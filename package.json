@@ -1,0 +1,9 @@
+{
+  "name": "brl-subagent",
+  "version": "1.2.0",
+  "description": "Subagent extension for pi with configurable model and thinking mode via selection UI",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  }
+}
