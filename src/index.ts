@@ -18,7 +18,6 @@
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -33,7 +32,7 @@ import { Type } from "typebox";
 
 interface SubagentState {
 	model?: { provider: string; id: string };
-	thinkingLevel: ThinkingLevel;
+	maxThinkingLevel: ThinkingLevel;
 	maxParallel: number; // 0 = unlimited
 }
 
@@ -66,6 +65,16 @@ interface SubagentToolOptions {
 }
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+function resolveThinkingLevel(
+	requested: ThinkingLevel | undefined,
+	maxAllowed: ThinkingLevel,
+): ThinkingLevel {
+	if (!requested) return maxAllowed;
+	const requestedIdx = THINKING_LEVELS.indexOf(requested);
+	const maxIdx = THINKING_LEVELS.indexOf(maxAllowed);
+	return THINKING_LEVELS[Math.min(requestedIdx, maxIdx)];
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -100,8 +109,8 @@ function formatTokens(count: number): string {
 function formatUsageStats(usage: UsageStats, model?: string): string {
 	const parts: string[] = [];
 	if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
-	if (usage.input) parts.push(`\u2191${formatTokens(usage.input)}`);
-	if (usage.output) parts.push(`\u2193${formatTokens(usage.output)}`);
+	if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
+	if (usage.output) parts.push(`↓${formatTokens(usage.output)}`);
 	if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
 	if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
 	if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
@@ -125,11 +134,13 @@ function getFinalOutput(messages: Array<Record<string, unknown>>): string {
 	return "";
 }
 
-async function writeToTempFile(name: string, content: string): Promise<{ dir: string; filePath: string }> {
-	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `brl-subagent-${name}-`));
+async function writeToTempFile(cwd: string, name: string, content: string): Promise<{ dir: string; filePath: string }> {
+	const baseDir = path.join(cwd, ".pi", "subagent-tmp");
+	await fs.promises.mkdir(baseDir, { recursive: true });
+	const tmpDir = await fs.promises.mkdtemp(path.join(baseDir, `${name}-`));
 	const filePath = path.join(tmpDir, `${name}.md`);
 	await withFileMutationQueue(filePath, async () => {
-		await fs.promises.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 });
+		await fs.promises.writeFile(filePath, content, { encoding: "utf-8", mode: TEMP_FILE_MODE });
 	});
 	return { dir: tmpDir, filePath };
 }
@@ -162,6 +173,12 @@ const EMPTY_USAGE: UsageStats = {
 };
 
 const NAV_FOOTER = "\u2191\u2193 navigate \u2022 enter select \u2022 esc cancel";
+
+const SIGKILL_GRACE_MS = 5000;
+const STATUS_RESET_DELAY_MS = 3000;
+const TEMP_FILE_MODE = 0o600;
+const TASK_PREVIEW_MAX_LENGTH = 80;
+const COLLAPSED_OUTPUT_LINES = 5;
 
 function isSubagentError(result: SubagentResult): boolean {
 	return result.exitCode !== 0
@@ -293,6 +310,7 @@ function parseSubagentLine(
 	try {
 		event = JSON.parse(line) as Record<string, unknown>;
 	} catch {
+		result.stderr += `[parse error] ${line.trim().slice(0, 200)}\n`;
 		return;
 	}
 
@@ -325,7 +343,7 @@ function attachAbortHandler(
 		proc.kill("SIGTERM");
 		setTimeout(() => {
 			if (!proc.killed) proc.kill("SIGKILL");
-		}, 5000);
+		}, SIGKILL_GRACE_MS);
 	};
 	if (signal.aborted) killProc();
 	else signal.addEventListener("abort", killProc, { once: true });
@@ -344,6 +362,7 @@ async function runSubagent(
 	signal: AbortSignal | undefined,
 	onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
 	toolOptions?: SubagentToolOptions,
+	timeout?: number,
 ): Promise<SubagentResult> {
 	const args = buildSubagentArgs(model, thinkingLevel, toolOptions);
 
@@ -351,7 +370,7 @@ async function runSubagent(
 	let tmpFilePath: string | null = null;
 
 	if (systemPrompt.trim()) {
-		const tmp = await writeToTempFile("system", systemPrompt);
+		const tmp = await writeToTempFile(cwd, "system", systemPrompt);
 		tmpDir = tmp.dir;
 		tmpFilePath = tmp.filePath;
 		args.push("--append-system-prompt", tmpFilePath);
@@ -394,12 +413,25 @@ async function runSubagent(
 				resolve(code ?? 0);
 			});
 
-			proc.on("error", () => {
+			proc.on("error", (err) => {
+				result.errorMessage = `Subprocess error: ${err.message}`;
+				result.stderr += err.message;
 				resolve(1);
 			});
 
 			if (signal) {
 				attachAbortHandler(proc, signal);
+			}
+
+			if (timeout && timeout > 0) {
+				const timer = setTimeout(() => {
+					result.errorMessage = `Subagent timed out after ${timeout}ms`;
+					proc.kill("SIGTERM");
+					setTimeout(() => {
+						if (!proc.killed) proc.kill("SIGKILL");
+					}, SIGKILL_GRACE_MS);
+				}, timeout);
+				proc.on("close", () => clearTimeout(timer));
 			}
 		});
 
@@ -417,6 +449,7 @@ function buildSubagentPrompt(
 	basePrompt: string,
 	inheritSystemPrompt: boolean,
 	customSystemPrompt: string | undefined,
+	outputFile?: string,
 ): string {
 	const SUBAGENT_INSTRUCTIONS =
 		"You are now acting as a subagent. Your task has been delegated to you by the main agent.\n\n" +
@@ -426,19 +459,29 @@ function buildSubagentPrompt(
 		"3. Any issues or limitations encountered\n" +
 		"4. Files modified (if any)";
 
-	if (inheritSystemPrompt && customSystemPrompt) {
-		// inherit + custom instructions appended
-		return `${basePrompt}\n\n${customSystemPrompt}\n\n${SUBAGENT_INSTRUCTIONS}`;
-	} else if (inheritSystemPrompt) {
-		// inherit only (current default)
-		return `${basePrompt}\n\n${SUBAGENT_INSTRUCTIONS}`;
-	} else if (customSystemPrompt) {
-		// replace — use custom prompt as the sole prompt
-		return `${customSystemPrompt}\n\n${SUBAGENT_INSTRUCTIONS}`;
-	} else {
-		// no inheritance, no custom prompt — just subagent instructions on pi's default
-		return SUBAGENT_INSTRUCTIONS;
+	let outputBlock = "";
+	if (outputFile) {
+		outputBlock =
+			`## Output Instructions\n\n` +
+			`Write your complete findings to the file at: ${outputFile}\n` +
+			`Use the write tool to create this file.\n\n` +
+			`Then, in your final response, provide ONLY a structured summary:\n` +
+			`1. A 2-3 sentence overview of what you found\n` +
+			`2. A compact index with: severity counts, key keywords, files examined, and section references\n` +
+			`3. Do NOT include the full findings in your response — they are in the file.\n\n` +
+			`When finished, your final response should look like:\n\n` +
+			`## Summary\n[2-3 sentences]\n\n` +
+			`## Index\n- Critical: N (see §X)\n- High: N (see §Y)\n- Medium: N (see §Z)\n` +
+			`- Keywords: word1, word2, word3\n- Files examined: file1.ts, file2.ts`;
 	}
+
+	const parts: string[] = [];
+	if (inheritSystemPrompt) parts.push(basePrompt);
+	if (customSystemPrompt) parts.push(customSystemPrompt);
+	if (outputBlock) parts.push(outputBlock);
+	parts.push(SUBAGENT_INSTRUCTIONS);
+
+	return parts.join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -447,7 +490,7 @@ function buildSubagentPrompt(
 
 export default function (pi: ExtensionAPI) {
 	const state: SubagentState = {
-		thinkingLevel: "off",
+		maxThinkingLevel: "off",
 		maxParallel: 0,
 	};
 
@@ -455,7 +498,6 @@ export default function (pi: ExtensionAPI) {
 	let activeSubagents = 0;
 	let completedSubagents = 0;
 	let failedSubagents = 0;
-	let currentCtx: ExtensionContext | null = null;
 
 	// -----------------------------------------------------------------------
 	// Status display
@@ -465,7 +507,7 @@ export default function (pi: ExtensionAPI) {
 		if (state.model) {
 			ctx.ui.setStatus(
 				"brl-subagent",
-				ctx.ui.theme.fg("accent", `brl:${state.model.id} [think:${state.thinkingLevel}]`),
+				ctx.ui.theme.fg("accent", `brl:${state.model.id} [max think:${state.maxThinkingLevel}]`),
 			);
 		} else {
 			ctx.ui.setStatus(
@@ -475,10 +517,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	function updateProgressStatus() {
-		const ctx = currentCtx;
-		if (!ctx) return;
-
+	function updateProgressStatus(ctx: ExtensionContext) {
 		const total = activeSubagents + completedSubagents + failedSubagents;
 		if (total === 0) {
 			updateStatus(ctx);
@@ -500,9 +539,9 @@ export default function (pi: ExtensionAPI) {
 				if (activeSubagents === 0 && (completedSubagents + failedSubagents) === snapshotTotal) {
 					completedSubagents = 0;
 					failedSubagents = 0;
-					updateStatus(currentCtx!);
+					updateStatus(ctx);
 				}
-			}, 3000);
+			}, STATUS_RESET_DELAY_MS);
 		}
 	}
 
@@ -518,7 +557,7 @@ export default function (pi: ExtensionAPI) {
 
 	function resetState(ctx: ExtensionContext) {
 		state.model = undefined;
-		state.thinkingLevel = "off";
+		state.maxThinkingLevel = "off";
 		state.maxParallel = 0;
 		updateStatus(ctx);
 		persistState();
@@ -529,22 +568,24 @@ export default function (pi: ExtensionAPI) {
 	let pendingQueue: Array<{
 		run: () => void;
 		signal: AbortSignal | undefined;
+		ctx: ExtensionContext;
 	}> = [];
 
-	async function acquireSlot(signal?: AbortSignal): Promise<boolean> {
+	async function acquireSlot(ctx: ExtensionContext, signal?: AbortSignal): Promise<boolean> {
 		if (state.maxParallel === 0 || activeSubagents < state.maxParallel) {
 			activeSubagents++;
-			updateProgressStatus();
+			updateProgressStatus(ctx);
 			return true;
 		}
 		return new Promise((resolve) => {
 			const entry = {
 				run: () => {
 					activeSubagents++;
-					updateProgressStatus();
+					updateProgressStatus(ctx);
 					resolve(true);
 				},
 				signal,
+				ctx,
 			};
 			pendingQueue.push(entry);
 			if (signal) {
@@ -559,11 +600,11 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
-	function releaseSlot(success: boolean) {
+	function releaseSlot(success: boolean, ctx: ExtensionContext) {
 		activeSubagents--;
 		if (success) completedSubagents++;
 		else failedSubagents++;
-		updateProgressStatus();
+		updateProgressStatus(ctx);
 
 		const next = pendingQueue.shift();
 		if (next && !next.signal?.aborted) {
@@ -578,7 +619,7 @@ export default function (pi: ExtensionAPI) {
 	function persistState() {
 		pi.appendEntry("brl-subagent-state", {
 			model: state.model,
-			thinkingLevel: state.thinkingLevel,
+			maxThinkingLevel: state.maxThinkingLevel,
 			maxParallel: state.maxParallel,
 		});
 	}
@@ -619,14 +660,14 @@ export default function (pi: ExtensionAPI) {
 	async function showThinkingSelector(ctx: ExtensionContext): Promise<void> {
 		const items: SelectItem[] = THINKING_LEVELS.map((level) => ({
 			value: level,
-			label: level === state.thinkingLevel ? `${level} (current)` : level,
+			label: level === state.maxThinkingLevel ? `${level} (current - ceiling)` : level,
 		}));
 
-		const result = await showSelectList(ctx, "Select Thinking Level", items, 10);
+		const result = await showSelectList(ctx, "Select Max Thinking Level", items, 10);
 		if (!result) return;
 
-		state.thinkingLevel = result as ThinkingLevel;
-		applyConfig(ctx, `Subagent thinking level set to ${result}`);
+		state.maxThinkingLevel = result as ThinkingLevel;
+		applyConfig(ctx, `Subagent max thinking level set to ${result} (subagents can request up to ${result})`);
 	}
 
 	// -----------------------------------------------------------------------
@@ -652,8 +693,8 @@ export default function (pi: ExtensionAPI) {
 	// Main configuration menu
 	// -----------------------------------------------------------------------
 
-	async function showConfigMenu(ctx: ExtensionContext): Promise<void> {
-		const items: SelectItem[] = [
+	function getConfigMenuItems(): SelectItem[] {
+		return [
 			{
 				value: "model",
 				label: "Select Model",
@@ -663,8 +704,8 @@ export default function (pi: ExtensionAPI) {
 			},
 			{
 				value: "thinking",
-				label: "Select Thinking Level",
-				description: state.thinkingLevel,
+				label: "Select Max Thinking Level",
+				description: state.maxThinkingLevel,
 			},
 			{
 				value: "concurrency",
@@ -677,6 +718,10 @@ export default function (pi: ExtensionAPI) {
 				description: "Clear subagent configuration",
 			},
 		];
+	}
+
+	async function showConfigMenu(ctx: ExtensionContext): Promise<void> {
+		const items = getConfigMenuItems();
 
 		const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
 			const container = new Container();
@@ -687,7 +732,7 @@ export default function (pi: ExtensionAPI) {
 			);
 
 			container.addChild(new Text(theme.fg("dim", `Model: ${formatModel(state.model)}`), 1, 0));
-			container.addChild(new Text(theme.fg("dim", `Thinking: ${state.thinkingLevel}`), 1, 0));
+			container.addChild(new Text(theme.fg("dim", `Max Thinking: ${state.maxThinkingLevel}`), 1, 0));
 			container.addChild(new Text(theme.fg("dim", `Max parallel: ${formatMaxParallel(state.maxParallel)}`), 1, 0));
 			container.addChild(new Text("", 0, 0)); // spacer
 
@@ -836,9 +881,9 @@ export default function (pi: ExtensionAPI) {
 		if (isError && details.errorMessage) {
 			text += `\n${theme.fg("error", `Error: ${details.errorMessage}`)}`;
 		} else if (finalOutput) {
-			const preview = finalOutput.split("\n").slice(0, 5).join("\n");
+			const preview = finalOutput.split("\n").slice(0, COLLAPSED_OUTPUT_LINES).join("\n");
 			text += `\n${theme.fg("toolOutput", preview)}`;
-			if (finalOutput.split("\n").length > 5) {
+			if (finalOutput.split("\n").length > COLLAPSED_OUTPUT_LINES) {
 				text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
 			}
 		} else {
@@ -847,6 +892,83 @@ export default function (pi: ExtensionAPI) {
 		const usageStr = formatUsageStats(details.usage, details.model);
 		if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
 		return text;
+	}
+
+	// -----------------------------------------------------------------------
+	// delegate_task helpers
+	// -----------------------------------------------------------------------
+
+	interface ResolvedParams {
+		task: string;
+		inheritSP: boolean;
+		customSP: string | undefined;
+		outputFile: string | undefined;
+		timeout: number | undefined;
+		effectiveCwd: string;
+		thinkingLevel: ThinkingLevel;
+		toolOptions: SubagentToolOptions | undefined;
+	}
+
+	function resolveSubagentParams(
+		params: {
+			task: string;
+			systemPrompt?: string;
+			inheritSystemPrompt?: boolean;
+			thinkingLevel?: string;
+			outputFile?: string;
+			timeout?: number;
+			cwd?: string;
+			tools?: string[];
+			excludeTools?: string[];
+			noBuiltinTools?: boolean;
+		},
+		ctx: ExtensionContext,
+	): ResolvedParams {
+		const thinkingLevel = resolveThinkingLevel(
+			params.thinkingLevel as ThinkingLevel | undefined,
+			state.maxThinkingLevel,
+		);
+
+		const toolOptions: SubagentToolOptions | undefined =
+			params.tools || params.excludeTools || params.noBuiltinTools
+				? { tools: params.tools, excludeTools: params.excludeTools, noBuiltinTools: params.noBuiltinTools }
+				: undefined;
+
+		return {
+			task: params.task,
+			inheritSP: params.inheritSystemPrompt !== false,
+			customSP: params.systemPrompt,
+			outputFile: params.outputFile,
+			timeout: params.timeout,
+			effectiveCwd: params.cwd || ctx.cwd,
+			thinkingLevel,
+			toolOptions,
+		};
+	}
+
+	function resolveSubagentModel(ctx: ExtensionContext):
+		| { ok: true; model: { provider: string; id: string } }
+		| { ok: false; error: AgentToolResult<SubagentResult> }
+	{
+		const subagentModel = state.model ||
+			(ctx.model
+				? { provider: ctx.model.provider, id: ctx.model.id }
+				: undefined);
+
+		if (!subagentModel) {
+			return {
+				ok: false,
+				error: {
+					content: [{
+						type: "text" as const,
+						text: "No model available. Configure API keys first, then use /brl-subagent to set a model.",
+					}],
+					isError: true,
+				},
+			};
+		}
+
+		return { ok: true, model: subagentModel };
 	}
 
 	// -----------------------------------------------------------------------
@@ -869,6 +991,10 @@ export default function (pi: ExtensionAPI) {
 			"Use delegate_task when the user asks you to hand off work to a subagent, or when a task would benefit from an isolated context window (e.g., deep investigation, parallel research, long-running analysis).",
 			"The subagent inherits your system prompt and runs with its own model (configurable via /brl-subagent). It reports what it did when done.",
 			"You can customize per-call via inheritSystemPrompt and systemPrompt: set inheritSystemPrompt: false to save context, provide a systemPrompt for custom instructions, or use both to add instructions on top of inheritance.",
+			"Set thinkingLevel per call for task-appropriate reasoning depth (off/minimal/low/medium/high/xhigh). It is capped at the user's configured maximum. Use lower levels for simple lookups, higher levels for deep analysis.",
+			"Use outputFile to have the subagent write full findings to disk and return only a structured summary — saves context tokens for large investigations.",
+			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck.",
+			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
 		],
 		parameters: Type.Object({
 			task: Type.String({
@@ -890,6 +1016,36 @@ export default function (pi: ExtensionAPI) {
 						"or to avoid passing a large inherited prompt to the subagent.",
 				}),
 			),
+			thinkingLevel: Type.Optional(
+				Type.String({
+					description:
+						"Requested thinking level for this subagent call. " +
+						"One of: off, minimal, low, medium, high, xhigh. " +
+						"Capped at the user's configured maximum. If omitted, the user's configured level is used.",
+				}),
+			),
+			outputFile: Type.Optional(
+				Type.String({
+					description:
+						"Project-relative path where the subagent should write its full findings. " +
+						"When provided, the subagent is instructed to write complete output to this file " +
+						"and return only a structured summary.",
+				}),
+			),
+			timeout: Type.Optional(
+				Type.Number({
+					description:
+						"Maximum time in milliseconds the subagent is allowed to run. " +
+						"If exceeded, the subagent is killed and an error is returned.",
+				}),
+			),
+			cwd: Type.Optional(
+				Type.String({
+					description:
+						"Working directory for the subagent. Must be an existing directory. " +
+						"Defaults to the conductor's current working directory.",
+				}),
+			),
 			tools: Type.Optional(Type.Array(Type.String(), {
 				description: "Explicit allowlist of tool names for the subagent. Maps to pi's --tools flag.",
 			})),
@@ -907,6 +1063,10 @@ export default function (pi: ExtensionAPI) {
 				task: string;
 				systemPrompt?: string;
 				inheritSystemPrompt?: boolean;
+				thinkingLevel?: string;
+				outputFile?: string;
+				timeout?: number;
+				cwd?: string;
 				tools?: string[];
 				excludeTools?: string[];
 				noBuiltinTools?: boolean;
@@ -915,36 +1075,15 @@ export default function (pi: ExtensionAPI) {
 			onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
 			ctx: ExtensionContext,
 		) {
-			currentCtx = ctx;
-
-			const task = params.task;
-			const inheritSP = params.inheritSystemPrompt !== false; // default true
-			const customSP = params.systemPrompt;
-			const toolOptions: SubagentToolOptions | undefined =
-				params.tools || params.excludeTools || params.noBuiltinTools
-					? { tools: params.tools, excludeTools: params.excludeTools, noBuiltinTools: params.noBuiltinTools }
-					: undefined;
+			const { task, inheritSP, customSP, outputFile, timeout, effectiveCwd, thinkingLevel, toolOptions } =
+				resolveSubagentParams(params, ctx);
 
 			// Determine subagent model: configured model, or fall back to main agent's model
-			const subagentModel = state.model ||
-				(ctx.model
-					? { provider: ctx.model.provider, id: ctx.model.id }
-					: undefined);
+			const modelResult = resolveSubagentModel(ctx);
+			if (!modelResult.ok) return modelResult.error;
+			const subagentModel = modelResult.model;
 
-			if (!subagentModel) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text:
-								"No model available. Configure API keys first, then use /brl-subagent to set a model.",
-						},
-					],
-					isError: true,
-				};
-			}
-
-			const acquired = await acquireSlot(signal);
+			const acquired = await acquireSlot(ctx, signal);
 			if (!acquired) {
 				return {
 					content: [{ type: "text" as const, text: "Subagent cancelled while waiting for concurrency slot." }],
@@ -956,7 +1095,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				// Build the subagent's system prompt based on inheritSystemPrompt and systemPrompt
 				const basePrompt = ctx.getSystemPrompt();
-				const subagentPrompt = buildSubagentPrompt(basePrompt, inheritSP, customSP);
+				const subagentPrompt = buildSubagentPrompt(basePrompt, inheritSP, customSP, outputFile);
 
 				// Emit initial progress with mode info
 				const modeInfo = describePromptMode(inheritSP, Boolean(customSP));
@@ -977,14 +1116,15 @@ export default function (pi: ExtensionAPI) {
 				});
 
 				const result = await runSubagent(
-					ctx.cwd,
+					effectiveCwd,
 					subagentPrompt,
 					subagentModel,
-					state.thinkingLevel,
+					thinkingLevel,
 					task,
 					signal,
 					onUpdate,
 					toolOptions,
+					timeout,
 				);
 
 				const finalOutput = getFinalOutput(result.messages);
@@ -1005,13 +1145,25 @@ export default function (pi: ExtensionAPI) {
 					content: [{ type: "text" as const, text: finalOutput || "(no output)" }],
 					details: result,
 				};
+			} catch (err) {
+				return {
+					content: [{ type: "text" as const, text: `Subagent crashed: ${(err as Error).message || String(err)}` }],
+					details: {
+						messages: [],
+						usage: { ...EMPTY_USAGE },
+						exitCode: 1,
+						stderr: String(err),
+						errorMessage: (err as Error).message || String(err),
+					},
+					isError: true,
+				};
 			} finally {
-				releaseSlot(success);
+				releaseSlot(success, ctx);
 			}
 		},
 
 		renderCall(
-			args: { task?: string; systemPrompt?: string; inheritSystemPrompt?: boolean; tools?: string[]; excludeTools?: string[]; noBuiltinTools?: boolean },
+			args: { task?: string; systemPrompt?: string; inheritSystemPrompt?: boolean; thinkingLevel?: string; outputFile?: string; timeout?: number; cwd?: string; tools?: string[]; excludeTools?: string[]; noBuiltinTools?: boolean },
 			theme: {
 				fg: (color: string, text: string) => string;
 				bold: (text: string) => string;
@@ -1021,8 +1173,8 @@ export default function (pi: ExtensionAPI) {
 			const label = buildDelegateLabel(args, theme);
 			const scopeLabel = buildScopeLabel(args, theme);
 			const preview = args.task
-				? args.task.length > 80
-					? `${args.task.slice(0, 80)}\u2026`
+				? args.task.length > TASK_PREVIEW_MAX_LENGTH
+					? `${args.task.slice(0, TASK_PREVIEW_MAX_LENGTH)}\u2026`
 					: args.task
 				: "\u2026";
 			return new Text(label + scopeLabel + theme.fg("dim", preview), 0, 0);
@@ -1062,7 +1214,6 @@ export default function (pi: ExtensionAPI) {
 	// -----------------------------------------------------------------------
 
 	pi.on("session_start", async (_event, ctx) => {
-		currentCtx = ctx;
 		const entries = ctx.sessionManager.getEntries();
 		const stateEntry = entries
 			.filter(
@@ -1073,7 +1224,9 @@ export default function (pi: ExtensionAPI) {
 
 		if (stateEntry?.data) {
 			if (stateEntry.data.model) state.model = stateEntry.data.model;
-			if (stateEntry.data.thinkingLevel) state.thinkingLevel = stateEntry.data.thinkingLevel;
+			const storedLevel = (stateEntry.data as any).maxThinkingLevel
+				|| (stateEntry.data as any).thinkingLevel;
+			if (storedLevel) state.maxThinkingLevel = storedLevel;
 			if (stateEntry.data.maxParallel !== undefined) state.maxParallel = stateEntry.data.maxParallel;
 		}
 

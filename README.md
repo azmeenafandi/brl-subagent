@@ -44,7 +44,7 @@ Run `/brl-subagent` inside pi to open the configuration menu. From there you can
 | Option | What it does |
 |---|---|
 | **Select Model** | Pick the model your subagent will use (or leave unset to use the main agent's model) |
-| **Select Thinking Level** | Choose from `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` |
+| **Select Max Thinking Level** | Set the ceiling for subagent thinking. Choose from `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Individual calls can request a lower level. |
 | **Set Max Parallel Subagents** | Limit concurrent subagents (0 = unlimited) |
 | **Reset to Default** | Clear all configuration |
 
@@ -81,6 +81,10 @@ The LLM can also be explicit:
 | `task` | string | Yes | — | What you want the subagent to do. Be specific — the subagent doesn't see your conversation history. |
 | `systemPrompt` | string | No | — | Extra instructions or a completely different persona for the subagent. |
 | `inheritSystemPrompt` | boolean | No | `true` | Whether to pass the main agent's system prompt to the subagent. Set to `false` to save tokens on simple tasks. |
+| `thinkingLevel` | string | No | — | Requested thinking level for this call. One of: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Capped at the user's configured maximum. Omit to use the user's configured level. |
+| `outputFile` | string | No | — | Project-relative path where the subagent writes full findings. The subagent returns only a structured summary — full output goes to disk. |
+| `timeout` | number | No | — | Maximum time in milliseconds. If exceeded, the subagent is killed (SIGTERM → 5s → SIGKILL). |
+| `cwd` | string | No | — | Working directory for the subagent. Defaults to the conductor's current directory. |
 | `tools` | string[] | No | — | Allowlist of tools the subagent can use (e.g., `["read", "grep"]`). |
 | `excludeTools` | string[] | No | — | Tools to disable (e.g., `["write", "edit"]` for read-only subagents). |
 | `noBuiltinTools` | boolean | No | `false` | Disable all built-in tools. Useful when the subagent only needs custom tools. |
@@ -109,6 +113,84 @@ The subagent always gets pi's default tool descriptions and basic instructions t
 
 ---
 
+## Per-Call Thinking Level
+
+You can set the thinking level per `delegate_task` call, capped at the user's configured maximum:
+
+```json
+{
+  "task": "Audit contracts/ for security issues",
+  "thinkingLevel": "high"
+}
+```
+
+The user sets a ceiling via `/brl-subagent thinking` ("Select Max Thinking Level") for cost control. The conductor model can dial within that range for task-appropriate depth:
+
+| Task | Ideal thinking | Why |
+|---|---|---|
+| Simple file read / lookup | `off` or `minimal` | Speed matters, no reasoning needed |
+| Code audit / security review | `high` | Deep reasoning required |
+| Creative ideation | `high` | Divergent thinking benefits |
+| Scoring / evaluation | `medium` | Evaluative, not generative |
+| Debugging flaky tests | `high` | Complex causal reasoning |
+
+**Cap behavior:** If the user's max is `medium` and the conductor requests `high`, the subagent runs at `medium`. If the request is `low`, it runs at `low`. If omitted, the user's configured max is used.
+
+---
+
+## File Output (Treasury Management)
+
+Use `outputFile` to have the subagent write full findings to disk instead of returning them in the response. The subagent returns only a structured summary — saving context tokens:
+
+```json
+{
+  "task": "Audit contracts/ for security issues",
+  "outputFile": ".pi/subagent-outputs/audit_contracts.md"
+}
+```
+
+The extension auto-appends file-logging instructions to the subagent's system prompt. The subagent writes its complete output to the specified file using its `write` tool, then returns a compact summary with severity counts, keywords, and files examined.
+
+> **Note:** The extension does NOT create the file or directory — the subagent does via its own `write` tool. Paths are relative to the subagent's working directory.
+
+---
+
+## Timeout
+
+Limit how long a subagent can run to prevent stuck tasks:
+
+```json
+{
+  "task": "Reproduce flaky test",
+  "timeout": 300000
+}
+```
+
+When the timeout is exceeded, the subagent receives `SIGTERM` (with a 5-second grace period before `SIGKILL`). The result is returned with `isError: true` and `errorMessage: "Subagent timed out after 300000ms"`.
+
+---
+
+## Custom Working Directory
+
+Override the subagent's working directory for isolated worktrees:
+
+```json
+{
+  "task": "Run tests in isolated worktree",
+  "cwd": "/tmp/worktree_attempt_5"
+}
+```
+
+Defaults to the conductor's current working directory. The path must be an existing directory.
+
+---
+
+## Temp Directory
+
+System prompt temp files are written to `.pi/subagent-tmp/` inside the project directory (not `/tmp`). Each subagent call gets a unique subdirectory that is cleaned up after the subagent exits. Add `.pi/subagent-tmp/` to your `.gitignore` — it's a build artifact, not source code.
+
+---
+
 ## Concurrency
 
 By default, subagents run with no limit — great for fanning out to many files at once. If you're hitting resource limits, set a cap via the config menu or run:
@@ -124,6 +206,7 @@ Excess subagents are queued and launched as slots free up. The footer shows real
 | `brl: 3 running` | Three subagents are actively working |
 | `brl: 1 running, 4 done, 1 failed` | Mixed progress during fan-out |
 | `brl: 5 done` | All finished (resets to normal after 3 seconds) |
+| `brl:claude-sonnet-4-5 [max think:medium]` | Configured model and max thinking ceiling |
 
 ---
 
