@@ -53,6 +53,8 @@ You can also jump straight to a selector:
 ```bash
 /brl-subagent model       # Open model selector directly
 /brl-subagent thinking    # Open thinking level selector directly
+/brl-subagent concurrency  # Set max parallel limit
+/brl-subagent history     # Browse past subagent runs
 /brl-subagent reset       # Reset everything
 ```
 
@@ -81,6 +83,7 @@ The LLM can also be explicit:
 | `task` | string | Yes | — | What you want the subagent to do. Be specific — the subagent doesn't see your conversation history. |
 | `systemPrompt` | string | No | — | Extra instructions or a completely different persona for the subagent. |
 | `inheritSystemPrompt` | boolean | No | `true` | Whether to pass the main agent's system prompt to the subagent. Set to `false` to save tokens on simple tasks. |
+| `label` | string | No | — | Human-readable name for this subagent (e.g., `"security-audit"`, `"docs-review"`). Appears in the tool call badge, result header, and run history. |
 | `thinkingLevel` | string | No | — | Requested thinking level for this call. One of: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Capped at the user's configured maximum. Omit to use the user's configured level. |
 | `outputFile` | string | No | — | Project-relative path where the subagent writes full findings. The subagent returns only a structured summary — full output goes to disk. |
 | `timeout` | number | No | — | Maximum time in milliseconds. If exceeded, the subagent is killed (SIGTERM → 5s → SIGKILL). |
@@ -205,8 +208,55 @@ Excess subagents are queued and launched as slots free up. The footer shows real
 |---|---|
 | `brl: 3 running` | Three subagents are actively working |
 | `brl: 1 running, 4 done, 1 failed` | Mixed progress during fan-out |
+| `brl: 3 done (3 unseen)` | All finished — 3 results haven't been reviewed yet |
+| `brl: 5 done (1 unseen)` | Most results reviewed, 1 still pending |
 | `brl: 5 done` | All finished (resets to normal after 3 seconds) |
 | `brl:claude-sonnet-4-5 [max think:medium]` | Configured model and max thinking ceiling |
+
+---
+
+## Naming Subagents
+
+Give subagents human-readable labels so you can tell them apart at a glance:
+
+```json
+{
+  "label": "security-audit",
+  "task": "Audit contracts/ for security issues"
+}
+```
+
+The label appears in three places:
+- **Tool call badge:** `delegate_task [security-audit] Audit contracts/...`
+- **Result header:** `✓ subagent [security-audit] (claude-sonnet-4-5)`
+- **Run history:** each entry shows its label for easy scanning
+
+When subagents have labels, the status bar shows named entries (e.g., `brl: [audit] running, [docs] done (1 unseen)`) instead of anonymous counts. Omit the label to use the default anonymous counter.
+
+---
+
+## Run History & Audit Trail
+
+Every `delegate_task` call is automatically recorded — task, label, model, thinking level, timestamps, duration, token usage, cost, and a preview of the output. This gives you a persistent, searchable audit trail of what your subagents did, whether they succeeded, and how much they cost.
+
+Browse the history at any time:
+
+```bash
+/brl-subagent history
+```
+
+This opens a scrollable list of past runs (newest first) with status icons and key metrics. Select a run to see its full detail: task description, model, thinking level, start/end times, duration, cost, token counts, error messages, and an output preview.
+
+### Seen vs. Unseen
+
+When a subagent finishes, it's marked **unseen** until you review it. The status bar shows how many results are waiting for your attention:
+
+- `brl: 3 done (3 unseen)` — all three completions need review
+- `brl: 3 done (1 unseen)` — you've looked at two, one remains
+
+Opening a run in the history view marks it as seen. Seen status persists across sessions — you won't lose track of what you've reviewed. The counters reset after 3 seconds of inactivity, but the history and seen records are permanent.
+
+> **Tip:** Periodically run `/brl-subagent history` to spot-check subagent output. This lets you verify that the conductor is delegating effectively and that subagents are producing quality results — no more blind trust.
 
 ---
 

@@ -34,6 +34,24 @@ interface SubagentState {
 	model?: { provider: string; id: string };
 	maxThinkingLevel: ThinkingLevel;
 	maxParallel: number; // 0 = unlimited
+	seenRunIds: string[];
+}
+
+interface SubagentRun {
+	id: string;
+	task: string;
+	label?: string;
+	status: "running" | "done" | "failed";
+	model: string;
+	thinkingLevel: string;
+	startedAt: string;
+	finishedAt?: string;
+	durationMs?: number;
+	cost?: number;
+	tokensIn?: number;
+	tokensOut?: number;
+	errorMessage?: string;
+	outputSummary?: string;
 }
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -492,12 +510,14 @@ export default function (pi: ExtensionAPI) {
 	const state: SubagentState = {
 		maxThinkingLevel: "off",
 		maxParallel: 0,
+		seenRunIds: [],
 	};
 
 	// Module-level progress tracking
 	let activeSubagents = 0;
 	let completedSubagents = 0;
 	let failedSubagents = 0;
+	let unseenSubagents = 0;
 
 	// -----------------------------------------------------------------------
 	// Status display
@@ -526,7 +546,13 @@ export default function (pi: ExtensionAPI) {
 
 		const parts: string[] = [];
 		if (activeSubagents > 0) parts.push(`${activeSubagents} running`);
-		if (completedSubagents > 0) parts.push(`${completedSubagents} done`);
+		if (completedSubagents > 0) {
+			if (unseenSubagents > 0) {
+				parts.push(`${completedSubagents} done (${unseenSubagents} unseen)`);
+			} else {
+				parts.push(`${completedSubagents} done`);
+			}
+		}
 		if (failedSubagents > 0) parts.push(`${failedSubagents} failed`);
 
 		const statusText = `brl: ${parts.join(", ")}`;
@@ -539,6 +565,7 @@ export default function (pi: ExtensionAPI) {
 				if (activeSubagents === 0 && (completedSubagents + failedSubagents) === snapshotTotal) {
 					completedSubagents = 0;
 					failedSubagents = 0;
+					unseenSubagents = 0;
 					updateStatus(ctx);
 				}
 			}, STATUS_RESET_DELAY_MS);
@@ -602,8 +629,12 @@ export default function (pi: ExtensionAPI) {
 
 	function releaseSlot(success: boolean, ctx: ExtensionContext) {
 		activeSubagents--;
-		if (success) completedSubagents++;
-		else failedSubagents++;
+		if (success) {
+			completedSubagents++;
+			unseenSubagents++;
+		} else {
+			failedSubagents++;
+		}
 		updateProgressStatus(ctx);
 
 		const next = pendingQueue.shift();
@@ -621,7 +652,12 @@ export default function (pi: ExtensionAPI) {
 			model: state.model,
 			maxThinkingLevel: state.maxThinkingLevel,
 			maxParallel: state.maxParallel,
+			seenRunIds: state.seenRunIds,
 		});
+	}
+
+	function persistRun(run: SubagentRun) {
+		pi.appendEntry("brl-subagent-run", run);
 	}
 
 	// -----------------------------------------------------------------------
@@ -717,6 +753,11 @@ export default function (pi: ExtensionAPI) {
 				label: "Reset to Default",
 				description: "Clear subagent configuration",
 			},
+			{
+				value: "history",
+				label: "View Run History",
+				description: "Browse past subagent runs",
+			},
 		];
 	}
 
@@ -770,13 +811,117 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// -----------------------------------------------------------------------
+	// Run history viewer
+	// -----------------------------------------------------------------------
+
+	function formatRunDuration(ms: number): string {
+		if (ms < 1000) return `${ms}ms`;
+		const sec = (ms / 1000).toFixed(1);
+		if (ms < 60_000) return `${sec}s`;
+		const min = Math.floor(ms / 60_000);
+		const secs = Math.round((ms % 60_000) / 1000);
+		return `${min}m ${secs}s`;
+	}
+
+	async function showRunHistory(ctx: ExtensionContext): Promise<void> {
+		const entries = ctx.sessionManager.getEntries();
+		const runs = entries
+			.filter((e: { type: string; customType?: string }) =>
+				e.type === "custom" && e.customType === "brl-subagent-run",
+			)
+			.map((e: { data?: SubagentRun }) => e.data!)
+			.filter(Boolean)
+			.reverse(); // newest first
+
+		if (runs.length === 0) {
+			ctx.ui.notify("No subagent runs recorded yet. Delegate a task to see history.", "info");
+			return;
+		}
+
+		const statusIcon: Record<string, string> = {
+			running: ctx.ui.theme.fg("accent", "◉"),
+			done: ctx.ui.theme.fg("success", "✓"),
+			failed: ctx.ui.theme.fg("error", "✗"),
+		};
+
+		const items: SelectItem[] = runs.map((r) => {
+			const icon = statusIcon[r.status] || "·";
+			const name = r.label || r.task.slice(0, 60);
+			const model = r.model.split("/").pop() || r.model;
+			const when = r.finishedAt
+				? formatRunDuration(r.durationMs || 0)
+				: "running...";
+			const cost = r.cost ? ` $${r.cost.toFixed(4)}` : "";
+			const desc = `${r.thinkingLevel} · ${model} · ${when}${cost}`;
+			const selLabel = `${icon} ${name}`;
+			return { value: r.id, label: selLabel, description: desc };
+		});
+
+		const selectedId = await showSelectList(ctx, "Subagent History", items, 15);
+		if (!selectedId) return;
+
+		const run = runs.find((r) => r.id === selectedId);
+		if (!run) return;
+
+		// Mark as seen
+		if (!state.seenRunIds.includes(run.id)) {
+			state.seenRunIds.push(run.id);
+			if (unseenSubagents > 0) unseenSubagents--;
+			updateProgressStatus(ctx);
+			persistState();
+		}
+
+		// Show detail view
+		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+			const container = new Container();
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+			const statusLabel = run.status === "done" ? "Completed" : run.status === "failed" ? "Failed" : "Running";
+			container.addChild(new Text(
+				theme.fg("toolTitle", theme.bold(`${run.label || "Subagent"} — ${statusLabel}`)), 1, 0));
+			container.addChild(new Text("", 0, 0));
+			container.addChild(new Text(theme.fg("dim", `Task: ${run.task.slice(0, 200)}`), 1, 0));
+			container.addChild(new Text(theme.fg("dim", `Model: ${run.model} · Thinking: ${run.thinkingLevel}`), 1, 0));
+			container.addChild(new Text(theme.fg("dim", `Started: ${run.startedAt}`), 1, 0));
+			if (run.finishedAt) {
+				container.addChild(new Text(theme.fg("dim", `Finished: ${run.finishedAt} (${formatRunDuration(run.durationMs || 0)})`), 1, 0));
+			}
+			if (run.cost) {
+				container.addChild(new Text(theme.fg("dim", `Cost: $${run.cost.toFixed(4)} · ↑${formatTokens(run.tokensIn || 0)} ↓${formatTokens(run.tokensOut || 0)}`), 1, 0));
+			}
+			if (run.errorMessage) {
+				container.addChild(new Spacer(1));
+				container.addChild(new Text(theme.fg("error", `Error: ${run.errorMessage}`), 1, 0));
+			}
+			if (run.outputSummary) {
+				container.addChild(new Spacer(1));
+				container.addChild(new Text(theme.fg("muted", "\u2500\u2500\u2500 Output Preview \u2500\u2500\u2500"), 1, 0));
+				container.addChild(new Text(theme.fg("toolOutput", run.outputSummary), 1, 0));
+				if ((run.outputSummary || "").length >= 200) {
+					container.addChild(new Text(theme.fg("dim", "(first 200 characters)"), 1, 0));
+				}
+			}
+
+			container.addChild(new Spacer(1));
+			container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+			return {
+				render: (w: number) => container.render(w),
+				invalidate: () => container.invalidate(),
+				handleInput: (_data: string) => done(),
+			};
+		});
+	}
+
+	// -----------------------------------------------------------------------
 	// /brl-subagent command
 	// -----------------------------------------------------------------------
 
 	pi.registerCommand("brl-subagent", {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
-			const options = ["model", "thinking", "concurrency", "reset"];
+			const options = ["model", "thinking", "concurrency", "reset", "history"];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
 				? filtered.map((o) => ({ value: o, label: o }))
@@ -792,6 +937,8 @@ export default function (pi: ExtensionAPI) {
 				await showConcurrencyInput(ctx);
 			} else if (trimmed === "reset") {
 				resetState(ctx);
+			} else if (trimmed === "history") {
+				await showRunHistory(ctx);
 			} else {
 				await showConfigMenu(ctx);
 			}
@@ -842,9 +989,13 @@ export default function (pi: ExtensionAPI) {
 		mdTheme: ReturnType<typeof getMarkdownTheme>,
 	): Container {
 		const container = new Container();
+		const labelText = details.label
+			? theme.fg("accent", ` [${details.label}]`)
+			: "";
 		container.addChild(
 			new Text(
 				`${icon} ${theme.fg("toolTitle", theme.bold("subagent"))}` +
+					labelText +
 					(details.model ? theme.fg("muted", ` (${details.model})`) : ""),
 				0,
 				0,
@@ -877,6 +1028,7 @@ export default function (pi: ExtensionAPI) {
 	): string {
 		let text =
 			`${icon} ${theme.fg("toolTitle", theme.bold("subagent"))}` +
+			(details.label ? theme.fg("accent", ` [${details.label}]`) : "") +
 			(details.model ? theme.fg("muted", ` (${details.model})`) : "");
 		if (isError && details.errorMessage) {
 			text += `\n${theme.fg("error", `Error: ${details.errorMessage}`)}`;
@@ -900,6 +1052,7 @@ export default function (pi: ExtensionAPI) {
 
 	interface ResolvedParams {
 		task: string;
+		label: string | undefined;
 		inheritSP: boolean;
 		customSP: string | undefined;
 		outputFile: string | undefined;
@@ -912,6 +1065,7 @@ export default function (pi: ExtensionAPI) {
 	function resolveSubagentParams(
 		params: {
 			task: string;
+			label?: string;
 			systemPrompt?: string;
 			inheritSystemPrompt?: boolean;
 			thinkingLevel?: string;
@@ -936,6 +1090,7 @@ export default function (pi: ExtensionAPI) {
 
 		return {
 			task: params.task,
+			label: params.label?.trim() || undefined,
 			inheritSP: params.inheritSystemPrompt !== false,
 			customSP: params.systemPrompt,
 			outputFile: params.outputFile,
@@ -995,6 +1150,7 @@ export default function (pi: ExtensionAPI) {
 			"Use outputFile to have the subagent write full findings to disk and return only a structured summary — saves context tokens for large investigations.",
 			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck.",
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
+			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
 		],
 		parameters: Type.Object({
 			task: Type.String({
@@ -1032,6 +1188,14 @@ export default function (pi: ExtensionAPI) {
 						"and return only a structured summary.",
 				}),
 			),
+			label: Type.Optional(
+				Type.String({
+					description:
+						"Human-readable label for this subagent (e.g., 'security-audit', 'docs-review'). " +
+						"Appears in the status bar and tool call display. " +
+						"Omit to use the default anonymous counter.",
+				}),
+			),
 			timeout: Type.Optional(
 				Type.Number({
 					description:
@@ -1061,6 +1225,7 @@ export default function (pi: ExtensionAPI) {
 			_toolCallId: string,
 			params: {
 				task: string;
+				label?: string;
 				systemPrompt?: string;
 				inheritSystemPrompt?: boolean;
 				thinkingLevel?: string;
@@ -1075,13 +1240,26 @@ export default function (pi: ExtensionAPI) {
 			onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
 			ctx: ExtensionContext,
 		) {
-			const { task, inheritSP, customSP, outputFile, timeout, effectiveCwd, thinkingLevel, toolOptions } =
+			const { task, label, inheritSP, customSP, outputFile, timeout, effectiveCwd, thinkingLevel, toolOptions } =
 				resolveSubagentParams(params, ctx);
 
 			// Determine subagent model: configured model, or fall back to main agent's model
 			const modelResult = resolveSubagentModel(ctx);
 			if (!modelResult.ok) return modelResult.error;
 			const subagentModel = modelResult.model;
+
+			// Start tracking this run for history
+			const runId = crypto.randomUUID();
+			const run: SubagentRun = {
+				id: runId,
+				task,
+				label,
+				status: "running",
+				model: `${subagentModel.provider}/${subagentModel.id}`,
+				thinkingLevel,
+				startedAt: new Date().toISOString(),
+			};
+			persistRun(run);
 
 			const acquired = await acquireSlot(ctx, signal);
 			if (!acquired) {
@@ -1130,6 +1308,21 @@ export default function (pi: ExtensionAPI) {
 				const finalOutput = getFinalOutput(result.messages);
 				const isError = isSubagentError(result);
 
+				// Attach label to result for display
+				result.label = label;
+
+				// Update run record with completion data
+				const finishedAt = new Date().toISOString();
+				run.status = isError ? "failed" : "done";
+				run.finishedAt = finishedAt;
+				run.durationMs = Date.now() - new Date(run.startedAt).getTime();
+				run.cost = result.usage.cost;
+				run.tokensIn = result.usage.input;
+				run.tokensOut = result.usage.output;
+				run.errorMessage = result.errorMessage;
+				run.outputSummary = finalOutput.slice(0, 200);
+				persistRun(run);
+
 				if (isError) {
 					const errorMsg =
 						result.errorMessage || result.stderr || finalOutput || "(no output from subagent)";
@@ -1163,21 +1356,24 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(
-			args: { task?: string; systemPrompt?: string; inheritSystemPrompt?: boolean; thinkingLevel?: string; outputFile?: string; timeout?: number; cwd?: string; tools?: string[]; excludeTools?: string[]; noBuiltinTools?: boolean },
+			args: { task?: string; label?: string; systemPrompt?: string; inheritSystemPrompt?: boolean; thinkingLevel?: string; outputFile?: string; timeout?: number; cwd?: string; tools?: string[]; excludeTools?: string[]; noBuiltinTools?: boolean },
 			theme: {
 				fg: (color: string, text: string) => string;
 				bold: (text: string) => string;
 			},
 			_context: unknown,
 		) {
-			const label = buildDelegateLabel(args, theme);
+			const dl = buildDelegateLabel(args, theme);
 			const scopeLabel = buildScopeLabel(args, theme);
+			const nameLabel = args.label
+				? theme.fg("accent", `[${args.label}] `)
+				: "";
 			const preview = args.task
 				? args.task.length > TASK_PREVIEW_MAX_LENGTH
 					? `${args.task.slice(0, TASK_PREVIEW_MAX_LENGTH)}\u2026`
 					: args.task
 				: "\u2026";
-			return new Text(label + scopeLabel + theme.fg("dim", preview), 0, 0);
+			return new Text(dl + scopeLabel + nameLabel + theme.fg("dim", preview), 0, 0);
 		},
 
 		renderResult(
@@ -1228,6 +1424,7 @@ export default function (pi: ExtensionAPI) {
 				|| (stateEntry.data as any).thinkingLevel;
 			if (storedLevel) state.maxThinkingLevel = storedLevel;
 			if (stateEntry.data.maxParallel !== undefined) state.maxParallel = stateEntry.data.maxParallel;
+			if ((stateEntry.data as any).seenRunIds) state.seenRunIds = (stateEntry.data as any).seenRunIds;
 		}
 
 		updateStatus(ctx);
