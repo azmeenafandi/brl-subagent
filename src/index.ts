@@ -54,6 +54,18 @@ interface SubagentRun {
 	outputSummary?: string;
 }
 
+interface LiveSubagent {
+	id: string;
+	label?: string;
+	task: string;
+	model: string;
+	thinkingLevel: string;
+	startedAt: number;
+	liveOutput: string;
+	usage: { input: number; output: number };
+	ctx: ExtensionContext;
+}
+
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 interface UsageStats {
@@ -519,6 +531,29 @@ export default function (pi: ExtensionAPI) {
 	let failedSubagents = 0;
 	let unseenSubagents = 0;
 
+	// Per-subagent live state for the monitor dashboard
+	const subagentSessions = new Map<string, LiveSubagent>();
+
+	function registerLiveSubagent(id: string, data: Omit<LiveSubagent, "liveOutput" | "usage">) {
+		subagentSessions.set(id, { ...data, liveOutput: "", usage: { input: 0, output: 0 } });
+	}
+
+	function updateLiveSubagent(id: string, output: string, input: number, output_: number) {
+		const s = subagentSessions.get(id);
+		if (s) {
+			s.liveOutput = output;
+			s.usage = { input, output: output_ };
+		}
+	}
+
+	function finalizeLiveSubagent(id: string, status: "done" | "failed") {
+		const s = subagentSessions.get(id);
+		if (s) {
+			// Keep for the 3-second reset window, then clean up
+			setTimeout(() => subagentSessions.delete(id), STATUS_RESET_DELAY_MS);
+		}
+	}
+
 	// -----------------------------------------------------------------------
 	// Status display
 	// -----------------------------------------------------------------------
@@ -758,6 +793,11 @@ export default function (pi: ExtensionAPI) {
 				label: "View Run History",
 				description: "Browse past subagent runs",
 			},
+			{
+				value: "monitor",
+				label: "Live Monitor",
+				description: "Watch running subagents in real-time",
+			},
 		];
 	}
 
@@ -915,13 +955,75 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// -----------------------------------------------------------------------
+	// Live monitor dashboard
+	// -----------------------------------------------------------------------
+
+	async function showMonitor(ctx: ExtensionContext): Promise<void> {
+		if (subagentSessions.size === 0) {
+			ctx.ui.notify("No subagents are currently running. Delegate a task to see live activity.", "info");
+			return;
+		}
+
+		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+			const buildView = () => {
+				const container = new Container();
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+				container.addChild(new Text(
+					theme.fg("accent", theme.bold(`Subagent Monitor (${subagentSessions.size} active)`)), 1, 0));
+				container.addChild(new Text(theme.fg("dim", "\u2193 next \u2022 enter inspect \u2022 esc close"), 1, 0));
+				container.addChild(new Text("", 0, 0));
+
+				let idx = 0;
+				for (const [id, s] of subagentSessions) {
+					const elapsed = Math.round((Date.now() - s.startedAt) / 1000);
+					const elapsedStr = elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+					const name = s.label || s.task.slice(0, 40);
+					const spinner = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"][Math.floor(Date.now() / 150) % 10];
+
+					container.addChild(new Text(
+						theme.fg("accent", `${spinner} ${name}`) +
+						theme.fg("dim", `  \u2191${formatTokens(s.usage.input)} \u2193${formatTokens(s.usage.output)}  ${elapsedStr}`),
+						1, 0));
+					container.addChild(new Text(
+						theme.fg("muted", `   ${s.thinkingLevel} \u00b7 ${s.model.split("/").pop() || s.model}`),
+						1, 0));
+
+					if (s.liveOutput) {
+						const lastLine = s.liveOutput.split("\n").filter(Boolean).pop() || "";
+						if (lastLine) {
+							container.addChild(new Text(
+								theme.fg("toolOutput", `   ${lastLine.slice(0, 60)}`),
+								1, 0));
+						}
+					}
+
+					idx++;
+					if (idx < subagentSessions.size) container.addChild(new Text("", 0, 0));
+				}
+
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+				return container;
+			};
+
+			const interval = setInterval(() => tui.requestRender(), 200);
+			const cleanup = () => clearInterval(interval);
+
+			return {
+				render: (w: number) => buildView().render(w),
+				invalidate: () => {},
+				handleInput: (_data: string) => { cleanup(); done(); },
+			};
+		});
+	}
+
+	// -----------------------------------------------------------------------
 	// /brl-subagent command
 	// -----------------------------------------------------------------------
 
 	pi.registerCommand("brl-subagent", {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
-			const options = ["model", "thinking", "concurrency", "reset", "history"];
+			const options = ["model", "thinking", "concurrency", "reset", "history", "monitor"];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
 				? filtered.map((o) => ({ value: o, label: o }))
@@ -939,9 +1041,19 @@ export default function (pi: ExtensionAPI) {
 				resetState(ctx);
 			} else if (trimmed === "history") {
 				await showRunHistory(ctx);
+			} else if (trimmed === "monitor") {
+				await showMonitor(ctx);
 			} else {
 				await showConfigMenu(ctx);
 			}
+		},
+	});
+
+	// Register keyboard shortcut for live monitor
+	pi.registerShortcut("ctrl+shift+o", {
+		description: "Open subagent live monitor",
+		handler: async (_input, ctx) => {
+			await showMonitor(ctx);
 		},
 	});
 
@@ -1146,7 +1258,7 @@ export default function (pi: ExtensionAPI) {
 			"Use delegate_task when the user asks you to hand off work to a subagent, or when a task would benefit from an isolated context window (e.g., deep investigation, parallel research, long-running analysis).",
 			"The subagent inherits your system prompt and runs with its own model (configurable via /brl-subagent). It reports what it did when done.",
 			"You can customize per-call via inheritSystemPrompt and systemPrompt: set inheritSystemPrompt: false to save context, provide a systemPrompt for custom instructions, or use both to add instructions on top of inheritance.",
-			"Set thinkingLevel per call for task-appropriate reasoning depth (off/minimal/low/medium/high/xhigh). It is capped at the user's configured maximum. Use lower levels for simple lookups, higher levels for deep analysis.",
+			"Set thinkingLevel per call to match task complexity. The level is capped at the user's configured maximum. Map tasks to levels using this heuristic: off = file listing, grep, simple read. minimal = file diff, syntax check, find-and-replace. low = refactoring, test generation, documentation. medium = default — code review, debugging, moderate analysis. high = security audit, architecture review, complex debugging. xhigh = multi-step causal reasoning, research, novel problem solving. Default to 'off' or 'minimal' for trivial tasks — do not waste the user's budget.",
 			"Use outputFile to have the subagent write full findings to disk and return only a structured summary — saves context tokens for large investigations.",
 			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck.",
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
@@ -1261,6 +1373,17 @@ export default function (pi: ExtensionAPI) {
 			};
 			persistRun(run);
 
+			// Register for live monitor dashboard
+			registerLiveSubagent(runId, {
+				id: runId,
+				label,
+				task,
+				model: run.model,
+				thinkingLevel,
+				startedAt: Date.now(),
+				ctx,
+			});
+
 			const acquired = await acquireSlot(ctx, signal);
 			if (!acquired) {
 				return {
@@ -1293,6 +1416,21 @@ export default function (pi: ExtensionAPI) {
 					},
 				});
 
+				// Wrap onUpdate to feed live monitor
+				const liveOnUpdate = onUpdate
+					? (partial: AgentToolResult<SubagentResult>) => {
+							onUpdate(partial);
+							if (partial.details) {
+								updateLiveSubagent(
+									runId,
+									getFinalOutput(partial.details.messages),
+									partial.details.usage.input,
+									partial.details.usage.output,
+								);
+							}
+						}
+					: undefined;
+
 				const result = await runSubagent(
 					effectiveCwd,
 					subagentPrompt,
@@ -1300,7 +1438,7 @@ export default function (pi: ExtensionAPI) {
 					thinkingLevel,
 					task,
 					signal,
-					onUpdate,
+					liveOnUpdate,
 					toolOptions,
 					timeout,
 				);
@@ -1322,6 +1460,9 @@ export default function (pi: ExtensionAPI) {
 				run.errorMessage = result.errorMessage;
 				run.outputSummary = finalOutput.slice(0, 200);
 				persistRun(run);
+
+				// Finalize live monitor state
+				finalizeLiveSubagent(runId, run.status);
 
 				if (isError) {
 					const errorMsg =

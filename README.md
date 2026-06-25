@@ -260,6 +260,30 @@ Opening a run in the history view marks it as seen. Seen status persists across 
 
 ---
 
+## Live Monitor
+
+Watch all running subagents in real-time with a live dashboard. While subagents are working, open the monitor:
+
+```bash
+/brl-subagent monitor
+```
+
+Or press **Ctrl+Shift+O** to open it directly.
+
+The dashboard shows every active subagent with:
+- Spinning indicator showing it's alive
+- Label or task name
+- Model and thinking level
+- Live token usage (input/output) updating in real-time
+- Elapsed time
+- The most recent line of output — so you can see what it's working on *right now*
+
+When all subagents finish, the dashboard clears. The status bar continues to show completion counts as usual.
+
+> **Tip:** Combine with labels (["Naming Subagents"](#naming-subagents)) to make the dashboard instantly readable: `◉ security-audit` instead of `◉ Review all TypeScript files for...`.
+
+---
+
 ## Read-only subagents
 
 For safe audits where you don't want the subagent modifying anything:
