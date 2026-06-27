@@ -66,6 +66,19 @@ interface SubagentRun {
 	tokensOut?: number;
 	errorMessage?: string;
 	outputSummary?: string;
+	fullOutput?: string;
+	originalParams?: {
+		systemPrompt?: string;
+		inheritSystemPrompt?: boolean;
+		thinkingLevel?: string;
+		outputFile?: string;
+		timeout?: number;
+		cwd?: string;
+		tools?: string[];
+		excludeTools?: string[];
+		noBuiltinTools?: boolean;
+		preset?: string;
+	};
 }
 
 interface LiveSubagent {
@@ -970,6 +983,11 @@ export default function (pi: ExtensionAPI) {
 				label: "Manage Presets",
 				description: `${state.presets.length} preset${state.presets.length === 1 ? "" : "s"} configured`,
 			},
+			{
+				value: "retry",
+				label: "Retry Failed Run",
+				description: "Select a failed subagent to retry",
+			},
 		];
 	}
 
@@ -1189,13 +1207,51 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// -----------------------------------------------------------------------
+	// Retry menu
+	// -----------------------------------------------------------------------
+
+	async function showRetryMenu(ctx: ExtensionContext): Promise<void> {
+		const entries = ctx.sessionManager.getEntries();
+		const failedRuns = entries
+			.filter((e: { type: string; customType?: string }) =>
+				e.type === "custom" && e.customType === "brl-subagent-run",
+			)
+			.map((e: { data?: SubagentRun }) => e.data!)
+			.filter((r: SubagentRun | undefined) => r && r.status === "failed")
+			.reverse();
+
+		if (failedRuns.length === 0) {
+			ctx.ui.notify("No failed subagent runs to retry.", "info");
+			return;
+		}
+
+		const items: SelectItem[] = failedRuns.map((r) => {
+			const name = r.label || r.task.slice(0, 60);
+			const model = r.model.split("/").pop() || r.model;
+			const err = r.errorMessage ? r.errorMessage.slice(0, 40) : "error";
+			return {
+				value: r.id,
+				label: `✗ ${name}`,
+				description: `${model} · ${err}`,
+			};n		});
+
+		const selectedId = await showSelectList(ctx, "Retry Failed Run", items, 10);
+		if (!selectedId) return;
+
+		ctx.ui.notify(
+			`Ask the LLM to retry: \"Use delegate_task to retry failed run ${selectedId.slice(0, 8)}...\"`,
+			"info",
+		);
+	}
+
+	// -----------------------------------------------------------------------
 	// /brl-subagent command
 	// -----------------------------------------------------------------------
 
 	pi.registerCommand("brl-subagent", {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
-			const options = ["model", "thinking", "concurrency", "reset", "history", "monitor", "preset"];
+			const options = ["model", "thinking", "concurrency", "reset", "history", "monitor", "preset", "retry"];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
 				? filtered.map((o) => ({ value: o, label: o }))
@@ -1217,6 +1273,8 @@ export default function (pi: ExtensionAPI) {
 				await showMonitor(ctx);
 			} else if (trimmed === "preset" || trimmed?.startsWith("preset")) {
 				await showPresetManager(ctx);
+			} else if (trimmed === "retry") {
+				await showRetryMenu(ctx);
 			} else {
 				await showConfigMenu(ctx);
 			}
@@ -1452,6 +1510,8 @@ export default function (pi: ExtensionAPI) {
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
 			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
 			"Use preset to apply a saved delegation configuration (created via /brl-subagent preset). Preset values are defaults — explicit parameters on this call override them. For example, a 'read-only-audit' preset might set tools and thinkingLevel, but you can still override thinkingLevel per-call.",
+			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
+			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
 		],
 		parameters: Type.Object({
 			task: Type.String({
@@ -1527,6 +1587,22 @@ export default function (pi: ExtensionAPI) {
 						"Preset values are used as defaults; explicit parameters on this call override them.",
 				}),
 			),
+			retryRunId: Type.Optional(
+				Type.String({
+					description:
+						"ID of a previously failed subagent run to retry. " +
+						"The retried run uses the same task and parameters as the original. " +
+						"Only works with runs that ended in failure (exitCode != 0, timeout, error, or abort). " +
+						"Explicit parameters on this call override the original's.",
+				}),
+			),
+			retryOnTimeout: Type.Optional(
+				Type.Boolean({
+					description:
+						"If true and the subagent times out, automatically retry with the same parameters. " +
+						"Only retries once — the second timeout is treated as a final failure.",
+				}),
+			),
 		}),
 
 		async execute(
@@ -1544,11 +1620,43 @@ export default function (pi: ExtensionAPI) {
 				tools?: string[];
 				excludeTools?: string[];
 				noBuiltinTools?: boolean;
+				retryRunId?: string;
+				retryOnTimeout?: boolean;
 			},
 			signal: AbortSignal | undefined,
 			onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
 			ctx: ExtensionContext,
 		) {
+			// Handle retryRunId — look up original run and merge params
+			if (params.retryRunId) {
+				const entries = ctx.sessionManager.getEntries();
+				const runEntry = entries
+					.filter((e: { type: string; customType?: string }) =>
+						e.type === "custom" && e.customType === "brl-subagent-run",
+					)
+					.map((e: { data?: SubagentRun }) => e.data!)
+					.find((r: SubagentRun | undefined) => r?.id === params.retryRunId);
+
+				if (runEntry) {
+					const orig = runEntry.originalParams;
+					params = {
+						task: params.task || runEntry.task,
+						label: params.label ?? runEntry.label,
+						preset: params.preset ?? orig?.preset,
+						systemPrompt: params.systemPrompt ?? orig?.systemPrompt,
+						inheritSystemPrompt: params.inheritSystemPrompt ?? orig?.inheritSystemPrompt,
+						thinkingLevel: params.thinkingLevel ?? orig?.thinkingLevel,
+						outputFile: params.outputFile ?? orig?.outputFile,
+						timeout: params.timeout ?? orig?.timeout,
+						cwd: params.cwd ?? orig?.cwd,
+						tools: params.tools ?? orig?.tools,
+						excludeTools: params.excludeTools ?? orig?.excludeTools,
+						noBuiltinTools: params.noBuiltinTools ?? orig?.noBuiltinTools,
+						retryOnTimeout: params.retryOnTimeout,
+					};
+				}
+			}
+
 			const { task, label, inheritSP, customSP, outputFile, timeout, effectiveCwd, thinkingLevel, toolOptions } =
 				resolveSubagentParams(params, ctx);
 
@@ -1567,6 +1675,18 @@ export default function (pi: ExtensionAPI) {
 				model: `${subagentModel.provider}/${subagentModel.id}`,
 				thinkingLevel,
 				startedAt: new Date().toISOString(),
+				originalParams: {
+					systemPrompt: params.systemPrompt,
+					inheritSystemPrompt: params.inheritSystemPrompt,
+					thinkingLevel: params.thinkingLevel,
+					outputFile: params.outputFile,
+					timeout: params.timeout,
+					cwd: params.cwd,
+					tools: params.tools,
+					excludeTools: params.excludeTools,
+					noBuiltinTools: params.noBuiltinTools,
+					preset: params.preset,
+				},
 			};
 			persistRun(run);
 
@@ -1628,7 +1748,7 @@ export default function (pi: ExtensionAPI) {
 						}
 					: undefined;
 
-				const result = await runSubagent(
+				let result = await runSubagent(
 					effectiveCwd,
 					subagentPrompt,
 					subagentModel,
@@ -1639,6 +1759,36 @@ export default function (pi: ExtensionAPI) {
 					toolOptions,
 					timeout,
 				);
+
+				// Auto-retry on timeout if requested
+				if (params.retryOnTimeout && isSubagentError(result) && result.errorMessage?.includes("timed out")) {
+					registerLiveSubagent(runId, {
+						id: runId,
+						label,
+						task,
+						model: run.model,
+						thinkingLevel,
+						startedAt: Date.now(),
+						ctx,
+					});
+
+					onUpdate?.({
+						content: [{ type: "text" as const, text: `Retrying after timeout...` }],
+						details: { messages: [], usage: { ...EMPTY_USAGE }, exitCode: -1, stderr: "" },
+					});
+
+					result = await runSubagent(
+						effectiveCwd,
+						subagentPrompt,
+						subagentModel,
+						thinkingLevel,
+						task,
+						signal,
+						liveOnUpdate,
+						toolOptions,
+						timeout,
+					);
+				}
 
 				const finalOutput = getFinalOutput(result.messages);
 				const isError = isSubagentError(result);
@@ -1656,6 +1806,7 @@ export default function (pi: ExtensionAPI) {
 				run.tokensOut = result.usage.output;
 				run.errorMessage = result.errorMessage;
 				run.outputSummary = finalOutput.slice(0, 200);
+				run.fullOutput = finalOutput || undefined;
 				persistRun(run);
 
 				// Finalize live monitor state

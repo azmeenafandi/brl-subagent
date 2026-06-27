@@ -55,6 +55,9 @@ You can also jump straight to a selector:
 /brl-subagent thinking    # Open thinking level selector directly
 /brl-subagent concurrency  # Set max parallel limit
 /brl-subagent history     # Browse past subagent runs
+/brl-subagent monitor     # Watch running subagents live
+/brl-subagent preset      # Manage delegation presets
+/brl-subagent retry       # Browse failed runs to retry
 /brl-subagent reset       # Reset everything
 ```
 
@@ -84,6 +87,8 @@ The LLM can also be explicit:
 | `systemPrompt` | string | No | — | Extra instructions or a completely different persona for the subagent. |
 | `inheritSystemPrompt` | boolean | No | `true` | Whether to pass the main agent's system prompt to the subagent. Set to `false` to save tokens on simple tasks. |
 | `label` | string | No | — | Human-readable name for this subagent (e.g., `"security-audit"`, `"docs-review"`). Appears in the tool call badge, result header, and run history. |
+| `retryRunId` | string | No | — | ID of a previously failed subagent run to retry. The retried run uses the same task and parameters as the original. Only works with failed runs. Explicit parameters on this call override the original's. |
+| `retryOnTimeout` | boolean | No | `false` | If true and the subagent times out, automatically retry once with the same parameters. The second timeout is treated as a final failure. |
 | `preset` | string | No | — | Name of a saved delegation preset (created via `/brl-subagent preset`). Preset values are used as defaults; explicit parameters on this call override them. |
 | `thinkingLevel` | string | No | — | Requested thinking level for this call. One of: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Capped at the user's configured maximum. Omit to use the user's configured level. |
 | `outputFile` | string | No | — | Project-relative path where the subagent writes full findings. The subagent returns only a structured summary — full output goes to disk. |
@@ -335,6 +340,55 @@ Preset values are **defaults** — any explicit parameter on the call overrides 
 Presets persist across sessions automatically.
 
 > **Tip:** Share presets across your team by committing them to version control. Presets are stored in the extension's session state and are restored on startup.
+
+---
+
+## Retry & Resume
+
+Subagents can fail — timeouts, crashes, or aborted runs. The retry mechanism lets you re-run failed tasks without re-describing them.
+
+### Manual retry via delegate_task
+
+Pass the `retryRunId` of a failed run to retry it with the same parameters:
+
+```json
+{
+  "task": "",
+  "retryRunId": "run-id-from-history"
+}
+```
+
+The retried run uses the same task and parameters as the original. Explicit parameters on the retry call override the original's — useful for bumping the timeout or thinking level on a retry.
+
+### Manual retry via command
+
+Browse failed runs and get their IDs:
+
+```bash
+/brl-subagent retry
+```
+
+This opens a list of failed subagents. Select one to see its ID and error details. Then ask the LLM to retry it.
+
+### Auto-retry on timeout
+
+Set `retryOnTimeout: true` on any `delegate_task` call to automatically retry once if the subagent times out:
+
+```json
+{
+  "task": "Reproduce flaky test",
+  "timeout": 300000,
+  "retryOnTimeout": true
+}
+```
+
+If the first attempt times out, the extension automatically spawns a fresh subagent with the same parameters. The second timeout is treated as a final failure. This is especially useful for flaky or long-running tasks where a timeout doesn't mean the task is impossible — just that the first attempt was unlucky.
+
+### How retry works
+
+- **Original parameters are stored** — every `delegate_task` call saves its full parameter set (`systemPrompt`, `thinkingLevel`, `tools`, etc.) alongside the run record.
+- **Full output is preserved** — the complete subagent output (not just the 200-char preview) is stored for potential resume.
+- **Explicit overrides** — any parameter you pass on the retry call takes precedence over the original's. So you can retry with `thinkingLevel: "xhigh"` to give the subagent more reasoning power, or increase the timeout.
 
 ---
 
