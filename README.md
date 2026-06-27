@@ -84,6 +84,7 @@ The LLM can also be explicit:
 | `systemPrompt` | string | No | — | Extra instructions or a completely different persona for the subagent. |
 | `inheritSystemPrompt` | boolean | No | `true` | Whether to pass the main agent's system prompt to the subagent. Set to `false` to save tokens on simple tasks. |
 | `label` | string | No | — | Human-readable name for this subagent (e.g., `"security-audit"`, `"docs-review"`). Appears in the tool call badge, result header, and run history. |
+| `preset` | string | No | — | Name of a saved delegation preset (created via `/brl-subagent preset`). Preset values are used as defaults; explicit parameters on this call override them. |
 | `thinkingLevel` | string | No | — | Requested thinking level for this call. One of: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Capped at the user's configured maximum. Omit to use the user's configured level. |
 | `outputFile` | string | No | — | Project-relative path where the subagent writes full findings. The subagent returns only a structured summary — full output goes to disk. |
 | `timeout` | number | No | — | Maximum time in milliseconds. If exceeded, the subagent is killed (SIGTERM → 5s → SIGKILL). |
@@ -281,6 +282,59 @@ The dashboard shows every active subagent with:
 When all subagents finish, the dashboard clears. The status bar continues to show completion counts as usual.
 
 > **Tip:** Combine with labels (["Naming Subagents"](#naming-subagents)) to make the dashboard instantly readable: `◉ security-audit` instead of `◉ Review all TypeScript files for...`.
+
+---
+
+## Presets
+
+Presets let you save and reuse common delegation configurations. Instead of specifying `tools`, `thinkingLevel`, `inheritSystemPrompt`, and other options every time, define them once as a named preset and delegate with just the preset name.
+
+### Creating presets
+
+Open the preset manager:
+
+```bash
+/brl-subagent preset
+```
+
+From there, select **"+ Add Preset"** and walk through the interactive wizard. You'll configure:
+- **Name** — a short identifier (e.g., `read-only-audit`, `fast-scan`)
+- **Description** — optional context
+- **Thinking level** — default thinking depth for this preset
+- **Tool scope** — all tools, read-only, or a custom allowlist
+- **System prompt inheritance** — whether to inherit the main prompt
+
+### Using presets
+
+Pass the `preset` parameter on `delegate_task`:
+
+```json
+{
+  "task": "Audit src/ for security issues",
+  "preset": "read-only-audit"
+}
+```
+
+Preset values are **defaults** — any explicit parameter on the call overrides the preset. For example, if the preset sets `thinkingLevel: "high"` but you pass `thinkingLevel: "low"`, the subagent runs at `low`.
+
+### Example presets
+
+| Preset | Use case | Settings |
+|---|---|---|
+| `read-only-audit` | Safe code reviews | `tools: ["read", "grep", "find", "ls"]`, `excludeTools: ["write", "edit", "bash"]`, `thinkingLevel: "high"` |
+| `fast-scan` | Quick lookups | `thinkingLevel: "off"`, `inheritSystemPrompt: false` |
+| `deep-analysis` | Complex reasoning | `thinkingLevel: "xhigh"`, `timeout: 600000` |
+| `isolated-docs` | Documentation writing | `inheritSystemPrompt: false`, `systemPrompt: "You are a technical writer."` |
+
+### Managing presets
+
+| Command | What it does |
+|---|---|
+| `/brl-subagent preset` | Open the preset manager (list, add, remove, view) |
+
+Presets persist across sessions automatically.
+
+> **Tip:** Share presets across your team by committing them to version control. Presets are stored in the extension's session state and are restored on startup.
 
 ---
 

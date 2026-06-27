@@ -30,11 +30,25 @@ import { Type } from "typebox";
 // Types
 // ---------------------------------------------------------------------------
 
+interface SubagentPreset {
+	name: string;
+	description?: string;
+	systemPrompt?: string;
+	inheritSystemPrompt?: boolean;
+	thinkingLevel?: string;
+	outputFile?: string;
+	timeout?: number;
+	tools?: string[];
+	excludeTools?: string[];
+	noBuiltinTools?: boolean;
+}
+
 interface SubagentState {
 	model?: { provider: string; id: string };
 	maxThinkingLevel: ThinkingLevel;
 	maxParallel: number; // 0 = unlimited
 	seenRunIds: string[];
+	presets: SubagentPreset[];
 }
 
 interface SubagentRun {
@@ -523,6 +537,7 @@ export default function (pi: ExtensionAPI) {
 		maxThinkingLevel: "off",
 		maxParallel: 0,
 		seenRunIds: [],
+		presets: [],
 	};
 
 	// Module-level progress tracking
@@ -688,6 +703,7 @@ export default function (pi: ExtensionAPI) {
 			maxThinkingLevel: state.maxThinkingLevel,
 			maxParallel: state.maxParallel,
 			seenRunIds: state.seenRunIds,
+			presets: state.presets,
 		});
 	}
 
@@ -761,6 +777,157 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// -----------------------------------------------------------------------
+	// Preset management
+	// -----------------------------------------------------------------------
+
+	function getPreset(name: string): SubagentPreset | undefined {
+		return state.presets.find((p) => p.name === name);
+	}
+
+	async function showAddPreset(ctx: ExtensionContext): Promise<void> {
+		const name = await ctx.ui.input({ prompt: "Preset name (e.g., read-only-audit):" });
+		if (!name?.trim()) return;
+		const trimmedName = name.trim();
+
+		if (getPreset(trimmedName)) {
+			ctx.ui.notify(`Preset "${trimmedName}" already exists. Use a different name.`, "error");
+			return;
+		}
+
+		const description = await ctx.ui.input({ prompt: "Description (optional):" });
+
+		// Thinking level selector
+		const thinkingItems: SelectItem[] = [
+			{ value: "", label: "(not set — use conductor's choice)" },
+			...THINKING_LEVELS.map((level) => ({ value: level, label: level })),
+		];
+		const thinkingResult = await showSelectList(ctx, "Default Thinking Level", thinkingItems, 8);
+
+		// Tool scoping
+		const scopeItems: SelectItem[] = [
+			{ value: "all", label: "All tools (default)" },
+			{ value: "readonly", label: "Read-only (read, grep, find, ls)" },
+			{ value: "custom", label: "Custom tool list..." },
+		];
+		const scopeResult = await showSelectList(ctx, "Tool Scope", scopeItems, 5);
+
+		let tools: string[] | undefined;
+		let excludeTools: string[] | undefined;
+		let noBuiltinTools: boolean | undefined;
+
+		if (scopeResult === "readonly") {
+			tools = ["read", "grep", "find", "ls"];
+			excludeTools = ["write", "edit", "bash"];
+		} else if (scopeResult === "custom") {
+			const toolsStr = await ctx.ui.input({ prompt: "Tools (comma-separated):" });
+			if (toolsStr?.trim()) tools = toolsStr.split(",").map((t) => t.trim()).filter(Boolean);
+		}
+
+		// Inheritance
+		const inheritItems: SelectItem[] = [
+			{ value: "true", label: "Inherit system prompt (default)" },
+			{ value: "false", label: "No inheritance (standalone)" },
+		];
+		const inheritResult = await showSelectList(ctx, "System Prompt Inheritance", inheritItems, 3);
+
+		const preset: SubagentPreset = {
+			name: trimmedName,
+			description: description?.trim() || undefined,
+			thinkingLevel: thinkingResult || undefined,
+			inheritSystemPrompt: inheritResult === "false" ? false : undefined,
+			tools,
+			excludeTools,
+			noBuiltinTools,
+		};
+
+		state.presets.push(preset);
+		persistState();
+		ctx.ui.notify(`Preset "${trimmedName}" created`, "info");
+	}
+
+	async function showRemovePreset(ctx: ExtensionContext): Promise<void> {
+		if (state.presets.length === 0) {
+			ctx.ui.notify("No presets configured.", "info");
+			return;
+		}
+
+		const items: SelectItem[] = state.presets.map((p) => ({
+			value: p.name,
+			label: p.name,
+			description: p.description || formatPresetSummary(p),
+		}));
+
+		const result = await showSelectList(ctx, "Remove Preset", items, 10);
+		if (!result) return;
+
+		state.presets = state.presets.filter((p) => p.name !== result);
+		persistState();
+		ctx.ui.notify(`Preset "${result}" removed`, "info");
+	}
+
+	function formatPresetSummary(p: SubagentPreset): string {
+		const parts: string[] = [];
+		if (p.thinkingLevel) parts.push(p.thinkingLevel);
+		if (p.tools?.length) parts.push(`tools:${p.tools.join(",")}`);
+		if (p.excludeTools?.length) parts.push(`-${p.excludeTools.join(",")}`);
+		if (p.noBuiltinTools) parts.push("no-builtins");
+		return parts.join(" · ") || "default";
+	}
+
+	async function showPresetManager(ctx: ExtensionContext): Promise<void> {
+		const items: SelectItem[] = [
+			...state.presets.map((p) => ({
+				value: p.name,
+				label: p.name,
+				description: p.description || formatPresetSummary(p),
+			})),
+			{
+				value: "__add__",
+				label: "+ Add Preset",
+				description: "Create a new delegation preset",
+			},
+			{
+				value: "__remove__",
+				label: "- Remove Preset",
+				description: "Delete an existing preset",
+			},
+		];
+
+		const result = await showSelectList(ctx, `Presets (${state.presets.length})`, items, 12);
+		if (!result) return;
+
+		if (result === "__add__") {
+			await showAddPreset(ctx);
+		} else if (result === "__remove__") {
+			await showRemovePreset(ctx);
+		} else {
+			// Show preset detail
+			const preset = getPreset(result);
+			if (preset) {
+				await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
+					const container = new Container();
+					container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+					container.addChild(new Text(theme.fg("accent", theme.bold(`Preset: ${preset.name}`)), 1, 0));
+					if (preset.description) container.addChild(new Text(theme.fg("dim", preset.description), 1, 0));
+					container.addChild(new Text("", 0, 0));
+					container.addChild(new Text(theme.fg("dim", `Thinking: ${preset.thinkingLevel || "(not set)"}`), 1, 0));
+					container.addChild(new Text(theme.fg("dim", `Inherit: ${preset.inheritSystemPrompt === false ? "no" : "yes (default)"}`), 1, 0));
+					if (preset.tools) container.addChild(new Text(theme.fg("dim", `Tools: ${preset.tools.join(", ")}`), 1, 0));
+					if (preset.excludeTools) container.addChild(new Text(theme.fg("dim", `Exclude: ${preset.excludeTools.join(", ")}`), 1, 0));
+					container.addChild(new Text("", 0, 0));
+					container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
+					container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+					return {
+						render: (w: number) => container.render(w),
+						invalidate: () => container.invalidate(),
+						handleInput: (_data: string) => done(),
+					};
+				});
+			}
+		}
+	}
+
+	// -----------------------------------------------------------------------
 	// Main configuration menu
 	// -----------------------------------------------------------------------
 
@@ -797,6 +964,11 @@ export default function (pi: ExtensionAPI) {
 				value: "monitor",
 				label: "Live Monitor",
 				description: "Watch running subagents in real-time",
+			},
+			{
+				value: "preset",
+				label: "Manage Presets",
+				description: `${state.presets.length} preset${state.presets.length === 1 ? "" : "s"} configured`,
 			},
 		];
 	}
@@ -1023,7 +1195,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("brl-subagent", {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
-			const options = ["model", "thinking", "concurrency", "reset", "history", "monitor"];
+			const options = ["model", "thinking", "concurrency", "reset", "history", "monitor", "preset"];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
 				? filtered.map((o) => ({ value: o, label: o }))
@@ -1043,6 +1215,8 @@ export default function (pi: ExtensionAPI) {
 				await showRunHistory(ctx);
 			} else if (trimmed === "monitor") {
 				await showMonitor(ctx);
+			} else if (trimmed === "preset" || trimmed?.startsWith("preset")) {
+				await showPresetManager(ctx);
 			} else {
 				await showConfigMenu(ctx);
 			}
@@ -1178,6 +1352,7 @@ export default function (pi: ExtensionAPI) {
 		params: {
 			task: string;
 			label?: string;
+			preset?: string;
 			systemPrompt?: string;
 			inheritSystemPrompt?: boolean;
 			thinkingLevel?: string;
@@ -1190,23 +1365,36 @@ export default function (pi: ExtensionAPI) {
 		},
 		ctx: ExtensionContext,
 	): ResolvedParams {
+		// Resolve preset (if provided) — values become defaults
+		const preset = params.preset ? getPreset(params.preset) : undefined;
+
+		// Merge: conductor's explicit values override preset, undefined falls through
+		const mergedThinkingLevel = (params.thinkingLevel as ThinkingLevel | undefined) ?? preset?.thinkingLevel;
+		const mergedSystemPrompt = params.systemPrompt ?? preset?.systemPrompt;
+		const mergedInheritSP = params.inheritSystemPrompt ?? preset?.inheritSystemPrompt;
+		const mergedOutputFile = params.outputFile ?? preset?.outputFile;
+		const mergedTimeout = params.timeout ?? preset?.timeout;
+		const mergedTools = params.tools ?? preset?.tools;
+		const mergedExcludeTools = params.excludeTools ?? preset?.excludeTools;
+		const mergedNoBuiltinTools = params.noBuiltinTools ?? preset?.noBuiltinTools;
+
 		const thinkingLevel = resolveThinkingLevel(
-			params.thinkingLevel as ThinkingLevel | undefined,
+			mergedThinkingLevel,
 			state.maxThinkingLevel,
 		);
 
 		const toolOptions: SubagentToolOptions | undefined =
-			params.tools || params.excludeTools || params.noBuiltinTools
-				? { tools: params.tools, excludeTools: params.excludeTools, noBuiltinTools: params.noBuiltinTools }
+			mergedTools || mergedExcludeTools || mergedNoBuiltinTools
+				? { tools: mergedTools, excludeTools: mergedExcludeTools, noBuiltinTools: mergedNoBuiltinTools }
 				: undefined;
 
 		return {
 			task: params.task,
 			label: params.label?.trim() || undefined,
-			inheritSP: params.inheritSystemPrompt !== false,
-			customSP: params.systemPrompt,
-			outputFile: params.outputFile,
-			timeout: params.timeout,
+			inheritSP: mergedInheritSP !== false,
+			customSP: mergedSystemPrompt,
+			outputFile: mergedOutputFile,
+			timeout: mergedTimeout,
 			effectiveCwd: params.cwd || ctx.cwd,
 			thinkingLevel,
 			toolOptions,
@@ -1263,6 +1451,7 @@ export default function (pi: ExtensionAPI) {
 			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck.",
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
 			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
+			"Use preset to apply a saved delegation configuration (created via /brl-subagent preset). Preset values are defaults — explicit parameters on this call override them. For example, a 'read-only-audit' preset might set tools and thinkingLevel, but you can still override thinkingLevel per-call.",
 		],
 		parameters: Type.Object({
 			task: Type.String({
@@ -1331,6 +1520,13 @@ export default function (pi: ExtensionAPI) {
 			noBuiltinTools: Type.Optional(Type.Boolean({
 				description: "Disable all built-in tools for the subagent. Maps to pi's --no-builtin-tools flag.",
 			})),
+			preset: Type.Optional(
+				Type.String({
+					description:
+						"Name of a saved delegation preset (created via /brl-subagent preset). " +
+						"Preset values are used as defaults; explicit parameters on this call override them.",
+				}),
+			),
 		}),
 
 		async execute(
@@ -1338,6 +1534,7 @@ export default function (pi: ExtensionAPI) {
 			params: {
 				task: string;
 				label?: string;
+				preset?: string;
 				systemPrompt?: string;
 				inheritSystemPrompt?: boolean;
 				thinkingLevel?: string;
@@ -1566,6 +1763,7 @@ export default function (pi: ExtensionAPI) {
 			if (storedLevel) state.maxThinkingLevel = storedLevel;
 			if (stateEntry.data.maxParallel !== undefined) state.maxParallel = stateEntry.data.maxParallel;
 			if ((stateEntry.data as any).seenRunIds) state.seenRunIds = (stateEntry.data as any).seenRunIds;
+			if ((stateEntry.data as any).presets) state.presets = (stateEntry.data as any).presets;
 		}
 
 		updateStatus(ctx);
