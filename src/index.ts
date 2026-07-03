@@ -16,7 +16,7 @@
  * control how the subagent's system prompt is constructed.
  */
 
-import { spawn, exec } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -91,18 +91,6 @@ interface LiveSubagent {
 	liveOutput: string;
 	usage: { input: number; output: number };
 	ctx: ExtensionContext;
-}
-
-interface BackgroundSubagent {
-	paneId: string;
-	task: string;
-	label?: string;
-	model: string;
-	thinkingLevel: string;
-	startedAt: number;
-	outputFile: string;
-	doneFile: string;
-	cwd: string;
 }
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -249,10 +237,94 @@ const TEMP_FILE_MODE = 0o600;
 const TASK_PREVIEW_MAX_LENGTH = 80;
 const COLLAPSED_OUTPUT_LINES = 5;
 
+const CUSTOM_ENTRY_TYPES = {
+	run: "brl-subagent-run",
+	state: "brl-subagent-state",
+} as const;
+
 function isSubagentError(result: SubagentResult): boolean {
 	return result.exitCode !== 0
 		|| result.stopReason === "error"
 		|| result.stopReason === "aborted";
+}
+
+function getRunEntries(ctx: ExtensionContext): SubagentRun[] {
+	return ctx.sessionManager
+		.getEntries()
+		.filter((e: { type: string; customType?: string }) =>
+			e.type === "custom" && e.customType === CUSTOM_ENTRY_TYPES.run,
+		)
+		.map((e: { data?: SubagentRun }) => e.data!)
+		.filter(Boolean);
+}
+
+function findRunById(ctx: ExtensionContext, id: string): SubagentRun | undefined {
+	return getRunEntries(ctx).find((r) => r.id === id);
+}
+
+function createEmptyResult(): SubagentResult {
+	return {
+		messages: [],
+		usage: { ...EMPTY_USAGE },
+		exitCode: 0,
+		stderr: "",
+	};
+}
+
+
+function finalizeRunRecord(
+	run: SubagentRun,
+	result: SubagentResult,
+	finalOutput: string,
+	startTimestamp: number,
+): void {
+	const isError = isSubagentError(result);
+	run.status = isError ? "failed" : "done";
+	run.finishedAt = new Date().toISOString();
+	run.durationMs = Date.now() - startTimestamp;
+	run.cost = result.usage.cost;
+	run.tokensIn = result.usage.input;
+	run.tokensOut = result.usage.output;
+	run.errorMessage = result.errorMessage;
+	run.outputSummary = finalOutput.slice(0, 200);
+	run.fullOutput = finalOutput || undefined;
+}
+
+function resolveRetryParams(
+	params: {
+		task: string;
+		label?: string;
+		preset?: string;
+		systemPrompt?: string;
+		inheritSystemPrompt?: boolean;
+		thinkingLevel?: string;
+		outputFile?: string;
+		timeout?: number;
+		cwd?: string;
+		tools?: string[];
+		excludeTools?: string[];
+		noBuiltinTools?: boolean;
+		retryRunId?: string;
+		retryOnTimeout?: boolean;
+	},
+	run: SubagentRun,
+): typeof params {
+	const orig = run.originalParams;
+	return {
+		task: params.task || run.task,
+		label: params.label ?? run.label,
+		preset: params.preset ?? orig?.preset,
+		systemPrompt: params.systemPrompt ?? orig?.systemPrompt,
+		inheritSystemPrompt: params.inheritSystemPrompt ?? orig?.inheritSystemPrompt,
+		thinkingLevel: params.thinkingLevel ?? orig?.thinkingLevel,
+		outputFile: params.outputFile ?? orig?.outputFile,
+		timeout: params.timeout ?? orig?.timeout,
+		cwd: params.cwd ?? orig?.cwd,
+		tools: params.tools ?? orig?.tools,
+		excludeTools: params.excludeTools ?? orig?.excludeTools,
+		noBuiltinTools: params.noBuiltinTools ?? orig?.noBuiltinTools,
+		retryOnTimeout: params.retryOnTimeout,
+	};
 }
 
 function formatModel(m: { provider: string; id: string } | undefined): string {
@@ -665,11 +737,11 @@ export default function (pi: ExtensionAPI) {
 		subagentSessions.set(id, { ...data, liveOutput: "", usage: { input: 0, output: 0 } });
 	}
 
-	function updateLiveSubagent(id: string, output: string, input: number, output_: number) {
+	function updateLiveSubagent(id: string, output: string, input: number, outputTokens: number) {
 		const s = subagentSessions.get(id);
 		if (s) {
 			s.liveOutput = output;
-			s.usage = { input, output: output_ };
+			s.usage = { input, output: outputTokens };
 		}
 	}
 
@@ -679,123 +751,6 @@ export default function (pi: ExtensionAPI) {
 			// Keep for the 3-second reset window, then clean up
 			setTimeout(() => subagentSessions.delete(id), STATUS_RESET_DELAY_MS);
 		}
-	}
-
-	// Background subagent tracking (herdr integration)
-	const backgroundSubagents = new Map<string, BackgroundSubagent>();
-	let backgroundSubagentCount = 0;
-
-	function isHerdrEnv(): boolean {
-		return process.env.HERDR_ENV === "1";
-	}
-
-	function execHerdr(args: string[], cwd: string): string {
-		try {
-			return require("child_process").execSync(`herdr ${args.join(" ")}`, {
-				cwd,
-				encoding: "utf-8",
-				timeout: 10000,
-				env: { ...process.env },
-			}).trim();
-		} catch (err) {
-			throw new Error(`herdr command failed: ${(err as Error).message}`);
-		}
-	}
-
-	async function spawnBackgroundSubagent(
-		task: string,
-		label: string | undefined,
-		model: { provider: string; id: string },
-		thinkingLevel: ThinkingLevel,
-		systemPrompt: string,
-		cwd: string,
-		toolOptions: SubagentToolOptions | undefined,
-		timeout: number | undefined,
-	): Promise<{ paneId: string; outputFile: string; doneFile: string }> {
-		// Split a new pane without stealing focus
-		const splitResult = execHerdr(["pane", "split", "--direction", "right", "--no-focus", "--format", "json"], cwd);
-		const splitJson = JSON.parse(splitResult);
-		const paneId = splitJson.result?.pane?.paneId;
-		if (!paneId) throw new Error("Failed to get pane ID from herdr split");
-
-		// Prepare temp files for output
-		const bgDir = path.join(cwd, ".pi", "subagent-bg");
-		await fs.promises.mkdir(bgDir, { recursive: true });
-		const id = crypto.randomUUID().slice(0, 8);
-		const outputFile = path.join(bgDir, `${id}.jsonl`);
-		const doneFile = path.join(bgDir, `${id}.done`);
-
-		// Build the pi command with output redirection
-		const args = buildSubagentArgs(model, thinkingLevel, toolOptions);
-		if (systemPrompt.trim()) {
-			const tmp = await writeToTempFile(cwd, "bg-system", systemPrompt);
-			args.push("--append-system-prompt", tmp.filePath);
-			// Note: we don't clean up the temp file here since the background process needs it
-		}
-		args.push(task);
-
-		const invocation = getPiInvocation(args);
-		const cmd = `${invocation.command} ${invocation.args.join(" ")} > "${outputFile}" 2>&1; echo done > "${doneFile}"`;
-
-		// Run in the new pane
-		execHerdr(["pane", "run", paneId, JSON.stringify(cmd)], cwd);
-
-		// Track the background subagent
-		backgroundSubagents.set(id, {
-			paneId,
-			task,
-			label,
-			model: `${model.provider}/${model.id}`,
-			thinkingLevel,
-			startedAt: Date.now(),
-			outputFile,
-			doneFile,
-			cwd,
-		});
-		backgroundSubagentCount++;
-
-		return { paneId: id, outputFile, doneFile };
-	}
-
-	async function readBackgroundResult(bg: BackgroundSubagent): Promise<SubagentResult> {
-		const result: SubagentResult = {
-			messages: [],
-			usage: { ...EMPTY_USAGE },
-			exitCode: 0,
-			stderr: "",
-		};n
-		try {
-			const content = await fs.promises.readFile(bg.outputFile, "utf-8");
-			const lines = content.split("\n");
-			for (const line of lines) {
-				parseSubagentLine(line, result, undefined);
-			}
-			result.exitCode = result.stopReason === "error" || result.stopReason === "aborted" ? 1 : 0;
-		} catch (err) {
-			result.exitCode = 1;
-			result.stderr = `Failed to read output: ${(err as Error).message}`;
-			result.errorMessage = result.stderr;
-		}
-		return result;
-	}
-
-	function isBackgroundDone(id: string): boolean {
-		const bg = backgroundSubagents.get(id);
-		if (!bg) return false;
-		try {
-			fs.accessSync(bg.doneFile);
-			return true;
-		} catch {
-			return false;
-		}
-	}
-
-	async function cleanupBackground(id: string) {
-		const bg = backgroundSubagents.get(id);
-		if (!bg) return;
-		try { await fs.promises.unlink(bg.doneFile); } catch { /* ignore */ }
-		try { await fs.promises.unlink(bg.outputFile); } catch { /* ignore */ }
-		backgroundSubagents.delete(id);
 	}
 
 	// -----------------------------------------------------------------------
@@ -825,7 +780,6 @@ export default function (pi: ExtensionAPI) {
 
 		const parts: string[] = [];
 		if (activeSubagents > 0) parts.push(`${activeSubagents} running`);
-		if (backgroundSubagentCount > 0) parts.push(`${backgroundSubagentCount} background`);
 		if (completedSubagents > 0) {
 			if (unseenSubagents > 0) {
 				parts.push(`${completedSubagents} done (${unseenSubagents} unseen)`);
@@ -1253,14 +1207,18 @@ export default function (pi: ExtensionAPI) {
 
 		if (!result) return;
 
-		if (result === "model") {
-			await showModelSelector(ctx);
-		} else if (result === "thinking") {
-			await showThinkingSelector(ctx);
-		} else if (result === "concurrency") {
-			await showConcurrencyInput(ctx);
-		} else if (result === "reset") {
-			resetState(ctx);
+		const configActions: Record<string, () => Promise<void> | void> = {
+			model: () => showModelSelector(ctx),
+			thinking: () => showThinkingSelector(ctx),
+			concurrency: () => showConcurrencyInput(ctx),
+			reset: () => resetState(ctx),
+			history: () => showRunHistory(ctx),
+			monitor: () => showMonitor(ctx),
+			preset: () => showPresetManager(ctx),
+			retry: () => showRetryMenu(ctx),
+		};
+		if (result && result in configActions) {
+			await configActions[result]();
 		}
 	}
 
@@ -1388,22 +1346,22 @@ export default function (pi: ExtensionAPI) {
 				container.addChild(new Text("", 0, 0));
 
 				let idx = 0;
-				for (const [id, s] of subagentSessions) {
-					const elapsed = Math.round((Date.now() - s.startedAt) / 1000);
+				for (const [id, session] of subagentSessions) {
+					const elapsed = Math.round((Date.now() - session.startedAt) / 1000);
 					const elapsedStr = elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
-					const name = s.label || s.task.slice(0, 40);
+					const name = session.label || session.task.slice(0, 40);
 					const spinner = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"][Math.floor(Date.now() / 150) % 10];
 
 					container.addChild(new Text(
 						theme.fg("accent", `${spinner} ${name}`) +
-						theme.fg("dim", `  \u2191${formatTokens(s.usage.input)} \u2193${formatTokens(s.usage.output)}  ${elapsedStr}`),
+						theme.fg("dim", `  \u2191${formatTokens(session.usage.input)} \u2193${formatTokens(session.usage.output)}  ${elapsedStr}`),
 						1, 0));
 					container.addChild(new Text(
-						theme.fg("muted", `   ${s.thinkingLevel} \u00b7 ${s.model.split("/").pop() || s.model}`),
+						theme.fg("muted", `   ${session.thinkingLevel} \u00b7 ${session.model.split("/").pop() || session.model}`),
 						1, 0));
 
-					if (s.liveOutput) {
-						const lastLine = s.liveOutput.split("\n").filter(Boolean).pop() || "";
+					if (session.liveOutput) {
+						const lastLine = session.liveOutput.split("\n").filter(Boolean).pop() || "";
 						if (lastLine) {
 							container.addChild(new Text(
 								theme.fg("toolOutput", `   ${lastLine.slice(0, 60)}`),
@@ -1435,13 +1393,8 @@ export default function (pi: ExtensionAPI) {
 	// -----------------------------------------------------------------------
 
 	async function showRetryMenu(ctx: ExtensionContext): Promise<void> {
-		const entries = ctx.sessionManager.getEntries();
-		const failedRuns = entries
-			.filter((e: { type: string; customType?: string }) =>
-				e.type === "custom" && e.customType === "brl-subagent-run",
-			)
-			.map((e: { data?: SubagentRun }) => e.data!)
-			.filter((r: SubagentRun | undefined) => r && r.status === "failed")
+		const failedRuns = getRunEntries(ctx)
+			.filter((r) => r.status === "failed")
 			.reverse();
 
 		if (failedRuns.length === 0) {
@@ -1484,22 +1437,19 @@ export default function (pi: ExtensionAPI) {
 		},
 		handler: async (args, ctx) => {
 			const trimmed = args?.trim();
-			if (trimmed === "model") {
-				await showModelSelector(ctx);
-			} else if (trimmed === "thinking") {
-				await showThinkingSelector(ctx);
-			} else if (trimmed === "concurrency") {
-				await showConcurrencyInput(ctx);
-			} else if (trimmed === "reset") {
-				resetState(ctx);
-			} else if (trimmed === "history") {
-				await showRunHistory(ctx);
-			} else if (trimmed === "monitor") {
-				await showMonitor(ctx);
-			} else if (trimmed === "preset" || trimmed?.startsWith("preset")) {
-				await showPresetManager(ctx);
-			} else if (trimmed === "retry") {
-				await showRetryMenu(ctx);
+			const commandHandlers: Record<string, () => Promise<void> | void> = {
+				model: () => showModelSelector(ctx),
+				thinking: () => showThinkingSelector(ctx),
+				concurrency: () => showConcurrencyInput(ctx),
+				reset: () => resetState(ctx),
+				history: () => showRunHistory(ctx),
+				monitor: () => showMonitor(ctx),
+				preset: () => showPresetManager(ctx),
+				retry: () => showRetryMenu(ctx),
+			};
+			if (trimmed && (trimmed in commandHandlers || trimmed.startsWith("preset"))) {
+				const key = trimmed.startsWith("preset") ? "preset" : trimmed;
+				await commandHandlers[key]();
 			} else {
 				await showConfigMenu(ctx);
 			}
@@ -1737,8 +1687,6 @@ export default function (pi: ExtensionAPI) {
 			"Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. Built-in presets: code-reviewer, security-auditor, test-engineer, tech-writer, rapid-prototyper, debugger, refactorer, data-analyst.",
 			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
-			"Set background: true to run the subagent in a background herdr pane (requires HERDR_ENV=1). The tool returns immediately with a subagent ID. Use check_subagent to wait for and retrieve the result. This enables true background execution — the conductor is not blocked while the subagent runs.",
-			"When running inside herdr (HERDR_ENV=1), background execution is the default. Set background: false to force foreground execution if you need the result immediately.",
 		],
 		parameters: Type.Object({
 			task: Type.String({
@@ -1830,15 +1778,6 @@ export default function (pi: ExtensionAPI) {
 						"Only retries once — the second timeout is treated as a final failure.",
 				}),
 			),
-			background: Type.Optional(
-				Type.Boolean({
-					description:
-						"Run the subagent in a background herdr pane (requires HERDR_ENV=1). " +
-						"When running inside herdr, background is the default — the conductor is not blocked. " +
-						"Set to false to force foreground execution. " +
-						"Returns immediately with a subagent ID. Use check_subagent to wait for and retrieve the result.",
-				}),
-			),
 		}),
 
 		async execute(
@@ -1858,7 +1797,6 @@ export default function (pi: ExtensionAPI) {
 				noBuiltinTools?: boolean;
 				retryRunId?: string;
 				retryOnTimeout?: boolean;
-				background?: boolean;
 			},
 			signal: AbortSignal | undefined,
 			onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
@@ -1866,31 +1804,10 @@ export default function (pi: ExtensionAPI) {
 		) {
 			// Handle retryRunId — look up original run and merge params
 			if (params.retryRunId) {
-				const entries = ctx.sessionManager.getEntries();
-				const runEntry = entries
-					.filter((e: { type: string; customType?: string }) =>
-						e.type === "custom" && e.customType === "brl-subagent-run",
-					)
-					.map((e: { data?: SubagentRun }) => e.data!)
-					.find((r: SubagentRun | undefined) => r?.id === params.retryRunId);
+				const runEntry = findRunById(ctx, params.retryRunId);
 
 				if (runEntry) {
-					const orig = runEntry.originalParams;
-					params = {
-						task: params.task || runEntry.task,
-						label: params.label ?? runEntry.label,
-						preset: params.preset ?? orig?.preset,
-						systemPrompt: params.systemPrompt ?? orig?.systemPrompt,
-						inheritSystemPrompt: params.inheritSystemPrompt ?? orig?.inheritSystemPrompt,
-						thinkingLevel: params.thinkingLevel ?? orig?.thinkingLevel,
-						outputFile: params.outputFile ?? orig?.outputFile,
-						timeout: params.timeout ?? orig?.timeout,
-						cwd: params.cwd ?? orig?.cwd,
-						tools: params.tools ?? orig?.tools,
-						excludeTools: params.excludeTools ?? orig?.excludeTools,
-						noBuiltinTools: params.noBuiltinTools ?? orig?.noBuiltinTools,
-						retryOnTimeout: params.retryOnTimeout,
-					};
+					params = resolveRetryParams(params, runEntry);
 				}
 			}
 
@@ -1926,40 +1843,6 @@ export default function (pi: ExtensionAPI) {
 				},
 			};
 			persistRun(run);
-
-			// Background mode: spawn in herdr pane and return immediately
-			// When running inside herdr, background is the default unless explicitly set to false
-			if (isHerdrEnv() && params.background !== false) {
-				try {
-					const basePrompt = ctx.getSystemPrompt();
-					const subagentPrompt = buildSubagentPrompt(basePrompt, inheritSP, customSP, outputFile);
-					const bg = await spawnBackgroundSubagent(
-						task, label, subagentModel, thinkingLevel, subagentPrompt, effectiveCwd, toolOptions, timeout,
-					);
-
-					// Update run record as background
-					run.status = "running";
-					persistRun(run);
-
-					return {
-						content: [{
-							type: "text" as const,
-							text: `Subagent started in background (id: ${bg.paneId}). Use check_subagent with paneId "${bg.paneId}" to wait for and retrieve the result.`,
-						}],
-						details: {
-							messages: [],
-							usage: { ...EMPTY_USAGE },
-							exitCode: -1,
-							stderr: "",
-						},
-					};
-				} catch (err) {
-					return {
-						content: [{ type: "text" as const, text: `Failed to start background subagent: ${(err as Error).message}` }],
-						isError: true,
-					};
-				}
-			}
 
 			// Register for live monitor dashboard
 			registerLiveSubagent(runId, {
@@ -2068,16 +1951,7 @@ export default function (pi: ExtensionAPI) {
 				result.label = label;
 
 				// Update run record with completion data
-				const finishedAt = new Date().toISOString();
-				run.status = isError ? "failed" : "done";
-				run.finishedAt = finishedAt;
-				run.durationMs = Date.now() - new Date(run.startedAt).getTime();
-				run.cost = result.usage.cost;
-				run.tokensIn = result.usage.input;
-				run.tokensOut = result.usage.output;
-				run.errorMessage = result.errorMessage;
-				run.outputSummary = finalOutput.slice(0, 200);
-				run.fullOutput = finalOutput || undefined;
+				finalizeRunRecord(run, result, finalOutput, new Date(run.startedAt).getTime());
 				persistRun(run);
 
 				// Finalize live monitor state
@@ -2162,118 +2036,6 @@ export default function (pi: ExtensionAPI) {
 				return renderExpandedResult(details, isError, icon, finalOutput, theme, getMarkdownTheme());
 			}
 			return new Text(renderCollapsedText(details, isError, icon, finalOutput, theme), 0, 0);
-		},
-	});
-
-	// -----------------------------------------------------------------------
-	// check_subagent tool (for background subagents)
-	// -----------------------------------------------------------------------
-
-	pi.registerTool({
-		name: "check_subagent",
-		label: "Check Subagent",
-		description: [
-			"Check on a background subagent's progress or wait for its result.",
-			"Use this after delegate_task with background=true to retrieve the subagent's output.",
-		].join(" "),
-		promptSnippet: "Check on a background subagent and retrieve its result",
-		promptGuidelines: [
-			"After calling delegate_task with background=true, use check_subagent to wait for and retrieve the result.",
-			"The paneId is returned by the background delegate_task call.",
-			"By default, check_subagent waits for the subagent to finish before returning. Set wait=false to check progress without blocking.",
-		],
-		parameters: Type.Object({
-			paneId: Type.String({
-				description: "The subagent ID returned by a background delegate_task call.",
-			}),
-			wait: Type.Optional(Type.Boolean({
-				description: "Wait for the subagent to complete before returning. Default: true.",
-			})),
-		}),
-
-		async execute(
-			_toolCallId: string,
-			params: { paneId: string; wait?: boolean },
-			signal: AbortSignal | undefined,
-			_onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
-			ctx: ExtensionContext,
-		) {
-			const bg = backgroundSubagents.get(params.paneId);
-			if (!bg) {
-				return {
-					content: [{ type: "text" as const, text: `No background subagent found with ID "${params.paneId}". Use delegate_task with background=true to start one.` }],
-					isError: true,
-				};
-			}
-
-			const shouldWait = params.wait !== false; // default true
-
-			if (shouldWait) {
-				// Poll for completion
-				const maxWait = 600_000; // 10 minutes max
-				const start = Date.now();
-				while (!isBackgroundDone(params.paneId) && Date.now() - start < maxWait) {
-					if (signal?.aborted) {
-						return {
-							content: [{ type: "text" as const, text: "Aborted while waiting for background subagent." }],
-							isError: true,
-						};
-					}
-					await new Promise((r) => setTimeout(r, 1000));
-				}
-
-				if (!isBackgroundDone(params.paneId)) {
-					return {
-						content: [{ type: "text" as const, text: `Background subagent did not complete within ${maxWait / 1000}s. Check the pane manually: herdr pane read ${bg.paneId}` }],
-						isError: true,
-					};
-				}
-			}
-
-			// Read the result
-			const result = await readBackgroundResult(bg);
-			const finalOutput = getFinalOutput(result.messages);
-			const isError = isSubagentError(result);
-
-			// Update run record
-			const runEntries = ctx.sessionManager.getEntries();
-			const runEntry = runEntries
-				.filter((e: { type: string; customType?: string }) =>
-					e.type === "custom" && e.customType === "brl-subagent-run",
-				)
-				.map((e: { data?: SubagentRun }) => e.data!)
-				.find((r: SubagentRun | undefined) => r?.task === bg.task && r?.status === "running");
-
-			if (runEntry) {
-				runEntry.status = isError ? "failed" : "done";
-				runEntry.finishedAt = new Date().toISOString();
-				runEntry.durationMs = Date.now() - bg.startedAt;
-				runEntry.cost = result.usage.cost;
-				runEntry.tokensIn = result.usage.input;
-				runEntry.tokensOut = result.usage.output;
-				runEntry.errorMessage = result.errorMessage;
-				runEntry.outputSummary = finalOutput.slice(0, 200);
-				runEntry.fullOutput = finalOutput || undefined;
-				persistRun(runEntry);
-			}
-
-			// Cleanup
-			backgroundSubagentCount = Math.max(0, backgroundSubagentCount - 1);
-			await cleanupBackground(params.paneId);
-
-			if (isError) {
-				const errorMsg = result.errorMessage || result.stderr || finalOutput || "(no output from subagent)";
-				return {
-					content: [{ type: "text" as const, text: `Background subagent failed: ${errorMsg}` }],
-					details: result,
-					isError: true,
-				};
-			}
-
-			return {
-				content: [{ type: "text" as const, text: finalOutput || "(no output)" }],
-				details: result,
-			};
 		},
 	});
 

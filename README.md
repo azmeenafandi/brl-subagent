@@ -64,7 +64,6 @@ All settings persist across sessions.
 | `noBuiltinTools` | boolean | `false` | Disable all built-in tools. |
 | `retryRunId` | string | — | ID of a failed run to retry with same params. Explicit params override. |
 | `retryOnTimeout` | boolean | `false` | Auto-retry once on timeout. Second timeout = final failure. |
-| `background` | boolean | `false` | Run in background herdr pane (`HERDR_ENV=1` required). Returns immediately. |
 
 The subagent returns: final output text, usage stats (turns, tokens, cost), and error info if something went wrong.
 
@@ -158,36 +157,6 @@ Or browse failed runs: `/brl-subagent retry`
 ```
 
 Original parameters are stored automatically. Explicit params on the retry override the original.
-
----
-
-## Background execution (herdr)
-
-When running inside [herdr](https://herdr.dev) (`HERDR_ENV=1`), subagents run as **true background tasks by default** — the conductor is not blocked:
-
-```json
-{ "task": "Audit src/ for security issues" }
-```
-
-Returns immediately with a subagent ID. Retrieve the result later with `check_subagent`:
-
-```json
-{ "paneId": "a1b2c3" }
-```
-
-To force foreground execution (blocking until done):
-
-```json
-{ "task": "Quick lookup", "background": false }
-```
-
-| Use background | Use foreground |
-|---|---|
-| Long-running tasks | Quick tasks (< 30s) |
-| Multiple tasks at once | Need result immediately |
-| Want to keep chatting | Task is sole focus |
-
-If `HERDR_ENV` is not set, `background: true` is silently ignored.
 
 ---
 
