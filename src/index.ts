@@ -1170,43 +1170,6 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function showConfigMenu(ctx: ExtensionContext): Promise<void> {
-		const items = getConfigMenuItems();
-
-		const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-			const container = new Container();
-
-			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-			container.addChild(
-				new Text(theme.fg("accent", theme.bold("brl-subagent Configuration")), 1, 0),
-			);
-
-			container.addChild(new Text(theme.fg("dim", `Model: ${formatModel(state.model)}`), 1, 0));
-			container.addChild(new Text(theme.fg("dim", `Max Thinking: ${state.maxThinkingLevel}`), 1, 0));
-			container.addChild(new Text(theme.fg("dim", `Max parallel: ${formatMaxParallel(state.maxParallel)}`), 1, 0));
-			container.addChild(new Text("", 0, 0)); // spacer
-
-			const selectList = new SelectList(items, Math.min(items.length, 10), makeSelectListTheme(theme));
-			selectList.onSelect = (item) => done(item.value);
-			selectList.onCancel = () => done(null);
-
-			container.addChild(selectList);
-			container.addChild(
-				new Text(theme.fg("dim", NAV_FOOTER), 1, 0),
-			);
-			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-			return {
-				render: (w: number) => container.render(w),
-				invalidate: () => container.invalidate(),
-				handleInput: (data: string) => {
-					selectList.handleInput(data);
-					tui.requestRender();
-				},
-			};
-		});
-
-		if (!result) return;
-
 		const configActions: Record<string, () => Promise<void> | void> = {
 			model: () => showModelSelector(ctx),
 			thinking: () => showThinkingSelector(ctx),
@@ -1217,8 +1180,52 @@ export default function (pi: ExtensionAPI) {
 			preset: () => showPresetManager(ctx),
 			retry: () => showRetryMenu(ctx),
 		};
-		if (result && result in configActions) {
-			await configActions[result]();
+
+		while (true) {
+			const items = [...getConfigMenuItems(), {
+				value: "__done__",
+				label: "Done",
+				description: "Close this menu",
+			}];
+
+			const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+				const container = new Container();
+
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+				container.addChild(
+					new Text(theme.fg("accent", theme.bold("brl-subagent Configuration")), 1, 0),
+				);
+
+				container.addChild(new Text(theme.fg("dim", `Model: ${formatModel(state.model)}`), 1, 0));
+				container.addChild(new Text(theme.fg("dim", `Max Thinking: ${state.maxThinkingLevel}`), 1, 0));
+				container.addChild(new Text(theme.fg("dim", `Max parallel: ${formatMaxParallel(state.maxParallel)}`), 1, 0));
+				container.addChild(new Text("", 0, 0)); // spacer
+
+				const selectList = new SelectList(items, Math.min(items.length, 10), makeSelectListTheme(theme));
+				selectList.onSelect = (item) => done(item.value);
+				selectList.onCancel = () => done(null);
+
+				container.addChild(selectList);
+				container.addChild(
+					new Text(theme.fg("dim", NAV_FOOTER), 1, 0),
+				);
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+				return {
+					render: (w: number) => container.render(w),
+					invalidate: () => container.invalidate(),
+					handleInput: (data: string) => {
+						selectList.handleInput(data);
+						tui.requestRender();
+					},
+				};
+			});
+
+			if (!result || result === "__done__") return;
+
+			if (result in configActions) {
+				await configActions[result]();
+			}
 		}
 	}
 
