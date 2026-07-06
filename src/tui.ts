@@ -221,6 +221,38 @@ export async function showHistoryEntriesInput(
 }
 
 // ---------------------------------------------------------------------------
+// Cost limit input — R5: Cost governance
+// ---------------------------------------------------------------------------
+
+export async function showCostLimitInput(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	const current =
+		state.config.sessionCostLimit === 0
+			? "0 (unlimited)"
+			: String(state.config.sessionCostLimit);
+	const result = await ctx.ui.input({
+		prompt: "Session cost limit in USD (0 = unlimited, e.g. 1.00 for $1):",
+		default: current,
+	});
+	if (result == null) return;
+	const num = parseFloat(result);
+	if (isNaN(num) || num < 0) {
+		ctx.ui.notify("Invalid number. Must be >= 0.", "error");
+		return;
+	}
+	state.config.sessionCostLimit = num;
+	onConfigChanged(
+		ctx,
+		num === 0
+			? "Session cost limit set to unlimited"
+			: `Session cost limit set to $${num.toFixed(2)}`,
+	);
+}
+
+// ---------------------------------------------------------------------------
 // Preset management UI
 // ---------------------------------------------------------------------------
 
@@ -456,6 +488,13 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 				: `${state.config.maxHistoryEntries} entries kept`,
 		},
 		{
+			value: "costlimit",
+			label: "Set Session Cost Limit",
+			description: state.config.sessionCostLimit === 0
+				? "Unlimited"
+				: `$${state.config.sessionCostLimit.toFixed(2)}`,
+		},
+		{
 			value: "reset",
 			label: "Reset to Default",
 			description: "Clear subagent configuration",
@@ -523,6 +562,15 @@ export async function showConfigMenu(
 					0,
 				),
 			);
+			if (state.config.sessionCostLimit > 0) {
+				container.addChild(
+					new Text(
+						theme.fg("dim", `Cost limit: $${state.config.sessionCostLimit.toFixed(2)}`),
+						1,
+						0,
+					),
+				);
+			}
 			container.addChild(new Text("", 0, 0));
 
 			const selectList = new SelectList(
