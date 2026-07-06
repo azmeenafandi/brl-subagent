@@ -1,0 +1,349 @@
+/**
+ * brl-subagent — Process Runner
+ *
+ * Spawns and manages subagent pi processes. Handles:
+ * - Process spawning with safe environment (F2)
+ * - JSON-line stdout parsing
+ * - Usage statistics accumulation
+ * - Abort signal and timeout handling
+ * - Temp file management
+ */
+
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import type {
+	SubagentResult,
+	SubagentToolOptions,
+	UsageStats,
+	ThinkingLevel,
+} from "./types";
+import {
+	EMPTY_USAGE,
+	SIGKILL_GRACE_MS,
+	TEMP_FILE_MODE,
+} from "./types";
+import { getSafeEnv, DEPTH_ENV_KEY } from "./sanitize";
+import type { Logger } from "./logging";
+
+// ---------------------------------------------------------------------------
+// Pi binary resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the pi binary and command-line invocation for subprocess spawning.
+ */
+export function getPiInvocation(extraArgs: string[]): { command: string; args: string[] } {
+	const currentScript = process.argv[1];
+	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
+	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
+		return { command: process.execPath, args: [currentScript, ...extraArgs] };
+	}
+
+	const execName = path.basename(process.execPath).toLowerCase();
+	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
+	if (!isGenericRuntime) {
+		return { command: process.execPath, args: extraArgs };
+	}
+
+	return { command: "pi", args: extraArgs };
+}
+
+// ---------------------------------------------------------------------------
+// Temp file helpers
+// ---------------------------------------------------------------------------
+
+async function writeToTempFile(
+	cwd: string,
+	name: string,
+	content: string,
+): Promise<{ dir: string; filePath: string }> {
+	const baseDir = path.join(cwd, ".pi", "subagent-tmp");
+	await fs.promises.mkdir(baseDir, { recursive: true });
+	const tmpDir = await fs.promises.mkdtemp(path.join(baseDir, `${name}-`));
+	const filePath = path.join(tmpDir, `${name}.md`);
+	await withFileMutationQueue(filePath, async () => {
+		await fs.promises.writeFile(filePath, content, {
+			encoding: "utf-8",
+			mode: TEMP_FILE_MODE,
+		});
+	});
+	return { dir: tmpDir, filePath };
+}
+
+function cleanupTempDir(dir: string, filePath: string): void {
+	try {
+		fs.unlinkSync(filePath);
+	} catch {
+		/* ignore */
+	}
+	try {
+		fs.rmdirSync(dir);
+	} catch {
+		/* ignore */
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Argument construction
+// ---------------------------------------------------------------------------
+
+export function buildSubagentArgs(
+	model: { provider: string; id: string },
+	thinkingLevel: ThinkingLevel,
+	toolOptions?: SubagentToolOptions,
+): string[] {
+	const args: string[] = [
+		"--mode",
+		"json",
+		"-p",
+		"--no-session",
+		"--model",
+		`${model.provider}/${model.id}`,
+		"--thinking",
+		thinkingLevel,
+	];
+	if (toolOptions?.noBuiltinTools) {
+		args.push("--no-builtin-tools");
+	} else if (toolOptions?.tools && toolOptions.tools.length > 0) {
+		args.push("--tools", toolOptions.tools.join(","));
+	}
+	if (toolOptions?.excludeTools && toolOptions.excludeTools.length > 0) {
+		args.push("--exclude-tools", toolOptions.excludeTools.join(","));
+	}
+	return args;
+}
+
+// ---------------------------------------------------------------------------
+// Usage tracking
+// ---------------------------------------------------------------------------
+
+export function accumulateUsage(
+	target: UsageStats,
+	src: {
+		input?: number;
+		output?: number;
+		cacheRead?: number;
+		cacheWrite?: number;
+		cost?: { total?: number };
+		totalTokens?: number;
+	} | undefined,
+): void {
+	if (!src) return;
+	target.turns++;
+	target.input += src.input ?? 0;
+	target.output += src.output ?? 0;
+	target.cacheRead += src.cacheRead ?? 0;
+	target.cacheWrite += src.cacheWrite ?? 0;
+	if (src.cost && typeof src.cost.total === "number") {
+		target.cost += src.cost.total;
+	}
+	if (src.totalTokens) {
+		target.contextTokens = src.totalTokens;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Abort handler
+// ---------------------------------------------------------------------------
+
+function attachAbortHandler(
+	proc: { kill: (signal: string) => boolean; killed: boolean },
+	signal: AbortSignal,
+): void {
+	const killProc = () => {
+		proc.kill("SIGTERM");
+		setTimeout(() => {
+			if (!proc.killed) proc.kill("SIGKILL");
+		}, SIGKILL_GRACE_MS);
+	};
+	if (signal.aborted) killProc();
+	else signal.addEventListener("abort", killProc, { once: true });
+}
+
+// ---------------------------------------------------------------------------
+// Stdout parsing
+// ---------------------------------------------------------------------------
+
+function emitSubagentUpdate(
+	result: SubagentResult,
+	onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
+	getFinalOutputFn: (messages: Array<Record<string, unknown>>) => string,
+): void {
+	if (!onUpdate) return;
+	onUpdate({
+		content: [
+			{
+				type: "text",
+				text: getFinalOutputFn(result.messages) || "(running...)",
+			},
+		],
+		details: { ...result },
+	});
+}
+
+export function parseSubagentLine(
+	line: string,
+	result: SubagentResult,
+	onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
+	getFinalOutputFn: (messages: Array<Record<string, unknown>>) => string,
+	log?: Logger,
+): void {
+	if (!line.trim()) return;
+	let event: Record<string, unknown>;
+	try {
+		event = JSON.parse(line) as Record<string, unknown>;
+	} catch {
+		const snippet = line.trim().slice(0, 200);
+		result.stderr += `[parse error] ${snippet}\n`;
+		log?.warn("Failed to parse subagent stdout line", { snippet });
+		return;
+	}
+
+	if (event.type === "message_end" && event.message) {
+		const msg = event.message as Record<string, unknown>;
+		result.messages.push(msg);
+
+		if (msg.role === "assistant") {
+			const usage = msg.usage as Parameters<typeof accumulateUsage>[1];
+			accumulateUsage(result.usage, usage);
+			if (!result.model && msg.model) result.model = msg.model as string;
+			if (msg.stopReason) result.stopReason = msg.stopReason as string;
+			if (msg.errorMessage) result.errorMessage = msg.errorMessage as string;
+
+			log?.debug("Subagent message completed", {
+				model: result.model,
+				stopReason: result.stopReason,
+				tokensIn: result.usage.input,
+				tokensOut: result.usage.output,
+			});
+		}
+
+		emitSubagentUpdate(result, onUpdate, getFinalOutputFn);
+	}
+
+	if (event.type === "tool_result_end" && event.message) {
+		result.messages.push(event.message as Record<string, unknown>);
+		emitSubagentUpdate(result, onUpdate, getFinalOutputFn);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Process runner
+// ---------------------------------------------------------------------------
+
+export async function runSubagent(
+	cwd: string,
+	systemPrompt: string,
+	model: { provider: string; id: string },
+	thinkingLevel: ThinkingLevel,
+	task: string,
+	signal: AbortSignal | undefined,
+	onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
+	toolOptions: SubagentToolOptions | undefined,
+	timeout: number | undefined,
+	getFinalOutputFn: (messages: Array<Record<string, unknown>>) => string,
+	log?: Logger,
+	depth?: number,
+): Promise<SubagentResult> {
+	const args = buildSubagentArgs(model, thinkingLevel, toolOptions);
+
+	let tmpDir: string | null = null;
+	let tmpFilePath: string | null = null;
+
+	if (systemPrompt.trim()) {
+		const tmp = await writeToTempFile(cwd, "system", systemPrompt);
+		tmpDir = tmp.dir;
+		tmpFilePath = tmp.filePath;
+		args.push("--append-system-prompt", tmpFilePath);
+	}
+
+	// Pass the task as the prompt argument
+	args.push(task);
+
+	const result: SubagentResult = {
+		messages: [],
+		usage: { ...EMPTY_USAGE },
+		exitCode: 0,
+		stderr: "",
+	};
+
+	log?.info("Starting subagent process", {
+		model: `${model.provider}/${model.id}`,
+		thinkingLevel,
+		cwd,
+		taskPreview: task.slice(0, 80),
+		hasSystemPrompt: systemPrompt.trim().length > 0,
+		timeout,
+	});
+
+	try {
+		const exitCode = await new Promise<number>((resolve) => {
+			const invocation = getPiInvocation(args);
+			const subDepth = depth !== undefined ? depth : undefined;
+			const envOverrides: Record<string, string> | undefined =
+				subDepth !== undefined ? { [DEPTH_ENV_KEY]: String(subDepth) } : undefined;
+			const proc = spawn(invocation.command, invocation.args, {
+				cwd,
+				shell: false,
+				stdio: ["ignore", "pipe", "pipe"],
+				env: getSafeEnv(envOverrides), // F2: Environment isolation + depth tracking
+			});
+
+			let buffer = "";
+
+			proc.stdout.on("data", (data: Buffer) => {
+				buffer += data.toString();
+				const lines = buffer.split("\n");
+				buffer = lines.pop() ?? "";
+				for (const line of lines) {
+					parseSubagentLine(line, result, onUpdate, getFinalOutputFn, log);
+				}
+			});
+
+			proc.stderr.on("data", (data: Buffer) => {
+				result.stderr += data.toString();
+			});
+
+			proc.on("close", (code) => {
+				if (buffer.trim()) {
+					parseSubagentLine(buffer, result, onUpdate, getFinalOutputFn, log);
+				}
+				log?.info("Subagent process exited", { exitCode: code, pid: proc.pid });
+				resolve(code ?? 0);
+			});
+
+			proc.on("error", (err) => {
+				result.errorMessage = `Subprocess error: ${err.message}`;
+				result.stderr += err.message;
+				log?.error("Subagent process error", { error: err.message });
+				resolve(1);
+			});
+
+			if (signal) {
+				attachAbortHandler(proc, signal);
+			}
+
+			if (timeout && timeout > 0) {
+				const timer = setTimeout(() => {
+					result.errorMessage = `Subagent timed out after ${timeout}ms`;
+					log?.warn("Subagent timed out", { timeout, pid: proc.pid });
+					proc.kill("SIGTERM");
+					setTimeout(() => {
+						if (!proc.killed) proc.kill("SIGKILL");
+					}, SIGKILL_GRACE_MS);
+				}, timeout);
+				proc.on("close", () => clearTimeout(timer));
+			}
+		});
+
+		result.exitCode = exitCode;
+		return result;
+	} finally {
+		if (tmpDir && tmpFilePath) {
+			cleanupTempDir(tmpDir, tmpFilePath);
+		}
+	}
+}
