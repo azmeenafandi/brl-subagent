@@ -23,12 +23,15 @@ import type {
 	ThinkingLevel,
 	Priority,
 	UsageStats,
+	FileDiff,
 } from "./types";
 import {
 	THINKING_LEVELS,
 	NAV_FOOTER,
 	TASK_PREVIEW_MAX_LENGTH,
 	COLLAPSED_OUTPUT_LINES,
+	COLLAPSED_DIFF_FILES_PREVIEW,
+	EXPANDED_HUNKS_PER_FILE,
 	formatTokens,
 	formatUsageStats,
 	formatModel,
@@ -37,6 +40,7 @@ import {
 	isSubagentError,
 	isMultiSubagentDetails,
 } from "./types";
+import { parseDiff } from "./diff";
 import { formatPresetSummary } from "./presets";
 import { formatRunDuration } from "./history";
 import type { SessionState } from "./state";
@@ -1056,6 +1060,8 @@ function renderExpandedResult(
 		);
 		container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
 	}
+	// P5: Expanded diff section
+	addExpandedDiffSection(container, details.gitDiff, theme);
 	const usageStr = formatUsageStats(details.usage, details.model);
 	if (usageStr) {
 		container.addChild(new Spacer(1));
@@ -1086,9 +1092,10 @@ function renderCollapsedText(
 		if (finalOutput.split("\n").length > COLLAPSED_OUTPUT_LINES) {
 			text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
 		}
-	} else {
-		text += `\n${theme.fg("muted", "(no output)")}`;
 	}
+	// P5: Collapsed diff file summary
+	const diffSummary = renderCollapsedDiffSummary(details.gitDiff, theme);
+	if (diffSummary) text += `\n${diffSummary}`;
 	const usageStr = formatUsageStats(details.usage, details.model);
 	if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
 	return text;
@@ -1161,6 +1168,9 @@ function renderCollapsedChain(
 		if (r.errorMessage) {
 			text += `\n   ${theme.fg("error", r.errorMessage)}`;
 		}
+		// P5: Collapsed diff file summary per step
+		const diffSummary = renderCollapsedDiffSummary(r.gitDiff, theme);
+		if (diffSummary) text += `\n   ${diffSummary}`;
 	}
 
 	text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
@@ -1196,6 +1206,9 @@ function renderCollapsedParallel(
 		if (r.errorMessage) {
 			text += `\n   ${theme.fg("error", r.errorMessage)}`;
 		}
+		// P5: Collapsed diff file summary per task
+		const diffSummary = renderCollapsedDiffSummary(r.gitDiff, theme);
+		if (diffSummary) text += `\n   ${diffSummary}`;
 	}
 
 	text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
@@ -1264,6 +1277,9 @@ function renderExpandedChain(
 			);
 			container.addChild(new Markdown(output.trim(), 0, 0, mdTheme));
 		}
+
+		// P5: Expanded diff section per step
+		addExpandedDiffSection(container, r.gitDiff, theme);
 
 		const usageStr = formatUsageStats(r.usage, r.model);
 		if (usageStr) {
@@ -1348,6 +1364,9 @@ function renderExpandedParallel(
 			);
 			container.addChild(new Markdown(output.trim(), 0, 0, mdTheme));
 		}
+
+		// P5: Expanded diff section per task
+		addExpandedDiffSection(container, r.gitDiff, theme);
 
 		const usageStr = formatUsageStats(r.usage, r.model);
 		if (usageStr) {
@@ -1531,6 +1550,153 @@ export async function showApprovalDialog(
 }
 
 // ---------------------------------------------------------------------------
+// P5: Diff rendering helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a collapsed one-line summary of changed files from a git diff.
+ * Returns empty string if no diff or no files changed.
+ */
+function renderCollapsedDiffSummary(
+	gitDiff: string | undefined,
+	theme: {
+		fg: (color: string, text: string) => string;
+	},
+): string {
+	if (!gitDiff?.trim()) return "";
+	const files = parseDiff(gitDiff);
+	if (files.length === 0) return "";
+
+	const fileEntries = files
+		.slice(0, COLLAPSED_DIFF_FILES_PREVIEW)
+		.map((f) =>
+			theme.fg("accent", `${f.path}`) + theme.fg("accent", ` (+${f.additions} -${f.deletions})`),
+		);
+
+	let text = theme.fg("muted", "\u2500\u2500\u2500 Files: ") + fileEntries.join(theme.fg("muted", ", "));
+
+	if (files.length > COLLAPSED_DIFF_FILES_PREVIEW) {
+		text += theme.fg("muted", ` +${files.length - COLLAPSED_DIFF_FILES_PREVIEW} more`);
+	}
+
+	text += theme.fg("muted", " \u2500\u2500\u2500");
+	return text;
+}
+
+/**
+ * Add a structured diff section to an expanded view Container.
+ * Returns true if any file has truncated hunks (needs a "Press D" hint).
+ */
+function addExpandedDiffSection(
+	container: Container,
+	gitDiff: string | undefined,
+	theme: {
+		fg: (color: string, text: string) => string;
+	},
+): boolean {
+	if (!gitDiff?.trim()) return false;
+	const files = parseDiff(gitDiff);
+	if (files.length === 0) return false;
+
+	let anyTruncated = false;
+
+	container.addChild(new Spacer(1));
+	container.addChild(
+		new Text(theme.fg("muted", `\u2500\u2500\u2500 Files changed (${files.length}) \u2500\u2500\u2500`), 0, 0),
+	);
+
+	for (const file of files) {
+		container.addChild(new Text("", 0, 0));
+		container.addChild(
+			new Text(
+				theme.fg("accent", file.path) +
+					theme.fg("dim", `  (+${file.additions} -${file.deletions})`),
+				0,
+				0,
+			),
+		);
+		container.addChild(new Text(theme.fg("muted", "\u2500".repeat(50)), 0, 0));
+
+		const hunksToShow = file.hunks.slice(0, EXPANDED_HUNKS_PER_FILE);
+		for (const hunk of hunksToShow) {
+			container.addChild(new Text(theme.fg("toolOutput", hunk), 0, 0));
+		}
+
+		if (file.totalHunks > EXPANDED_HUNKS_PER_FILE) {
+			anyTruncated = true;
+			container.addChild(
+				new Text(
+					theme.fg(
+						"dim",
+						`(${file.totalHunks - EXPANDED_HUNKS_PER_FILE} more hunks \u2014 press D for full diff)`,
+					),
+					0,
+					0,
+				),
+			);
+		}
+	}
+
+	if (anyTruncated) {
+		container.addChild(new Text("", 0, 0));
+		container.addChild(
+			new Text(theme.fg("dim", "Press D to view full raw diff"), 0, 0),
+		);
+	}
+
+	return anyTruncated;
+}
+
+/**
+ * Wrap an expanded view Container in a Component that intercepts 'D'/'d' keys
+ * to toggle a full raw diff view. Pressing any key in the full diff view
+ * returns to the normal expanded view.
+ */
+function withDiffKeybinding(
+	container: Container,
+	gitDiff: string | undefined,
+	theme: {
+		fg: (color: string, text: string) => string;
+		bold: (text: string) => string;
+	},
+): Container | { render(w: number): string[]; handleInput(d: string): void; invalidate(): void } {
+	if (!gitDiff?.trim()) return container;
+
+	let showFullDiff = false;
+
+	return {
+		render(width: number) {
+			if (showFullDiff) {
+				const dc = new Container();
+				dc.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+				dc.addChild(new Text(theme.fg("accent", theme.bold("Full Diff")), 1, 0));
+				dc.addChild(new Text("", 0, 0));
+				dc.addChild(new Text(theme.fg("toolOutput", gitDiff), 1, 0));
+				dc.addChild(new Text("", 0, 0));
+				dc.addChild(new Text(theme.fg("dim", "Press any key to return"), 1, 0));
+				dc.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+				return dc.render(width);
+			}
+			return container.render(width);
+		},
+		handleInput(data: string) {
+			if (showFullDiff) {
+				showFullDiff = false;
+				return;
+			}
+			if (data === "d" || data === "D") {
+				showFullDiff = true;
+				return;
+			}
+			container.handleInput?.(data);
+		},
+		invalidate() {
+			container.invalidate();
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Public rendering entry points (used by delegate_task tool)
 // ---------------------------------------------------------------------------
 
@@ -1609,7 +1775,7 @@ export function renderDelegateResult(
 		fg: (color: string, text: string) => string;
 		bold: (text: string) => string;
 	},
-): Container | Text {
+): Container | Text | ReturnType<typeof withDiffKeybinding> {
 	const details = result.details;
 
 	// Check for multi-subagent (chain / parallel) mode
@@ -1640,7 +1806,7 @@ export function renderDelegateResult(
 	const finalOutput = getFinalOutput(details.messages);
 
 	if (options.expanded) {
-		return renderExpandedResult(
+		const container = renderExpandedResult(
 			details,
 			isError,
 			icon,
@@ -1648,6 +1814,8 @@ export function renderDelegateResult(
 			theme,
 			getMarkdownTheme(),
 		);
+		// P5: Wrap with keybinding for full diff view
+		return withDiffKeybinding(container, details.gitDiff, theme);
 	}
 	return new Text(
 		renderCollapsedText(details, isError, icon, finalOutput, theme),

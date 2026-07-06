@@ -290,6 +290,11 @@ export const TASK_PREVIEW_MAX_LENGTH = 80;
 export const COLLAPSED_OUTPUT_LINES = 5;
 export const DEFAULT_OUTPUT_CAP_BYTES = 100 * 1024; // 100KB
 
+// P5: Output diffing constants
+export const MAX_HUNKS_PER_FILE = 10;
+export const COLLAPSED_DIFF_FILES_PREVIEW = 5; // max file entries in collapsed view
+export const EXPANDED_HUNKS_PER_FILE = 5; // max hunks shown per file in expanded view
+
 export const MAX_RUN_HISTORY_ENTRIES = 500;
 export const MAX_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -304,6 +309,15 @@ export const CUSTOM_ENTRY_TYPES = {
 	run: "brl-subagent-run",
 	state: "brl-subagent-state",
 } as const;
+
+// P5: File-level diff summary for structured diff output
+export interface FileDiff {
+	path: string;        // relative file path (e.g. "src/logging.ts")
+	additions: number;   // count of + lines
+	deletions: number;   // count of - lines
+	hunks: string[];     // first 10 hunk texts, capped
+	totalHunks: number;  // actual total (may be more than hunks.length)
+}
 
 // ---------------------------------------------------------------------------
 // P1+P2: Chain / parallel constants
