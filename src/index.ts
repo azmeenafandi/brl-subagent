@@ -35,6 +35,7 @@ import type {
 	SubagentToolOptions,
 	ResolvedParams,
 	ThinkingLevel,
+	ApprovalMode,
 	SubTaskParams,
 	SubTaskResult,
 	ChainDetails,
@@ -61,6 +62,7 @@ import {
 	captureDiff,
 	switchToBranch,
 	deleteBranch,
+	mergeWorkBranch,
 } from "./git";
 import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets } from "./presets";
@@ -83,6 +85,8 @@ import {
 	showDepthInput,
 	showHistoryEntriesInput,
 	showCostLimitInput,
+	showApprovalModeSelector,
+	showApprovalDialog,
 	showPresetManager,
 	showConfigMenu,
 	showRunHistory,
@@ -139,9 +143,10 @@ export default function (pi: ExtensionAPI) {
 			excludeTools?: string[];
 			noBuiltinTools?: boolean;
 			gitMode?: string;
+			approvalMode?: string;
 		},
 		ctx: ExtensionContext,
-	): ResolvedParams & { resolvedGitMode: GitMode } {
+	): ResolvedParams & { resolvedGitMode: GitMode; resolvedApprovalMode: ApprovalMode } {
 		const preset = params.preset
 			? getPresetFn(params.preset, state.builtinPresets, state.config.presets)
 			: undefined;
@@ -161,6 +166,13 @@ export default function (pi: ExtensionAPI) {
 			mergedGitMode === "branch" || mergedGitMode === "none"
 				? mergedGitMode
 				: state.config.gitMode;
+
+		// P4: Resolve approval mode: per-call param > state config > default "writes"
+		const mergedApprovalMode = params.approvalMode as ApprovalMode | undefined;
+		const resolvedApprovalMode: ApprovalMode =
+			mergedApprovalMode === "auto" || mergedApprovalMode === "writes" || mergedApprovalMode === "always"
+				? mergedApprovalMode
+				: state.config.approvalMode;
 
 		const thinkingLevel = resolveThinkingLevel(
 			mergedThinkingLevel,
@@ -187,6 +199,7 @@ export default function (pi: ExtensionAPI) {
 			thinkingLevel,
 			toolOptions,
 			resolvedGitMode,
+			resolvedApprovalMode,
 		};
 	}
 
@@ -225,7 +238,7 @@ export default function (pi: ExtensionAPI) {
 	 * are replaced entirely if set in the subTask, otherwise inherited from global.
 	 */
 	function mergeSubTaskParams(
-		globalParams: ResolvedParams & { resolvedGitMode: GitMode },
+		globalParams: ResolvedParams & { resolvedGitMode: GitMode; resolvedApprovalMode: ApprovalMode },
 		subTask: SubTaskParams,
 	): {
 		task: string;
@@ -238,6 +251,7 @@ export default function (pi: ExtensionAPI) {
 		thinkingLevel: ThinkingLevel;
 		toolOptions: SubagentToolOptions | undefined;
 		resolvedGitMode: GitMode;
+		resolvedApprovalMode: ApprovalMode;
 	} {
 		const mergedThinkingLevel = subTask.thinkingLevel
 			? resolveThinkingLevel(
@@ -271,6 +285,7 @@ export default function (pi: ExtensionAPI) {
 			thinkingLevel: mergedThinkingLevel,
 			toolOptions: mergedToolOptions,
 			resolvedGitMode: globalParams.resolvedGitMode,
+			resolvedApprovalMode: globalParams.resolvedApprovalMode,
 		};
 	}
 
@@ -1010,7 +1025,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"model", "thinking", "concurrency", "depth", "gitmode", "costlimit", "reset",
+				"model", "thinking", "concurrency", "depth", "gitmode", "approval", "costlimit", "reset",
 				"history", "historyentries", "monitor", "preset", "retry",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
@@ -1027,6 +1042,7 @@ export default function (pi: ExtensionAPI) {
 				concurrency: () => showConcurrencyInput(ctx, state, applyConfig),
 				depth: () => showDepthInput(ctx, state, applyConfig),
 				gitmode: () => showGitModeSelector(ctx, state, applyConfig),
+				approval: () => showApprovalModeSelector(ctx, state, applyConfig),
 				costlimit: () => showCostLimitInput(ctx, state, applyConfig),
 				reset: () => resetState(ctx),
 				history: () => showRunHistory(ctx, state, () => state.persistState(pi)),
@@ -1189,6 +1205,13 @@ export default function (pi: ExtensionAPI) {
 					description:
 						"If true and the subagent times out, automatically retry with the same parameters. " +
 						"Only retries once — the second timeout is treated as a final failure.",
+				}),
+			),
+			approvalMode: Type.Optional(
+				Type.String({
+					description:
+						"Change approval mode: auto (never ask), writes (ask when files changed), " +
+						"always (ask every time). Default is user config (/brl-subagent approval).",
 				}),
 			),
 			chain: Type.Optional(Type.Array(Type.Object({
@@ -1411,6 +1434,7 @@ export default function (pi: ExtensionAPI) {
 				thinkingLevel,
 				toolOptions,
 				resolvedGitMode,
+				resolvedApprovalMode,
 			} = resolveSubagentParams(params, ctx);
 
 			// F1: Validate CWD
@@ -1711,9 +1735,56 @@ export default function (pi: ExtensionAPI) {
 					const switchResult = switchToBranch(resolvedCwd, originalBranch);
 					if (switchResult.ok) {
 						log.info("Switched back to original branch", { branch: originalBranch });
-						// Best-effort delete work branch
-						deleteBranch(resolvedCwd, workBranchName);
-						workBranchName = undefined; // Prevent double-cleanup
+
+						// P4: Change approval workflow — let user review the diff
+						const diffContent = (result.gitDiff ?? "").trim();
+						const hasChanges = diffContent.length > 0;
+						const shouldPrompt =
+							ctx.hasUI !== false &&
+							(resolvedApprovalMode === "always" ||
+								(resolvedApprovalMode === "writes" && hasChanges));
+
+						if (shouldPrompt) {
+							const choice = await showApprovalDialog(ctx, label, result.gitDiff ?? "", workBranchName);
+
+							if (choice === "apply") {
+								const mergeResult = mergeWorkBranch(resolvedCwd, workBranchName);
+								if (mergeResult.ok) {
+									log.info("Merged work branch (approved)", { branch: workBranchName });
+									result.approved = true;
+								} else {
+									log.error("Failed to merge work branch", {
+										branch: workBranchName,
+										error: mergeResult.error,
+									});
+									result.approved = false;
+								}
+							} else {
+								// Discard or cancelled
+								deleteBranch(resolvedCwd, workBranchName);
+								log.info("Discarded work branch", { branch: workBranchName });
+								result.approved = false;
+							}
+							workBranchName = undefined; // Prevent double-cleanup
+						} else if (hasChanges) {
+							// Auto-approve: merge the work branch
+							const mergeResult = mergeWorkBranch(resolvedCwd, workBranchName);
+							if (mergeResult.ok) {
+								log.info("Merged work branch (auto-approve)", { branch: workBranchName });
+								result.approved = true;
+							} else {
+								log.error("Failed to merge work branch (auto-approve)", {
+									branch: workBranchName,
+									error: mergeResult.error,
+								});
+							}
+							deleteBranch(resolvedCwd, workBranchName);
+							workBranchName = undefined;
+						} else {
+							// No changes — just delete the empty branch
+							deleteBranch(resolvedCwd, workBranchName);
+							workBranchName = undefined;
+						}
 					}
 				}
 

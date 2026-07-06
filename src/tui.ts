@@ -259,6 +259,40 @@ export async function showCostLimitInput(
 }
 
 // ---------------------------------------------------------------------------
+// Approval mode selector — P4
+// ---------------------------------------------------------------------------
+
+export async function showApprovalModeSelector(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	const items: SelectItem[] = [
+		{
+			value: "auto",
+			label: "auto",
+			description: "Never ask - auto-approve",
+		},
+		{
+			value: "writes",
+			label: "writes",
+			description: "Ask when files changed - default",
+		},
+		{
+			value: "always",
+			label: "always",
+			description: "Ask every time",
+		},
+	];
+
+	const result = await showSelectList(ctx, "Select Change Approval Mode", items, 5);
+	if (!result) return;
+
+	state.config.approvalMode = result as "auto" | "writes" | "always";
+	onConfigChanged(ctx, `Change approval mode set to ${result}`);
+}
+
+// ---------------------------------------------------------------------------
 // Git mode selector — P3
 // ---------------------------------------------------------------------------
 
@@ -521,6 +555,15 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			description: state.config.gitMode === "branch"
 				? "Branch-based workflow"
 				: "No git integration",
+		},
+		{
+			value: "approval",
+			label: "Set Change Approval Mode",
+			description: state.config.approvalMode === "auto"
+				? "Never ask"
+				: state.config.approvalMode === "writes"
+					? "Ask when files changed"
+					: "Ask every time",
 		},
 		{
 			value: "historyentries",
@@ -1302,6 +1345,160 @@ function renderExpandedParallel(
 	}
 
 	return container;
+}
+
+// ---------------------------------------------------------------------------
+// P4: Approval dialog — user reviews diff before merging
+// ---------------------------------------------------------------------------
+
+/**
+ * Show approval dialog for subagent changes.
+ * Returns "apply" to merge the branch, "discard" to delete it, or null if cancelled.
+ */
+export async function showApprovalDialog(
+	ctx: ExtensionContext,
+	label: string | undefined,
+	gitDiff: string,
+	gitBranch: string,
+): Promise<"apply" | "discard" | null> {
+	const diffLines = gitDiff.split("\n");
+	const filesChanged = (gitDiff.match(/^diff --git /gm) || []).length;
+	const hasMoreLines = diffLines.length > 20;
+	const previewLines = diffLines.slice(0, 20).join("\n");
+
+	return ctx.ui.custom<"apply" | "discard" | null>((tui, theme, _kb, done) => {
+		let currentView: "menu" | "diff" = "menu";
+		let selectList: SelectList | null = null;
+
+		const items: SelectItem[] = [
+			{
+				value: "apply",
+				label: "[Y] Apply changes",
+				description: "Merge branch into working branch",
+			},
+			{
+				value: "viewdiff",
+				label: "[D] View full diff",
+				description: "Open full diff in a scrollable view",
+			},
+			{
+				value: "discard",
+				label: "[N] Discard changes",
+				description: "Delete branch without merging",
+			},
+		];
+
+		const buildMenuView = () => {
+			const container = new Container();
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+			container.addChild(
+				new Text(
+					theme.fg("accent", theme.bold(`[\u2691] subagent${label ? ` [${label}]` : ""} completed`)),
+					1,
+					0,
+				),
+			);
+			container.addChild(
+				new Text(
+					theme.fg("dim", `${filesChanged} file(s) changed, branch: ${gitBranch}`),
+					1,
+					0,
+				),
+			);
+			container.addChild(new Text("", 0, 0));
+
+			if (gitDiff.trim()) {
+				container.addChild(
+					new Text(theme.fg("muted", "\u2500\u2500\u2500 Diff Preview \u2500\u2500\u2500"), 1, 0),
+				);
+				container.addChild(new Text(theme.fg("toolOutput", previewLines), 1, 0));
+				if (hasMoreLines) {
+					container.addChild(
+						new Text(theme.fg("dim", `... ${diffLines.length - 20} more lines`), 1, 0),
+					);
+				}
+				container.addChild(new Text("", 0, 0));
+			} else {
+				container.addChild(
+					new Text(theme.fg("dim", "(no changes detected)"), 1, 0),
+				);
+			}
+
+			selectList = new SelectList(items, 3, makeSelectListTheme(theme));
+			selectList.onSelect = (item) => {
+				if (item.value === "viewdiff") {
+					currentView = "diff";
+					tui.requestRender();
+				} else {
+					done(item.value);
+				}
+			};
+			selectList.onCancel = () => done(null);
+
+			container.addChild(selectList);
+			container.addChild(new Text(theme.fg("dim", NAV_FOOTER), 1, 0));
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+			return container;
+		};
+
+		const buildDiffView = () => {
+			const container = new Container();
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+			container.addChild(
+				new Text(
+					theme.fg("accent", theme.bold(`Full Diff — ${gitBranch}`)),
+					1,
+					0,
+				),
+			);
+			container.addChild(new Text("", 0, 0));
+			container.addChild(new Text(theme.fg("toolOutput", gitDiff), 1, 0));
+			container.addChild(new Text("", 0, 0));
+			container.addChild(
+				new Text(theme.fg("dim", "Press any key to return to menu"), 1, 0),
+			);
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+			return container;
+		};
+
+		return {
+			render: (w: number) => {
+				if (currentView === "diff") {
+					return buildDiffView().render(w);
+				}
+				return buildMenuView().render(w);
+			},
+			invalidate: () => {
+				// No-op: rebuild on each render
+			},
+			handleInput: (data: string) => {
+				if (currentView === "diff") {
+					currentView = "menu";
+					tui.requestRender();
+					return;
+				}
+
+				// Keyboard shortcuts
+				if (data === "y" || data === "Y") {
+					done("apply");
+					return;
+				}
+				if (data === "d" || data === "D") {
+					currentView = "diff";
+					tui.requestRender();
+					return;
+				}
+				if (data === "n" || data === "N") {
+					done("discard");
+					return;
+				}
+
+				selectList?.handleInput(data);
+				tui.requestRender();
+			},
+		};
+	});
 }
 
 // ---------------------------------------------------------------------------

@@ -90,6 +90,23 @@ export function switchToBranch(
 }
 
 /**
+ * Merge a work branch into the current branch.
+ * Uses --no-edit to prevent opening an editor.
+ * Returns { ok: true } on success, { ok: false, error } on failure.
+ */
+export function mergeWorkBranch(
+	cwd: string,
+	branch: string,
+): { ok: true } | { ok: false; error: string } {
+	try {
+		execFileSync("git", ["merge", branch, "--no-edit"], gitOpts(cwd));
+		return { ok: true };
+	} catch (err) {
+		return { ok: false, error: (err as Error).message };
+	}
+}
+
+/**
  * Delete a branch.
  * Returns { ok: true } on success, { ok: false, error } on failure.
  */

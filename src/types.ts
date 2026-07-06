@@ -10,6 +10,8 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 // Core types
 // ---------------------------------------------------------------------------
 
+export type ApprovalMode = "auto" | "writes" | "always";
+
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -86,6 +88,7 @@ export interface SubagentState {
 	maxParallel: number; // 0 = unlimited
 	maxSubagentDepth: number; // 0 = no recursion allowed, 1 = one level, etc.
 	gitMode: GitMode; // P3: branch-based git workflow
+	approvalMode: ApprovalMode; // P4: change approval workflow
 	maxHistoryEntries: number; // 0 = unlimited
 	sessionCostLimit: number; // 0 = unlimited
 	perTaskCostEstimate: number; // 0 = no estimate, use default
@@ -160,6 +163,8 @@ export interface SubagentResult {
 	// P3: Git integration fields
 	gitBranch?: string;
 	gitDiff?: string;
+	// P4: Change approval workflow
+	approved?: boolean;
 }
 
 export interface SubagentToolOptions {
@@ -392,6 +397,11 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 	// gitMode must be "branch" or "none" if present
 	if (v.gitMode !== undefined) {
 		if (v.gitMode !== "branch" && v.gitMode !== "none") return false;
+	}
+
+	// approvalMode must be "auto", "writes", or "always" if present
+	if (v.approvalMode !== undefined) {
+		if (v.approvalMode !== "auto" && v.approvalMode !== "writes" && v.approvalMode !== "always") return false;
 	}
 
 	// maxHistoryEntries must be a non-negative number if present

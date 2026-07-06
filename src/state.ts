@@ -14,6 +14,7 @@ import type {
 	SubagentRun,
 	LiveSubagent,
 	ThinkingLevel,
+	ApprovalMode,
 	CircuitBreakerState,
 } from "./types";
 import {
@@ -66,6 +67,7 @@ export class SessionState {
 			maxParallel: 0,
 			maxSubagentDepth: 1,
 			gitMode: "none",
+			approvalMode: "writes",
 			maxHistoryEntries: MAX_RUN_HISTORY_ENTRIES,
 			sessionCostLimit: DEFAULT_SESSION_COST_LIMIT,
 			perTaskCostEstimate: 0,
@@ -86,6 +88,7 @@ export class SessionState {
 			maxParallel: this.config.maxParallel,
 			maxSubagentDepth: this.config.maxSubagentDepth,
 			gitMode: this.config.gitMode,
+			approvalMode: this.config.approvalMode,
 			maxHistoryEntries: this.config.maxHistoryEntries,
 			sessionCostLimit: this.config.sessionCostLimit,
 			perTaskCostEstimate: this.config.perTaskCostEstimate,
@@ -137,6 +140,10 @@ export class SessionState {
 		if (data.maxParallel !== undefined) this.config.maxParallel = data.maxParallel;
 		if (data.maxSubagentDepth !== undefined) this.config.maxSubagentDepth = data.maxSubagentDepth;
 		this.config.gitMode = data.gitMode === "branch" ? "branch" : "none";
+		this.config.approvalMode =
+			data.approvalMode === "auto" || data.approvalMode === "writes" || data.approvalMode === "always"
+				? data.approvalMode
+				: "writes";
 		if (data.maxHistoryEntries !== undefined) this.config.maxHistoryEntries = data.maxHistoryEntries;
 		if (data.sessionCostLimit !== undefined) this.config.sessionCostLimit = data.sessionCostLimit;
 		if (data.perTaskCostEstimate !== undefined) this.config.perTaskCostEstimate = data.perTaskCostEstimate;
@@ -328,6 +335,7 @@ export class SessionState {
 		this.config.maxParallel = 0;
 		this.config.maxSubagentDepth = 1;
 		this.config.gitMode = "none";
+		this.config.approvalMode = "writes";
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
 		this.config.perTaskCostEstimate = 0;
