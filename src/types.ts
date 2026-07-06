@@ -71,14 +71,24 @@ export interface SubagentPreset {
 	noBuiltinTools?: boolean;
 }
 
+export interface CircuitBreakerState {
+	consecutiveFailures: number;
+	lastFailureTime: number; // epoch ms
+	circuitOpen: boolean;
+	degradedThinkingLevel?: ThinkingLevel;
+}
+
 export interface SubagentState {
 	model?: { provider: string; id: string };
 	maxThinkingLevel: ThinkingLevel;
 	maxParallel: number; // 0 = unlimited
 	maxSubagentDepth: number; // 0 = no recursion allowed, 1 = one level, etc.
 	maxHistoryEntries: number; // 0 = unlimited
+	sessionCostLimit: number; // 0 = unlimited
+	perTaskCostEstimate: number; // 0 = no estimate, use default
 	seenRunIds: string[];
 	presets: SubagentPreset[];
+	circuitBreaker: CircuitBreakerState;
 }
 
 export interface SubagentRun {
@@ -200,6 +210,13 @@ export const DEFAULT_OUTPUT_CAP_BYTES = 100 * 1024; // 100KB
 export const MAX_RUN_HISTORY_ENTRIES = 500;
 export const MAX_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+// Circuit breaker constants
+export const MAX_CONSECUTIVE_FAILURES = 5;
+export const CIRCUIT_BREAKER_RESET_MS = 60000; // 1 min auto-recovery
+export const CIRCUIT_DEGRADED_THINKING: ThinkingLevel = "minimal";
+
+export const DEFAULT_SESSION_COST_LIMIT = 0;
+
 export const CUSTOM_ENTRY_TYPES = {
 	run: "brl-subagent-run",
 	state: "brl-subagent-state",
@@ -301,6 +318,16 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 	// maxHistoryEntries must be a non-negative number if present
 	if (v.maxHistoryEntries !== undefined) {
 		if (typeof v.maxHistoryEntries !== "number" || v.maxHistoryEntries < 0) return false;
+	}
+
+	// sessionCostLimit must be a non-negative number if present
+	if (v.sessionCostLimit !== undefined) {
+		if (typeof v.sessionCostLimit !== "number" || v.sessionCostLimit < 0) return false;
+	}
+
+	// perTaskCostEstimate must be a non-negative number if present
+	if (v.perTaskCostEstimate !== undefined) {
+		if (typeof v.perTaskCostEstimate !== "number" || v.perTaskCostEstimate < 0) return false;
 	}
 
 	return true;

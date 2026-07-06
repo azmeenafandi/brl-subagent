@@ -14,12 +14,17 @@ import type {
 	SubagentRun,
 	LiveSubagent,
 	ThinkingLevel,
+	CircuitBreakerState,
 } from "./types";
 import {
 	isSubagentStateShape,
 	isSubagentRunShape,
 	CUSTOM_ENTRY_TYPES,
 	MAX_RUN_HISTORY_ENTRIES,
+	DEFAULT_SESSION_COST_LIMIT,
+	MAX_CONSECUTIVE_FAILURES,
+	CIRCUIT_BREAKER_RESET_MS,
+	CIRCUIT_DEGRADED_THINKING,
 } from "./types";
 import { cleanupRuns } from "./history";
 import type { Logger } from "./logging";
@@ -61,8 +66,11 @@ export class SessionState {
 			maxParallel: 0,
 			maxSubagentDepth: 1,
 			maxHistoryEntries: MAX_RUN_HISTORY_ENTRIES,
+			sessionCostLimit: DEFAULT_SESSION_COST_LIMIT,
+			perTaskCostEstimate: 0,
 			seenRunIds: [],
 			presets: [],
+			circuitBreaker: this.defaultCircuitBreaker(),
 		};
 	}
 
@@ -77,8 +85,11 @@ export class SessionState {
 			maxParallel: this.config.maxParallel,
 			maxSubagentDepth: this.config.maxSubagentDepth,
 			maxHistoryEntries: this.config.maxHistoryEntries,
+			sessionCostLimit: this.config.sessionCostLimit,
+			perTaskCostEstimate: this.config.perTaskCostEstimate,
 			seenRunIds: this.config.seenRunIds,
 			presets: this.config.presets,
+			circuitBreaker: this.config.circuitBreaker,
 		});
 	}
 
@@ -124,8 +135,23 @@ export class SessionState {
 		if (data.maxParallel !== undefined) this.config.maxParallel = data.maxParallel;
 		if (data.maxSubagentDepth !== undefined) this.config.maxSubagentDepth = data.maxSubagentDepth;
 		if (data.maxHistoryEntries !== undefined) this.config.maxHistoryEntries = data.maxHistoryEntries;
+		if (data.sessionCostLimit !== undefined) this.config.sessionCostLimit = data.sessionCostLimit;
+		if (data.perTaskCostEstimate !== undefined) this.config.perTaskCostEstimate = data.perTaskCostEstimate;
 		if (Array.isArray(data.seenRunIds)) this.config.seenRunIds = data.seenRunIds;
 		if (Array.isArray(data.presets)) this.config.presets = data.presets;
+		if (
+			data.circuitBreaker &&
+			typeof data.circuitBreaker === "object" &&
+			typeof (data.circuitBreaker as CircuitBreakerState).consecutiveFailures === "number"
+		) {
+			const cb = data.circuitBreaker as CircuitBreakerState;
+			this.config.circuitBreaker.consecutiveFailures = cb.consecutiveFailures;
+			this.config.circuitBreaker.lastFailureTime = cb.lastFailureTime;
+			this.config.circuitBreaker.circuitOpen = cb.circuitOpen;
+			if (cb.degradedThinkingLevel) {
+				this.config.circuitBreaker.degradedThinkingLevel = cb.degradedThinkingLevel;
+			}
+		}
 
 		this.log?.info("State restored from session", {
 			model: data.model ? `${data.model.provider}/${data.model.id}` : "none",
@@ -196,6 +222,100 @@ export class SessionState {
 	}
 
 	// -------------------------------------------------------------------
+	// Circuit breaker
+	// -------------------------------------------------------------------
+
+	private defaultCircuitBreaker(): CircuitBreakerState {
+		return {
+			consecutiveFailures: 0,
+			lastFailureTime: 0,
+			circuitOpen: false,
+		};
+	}
+
+	/**
+	 * Reset consecutiveFailures to 0, close the circuit, and clear
+	 * the degraded thinking level.
+	 */
+	recordSuccess(): void {
+		this.config.circuitBreaker.consecutiveFailures = 0;
+		this.config.circuitBreaker.circuitOpen = false;
+		this.config.circuitBreaker.degradedThinkingLevel = undefined;
+		this.config.circuitBreaker.lastFailureTime = 0;
+	}
+
+	/**
+	 * Increment consecutiveFailures. If the threshold is reached,
+	 * open the circuit, record the failure time, and set the
+	 * degraded thinking level.
+	 */
+	recordFailure(): void {
+		this.config.circuitBreaker.consecutiveFailures++;
+		if (this.config.circuitBreaker.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+			this.config.circuitBreaker.circuitOpen = true;
+			this.config.circuitBreaker.lastFailureTime = Date.now();
+			this.config.circuitBreaker.degradedThinkingLevel = CIRCUIT_DEGRADED_THINKING;
+		}
+	}
+
+	/**
+	 * Check whether the circuit breaker is currently open.
+	 * Applies auto-recovery if enough time has passed since
+	 * the last failure. Returns the result with status info.
+	 */
+	checkCircuit(): { isOpen: boolean; message?: string; waitTimeRemaining?: number } {
+		const cb = this.config.circuitBreaker;
+
+		if (!cb.circuitOpen) {
+			return { isOpen: false };
+		}
+
+		const elapsed = Date.now() - cb.lastFailureTime;
+
+		// Auto-recover if the reset window has passed
+		if (elapsed >= CIRCUIT_BREAKER_RESET_MS) {
+			cb.consecutiveFailures = 0;
+			cb.circuitOpen = false;
+			cb.degradedThinkingLevel = undefined;
+			cb.lastFailureTime = 0;
+			return { isOpen: false };
+		}
+
+		const waitTimeRemaining = CIRCUIT_BREAKER_RESET_MS - elapsed;
+		return {
+			isOpen: true,
+			message:
+				`Circuit breaker is open: ${cb.consecutiveFailures} consecutive failures. ` +
+				`Auto-recovery in ${Math.ceil(waitTimeRemaining / 1000)}s. ` +
+				`Wait or reduce thinkingLevel to ${CIRCUIT_DEGRADED_THINKING} and try again.`,
+			waitTimeRemaining,
+		};
+	}
+
+	// -------------------------------------------------------------------
+	// Cost governance — R5
+	// -------------------------------------------------------------------
+
+	/**
+	 * Sum the cost of all completed runs in the current session.
+	 */
+	getSessionTotalCost(ctx: ExtensionContext): number {
+		const runs = this.getRunEntries(ctx);
+		return runs.reduce((acc, r) => acc + (r.cost ?? 0), 0);
+	}
+
+	/**
+	 * Check if adding `cost` would exceed the session cost limit.
+	 * Returns true if the limit would be exceeded (or is already exceeded).
+	 * Returns false if the limit is 0 (unlimited) or the new total is within budget.
+	 */
+	checkCostLimit(cost: number, ctx: ExtensionContext): boolean {
+		if (this.config.sessionCostLimit === 0) return false;
+		const currentTotal = this.getSessionTotalCost(ctx);
+		return currentTotal + cost > this.config.sessionCostLimit;
+	}
+
+	// -------------------------------------------------------------------
 	// Reset
 	// -------------------------------------------------------------------
 
@@ -205,6 +325,9 @@ export class SessionState {
 		this.config.maxParallel = 0;
 		this.config.maxSubagentDepth = 1;
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
+		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
+		this.config.perTaskCostEstimate = 0;
+		this.config.circuitBreaker = this.defaultCircuitBreaker();
 	}
 }
 

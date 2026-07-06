@@ -45,6 +45,7 @@ import {
 } from "./types";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth } from "./sanitize";
+import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets } from "./presets";
 import { getPreset as getPresetFn } from "./tui";
 import { createSessionState } from "./state";
@@ -64,6 +65,7 @@ import {
 	showConcurrencyInput,
 	showDepthInput,
 	showHistoryEntriesInput,
+	showCostLimitInput,
 	showPresetManager,
 	showConfigMenu,
 	showRunHistory,
@@ -196,7 +198,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"model", "thinking", "concurrency", "depth", "reset",
+				"model", "thinking", "concurrency", "depth", "costlimit", "reset",
 				"history", "historyentries", "monitor", "preset", "retry",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
@@ -212,6 +214,7 @@ export default function (pi: ExtensionAPI) {
 				thinking: () => showThinkingSelector(ctx, state, applyConfig),
 				concurrency: () => showConcurrencyInput(ctx, state, applyConfig),
 				depth: () => showDepthInput(ctx, state, applyConfig),
+				costlimit: () => showCostLimitInput(ctx, state, applyConfig),
 				reset: () => resetState(ctx),
 				history: () => showRunHistory(ctx, state, () => state.persistState(pi)),
 				historyentries: () => showHistoryEntriesInput(ctx, state, applyConfig),
@@ -412,6 +415,33 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 
+			// R5: Check session cost limit before spawning
+			// Use a default per-task estimate of $0.05 if no perTaskCostEstimate is set
+			const perTaskEstimate = state.config.perTaskCostEstimate > 0
+				? state.config.perTaskCostEstimate
+				: 0.05;
+			const currentTotal = state.getSessionTotalCost(ctx);
+			if (state.checkCostLimit(perTaskEstimate, ctx)) {
+				const limit = state.config.sessionCostLimit;
+				log.warn("Subagent delegation rejected: session cost limit reached", {
+					currentTotal,
+					estimatedCost: perTaskEstimate,
+					limit,
+				});
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text:
+								`Cannot delegate: session cost limit reached ` +
+								`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
+								`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
+						},
+					],
+					isError: true,
+				};
+			}
+
 			// Reject delegation if recursion depth exceeds configured max.
 			// This prevents subagents from spawning infinite sub-subagents while
 			// still allowing other extensions to function normally in subprocesses.
@@ -472,10 +502,37 @@ export default function (pi: ExtensionAPI) {
 				resolvedOutputFile = ofResult.value;
 			}
 
+			// R3: Pre-flight checks — fail fast before consuming resources
+			const pfResult = preflightCheck(resolvedCwd);
+			if (!pfResult.ok) {
+				log.warn("Pre-flight check failed", { error: pfResult.error });
+				return {
+					content: [{ type: "text" as const, text: `Pre-flight check failed: ${pfResult.error}` }],
+					isError: true,
+				};
+			}
+
 			// Resolve model
 			const modelResult = resolveSubagentModel(ctx);
 			if (!modelResult.ok) return modelResult.error;
 			const subagentModel = modelResult.model;
+
+			// R3: Verify resolved model provider+id is non-empty
+			const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
+			if (!modelStr || modelStr === "/") {
+				log.warn("Model string is empty after resolution", { model: subagentModel });
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text:
+								"Subagent model is not configured. " +
+								"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
+						},
+					],
+					isError: true,
+				};
+			}
 
 			// Create run record
 			const runId = crypto.randomUUID();
@@ -518,6 +575,15 @@ export default function (pi: ExtensionAPI) {
 				startedAt: Date.now(),
 				ctx,
 			});
+
+			// R1: Circuit breaker check — reject if circuit is open
+			const circuitCheck = state.checkCircuit();
+			if (circuitCheck.isOpen) {
+				return {
+					content: [{ type: "text" as const, text: circuitCheck.message! }],
+					isError: true,
+				};
+			}
 
 			// Acquire concurrency slot
 			const acquired = await acquireSlot(state, ctx, signal);
@@ -680,6 +746,10 @@ export default function (pi: ExtensionAPI) {
 						exitCode: result.exitCode,
 						errorCategory: result.errorCategory,
 					});
+
+					// R1: Record failure in circuit breaker
+					state.recordFailure();
+
 					return {
 						content: [
 							{ type: "text" as const, text: `Subagent failed: ${errorMsg}` },
@@ -695,7 +765,11 @@ export default function (pi: ExtensionAPI) {
 					tokensIn: result.usage.input,
 					tokensOut: result.usage.output,
 					cost: result.usage.cost,
+					sessionTotalCost: state.getSessionTotalCost(ctx),
 				});
+
+				// R1: Record success in circuit breaker
+				state.recordSuccess();
 
 				return {
 					content: [
