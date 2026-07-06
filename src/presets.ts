@@ -166,7 +166,51 @@ export function loadBuiltinPresets(presetsDir: string, log?: Logger): SubagentPr
 		log?.info("No built-in presets directory found", { dir: presetsDir });
 	}
 
+	// Validate all loaded presets
+	const validationErrors = validateAllPresets(presets);
+	if (validationErrors.length > 0) {
+		for (const err of validationErrors) {
+			log?.warn("Preset validation on load failed", { error: err });
+		}
+	}
+
 	return presets;
+}
+
+// ---------------------------------------------------------------------------
+// Preset validation of parsed objects
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate an array of already-parsed SubagentPreset objects.
+ * Checks: name must be defined and non-empty, thinkingLevel (if set) must be
+ * a valid ThinkingLevel, and tools (if set) must be an array.
+ * Returns an array of error messages (empty = valid).
+ */
+export function validateAllPresets(presets: SubagentPreset[]): string[] {
+	const errors: string[] = [];
+
+	for (const preset of presets) {
+		if (!preset.name || (typeof preset.name === "string" && preset.name.trim() === "")) {
+			errors.push("Preset has empty or missing name.");
+			continue;
+		}
+
+		if (preset.thinkingLevel !== undefined) {
+			if (!THINKING_LEVELS.includes(preset.thinkingLevel as ThinkingLevel)) {
+				errors.push(
+					`Preset "${preset.name}": invalid thinkingLevel "${preset.thinkingLevel}". ` +
+					`Must be one of: ${THINKING_LEVELS.join(", ")}.`,
+				);
+			}
+		}
+
+		if (preset.tools !== undefined && !Array.isArray(preset.tools)) {
+			errors.push(`Preset "${preset.name}": tools must be an array.`);
+		}
+	}
+
+	return errors;
 }
 
 // ---------------------------------------------------------------------------

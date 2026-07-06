@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { parseFrontmatter, validatePreset } from "../presets";
+import { parseFrontmatter, validatePreset, validateAllPresets } from "../presets";
+import type { SubagentPreset } from "../types";
 
 // ---------------------------------------------------------------------------
 // parseFrontmatter
@@ -199,5 +200,46 @@ describe("validatePreset", () => {
 				"test.md",
 			),
 		).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// validateAllPresets
+// ---------------------------------------------------------------------------
+
+describe("validateAllPresets", () => {
+	it("valid preset array returns empty errors", () => {
+		const presets: SubagentPreset[] = [
+			{ name: "agent1", thinkingLevel: "high", tools: ["read", "grep"] },
+			{ name: "agent2", thinkingLevel: "low" },
+		];
+		expect(validateAllPresets(presets)).toEqual([]);
+	});
+
+	it("invalid preset (empty name) returns error", () => {
+		const errors = validateAllPresets([{ name: "" }]);
+		expect(errors.length).toBe(1);
+		expect(errors[0]).toContain("empty or missing name");
+	});
+
+	it("multiple presets, some valid some not, returns only the invalid error", () => {
+		const presets: SubagentPreset[] = [
+			{ name: "valid-agent", thinkingLevel: "high" },
+			{ name: "" },
+			{ name: "another-valid" },
+		];
+		const errors = validateAllPresets(presets);
+		expect(errors.length).toBe(1);
+		expect(errors[0]).toContain("empty or missing name");
+	});
+
+	it("invalid thinkingLevel returns error", () => {
+		const errors = validateAllPresets([{ name: "agent", thinkingLevel: "extreme" }]);
+		expect(errors.length).toBe(1);
+		expect(errors[0]).toContain("invalid thinkingLevel");
+	});
+
+	it("empty preset array returns empty errors", () => {
+		expect(validateAllPresets([])).toEqual([]);
 	});
 });
