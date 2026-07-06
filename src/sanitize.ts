@@ -17,9 +17,9 @@ import * as fs from "node:fs";
  * as CLI arguments. We aggressively reject any task containing these.
  */
 // With spawn({shell: false}), arguments are passed directly to execve with
-// no shell interpretation. Only newlines (could inject extra prompts) and
-// backticks (shell-injection pattern + markdown breakage) are blocked.
-const SHELL_METACHARS = /[`\n\r]/;
+// no shell interpretation. Only backticks are blocked (shell-injection
+// pattern that could also break markdown rendering in the TUI).
+const SHELL_METACHARS = /[`]/;
 
 /**
  * Maximum allowed task length to prevent memory exhaustion from

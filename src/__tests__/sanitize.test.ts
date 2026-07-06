@@ -44,11 +44,10 @@ describe("sanitizeTask", () => {
 		expect(result.ok).toBe(false);
 	});
 
-	it("rejects newlines and backticks", () => {
+	it("rejects backticks", () => {
 		const dangerous = [
-			`task${String.fromCharCode(10)}rm -rf /`,
 			"task`whoami`",
-			"task\r\nextra",
+			"`cat /etc/passwd`",
 		];
 		for (const t of dangerous) {
 			const result = sanitizeTask(t);
@@ -56,12 +55,13 @@ describe("sanitizeTask", () => {
 		}
 	});
 
-	it("accepts shell characters that are safe in non-shell spawn", () => {
+	it("accepts newlines and shell characters that are safe in non-shell spawn", () => {
 		const safe = [
 			"task; rm -rf /",
 			"task && echo hacked",
 			"task | cat /etc/passwd",
 			"task $(whoami)",
+			`line1\nline2\nline3`,
 		];
 		for (const t of safe) {
 			const result = sanitizeTask(t);
