@@ -13,6 +13,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type {
 	SubagentPreset,
+	TaskTemplate,
 	SubagentResult,
 	SubagentRun,
 	SubTaskParams,
@@ -40,6 +41,7 @@ import {
 	isSubagentError,
 	isMultiSubagentDetails,
 } from "./types";
+import { extractParamNames } from "./templates";
 import { parseDiff } from "./diff";
 import { formatPresetSummary } from "./presets";
 import { formatRunDuration } from "./history";
@@ -548,6 +550,185 @@ export async function showPresetManager(
 }
 
 // ---------------------------------------------------------------------------
+// Template management UI
+// ---------------------------------------------------------------------------
+
+export function getTemplate(
+	name: string,
+	templates: TaskTemplate[],
+): TaskTemplate | undefined {
+	return templates.find((t) => t.name === name);
+}
+
+export async function showAddTemplate(
+	ctx: ExtensionContext,
+	state: SessionState,
+	persistState: () => void,
+): Promise<void> {
+	const name = await ctx.ui.input({ prompt: "Template name (e.g., owasp-audit):" });
+	if (!name?.trim()) return;
+	const trimmedName = name.trim();
+
+	if (getTemplate(trimmedName, state.config.templates)) {
+		ctx.ui.notify(`Template "${trimmedName}" already exists. Use a different name.`, "error");
+		return;
+	}
+
+	const description = await ctx.ui.input({ prompt: "Description (optional):" });
+
+	const task = await ctx.ui.input({
+		prompt: "Task description (use ${param} for slots, e.g. 'Audit ${file} for security issues'):",
+	});
+	if (!task?.trim()) {
+		ctx.ui.notify("Task description is required.", "error");
+		return;
+	}
+
+	// Show parsed params as hint
+	const parsedParams = extractParamNames(task);
+	if (parsedParams.length > 0) {
+		ctx.ui.notify(`Detected params: ${parsedParams.join(", ")}`, "info");
+	}
+
+	const preset = await ctx.ui.input({ prompt: "Preset name (optional, e.g. security-auditor):" });
+
+	const thinkingItems: SelectItem[] = [
+		{ value: "", label: "(not set)" },
+		...THINKING_LEVELS.map((level) => ({ value: level, label: level })),
+	];
+	const thinkingResult = await showSelectList(ctx, "Default Thinking Level", thinkingItems, 8);
+
+	const outputFile = await ctx.ui.input({
+		prompt: "Output file (optional, e.g. audit-${file}.md):",
+	});
+
+	const template: TaskTemplate = {
+		name: trimmedName,
+		description: description?.trim() || undefined,
+		task: task.trim(),
+		preset: preset?.trim() || undefined,
+		thinkingLevel: thinkingResult || undefined,
+		outputFile: outputFile?.trim() || undefined,
+	};
+
+	state.config.templates.push(template);
+	persistState();
+	ctx.ui.notify(`Template "${trimmedName}" created`, "info");
+}
+
+export async function showRemoveTemplate(
+	ctx: ExtensionContext,
+	state: SessionState,
+	persistState: () => void,
+): Promise<void> {
+	if (state.config.templates.length === 0) {
+		ctx.ui.notify("No templates to remove.", "info");
+		return;
+	}
+
+	const items: SelectItem[] = state.config.templates.map((t) => ({
+		value: t.name,
+		label: t.name,
+		description: t.description || t.task.slice(0, 60),
+	}));
+
+	const result = await showSelectList(ctx, "Remove Template", items, 10);
+	if (!result) return;
+
+	state.config.templates = state.config.templates.filter((t) => t.name !== result);
+	persistState();
+	ctx.ui.notify(`Template "${result}" removed`, "info");
+}
+
+export async function showViewTemplate(
+	ctx: ExtensionContext,
+	state: SessionState,
+	name: string,
+): Promise<void> {
+	const template = getTemplate(name, state.config.templates);
+	if (!template) return;
+
+	const paramNames = extractParamNames(template.task + (template.outputFile || ""));
+
+	await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(
+			new Text(theme.fg("accent", theme.bold(`Template: ${template.name}`)), 1, 0),
+		);
+		if (template.description)
+			container.addChild(new Text(theme.fg("dim", template.description), 1, 0));
+		container.addChild(new Text("", 0, 0));
+		container.addChild(
+			new Text(theme.fg("toolTitle", "Task:") + " " + theme.fg("toolOutput", template.task), 1, 0),
+		);
+		if (paramNames.length > 0) {
+			container.addChild(
+				new Text(theme.fg("dim", `Parameters: ${paramNames.join(", ")}`), 1, 0),
+			);
+		}
+		if (template.preset)
+			container.addChild(
+				new Text(theme.fg("dim", `Preset: ${template.preset}`), 1, 0),
+			);
+		if (template.thinkingLevel)
+			container.addChild(
+				new Text(theme.fg("dim", `Thinking: ${template.thinkingLevel}`), 1, 0),
+			);
+		if (template.outputFile)
+			container.addChild(
+				new Text(theme.fg("dim", `Output file: ${template.outputFile}`), 1, 0),
+			);
+		if (template.timeout)
+			container.addChild(
+				new Text(theme.fg("dim", `Timeout: ${template.timeout}ms`), 1, 0),
+			);
+		container.addChild(new Text("", 0, 0));
+		container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (_data: string) => done(),
+		};
+	});
+}
+
+export async function showTemplateManager(
+	ctx: ExtensionContext,
+	state: SessionState,
+	persistState: () => void,
+): Promise<void> {
+	const templateItems: SelectItem[] = state.config.templates.map((t) => ({
+		value: t.name,
+		label: t.name,
+		description: t.description || t.task.slice(0, 60),
+	}));
+
+	const items: SelectItem[] = [
+		...templateItems,
+		{ value: "__add__", label: "+ Add Template", description: "Create a new task template" },
+		{ value: "__remove__", label: "- Remove Template", description: "Delete a template" },
+	];
+
+	const result = await showSelectList(
+		ctx,
+		`Templates (${state.config.templates.length} saved)`,
+		items,
+		15,
+	);
+	if (!result) return;
+
+	if (result === "__add__") {
+		await showAddTemplate(ctx, state, persistState);
+	} else if (result === "__remove__") {
+		await showRemoveTemplate(ctx, state, persistState);
+	} else {
+		await showViewTemplate(ctx, state, result);
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Configuration menu
 // ---------------------------------------------------------------------------
 
@@ -631,6 +812,13 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			value: "preset",
 			label: "Manage Presets",
 			description: `${state.builtinPresets.length} built-in, ${state.config.presets.length} custom`,
+		},
+		{
+			value: "templates",
+			label: "Manage Templates",
+			description: state.config.templates.length === 0
+				? "None saved"
+				: `${state.config.templates.length} saved`,
 		},
 		{
 			value: "retry",

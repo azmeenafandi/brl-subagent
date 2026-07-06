@@ -53,6 +53,7 @@ import {
 	PREVIOUS_OUTPUT_PLACEHOLDER,
 	type GitMode,
 } from "./types";
+import { resolveTemplate } from "./templates";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth } from "./sanitize";
 import {
@@ -88,6 +89,7 @@ import {
 	showApprovalModeSelector,
 	showApprovalDialog,
 	showPresetManager,
+	showTemplateManager,
 	showConfigMenu,
 	showRunHistory,
 	showMonitor,
@@ -1064,11 +1066,14 @@ export default function (pi: ExtensionAPI) {
 				historyentries: () => showHistoryEntriesInput(ctx, state, applyConfig),
 				monitor: () => showMonitor(ctx, state),
 				preset: () => showPresetManager(ctx, state, () => state.persistState(pi)),
+				templates: () => showTemplateManager(ctx, state, () => state.persistState(pi)),
 				retry: () => showRetryMenu(ctx, state),
 			};
 
 			if (trimmed && trimmed in handlers) {
 				await handlers[trimmed]();
+			} else if (trimmed?.startsWith("templates")) {
+				await handlers.templates();
 			} else if (trimmed?.startsWith("preset")) {
 				await handlers.preset();
 			} else {
@@ -1198,6 +1203,20 @@ export default function (pi: ExtensionAPI) {
 						"Preset values are used as defaults; explicit parameters on this call override them.",
 				}),
 			),
+			template: Type.Optional(
+				Type.String({
+					description:
+						"Name of a saved task template. Use with params to fill template slots. " +
+						"Templates are created via /brl-subagent templates.",
+				}),
+			),
+			params: Type.Optional(
+				Type.Record(Type.String(), Type.String(), {
+					description:
+						"Parameter values for template ${param} slots. " +
+						"Keys are param names, values are the substitution text.",
+				}),
+			),
 			retryRunId: Type.Optional(
 				Type.String({
 					description:
@@ -1278,6 +1297,8 @@ export default function (pi: ExtensionAPI) {
 				tools?: string[];
 				excludeTools?: string[];
 				noBuiltinTools?: boolean;
+				template?: string;
+				params?: Record<string, string>;
 				retryRunId?: string;
 				retryOnTimeout?: boolean;
 				gitMode?: string;
@@ -1338,6 +1359,48 @@ export default function (pi: ExtensionAPI) {
 				} else {
 					log.warn("Retry run ID not found", { retryRunId: params.retryRunId });
 				}
+			}
+
+			// Handle template resolution
+			if (params.template) {
+				const templateEntry = state.config.templates.find((t) => t.name === params.template);
+				if (!templateEntry) {
+					const available = state.config.templates.map((t) => t.name).join(", ") || "none";
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Template '${params.template}' not found. Available: ${available}`,
+							},
+						],
+						isError: true,
+					};
+				}
+
+				const resolved = resolveTemplate(templateEntry, params.params ?? {});
+				if (!resolved.ok) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Template '${params.template}' resolution failed: ${resolved.error}`,
+							},
+						],
+						isError: true,
+					};
+				}
+
+				const tv = resolved.value;
+				// Use resolved template fields as defaults, explicitly provided params override
+				params.task = tv.task;
+				if (tv.preset && !params.preset) params.preset = tv.preset;
+				if (tv.thinkingLevel && !params.thinkingLevel) params.thinkingLevel = tv.thinkingLevel;
+				if (tv.outputFile && !params.outputFile) params.outputFile = tv.outputFile;
+				if (tv.timeout !== undefined && params.timeout === undefined) params.timeout = tv.timeout;
+				if (tv.tools && !params.tools) params.tools = tv.tools;
+				if (tv.excludeTools && !params.excludeTools) params.excludeTools = tv.excludeTools;
+				if (tv.noBuiltinTools !== undefined && params.noBuiltinTools === undefined) params.noBuiltinTools = tv.noBuiltinTools;
+				if (tv.inheritSystemPrompt !== undefined && params.inheritSystemPrompt === undefined) params.inheritSystemPrompt = tv.inheritSystemPrompt;
 			}
 
 			// P1+P2: Mode detection — chain > parallel > single

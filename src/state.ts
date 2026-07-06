@@ -77,6 +77,7 @@ export class SessionState {
 			perTaskCostEstimate: 0,
 			seenRunIds: [],
 			presets: [],
+			templates: [],
 			circuitBreaker: this.defaultCircuitBreaker(),
 		};
 	}
@@ -99,6 +100,7 @@ export class SessionState {
 			perTaskCostEstimate: this.config.perTaskCostEstimate,
 			seenRunIds: this.config.seenRunIds,
 			presets: this.config.presets,
+			templates: this.config.templates,
 			circuitBreaker: this.config.circuitBreaker,
 		});
 	}
@@ -162,6 +164,7 @@ export class SessionState {
 		}
 		if (Array.isArray(data.seenRunIds)) this.config.seenRunIds = data.seenRunIds;
 		if (Array.isArray(data.presets)) this.config.presets = data.presets;
+		if (Array.isArray(data.templates)) this.config.templates = data.templates;
 		if (
 			data.circuitBreaker &&
 			typeof data.circuitBreaker === "object" &&
@@ -353,6 +356,7 @@ export class SessionState {
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
 		this.config.perTaskCostEstimate = 0;
+		this.config.templates = [];
 		this.config.circuitBreaker = this.defaultCircuitBreaker();
 	}
 }

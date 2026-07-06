@@ -84,6 +84,20 @@ export interface SubagentPreset {
 	noBuiltinTools?: boolean;
 }
 
+export interface TaskTemplate {
+	name: string;
+	description?: string;
+	task: string;
+	preset?: string;
+	thinkingLevel?: string;
+	outputFile?: string;
+	timeout?: number;
+	tools?: string[];
+	excludeTools?: string[];
+	noBuiltinTools?: boolean;
+	inheritSystemPrompt?: boolean;
+}
+
 export interface CircuitBreakerState {
 	consecutiveFailures: number;
 	lastFailureTime: number; // epoch ms
@@ -106,6 +120,7 @@ export interface SubagentState {
 	perTaskCostEstimate: number; // 0 = no estimate, use default
 	seenRunIds: string[];
 	presets: SubagentPreset[];
+	templates: TaskTemplate[];
 	circuitBreaker: CircuitBreakerState;
 }
 
@@ -302,6 +317,8 @@ export const MAX_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 export const MAX_CONSECUTIVE_FAILURES = 5;
 export const CIRCUIT_BREAKER_RESET_MS = 60000; // 1 min auto-recovery
 export const CIRCUIT_DEGRADED_THINKING: ThinkingLevel = "minimal";
+
+export const TEMPLATE_PARAM_RE = /\$\{(\w+)\}/g;
 
 export const DEFAULT_SESSION_COST_LIMIT = 0;
 
