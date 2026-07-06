@@ -6,7 +6,73 @@
  */
 
 import type { SubagentRun, SubagentResult } from "./types";
-import { isSubagentError, getFinalOutput } from "./types";
+import { isSubagentError, getFinalOutput, isSubagentRunShape, CUSTOM_ENTRY_TYPES, MAX_RUN_HISTORY_ENTRIES } from "./types";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+// ---------------------------------------------------------------------------
+// Run pruning — R2: Disk usage policy
+// ---------------------------------------------------------------------------
+
+/**
+ * Prune a SubagentRun array to keep only the newest entries up to maxEntries.
+ * Uses startedAt timestamp for ordering (newest first). If maxEntries is 0,
+ * returns all entries (no limit). Returns a new array; does not mutate input.
+ */
+export function cleanupRuns(
+	runs: SubagentRun[],
+	maxEntries: number = MAX_RUN_HISTORY_ENTRIES,
+): SubagentRun[] {
+	if (runs.length === 0) return [];
+	if (maxEntries === 0) return runs;
+
+	// Always sort newest-first for consistency, even when not truncating
+	const sorted = [...runs].sort(
+		(a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+	);
+
+	if (sorted.length <= maxEntries) return sorted;
+	return sorted.slice(0, maxEntries);
+}
+
+/**
+ * Prune run entries in the current session to at most maxEntries.
+ * Gets all entries from the session, identifies run entries, prunes them via
+ * cleanupRuns, and writes a prune marker entry back to the session.
+ * Since session entries are append-only, actual old entries remain in the
+ * session file but are filtered out at read time by getRunEntries (state.ts).
+ * Returns the number of entries that were pruned.
+ */
+export function pruneSessionRuns(
+	ctx: ExtensionContext,
+	maxEntries: number = MAX_RUN_HISTORY_ENTRIES,
+): number {
+	const entries = ctx.sessionManager.getEntries();
+	const runEntries: SubagentRun[] = [];
+
+	for (const entry of entries) {
+		if (
+			entry.type === "custom" &&
+			entry.customType === CUSTOM_ENTRY_TYPES.run &&
+			entry.data &&
+			isSubagentRunShape(entry.data)
+		) {
+			runEntries.push(entry.data);
+		}
+	}
+
+	const pruned = cleanupRuns(runEntries, maxEntries);
+	const prunedCount = runEntries.length - pruned.length;
+	if (prunedCount <= 0) return 0;
+
+	// Append a prune marker entry for reference (actual filtering is in getRunEntries)
+	ctx.sessionManager.appendCustomEntry(CUSTOM_ENTRY_TYPES.run + ":prune", {
+		prunedCount,
+		keptCount: pruned.length,
+		timestamp: Date.now(),
+	});
+
+	return prunedCount;
+}
 
 // ---------------------------------------------------------------------------
 // Run record management

@@ -19,7 +19,9 @@ import {
 	isSubagentStateShape,
 	isSubagentRunShape,
 	CUSTOM_ENTRY_TYPES,
+	MAX_RUN_HISTORY_ENTRIES,
 } from "./types";
+import { cleanupRuns } from "./history";
 import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,7 @@ export class SessionState {
 			maxThinkingLevel: "off",
 			maxParallel: 0,
 			maxSubagentDepth: 1,
+			maxHistoryEntries: MAX_RUN_HISTORY_ENTRIES,
 			seenRunIds: [],
 			presets: [],
 		};
@@ -73,6 +76,7 @@ export class SessionState {
 			maxThinkingLevel: this.config.maxThinkingLevel,
 			maxParallel: this.config.maxParallel,
 			maxSubagentDepth: this.config.maxSubagentDepth,
+			maxHistoryEntries: this.config.maxHistoryEntries,
 			seenRunIds: this.config.seenRunIds,
 			presets: this.config.presets,
 		});
@@ -119,6 +123,7 @@ export class SessionState {
 		if (data.maxThinkingLevel) this.config.maxThinkingLevel = data.maxThinkingLevel;
 		if (data.maxParallel !== undefined) this.config.maxParallel = data.maxParallel;
 		if (data.maxSubagentDepth !== undefined) this.config.maxSubagentDepth = data.maxSubagentDepth;
+		if (data.maxHistoryEntries !== undefined) this.config.maxHistoryEntries = data.maxHistoryEntries;
 		if (Array.isArray(data.seenRunIds)) this.config.seenRunIds = data.seenRunIds;
 		if (Array.isArray(data.presets)) this.config.presets = data.presets;
 
@@ -135,7 +140,7 @@ export class SessionState {
 	// -------------------------------------------------------------------
 
 	getRunEntries(ctx: ExtensionContext): SubagentRun[] {
-		return ctx.sessionManager
+		const runs = ctx.sessionManager
 			.getEntries()
 			.filter((e: { type: string; customType?: string }) =>
 				e.type === "custom" && e.customType === CUSTOM_ENTRY_TYPES.run,
@@ -147,6 +152,7 @@ export class SessionState {
 				return undefined;
 			})
 			.filter((r): r is SubagentRun => r !== undefined);
+		return cleanupRuns(runs, this.config.maxHistoryEntries);
 	}
 
 	findRunById(ctx: ExtensionContext, id: string): SubagentRun | undefined {
@@ -198,6 +204,7 @@ export class SessionState {
 		this.config.maxThinkingLevel = "off";
 		this.config.maxParallel = 0;
 		this.config.maxSubagentDepth = 1;
+		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 	}
 }
 

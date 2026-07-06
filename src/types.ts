@@ -76,6 +76,7 @@ export interface SubagentState {
 	maxThinkingLevel: ThinkingLevel;
 	maxParallel: number; // 0 = unlimited
 	maxSubagentDepth: number; // 0 = no recursion allowed, 1 = one level, etc.
+	maxHistoryEntries: number; // 0 = unlimited
 	seenRunIds: string[];
 	presets: SubagentPreset[];
 }
@@ -196,6 +197,9 @@ export const TASK_PREVIEW_MAX_LENGTH = 80;
 export const COLLAPSED_OUTPUT_LINES = 5;
 export const DEFAULT_OUTPUT_CAP_BYTES = 100 * 1024; // 100KB
 
+export const MAX_RUN_HISTORY_ENTRIES = 500;
+export const MAX_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 export const CUSTOM_ENTRY_TYPES = {
 	run: "brl-subagent-run",
 	state: "brl-subagent-state",
@@ -292,6 +296,11 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 	// maxSubagentDepth must be a non-negative number if present
 	if (v.maxSubagentDepth !== undefined) {
 		if (typeof v.maxSubagentDepth !== "number" || v.maxSubagentDepth < 0) return false;
+	}
+
+	// maxHistoryEntries must be a non-negative number if present
+	if (v.maxHistoryEntries !== undefined) {
+		if (typeof v.maxHistoryEntries !== "number" || v.maxHistoryEntries < 0) return false;
 	}
 
 	return true;

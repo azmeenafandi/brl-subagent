@@ -49,12 +49,13 @@ import { loadBuiltinPresets } from "./presets";
 import { getPreset as getPresetFn } from "./tui";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
-import { runSubagent } from "./runner";
+import { runSubagent, cleanupTempDirs } from "./runner";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
 import {
 	finalizeRunRecord,
 	resolveRetryParams,
 	createEmptyResult,
+	pruneSessionRuns,
 } from "./history";
 import {
 	showSelectList,
@@ -62,6 +63,7 @@ import {
 	showThinkingSelector,
 	showConcurrencyInput,
 	showDepthInput,
+	showHistoryEntriesInput,
 	showPresetManager,
 	showConfigMenu,
 	showRunHistory,
@@ -195,7 +197,7 @@ export default function (pi: ExtensionAPI) {
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
 				"model", "thinking", "concurrency", "depth", "reset",
-				"history", "monitor", "preset", "retry",
+				"history", "historyentries", "monitor", "preset", "retry",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
@@ -212,6 +214,7 @@ export default function (pi: ExtensionAPI) {
 				depth: () => showDepthInput(ctx, state, applyConfig),
 				reset: () => resetState(ctx),
 				history: () => showRunHistory(ctx, state, () => state.persistState(pi)),
+				historyentries: () => showHistoryEntriesInput(ctx, state, applyConfig),
 				monitor: () => showMonitor(ctx, state),
 				preset: () => showPresetManager(ctx, state, () => state.persistState(pi)),
 				retry: () => showRetryMenu(ctx, state),
@@ -499,6 +502,12 @@ export default function (pi: ExtensionAPI) {
 			};
 			state.persistRun(pi, run);
 
+			// R2: Prune old run entries if history exceeds limit
+			if (state.config.maxHistoryEntries > 0) {
+				const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
+				if (p > 0) log.debug("Run history pruned", { pruned: p });
+			}
+
 			// Register for live monitor
 			state.registerLiveSubagent(runId, {
 				id: runId,
@@ -650,6 +659,12 @@ export default function (pi: ExtensionAPI) {
 				};
 				state.persistRun(pi, run);
 
+				// R2: Prune old run entries
+				if (state.config.maxHistoryEntries > 0) {
+					const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
+					if (p > 0) log.debug("Run history pruned", { pruned: p });
+				}
+
 				// Finalize live monitor
 				state.finalizeLiveSubagent(runId);
 
@@ -760,6 +775,11 @@ export default function (pi: ExtensionAPI) {
 		// Load built-in presets
 		const presetsDir = path.join(__dirname, "..", "presets");
 		state.builtinPresets = loadBuiltinPresets(presetsDir, log);
+
+		// R2: Clean stale temp dirs from previous sessions
+		cleanupTempDirs(ctx.cwd).then((count) => {
+			if (count > 0) log.info("Cleaned stale temp directories", { count });
+		});
 
 		log.info("Session started", {
 			builtinPresets: state.builtinPresets.length,

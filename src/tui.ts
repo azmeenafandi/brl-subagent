@@ -189,6 +189,38 @@ export async function showDepthInput(
 }
 
 // ---------------------------------------------------------------------------
+// History entries input — R2: Disk usage policy
+// ---------------------------------------------------------------------------
+
+export async function showHistoryEntriesInput(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	const current =
+		state.config.maxHistoryEntries === 0
+			? "unlimited"
+			: String(state.config.maxHistoryEntries);
+	const result = await ctx.ui.input({
+		prompt: "Max run history entries (0 = unlimited, default 500):",
+		default: current,
+	});
+	if (result == null) return;
+	const num = parseInt(result, 10);
+	if (isNaN(num) || num < 0) {
+		ctx.ui.notify("Invalid number. Must be >= 0.", "error");
+		return;
+	}
+	state.config.maxHistoryEntries = num;
+	onConfigChanged(
+		ctx,
+		num === 0
+			? "Run history set to unlimited (no pruning)"
+			: `Run history entries set to ${num} (oldest entries will be pruned)`,
+	);
+}
+
+// ---------------------------------------------------------------------------
 // Preset management UI
 // ---------------------------------------------------------------------------
 
@@ -415,6 +447,13 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			description: state.config.maxSubagentDepth === 0
 				? "No delegation from subagents"
 				: `Subagents can delegate up to ${state.config.maxSubagentDepth} level${state.config.maxSubagentDepth > 1 ? "s" : ""} deep`,
+		},
+		{
+			value: "historyentries",
+			label: "Set Max History Entries",
+			description: state.config.maxHistoryEntries === 0
+				? "Unlimited (no pruning)"
+				: `${state.config.maxHistoryEntries} entries kept`,
 		},
 		{
 			value: "reset",

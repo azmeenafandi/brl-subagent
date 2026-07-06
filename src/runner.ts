@@ -24,6 +24,7 @@ import {
 	EMPTY_USAGE,
 	SIGKILL_GRACE_MS,
 	TEMP_FILE_MODE,
+	MAX_TEMP_DIR_AGE_MS,
 	classifyError,
 } from "./types";
 import { getSafeEnv, DEPTH_ENV_KEY } from "./sanitize";
@@ -56,12 +57,55 @@ export function getPiInvocation(extraArgs: string[]): { command: string; args: s
 // Temp file helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Get the subagent temp directory path for a given cwd.
+ */
+function getTempBaseDir(cwd: string): string {
+	return path.join(cwd, ".pi", "subagent-tmp");
+}
+
+/**
+ * Scan .pi/subagent-tmp/ directory and remove any subdirectories whose mtime
+ * is older than maxAgeMs. Returns the count of removed directories.
+ * Handles missing directory gracefully (returns 0).
+ */
+export async function cleanupTempDirs(
+	cwd: string,
+	maxAgeMs: number = MAX_TEMP_DIR_AGE_MS,
+): Promise<number> {
+	const baseDir = getTempBaseDir(cwd);
+	let removed = 0;
+
+	try {
+		const entries = await fs.promises.readdir(baseDir, { withFileTypes: true });
+		const now = Date.now();
+
+		for (const entry of entries) {
+			if (!entry.isDirectory()) continue;
+			const dirPath = path.join(baseDir, entry.name);
+			try {
+				const stat = await fs.promises.stat(dirPath);
+				if (now - stat.mtimeMs > maxAgeMs) {
+					await fs.promises.rm(dirPath, { recursive: true, force: true });
+					removed++;
+				}
+			} catch {
+				// Skip entries that disappear during iteration
+			}
+		}
+	} catch {
+		// Directory does not exist or is not accessible
+	}
+
+	return removed;
+}
+
 async function writeToTempFile(
 	cwd: string,
 	name: string,
 	content: string,
 ): Promise<{ dir: string; filePath: string }> {
-	const baseDir = path.join(cwd, ".pi", "subagent-tmp");
+	const baseDir = getTempBaseDir(cwd);
 	await fs.promises.mkdir(baseDir, { recursive: true });
 	const tmpDir = await fs.promises.mkdtemp(path.join(baseDir, `${name}-`));
 	const filePath = path.join(tmpDir, `${name}.md`);
