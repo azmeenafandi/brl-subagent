@@ -16,6 +16,7 @@ import {
 	isSubagentRunShape,
 	EMPTY_USAGE,
 } from "../types";
+import { classifyError } from "../types";
 
 // ---------------------------------------------------------------------------
 // resolveThinkingLevel
@@ -296,6 +297,94 @@ describe("isSubagentStateShape", () => {
 				maxParallel: 0,
 			}),
 		).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// classifyError (R9: Error classification)
+// ---------------------------------------------------------------------------
+
+describe("classifyError", () => {
+	function makeResult(overrides: Partial<import("../types").SubagentResult> = {}) {
+		return {
+			messages: [],
+			usage: { ...EMPTY_USAGE },
+			exitCode: 0,
+			stderr: "",
+			...overrides,
+		};
+	}
+
+	it("returns 'aborted' for stopReason aborted", () => {
+		expect(classifyError(makeResult({ stopReason: "aborted" }))).toBe("aborted");
+	});
+
+	it("returns 'timeout' for timed out error message", () => {
+		expect(
+			classifyError(makeResult({ errorMessage: "Subagent timed out after 30000ms" })),
+		).toBe("timeout");
+	});
+
+	it("returns 'permission_denied' for permission denied error", () => {
+		expect(
+			classifyError(makeResult({ errorMessage: "permission denied" })),
+		).toBe("permission_denied");
+	});
+
+	it("returns 'permission_denied' for EACCES error", () => {
+		expect(classifyError(makeResult({ errorMessage: "EACCES" }))).toBe("permission_denied");
+	});
+
+	it("returns 'parse_error' for parse errors in stderr", () => {
+		expect(
+			classifyError(makeResult({ stderr: "parse error at line 42" })),
+		).toBe("parse_error");
+	});
+
+	it("returns 'tool_error' for spawn errors", () => {
+		expect(
+			classifyError(makeResult({ errorMessage: "spawn pi ENOENT" })),
+		).toBe("tool_error");
+	});
+
+	it("returns 'tool_error' for 'not found' errors", () => {
+		expect(
+			classifyError(makeResult({ errorMessage: "command not found" })),
+		).toBe("tool_error");
+	});
+
+	it("returns 'model_unavailable' for model not found", () => {
+		expect(
+			classifyError(makeResult({ errorMessage: "model not found" })),
+		).toBe("model_unavailable");
+	});
+
+	it("returns 'crash' for crash patterns in stderr", () => {
+		expect(
+			classifyError(makeResult({ stderr: "panic: runtime error" })),
+		).toBe("crash");
+	});
+
+	it("returns 'exit_error' for non-zero exit code", () => {
+		expect(classifyError(makeResult({ exitCode: 1 }))).toBe("exit_error");
+	});
+
+	it("returns 'unknown' for successful result (exitCode 0, no error)", () => {
+		expect(classifyError(makeResult({ exitCode: 0 }))).toBe("unknown");
+	});
+
+	it("returns 'exit_error' for mixed signals (exitCode 0 but stopReason error)", () => {
+		expect(
+			classifyError(makeResult({ exitCode: 0, stopReason: "error" })),
+		).toBe("exit_error");
+	});
+
+	it("successful result with exitCode 0 is NOT an isSubagentError", () => {
+		expect(isSubagentError(makeResult({ exitCode: 0 }))).toBe(false);
+	});
+
+	it("mixed signals with stopReason error IS an isSubagentError", () => {
+		expect(isSubagentError(makeResult({ exitCode: 0, stopReason: "error" }))).toBe(true);
 	});
 });
 

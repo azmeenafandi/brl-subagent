@@ -41,6 +41,7 @@ import {
 	EMPTY_USAGE,
 	getFinalOutput,
 	isSubagentError,
+	classifyError,
 } from "./types";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth } from "./sanitize";
@@ -643,6 +644,10 @@ export default function (pi: ExtensionAPI) {
 					finalOutput,
 					new Date(run.startedAt).getTime(),
 				);
+				run.originalParams = {
+					...run.originalParams,
+					errorCategory: result.errorCategory,
+				};
 				state.persistRun(pi, run);
 
 				// Finalize live monitor
@@ -658,6 +663,7 @@ export default function (pi: ExtensionAPI) {
 						runId,
 						error: errorMsg,
 						exitCode: result.exitCode,
+						errorCategory: result.errorCategory,
 					});
 					return {
 						content: [

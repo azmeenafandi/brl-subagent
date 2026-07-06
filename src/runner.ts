@@ -24,6 +24,7 @@ import {
 	EMPTY_USAGE,
 	SIGKILL_GRACE_MS,
 	TEMP_FILE_MODE,
+	classifyError,
 } from "./types";
 import { getSafeEnv, DEPTH_ENV_KEY } from "./sanitize";
 import type { Logger } from "./logging";
@@ -340,6 +341,7 @@ export async function runSubagent(
 		});
 
 		result.exitCode = exitCode;
+		result.errorCategory = classifyError(result);
 		return result;
 	} finally {
 		if (tmpDir && tmpFilePath) {

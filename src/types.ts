@@ -14,6 +14,50 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 
 export const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
+export type ErrorCategory =
+	| "timeout"
+	| "model_unavailable"
+	| "tool_error"
+	| "permission_denied"
+	| "parse_error"
+	| "aborted"
+	| "exit_error"
+	| "crash"
+	| "unknown";
+
+/**
+ * Classify a subagent result into an error category based on its errorMessage,
+ * stopReason, exitCode, and stderr content. Inspects patterns in priority order.
+ */
+export function classifyError(result: SubagentResult): ErrorCategory {
+	if (result.stopReason === "aborted") return "aborted";
+
+	const msg = (result.errorMessage ?? "").toLowerCase();
+	const err = (result.stderr ?? "").toLowerCase();
+
+	if (msg.includes("timed out")) return "timeout";
+
+	if (msg.includes("model not found") || msg.includes("model unavailable"))
+		return "model_unavailable";
+
+	if (msg.includes("permission denied") || msg.includes("eacces")) return "permission_denied";
+
+	if (err.includes("parse error") || err.includes("parse_error") || err.includes("unexpected token"))
+		return "parse_error";
+
+	if (err.includes("crash") || err.includes("panic") || err.includes("segmentation fault"))
+		return "crash";
+
+	if (msg.includes("spawn") || msg.includes("not found") || msg.includes("enoent"))
+		return "tool_error";
+
+	if (result.exitCode !== 0) return "exit_error";
+
+	if (result.stopReason === "error") return "exit_error";
+
+	return "unknown";
+}
+
 export interface SubagentPreset {
 	name: string;
 	description?: string;
@@ -63,6 +107,7 @@ export interface SubagentRun {
 		excludeTools?: string[];
 		noBuiltinTools?: boolean;
 		preset?: string;
+		errorCategory?: ErrorCategory;
 	};
 }
 
@@ -97,6 +142,7 @@ export interface SubagentResult {
 	exitCode: number;
 	stderr: string;
 	label?: string;
+	errorCategory?: ErrorCategory;
 }
 
 export interface SubagentToolOptions {
