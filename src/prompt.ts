@@ -15,7 +15,8 @@ export const SUBAGENT_INSTRUCTIONS =
 	"1. What you did\n" +
 	"2. Key findings or results\n" +
 	"3. Any issues or limitations encountered\n" +
-	"4. Files modified (if any)";
+	"4. Files modified (if any)\n\n" +
+	"When you encounter a blocker during the task, report it clearly using this format in your final response: ## Completion Status with [DONE/UNVERIFIED/BLOCKED] for each requirement, then ## Blockers section listing the issue, what you tried, and what you need. If you cannot run tests or execute commands because your toolset lacks bash/exec access, state this explicitly under Blockers. Do NOT claim tests pass if you could not run them.";
 
 // ---------------------------------------------------------------------------
 // Output file instruction block
