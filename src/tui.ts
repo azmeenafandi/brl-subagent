@@ -15,6 +15,11 @@ import type {
 	SubagentPreset,
 	SubagentResult,
 	SubagentRun,
+	SubTaskParams,
+	MultiSubagentDetails,
+	ChainDetails,
+	ParallelDetails,
+	SubTaskResult,
 	ThinkingLevel,
 	UsageStats,
 } from "./types";
@@ -29,6 +34,7 @@ import {
 	formatMaxParallel,
 	getFinalOutput,
 	isSubagentError,
+	isMultiSubagentDetails,
 } from "./types";
 import { formatPresetSummary } from "./presets";
 import { formatRunDuration } from "./history";
@@ -1017,6 +1023,288 @@ function renderCollapsedText(
 }
 
 // ---------------------------------------------------------------------------
+// Chain / parallel helper: one-line subtask summary
+// ---------------------------------------------------------------------------
+
+function renderSubTaskSummary(
+	result: SubTaskResult,
+	theme: {
+		fg: (color: string, text: string) => string;
+	},
+	maxLines: number,
+): string {
+	const isError =
+		result.exitCode !== 0 ||
+		result.stopReason === "error" ||
+		result.stopReason === "aborted";
+	const icon = isError
+		? theme.fg("error", "\u2717")
+		: theme.fg("success", "\u2713");
+	const label = result.label
+		? theme.fg("accent", `${result.label}: `)
+		: "";
+	const output = getFinalOutput(result.messages);
+	const preview = output.split("\n").slice(0, maxLines).join("\n");
+	return `${icon} ${label}${theme.fg("toolOutput", preview)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Chain / parallel collapsed rendering
+// ---------------------------------------------------------------------------
+
+function renderCollapsedChain(
+	details: ChainDetails,
+	theme: {
+		fg: (color: string, text: string) => string;
+		bold: (text: string) => string;
+	},
+): string {
+	const allSucceeded = details.results.every(
+		(r) =>
+			r.exitCode === 0 &&
+			r.stopReason !== "error" &&
+			r.stopReason !== "aborted",
+	);
+	const icon = allSucceeded
+		? theme.fg("success", "\u2713")
+		: theme.fg("error", "\u2717");
+	const stoppedEarly = details.stoppedEarly ? " (stopped early)" : "";
+	let text = `${icon} ${theme.fg("toolTitle", theme.bold("chain"))} ${theme.fg("muted", `${details.completedSteps}/${details.totalSteps} steps${stoppedEarly}`)}`;
+
+	for (const r of details.results) {
+		const isErr =
+			r.exitCode !== 0 ||
+			r.stopReason === "error" ||
+			r.stopReason === "aborted";
+		const statusIcon = isErr
+			? theme.fg("error", "\u2717")
+			: theme.fg("success", "\u2713");
+		const stepNum =
+			r.step !== undefined ? theme.fg("muted", `${r.step}. `) : "";
+		const label = r.label ? theme.fg("accent", r.label) : "";
+		const output = getFinalOutput(r.messages);
+		const preview = output.split("\n").slice(0, 2).join("\n");
+		const sep = label ? ": " : "";
+		text += `\n${stepNum}${statusIcon} ${label}${sep}${theme.fg("toolOutput", preview)}`;
+		if (r.errorMessage) {
+			text += `\n   ${theme.fg("error", r.errorMessage)}`;
+		}
+	}
+
+	text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+	return text;
+}
+
+function renderCollapsedParallel(
+	details: ParallelDetails,
+	theme: {
+		fg: (color: string, text: string) => string;
+		bold: (text: string) => string;
+	},
+): string {
+	const icon =
+		details.failed === 0
+			? theme.fg("success", "\u2713")
+			: theme.fg("error", "\u2717");
+	let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel"))} ${theme.fg("muted", `${details.succeeded}/${details.failed}/${details.results.length} total`)}`;
+
+	for (const r of details.results) {
+		const isErr =
+			r.exitCode !== 0 ||
+			r.stopReason === "error" ||
+			r.stopReason === "aborted";
+		const statusIcon = isErr
+			? theme.fg("error", "\u2717")
+			: theme.fg("success", "\u2713");
+		const label = r.label ? theme.fg("accent", r.label) : "";
+		const output = getFinalOutput(r.messages);
+		const preview = output.split("\n").slice(0, 2).join("\n");
+		const sep = label ? ": " : " ";
+		text += `\n${statusIcon} ${label}${sep}${theme.fg("toolOutput", preview)}`;
+		if (r.errorMessage) {
+			text += `\n   ${theme.fg("error", r.errorMessage)}`;
+		}
+	}
+
+	text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+	return text;
+}
+
+// ---------------------------------------------------------------------------
+// Chain / parallel expanded rendering
+// ---------------------------------------------------------------------------
+
+function renderExpandedChain(
+	details: ChainDetails,
+	theme: {
+		fg: (color: string, text: string) => string;
+		bold: (text: string) => string;
+	},
+	mdTheme: ReturnType<typeof getMarkdownTheme>,
+): Container {
+	const container = new Container();
+	const stoppedEarly = details.stoppedEarly ? " (stopped early)" : "";
+	container.addChild(
+		new Text(
+			theme.fg("accent", theme.bold("Chain")) +
+				theme.fg(
+					"muted",
+					` ${details.completedSteps}/${details.totalSteps} steps${stoppedEarly}`,
+				),
+			0,
+			0,
+		),
+	);
+	container.addChild(new Spacer(1));
+
+	for (const r of details.results) {
+		const isErr =
+			r.exitCode !== 0 ||
+			r.stopReason === "error" ||
+			r.stopReason === "aborted";
+		const statusIcon = isErr
+			? theme.fg("error", "\u2717")
+			: theme.fg("success", "\u2713");
+		const stepNum = r.step !== undefined ? `${r.step}. ` : "";
+		const label = r.label ? `[${r.label}] ` : "";
+		container.addChild(
+			new Text(
+				`${statusIcon} ${stepNum}${theme.fg("toolTitle", theme.bold(label))}` +
+					(r.model ? theme.fg("muted", ` (${r.model})`) : ""),
+				0,
+				0,
+			),
+		);
+		container.addChild(
+			new Text(theme.fg("dim", `Task: ${r.task.slice(0, 200)}`), 0, 0),
+		);
+
+		if (isErr && r.errorMessage) {
+			container.addChild(
+				new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0),
+			);
+		}
+
+		const output = getFinalOutput(r.messages);
+		if (output) {
+			container.addChild(
+				new Text(theme.fg("muted", "\u2500\u2500\u2500 Output \u2500\u2500\u2500"), 0, 0),
+			);
+			container.addChild(new Markdown(output.trim(), 0, 0, mdTheme));
+		}
+
+		const usageStr = formatUsageStats(r.usage, r.model);
+		if (usageStr) {
+			container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
+		}
+		container.addChild(new Spacer(1));
+	}
+
+	// Aggregated totals
+	const aggUsage: UsageStats = {
+		input: details.totalInput,
+		output: details.totalOutput,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost: details.totalCost,
+		contextTokens: 0,
+		turns: details.totalTurns,
+	};
+	const aggStr = formatUsageStats(aggUsage);
+	if (aggStr) {
+		container.addChild(
+			new Text(theme.fg("dim", `Totals: ${aggStr}`), 0, 0),
+		);
+	}
+
+	return container;
+}
+
+function renderExpandedParallel(
+	details: ParallelDetails,
+	theme: {
+		fg: (color: string, text: string) => string;
+		bold: (text: string) => string;
+	},
+	mdTheme: ReturnType<typeof getMarkdownTheme>,
+): Container {
+	const container = new Container();
+	container.addChild(
+		new Text(
+			theme.fg("accent", theme.bold("Parallel")) +
+				theme.fg(
+					"muted",
+					` ${details.succeeded} succeeded, ${details.failed} failed, ${details.results.length} total`,
+				),
+			0,
+			0,
+		),
+	);
+	container.addChild(new Spacer(1));
+
+	for (const r of details.results) {
+		const isErr =
+			r.exitCode !== 0 ||
+			r.stopReason === "error" ||
+			r.stopReason === "aborted";
+		const statusIcon = isErr
+			? theme.fg("error", "\u2717")
+			: theme.fg("success", "\u2713");
+		const label = r.label ? `[${r.label}] ` : "";
+		container.addChild(
+			new Text(
+				`${statusIcon} ${theme.fg("toolTitle", theme.bold(label))}` +
+					(r.model ? theme.fg("muted", ` (${r.model})`) : ""),
+				0,
+				0,
+			),
+		);
+		container.addChild(
+			new Text(theme.fg("dim", `Task: ${r.task.slice(0, 200)}`), 0, 0),
+		);
+
+		if (isErr && r.errorMessage) {
+			container.addChild(
+				new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0),
+			);
+		}
+
+		const output = getFinalOutput(r.messages);
+		if (output) {
+			container.addChild(
+				new Text(theme.fg("muted", "\u2500\u2500\u2500 Output \u2500\u2500\u2500"), 0, 0),
+			);
+			container.addChild(new Markdown(output.trim(), 0, 0, mdTheme));
+		}
+
+		const usageStr = formatUsageStats(r.usage, r.model);
+		if (usageStr) {
+			container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
+		}
+		container.addChild(new Spacer(1));
+	}
+
+	// Aggregated totals
+	const aggUsage: UsageStats = {
+		input: details.totalInput,
+		output: details.totalOutput,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost: details.totalCost,
+		contextTokens: 0,
+		turns: details.totalTurns,
+	};
+	const aggStr = formatUsageStats(aggUsage);
+	if (aggStr) {
+		container.addChild(
+			new Text(theme.fg("dim", `Totals: ${aggStr}`), 0, 0),
+		);
+	}
+
+	return container;
+}
+
+// ---------------------------------------------------------------------------
 // Public rendering entry points (used by delegate_task tool)
 // ---------------------------------------------------------------------------
 
@@ -1033,12 +1321,47 @@ export function renderDelegateCall(
 		tools?: string[];
 		excludeTools?: string[];
 		noBuiltinTools?: boolean;
+		chain?: SubTaskParams[];
+		tasks?: SubTaskParams[];
 	},
 	theme: {
 		fg: (color: string, text: string) => string;
 		bold: (text: string) => string;
 	},
 ): Text {
+	// Chain mode
+	if (args.chain && args.chain.length > 0) {
+		const n = args.chain.length;
+		let text = `${theme.fg("accent", "delegate_task")} ${theme.fg("muted", `chain (${n} step${n > 1 ? "s" : ""})`)}`;
+		const preview = args.chain.slice(0, 3);
+		for (let i = 0; i < preview.length; i++) {
+			const s = preview[i];
+			const label = s.label || s.task.slice(0, 60);
+			text += `\n${theme.fg("muted", `${i + 1}.`)} ${theme.fg("dim", label)}`;
+		}
+		if (n > 3) {
+			text += `\n${theme.fg("dim", `+${n - 3} more`)}`;
+		}
+		return new Text(text, 0, 0);
+	}
+
+	// Parallel mode
+	if (args.tasks && args.tasks.length > 0) {
+		const n = args.tasks.length;
+		let text = `${theme.fg("accent", "delegate_task")} ${theme.fg("muted", `parallel (${n} task${n > 1 ? "s" : ""})`)}`;
+		const preview = args.tasks.slice(0, 3);
+		for (let i = 0; i < preview.length; i++) {
+			const t = preview[i];
+			const label = t.label || t.task.slice(0, 60);
+			text += `\n${theme.fg("muted", `${i + 1}.`)} ${theme.fg("dim", label)}`;
+		}
+		if (n > 3) {
+			text += `\n${theme.fg("dim", `+${n - 3} more`)}`;
+		}
+		return new Text(text, 0, 0);
+	}
+
+	// Single mode (original)
 	const dl = buildDelegateLabel(args, theme);
 	const scopeLabel = buildScopeLabel(args, theme);
 	const nameLabel = args.label ? theme.fg("accent", `[${args.label}] `) : "";
@@ -1053,7 +1376,7 @@ export function renderDelegateCall(
 export function renderDelegateResult(
 	result: {
 		content: Array<{ type: string; text: string }>;
-		details?: SubagentResult;
+		details?: SubagentResult | MultiSubagentDetails;
 	},
 	options: { expanded: boolean },
 	theme: {
@@ -1062,6 +1385,25 @@ export function renderDelegateResult(
 	},
 ): Container | Text {
 	const details = result.details;
+
+	// Check for multi-subagent (chain / parallel) mode
+	if (details && isMultiSubagentDetails(details)) {
+		if (details.mode === "chain") {
+			const cd = details as ChainDetails;
+			if (options.expanded) {
+				return renderExpandedChain(cd, theme, getMarkdownTheme());
+			}
+			return new Text(renderCollapsedChain(cd, theme), 0, 0);
+		} else {
+			const pd = details as ParallelDetails;
+			if (options.expanded) {
+				return renderExpandedParallel(pd, theme, getMarkdownTheme());
+			}
+			return new Text(renderCollapsedParallel(pd, theme), 0, 0);
+		}
+	}
+
+	// Single subagent mode (original)
 	if (!details || details.exitCode === -1) {
 		const text = result.content[0];
 		return new Text(text?.type === "text" ? text.text : "(running\u2026)", 0, 0);
