@@ -169,6 +169,66 @@ export interface SubagentToolOptions {
 }
 
 // ---------------------------------------------------------------------------
+// P1+P2: Task chaining & parallel mode types
+// ---------------------------------------------------------------------------
+
+/** One step in a chain or one task in a parallel group. */
+export interface SubTaskParams {
+	task: string;
+	label?: string;
+	preset?: string;
+	thinkingLevel?: string;
+	systemPrompt?: string;
+	inheritSystemPrompt?: boolean;
+	cwd?: string;
+	timeout?: number;
+	outputFile?: string;
+	tools?: string[];
+	excludeTools?: string[];
+	noBuiltinTools?: boolean;
+}
+
+/** Result of a single subtask execution. */
+export interface SubTaskResult {
+	label?: string;
+	task: string;
+	step?: number;
+	exitCode: number;
+	messages: Array<Record<string, unknown>>;
+	stderr: string;
+	usage: UsageStats;
+	model?: string;
+	stopReason?: string;
+	errorMessage?: string;
+	errorCategory?: ErrorCategory;
+	gitBranch?: string;
+	gitDiff?: string;
+}
+
+/** Aggregate result for chain and parallel modes. */
+export interface MultiSubagentDetails {
+	mode: "chain" | "parallel";
+	results: SubTaskResult[];
+	totalInput: number;
+	totalOutput: number;
+	totalCost: number;
+	totalTurns: number;
+}
+
+export interface ChainDetails extends MultiSubagentDetails {
+	mode: "chain";
+	completedSteps: number;
+	totalSteps: number;
+	stoppedEarly: boolean;
+}
+
+export interface ParallelDetails extends MultiSubagentDetails {
+	mode: "parallel";
+	succeeded: number;
+	failed: number;
+}
+
+// ---------------------------------------------------------------------------
 // Resolved params (after preset merging + validation)
 // ---------------------------------------------------------------------------
 
@@ -227,6 +287,14 @@ export const CUSTOM_ENTRY_TYPES = {
 	run: "brl-subagent-run",
 	state: "brl-subagent-state",
 } as const;
+
+// ---------------------------------------------------------------------------
+// P1+P2: Chain / parallel constants
+// ---------------------------------------------------------------------------
+
+export const MAX_CHAIN_STEPS = 10;
+export const MAX_PARALLEL_TASKS = 8;
+export const PREVIOUS_OUTPUT_PLACEHOLDER = "{previous}";
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -353,5 +421,20 @@ export function isSubagentRunShape(value: unknown): value is SubagentRun {
 	if (typeof v.id !== "string") return false;
 	if (typeof v.task !== "string") return false;
 	if (!["running", "done", "failed"].includes(v.status as string)) return false;
+	return true;
+}
+
+/**
+ * Type guard: checks if a value is a valid MultiSubagentDetails shape.
+ */
+export function isMultiSubagentDetails(value: unknown): value is MultiSubagentDetails {
+	if (!value || typeof value !== "object") return false;
+	const v = value as Record<string, unknown>;
+	if (v.mode !== "chain" && v.mode !== "parallel") return false;
+	if (!Array.isArray(v.results)) return false;
+	if (typeof v.totalInput !== "number") return false;
+	if (typeof v.totalOutput !== "number") return false;
+	if (typeof v.totalCost !== "number") return false;
+	if (typeof v.totalTurns !== "number") return false;
 	return true;
 }
