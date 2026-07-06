@@ -42,9 +42,18 @@ import {
 	getFinalOutput,
 	isSubagentError,
 	classifyError,
+	type GitMode,
 } from "./types";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth } from "./sanitize";
+import {
+	getCurrentBranch,
+	hasUncommittedChanges,
+	createWorkBranch,
+	captureDiff,
+	switchToBranch,
+	deleteBranch,
+} from "./git";
 import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets } from "./presets";
 import { getPreset as getPresetFn } from "./tui";
@@ -121,9 +130,10 @@ export default function (pi: ExtensionAPI) {
 			tools?: string[];
 			excludeTools?: string[];
 			noBuiltinTools?: boolean;
+			gitMode?: string;
 		},
 		ctx: ExtensionContext,
-	): ResolvedParams {
+	): ResolvedParams & { resolvedGitMode: GitMode } {
 		const preset = params.preset
 			? getPresetFn(params.preset, state.builtinPresets, state.config.presets)
 			: undefined;
@@ -137,6 +147,12 @@ export default function (pi: ExtensionAPI) {
 		const mergedTools = params.tools ?? preset?.tools;
 		const mergedExcludeTools = params.excludeTools ?? preset?.excludeTools;
 		const mergedNoBuiltinTools = params.noBuiltinTools ?? preset?.noBuiltinTools;
+
+		const mergedGitMode = (params.gitMode as GitMode | undefined) ?? preset?.name;
+		const resolvedGitMode: GitMode =
+			mergedGitMode === "branch" || mergedGitMode === "none"
+				? mergedGitMode
+				: state.config.gitMode;
 
 		const thinkingLevel = resolveThinkingLevel(
 			mergedThinkingLevel,
@@ -162,6 +178,7 @@ export default function (pi: ExtensionAPI) {
 			effectiveCwd: params.cwd || ctx.cwd,
 			thinkingLevel,
 			toolOptions,
+			resolvedGitMode,
 		};
 	}
 
@@ -198,7 +215,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"model", "thinking", "concurrency", "depth", "costlimit", "reset",
+				"model", "thinking", "concurrency", "depth", "gitmode", "costlimit", "reset",
 				"history", "historyentries", "monitor", "preset", "retry",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
@@ -214,6 +231,7 @@ export default function (pi: ExtensionAPI) {
 				thinking: () => showThinkingSelector(ctx, state, applyConfig),
 				concurrency: () => showConcurrencyInput(ctx, state, applyConfig),
 				depth: () => showDepthInput(ctx, state, applyConfig),
+				gitmode: () => showGitModeSelector(ctx, state, applyConfig),
 				costlimit: () => showCostLimitInput(ctx, state, applyConfig),
 				reset: () => resetState(ctx),
 				history: () => showRunHistory(ctx, state, () => state.persistState(pi)),
@@ -363,6 +381,14 @@ export default function (pi: ExtensionAPI) {
 						"Explicit parameters on this call override the original's.",
 				}),
 			),
+			gitMode: Type.Optional(
+				Type.String({
+					description:
+						"Git integration mode for this subagent call. " +
+						"'branch' creates a work branch, captures the diff, and switches back. " +
+						"'none' (default) does nothing. Falls back to the configured default.",
+				}),
+			),
 			retryOnTimeout: Type.Optional(
 				Type.Boolean({
 					description:
@@ -389,6 +415,7 @@ export default function (pi: ExtensionAPI) {
 				noBuiltinTools?: boolean;
 				retryRunId?: string;
 				retryOnTimeout?: boolean;
+				gitMode?: string;
 			},
 			signal: AbortSignal | undefined,
 			onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
@@ -475,6 +502,7 @@ export default function (pi: ExtensionAPI) {
 				effectiveCwd,
 				thinkingLevel,
 				toolOptions,
+				resolvedGitMode,
 			} = resolveSubagentParams(params, ctx);
 
 			// F1: Validate CWD
@@ -576,9 +604,59 @@ export default function (pi: ExtensionAPI) {
 				ctx,
 			});
 
+			// P3: Git integration — set up work branch if gitMode is "branch"
+			let originalBranch: string | undefined;
+			let workBranchName: string | undefined;
+			if (resolvedGitMode === "branch") {
+				try {
+					originalBranch = getCurrentBranch(resolvedCwd);
+
+					if (hasUncommittedChanges(resolvedCwd)) {
+						log.warn("Uncommitted changes detected; proceeding with branch-based workflow anyway", {
+							cwd: resolvedCwd,
+						});
+					}
+
+					const branchResult = createWorkBranch(resolvedCwd, originalBranch);
+					if (branchResult.ok) {
+						workBranchName = branchResult.branch;
+						log.info("Created work branch for subagent", {
+							branch: workBranchName,
+							base: originalBranch,
+						});
+					} else {
+						log.error("Failed to create work branch, falling back to 'none'", {
+							error: branchResult.error,
+						});
+						originalBranch = undefined;
+					}
+				} catch (err) {
+					log.warn("Not a git repository or git error; falling back to gitMode 'none'", {
+						error: (err as Error).message,
+					});
+					originalBranch = undefined;
+					workBranchName = undefined;
+				}
+			}
+
+			// Helper to switch back to original branch and optionally delete work branch
+			const cleanupGitBranch = () => {
+				if (workBranchName && originalBranch) {
+					try {
+						switchToBranch(resolvedCwd, originalBranch);
+						log.info("Switched back to original branch", { branch: originalBranch });
+						// Attempt to delete the work branch (non-critical)
+						deleteBranch(resolvedCwd, workBranchName);
+					} catch {
+						// Non-fatal: best-effort cleanup
+					}
+				}
+			};
+
 			// R1: Circuit breaker check — reject if circuit is open
 			const circuitCheck = state.checkCircuit();
 			if (circuitCheck.isOpen) {
+				cleanupGitBranch();
 				return {
 					content: [{ type: "text" as const, text: circuitCheck.message! }],
 					isError: true,
@@ -588,6 +666,7 @@ export default function (pi: ExtensionAPI) {
 			// Acquire concurrency slot
 			const acquired = await acquireSlot(state, ctx, signal);
 			if (!acquired) {
+				cleanupGitBranch();
 				return {
 					content: [
 						{
@@ -712,6 +791,24 @@ export default function (pi: ExtensionAPI) {
 				// Attach label for display
 				result.label = label;
 
+				// P3: Capture git diff if we created a work branch
+				if (workBranchName && originalBranch) {
+					const diffResult = captureDiff(resolvedCwd, originalBranch);
+					if (diffResult.ok) {
+						result.gitBranch = workBranchName;
+						result.gitDiff = diffResult.diff;
+					}
+
+					// Switch back to the original branch
+					const switchResult = switchToBranch(resolvedCwd, originalBranch);
+					if (switchResult.ok) {
+						log.info("Switched back to original branch", { branch: originalBranch });
+						// Best-effort delete work branch
+						deleteBranch(resolvedCwd, workBranchName);
+						workBranchName = undefined; // Prevent double-cleanup
+					}
+				}
+
 				// Finalize run record
 				finalizeRunRecord(
 					run,
@@ -778,6 +875,9 @@ export default function (pi: ExtensionAPI) {
 					details: result,
 				};
 			} catch (err) {
+				// P3: Clean up git branch on crash
+				cleanupGitBranch();
+
 				const errorMessage =
 					(err as Error).message || String(err);
 				log.error("Subagent crashed", { runId, error: errorMessage });

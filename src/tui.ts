@@ -253,6 +253,35 @@ export async function showCostLimitInput(
 }
 
 // ---------------------------------------------------------------------------
+// Git mode selector — P3
+// ---------------------------------------------------------------------------
+
+export async function showGitModeSelector(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	const items: SelectItem[] = [
+		{
+			value: "none",
+			label: "none",
+			description: "No git integration",
+		},
+		{
+			value: "branch",
+			label: "branch",
+			description: "Branch-based workflow (creates a work branch per subagent call)",
+		},
+	];
+
+	const result = await showSelectList(ctx, "Select Git Integration Mode", items, 5);
+	if (!result) return;
+
+	state.config.gitMode = result as "branch" | "none";
+	onConfigChanged(ctx, `Git integration mode set to ${result}`);
+}
+
+// ---------------------------------------------------------------------------
 // Preset management UI
 // ---------------------------------------------------------------------------
 
@@ -479,6 +508,13 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			description: state.config.maxSubagentDepth === 0
 				? "No delegation from subagents"
 				: `Subagents can delegate up to ${state.config.maxSubagentDepth} level${state.config.maxSubagentDepth > 1 ? "s" : ""} deep`,
+		},
+		{
+			value: "gitmode",
+			label: "Set Git Integration Mode",
+			description: state.config.gitMode === "branch"
+				? "Branch-based workflow"
+				: "No git integration",
 		},
 		{
 			value: "historyentries",

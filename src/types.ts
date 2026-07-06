@@ -78,11 +78,14 @@ export interface CircuitBreakerState {
 	degradedThinkingLevel?: ThinkingLevel;
 }
 
+export type GitMode = "branch" | "none";
+
 export interface SubagentState {
 	model?: { provider: string; id: string };
 	maxThinkingLevel: ThinkingLevel;
 	maxParallel: number; // 0 = unlimited
 	maxSubagentDepth: number; // 0 = no recursion allowed, 1 = one level, etc.
+	gitMode: GitMode; // P3: branch-based git workflow
 	maxHistoryEntries: number; // 0 = unlimited
 	sessionCostLimit: number; // 0 = unlimited
 	perTaskCostEstimate: number; // 0 = no estimate, use default
@@ -154,6 +157,9 @@ export interface SubagentResult {
 	stderr: string;
 	label?: string;
 	errorCategory?: ErrorCategory;
+	// P3: Git integration fields
+	gitBranch?: string;
+	gitDiff?: string;
 }
 
 export interface SubagentToolOptions {
@@ -313,6 +319,11 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 	// maxSubagentDepth must be a non-negative number if present
 	if (v.maxSubagentDepth !== undefined) {
 		if (typeof v.maxSubagentDepth !== "number" || v.maxSubagentDepth < 0) return false;
+	}
+
+	// gitMode must be "branch" or "none" if present
+	if (v.gitMode !== undefined) {
+		if (v.gitMode !== "branch" && v.gitMode !== "none") return false;
 	}
 
 	// maxHistoryEntries must be a non-negative number if present

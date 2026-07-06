@@ -65,6 +65,7 @@ export class SessionState {
 			maxThinkingLevel: "off",
 			maxParallel: 0,
 			maxSubagentDepth: 1,
+			gitMode: "none",
 			maxHistoryEntries: MAX_RUN_HISTORY_ENTRIES,
 			sessionCostLimit: DEFAULT_SESSION_COST_LIMIT,
 			perTaskCostEstimate: 0,
@@ -84,6 +85,7 @@ export class SessionState {
 			maxThinkingLevel: this.config.maxThinkingLevel,
 			maxParallel: this.config.maxParallel,
 			maxSubagentDepth: this.config.maxSubagentDepth,
+			gitMode: this.config.gitMode,
 			maxHistoryEntries: this.config.maxHistoryEntries,
 			sessionCostLimit: this.config.sessionCostLimit,
 			perTaskCostEstimate: this.config.perTaskCostEstimate,
@@ -134,6 +136,7 @@ export class SessionState {
 		if (data.maxThinkingLevel) this.config.maxThinkingLevel = data.maxThinkingLevel;
 		if (data.maxParallel !== undefined) this.config.maxParallel = data.maxParallel;
 		if (data.maxSubagentDepth !== undefined) this.config.maxSubagentDepth = data.maxSubagentDepth;
+		this.config.gitMode = data.gitMode === "branch" ? "branch" : "none";
 		if (data.maxHistoryEntries !== undefined) this.config.maxHistoryEntries = data.maxHistoryEntries;
 		if (data.sessionCostLimit !== undefined) this.config.sessionCostLimit = data.sessionCostLimit;
 		if (data.perTaskCostEstimate !== undefined) this.config.perTaskCostEstimate = data.perTaskCostEstimate;
@@ -324,6 +327,7 @@ export class SessionState {
 		this.config.maxThinkingLevel = "off";
 		this.config.maxParallel = 0;
 		this.config.maxSubagentDepth = 1;
+		this.config.gitMode = "none";
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
 		this.config.perTaskCostEstimate = 0;
