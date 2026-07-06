@@ -1,15 +1,15 @@
 /**
  * Tests for git.ts — Git integration module.
  *
- * Uses vi.mock("node:child_process") to mock execSync.
+ * Uses vi.mock("node:child_process") to mock execFileSync.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Mock execSync before importing the module under test
-const mockExecSync = vi.fn();
+// Mock execFileSync before importing the module under test
+const mockExecFileSync = vi.fn();
 vi.mock("node:child_process", () => ({
-	execSync: mockExecSync,
+	execFileSync: mockExecFileSync,
 }));
 
 // Import after mocks are set up
@@ -34,21 +34,22 @@ function expectOk<T extends { ok: false }>(result: T): void {
 
 describe("getCurrentBranch", () => {
 	beforeEach(() => {
-		mockExecSync.mockReset();
+		mockExecFileSync.mockReset();
 	});
 
 	it("returns the trimmed branch name", () => {
-		mockExecSync.mockReturnValue("main\n");
+		mockExecFileSync.mockReturnValue("main\n");
 		const branch = getCurrentBranch("/some/project");
 		expect(branch).toBe("main");
-		expect(mockExecSync).toHaveBeenCalledWith(
-			"git rev-parse --abbrev-ref HEAD",
+		expect(mockExecFileSync).toHaveBeenCalledWith(
+			"git",
+			["rev-parse", "--abbrev-ref", "HEAD"],
 			expect.objectContaining({ cwd: "/some/project", encoding: "utf-8", timeout: 10000 }),
 		);
 	});
 
 	it("throws when not in a git repository", () => {
-		mockExecSync.mockImplementation(() => {
+		mockExecFileSync.mockImplementation(() => {
 			throw new Error("fatal: not a git repository");
 		});
 		expect(() => getCurrentBranch("/not/a/repo")).toThrow("not a git repository");
@@ -61,16 +62,16 @@ describe("getCurrentBranch", () => {
 
 describe("hasUncommittedChanges", () => {
 	beforeEach(() => {
-		mockExecSync.mockReset();
+		mockExecFileSync.mockReset();
 	});
 
 	it("returns false when git status is clean", () => {
-		mockExecSync.mockReturnValue("");
+		mockExecFileSync.mockReturnValue("");
 		expect(hasUncommittedChanges("/repo")).toBe(false);
 	});
 
 	it("returns true when there are uncommitted changes", () => {
-		mockExecSync.mockReturnValue(" M file.ts\n");
+		mockExecFileSync.mockReturnValue(" M file.ts\n");
 		expect(hasUncommittedChanges("/repo")).toBe(true);
 	});
 });
@@ -81,24 +82,25 @@ describe("hasUncommittedChanges", () => {
 
 describe("createWorkBranch", () => {
 	beforeEach(() => {
-		mockExecSync.mockReset();
+		mockExecFileSync.mockReset();
 	});
 
 	it("returns ok with a branch name prefixed with 'brl-subagent-'", () => {
-		mockExecSync.mockReturnValue("");
+		mockExecFileSync.mockReturnValue("");
 		const result = createWorkBranch("/repo", "main");
 		expect(result.ok).toBe(true);
 		if (result.ok) {
 			expect(result.branch).toMatch(/^brl-subagent-[a-f0-9]{8}$/);
 		}
-		expect(mockExecSync).toHaveBeenCalledWith(
-			expect.stringMatching(/^git checkout -b brl-subagent-[a-f0-9]{8} main$/),
+		expect(mockExecFileSync).toHaveBeenCalledWith(
+			"git",
+			["checkout", "-b", expect.stringMatching(/^brl-subagent-[a-f0-9]{8}$/), "main"],
 			expect.objectContaining({ cwd: "/repo" }),
 		);
 	});
 
 	it("returns { ok: false, error } when git command fails", () => {
-		mockExecSync.mockImplementation(() => {
+		mockExecFileSync.mockImplementation(() => {
 			throw new Error("fatal: not a valid object name");
 		});
 		const result = createWorkBranch("/repo", "nonexistent");
@@ -115,12 +117,12 @@ describe("createWorkBranch", () => {
 
 describe("captureDiff", () => {
 	beforeEach(() => {
-		mockExecSync.mockReset();
+		mockExecFileSync.mockReset();
 	});
 
 	it("returns ok with unified diff output", () => {
 		const diffContent = "diff --git a/file.ts b/file.ts\nindex abc..def 100644\n--- a/file.ts\n+++ b/file.ts\n@@ -1,3 +1,4 @@\n+// new line\n const x = 1;\n";
-		mockExecSync.mockReturnValue(diffContent);
+		mockExecFileSync.mockReturnValue(diffContent);
 		const result = captureDiff("/repo", "main");
 		expect(result.ok).toBe(true);
 		if (result.ok) {
@@ -130,7 +132,7 @@ describe("captureDiff", () => {
 	});
 
 	it("returns { ok: false, error } on failure", () => {
-		mockExecSync.mockImplementation(() => {
+		mockExecFileSync.mockImplementation(() => {
 			throw new Error("fatal: ambiguous argument 'main...HEAD'");
 		});
 		const result = captureDiff("/repo", "main");
@@ -144,21 +146,22 @@ describe("captureDiff", () => {
 
 describe("switchToBranch", () => {
 	beforeEach(() => {
-		mockExecSync.mockReset();
+		mockExecFileSync.mockReset();
 	});
 
 	it("returns ok on success", () => {
-		mockExecSync.mockReturnValue("");
+		mockExecFileSync.mockReturnValue("");
 		const result = switchToBranch("/repo", "main");
 		expect(result.ok).toBe(true);
-		expect(mockExecSync).toHaveBeenCalledWith(
-			"git checkout main",
+		expect(mockExecFileSync).toHaveBeenCalledWith(
+			"git",
+			["checkout", "main"],
 			expect.objectContaining({ cwd: "/repo" }),
 		);
 	});
 
 	it("returns { ok: false, error } on failure", () => {
-		mockExecSync.mockImplementation(() => {
+		mockExecFileSync.mockImplementation(() => {
 			throw new Error("error: pathspec 'nope' did not match any file(s) known to git");
 		});
 		const result = switchToBranch("/repo", "nope");
@@ -172,21 +175,22 @@ describe("switchToBranch", () => {
 
 describe("deleteBranch", () => {
 	beforeEach(() => {
-		mockExecSync.mockReset();
+		mockExecFileSync.mockReset();
 	});
 
 	it("returns ok on success", () => {
-		mockExecSync.mockReturnValue("");
+		mockExecFileSync.mockReturnValue("");
 		const result = deleteBranch("/repo", "brl-subagent-abc12345");
 		expect(result.ok).toBe(true);
-		expect(mockExecSync).toHaveBeenCalledWith(
-			"git branch -D brl-subagent-abc12345",
+		expect(mockExecFileSync).toHaveBeenCalledWith(
+			"git",
+			["branch", "-D", "brl-subagent-abc12345"],
 			expect.objectContaining({ cwd: "/repo" }),
 		);
 	});
 
 	it("returns { ok: false, error } on failure", () => {
-		mockExecSync.mockImplementation(() => {
+		mockExecFileSync.mockImplementation(() => {
 			throw new Error("error: branch 'brl-subagent-unknown' not found.");
 		});
 		const result = deleteBranch("/repo", "brl-subagent-unknown");
@@ -200,12 +204,12 @@ describe("deleteBranch", () => {
 
 describe("error handling consistency", () => {
 	beforeEach(() => {
-		mockExecSync.mockReset();
+		mockExecFileSync.mockReset();
 	});
 
 	it("all guarded functions return the same { ok: false, error } shape on error", () => {
 		const errorMsg = "fatal: some git error";
-		mockExecSync.mockImplementation(() => {
+		mockExecFileSync.mockImplementation(() => {
 			throw new Error(errorMsg);
 		});
 

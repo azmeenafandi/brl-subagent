@@ -2,10 +2,10 @@
  * brl-subagent — Git Integration (P3)
  *
  * Branch-based git workflow for subagent isolation.
- * All git commands use execSync with a 10-second timeout.
+ * All git commands use execFileSync with a 10-second timeout.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
 // Options for git commands
@@ -28,7 +28,7 @@ function gitOpts(cwd: string) {
  * Throws if the cwd is not a git repository.
  */
 export function getCurrentBranch(cwd: string): string {
-	const output = execSync("git rev-parse --abbrev-ref HEAD", gitOpts(cwd));
+	const output = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], gitOpts(cwd));
 	return output.trim();
 }
 
@@ -36,7 +36,7 @@ export function getCurrentBranch(cwd: string): string {
  * Check if there are uncommitted changes in the working tree.
  */
 export function hasUncommittedChanges(cwd: string): boolean {
-	const output = execSync("git status --porcelain", gitOpts(cwd));
+	const output = execFileSync("git", ["status", "--porcelain"], gitOpts(cwd));
 	return output.trim().length > 0;
 }
 
@@ -50,7 +50,7 @@ export function createWorkBranch(
 ): { ok: true; branch: string } | { ok: false; error: string } {
 	try {
 		const branch = "brl-subagent-" + crypto.randomUUID().slice(0, 8);
-		execSync(`git checkout -b ${branch} ${baseBranch}`, gitOpts(cwd));
+		execFileSync("git", ["checkout", "-b", branch, baseBranch], gitOpts(cwd));
 		return { ok: true, branch };
 	} catch (err) {
 		return { ok: false, error: (err as Error).message };
@@ -66,7 +66,7 @@ export function captureDiff(
 	baseBranch: string,
 ): { ok: true; diff: string } | { ok: false; error: string } {
 	try {
-		const output = execSync(`git diff ${baseBranch}...HEAD`, gitOpts(cwd));
+		const output = execFileSync("git", ["diff", `${baseBranch}...HEAD`], gitOpts(cwd));
 		return { ok: true, diff: output };
 	} catch (err) {
 		return { ok: false, error: (err as Error).message };
@@ -82,7 +82,7 @@ export function switchToBranch(
 	branch: string,
 ): { ok: true } | { ok: false; error: string } {
 	try {
-		execSync(`git checkout ${branch}`, gitOpts(cwd));
+		execFileSync("git", ["checkout", branch], gitOpts(cwd));
 		return { ok: true };
 	} catch (err) {
 		return { ok: false, error: (err as Error).message };
@@ -98,7 +98,7 @@ export function deleteBranch(
 	branch: string,
 ): { ok: true } | { ok: false; error: string } {
 	try {
-		execSync(`git branch -D ${branch}`, gitOpts(cwd));
+		execFileSync("git", ["branch", "-D", branch], gitOpts(cwd));
 		return { ok: true };
 	} catch (err) {
 		return { ok: false, error: (err as Error).message };
