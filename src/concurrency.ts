@@ -9,6 +9,8 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Priority } from "./types";
+import { PRIORITY_ORDER } from "./types";
 import type { SessionState } from "./state";
 
 // ---------------------------------------------------------------------------
@@ -19,10 +21,31 @@ import type { SessionState } from "./state";
  * Acquire a concurrency slot. If maxParallel is reached, the caller is queued.
  * Returns true if a slot was acquired, false if cancelled while waiting.
  */
+/**
+ * Insert an entry into a priority queue. The entry is placed before the first
+ * item with lower priority (higher numeric value). Equal-priority items maintain
+ * FIFO order (stack behind existing same-priority items).
+ */
+export function priorityInsert<T extends { priority: Priority }>(
+	queue: T[],
+	entry: T,
+): void {
+	const newOrder = PRIORITY_ORDER[entry.priority];
+	const idx = queue.findIndex(
+		(existing) => PRIORITY_ORDER[existing.priority] > newOrder,
+	);
+	if (idx >= 0) {
+		queue.splice(idx, 0, entry);
+	} else {
+		queue.push(entry);
+	}
+}
+
 export async function acquireSlot(
 	state: SessionState,
 	ctx: ExtensionContext,
 	signal?: AbortSignal,
+	priority?: Priority,
 ): Promise<boolean> {
 	const maxParallel = state.config.maxParallel;
 
@@ -41,8 +64,9 @@ export async function acquireSlot(
 			},
 			signal,
 			ctx,
+			priority: priority ?? "normal",
 		};
-		state.pendingQueue.push(entry);
+		priorityInsert(state.pendingQueue, entry);
 		if (signal) {
 			signal.addEventListener(
 				"abort",

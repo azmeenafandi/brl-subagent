@@ -16,6 +16,7 @@ import type {
 	ThinkingLevel,
 	ApprovalMode,
 	CircuitBreakerState,
+	Priority,
 } from "./types";
 import {
 	isSubagentStateShape,
@@ -23,6 +24,7 @@ import {
 	CUSTOM_ENTRY_TYPES,
 	MAX_RUN_HISTORY_ENTRIES,
 	DEFAULT_SESSION_COST_LIMIT,
+	DEFAULT_PRIORITY,
 	MAX_CONSECUTIVE_FAILURES,
 	CIRCUIT_BREAKER_RESET_MS,
 	CIRCUIT_DEGRADED_THINKING,
@@ -49,6 +51,7 @@ export class SessionState {
 		run: () => void;
 		signal: AbortSignal | undefined;
 		ctx: ExtensionContext;
+		priority: Priority;
 	}> = [];
 
 	/** Live subagent sessions for the monitor dashboard */
@@ -68,6 +71,7 @@ export class SessionState {
 			maxSubagentDepth: 1,
 			gitMode: "none",
 			approvalMode: "writes",
+			defaultPriority: DEFAULT_PRIORITY,
 			maxHistoryEntries: MAX_RUN_HISTORY_ENTRIES,
 			sessionCostLimit: DEFAULT_SESSION_COST_LIMIT,
 			perTaskCostEstimate: 0,
@@ -89,6 +93,7 @@ export class SessionState {
 			maxSubagentDepth: this.config.maxSubagentDepth,
 			gitMode: this.config.gitMode,
 			approvalMode: this.config.approvalMode,
+			defaultPriority: this.config.defaultPriority,
 			maxHistoryEntries: this.config.maxHistoryEntries,
 			sessionCostLimit: this.config.sessionCostLimit,
 			perTaskCostEstimate: this.config.perTaskCostEstimate,
@@ -147,6 +152,14 @@ export class SessionState {
 		if (data.maxHistoryEntries !== undefined) this.config.maxHistoryEntries = data.maxHistoryEntries;
 		if (data.sessionCostLimit !== undefined) this.config.sessionCostLimit = data.sessionCostLimit;
 		if (data.perTaskCostEstimate !== undefined) this.config.perTaskCostEstimate = data.perTaskCostEstimate;
+		if (
+			data.defaultPriority &&
+			["critical", "high", "normal", "low"].includes(data.defaultPriority)
+		) {
+			this.config.defaultPriority = data.defaultPriority as Priority;
+		} else {
+			this.config.defaultPriority = "normal";
+		}
 		if (Array.isArray(data.seenRunIds)) this.config.seenRunIds = data.seenRunIds;
 		if (Array.isArray(data.presets)) this.config.presets = data.presets;
 		if (
@@ -336,6 +349,7 @@ export class SessionState {
 		this.config.maxSubagentDepth = 1;
 		this.config.gitMode = "none";
 		this.config.approvalMode = "writes";
+		this.config.defaultPriority = "normal";
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
 		this.config.perTaskCostEstimate = 0;

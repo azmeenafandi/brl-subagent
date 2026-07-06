@@ -430,8 +430,15 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
+		// Resolve priority
+		const chainPriority: Priority = (
+			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+				? (params.priority as Priority)
+				: state.config.defaultPriority
+		);
+
 		// Acquire concurrency slot for the chain
-		const acquired = await acquireSlot(state, ctx, signal);
+		const acquired = await acquireSlot(state, ctx, signal, chainPriority);
 		if (!acquired) {
 			return {
 				content: [
@@ -934,9 +941,16 @@ export default function (pi: ExtensionAPI) {
 			});
 		};
 
+		// Resolve priority
+		const parallelPriority: Priority = (
+			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+				? (params.priority as Priority)
+				: state.config.defaultPriority
+		);
+
 		// Launch all tasks concurrently using acquireSlot for natural concurrency limiting
 		const promises = taskList.map(async (_, index) => {
-			const acquired = await acquireSlot(state, ctx, signal);
+			const acquired = await acquireSlot(state, ctx, signal, parallelPriority);
 			if (!acquired) {
 				results[index] = {
 					task: taskList[index].task,
@@ -1025,7 +1039,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"model", "thinking", "concurrency", "depth", "gitmode", "approval", "costlimit", "reset",
+				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "costlimit", "reset",
 				"history", "historyentries", "monitor", "preset", "retry",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
@@ -1041,6 +1055,7 @@ export default function (pi: ExtensionAPI) {
 				thinking: () => showThinkingSelector(ctx, state, applyConfig),
 				concurrency: () => showConcurrencyInput(ctx, state, applyConfig),
 				depth: () => showDepthInput(ctx, state, applyConfig),
+				priority: () => showDefaultPrioritySelector(ctx, state, applyConfig),
 				gitmode: () => showGitModeSelector(ctx, state, applyConfig),
 				approval: () => showApprovalModeSelector(ctx, state, applyConfig),
 				costlimit: () => showCostLimitInput(ctx, state, applyConfig),
@@ -1266,6 +1281,7 @@ export default function (pi: ExtensionAPI) {
 				retryRunId?: string;
 				retryOnTimeout?: boolean;
 				gitMode?: string;
+				priority?: string;
 				chain?: Array<{
 					task: string;
 					label?: string;

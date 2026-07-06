@@ -21,6 +21,7 @@ import type {
 	ParallelDetails,
 	SubTaskResult,
 	ThinkingLevel,
+	Priority,
 	UsageStats,
 } from "./types";
 import {
@@ -293,6 +294,29 @@ export async function showApprovalModeSelector(
 }
 
 // ---------------------------------------------------------------------------
+// Default priority selector — P6
+// ---------------------------------------------------------------------------
+
+export async function showDefaultPrioritySelector(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	const items: SelectItem[] = [
+		{ value: "critical", label: "critical", description: "Highest priority — queued ahead of all others" },
+		{ value: "high", label: "high", description: "High priority — above normal and low" },
+		{ value: "normal", label: "normal (default)", description: "Normal priority — below critical and high" },
+		{ value: "low", label: "low", description: "Lowest priority — queued behind all others" },
+	];
+
+	const result = await showSelectList(ctx, "Select Default Priority", items, 5);
+	if (!result) return;
+
+	state.config.defaultPriority = result as Priority;
+	onConfigChanged(ctx, `Default priority set to ${result}`);
+}
+
+// ---------------------------------------------------------------------------
 // Git mode selector — P3
 // ---------------------------------------------------------------------------
 
@@ -548,6 +572,11 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			description: state.config.maxSubagentDepth === 0
 				? "No delegation from subagents"
 				: `Subagents can delegate up to ${state.config.maxSubagentDepth} level${state.config.maxSubagentDepth > 1 ? "s" : ""} deep`,
+		},
+		{
+			value: "priority",
+			label: "Set Default Priority",
+			description: state.config.defaultPriority,
 		},
 		{
 			value: "gitmode",

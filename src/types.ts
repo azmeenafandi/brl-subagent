@@ -16,6 +16,17 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 
 export const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
+export type Priority = "critical" | "high" | "normal" | "low";
+
+export const PRIORITY_ORDER: Record<Priority, number> = {
+	critical: 0,
+	high: 1,
+	normal: 2,
+	low: 3,
+};
+
+export const DEFAULT_PRIORITY: Priority = "normal";
+
 export type ErrorCategory =
 	| "timeout"
 	| "model_unavailable"
@@ -89,6 +100,7 @@ export interface SubagentState {
 	maxSubagentDepth: number; // 0 = no recursion allowed, 1 = one level, etc.
 	gitMode: GitMode; // P3: branch-based git workflow
 	approvalMode: ApprovalMode; // P4: change approval workflow
+	defaultPriority: Priority; // P6: default priority for subagent tasks
 	maxHistoryEntries: number; // 0 = unlimited
 	sessionCostLimit: number; // 0 = unlimited
 	perTaskCostEstimate: number; // 0 = no estimate, use default
@@ -402,6 +414,11 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 	// approvalMode must be "auto", "writes", or "always" if present
 	if (v.approvalMode !== undefined) {
 		if (v.approvalMode !== "auto" && v.approvalMode !== "writes" && v.approvalMode !== "always") return false;
+	}
+
+	// defaultPriority must be a valid priority if present
+	if (v.defaultPriority !== undefined) {
+		if (!["critical", "high", "normal", "low"].includes(v.defaultPriority as string)) return false;
 	}
 
 	// maxHistoryEntries must be a non-negative number if present
