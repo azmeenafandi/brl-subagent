@@ -41,6 +41,9 @@ import type {
 	ChainDetails,
 	ParallelDetails,
 	MultiSubagentDetails,
+	GraphTask,
+	GraphDetails,
+	GraphWave,
 	SandboxLevel,
 } from "./types";
 import {
@@ -51,11 +54,14 @@ import {
 	classifyError,
 	MAX_CHAIN_STEPS,
 	MAX_PARALLEL_TASKS,
+	MAX_GRAPH_TASKS,
 	PREVIOUS_OUTPUT_PLACEHOLDER,
+	GRAPH_OUTPUT_PLACEHOLDER_RE,
 	SANDBOX_TOOLS,
 	SANDBOX_EXCLUDE,
 	type GitMode,
 } from "./types";
+import { validateGraph, topologicalSort } from "./scheduler";
 import { resolveTemplate } from "./templates";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth } from "./sanitize";
@@ -69,7 +75,8 @@ import {
 	mergeWorkBranch,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { loadBuiltinPresets } from "./presets";
+import { loadBuiltinPresets, getAllPresets } from "./presets";
+import { autoRoutePreset } from "./router";
 import { getPreset as getPresetFn } from "./tui";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
@@ -153,8 +160,19 @@ export default function (pi: ExtensionAPI) {
 		},
 		ctx: ExtensionContext,
 	): ResolvedParams & { resolvedGitMode: GitMode; resolvedApprovalMode: ApprovalMode } {
-		const preset = params.preset
-			? getPresetFn(params.preset, state.builtinPresets, state.config.presets)
+		// E2: Auto-route to best preset when neither preset nor template is specified
+		let resolvedPreset = params.preset;
+		if (!resolvedPreset && !params.template) {
+			const allPresets = getAllPresets(state.builtinPresets, state.config.presets);
+			const suggested = autoRoutePreset(params.task, allPresets);
+			if (suggested) {
+				resolvedPreset = suggested;
+				log.info("Auto-routed task to preset", { preset: suggested });
+			}
+		}
+
+		const preset = resolvedPreset
+			? getPresetFn(resolvedPreset, state.builtinPresets, state.config.presets)
 			: undefined;
 
 		const mergedThinkingLevel =
@@ -1061,6 +1079,401 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// -------------------------------------------------------------------
+	// P10: runGraphMode
+	// -------------------------------------------------------------------
+
+	async function runGraphMode(
+		params: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+		onUpdate:
+			| ((partial: AgentToolResult<SubagentResult>) => void)
+			| undefined,
+		ctx: ExtensionContext,
+	): Promise<AgentToolResult<Record<string, unknown>>> {
+		const graphTasks = params.graph as GraphTask[];
+
+		// Validate graph
+		const errors = validateGraph(graphTasks);
+		if (errors.length > 0) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Graph validation failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
+					},
+				],
+				isError: true,
+			};
+		}
+
+		// R5: Check session cost limit before spawning
+		const perTaskEstimate =
+			state.config.perTaskCostEstimate > 0
+				? state.config.perTaskCostEstimate
+				: 0.05;
+		if (state.checkCostLimit(perTaskEstimate * graphTasks.length, ctx)) {
+			const currentTotal = state.getSessionTotalCost(ctx);
+			const limit = state.config.sessionCostLimit;
+			log.warn("Graph delegation rejected: session cost limit reached", {
+				currentTotal,
+				estimatedCost: perTaskEstimate * graphTasks.length,
+				limit,
+			});
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text:
+							`Cannot delegate: session cost limit reached ` +
+							`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
+							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
+					},
+				],
+				isError: true,
+			};
+		}
+
+		// Reject delegation if recursion depth exceeds configured max
+		const currentDepth = getCurrentDepth();
+		if (currentDepth >= state.config.maxSubagentDepth) {
+			log.warn("Graph delegation rejected: max depth reached", {
+				currentDepth,
+				maxDepth: state.config.maxSubagentDepth,
+			});
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text:
+							`Cannot delegate further: subagent recursion depth limit reached ` +
+							`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
+							`Complete the task directly or ask the user to increase the limit via /brl-subagent.`,
+					},
+				],
+				isError: true,
+			};
+		}
+
+		// Resolve global params once
+		const globalParams = resolveSubagentParams(
+			params as {
+				task: string;
+				label?: string;
+				preset?: string;
+				systemPrompt?: string;
+				inheritSystemPrompt?: boolean;
+				thinkingLevel?: string;
+				outputFile?: string;
+				timeout?: number;
+				cwd?: string;
+				tools?: string[];
+				excludeTools?: string[];
+				noBuiltinTools?: boolean;
+				gitMode?: string;
+				approvalMode?: string;
+			},
+			ctx,
+		);
+
+		// Validate CWD once
+		const cwdResult = validateCwd(globalParams.effectiveCwd, ctx.cwd);
+		if (!cwdResult.ok) {
+			return {
+				content: [
+					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
+				],
+				isError: true,
+			};
+		}
+		const resolvedCwd = cwdResult.value;
+
+		// Pre-flight checks
+		const pfResult = preflightCheck(resolvedCwd);
+		if (!pfResult.ok) {
+			log.warn("Graph pre-flight check failed", { error: pfResult.error });
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Pre-flight check failed: ${pfResult.error}`,
+					},
+				],
+				isError: true,
+			};
+		}
+
+		// Resolve model once
+		const modelResult = resolveSubagentModel(ctx);
+		if (!modelResult.ok) return modelResult.error;
+		const subagentModel = modelResult.model;
+
+		const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
+		if (!modelStr || modelStr === "/") {
+			log.warn("Model string is empty after resolution", { model: subagentModel });
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text:
+							"Subagent model is not configured. " +
+							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
+					},
+				],
+				isError: true,
+			};
+		}
+
+		// R1: Circuit breaker check
+		const circuitCheck = state.checkCircuit();
+		if (circuitCheck.isOpen) {
+			return {
+				content: [
+					{ type: "text" as const, text: circuitCheck.message! },
+				],
+				isError: true,
+			};
+		}
+
+		// Resolve priority
+		const graphPriority: Priority = (
+			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+				? (params.priority as Priority)
+				: state.config.defaultPriority
+		);
+
+		// Topological sort → execution waves
+		const sortResult = topologicalSort(graphTasks);
+		if (!sortResult.ok) {
+			return {
+				content: [
+					{ type: "text" as const, text: `Graph scheduling failed: ${sortResult.error}` },
+				],
+				isError: true,
+			};
+		}
+		const waves = sortResult.waves;
+
+		// Build base prompt once
+		const basePrompt = ctx.getSystemPrompt();
+
+		// Results map: task id → SubTaskResult (populated as waves complete)
+		const resultMap = new Map<string, SubTaskResult>();
+		const allWaves: GraphWave[] = [];
+
+		let chainSuccess = false;
+		try {
+			for (let w = 0; w < waves.length; w++) {
+				const wave = waves[w];
+				const waveIndex = w + 1;
+				const isParallel = wave.length > 1;
+
+				// Emit initial progress
+				onUpdate?.({
+					content: [
+						{
+							type: "text" as const,
+							text: `Graph wave ${waveIndex}/${waves.length} (${wave.length} task${wave.length > 1 ? "s" : ""})...`,
+						},
+					],
+					details: {
+						messages: [],
+						usage: { ...EMPTY_USAGE },
+						exitCode: -1,
+						stderr: "",
+					},
+				});
+
+				// Run all tasks in this wave concurrently
+				const wavePromises = wave.map(async (graphTask) => {
+					const subTaskParams: SubTaskParams = {
+						task: graphTask.task,
+						label: graphTask.label,
+						preset: graphTask.preset,
+						thinkingLevel: graphTask.thinkingLevel,
+						cwd: graphTask.cwd,
+						timeout: graphTask.timeout,
+						outputFile: graphTask.outputFile,
+						tools: graphTask.tools,
+						excludeTools: graphTask.excludeTools,
+						noBuiltinTools: graphTask.noBuiltinTools,
+						systemPrompt: graphTask.systemPrompt,
+						inheritSystemPrompt: graphTask.inheritSystemPrompt,
+					};
+
+					const merged = mergeSubTaskParams(globalParams, subTaskParams);
+
+					// Substitute {id} placeholders with previous outputs
+					merged.task = merged.task.replace(GRAPH_OUTPUT_PLACEHOLDER_RE, (_match, id) => {
+						const depResult = resultMap.get(id);
+						if (!depResult) return _match; // Leave unchanged if dep not found
+						return getFinalOutput(depResult.messages);
+					});
+
+					// Build system prompt
+					const subagentPrompt = buildSubagentPrompt(
+						basePrompt,
+						merged.inheritSP,
+						merged.customSP,
+						merged.outputFile,
+					);
+
+					// Acquire concurrency slot
+					const acquired = await acquireSlot(state, ctx, signal, graphPriority);
+					if (!acquired) {
+						return {
+							id: graphTask.id,
+							result: {
+								task: merged.task,
+								label: merged.label,
+								exitCode: 1,
+								messages: [],
+								stderr: "",
+								usage: { ...EMPTY_USAGE },
+								errorMessage: "Cancelled while waiting for concurrency slot",
+								errorCategory: "aborted" as const,
+							} satisfies SubTaskResult,
+						};
+					}
+
+					try {
+						const stepOnUpdate = onUpdate
+							? (partial: AgentToolResult<SubagentResult>) => {
+								onUpdate(partial);
+								}
+							: undefined;
+
+						const result = await runSubagent(
+							resolvedCwd,
+							subagentPrompt,
+							subagentModel,
+							merged.thinkingLevel,
+							merged.task,
+							signal,
+							stepOnUpdate,
+							merged.toolOptions,
+							merged.timeout,
+							getFinalOutput,
+							log,
+							currentDepth + 1,
+						);
+
+						const subTaskResult: SubTaskResult = {
+							task: merged.task,
+							label: merged.label,
+							exitCode: result.exitCode,
+							messages: result.messages,
+							stderr: result.stderr,
+							usage: result.usage,
+							model: result.model,
+							stopReason: result.stopReason,
+							errorMessage: result.errorMessage,
+							errorCategory: classifyError(result),
+							gitBranch: result.gitBranch,
+							gitDiff: result.gitDiff,
+						};
+
+						return { id: graphTask.id, result: subTaskResult };
+					} finally {
+						releaseSlot(state, false, ctx);
+					}
+				});
+
+				const waveResults = await Promise.allSettled(wavePromises);
+				const graphWaveTasks: SubTaskResult[] = [];
+
+				for (const settled of waveResults) {
+					if (settled.status === "fulfilled") {
+						resultMap.set(settled.value.id, settled.value.result);
+						graphWaveTasks.push(settled.value.result);
+					} else {
+						log.error("Graph wave task rejected", { error: String(settled.reason) });
+					}
+				}
+
+				const graphWave: GraphWave = {
+					waveIndex,
+					tasks: graphWaveTasks,
+					parallel: isParallel,
+				};
+				allWaves.push(graphWave);
+
+				// Emit progress update
+				onUpdate?.({
+					content: [
+						{
+							type: "text" as const,
+							text: `Graph wave ${waveIndex}/${waves.length} completed`,
+						},
+					],
+				});
+			}
+
+			// Compute final aggregates
+			const allResults = allWaves.flatMap((w) => w.tasks);
+			const totalInput = allResults.reduce((s, r) => s + r.usage.input, 0);
+			const totalOutput = allResults.reduce((s, r) => s + r.usage.output, 0);
+			const totalCost = allResults.reduce((s, r) => s + r.usage.cost, 0);
+			const totalTurns = allResults.reduce((s, r) => s + r.usage.turns, 0);
+
+			chainSuccess = allResults.every(
+				(r) => r.exitCode === 0 && r.stopReason !== "error" && r.stopReason !== "aborted",
+			);
+
+			const graphDetails: GraphDetails = {
+				mode: "graph",
+				waves: allWaves,
+				totalInput,
+				totalOutput,
+				totalCost,
+				totalTurns,
+			};
+
+			// R1: Record circuit breaker outcome
+			if (chainSuccess) {
+				state.recordSuccess();
+			} else {
+				state.recordFailure();
+			}
+
+			log.info("Graph completed", {
+				totalTasks: graphTasks.length,
+				waves: allWaves.length,
+				totalInput,
+				totalOutput,
+				totalCost,
+			});
+
+			return {
+				content: [
+					{ type: "text" as const, text: JSON.stringify(graphDetails, null, 2) },
+				],
+				details: graphDetails as unknown as SubagentResult,
+			};
+		} catch (err) {
+			const errorMessage = (err as Error).message || String(err);
+			log.error("Graph mode crashed", { error: errorMessage });
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Graph mode crashed: ${errorMessage}`,
+					},
+				],
+				details: {
+					messages: [],
+					usage: { ...EMPTY_USAGE },
+					exitCode: 1,
+					stderr: String(err),
+					errorMessage,
+				},
+				isError: true,
+			};
+		} finally {
+			releaseSlot(state, chainSuccess, ctx);
+		}
+	}
+
+	// -------------------------------------------------------------------
 	// /brl-subagent command
 	// -------------------------------------------------------------------
 
@@ -1068,7 +1481,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "costlimit", "reset",
+				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "costlimit", "graph", "reset",
 				"history", "historyentries", "monitor", "preset", "retry",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
@@ -1315,6 +1728,24 @@ export default function (pi: ExtensionAPI) {
 			}), {
 				description: "Parallel tasks to execute concurrently. All tasks run regardless of individual failures. Max " + MAX_PARALLEL_TASKS + " tasks."
 			})),
+			graph: Type.Optional(Type.Array(Type.Object({
+				id: Type.String({ description: "Unique identifier for this task node" }),
+				task: Type.String({ description: "Task description. Use {otherId} to reference output from another task." }),
+				label: Type.Optional(Type.String({})),
+				dependsOn: Type.Optional(Type.Array(Type.String({}), { description: "IDs of tasks that must complete before this one starts" })),
+				preset: Type.Optional(Type.String({})),
+				thinkingLevel: Type.Optional(Type.String({})),
+				cwd: Type.Optional(Type.String({})),
+				timeout: Type.Optional(Type.Number({})),
+				outputFile: Type.Optional(Type.String({})),
+				tools: Type.Optional(Type.Array(Type.String({}))),
+				excludeTools: Type.Optional(Type.Array(Type.String({}))),
+				noBuiltinTools: Type.Optional(Type.Boolean({})),
+				systemPrompt: Type.Optional(Type.String({})),
+				inheritSystemPrompt: Type.Optional(Type.Boolean({})),
+			}), {
+				description: "Declare tasks with dependencies. The scheduler parallelizes independent tasks and sequences dependent ones. Max " + MAX_GRAPH_TASKS + " tasks."
+			})),
 		}),
 
 		async execute(
@@ -1374,7 +1805,8 @@ export default function (pi: ExtensionAPI) {
 			// F1: Sanitize task input — skip for chain/parallel modes
 			const hasChain = params.chain && params.chain.length > 0;
 			const hasParallel = params.tasks && params.tasks.length > 0;
-			if (!hasChain && !hasParallel) {
+			const hasGraph = params.graph && params.graph.length > 0;
+			if (!hasChain && !hasParallel && !hasGraph) {
 				const taskResult = sanitizeTask(params.task);
 				if (!taskResult.ok) {
 					log.warn("Task rejected by sanitizer", { error: taskResult.error });
@@ -1438,19 +1870,20 @@ export default function (pi: ExtensionAPI) {
 				if (tv.inheritSystemPrompt !== undefined && params.inheritSystemPrompt === undefined) params.inheritSystemPrompt = tv.inheritSystemPrompt;
 			}
 
-			// P1+P2: Mode detection — chain > parallel > single
+			// P1+P2+P10: Mode detection — graph > chain > parallel > single
 			const isChain = hasChain;
 			const isParallel = hasParallel;
+			const isGraph = hasGraph;
 			const isSingle = typeof params.task === "string" && params.task.length > 0;
 
-			const modeCount = [isChain, isParallel, isSingle].filter(Boolean).length;
+			const modeCount = [isChain, isParallel, isGraph, isSingle].filter(Boolean).length;
 			if (modeCount !== 1) {
 				return {
 					content: [
 						{
 							type: "text" as const,
 							text:
-								"Provide exactly one of: task (single), chain (sequential), or tasks (parallel).",
+								"Provide exactly one of: task (single), chain (sequential), tasks (parallel), or graph (dependency graph).",
 						},
 					],
 					isError: true,
@@ -1485,6 +1918,10 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 				return runParallelMode(params, signal, onUpdate, ctx);
+			}
+
+			if (isGraph) {
+				return runGraphMode(params, signal, onUpdate, ctx);
 			}
 
 			// R5: Check session cost limit before spawning

@@ -229,6 +229,17 @@ export function getPreset(
 }
 
 /**
+ * Combine built-in and custom presets into a single array.
+ * Built-in presets come first.
+ */
+export function getAllPresets(
+	builtinPresets: SubagentPreset[],
+	customPresets: SubagentPreset[],
+): SubagentPreset[] {
+	return [...builtinPresets, ...customPresets];
+}
+
+/**
  * Format a one-line summary of a preset's configuration.
  */
 export function formatPresetSummary(p: SubagentPreset): string {
