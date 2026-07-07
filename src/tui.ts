@@ -48,6 +48,7 @@ import {
 	isMultiSubagentDetails,
 	isGraphDetails,
 } from "./types";
+import { ROLE_DEFINITIONS, DEFAULT_ROLE, type RoleName } from "./roles";
 import { extractParamNames } from "./templates";
 import { parseDiff } from "./diff";
 import { formatPresetSummary } from "./presets";
@@ -399,6 +400,47 @@ export async function showSandboxLevelSelector(
 }
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Role selector (E6)
+// ---------------------------------------------------------------------------
+
+function roleDescription(role: RoleName): string {
+	const def = ROLE_DEFINITIONS[role];
+	if (!def) return "Unknown";
+	return `Tools: ${def.tools.join(", ")}`;
+}
+
+export async function showRoleSelector(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	const items: SelectItem[] = [
+		{
+			value: "developer",
+			label: "developer",
+			description: "Full development access",
+		},
+		{
+			value: "reviewer",
+			label: "reviewer",
+			description: "Read-only analysis and review",
+		},
+		{
+			value: "auditor",
+			label: "auditor",
+			description: "Read-only security-focused",
+		},
+	];
+
+	const result = await showSelectList(ctx, "Select Default Role", items, 5);
+	if (!result) return;
+
+	state.config.defaultRole = result as RoleName;
+	onConfigChanged(ctx, `Default role set to ${result} — ${roleDescription(result as RoleName)}`);
+}
+
 // Pool configuration UI (E11)
 // ---------------------------------------------------------------------------
 
@@ -1104,6 +1146,11 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			value: "sandbox",
 			label: "Set Default Sandbox Level",
 			description: sandboxLevelDescription(state.config.defaultSandboxLevel),
+		},
+		{
+			value: "role",
+			label: "Set Default Role",
+			description: state.config.defaultRole,
 		},
 		{
 			value: "historyentries",
