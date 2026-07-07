@@ -52,7 +52,7 @@
 | R9 | Error classification | P2 | S | `done` | subagent | `classifyError()` in types.ts — 9 categories with priority-based pattern matching |
 | R10 | Preset validation on load | P2 | S | `done` | subagent | `validateAllPresets()` validates parsed preset objects after loading |
 
-## Phase 3 — Power (v1.6.0) ✅ 9/10 (P8 deferred)
+## Phase 3 — Power (v1.6.0) ✅ 10/10
 
 | ID | Task | Phase | Effort | Status | Assignee | Notes |
 |----|------|-------|--------|--------|----------|-------|
@@ -63,24 +63,25 @@
 | P5 | Output diffing | P3 | M | `done` | subagent | `diff.ts`: `parseDiff()` produces `FileDiff[]` with additions/deletions/hunks. Hunk capping (MAX_HUNKS_PER_FILE=10). Collapsed file summary, expanded per-file hunks, full raw diff view (D key). |
 | P6 | Priority queue | P3 | M | `done` | subagent | `priorityInsert()` in concurrency.ts: four tiers (critical/high/normal/low), FIFO within tier. `defaultPriority` config + per-call `priority` param override. |
 | P7 | Subagent sandboxing | P3 | L | `done` | subagent | `SandboxLevel` type ("none"/"readonly"/"safe"), `SANDBOX_TOOLS`/`SANDBOX_EXCLUDE` maps. Per-call override chain: call > preset > config. TUI selector via `/brl-subagent sandbox`. |
-| P8 | Process pool | P3 | L | `deferred` | — | Deferred to Phase 4 (E11). Would reduce cold-start latency by keeping warm pi processes. |
+| P8 | Process pool | P3 | L | `done` | subagent | Implemented as E11 in Phase 4: `pool.ts` manages warm pi processes in RPC mode with lazy spawn, idle cleanup, and configurable pool size. |
 | P9 | Task templates | P3 | M | `done` | subagent | `templates.ts`: `resolveTemplate()` with `${param}` substitution, `extractParamNames()` for validation. Template management TUI (add/view/remove). `template`+`params` on `delegate_task`. |
 | P10 | Dependency graph | P3 | L | `done` | subagent | `scheduler.ts`: `detectCycle()` (three-color DFS), `topologicalSort()` (Kahn's algorithm → waves), `validateGraph()`. `runGraphMode()` in index.ts: wave-based execution with `{taskId}` output substitution. Max 12 tasks. |
 
-## Phase 4 — Excellence (v2.0.0) ⏳ 0/10
+## Phase 4 — Excellence (v2.0.0) ✅ 11/11
 
 | ID | Task | Phase | Effort | Status | Assignee | Notes |
 |----|------|-------|--------|--------|----------|-------|
-| E1 | Observability dashboard | P4 | XL | `todo` | — | — |
-| E2 | Skill-based routing | P4 | L | `todo` | — | — |
-| E3 | Recursive delegation | P4 | L | `todo` | — | — |
-| E4 | SLA tracking | P4 | M | `todo` | — | — |
-| E5 | Compliance reports | P4 | M | `todo` | — | — |
-| E6 | RBAC matrices | P4 | M | `todo` | — | — |
-| E7 | Multi-turn subagents | P4 | L | `todo` | — | — |
-| E8 | Pluggable backends | P4 | XL | `todo` | — | — |
-| E9 | Scheduling (cron-like) | P4 | M | `todo` | — | — |
-| E10 | Subagent-to-subagent messaging | P4 | L | `todo` | — | — |
+| E1 | Observability dashboard | P4 | XL | `done` | subagent | Web UI showing active subagents, history, cost trends, success rates. Real-time metrics via `metrics.ts` integration. |
+| E2 | Skill-based routing | P4 | L | `done` | subagent | `router.ts`: auto-classify task description → best preset personality using keyword matching rules. |
+| E3 | Recursive delegation | P4 | L | `done` | subagent | Configurable depth limit via `maxSubagentDepth`; prevents infinite chains. Integrated with `BRL_SUBAGENT_DEPTH` env propagation. |
+| E4 | SLA tracking | P4 | M | `done` | subagent | `metrics.ts`: p50/p95/p99 latency, success rate, cost-per-task, degradation detection against baseline. Configurable window size (10-500 runs). |
+| E5 | Compliance reports | P4 | M | `done` | subagent | `reports.ts`: file access tracking, secrets exposure detection, compliance summary with role breakdown. |
+| E6 | RBAC matrices | P4 | M | `done` | subagent | `roles.ts`: three built-in roles (reviewer/developer/auditor) with tool permissions. Per-call override chain: role > sandbox > config. |
+| E7 | Multi-turn subagents | P4 | L | `done` | subagent | `maxTurns` parameter: subagents ask clarifying questions via `[QUESTION]:` format. Conductor feeds answers back as context. |
+| E8 | Pluggable backends | P4 | XL | `done` | subagent | `backend.ts`: Backend abstraction with `pi` (full tools) and `direct-api` (HTTP, no tools) implementations. Configurable via `/brl-subagent backend`. |
+| E9 | Scheduling (cron-like) | P4 | M | `done` | subagent | `schedule.ts`: recurring task schedules with interval-based polling, fire-and-forget execution, enable/disable, `/brl-subagent schedule` TUI. |
+| E10 | Subagent-to-subagent messaging | P4 | L | `done` | subagent | `messaging.ts`: Intercom class with `[TO:agent-id]:` output format, targeted and broadcast messages, message delivery on completion. |
+| E11 | Process pool | P4 | L | `done` | subagent | `pool.ts`: warm pi process management in RPC mode, lazy spawn on acquire, idle cleanup timer, configurable pool size. Replaces deferred P8. |
 
 ---
 
@@ -90,9 +91,9 @@
 |-------|---------|-------|-----------|----------|-------|
 | P1 — Foundation | v1.4.0 | 10 | 10 | 0 | All security and architecture tasks done |
 | P2 — Reliability | v1.5.0 | 10 | 10 | 0 | Circuit breaker, cost governance, pre-flight checks |
-| P3 — Power | v1.6.0 | 10 | 9 | 1 | P8 (Process pool) deferred to Phase 4 |
-| P4 — Excellence | v2.0.0 | 10 | 0 | 0 | Not started |
-| **Total** | | **40** | **29** | **1** | |
+| P3 — Power | v1.6.0 | 10 | 10 | 0 | All tasks including P8 (now E11) |
+| P4 — Excellence | v2.0.0 | 11 | 11 | 0 | All 11 tasks complete (E1-E11) |
+| **Total** | | **41** | **41** | **0** | All phases complete |
 
 ## Change Log
 
@@ -116,3 +117,17 @@
 | 2026-07-07 | **P9 — Task templates** complete: `resolveTemplate()` with ${param} substitution, template management TUI, template+params on delegate_task. |
 | 2026-07-07 | **P10 — Dependency graph** complete: detectCycle (DFS), topologicalSort (Kahn's algorithm), validateGraph, runGraphMode with wave-based execution. Max 12 tasks. |
 | 2026-07-07 | **P8 — Process pool** deferred to Phase 4 (E11). Would reduce cold-start latency but requires significant process lifecycle management. |
+| 2026-07-07 | **Phase 4 complete**: E1-E11 all implemented. 532 tests across 25 files. New modules: router.ts, roles.ts, reports.ts, schedule.ts, metrics.ts, pool.ts, messaging.ts, backend.ts. Total 24 source modules. |
+| 2026-07-07 | **E1 — Observability dashboard** complete: real-time metrics dashboard showing active subagents, cost trends, success rates, and SLA metrics. |
+| 2026-07-07 | **E2 — Skill-based routing** complete: `router.ts` auto-classifies task descriptions to best preset via keyword matching rules. |
+| 2026-07-07 | **E3 — Recursive delegation** complete: configurable `maxSubagentDepth` with `BRL_SUBAGENT_DEPTH` env propagation. Prevents infinite subagent chains. |
+| 2026-07-07 | **E4 — SLA tracking** complete: `metrics.ts` computes p50/p95/p99 latency, success rate, cost-per-task, degradation alerts. Configurable analysis window. |
+| 2026-07-07 | **E5 — Compliance reports** complete: `reports.ts` generates file access reports, secrets exposure detection, compliance summary with role breakdown. |
+| 2026-07-07 | **E6 — RBAC matrices** complete: `roles.ts` with reviewer/developer/auditor roles, tool permissions, per-call override chain. |
+| 2026-07-07 | **E7 — Multi-turn subagents** complete: `maxTurns` parameter enables subagents to ask clarifying questions via `[QUESTION]:` format. |
+| 2026-07-07 | **E8 — Pluggable backends** complete: `backend.ts` with Backend abstraction, pi (full tools) and direct-api (HTTP) implementations. |
+| 2026-07-07 | **E9 — Scheduling** complete: `schedule.ts` with recurring task schedules, interval polling, fire-and-forget execution, TUI management. |
+| 2026-07-07 | **E10 — Subagent messaging** complete: `messaging.ts` Intercom class with `[TO:agent-id]:` format, targeted and broadcast messages. |
+| 2026-07-07 | **E11 — Process pool** complete: `pool.ts` manages warm pi processes, lazy spawn, idle cleanup, configurable pool size. Replaces deferred P8. |
+| 2026-07-07 | **Reserved name validation** added: `RESERVED_NAME_PATTERN` (`/^__.*__$/`) and `RESERVED_COMMAND_NAMES` set prevent collision with TUI sentinels and `/brl-subagent` completions. Applied to presets, templates, and schedules. |
+| 2026-07-07 | **Preset prompt guidelines** added: `promptGuideline` field on presets provides usage hints. Built-in presets include guidelines for when to use each personality (e.g., "For security audits. Use thinkingLevel: high."). dev-agent preset added. |

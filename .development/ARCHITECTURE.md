@@ -174,7 +174,7 @@ State is persisted as custom session entries, managed by the `SessionState` clas
 
 | Entry Type | Key | Contents |
 |-----------|-----|----------|
-| `brl-subagent-state` | Session-level | `model`, `maxThinkingLevel`, `maxParallel`, `maxSubagentDepth`, `gitMode`, `approvalMode`, `defaultPriority`, `defaultSandboxLevel`, `maxHistoryEntries`, `sessionCostLimit`, `perTaskCostEstimate`, `seenRunIds`, `presets`, `templates`, `circuitBreaker` |
+| `brl-subagent-state` | Session-level | `model`, `maxThinkingLevel`, `maxParallel`, `maxSubagentDepth`, `gitMode`, `approvalMode`, `defaultPriority`, `defaultSandboxLevel`, `maxHistoryEntries`, `sessionCostLimit`, `perTaskCostEstimate`, `seenRunIds`, `presets`, `templates`, `circuitBreaker`, `defaultRole`, `defaultBackend`, `slaTrackingEnabled`, `slaWindowSize` |
 | `brl-subagent-run` | Per-invocation | `id`, `task`, `label`, `status`, `model`, `thinkingLevel`, timestamps, `cost`, `tokensIn/Out`, `outputSummary`, `fullOutput`, `originalParams`, `errorCategory`, `gitBranch`, `gitDiff`, `approved` |
 
 State is restored on `session_start` via `restoreFromSession()` using type guards (`isSubagentStateShape`) — no `as any` casts. Corrupted entries are logged and skipped, falling back to defaults.
@@ -187,8 +187,22 @@ All mutable state is encapsulated in the `SessionState` class (`state.ts`), whic
 - **Concurrency queue**: `pendingQueue` — priority-ordered, cleared on shutdown
 - **Live sessions**: `subagentSessions` Map — auto-expires entries after 3 seconds, cleared on shutdown
 - **Config**: All user-configurable fields stored in `this.config`
+- **Schedules**: `Map<string, ScheduleEntry>` — recurring task definitions (E9)
+- **Backend**: Execution backend reference (E8)
+- **SLA**: Metrics computation and degradation tracking (E4)
 
 This ensures no stale state leaks across sessions (`/resume`, `/new`).
+
+## Module Count Summary
+
+| Phase | Modules Added | Running Total |
+|-------|---------------|---------------|
+| P1 Foundation | types, sanitize, presets, state, prompt, runner, concurrency, history, tui, logging, preflight, index | 12 |
+| P3 Power | git, diff, templates, scheduler | 16 |
+| P4 Excellence | router, roles, reports, metrics, schedule, pool, messaging, backend | 24 |
+| **Total** | | **24 source modules** |
+
+Note: `index.ts` is the orchestrator entry point; all modules are imported from it.
 
 ## Recursion Depth Tracking
 
@@ -526,3 +540,114 @@ interface GraphDetails {
 
 - **Collapsed**: Wave count, per-wave status icons, task labels, parallel/serial mode indicator
 - **Expanded**: Full per-wave per-task details with output, diffs, usage stats, and aggregated totals
+
+## Skill-Based Routing (E2)
+
+The `router.ts` module auto-classifies task descriptions to the best preset personality:
+
+- **Classification rules** — ordered by priority; each rule maps keywords to a preset
+- **Keyword matching** — case-insensitive substring matching against task text
+- **Fallback** — returns `null` when no rule matches (conductor uses default preset)
+- **Integration** — called in `delegate_task.execute()` when no explicit preset is provided
+
+### Classification Examples
+
+| Keywords | Preset |
+|----------|--------|
+| "audit", "security", "vulnerability" | security-auditor |
+| "review", "PR", "pull request" | code-reviewer |
+| "test", "coverage", "spec" | test-engineer |
+| "deploy", "CI", "pipeline" | rapid-prototyper |
+| "debug", "error", "crash" | debugger |
+| "refactor", "clean up" | refactorer |
+| "docs", "README" | tech-writer |
+| "data", "SQL", "query" | data-analyst |
+| "implement", "build", "fix" | dev-agent |
+
+## RBAC Matrices (E6)
+
+The `roles.ts` module defines built-in roles and their tool permissions:
+
+### Built-in Roles
+
+| Role | Allowed Tools | Excluded Tools | Use Case |
+|------|---------------|----------------|----------|
+| `developer` | read, grep, find, ls, write, edit, bash | (none) | Full implementation access |
+| `reviewer` | read, grep, find, ls | write, edit, bash | Read-only code review |
+| `auditor` | read, grep, find, ls | write, edit, bash | Security/compliance audit |
+
+### Override Resolution
+
+1. Per-call `role` parameter
+2. Preset's `role` field
+3. State config `defaultRole` (default: `"developer"`)
+
+## Pluggable Backends (E8)
+
+The `backend.ts` module abstracts execution backends:
+
+| Backend | Tools | Use Case |
+|---------|-------|----------|
+| `pi` | Full tool access | Default; full pi process with all tools |
+| `direct-api` | None | Lightweight API-only execution (no tools) |
+
+The `Backend` interface requires:
+- `execute(task, model, thinkingLevel, signal?)` → `SubagentResult`
+- `name` — human-readable identifier
+- `supportsTools` — whether tool execution is available
+
+## Process Pool (E11)
+
+The `pool.ts` module manages warm pi processes to reduce cold-start latency:
+
+- **Lazy spawn** — processes created on first `acquireProcess()` call
+- **Idle tracking** — each entry tracks `lastUsed` timestamp
+- **Cleanup timer** — periodic sweep removes entries idle longer than `POOL_IDLE_TIMEOUT_MS`
+- **Pool size** — configurable `maxPoolSize` (default: 2)
+- **Model matching** — reuses process only if model and thinking level match
+
+## SLA Metrics (E4)
+
+The `metrics.ts` module computes performance metrics from run history:
+
+- **Latency percentiles** — p50, p95, p99 via linear interpolation
+- **Success rate** — ratio of non-error runs to total runs
+- **Cost analysis** — average, median, total cost per task
+- **Degradation detection** — compares current metrics against baseline with configurable thresholds
+
+### Degradation Triggers
+
+| Metric | Threshold |
+|--------|----------|
+| p95 latency | > 2× baseline |
+| Success rate | < 80% |
+| Cost | > 3× baseline average |
+
+## Recurring Scheduler (E9)
+
+The `schedule.ts` module manages recurring subagent tasks:
+
+- **Schedule creation** — task, interval (min 5 min), preset, thinking level
+- **Polling** — `setInterval`-based check; fires when `nextRun <= Date.now()`
+- **Fire-and-forget** — tasks execute asynchronously without blocking
+- **Enable/disable** — toggle without removing the schedule
+- **TUI management** — `/brl-subagent schedule` and `unschedule` commands
+
+## Subagent Messaging (E10)
+
+The `messaging.ts` module enables inter-subagent communication:
+
+- **Output format** — `[TO:agent-id]:message text` parsed from subagent stdout
+- **Targeted delivery** — `[TO:agent-id]:` sends to specific subagent by label
+- **Broadcast** — `[TO:*]:` sends to all running subagents
+- **Delivery timing** — messages delivered after sender completes, before recipient starts
+- **Message history** — stored in-memory with timestamps
+
+## Compliance Reports (E5)
+
+The `reports.ts` module generates compliance and audit reports:
+
+- **File access report** — which files each subagent touched (inferred from git diff)
+- **Secrets exposure** — pattern-based scan for `.env`, `.pem`, `credentials.json`, `id_rsa`
+- **Compliance summary** — aggregated counts by role, status, error category
+- **SLA integration** — includes latency/cost metrics from metrics.ts

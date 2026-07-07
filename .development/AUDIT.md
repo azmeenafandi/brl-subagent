@@ -1,12 +1,12 @@
 # brl-subagent — Audit: Strengths & Weaknesses
 
-> Generated: 2026-07-07 | Version: 1.6.0 (previously 1.5.0)
+> Generated: 2026-07-07 | Version: 2.0.0 (previously 1.6.0)
 
 ## What's Been Fixed (since v1.3.0)
 
 | # | Weakness | Resolution | Implementation |
 |---|----------|-----------|----------------|
-| 1 | Zero test coverage | **RESOLVED** | 365 tests across 16 files (unit + integration + benchmarks) |
+| 1 | Zero test coverage | **RESOLVED** | 532 tests across 25 files (unit + integration + benchmarks) |
 | 2 | No input/output sanitization | **RESOLVED** | `sanitize.ts`: `sanitizeTask`, `validateCwd`, `validateOutputFile`, `stripAnsi`, `capOutput` |
 | 3 | Subprocess environment inheritance | **RESOLVED** | `getSafeEnv()` allows only `PATH`, `HOME`, `LANG`, `TMPDIR`, `BRL_SUBAGENT_DEPTH` |
 | 4 | Type safety holes | **RESOLVED** | `isSubagentStateShape` / `isSubagentRunShape` / `isMultiSubagentDetails` / `isGraphDetails` type guards replace all `as any` |
@@ -17,7 +17,7 @@
 | 9 | No circuit breaker | **RESOLVED** | R1: `CircuitBreakerState` with 5-failure threshold, 60s auto-recovery, thinking-level degradation |
 | 10 | No disk usage policy | **RESOLVED** | R2: Auto-prune runs (default 500), cleanup stale temp dirs (24h), configurable history limit |
 | 11 | No pre-flight model validation | **RESOLVED** | R3: `preflightCheck()` validates pi binary, cwd readability, temp dir writability before spawning |
-| 12 | Monolithic architecture | **RESOLVED** | Refactored into 16 modules: types, sanitize, presets, state, prompt, runner, concurrency, history, tui, logging, preflight, git, diff, templates, scheduler, index |
+| 12 | Monolithic architecture | **RESOLVED** | Refactored into 24 modules: types, sanitize, presets, state, prompt, runner, concurrency, history, tui, logging, preflight, git, diff, templates, scheduler, router, roles, reports, metrics, schedule, pool, messaging, backend, index |
 | 13 | Module-level state not session-bound | **RESOLVED** | `SessionState` class initialized in `session_start`, cleaned in `session_shutdown` |
 | 14 | Silent preset load failures | **RESOLVED** | R10: `validateAllPresets()` validates parsed presets; errors reported per file |
 | 15 | No cost governance | **RESOLVED** | R5: `sessionCostLimit`, `perTaskCostEstimate`, `checkCostLimit()`, pre-delegation budget check |
@@ -26,8 +26,17 @@
 | 18 | No task chaining / parallel mode | **RESOLVED** | P1+P2: `runChainMode()` with `{previous}` placeholder; `runParallelMode()` with concurrent fan-out; `runGraphMode()` with dependency-aware waves |
 | 20 | No priority queue | **RESOLVED** | P6: Four priority tiers (critical/high/normal/low), `priorityInsert()` in concurrency queue, FIFO within tier |
 | 21 | No output diffing | **RESOLVED** | P5: `parseDiff()` in `diff.ts`, `FileDiff` interface, hunk capping (10/file), collapsed/expanded/full-diff views |
-| 23 | No RBAC / permission tiers | **PARTIALLY RESOLVED** | P7: `SandboxLevel` type ("none"/"readonly"/"safe"), `SANDBOX_TOOLS`/`SANDBOX_EXCLUDE` maps, per-call override semantics. Still no role-based matrices or per-user permissions. |
+| 23 | No RBAC / permission tiers | **RESOLVED** | P7: `SandboxLevel` type ("none"/"readonly"/"safe"), `SANDBOX_TOOLS`/`SANDBOX_EXCLUDE` maps, per-call override semantics. E6: `roles.ts` with reviewer/developer/auditor roles, tool permissions, per-call override chain: role > sandbox > config. |
 | 24 | No task templates | **RESOLVED** | P9: `TaskTemplate` interface, `resolveTemplate()` with `${param}` substitution, template management TUI, `template`+`params` on `delegate_task` |
+| 26 | No skill-based routing | **RESOLVED** | E2: `router.ts` — keyword-based auto-classification of tasks to presets |
+| 27 | No compliance reports | **RESOLVED** | E5: `reports.ts` — file access tracking, secrets exposure detection, compliance summary |
+| 28 | No SLA tracking | **RESOLVED** | E4: `metrics.ts` — p50/p95/p99 latency, success rate, cost analysis, degradation detection |
+| 29 | No RBAC roles | **RESOLVED** | E6: `roles.ts` — reviewer/developer/auditor roles with tool permissions and override chain |
+| 30 | No multi-turn subagents | **RESOLVED** | E7: `maxTurns` parameter enables clarifying questions via `[QUESTION]:` format |
+| 31 | No pluggable backends | **RESOLVED** | E8: `backend.ts` — Backend abstraction with pi and direct-api implementations |
+| 32 | No recurring scheduling | **RESOLVED** | E9: `schedule.ts` — interval-based recurring task management with TUI |
+| 33 | No subagent messaging | **RESOLVED** | E10: `messaging.ts` — Intercom class with `[TO:agent-id]:` output format |
+| 34 | No process pool | **RESOLVED** | E11: `pool.ts` — warm pi process management with lazy spawn and idle cleanup |
 
 ## Strengths
 
@@ -170,11 +179,71 @@
 - Clear rejection message when limit reached
 - Applies to single, chain, parallel, and graph modes
 
+### Skill-Based Routing (E2)
+- Auto-classify task descriptions to best preset via keyword matching
+- Fallback to default preset when no rule matches
+- Ordered classification rules by priority
+- Integrated into delegate_task.execute() for automatic preset selection
+
+### RBAC Roles (E6)
+- Three built-in roles: developer, reviewer, auditor
+- Tool permissions per role with override chain
+- Per-call role override with resolution: call > preset > role > sandbox > config
+- Prevents unauthorized tool access for read-only roles
+
+### Pluggable Backends (E8)
+- Backend abstraction with pi (full tools) and direct-api (HTTP) implementations
+- Configurable via /brl-subagent backend
+- Supports non-pi execution backends for flexibility
+- Backend interface: name, supportsTools, execute()
+
+### Process Pool (E11)
+- Warm pi process management reducing cold-start latency
+- Lazy spawn on first acquire, idle cleanup on timer
+- Model and thinking-level matching for process reuse
+- Configurable pool size (default: 2)
+
+### SLA Metrics (E4)
+- p50/p95/p99 latency computation via linear interpolation
+- Success rate and cost analysis per task
+- Degradation detection against configurable baseline
+- Alert thresholds: latency > 2× baseline, success < 80%, cost > 3× average
+
+### Recurring Scheduler (E9)
+- Cron-like task scheduling with minimum 5-minute intervals
+- Fire-and-forget asynchronous execution
+- Enable/disable without removing schedule
+- TUI management via /brl-subagent schedule and unschedule
+
+### Subagent Messaging (E10)
+- Intercom class for inter-subagent communication
+- Targeted ([TO:agent-id]:) and broadcast ([TO:*]:) message formats
+- Messages delivered after sender completes, before recipient starts
+- In-memory message history with timestamps
+
+### Compliance Reports (E5)
+- File access reports from git diff analysis
+- Secrets exposure detection: .env, .pem, credentials.json, id_rsa
+- Compliance summary with role breakdown and error categories
+- SLA integration with latency and cost metrics
+
+### Reserved Name Validation
+- RESERVED_NAME_PATTERN prevents __*__ names (TUI sentinels)
+- RESERVED_COMMAND_NAMES prevents collision with /brl-subagent completions
+- Applied to presets, templates, and schedules
+- Clear error messages when reserved names are used
+
+### Preset Prompt Guidelines
+- promptGuideline field on presets provides usage hints
+- Built-in presets include guidelines (e.g., "For security audits. Use thinkingLevel: high.")
+- dev-agent preset added for full-access development work
+- Helps LLM select appropriate presets for different task types
+
 ---
 
 ## Weaknesses
 
-### 🟡 Feature Gaps (Unresolved)
+### ⚠️ Remaining Weaknesses
 
 #### 19. No Dry-Run / Preview Mode
 - No way to ask "what would you change?" without actually changing files
@@ -184,6 +253,7 @@
 #### 22. No Audit Trail (Partial)
 - Run history tracks which subagent ran, with what params, and error category
 - Git diff captures which files were modified in branch mode
+- Compliance reports (E5) detect secrets exposure and file access
 - But no record of which files were **read** during execution, or which **tools** were invoked
 - Cannot answer "did a subagent read `.env`?" or "which files did it grep?"
 
@@ -200,5 +270,6 @@
 |----------|-------|----------|-----------|-----------|
 | 🔴 Critical | 9 | 9 | 0 | 0 |
 | 🟡 Robustness | 6 | 6 | 0 | 0 |
-| 🟠 Feature Gaps | 10 | 7 | 1 | 2 |
-| **Total** | **25** | **22** | **1** | **2** |
+| 🟠 Feature Gaps | 13 | 11 | 0 | 2 |
+| 🟢 Phase 4 | 9 | 9 | 0 | 0 |
+| **Total** | **37** | **35** | **0** | **2** |

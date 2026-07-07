@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Generated: 2026-07-07 | Version: 1.6.0
+> Generated: 2026-07-07 | Version: 2.0.0
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -49,7 +49,7 @@
 | P5 | **Output diffing** — parseDiff for structured file-level summaries; collapsed/expanded/full-diff views; hunk capping | M | P1 | ✅ **DONE** |
 | P6 | **Priority queue** — four tiers (critical/high/normal/low), FIFO within tier, priorityInsert function | M | P2 | ✅ **DONE** |
 | P7 | **Subagent sandboxing** — SandboxLevel (none/readonly/safe), SANDBOX_TOOLS/EXCLUDE maps, per-call override | L | P2 | ✅ **DONE** |
-| P8 | **Process pool** — keep warm pi processes for reuse (reduces cold-start latency) | L | P2 | ⏳ **DEFERRED** |
+| P8 | **Process pool** — keep warm pi processes for reuse (reduces cold-start latency) | L | P2 | ✅ **DONE** (E11) |
 | P9 | **Task templates** — save reusable task configurations with ${param} substitution; template management TUI | M | P2 | ✅ **DONE** |
 | P10 | **Dependency graph** — declare task dependencies; topological sort → wave-based parallel execution; cycle detection | L | P3 | ✅ **DONE** |
 
@@ -66,23 +66,43 @@
 | D7 | **Type guards for multi-mode** | Added `isMultiSubagentDetails()`, `isGraphDetails()` for runtime mode detection in TUI |
 | D8 | **Approval dialog with diff view** | TUI approval dialog with keyboard shortcuts (Y/D/N) and scrollable full diff view |
 
-## Phase 4 — Excellence (v2.0.0)
+## Phase 4 — Excellence (v2.0.0) ✅ COMPLETE
 
 > Goal: Best-in-class subagent extension with unmatched capabilities.
 
-| ID | Feature | Effort | Priority |
-|----|---------|--------|----------|
-| E1 | **Observability dashboard** — web UI showing active subagents, history, cost trends, success rates | XL | P2 |
-| E2 | **Skill-based routing** — auto-classify task → best preset personality | L | P2 |
-| E3 | **Recursive delegation** — subagents can delegate sub-tasks to other subagents | L | P3 |
-| E4 | **SLA tracking** — p50/p95/p99 latency; success rate; cost-per-task; degradation alerts | M | P3 |
-| E5 | **Compliance reports** — "which subagents touched X?", "secrets accessed?", "cost by agent type" | M | P3 |
-| E6 | **RBAC matrices** — role-based tool permissions (reviewer, auditor, developer) | M | P3 |
-| E7 | **Multi-turn subagents** — subagents ask clarifying questions back to conductor | L | P3 |
-| E8 | **Pluggable backends** — support non-pi backends: OpenAI API, Anthropic API, webhook, container | XL | P3 |
-| E9 | **Scheduling** — cron-like: "run security audit every night at 2am" (via pi agent loop) | M | P3 |
-| E10 | **Subagent-to-subagent messaging** — direct communication channel between concurrent subagents | L | P3 |
-| E11 | **Process pool** — keep warm pi processes for reuse (deferred from P8 in Phase 3) | L | P2 |
+| ID | Feature | Effort | Priority | Status |
+|----|---------|--------|----------|--------|
+| E1 | **Observability dashboard** — web UI showing active subagents, history, cost trends, success rates | XL | P2 | ✅ **DONE** |
+| E2 | **Skill-based routing** — auto-classify task → best preset personality | L | P2 | ✅ **DONE** |
+| E3 | **Recursive delegation** — subagents can delegate sub-tasks to other subagents | L | P3 | ✅ **DONE** |
+| E4 | **SLA tracking** — p50/p95/p99 latency; success rate; cost-per-task; degradation alerts | M | P3 | ✅ **DONE** |
+| E5 | **Compliance reports** — "which subagents touched X?", "secrets accessed?", "cost by agent type" | M | P3 | ✅ **DONE** |
+| E6 | **RBAC matrices** — role-based tool permissions (reviewer, auditor, developer) | M | P3 | ✅ **DONE** |
+| E7 | **Multi-turn subagents** — subagents ask clarifying questions back to conductor | L | P3 | ✅ **DONE** |
+| E8 | **Pluggable backends** — support non-pi backends: OpenAI API, Anthropic API, webhook, container | XL | P3 | ✅ **DONE** |
+| E9 | **Scheduling** — cron-like: "run security audit every night at 2am" (via pi agent loop) | M | P3 | ✅ **DONE** |
+| E10 | **Subagent-to-subagent messaging** — direct communication channel between concurrent subagents | L | P3 | ✅ **DONE** |
+| E11 | **Process pool** — keep warm pi processes for reuse (reimplemented from P8 in Phase 3) | L | P2 | ✅ **DONE** |
+
+### Discovery Tasks (added during implementation)
+
+| ID | Feature | Notes |
+|----|---------|-------|
+| D1 | **Recursion depth limit** | `BRL_SUBAGENT_DEPTH` env var + `maxSubagentDepth` config; prevents infinite subagent chains |
+| D2 | **Dev-agent preset** | Added to prompt guidelines: full-access preset for development subagents |
+| D3 | **Subagent feedback protocol** | Enhanced prompt instructions for how subagents should report their work |
+| D4 | **execFileSync security fix** | Replaced `execSync`/`spawn` with `execFileSync` for all git commands to avoid shell injection |
+| D5 | **Graph mode execution** | Added `runGraphMode()` to index.ts with wave-based execution using scheduler.ts |
+| D6 | **Chain/parallel mode in index.ts** | Added `runChainMode()` and `runParallelMode()` with cost/depth guard integration |
+| D7 | **Type guards for multi-mode** | Added `isMultiSubagentDetails()`, `isGraphDetails()` for runtime mode detection in TUI |
+| D8 | **Approval dialog with diff view** | TUI approval dialog with keyboard shortcuts (Y/D/N) and scrollable full diff view |
+| D9 | **Reserved name validation** | `RESERVED_NAME_PATTERN` and `RESERVED_COMMAND_NAMES` prevent collision with TUI sentinels |
+| D10 | **Preset prompt guidelines** | `promptGuideline` field on presets provides usage hints ("For security audits. Use thinkingLevel: high.") |
+| D11 | **Process pool warm-start** | `pool.ts`: lazy spawn, idle cleanup timer, configurable pool size for reduced cold-start latency |
+| D12 | **RBAC role system** | `roles.ts`: reviewer/developer/auditor roles with tool permissions and override chain |
+| D13 | **SLA degradation alerts** | `metrics.ts`: baseline comparison with configurable thresholds for performance regression detection |
+| D14 | **Secrets exposure detection** | `reports.ts`: pattern-based scan for `.env`, `.pem`, `credentials.json` in file access reports |
+| D15 | **Schedule management TUI** | `/brl-subagent schedule` and `/brl-subagent unschedule` for recurring task lifecycle |
 
 ---
 
