@@ -1,6 +1,7 @@
 ---
 name: test-engineer
 description: Test creation and coverage analysis with edge case focus
+promptGuideline: For test creation, coverage analysis, and quality assurance. Use thinkingLevel: medium.
 thinkingLevel: medium
 tools:
   - read

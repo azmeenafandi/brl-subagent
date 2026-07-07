@@ -83,6 +83,7 @@ export interface SubagentPreset {
 	excludeTools?: string[];
 	noBuiltinTools?: boolean;
 	sandboxLevel?: SandboxLevel;
+	promptGuideline?: string;
 }
 
 export interface TaskTemplate {
@@ -492,6 +493,17 @@ export const MAX_PARALLEL_TASKS = 8;
 export const MAX_GRAPH_TASKS = 12;
 export const PREVIOUS_OUTPUT_PLACEHOLDER = "{previous}";
 export const GRAPH_OUTPUT_PLACEHOLDER_RE = /\{(\w+)\}/g;
+
+/** Pattern matching names starting and ending with double underscores (TUI sentinels). */
+export const RESERVED_NAME_PATTERN = /^__.*__$/;
+
+/** Command names that collide with /brl-subagent completions. */
+export const RESERVED_COMMAND_NAMES = new Set([
+	"model", "thinking", "concurrency", "depth", "history", "monitor",
+	"preset", "retry", "reset", "priority", "templates", "schedule",
+	"unschedule", "dashboard", "approval", "role", "backend", "gitmode",
+	"sandbox", "costlimit", "historyentries", "sla",
+]);
 
 // ---------------------------------------------------------------------------
 // Helper functions

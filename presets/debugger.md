@@ -1,6 +1,7 @@
 ---
 name: debugger
 description: Systematic debugging with root cause analysis
+promptGuideline: For debugging, root cause analysis, and error diagnosis. Use thinkingLevel: high.
 thinkingLevel: high
 tools:
   - read

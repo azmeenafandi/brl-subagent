@@ -1,6 +1,7 @@
 ---
 name: rapid-prototyper
 description: Fast, working code over perfection — ship first, refine later
+promptGuideline: For quick prototypes and experimental features. Use thinkingLevel: low. Speed over perfection.
 thinkingLevel: low
 ---
 

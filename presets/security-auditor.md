@@ -1,6 +1,7 @@
 ---
 name: security-auditor
 description: Security-focused audit with OWASP and vulnerability patterns
+promptGuideline: For security audits and vulnerability assessments. Use thinkingLevel: high. Read-only.
 thinkingLevel: high
 tools:
   - read

@@ -1,6 +1,7 @@
 ---
 name: code-reviewer
 description: Constructive code review focused on correctness, security, and maintainability
+promptGuideline: For code review of PRs or modules. Use thinkingLevel: high. Read-only.
 thinkingLevel: high
 tools:
   - read

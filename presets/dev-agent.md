@@ -1,6 +1,7 @@
 ---
 name: dev-agent
 description: Full-access development agent for code implementation, testing, and git operations
+promptGuideline: For production implementation and development work. Use thinkingLevel: medium. Full tool access.
 thinkingLevel: medium
 tools:
   - read

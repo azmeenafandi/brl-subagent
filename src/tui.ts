@@ -40,6 +40,8 @@ import {
 	SANDBOX_TOOLS,
 	MAX_POOL_SIZE,
 	AVAILABLE_BACKENDS,
+	RESERVED_NAME_PATTERN,
+	RESERVED_COMMAND_NAMES,
 	formatTokens,
 	formatUsageStats,
 	formatModel,
@@ -843,6 +845,16 @@ export async function showAddPreset(
 	if (!name?.trim()) return;
 	const trimmedName = name.trim();
 
+	if (RESERVED_NAME_PATTERN.test(trimmedName)) {
+		ctx.ui.notify("Names starting and ending with '__' are reserved. Choose a different name.", "error");
+		return;
+	}
+
+	if (RESERVED_COMMAND_NAMES.has(trimmedName)) {
+		ctx.ui.notify("Name '" + trimmedName + "' is reserved for a command. Choose a different name.", "error");
+		return;
+	}
+
 	if (getPreset(trimmedName, state.builtinPresets, state.config.presets)) {
 		ctx.ui.notify(`Preset "${trimmedName}" already exists. Use a different name.`, "error");
 		return;
@@ -1036,6 +1048,16 @@ export async function showAddTemplate(
 	const name = await ctx.ui.input({ prompt: "Template name (e.g., owasp-audit):" });
 	if (!name?.trim()) return;
 	const trimmedName = name.trim();
+
+	if (RESERVED_NAME_PATTERN.test(trimmedName)) {
+		ctx.ui.notify("Names starting and ending with '__' are reserved. Choose a different name.", "error");
+		return;
+	}
+
+	if (RESERVED_COMMAND_NAMES.has(trimmedName)) {
+		ctx.ui.notify("Name '" + trimmedName + "' is reserved for a command. Choose a different name.", "error");
+		return;
+	}
 
 	if (getTemplate(trimmedName, state.config.templates)) {
 		ctx.ui.notify(`Template "${trimmedName}" already exists. Use a different name.`, "error");
@@ -1258,6 +1280,16 @@ export async function showAddSchedule(
 	const name = await ctx.ui.input({ prompt: "Schedule name (e.g., hourly-lint):" });
 	if (!name?.trim()) return;
 	const trimmedName = name.trim();
+
+	if (RESERVED_NAME_PATTERN.test(trimmedName)) {
+		ctx.ui.notify("Names starting and ending with '__' are reserved. Choose a different name.", "error");
+		return;
+	}
+
+	if (RESERVED_COMMAND_NAMES.has(trimmedName)) {
+		ctx.ui.notify("Name '" + trimmedName + "' is reserved for a command. Choose a different name.", "error");
+		return;
+	}
 
 	// Check for duplicate name
 	if (schedules.some((s) => s.name === trimmedName)) {

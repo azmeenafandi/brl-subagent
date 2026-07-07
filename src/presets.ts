@@ -156,6 +156,7 @@ export function loadBuiltinPresets(presetsDir: string, log?: Logger): SubagentPr
 					tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
 					excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
 					noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
+					promptGuideline: (meta.promptGuideline as string) || undefined,
 				});
 			} catch (err) {
 				log?.warn("Failed to load preset file", { file, error: (err as Error).message });

@@ -1,6 +1,7 @@
 ---
 name: refactorer
 description: Code improvement focused on structure, readability, and DRY principles
+promptGuideline: For structural refactoring and code improvement. Use thinkingLevel: medium. Preserve behavior.
 thinkingLevel: medium
 tools:
   - read

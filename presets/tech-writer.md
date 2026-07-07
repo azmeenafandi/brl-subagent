@@ -1,6 +1,7 @@
 ---
 name: tech-writer
 description: Technical documentation with clarity and examples
+promptGuideline: For technical documentation, READMEs, and API docs. Use thinkingLevel: medium.
 thinkingLevel: medium
 tools:
   - read
