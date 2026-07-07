@@ -140,6 +140,7 @@ export interface SubagentState {
 	circuitBreaker: CircuitBreakerState;
 	poolEnabled: boolean;
 	poolSize: number;
+ defaultRole: string; // E6: RBAC role-based tool permissions
 }
 
 export interface SubagentRun {
@@ -389,6 +390,8 @@ export const DEFAULT_OUTPUT_CAP_BYTES = 100 * 1024; // 100KB
 export const MAX_HUNKS_PER_FILE = 10;
 export const COLLAPSED_DIFF_FILES_PREVIEW = 5; // max file entries in collapsed view
 export const EXPANDED_HUNKS_PER_FILE = 5; // max hunks shown per file in expanded view
+
+export const DEFAULT_MAX_SUBAGENT_DEPTH = 3;
 
 export const MAX_RUN_HISTORY_ENTRIES = 500;
 export const MAX_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours

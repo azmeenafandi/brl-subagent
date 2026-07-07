@@ -115,6 +115,7 @@ import {
 	renderDelegateCall,
 	renderDelegateResult,
 } from "./tui";
+import { ROLE_DEFINITIONS, DEFAULT_ROLE, type RoleName } from "./roles";
 import { createLogger, type Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
@@ -404,7 +405,7 @@ export default function (pi: ExtensionAPI) {
 						text:
 							`Cannot delegate further: subagent recursion depth limit reached ` +
 							`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-							`Complete the task directly or ask the user to increase the limit via /brl-subagent.`,
+							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 					},
 				],
 				isError: true,
@@ -786,7 +787,7 @@ export default function (pi: ExtensionAPI) {
 						text:
 							`Cannot delegate further: subagent recursion depth limit reached ` +
 							`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-							`Complete the task directly or ask the user to increase the limit via /brl-subagent.`,
+							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 					},
 				],
 				isError: true,
@@ -1160,7 +1161,7 @@ export default function (pi: ExtensionAPI) {
 						text:
 							`Cannot delegate further: subagent recursion depth limit reached ` +
 							`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-							`Complete the task directly or ask the user to increase the limit via /brl-subagent.`,
+							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 					},
 				],
 				isError: true,
@@ -1728,6 +1729,13 @@ export default function (pi: ExtensionAPI) {
 						"always (ask every time). Default is user config (/brl-subagent approval).",
 				}),
 			),
+			role: Type.Optional(
+				Type.String({
+					description:
+						"RBAC role: reviewer (read-only), developer (full), or auditor (security). " +
+						"Defaults to user config or developer.",
+				}),
+			),
 			sandboxLevel: Type.Optional(
 				Type.String({
 					description:
@@ -2006,7 +2014,7 @@ export default function (pi: ExtensionAPI) {
 							text:
 								`Cannot delegate further: subagent recursion depth limit reached ` +
 								`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-								`Complete the task directly or ask the user to increase the limit via /brl-subagent.`,
+								`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 						},
 					],
 					isError: true,

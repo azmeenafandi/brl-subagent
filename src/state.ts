@@ -24,6 +24,7 @@ import {
 	isSubagentRunShape,
 	CUSTOM_ENTRY_TYPES,
 	MAX_RUN_HISTORY_ENTRIES,
+	DEFAULT_MAX_SUBAGENT_DEPTH,
 	DEFAULT_SESSION_COST_LIMIT,
 	DEFAULT_PRIORITY,
 	MAX_CONSECUTIVE_FAILURES,
@@ -69,12 +70,11 @@ export class SessionState {
 		this.config = {
 			maxThinkingLevel: "off",
 			maxParallel: 0,
-			maxSubagentDepth: 1,
+			maxSubagentDepth: DEFAULT_MAX_SUBAGENT_DEPTH,
 			gitMode: "none",
 			approvalMode: "writes",
 			defaultPriority: DEFAULT_PRIORITY,
 			defaultSandboxLevel: "none" as SandboxLevel,
-			maxHistoryEntries: MAX_RUN_HISTORY_ENTRIES,
 			sessionCostLimit: DEFAULT_SESSION_COST_LIMIT,
 			perTaskCostEstimate: 0,
 			seenRunIds: [],
@@ -83,6 +83,7 @@ export class SessionState {
 			circuitBreaker: this.defaultCircuitBreaker(),
 			poolEnabled: false,
 			poolSize: 2,
+ defaultRole: "developer",
 		};
 	}
 
@@ -109,6 +110,7 @@ export class SessionState {
 			circuitBreaker: this.config.circuitBreaker,
 			poolEnabled: this.config.poolEnabled,
 			poolSize: this.config.poolSize,
+			defaultRole: this.config.defaultRole,
 		});
 	}
 
@@ -178,6 +180,16 @@ export class SessionState {
 			this.config.defaultSandboxLevel = data.defaultSandboxLevel as SandboxLevel;
 		} else {
 			this.config.defaultSandboxLevel = "none";
+
+		// Restore defaultRole (E6)
+		if (
+			data.defaultRole &&
+			(data.defaultRole === "reviewer" || data.defaultRole === "developer" || data.defaultRole === "auditor")
+		) {
+			this.config.defaultRole = data.defaultRole;
+		} else {
+			this.config.defaultRole = "developer";
+		}
 		}
 
 		if (Array.isArray(data.seenRunIds)) this.config.seenRunIds = data.seenRunIds;
@@ -371,11 +383,21 @@ export class SessionState {
 		this.config.model = undefined;
 		this.config.maxThinkingLevel = "off";
 		this.config.maxParallel = 0;
-		this.config.maxSubagentDepth = 1;
+		this.config.maxSubagentDepth = DEFAULT_MAX_SUBAGENT_DEPTH;
 		this.config.gitMode = "none";
 		this.config.approvalMode = "writes";
 		this.config.defaultPriority = "normal";
 		this.config.defaultSandboxLevel = "none";
+
+		// Restore defaultRole (E6)
+		if (
+			data.defaultRole &&
+			(data.defaultRole === "reviewer" || data.defaultRole === "developer" || data.defaultRole === "auditor")
+		) {
+			this.config.defaultRole = data.defaultRole;
+		} else {
+			this.config.defaultRole = "developer";
+		}
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
 		this.config.perTaskCostEstimate = 0;
@@ -383,6 +405,7 @@ export class SessionState {
 		this.config.circuitBreaker = this.defaultCircuitBreaker();
 		this.config.poolEnabled = false;
 		this.config.poolSize = 2;
+			this.config.defaultRole = "developer";
 	}
 }
 

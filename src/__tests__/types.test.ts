@@ -2,8 +2,10 @@
  * Tests for types.ts — type guards, helpers, and constants.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
+import { getCurrentDepth, DEPTH_ENV_KEY } from "../sanitize";
 import {
+	DEFAULT_MAX_SUBAGENT_DEPTH,
 	THINKING_LEVELS,
 	resolveThinkingLevel,
 	formatTokens,
@@ -423,5 +425,63 @@ describe("isSubagentRunShape", () => {
 	it("rejects missing required fields", () => {
 		expect(isSubagentRunShape({ status: "done" })).toBe(false);
 		expect(isSubagentRunShape({ id: "abc", status: "done" })).toBe(false);
+	});
+});
+
+
+// ---------------------------------------------------------------------------
+// DEFAULT_MAX_SUBAGENT_DEPTH (E3: Recursive delegation)
+// ---------------------------------------------------------------------------
+
+describe("DEFAULT_MAX_SUBAGENT_DEPTH", () => {
+	it("is set to 3", () => {
+		expect(DEFAULT_MAX_SUBAGENT_DEPTH).toBe(3);
+	});
+
+	it("is a positive integer", () => {
+		expect(DEFAULT_MAX_SUBAGENT_DEPTH).toBeGreaterThan(0);
+		expect(Number.isInteger(DEFAULT_MAX_SUBAGENT_DEPTH)).toBe(true);
+	});
+});
+
+
+// ---------------------------------------------------------------------------
+// E3: Recursive delegation depth guard logic
+// ---------------------------------------------------------------------------
+
+describe("recursive delegation depth guard", () => {
+	const original = process.env[DEPTH_ENV_KEY];
+
+	afterEach(() => {
+		if (original !== undefined) {
+			process.env[DEPTH_ENV_KEY] = original;
+		} else {
+			delete process.env[DEPTH_ENV_KEY];
+		}
+	});
+
+	it("allows delegation at depth 2 with max 3", () => {
+		process.env[DEPTH_ENV_KEY] = "2";
+		const depth = getCurrentDepth();
+		expect(depth).toBeLessThan(DEFAULT_MAX_SUBAGENT_DEPTH); // 2 < 3 => allowed
+	});
+
+	it("rejects delegation at depth 3 with max 3", () => {
+		process.env[DEPTH_ENV_KEY] = "3";
+		const depth = getCurrentDepth();
+		expect(depth).toBeGreaterThanOrEqual(DEFAULT_MAX_SUBAGENT_DEPTH); // 3 >= 3 => rejected
+	});
+
+	it("rejects delegation at depth 4 with max 3", () => {
+		process.env[DEPTH_ENV_KEY] = "4";
+		const depth = getCurrentDepth();
+		expect(depth).toBeGreaterThanOrEqual(DEFAULT_MAX_SUBAGENT_DEPTH); // 4 >= 3 => rejected
+	});
+
+	it("allows delegation at depth 0 (main process) with max 3", () => {
+		delete process.env[DEPTH_ENV_KEY];
+		const depth = getCurrentDepth();
+		expect(depth).toBe(0);
+		expect(depth).toBeLessThan(DEFAULT_MAX_SUBAGENT_DEPTH); // 0 < 3 => allowed
 	});
 });

@@ -16,7 +16,9 @@ export const SUBAGENT_INSTRUCTIONS =
 	"2. Key findings or results\n" +
 	"3. Any issues or limitations encountered\n" +
 	"4. Files modified (if any)\n\n" +
-	"When you encounter a blocker during the task, report it clearly using this format in your final response: ## Completion Status with [DONE/UNVERIFIED/BLOCKED] for each requirement, then ## Blockers section listing the issue, what you tried, and what you need. If you cannot run tests or execute commands because your toolset lacks bash/exec access, state this explicitly under Blockers. Do NOT claim tests pass if you could not run them.";
+	"When you encounter a blocker during the task, report it clearly using this format in your final response: ## Completion Status with [DONE/UNVERIFIED/BLOCKED] for each requirement, then ## Blockers section listing the issue, what you tried, and what you need. If you cannot run tests or execute commands because your toolset lacks bash/exec access, state this explicitly under Blockers. Do NOT claim tests pass if you could not run them." +
+	"\n\n" +
+	"If your task is complex and can be broken into independent sub-tasks, you may use delegate_task to spawn sub-subagents. Follow these rules: delegate only truly independent work, set labels for each sub-subagent, use appropriate thinking levels for simplicity, and collect all results before reporting. Do NOT create chains of more than 2 levels deep without explicit user approval. If you delegate, mention it in your summary.";
 
 // ---------------------------------------------------------------------------
 // Output file instruction block
