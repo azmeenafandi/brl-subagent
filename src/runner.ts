@@ -20,6 +20,7 @@ import type {
 	UsageStats,
 	ThinkingLevel,
 } from "./types";
+import type { ProcessPool, ProcessPoolEntry } from "./pool";
 import {
 	EMPTY_USAGE,
 	SIGKILL_GRACE_MS,
@@ -292,7 +293,32 @@ export async function runSubagent(
 	getFinalOutputFn: (messages: Array<Record<string, unknown>>) => string,
 	log?: Logger,
 	depth?: number,
+	pool?: ProcessPool,
 ): Promise<SubagentResult> {
+	// E11: Try pool first if provided
+	if (pool) {
+		const modelStr = `${model.provider}/${model.id}`;
+		const poolEntry = await pool.acquire(cwd, modelStr, thinkingLevel);
+		if (poolEntry) {
+			log?.debug("Using pool process for subagent", {
+				pid: poolEntry.process.pid,
+				model: modelStr,
+				thinkingLevel,
+			});
+			try {
+				const result = await pool.sendTask(poolEntry, task, timeout, onUpdate as never, getFinalOutputFn);
+				return result;
+			} catch (err) {
+				log?.warn("Pool sendTask failed, falling back to fresh spawn", {
+					error: (err as Error).message,
+				});
+			} finally {
+				pool.release(poolEntry);
+			}
+		}
+		log?.debug("Pool acquire returned null, using fresh spawn");
+	}
+
 	const args = buildSubagentArgs(model, thinkingLevel, toolOptions);
 
 	let tmpDir: string | null = null;

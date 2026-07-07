@@ -558,6 +558,14 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 		if (typeof v.perTaskCostEstimate !== "number" || v.perTaskCostEstimate < 0) return false;
 	}
 
+	// poolEnabled must be a boolean if present
+	if (v.poolEnabled !== undefined && typeof v.poolEnabled !== "boolean") return false;
+
+	// poolSize must be a number 1-8 if present
+	if (v.poolSize !== undefined) {
+		if (typeof v.poolSize !== "number" || v.poolSize < 1 || v.poolSize > 8) return false;
+	}
+
 	return true;
 }
 

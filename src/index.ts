@@ -103,6 +103,7 @@ import {
 	showPresetManager,
 	showTemplateManager,
 	showSandboxLevelSelector,
+	showPoolConfig,
 	showConfigMenu,
 	showRunHistory,
 	showMonitor,
@@ -1495,7 +1496,7 @@ export default function (pi: ExtensionAPI) {
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
 				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "costlimit", "graph", "reset",
-				"history", "historyentries", "monitor", "preset", "retry", "schedule", "unschedule",
+				"history", "historyentries", "monitor", "preset", "retry", "pool", "schedule", "unschedule",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
@@ -1522,6 +1523,7 @@ export default function (pi: ExtensionAPI) {
 				preset: () => showPresetManager(ctx, state, () => state.persistState(pi)),
 				templates: () => showTemplateManager(ctx, state, () => state.persistState(pi)),
 				retry: () => showRetryMenu(ctx, state),
+				pool: () => showPoolConfig(ctx, state, applyConfig),
 				schedule: async () => {
 					if (!scheduler) {
 						ctx.ui.notify("Scheduler not initialized.", "error");
