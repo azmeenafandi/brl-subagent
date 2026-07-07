@@ -20,6 +20,8 @@ import type {
 	MultiSubagentDetails,
 	ChainDetails,
 	ParallelDetails,
+	GraphDetails,
+	GraphTask,
 	SubTaskResult,
 	ThinkingLevel,
 	Priority,
@@ -42,6 +44,7 @@ import {
 	getFinalOutput,
 	isSubagentError,
 	isMultiSubagentDetails,
+	isGraphDetails,
 } from "./types";
 import { extractParamNames } from "./templates";
 import { parseDiff } from "./diff";
@@ -1932,6 +1935,179 @@ function withDiffKeybinding(
 }
 
 // ---------------------------------------------------------------------------
+// P10: Graph collapsed / expanded rendering
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a collapsed one-line summary of a graph execution.
+ * Shows wave count, per-wave status icons, and task labels.
+ */
+function renderCollapsedGraph(
+	details: GraphDetails,
+	theme: {
+		fg: (color: string, text: string) => string;
+		bold: (text: string) => string;
+	},
+): string {
+	const totalTasks = details.waves.reduce((s, w) => s + w.tasks.length, 0);
+	const allSucceeded = details.waves.every((w) =>
+		w.tasks.every(
+			(r) =>
+				r.exitCode === 0 &&
+				r.stopReason !== "error" &&
+				r.stopReason !== "aborted",
+		),
+	);
+	const icon = allSucceeded
+		? theme.fg("success", "\u2713")
+		: theme.fg("error", "\u2717");
+	let text = `${icon} ${theme.fg("toolTitle", theme.bold("graph"))} ${theme.fg("muted", `${totalTasks} tasks in ${details.waves.length} waves`)}`;
+
+	const maxWavesToShow = 3;
+	const wavesToRender = details.waves.slice(0, maxWavesToShow);
+
+	for (const wave of wavesToRender) {
+		const waveOk = wave.tasks.every(
+			(r) =>
+				r.exitCode === 0 &&
+				r.stopReason !== "error" &&
+				r.stopReason !== "aborted",
+		);
+		const waveIcon = waveOk
+			? theme.fg("success", "\u2713")
+			: theme.fg("error", "\u2717");
+		const modeLabel = wave.parallel ? "parallel" : "serial";
+		const taskLabels = wave.tasks.map((r) => {
+			const label = r.label || r.task.slice(0, 30);
+			const taskIcon =
+				r.exitCode === 0 && r.stopReason !== "error" && r.stopReason !== "aborted"
+					? theme.fg("success", "\u2713")
+					: theme.fg("error", "\u2717");
+			return `${taskIcon} ${theme.fg("dim", label)}`;
+		});
+		text += `
+  ${waveIcon} Wave ${wave.waveIndex} (${theme.fg("muted", modeLabel)}): ${taskLabels.join(", ")}`;
+	}
+
+	if (details.waves.length > maxWavesToShow) {
+		text += `
+  ${theme.fg("dim", `+${details.waves.length - maxWavesToShow} more waves`)}`;
+	}
+
+	text += `
+${theme.fg("muted", "(Ctrl+O to expand)")}`;
+	return text;
+}
+
+/**
+ * Render an expanded view of a graph execution.
+ * Full Container with per-wave per-task details and aggregated totals.
+ */
+function renderExpandedGraph(
+	details: GraphDetails,
+	theme: {
+		fg: (color: string, text: string) => string;
+		bold: (text: string) => string;
+	},
+	mdTheme: ReturnType<typeof getMarkdownTheme>,
+): Container {
+	const container = new Container();
+	const totalTasks = details.waves.reduce((s, w) => s + w.tasks.length, 0);
+	container.addChild(
+		new Text(
+			theme.fg("accent", theme.bold(`Graph: ${totalTasks} tasks in ${details.waves.length} waves`)),
+			0,
+			0,
+		),
+	);
+	container.addChild(new Spacer(1));
+
+	for (const wave of details.waves) {
+		const waveOk = wave.tasks.every(
+			(r) =>
+				r.exitCode === 0 &&
+				r.stopReason !== "error" &&
+				r.stopReason !== "aborted",
+		);
+		const waveIcon = waveOk
+			? theme.fg("success", "\u2713")
+			: theme.fg("error", "\u2717");
+		const modeLabel = wave.parallel ? "parallel" : "serial";
+		container.addChild(
+			new Text(
+				`${waveIcon} ${theme.fg("toolTitle", theme.bold(`Wave ${wave.waveIndex}`))} ${theme.fg("muted", `(${modeLabel}, ${wave.tasks.length} task${wave.tasks.length > 1 ? "s" : ""})`)}`,
+				0,
+				0,
+			),
+		);
+
+		for (const r of wave.tasks) {
+			const isErr =
+				r.exitCode !== 0 ||
+				r.stopReason === "error" ||
+				r.stopReason === "aborted";
+			const statusIcon = isErr
+				? theme.fg("error", "\u2717")
+				: theme.fg("success", "\u2713");
+			const label = r.label ? `[${r.label}] ` : "";
+
+			container.addChild(
+				new Text(
+					`${statusIcon} ${theme.fg("toolTitle", theme.bold(label))}` +
+						(r.model ? theme.fg("muted", ` (${r.model})`) : ""),
+					0,
+					0,
+				),
+			);
+			container.addChild(
+				new Text(theme.fg("dim", `Task: ${r.task.slice(0, 200)}`), 0, 0),
+			);
+
+			if (isErr && r.errorMessage) {
+				container.addChild(
+					new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0),
+				);
+			}
+
+			const output = getFinalOutput(r.messages);
+			if (output) {
+				container.addChild(
+					new Text(theme.fg("muted", "\u2500\u2500\u2500 Output \u2500\u2500\u2500"), 0, 0),
+				);
+				container.addChild(new Markdown(output.trim(), 0, 0, mdTheme));
+			}
+
+			addExpandedDiffSection(container, r.gitDiff, theme);
+
+			const usageStr = formatUsageStats(r.usage, r.model);
+			if (usageStr) {
+				container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
+			}
+			container.addChild(new Spacer(1));
+		}
+	}
+
+	// Aggregated totals
+	const aggUsage: UsageStats = {
+		input: details.totalInput,
+		output: details.totalOutput,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost: details.totalCost,
+		contextTokens: 0,
+		turns: details.totalTurns,
+	};
+	const aggStr = formatUsageStats(aggUsage);
+	if (aggStr) {
+		container.addChild(
+			new Text(theme.fg("dim", `Totals: ${aggStr}`), 0, 0),
+		);
+	}
+
+	return container;
+}
+
+// ---------------------------------------------------------------------------
 // Public rendering entry points (used by delegate_task tool)
 // ---------------------------------------------------------------------------
 
@@ -1950,12 +2126,32 @@ export function renderDelegateCall(
 		noBuiltinTools?: boolean;
 		chain?: SubTaskParams[];
 		tasks?: SubTaskParams[];
+		graph?: GraphTask[];
 	},
 	theme: {
 		fg: (color: string, text: string) => string;
 		bold: (text: string) => string;
 	},
 ): Text {
+	// Graph mode
+	if (args.graph && args.graph.length > 0) {
+		const n = args.graph.length;
+		let text = `${theme.fg("accent", "delegate_task")} ${theme.fg("muted", `graph (${n} task${n > 1 ? "s" : ""})`)}`;
+		const preview = args.graph.slice(0, 3);
+		for (let i = 0; i < preview.length; i++) {
+			const t = preview[i];
+			const label = t.label || t.id;
+			const deps = t.dependsOn?.length ? theme.fg("dim", ` [depends on: ${t.dependsOn.join(", ")}]`) : "";
+			text += `
+${theme.fg("muted", `${i + 1}.`)} ${theme.fg("dim", label)}${deps}`;
+		}
+		if (n > 3) {
+			text += `
+${theme.fg("dim", `+${n - 3} more`)}`;
+		}
+		return new Text(text, 0, 0);
+	}
+
 	// Chain mode
 	if (args.chain && args.chain.length > 0) {
 		const n = args.chain.length;
@@ -2012,6 +2208,15 @@ export function renderDelegateResult(
 	},
 ): Container | Text | ReturnType<typeof withDiffKeybinding> {
 	const details = result.details;
+
+	// Check for graph mode
+	if (details && isGraphDetails(details)) {
+		const gd = details as GraphDetails;
+		if (options.expanded) {
+			return renderExpandedGraph(gd, theme, getMarkdownTheme());
+		}
+		return new Text(renderCollapsedGraph(gd, theme), 0, 0);
+	}
 
 	// Check for multi-subagent (chain / parallel) mode
 	if (details && isMultiSubagentDetails(details)) {
