@@ -82,6 +82,7 @@ export interface SubagentPreset {
 	tools?: string[];
 	excludeTools?: string[];
 	noBuiltinTools?: boolean;
+	sandboxLevel?: SandboxLevel;
 }
 
 export interface TaskTemplate {
@@ -107,6 +108,20 @@ export interface CircuitBreakerState {
 
 export type GitMode = "branch" | "none";
 
+export type SandboxLevel = "none" | "readonly" | "safe";
+
+export const SANDBOX_TOOLS: Record<SandboxLevel, string[] | undefined> = {
+	none: undefined,
+	readonly: ["read", "grep", "find", "ls"],
+	safe: ["read", "grep", "find", "ls", "bash"],
+};
+
+export const SANDBOX_EXCLUDE: Record<SandboxLevel, string[] | undefined> = {
+	none: undefined,
+	readonly: ["write", "edit", "bash"],
+	safe: ["write", "edit"],
+};
+
 export interface SubagentState {
 	model?: { provider: string; id: string };
 	maxThinkingLevel: ThinkingLevel;
@@ -115,6 +130,7 @@ export interface SubagentState {
 	gitMode: GitMode; // P3: branch-based git workflow
 	approvalMode: ApprovalMode; // P4: change approval workflow
 	defaultPriority: Priority; // P6: default priority for subagent tasks
+	defaultSandboxLevel: SandboxLevel; // P7: sandbox level for subagent tool access
 	maxHistoryEntries: number; // 0 = unlimited
 	sessionCostLimit: number; // 0 = unlimited
 	perTaskCostEstimate: number; // 0 = no estimate, use default
@@ -450,6 +466,11 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 	// defaultPriority must be a valid priority if present
 	if (v.defaultPriority !== undefined) {
 		if (!["critical", "high", "normal", "low"].includes(v.defaultPriority as string)) return false;
+	}
+
+	// defaultSandboxLevel must be "none", "readonly", or "safe" if present
+	if (v.defaultSandboxLevel !== undefined) {
+		if (v.defaultSandboxLevel !== "none" && v.defaultSandboxLevel !== "readonly" && v.defaultSandboxLevel !== "safe") return false;
 	}
 
 	// maxHistoryEntries must be a non-negative number if present

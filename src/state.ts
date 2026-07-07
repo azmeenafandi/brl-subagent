@@ -17,6 +17,7 @@ import type {
 	ApprovalMode,
 	CircuitBreakerState,
 	Priority,
+	SandboxLevel,
 } from "./types";
 import {
 	isSubagentStateShape,
@@ -72,6 +73,7 @@ export class SessionState {
 			gitMode: "none",
 			approvalMode: "writes",
 			defaultPriority: DEFAULT_PRIORITY,
+			defaultSandboxLevel: "none" as SandboxLevel,
 			maxHistoryEntries: MAX_RUN_HISTORY_ENTRIES,
 			sessionCostLimit: DEFAULT_SESSION_COST_LIMIT,
 			perTaskCostEstimate: 0,
@@ -95,6 +97,7 @@ export class SessionState {
 			gitMode: this.config.gitMode,
 			approvalMode: this.config.approvalMode,
 			defaultPriority: this.config.defaultPriority,
+			defaultSandboxLevel: this.config.defaultSandboxLevel,
 			maxHistoryEntries: this.config.maxHistoryEntries,
 			sessionCostLimit: this.config.sessionCostLimit,
 			perTaskCostEstimate: this.config.perTaskCostEstimate,
@@ -162,6 +165,17 @@ export class SessionState {
 		} else {
 			this.config.defaultPriority = "normal";
 		}
+
+		// Restore defaultSandboxLevel (P7)
+		if (
+			data.defaultSandboxLevel &&
+			(data.defaultSandboxLevel === "none" || data.defaultSandboxLevel === "readonly" || data.defaultSandboxLevel === "safe")
+		) {
+			this.config.defaultSandboxLevel = data.defaultSandboxLevel as SandboxLevel;
+		} else {
+			this.config.defaultSandboxLevel = "none";
+		}
+
 		if (Array.isArray(data.seenRunIds)) this.config.seenRunIds = data.seenRunIds;
 		if (Array.isArray(data.presets)) this.config.presets = data.presets;
 		if (Array.isArray(data.templates)) this.config.templates = data.templates;
@@ -353,6 +367,7 @@ export class SessionState {
 		this.config.gitMode = "none";
 		this.config.approvalMode = "writes";
 		this.config.defaultPriority = "normal";
+		this.config.defaultSandboxLevel = "none";
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
 		this.config.perTaskCostEstimate = 0;

@@ -41,6 +41,7 @@ import type {
 	ChainDetails,
 	ParallelDetails,
 	MultiSubagentDetails,
+	SandboxLevel,
 } from "./types";
 import {
 	resolveThinkingLevel,
@@ -51,6 +52,8 @@ import {
 	MAX_CHAIN_STEPS,
 	MAX_PARALLEL_TASKS,
 	PREVIOUS_OUTPUT_PLACEHOLDER,
+	SANDBOX_TOOLS,
+	SANDBOX_EXCLUDE,
 	type GitMode,
 } from "./types";
 import { resolveTemplate } from "./templates";
@@ -90,6 +93,7 @@ import {
 	showApprovalDialog,
 	showPresetManager,
 	showTemplateManager,
+	showSandboxLevelSelector,
 	showConfigMenu,
 	showRunHistory,
 	showMonitor,
@@ -181,12 +185,34 @@ export default function (pi: ExtensionAPI) {
 			state.config.maxThinkingLevel,
 		);
 
+		// P7: Resolve sandbox level: per-call param > preset's sandboxLevel > state config default
+		const resolvedSandboxLevel: SandboxLevel =
+			(params.sandboxLevel === "none" || params.sandboxLevel === "readonly" || params.sandboxLevel === "safe")
+				? (params.sandboxLevel as SandboxLevel)
+				: (preset?.sandboxLevel === "none" || preset?.sandboxLevel === "readonly" || preset?.sandboxLevel === "safe")
+					? (preset.sandboxLevel as SandboxLevel)
+					: state.config.defaultSandboxLevel;
+
+		// P7: Apply sandbox restrictions
+		let finalTools = mergedTools;
+		let finalExcludeTools = mergedExcludeTools;
+		let finalNoBuiltinTools = mergedNoBuiltinTools;
+
+		if (resolvedSandboxLevel !== "none") {
+			const sandboxToolsList = SANDBOX_TOOLS[resolvedSandboxLevel];
+			const sandboxExcludeList = SANDBOX_EXCLUDE[resolvedSandboxLevel];
+
+			// Use explicit user overrides if provided, otherwise use sandbox defaults
+			finalTools = params.tools ?? sandboxToolsList;
+			finalExcludeTools = params.excludeTools ?? sandboxExcludeList;
+		}
+
 		const toolOptions: SubagentToolOptions | undefined =
-			mergedTools || mergedExcludeTools || mergedNoBuiltinTools
+			finalTools || finalExcludeTools || finalNoBuiltinTools
 				? {
-						tools: mergedTools,
-						excludeTools: mergedExcludeTools,
-						noBuiltinTools: mergedNoBuiltinTools,
+						tools: finalTools,
+						excludeTools: finalExcludeTools,
+						noBuiltinTools: finalNoBuiltinTools,
 					}
 				: undefined;
 
@@ -202,6 +228,7 @@ export default function (pi: ExtensionAPI) {
 			toolOptions,
 			resolvedGitMode,
 			resolvedApprovalMode,
+			resolvedSandboxLevel,
 		};
 	}
 
@@ -1041,7 +1068,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "costlimit", "reset",
+				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "costlimit", "reset",
 				"history", "historyentries", "monitor", "preset", "retry",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
@@ -1060,6 +1087,7 @@ export default function (pi: ExtensionAPI) {
 				priority: () => showDefaultPrioritySelector(ctx, state, applyConfig),
 				gitmode: () => showGitModeSelector(ctx, state, applyConfig),
 				approval: () => showApprovalModeSelector(ctx, state, applyConfig),
+				sandbox: () => showSandboxLevelSelector(ctx, state, applyConfig),
 				costlimit: () => showCostLimitInput(ctx, state, applyConfig),
 				reset: () => resetState(ctx),
 				history: () => showRunHistory(ctx, state, () => state.persistState(pi)),
@@ -1246,6 +1274,13 @@ export default function (pi: ExtensionAPI) {
 					description:
 						"Change approval mode: auto (never ask), writes (ask when files changed), " +
 						"always (ask every time). Default is user config (/brl-subagent approval).",
+				}),
+			),
+			sandboxLevel: Type.Optional(
+				Type.String({
+					description:
+						"Sandbox level: none (full access), readonly (audit/review), or safe (debug/verify). " +
+						"Defaults to user config (/brl-subagent sandbox).",
 				}),
 			),
 			chain: Type.Optional(Type.Array(Type.Object({
