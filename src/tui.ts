@@ -28,6 +28,7 @@ import type {
 	UsageStats,
 	FileDiff,
 	SandboxLevel,
+	ScheduleEntry,
 } from "./types";
 import {
 	THINKING_LEVELS,
@@ -37,6 +38,7 @@ import {
 	COLLAPSED_DIFF_FILES_PREVIEW,
 	EXPANDED_HUNKS_PER_FILE,
 	SANDBOX_TOOLS,
+	MAX_POOL_SIZE,
 	formatTokens,
 	formatUsageStats,
 	formatModel,
@@ -394,6 +396,46 @@ export async function showSandboxLevelSelector(
 
 	state.config.defaultSandboxLevel = result as SandboxLevel;
 	onConfigChanged(ctx, `Default sandbox level set to ${result} — ${sandboxLevelDescription(result as SandboxLevel)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Pool configuration UI (E11)
+// ---------------------------------------------------------------------------
+
+export async function showPoolConfig(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	// Step 1: Enable/disable
+	const enableItems: SelectItem[] = [
+		{ value: "disabled", label: "Disabled", description: "No process pool (cold start for each subagent)" },
+		{ value: "enabled", label: "Enabled", description: "Keep warm pi processes for faster subagent starts" },
+	];
+	const enableResult = await showSelectList(ctx, "Process Pool", enableItems, 5);
+	if (!enableResult) return;
+
+	const enabled = enableResult === "enabled";
+	state.config.poolEnabled = enabled;
+
+	if (!enabled) {
+		onConfigChanged(ctx, "Process pool disabled");
+		return;
+	}
+
+	// Step 2: Pool size
+	const sizeResult = await ctx.ui.input({
+		prompt: `Pool size (1-${MAX_POOL_SIZE}, default 2):`,
+		default: String(state.config.poolSize),
+	});
+	if (sizeResult == null) return;
+	const size = parseInt(sizeResult, 10);
+	if (isNaN(size) || size < 1 || size > MAX_POOL_SIZE) {
+		ctx.ui.notify(`Invalid pool size. Must be 1-${MAX_POOL_SIZE}.`, "error");
+		return;
+	}
+	state.config.poolSize = size;
+	onConfigChanged(ctx, `Process pool enabled with ${size} warm process${size > 1 ? "es" : ""}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -774,6 +816,240 @@ export async function showTemplateManager(
 }
 
 // ---------------------------------------------------------------------------
+// E9: Schedule management UI
+// ---------------------------------------------------------------------------
+
+export async function showScheduleManager(
+	ctx: ExtensionContext,
+	state: SessionState,
+	schedules: ScheduleEntry[],
+	persistState: () => void,
+	callbacks: {
+		addSchedule: () => Promise<void>;
+		removeSchedule: () => Promise<void>;
+		listSchedules: () => Promise<void>;
+	},
+): Promise<void> {
+	const items: SelectItem[] = [
+		{
+			value: "__add__",
+			label: "+ Add Schedule",
+			description: "Create a new recurring task schedule",
+		},
+		{
+			value: "__remove__",
+			label: "- Remove Schedule",
+			description: "Delete an existing schedule",
+		},
+		{
+			value: "__list__",
+			label: "View Schedules",
+			description: "Show all schedules with next run times",
+		},
+	];
+
+	const result = await showSelectList(
+		ctx,
+		`Schedules (${schedules.length} active)`,
+		items,
+		5,
+	);
+	if (!result) return;
+
+	if (result === "__add__") {
+		await callbacks.addSchedule();
+	} else if (result === "__remove__") {
+		await callbacks.removeSchedule();
+	} else if (result === "__list__") {
+		await callbacks.listSchedules();
+	}
+}
+
+export async function showAddSchedule(
+	ctx: ExtensionContext,
+	state: SessionState,
+	schedules: ScheduleEntry[],
+	persistState: () => void,
+	callbacks: {
+		addScheduleEntry: (config: import("./types").ScheduleConfig) => string;
+	},
+): Promise<void> {
+	const name = await ctx.ui.input({ prompt: "Schedule name (e.g., hourly-lint):" });
+	if (!name?.trim()) return;
+	const trimmedName = name.trim();
+
+	// Check for duplicate name
+	if (schedules.some((s) => s.name === trimmedName)) {
+		ctx.ui.notify(`Schedule "${trimmedName}" already exists.`, "error");
+		return;
+	}
+
+	const task = await ctx.ui.input({ prompt: "Task description for the subagent:" });
+	if (!task?.trim()) {
+		ctx.ui.notify("Task description is required.", "error");
+		return;
+	}
+
+	const intervalStr = await ctx.ui.input({
+		prompt: "Interval in minutes (minimum 5):",
+		default: "60",
+	});
+	if (intervalStr == null) return;
+	const intervalMinutes = parseInt(intervalStr, 10);
+	if (isNaN(intervalMinutes) || intervalMinutes < 5) {
+		ctx.ui.notify("Interval must be at least 5 minutes.", "error");
+		return;
+	}
+
+	// Optional preset
+	const presetItems: SelectItem[] = [
+		{ value: "", label: "(none)" },
+		...state.builtinPresets.map((p) => ({
+			value: p.name,
+			label: p.name,
+			description: p.description || undefined,
+		})),
+		...state.config.presets.map((p) => ({
+			value: p.name,
+			label: p.name,
+			description: p.description || undefined,
+		})),
+	];
+	const presetResult = await showSelectList(ctx, "Preset (optional)", presetItems, 10);
+
+	// Optional thinking level
+	const thinkingItems: SelectItem[] = [
+		{ value: "", label: "(not set)" },
+		...THINKING_LEVELS.map((level) => ({ value: level, label: level })),
+	];
+	const thinkingResult = await showSelectList(ctx, "Thinking Level (optional)", thinkingItems, 8);
+
+	const config: import("./types").ScheduleConfig = {
+		name: trimmedName,
+		task: task.trim(),
+		preset: presetResult || undefined,
+		thinkingLevel: thinkingResult || undefined,
+		intervalMinutes,
+		enabled: true,
+	};
+
+	callbacks.addScheduleEntry(config);
+	persistState();
+	ctx.ui.notify(`Schedule "${trimmedName}" created (every ${intervalMinutes}m)`, "info");
+}
+
+export async function showRemoveSchedule(
+	ctx: ExtensionContext,
+	schedules: ScheduleEntry[],
+	persistState: () => void,
+	callbacks: {
+		removeScheduleEntry: (id: string) => boolean;
+	},
+): Promise<void> {
+	if (schedules.length === 0) {
+		ctx.ui.notify("No schedules to remove.", "info");
+		return;
+	}
+
+	const items: SelectItem[] = schedules.map((s) => ({
+		value: s.id,
+		label: s.name,
+		description: `every ${s.intervalMinutes}m · ${s.enabled ? "enabled" : "disabled"} · ${s.task.slice(0, 50)}`,
+	}));
+
+	const result = await showSelectList(ctx, "Remove Schedule", items, 10);
+	if (!result) return;
+
+	const removed = callbacks.removeScheduleEntry(result);
+	if (removed) {
+		persistState();
+		ctx.ui.notify("Schedule removed", "info");
+	}
+}
+
+export async function showScheduleList(
+	ctx: ExtensionContext,
+	schedules: ScheduleEntry[],
+): Promise<void> {
+	if (schedules.length === 0) {
+		ctx.ui.notify("No schedules configured.", "info");
+		return;
+	}
+
+	await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(
+			new Text(
+				theme.fg("accent", theme.bold(`Schedules (${schedules.length})`)),
+				1,
+				0,
+			),
+		);
+		container.addChild(new Text("", 0, 0));
+
+		for (const s of schedules) {
+			const statusIcon = s.enabled
+				? theme.fg("success", "●")
+				: theme.fg("dim", "○");
+			container.addChild(
+				new Text(
+					`${statusIcon} ${theme.fg("accent", s.name)}${theme.fg("dim", ` (${s.intervalMinutes}m)`)}`,
+					1,
+					0,
+				),
+			);
+			container.addChild(
+				new Text(
+					theme.fg("dim", `  Task: ${s.task.slice(0, 80)}`),
+					1,
+					0,
+				),
+			);
+			if (s.preset) {
+				container.addChild(
+					new Text(theme.fg("dim", `  Preset: ${s.preset}`), 1, 0),
+				);
+			}
+			if (s.thinkingLevel) {
+				container.addChild(
+					new Text(theme.fg("dim", `  Thinking: ${s.thinkingLevel}`), 1, 0),
+				);
+			}
+			const nextRunDate = new Date(s.nextRun);
+			const nextRunStr = nextRunDate.toLocaleTimeString();
+			container.addChild(
+				new Text(
+					theme.fg("dim", `  Next run: ${nextRunStr}`),
+					1,
+					0,
+				),
+			);
+			if (s.lastRun) {
+				const lastRunStr = new Date(s.lastRun).toLocaleTimeString();
+				container.addChild(
+					new Text(
+						theme.fg("dim", `  Last run: ${lastRunStr}`),
+						1,
+						0,
+					),
+				);
+			}
+			container.addChild(new Text("", 0, 0));
+		}
+
+		container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (_data: string) => done(),
+		};
+	});
+}
+
+// ---------------------------------------------------------------------------
 // Configuration menu
 // ---------------------------------------------------------------------------
 
@@ -874,6 +1150,18 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			value: "retry",
 			label: "Retry Failed Run",
 			description: "Select a failed subagent to retry",
+		},
+		{
+			value: "schedule",
+			label: "Manage Schedules",
+			description: "Configure recurring task schedules",
+		},
+		{
+			value: "pool",
+			label: "Process Pool",
+			description: state.config.poolEnabled
+				? `Enabled (${state.config.poolSize} process${state.config.poolSize > 1 ? "es" : ""})`
+				: "Disabled",
 		},
 	];
 }

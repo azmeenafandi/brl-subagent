@@ -138,6 +138,8 @@ export interface SubagentState {
 	presets: SubagentPreset[];
 	templates: TaskTemplate[];
 	circuitBreaker: CircuitBreakerState;
+	poolEnabled: boolean;
+	poolSize: number;
 }
 
 export interface SubagentRun {
@@ -277,6 +279,68 @@ export interface ParallelDetails extends MultiSubagentDetails {
 }
 
 // ---------------------------------------------------------------------------
+// P10: Dependency graph types
+// ---------------------------------------------------------------------------
+
+/** A single node in a dependency graph. */
+export interface GraphTask {
+	id: string;
+	task: string;
+	label?: string;
+	preset?: string;
+	thinkingLevel?: string;
+	cwd?: string;
+	timeout?: number;
+	outputFile?: string;
+	tools?: string[];
+	excludeTools?: string[];
+	noBuiltinTools?: boolean;
+	systemPrompt?: string;
+	inheritSystemPrompt?: boolean;
+	dependsOn: string[];
+}
+
+/** One wave of tasks executed together in a graph. */
+export interface GraphWave {
+	waveIndex: number;
+	tasks: SubTaskResult[];
+	parallel: boolean;
+}
+
+/** Aggregate result for graph mode. */
+export interface GraphDetails {
+	mode: "graph";
+	waves: GraphWave[];
+	totalInput: number;
+	totalOutput: number;
+	totalCost: number;
+	totalTurns: number;
+}
+
+// ---------------------------------------------------------------------------
+// Resolved params (after preset merging + validation)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// E9: Scheduling types
+// ---------------------------------------------------------------------------
+
+export interface ScheduleConfig {
+	name: string;
+	task: string;
+	preset?: string;
+	thinkingLevel?: string;
+	intervalMinutes: number;
+	enabled: boolean;
+}
+
+export interface ScheduleEntry extends ScheduleConfig {
+	id: string;
+	lastRun?: number;
+	nextRun: number;
+}
+
+// ---------------------------------------------------------------------------
 // Resolved params (after preset merging + validation)
 // ---------------------------------------------------------------------------
 
@@ -329,6 +393,10 @@ export const EXPANDED_HUNKS_PER_FILE = 5; // max hunks shown per file in expande
 export const MAX_RUN_HISTORY_ENTRIES = 500;
 export const MAX_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+// Process pool constants
+export const MAX_POOL_SIZE = 8;
+export const POOL_IDLE_TIMEOUT_MS = 120_000; // 2 minutes
+
 // Circuit breaker constants
 export const MAX_CONSECUTIVE_FAILURES = 5;
 export const CIRCUIT_BREAKER_RESET_MS = 60000; // 1 min auto-recovery
@@ -358,7 +426,9 @@ export interface FileDiff {
 
 export const MAX_CHAIN_STEPS = 10;
 export const MAX_PARALLEL_TASKS = 8;
+export const MAX_GRAPH_TASKS = 12;
 export const PREVIOUS_OUTPUT_PLACEHOLDER = "{previous}";
+export const GRAPH_OUTPUT_PLACEHOLDER_RE = /\{(\w+)\}/g;
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -509,8 +579,20 @@ export function isSubagentRunShape(value: unknown): value is SubagentRun {
 export function isMultiSubagentDetails(value: unknown): value is MultiSubagentDetails {
 	if (!value || typeof value !== "object") return false;
 	const v = value as Record<string, unknown>;
-	if (v.mode !== "chain" && v.mode !== "parallel") return false;
-	if (!Array.isArray(v.results)) return false;
+	if (v.mode !== "chain" && v.mode !== "parallel" && v.mode !== "graph") return false;
+	if (typeof v.totalInput !== "number") return false;
+	if (typeof v.totalOutput !== "number") return false;
+	if (typeof v.totalCost !== "number") return false;
+	if (typeof v.totalTurns !== "number") return false;
+	return true;
+}
+
+/** Type guard for graph mode details. */
+export function isGraphDetails(value: unknown): value is GraphDetails {
+	if (!value || typeof value !== "object") return false;
+	const v = value as Record<string, unknown>;
+	if (v.mode !== "graph") return false;
+	if (!Array.isArray(v.waves)) return false;
 	if (typeof v.totalInput !== "number") return false;
 	if (typeof v.totalOutput !== "number") return false;
 	if (typeof v.totalCost !== "number") return false;

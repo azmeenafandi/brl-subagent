@@ -63,6 +63,7 @@ import {
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
 import { resolveTemplate } from "./templates";
+import { Scheduler, type ScheduleConfig } from "./schedule";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth } from "./sanitize";
 import {
@@ -81,6 +82,7 @@ import { getPreset as getPresetFn } from "./tui";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
+import { ProcessPool } from "./pool";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
 import {
 	finalizeRunRecord,
@@ -105,6 +107,10 @@ import {
 	showRunHistory,
 	showMonitor,
 	showRetryMenu,
+	showScheduleManager,
+	showAddSchedule,
+	showRemoveSchedule,
+	showScheduleList,
 	renderDelegateCall,
 	renderDelegateResult,
 } from "./tui";
@@ -119,6 +125,12 @@ export default function (pi: ExtensionAPI) {
 
 	// F7: Session-bound state — initialized per session
 	let state = createSessionState(log);
+
+	// E11: Process pool — created when poolEnabled, shared across delegate_task calls
+	let pool: ProcessPool | undefined;
+
+	// E9: Recurring task scheduler
+	let scheduler: Scheduler | undefined;
 
 	// -------------------------------------------------------------------
 	// Config change callback
@@ -1355,6 +1367,7 @@ export default function (pi: ExtensionAPI) {
 							getFinalOutput,
 							log,
 							currentDepth + 1,
+							pool,
 						);
 
 						const subTaskResult: SubTaskResult = {
@@ -1482,7 +1495,7 @@ export default function (pi: ExtensionAPI) {
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
 				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "costlimit", "graph", "reset",
-				"history", "historyentries", "monitor", "preset", "retry",
+				"history", "historyentries", "monitor", "preset", "retry", "schedule", "unschedule",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
@@ -1509,6 +1522,30 @@ export default function (pi: ExtensionAPI) {
 				preset: () => showPresetManager(ctx, state, () => state.persistState(pi)),
 				templates: () => showTemplateManager(ctx, state, () => state.persistState(pi)),
 				retry: () => showRetryMenu(ctx, state),
+				schedule: async () => {
+					if (!scheduler) {
+						ctx.ui.notify("Scheduler not initialized.", "error");
+						return;
+					}
+					await showScheduleManager(ctx, state, scheduler.getSchedules(), () => state.persistState(pi), {
+						addSchedule: () => showAddSchedule(ctx, state, scheduler!.getSchedules(), () => state.persistState(pi), {
+							addScheduleEntry: (config: ScheduleConfig) => scheduler!.addSchedule(config.name, config),
+						}),
+						removeSchedule: () => showRemoveSchedule(ctx, scheduler!.getSchedules(), () => state.persistState(pi), {
+							removeScheduleEntry: (id: string) => scheduler!.removeSchedule(id),
+						}),
+						listSchedules: () => showScheduleList(ctx, scheduler!.getSchedules()),
+					});
+				},
+				unschedule: async () => {
+					if (!scheduler) {
+						ctx.ui.notify("Scheduler not initialized.", "error");
+						return;
+					}
+					await showRemoveSchedule(ctx, scheduler.getSchedules(), () => state.persistState(pi), {
+						removeScheduleEntry: (id: string) => scheduler!.removeSchedule(id),
+					});
+				},
 			};
 
 			if (trimmed && trimmed in handlers) {
@@ -2493,6 +2530,44 @@ export default function (pi: ExtensionAPI) {
 		// F5/F9: Safe state restoration with type guards
 		state.restoreFromSession(ctx);
 
+		// E9: Initialize scheduler with delegate_task executor
+		scheduler = new Scheduler(pi, log, async (task, config) => {
+			// Fire-and-forget: execute a scheduled task via delegate_task flow
+			const toolEntry = (pi as unknown as { _tools?: Map<string, { execute: Function }> })._tools?.get("delegate_task");
+			if (toolEntry) {
+				const params: Record<string, unknown> = { task };
+				if (config.preset) params.preset = config.preset;
+				if (config.thinkingLevel) params.thinkingLevel = config.thinkingLevel;
+				try {
+					await toolEntry.execute("scheduled", params, undefined, undefined, ctx);
+				} catch (err) {
+					log.error("Scheduled task delegate_task failed", {
+						task: task.slice(0, 60),
+						error: (err as Error).message,
+					});
+				}
+			} else {
+				log.warn("delegate_task tool not available for scheduled execution", {
+					task: task.slice(0, 60),
+				});
+			}
+		});
+		scheduler.start();
+
+		// E11: Pre-warm process pool if enabled
+		if (state.config.poolEnabled) {
+			log.info("Pre-warming process pool", { size: state.config.poolSize });
+			pool = new ProcessPool(state.config.poolSize, 120_000, log);
+			const modelResult = resolveSubagentModel(ctx);
+			if (modelResult.ok) {
+				const modelStr = `${modelResult.model.provider}/${modelResult.model.id}`;
+				pool.preWarm(state.config.poolSize, ctx.cwd, modelStr, state.config.maxThinkingLevel)
+					.catch((err) => {
+						log.warn("Pool pre-warm failed", { error: (err as Error).message });
+					});
+			}
+		}
+
 		updateStatus(state, ctx);
 	});
 
@@ -2501,6 +2576,16 @@ export default function (pi: ExtensionAPI) {
 		log.info("Session shutting down", {
 			activeSubagents: state.activeSubagents,
 		});
+
+		// E9: Stop the scheduler
+		scheduler?.stop();
+		scheduler = undefined;
+
+		// E11: Shut down process pool
+		if (pool) {
+			pool.shutdown();
+			pool = undefined;
+		}
 
 		// Clear all live subagent sessions
 		state.subagentSessions.clear();
