@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Generated: 2026-07-06 | Version: 1.5.0
+> Generated: 2026-07-07 | Version: 1.6.0
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -13,7 +13,7 @@
 | F3 | **Output sanitization** — strip ANSI escapes; cap output at 100KB default (configurable) | S | P0 | ✅ |
 | F4 | **Unit test suite** — Vitest tests for: `parseFrontmatter`, `buildSubagentPrompt`, `resolveSubagentParams`, `formatUsageStats`, `accumulateUsage` | M | P0 | ✅ |
 | F5 | **Type safety hardening** — replace all `as any` with proper type guards; add state schema validation | M | P0 | ✅ |
-| F6 | **Modular architecture** — split `index.ts` into 13 modules | L | P1 | ✅ |
+| F6 | **Modular architecture** — split `index.ts` into 16 modules | L | P1 | ✅ |
 | F7 | **Session-bound state** — move counters and sessions to `session_start`/`session_shutdown` lifecycle via `SessionState` | M | P1 | ✅ |
 | F8 | **Race condition fixes** — per-run state instead of module-level mutable counters | M | P1 | ✅ |
 | F9 | **State migration & validation** — versioned state schema; validate on load; handle corruption gracefully | M | P1 | ✅ |
@@ -36,24 +36,24 @@
 | R9 | **Error classification** — categorize errors (timeout, model_unavailable, tool_error, permission_denied) | S | P1 | ✅ |
 | R10 | **Preset validation** — schema-validate on load; report which file failed and why | S | P1 | ✅ |
 
-## Phase 3 — Power (v1.6.0)
+## Phase 3 — Power (v1.6.0) ✅ COMPLETE
 
 > Goal: Feature parity with the best subagent systems. Advanced delegation patterns.
 
 | ID | Feature | Effort | Priority | Status |
 |----|---------|--------|----------|--------|
-| P1 | **Task chaining** — `chain: [{agent, task}, ...]` with `{previous}` placeholder | L | P0 | 📋 |
-| P2 | **Parallel task mode** — `tasks: [{agent, task}, ...]` for fan-out execution | L | P0 | 📋 |
-| **P3** | **Git integration** — auto-commit before/after; create branches; diff summaries | L | **P1** | ✅ **DONE** |
-| P4 | **Change approval workflow** — dry-run mode; diff preview; approve/reject before execution | L | P1 | 📋 |
-| P5 | **Output diffing** — structured diff when subagent modifies files | M | P1 | 📋 |
-| P6 | **Priority queue** — `priority: "critical" \| "high" \| "normal" \| "low"` | M | P2 | 📋 |
-| P7 | **Subagent sandboxing** — option for read-only filesystem or container isolation | L | P2 | 📋 |
-| P8 | **Process pool** — keep warm pi processes for reuse (reduces cold-start latency) | L | P2 | 📋 |
-| P9 | **Task templates** — save reusable task configurations with parameter slots | M | P2 | 📋 |
-| P10 | **Dependency graph** — declare task dependencies; auto-resolve schedule | L | P3 | 📋 |
+| P1 | **Task chaining** — `chain: [{task}, ...]` with `{previous}` placeholder; sequential execution with per-step progress | L | P0 | ✅ **DONE** |
+| P2 | **Parallel task mode** — `tasks: [{task}, ...]` for concurrent fan-out; each task acquires its own concurrency slot | L | P0 | ✅ **DONE** |
+| P3 | **Git integration** — branch-based workflow; auto-create work branch, capture diff, switchback, merge/discard | L | P1 | ✅ **DONE** |
+| P4 | **Change approval workflow** — approvalMode (auto/writes/always); TUI dialog with diff preview, apply/discard | L | P1 | ✅ **DONE** |
+| P5 | **Output diffing** — parseDiff for structured file-level summaries; collapsed/expanded/full-diff views; hunk capping | M | P1 | ✅ **DONE** |
+| P6 | **Priority queue** — four tiers (critical/high/normal/low), FIFO within tier, priorityInsert function | M | P2 | ✅ **DONE** |
+| P7 | **Subagent sandboxing** — SandboxLevel (none/readonly/safe), SANDBOX_TOOLS/EXCLUDE maps, per-call override | L | P2 | ✅ **DONE** |
+| P8 | **Process pool** — keep warm pi processes for reuse (reduces cold-start latency) | L | P2 | ⏳ **DEFERRED** |
+| P9 | **Task templates** — save reusable task configurations with ${param} substitution; template management TUI | M | P2 | ✅ **DONE** |
+| P10 | **Dependency graph** — declare task dependencies; topological sort → wave-based parallel execution; cycle detection | L | P3 | ✅ **DONE** |
 
-### Discovery Tasks (added during v1.5.0 implementation)
+### Discovery Tasks (added during implementation)
 
 | ID | Feature | Notes |
 |----|---------|-------|
@@ -61,6 +61,10 @@
 | D2 | **Dev-agent preset** | Added to prompt guidelines: full-access preset for development subagents |
 | D3 | **Subagent feedback protocol** | Enhanced prompt instructions for how subagents should report their work |
 | D4 | **execFileSync security fix** | Replaced `execSync`/`spawn` with `execFileSync` for all git commands to avoid shell injection |
+| D5 | **Graph mode execution** | Added `runGraphMode()` to index.ts with wave-based execution using scheduler.ts |
+| D6 | **Chain/parallel mode in index.ts** | Added `runChainMode()` and `runParallelMode()` with cost/depth guard integration |
+| D7 | **Type guards for multi-mode** | Added `isMultiSubagentDetails()`, `isGraphDetails()` for runtime mode detection in TUI |
+| D8 | **Approval dialog with diff view** | TUI approval dialog with keyboard shortcuts (Y/D/N) and scrollable full diff view |
 
 ## Phase 4 — Excellence (v2.0.0)
 
@@ -78,6 +82,7 @@
 | E8 | **Pluggable backends** — support non-pi backends: OpenAI API, Anthropic API, webhook, container | XL | P3 |
 | E9 | **Scheduling** — cron-like: "run security audit every night at 2am" (via pi agent loop) | M | P3 |
 | E10 | **Subagent-to-subagent messaging** — direct communication channel between concurrent subagents | L | P3 |
+| E11 | **Process pool** — keep warm pi processes for reuse (deferred from P8 in Phase 3) | L | P2 |
 
 ---
 
