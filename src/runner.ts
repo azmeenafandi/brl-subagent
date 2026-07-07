@@ -32,6 +32,16 @@ import { getSafeEnv, DEPTH_ENV_KEY } from "./sanitize";
 import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
+// Multi-turn: question pattern
+// ---------------------------------------------------------------------------
+
+/**
+ * Pattern matching a clarifying question at the start of the final output.
+ * The subagent outputs this when it needs more info from the conductor.
+ */
+export const QUESTION_PATTERN = /^\[QUESTION\]:(.+)/m;
+
+// ---------------------------------------------------------------------------
 // Pi binary resolution
 // ---------------------------------------------------------------------------
 
@@ -280,6 +290,16 @@ export function parseSubagentLine(
 // Process runner
 // ---------------------------------------------------------------------------
 
+/**
+ * Detect a [QUESTION]: pattern in the final output of a subagent result.
+ * Returns the question text if found, otherwise null.
+ */
+export function detectQuestion(result: SubagentResult, getFinalOutputFn: (messages: Array<Record<string, unknown>>) => string): string | null {
+	const output = getFinalOutputFn(result.messages);
+	const match = output.match(QUESTION_PATTERN);
+	return match ? match[1].trim() : null;
+}
+
 export async function runSubagent(
 	cwd: string,
 	systemPrompt: string,
@@ -294,128 +314,174 @@ export async function runSubagent(
 	log?: Logger,
 	depth?: number,
 	pool?: ProcessPool,
+	maxTurns?: number,
+	onQuestion?: (question: string, turn: number, maxTurns: number) => Promise<string | null>,
 ): Promise<SubagentResult> {
-	// E11: Try pool first if provided
-	if (pool) {
-		const modelStr = `${model.provider}/${model.id}`;
-		const poolEntry = await pool.acquire(cwd, modelStr, thinkingLevel);
-		if (poolEntry) {
-			log?.debug("Using pool process for subagent", {
-				pid: poolEntry.process.pid,
-				model: modelStr,
-				thinkingLevel,
-			});
-			try {
-				const result = await pool.sendTask(poolEntry, task, timeout, onUpdate as never, getFinalOutputFn);
-				return result;
-			} catch (err) {
-				log?.warn("Pool sendTask failed, falling back to fresh spawn", {
-					error: (err as Error).message,
+	const effectiveMaxTurns = Math.max(1, maxTurns ?? 1);
+
+	// Accumulate context from previous Q&A turns
+	const previousAnswers: string[] = [];
+
+	for (let turn = 0; turn < effectiveMaxTurns; turn++) {
+		// Build the effective system prompt for this turn
+		let effectivePrompt = systemPrompt;
+		if (previousAnswers.length > 0) {
+			effectivePrompt += "\n\nAdditional context from the conductor:\n" + previousAnswers.join("\n\n");
+		}
+
+		// E11: Try pool first if provided (only on first turn)
+		if (pool && turn === 0) {
+			const modelStr = `${model.provider}/${model.id}`;
+			const poolEntry = await pool.acquire(cwd, modelStr, thinkingLevel);
+			if (poolEntry) {
+				log?.debug("Using pool process for subagent", {
+					pid: poolEntry.process.pid,
+					model: modelStr,
+					thinkingLevel,
 				});
-			} finally {
-				pool.release(poolEntry);
+				try {
+					const result = await pool.sendTask(poolEntry, task, timeout, onUpdate as never, getFinalOutputFn);
+					return result;
+				} catch (err) {
+					log?.warn("Pool sendTask failed, falling back to fresh spawn", {
+						error: (err as Error).message,
+					});
+				} finally {
+					pool.release(poolEntry);
+				}
+			}
+			log?.debug("Pool acquire returned null, using fresh spawn");
+		}
+
+		const args = buildSubagentArgs(model, thinkingLevel, toolOptions);
+
+		let tmpDir: string | null = null;
+		let tmpFilePath: string | null = null;
+
+		if (effectivePrompt.trim()) {
+			const tmp = await writeToTempFile(cwd, "system", effectivePrompt);
+			tmpDir = tmp.dir;
+			tmpFilePath = tmp.filePath;
+			args.push("--append-system-prompt", tmpFilePath);
+		}
+
+		// Pass the task as the prompt argument
+		args.push(task);
+
+		const result: SubagentResult = {
+			messages: [],
+			usage: { ...EMPTY_USAGE },
+			exitCode: 0,
+			stderr: "",
+		};
+
+		log?.info("Starting subagent process", {
+			model: `${model.provider}/${model.id}`,
+			thinkingLevel,
+			cwd,
+			taskPreview: task.slice(0, 80),
+			hasSystemPrompt: effectivePrompt.trim().length > 0,
+			timeout,
+			turn: turn + 1,
+			maxTurns: effectiveMaxTurns,
+		});
+
+		try {
+			const exitCode = await new Promise<number>((resolve) => {
+				const invocation = getPiInvocation(args);
+				const subDepth = depth !== undefined ? depth : undefined;
+				const envOverrides: Record<string, string> | undefined =
+					subDepth !== undefined ? { [DEPTH_ENV_KEY]: String(subDepth) } : undefined;
+				const proc = spawn(invocation.command, invocation.args, {
+					cwd,
+					shell: false,
+					stdio: ["ignore", "pipe", "pipe"],
+					env: getSafeEnv(envOverrides), // F2: Environment isolation + depth tracking
+				});
+
+				let buffer = "";
+
+				proc.stdout.on("data", (data: Buffer) => {
+					buffer += data.toString();
+					const lines = buffer.split("\n");
+					buffer = lines.pop() ?? "";
+					for (const line of lines) {
+						parseSubagentLine(line, result, onUpdate, getFinalOutputFn, log);
+					}
+				});
+
+				proc.stderr.on("data", (data: Buffer) => {
+					result.stderr += data.toString();
+				});
+
+				proc.on("close", (code) => {
+					if (buffer.trim()) {
+						parseSubagentLine(buffer, result, onUpdate, getFinalOutputFn, log);
+					}
+					log?.info("Subagent process exited", { exitCode: code, pid: proc.pid });
+					resolve(code ?? 0);
+				});
+
+				proc.on("error", (err) => {
+					result.errorMessage = `Subprocess error: ${err.message}`;
+					result.stderr += err.message;
+					log?.error("Subagent process error", { error: err.message });
+					resolve(1);
+				});
+
+				if (signal) {
+					attachAbortHandler(proc, signal);
+				}
+
+				if (timeout && timeout > 0) {
+					const timer = setTimeout(() => {
+						result.errorMessage = `Subagent timed out after ${timeout}ms`;
+						log?.warn("Subagent timed out", { timeout, pid: proc.pid });
+						proc.kill("SIGTERM");
+						setTimeout(() => {
+							if (!proc.killed) proc.kill("SIGKILL");
+						}, SIGKILL_GRACE_MS);
+					}, timeout);
+					proc.on("close", () => clearTimeout(timer));
+				}
+			});
+
+			result.exitCode = exitCode;
+			result.errorCategory = classifyError(result);
+		} finally {
+			if (tmpDir && tmpFilePath) {
+				cleanupTempDir(tmpDir, tmpFilePath);
 			}
 		}
-		log?.debug("Pool acquire returned null, using fresh spawn");
+
+		// Check for [QUESTION]: pattern in the output
+		const question = detectQuestion(result, getFinalOutputFn);
+		if (question && turn < effectiveMaxTurns - 1 && onQuestion) {
+			log?.debug("Subagent asked a clarifying question", {
+				question: question.slice(0, 100),
+				turn: turn + 1,
+				maxTurns: effectiveMaxTurns,
+			});
+
+			const answer = await onQuestion(question, turn + 1, effectiveMaxTurns);
+			if (answer === null) {
+				log?.debug("User cancelled multi-turn (returned null)");
+				return result;
+			}
+
+			previousAnswers.push(`Question (turn ${turn + 1}): ${question}\nAnswer: ${answer}`);
+			continue;
+		}
+
+		return result;
 	}
 
-	const args = buildSubagentArgs(model, thinkingLevel, toolOptions);
-
-	let tmpDir: string | null = null;
-	let tmpFilePath: string | null = null;
-
-	if (systemPrompt.trim()) {
-		const tmp = await writeToTempFile(cwd, "system", systemPrompt);
-		tmpDir = tmp.dir;
-		tmpFilePath = tmp.filePath;
-		args.push("--append-system-prompt", tmpFilePath);
-	}
-
-	// Pass the task as the prompt argument
-	args.push(task);
-
-	const result: SubagentResult = {
+	// Should not reach here, but return last result as fallback
+	const fallbackResult: SubagentResult = {
 		messages: [],
 		usage: { ...EMPTY_USAGE },
 		exitCode: 0,
 		stderr: "",
 	};
-
-	log?.info("Starting subagent process", {
-		model: `${model.provider}/${model.id}`,
-		thinkingLevel,
-		cwd,
-		taskPreview: task.slice(0, 80),
-		hasSystemPrompt: systemPrompt.trim().length > 0,
-		timeout,
-	});
-
-	try {
-		const exitCode = await new Promise<number>((resolve) => {
-			const invocation = getPiInvocation(args);
-			const subDepth = depth !== undefined ? depth : undefined;
-			const envOverrides: Record<string, string> | undefined =
-				subDepth !== undefined ? { [DEPTH_ENV_KEY]: String(subDepth) } : undefined;
-			const proc = spawn(invocation.command, invocation.args, {
-				cwd,
-				shell: false,
-				stdio: ["ignore", "pipe", "pipe"],
-				env: getSafeEnv(envOverrides), // F2: Environment isolation + depth tracking
-			});
-
-			let buffer = "";
-
-			proc.stdout.on("data", (data: Buffer) => {
-				buffer += data.toString();
-				const lines = buffer.split("\n");
-				buffer = lines.pop() ?? "";
-				for (const line of lines) {
-					parseSubagentLine(line, result, onUpdate, getFinalOutputFn, log);
-				}
-			});
-
-			proc.stderr.on("data", (data: Buffer) => {
-				result.stderr += data.toString();
-			});
-
-			proc.on("close", (code) => {
-				if (buffer.trim()) {
-					parseSubagentLine(buffer, result, onUpdate, getFinalOutputFn, log);
-				}
-				log?.info("Subagent process exited", { exitCode: code, pid: proc.pid });
-				resolve(code ?? 0);
-			});
-
-			proc.on("error", (err) => {
-				result.errorMessage = `Subprocess error: ${err.message}`;
-				result.stderr += err.message;
-				log?.error("Subagent process error", { error: err.message });
-				resolve(1);
-			});
-
-			if (signal) {
-				attachAbortHandler(proc, signal);
-			}
-
-			if (timeout && timeout > 0) {
-				const timer = setTimeout(() => {
-					result.errorMessage = `Subagent timed out after ${timeout}ms`;
-					log?.warn("Subagent timed out", { timeout, pid: proc.pid });
-					proc.kill("SIGTERM");
-					setTimeout(() => {
-						if (!proc.killed) proc.kill("SIGKILL");
-					}, SIGKILL_GRACE_MS);
-				}, timeout);
-				proc.on("close", () => clearTimeout(timer));
-			}
-		});
-
-		result.exitCode = exitCode;
-		result.errorCategory = classifyError(result);
-		return result;
-	} finally {
-		if (tmpDir && tmpFilePath) {
-			cleanupTempDir(tmpDir, tmpFilePath);
-		}
-	}
+	return fallbackResult;
 }
