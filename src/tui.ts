@@ -481,6 +481,109 @@ export async function showPoolConfig(
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// E4: SLA tracking configuration
+// ---------------------------------------------------------------------------
+
+export async function showSLAConfig(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	// Step 1: Enable/disable toggle
+	const enableItems: SelectItem[] = [
+		{ value: "disabled", label: "Disabled", description: "No SLA tracking" },
+		{ value: "enabled", label: "Enabled", description: "Track performance metrics and detect degradation" },
+	];
+	const enableResult = await showSelectList(ctx, "SLA Tracking", enableItems, 5);
+	if (!enableResult) return;
+
+	const enabled = enableResult === "enabled";
+	state.config.slaTrackingEnabled = enabled;
+
+	if (!enabled) {
+		onConfigChanged(ctx, "SLA tracking disabled");
+		return;
+	}
+
+	// Step 2: Window size input
+	const sizeResult = await ctx.ui.input({
+		prompt: `Window size (10-500, default ${state.config.slaWindowSize}):`,
+		default: String(state.config.slaWindowSize),
+	});
+	if (sizeResult == null) return;
+	const size = parseInt(sizeResult, 10);
+	if (isNaN(size) || size < 10 || size > 500) {
+		ctx.ui.notify("Invalid window size. Must be 10-500.", "error");
+		return;
+	}
+	state.config.slaWindowSize = size;
+	onConfigChanged(ctx, `SLA tracking enabled with window size ${size}`);
+}
+
+export async function showSLAStats(
+	ctx: ExtensionContext,
+	state: SessionState,
+): Promise<void> {
+	const runs = state.getRunEntries(ctx).slice(0, state.config.slaWindowSize);
+	if (runs.length === 0) {
+		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
+		return;
+	}
+
+	const { computeSLAMetrics } = await import("./metrics");
+	const metrics = computeSLAMetrics(runs);
+
+	const lines: string[] = [
+		`SLA Metrics (last ${metrics.totalRuns} runs)`,
+		"",
+		`  Success rate:      ${(metrics.successRate * 100).toFixed(1)}%`,
+		`  Failure rate:      ${(metrics.failureRate * 100).toFixed(1)}%`,
+		"",
+		`  Duration (ms):`,
+		`    Average:         ${metrics.averageDurationMs.toFixed(0)}`,
+		`    p50:             ${metrics.p50DurationMs.toFixed(0)}`,
+		`    p95:             ${metrics.p95DurationMs.toFixed(0)}`,
+		`    p99:             ${metrics.p99DurationMs.toFixed(0)}`,
+		"",
+		`  Cost:`,
+		`    Total:           $${metrics.totalCost.toFixed(4)}`,
+		`    Average:         $${metrics.averageCost.toFixed(4)}`,
+	];
+
+	if (Object.keys(metrics.errorCategoryBreakdown).length > 0) {
+		lines.push("", "  Errors by category:");
+		for (const [cat, count] of Object.entries(metrics.errorCategoryBreakdown)) {
+			lines.push(`    ${cat}: ${count}`);
+		}
+	}
+
+	if (Object.keys(metrics.roleBreakdown).length > 0) {
+		lines.push("", "  Runs by role:");
+		for (const [role, count] of Object.entries(metrics.roleBreakdown)) {
+			lines.push(`    ${role}: ${count}`);
+		}
+	}
+
+	ctx.ui.custom((tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(new Text(theme.fg("accent", theme.bold("SLA Statistics")), 1, 0));
+		container.addChild(new Text("", 0, 0));
+		for (const line of lines) {
+			container.addChild(new Text(theme.fg("dim", line), 1, 0));
+		}
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				if (data === "q" || data === "\x1b") done(undefined);
+			},
+		};
+	});
+}
+
 // Preset management UI
 // ---------------------------------------------------------------------------
 
@@ -1202,6 +1305,13 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			value: "schedule",
 			label: "Manage Schedules",
 			description: "Configure recurring task schedules",
+		},
+		{
+			value: "sla",
+			label: "SLA Tracking",
+			description: state.config.slaTrackingEnabled
+				? `Enabled (window: ${state.config.slaWindowSize})`
+				: "Disabled",
 		},
 		{
 			value: "pool",

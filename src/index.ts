@@ -90,6 +90,7 @@ import {
 	createEmptyResult,
 	pruneSessionRuns,
 } from "./history";
+import { computeSLAMetrics, computeDegradation } from "./metrics";
 import {
 	showSelectList,
 	showModelSelector,
@@ -104,6 +105,8 @@ import {
 	showTemplateManager,
 	showSandboxLevelSelector,
 	showPoolConfig,
+	showSLAConfig,
+	showSLAStats,
 	showConfigMenu,
 	showRunHistory,
 	showMonitor,
@@ -1496,7 +1499,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "costlimit", "graph", "reset",
+				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "costlimit", "graph", "reset", "sla", "sla-stats",
 				"history", "historyentries", "monitor", "preset", "retry", "pool", "schedule", "unschedule",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
@@ -1525,6 +1528,8 @@ export default function (pi: ExtensionAPI) {
 				templates: () => showTemplateManager(ctx, state, () => state.persistState(pi)),
 				retry: () => showRetryMenu(ctx, state),
 				pool: () => showPoolConfig(ctx, state, applyConfig),
+			sla: () => showSLAConfig(ctx, state, applyConfig),
+			"sla-stats": () => showSLAStats(ctx, state),
 				schedule: async () => {
 					if (!scheduler) {
 						ctx.ui.notify("Scheduler not initialized.", "error");
@@ -2407,6 +2412,29 @@ export default function (pi: ExtensionAPI) {
 
 				// Finalize live monitor
 				state.finalizeLiveSubagent(runId);
+
+				// E4: SLA tracking — compute metrics if enabled
+				if (state.config.slaTrackingEnabled) {
+					const recentRuns = state.getRunEntries(ctx).slice(0, state.config.slaWindowSize);
+					const metrics = computeSLAMetrics(recentRuns);
+					log.info("SLA metrics computed", {
+						totalRuns: metrics.totalRuns,
+						successRate: metrics.successRate,
+						p95DurationMs: metrics.p95DurationMs,
+						totalCost: metrics.totalCost,
+					});
+					if (state.config.lastSLAMetrics) {
+						const report = computeDegradation(metrics, state.config.lastSLAMetrics);
+						if (report.degraded) {
+							log.warn("SLA degradation detected", {
+								successRateChange: report.successRateChange,
+								p95Change: report.p95Change,
+								recommendations: report.recommendations,
+							});
+						}
+					}
+					state.config.lastSLAMetrics = metrics;
+				}
 
 				if (isSubagentError(result)) {
 					const errorMsg =

@@ -83,6 +83,8 @@ export class SessionState {
 			circuitBreaker: this.defaultCircuitBreaker(),
 			poolEnabled: false,
 			poolSize: 2,
+		slaTrackingEnabled: false,
+		slaWindowSize: 50,
  defaultRole: "developer",
 		};
 	}
@@ -111,6 +113,9 @@ export class SessionState {
 			poolEnabled: this.config.poolEnabled,
 			poolSize: this.config.poolSize,
 			defaultRole: this.config.defaultRole,
+		slaTrackingEnabled: this.config.slaTrackingEnabled,
+		slaWindowSize: this.config.slaWindowSize,
+		lastSLAMetrics: this.config.lastSLAMetrics,
 		});
 	}
 
@@ -211,6 +216,15 @@ export class SessionState {
 			if (cb.degradedThinkingLevel) {
 				this.config.circuitBreaker.degradedThinkingLevel = cb.degradedThinkingLevel;
 			}
+		}
+
+		// Restore SLA fields (E4)
+		if (typeof data.slaTrackingEnabled === "boolean") this.config.slaTrackingEnabled = data.slaTrackingEnabled;
+		if (typeof data.slaWindowSize === "number" && data.slaWindowSize >= 10 && data.slaWindowSize <= 500) {
+			this.config.slaWindowSize = data.slaWindowSize;
+		}
+		if (data.lastSLAMetrics && typeof data.lastSLAMetrics === "object") {
+			this.config.lastSLAMetrics = data.lastSLAMetrics as import("./types").SLAMetrics;
 		}
 
 		this.log?.info("State restored from session", {
@@ -404,6 +418,9 @@ export class SessionState {
 		this.config.templates = [];
 		this.config.circuitBreaker = this.defaultCircuitBreaker();
 		this.config.poolEnabled = false;
+		this.config.slaTrackingEnabled = false;
+		this.config.slaWindowSize = 50;
+		this.config.lastSLAMetrics = undefined;
 		this.config.poolSize = 2;
 			this.config.defaultRole = "developer";
 	}

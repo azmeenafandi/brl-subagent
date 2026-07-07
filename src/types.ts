@@ -122,6 +122,31 @@ export const SANDBOX_EXCLUDE: Record<SandboxLevel, string[] | undefined> = {
 	safe: ["write", "edit"],
 };
 
+export interface SLAMetrics {
+	errorCategoryBreakdown: Record<string, number>;
+	roleBreakdown: Record<string, number>;
+	totalRuns: number;
+	successRate: number;
+	failureRate: number;
+	averageDurationMs: number;
+	p50DurationMs: number;
+	p95DurationMs: number;
+	p99DurationMs: number;
+	totalCost: number;
+	averageCost: number;
+}
+
+export interface DegradationReport {
+	degraded: boolean;
+	successRateChange: number;
+	p95Change: number;
+	recommendations: string[];
+}
+
+export const DEFAULT_SLA_WINDOW_SIZE = 50;
+export const MIN_SLA_WINDOW_SIZE = 10;
+export const MAX_SLA_WINDOW_SIZE = 500;
+
 export interface SubagentState {
 	model?: { provider: string; id: string };
 	maxThinkingLevel: ThinkingLevel;
@@ -141,6 +166,9 @@ export interface SubagentState {
 	poolEnabled: boolean;
 	poolSize: number;
  defaultRole: string; // E6: RBAC role-based tool permissions
+	slaTrackingEnabled: boolean; // E4: SLA tracking toggle
+	slaWindowSize: number; // E4: number of recent runs to analyze (10-500)
+	lastSLAMetrics?: SLAMetrics; // E4: persisted baseline for degradation comparison
 }
 
 export interface SubagentRun {
@@ -567,6 +595,14 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 	// poolSize must be a number 1-8 if present
 	if (v.poolSize !== undefined) {
 		if (typeof v.poolSize !== "number" || v.poolSize < 1 || v.poolSize > 8) return false;
+	}
+
+	// slaTrackingEnabled must be a boolean if present
+	if (v.slaTrackingEnabled !== undefined && typeof v.slaTrackingEnabled !== "boolean") return false;
+
+	// slaWindowSize must be a number 10-500 if present
+	if (v.slaWindowSize !== undefined) {
+		if (typeof v.slaWindowSize !== "number" || v.slaWindowSize < 10 || v.slaWindowSize > 500) return false;
 	}
 
 	return true;
