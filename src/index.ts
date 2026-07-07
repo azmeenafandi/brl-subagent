@@ -82,6 +82,7 @@ import { getPreset as getPresetFn } from "./tui";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs, detectQuestion } from "./runner";
+import { getBackend, type Backend, DEFAULT_BACKEND } from "./backend";
 import { ProcessPool } from "./pool";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
 import {
@@ -1393,6 +1394,10 @@ export default function (pi: ExtensionAPI) {
 							log,
 							currentDepth + 1,
 							pool,
+							undefined, // maxTurns
+							undefined, // onQuestion
+							intercom,
+							subagentId,
 						);
 
 						const subTaskResult: SubTaskResult = {
@@ -1771,6 +1776,7 @@ export default function (pi: ExtensionAPI) {
 				}),
 			),
 			maxTurns: Type.Optional(Type.Number({ description: "Maximum conversation turns for the subagent (default: 1 = single-turn). Set > 1 to allow the subagent to ask clarifying questions.", default: 1 })),
+			backend: Type.Optional(Type.String({ description: "Subagent backend: pi (default, full tools) or direct-api (no tools, direct API call)." })),
 			chain: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
 				label: Type.Optional(Type.String({})),
@@ -1845,6 +1851,7 @@ export default function (pi: ExtensionAPI) {
 				gitMode?: string;
 				priority?: string;
 				maxTurns?: number;
+				backend?: string;
 				chain?: Array<{
 					task: string;
 					label?: string;

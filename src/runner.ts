@@ -320,8 +320,15 @@ export async function runSubagent(
 	onQuestion?: (question: string, turn: number, maxTurns: number) => Promise<string | null>,
 	intercom?: Intercom,
 	subagentId?: string,
+	backend?: Backend,
 ): Promise<SubagentResult> {
 	const effectiveMaxTurns = Math.max(1, maxTurns ?? 1);
+
+	// E8: Pluggable backend routing
+	if (backend && backend.name !== "pi") {
+		log?.info("Using non-pi backend", { backend: backend.name, model: `${model.provider}/${model.id}` });
+		return backend.execute(task, `${model.provider}/${model.id}`, thinkingLevel, signal);
+	}
 
 	// Accumulate context from previous Q&A turns
 	const previousAnswers: string[] = [];
