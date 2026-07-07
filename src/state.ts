@@ -83,9 +83,10 @@ export class SessionState {
 			circuitBreaker: this.defaultCircuitBreaker(),
 			poolEnabled: false,
 			poolSize: 2,
-		slaTrackingEnabled: false,
-		slaWindowSize: 50,
- defaultRole: "developer",
+			slaTrackingEnabled: false,
+			slaWindowSize: 50,
+			defaultRole: "developer",
+			defaultBackend: "pi",
 		};
 	}
 
@@ -113,6 +114,7 @@ export class SessionState {
 			poolEnabled: this.config.poolEnabled,
 			poolSize: this.config.poolSize,
 			defaultRole: this.config.defaultRole,
+			defaultBackend: this.config.defaultBackend,
 		slaTrackingEnabled: this.config.slaTrackingEnabled,
 		slaWindowSize: this.config.slaWindowSize,
 		lastSLAMetrics: this.config.lastSLAMetrics,
@@ -185,6 +187,7 @@ export class SessionState {
 			this.config.defaultSandboxLevel = data.defaultSandboxLevel as SandboxLevel;
 		} else {
 			this.config.defaultSandboxLevel = "none";
+		}
 
 		// Restore defaultRole (E6)
 		if (
@@ -195,6 +198,16 @@ export class SessionState {
 		} else {
 			this.config.defaultRole = "developer";
 		}
+
+		// Restore defaultBackend (E8)
+		if (
+			data.defaultBackend &&
+			typeof data.defaultBackend === "string" &&
+			AVAILABLE_BACKENDS.includes(data.defaultBackend)
+		) {
+			this.config.defaultBackend = data.defaultBackend;
+		} else {
+			this.config.defaultBackend = "pi";
 		}
 
 		if (Array.isArray(data.seenRunIds)) this.config.seenRunIds = data.seenRunIds;
@@ -402,16 +415,8 @@ export class SessionState {
 		this.config.approvalMode = "writes";
 		this.config.defaultPriority = "normal";
 		this.config.defaultSandboxLevel = "none";
-
-		// Restore defaultRole (E6)
-		if (
-			data.defaultRole &&
-			(data.defaultRole === "reviewer" || data.defaultRole === "developer" || data.defaultRole === "auditor")
-		) {
-			this.config.defaultRole = data.defaultRole;
-		} else {
-			this.config.defaultRole = "developer";
-		}
+		this.config.defaultRole = "developer";
+		this.config.defaultBackend = "pi";
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
 		this.config.perTaskCostEstimate = 0;
@@ -422,7 +427,6 @@ export class SessionState {
 		this.config.slaWindowSize = 50;
 		this.config.lastSLAMetrics = undefined;
 		this.config.poolSize = 2;
-			this.config.defaultRole = "developer";
 	}
 }
 

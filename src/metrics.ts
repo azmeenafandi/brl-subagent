@@ -135,6 +135,48 @@ export function computeSLAMetrics(runs: SubagentRun[]): SLAMetrics {
  * @param baseline - Baseline SLA metrics to compare against
  * @returns DegradationReport with comparison results and recommendations
  */
+// ---------------------------------------------------------------------------
+// Cost trend & sparkline (E1: Dashboard)
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the last N run costs as an array of numbers, most recent last.
+ * Filters to runs that have a cost field set.
+ */
+export function computeCostTrend(runs: SubagentRun[], count: number): number[] {
+	return runs
+		.filter((r) => r.cost !== undefined && r.cost !== null)
+		.slice(-count)
+		.map((r) => r.cost!);
+}
+
+/**
+ * Unicode sparkline characters, ordered from lowest to highest.
+ */
+const SPARKLINE_CHARS = ['\u2581', '\u2582', '\u2583', '\u2584', '\u2585', '\u2586', '\u2587', '\u2588'];
+
+/**
+ * Convert an array of numbers to a Unicode sparkline string.
+ * Values are scaled to the 8-character range. Empty array returns empty string.
+ */
+export function formatSparkline(values: number[]): string {
+	if (values.length === 0) return '';
+	const min = Math.min(...values);
+	const max = Math.max(...values);
+	const range = max - min;
+	if (range === 0) {
+		// All values equal — show middle character
+		return values.map(() => SPARKLINE_CHARS[3]).join('');
+	}
+	return values
+		.map((v) => {
+			const normalized = (v - min) / range;
+			const index = Math.min(Math.floor(normalized * SPARKLINE_CHARS.length), SPARKLINE_CHARS.length - 1);
+			return SPARKLINE_CHARS[index];
+		})
+		.join('');
+}
+
 export function computeDegradation(
 	current: SLAMetrics,
 	baseline: SLAMetrics,

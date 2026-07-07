@@ -55,6 +55,7 @@ import { parseDiff } from "./diff";
 import { formatPresetSummary } from "./presets";
 import { formatRunDuration } from "./history";
 import type { SessionState } from "./state";
+import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
 
 // ---------------------------------------------------------------------------
 // SelectList helper
@@ -1490,6 +1491,11 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			description: "Watch running subagents in real-time",
 		},
 		{
+			value: "dashboard",
+			label: "Observability Dashboard",
+			description: "Real-time metrics, SLA, errors, and cost trends",
+		},
+		{
 			value: "preset",
 			label: "Manage Presets",
 			description: `${state.builtinPresets.length} built-in, ${state.config.presets.length} custom`,
@@ -1833,6 +1839,242 @@ export async function showMonitor(
 		};
 
 		const interval = setInterval(() => tui.requestRender(), 200);
+		const cleanup = () => clearInterval(interval);
+
+		return {
+			render: (w: number) => buildView().render(w),
+			invalidate: () => {},
+			handleInput: (_data: string) => {
+				cleanup();
+				done();
+			},
+		};
+	});
+}
+
+// ---------------------------------------------------------------------------
+// E1: Observability Dashboard
+// ---------------------------------------------------------------------------
+
+/**
+ * Horizontal bar for error breakdown using Unicode block characters.
+ */
+function buildHorizontalBar(count: number, maxCount: number, maxWidth: number): string {
+	if (maxCount === 0 || count === 0) return '';
+	const barLen = Math.max(1, Math.round((count / maxCount) * maxWidth));
+	return '\u2588'.repeat(barLen);
+}
+
+/**
+ * Format a duration in ms to a compact string for the recent runs table.
+ */
+function compactDuration(ms: number): string {
+	if (ms < 1000) return `${ms}ms`;
+	if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+	return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
+}
+
+export async function showDashboard(
+	ctx: ExtensionContext,
+	state: SessionState,
+): Promise<void> {
+	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+		const buildView = () => {
+			const container = new Container();
+			const now = new Date();
+			const refreshStr = `refreshing \u00b7 ${now.toLocaleTimeString()}`;
+
+			// ---- Panel 1: Header ----
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+			container.addChild(
+				new Text(
+					theme.fg("accent", theme.bold("brl-subagent Dashboard")) +
+						theme.fg("dim", `  ${refreshStr}`),
+				1,
+				0,
+			),
+			);
+			container.addChild(new Text("", 0, 0));
+
+			// ---- Panel 2: Active subagents ----
+			const activeCount = state.subagentSessions.size;
+			container.addChild(
+				new Text(
+					theme.fg("accent", theme.bold(`Active Subagents (${activeCount})`)),
+					1,
+					0,
+				),
+			);
+			if (activeCount === 0) {
+				container.addChild(new Text(theme.fg("dim", "  None running"), 1, 0));
+			} else {
+				let idx = 0;
+				for (const [id, session] of state.subagentSessions) {
+					const elapsed = Math.round((Date.now() - session.startedAt) / 1000);
+					const elapsedStr =
+						elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m${elapsed % 60}s`;
+					const name = session.label || session.task.slice(0, 40);
+					const spinner =
+						["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"][
+							Math.floor(Date.now() / 150) % 10
+					];
+					container.addChild(
+						new Text(
+							theme.fg("accent", `  ${spinner} ${name}`) +
+								theme.fg(
+									"dim",
+									`  \u2191${formatTokens(session.usage.input)} \u2193${formatTokens(session.usage.output)}  ${elapsedStr}`,
+							),
+						1,
+						0,
+					),
+					);
+					idx++;
+					if (idx < activeCount) container.addChild(new Text("", 0, 0));
+				}
+			}
+			container.addChild(new Text("", 0, 0));
+
+			// ---- Panel 3: SLA Summary ----
+			const allRuns = state.getRunEntries(ctx);
+			const recentRuns = allRuns.slice(0, state.config.slaWindowSize || 50);
+			const metrics = recentRuns.length > 0 ? computeSLAMetrics(recentRuns) : null;
+
+			container.addChild(
+				new Text(
+					theme.fg("accent", theme.bold(`SLA Summary (last ${recentRuns.length} runs)`)),
+					1,
+					0,
+				),
+			);
+			if (metrics && metrics.totalRuns > 0) {
+				const successPct = (metrics.successRate * 100).toFixed(1);
+				const successColor = metrics.successRate >= 0.9 ? "success" : metrics.successRate >= 0.7 ? "warning" : "error";
+				container.addChild(
+					new Text(
+						theme.fg("dim", "  Success: ") +
+							theme.fg(successColor, `${successPct}%`) +
+							theme.fg("dim", ` \u00b7 p50: ${compactDuration(metrics.p50DurationMs)} \u00b7 p95: ${compactDuration(metrics.p95DurationMs)} \u00b7 p99: ${compactDuration(metrics.p99DurationMs)}`),
+					1,
+					0,
+				),
+				);
+				container.addChild(
+					new Text(
+						theme.fg("dim", "  Cost:      ") +
+							theme.fg("dim", `total $${metrics.totalCost.toFixed(4)} \u00b7 avg $${metrics.averageCost.toFixed(4)}`),
+					1,
+					0,
+				),
+				);
+			} else {
+				container.addChild(new Text(theme.fg("dim", "  No completed runs yet"), 1, 0));
+			}
+			container.addChild(new Text("", 0, 0));
+
+			// ---- Panel 4: Recent Runs (last 10) ----
+			const recent10 = allRuns.slice(0, 10);
+			container.addChild(
+				new Text(
+					theme.fg("accent", theme.bold("Recent Runs")),
+					1,
+					0,
+				),
+			);
+			if (recent10.length === 0) {
+				container.addChild(new Text(theme.fg("dim", "  No runs recorded"), 1, 0));
+			} else {
+				for (const run of recent10) {
+					const icon =
+						run.status === "done"
+							? theme.fg("success", "\u2713")
+							: run.status === "failed"
+								? theme.fg("error", "\u2717")
+								: theme.fg("accent", "\u25CF");
+					const name = run.label || run.task.slice(0, 50);
+					const dur = run.durationMs ? compactDuration(run.durationMs) : "...";
+					const cost = run.cost ? ` $${run.cost.toFixed(4)}` : "";
+					container.addChild(
+						new Text(
+							`  ${icon} ${theme.fg("dim", name.slice(0, 50))}` +
+								theme.fg("dim", `  ${dur}${cost}`),
+							1,
+							0,
+						),
+					);
+				}
+			}
+			container.addChild(new Text("", 0, 0));
+
+			// ---- Panel 5: Error Breakdown ----
+			container.addChild(
+				new Text(
+					theme.fg("accent", theme.bold("Error Breakdown")),
+					1,
+					0,
+				),
+			);
+			if (metrics && Object.keys(metrics.errorCategoryBreakdown).length > 0) {
+				const cats = Object.entries(metrics.errorCategoryBreakdown).sort(
+					(a, b) => b[1] - a[1],
+				);
+				const maxCount = cats[0][1];
+				for (const [cat, count] of cats) {
+					const bar = buildHorizontalBar(count, maxCount, 20);
+					container.addChild(
+						new Text(
+							theme.fg("dim", `  ${cat.padEnd(18)} `) +
+								theme.fg("error", bar) +
+								theme.fg("dim", ` ${count}`),
+						1,
+						0,
+					),
+				);
+				}
+			} else {
+				container.addChild(new Text(theme.fg("success", "  No errors \u2713"), 1, 0));
+			}
+			container.addChild(new Text("", 0, 0));
+
+			// ---- Panel 6: Cost Trend (sparkline) ----
+			container.addChild(
+				new Text(
+					theme.fg("accent", theme.bold("Cost Trend (last 20 runs)")),
+					1,
+					0,
+				),
+			);
+			const costTrend = computeCostTrend(allRuns, 20);
+			if (costTrend.length > 0) {
+				const sparkline = formatSparkline(costTrend);
+				const totalCost = costTrend.reduce((s, c) => s + c, 0);
+				container.addChild(
+					new Text(
+						theme.fg("dim", "  ") + theme.fg("accent", sparkline),
+						1,
+						0,
+					),
+				);
+				container.addChild(
+					new Text(
+						theme.fg("dim", `  ${costTrend.length} runs \u00b7 total $${totalCost.toFixed(4)} \u00b7 avg $${(totalCost / costTrend.length).toFixed(4)}`),
+						1,
+						0,
+					),
+				);
+			} else {
+				container.addChild(new Text(theme.fg("dim", "  No cost data"), 1, 0));
+			}
+
+			container.addChild(new Text("", 0, 0));
+			container.addChild(new Text(theme.fg("dim", "q / esc to close"), 1, 0));
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+			return container;
+		};
+
+		// Auto-refresh every 2 seconds
+		const interval = setInterval(() => tui.requestRender(), 2000);
 		const cleanup = () => clearInterval(interval);
 
 		return {

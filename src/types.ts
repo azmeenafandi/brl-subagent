@@ -194,6 +194,7 @@ export interface SubagentState {
 	poolEnabled: boolean;
 	poolSize: number;
  defaultRole: string; // E6: RBAC role-based tool permissions
+	defaultBackend: string; // E8: pluggable backend ("pi" or "direct-api")
 	slaTrackingEnabled: boolean; // E4: SLA tracking toggle
 	slaWindowSize: number; // E4: number of recent runs to analyze (10-500)
 	lastSLAMetrics?: SLAMetrics; // E4: persisted baseline for degradation comparison
@@ -451,6 +452,9 @@ export const DEFAULT_MAX_SUBAGENT_DEPTH = 3;
 
 export const MAX_RUN_HISTORY_ENTRIES = 500;
 export const MAX_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// E8: Pluggable backend constants
+export const AVAILABLE_BACKENDS: string[] = ["pi", "direct-api"];
 
 // Process pool constants
 export const MAX_POOL_SIZE = 8;

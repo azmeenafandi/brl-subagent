@@ -110,6 +110,7 @@ import {
 	showConfigMenu,
 	showRunHistory,
 	showMonitor,
+	showDashboard,
 	showRetryMenu,
 	showScheduleManager,
 	showAddSchedule,
@@ -120,6 +121,7 @@ import {
 } from "./tui";
 import { ROLE_DEFINITIONS, DEFAULT_ROLE, type RoleName } from "./roles";
 import { createLogger, type Logger } from "./logging";
+import { Intercom } from "./messaging";
 
 // ---------------------------------------------------------------------------
 // Extension entry point
@@ -883,6 +885,9 @@ export default function (pi: ExtensionAPI) {
 		const results: SubTaskResult[] = [];
 		let completedCount = 0;
 
+		// E10: Intercom for subagent-to-subagent messaging
+		const intercom = new Intercom();
+
 		// Individual task runner (captures merged params, runs subagent)
 		const runTask = async (index: number): Promise<void> => {
 			const step = taskList[index];
@@ -905,6 +910,10 @@ export default function (pi: ExtensionAPI) {
 				stderr: "",
 				usage: { ...EMPTY_USAGE },
 			};
+
+			// E10: Register subagent ID for intercom
+			const subagentId = merged.label ?? `parallel-${index}`;
+			intercom.register(subagentId);
 
 			// Emit initial progress
 			const modeInfo = describePromptMode(
@@ -947,6 +956,11 @@ export default function (pi: ExtensionAPI) {
 				getFinalOutput,
 				log,
 				currentDepth + 1,
+				undefined, // pool
+				undefined, // maxTurns
+				undefined, // onQuestion
+				intercom,
+				subagentId,
 			);
 
 			// Fill SubTaskResult
@@ -1277,6 +1291,9 @@ export default function (pi: ExtensionAPI) {
 		const resultMap = new Map<string, SubTaskResult>();
 		const allWaves: GraphWave[] = [];
 
+		// E10: Intercom for subagent-to-subagent messaging
+		const intercom = new Intercom();
+
 		let chainSuccess = false;
 		try {
 			for (let w = 0; w < waves.length; w++) {
@@ -1352,6 +1369,9 @@ export default function (pi: ExtensionAPI) {
 						};
 					}
 
+
+					const subagentId = graphTask.id;
+					intercom.register(subagentId);
 					try {
 						const stepOnUpdate = onUpdate
 							? (partial: AgentToolResult<SubagentResult>) => {
@@ -1500,7 +1520,7 @@ export default function (pi: ExtensionAPI) {
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
 				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "costlimit", "graph", "reset", "sla", "sla-stats",
-				"history", "historyentries", "monitor", "preset", "retry", "pool", "schedule", "unschedule",
+				"history", "historyentries", "monitor", "dashboard", "preset", "retry", "pool", "schedule", "unschedule",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
@@ -1524,6 +1544,7 @@ export default function (pi: ExtensionAPI) {
 				history: () => showRunHistory(ctx, state, () => state.persistState(pi)),
 				historyentries: () => showHistoryEntriesInput(ctx, state, applyConfig),
 				monitor: () => showMonitor(ctx, state),
+				dashboard: () => showDashboard(ctx, state),
 				preset: () => showPresetManager(ctx, state, () => state.persistState(pi)),
 				templates: () => showTemplateManager(ctx, state, () => state.persistState(pi)),
 				retry: () => showRetryMenu(ctx, state),

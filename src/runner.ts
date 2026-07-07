@@ -30,6 +30,8 @@ import {
 } from "./types";
 import { getSafeEnv, DEPTH_ENV_KEY } from "./sanitize";
 import type { Logger } from "./logging";
+import type { Intercom } from "./messaging";
+import { extractMessages, stripMessageLines, formatPendingMessages } from "./messaging";
 
 // ---------------------------------------------------------------------------
 // Multi-turn: question pattern
@@ -316,6 +318,8 @@ export async function runSubagent(
 	pool?: ProcessPool,
 	maxTurns?: number,
 	onQuestion?: (question: string, turn: number, maxTurns: number) => Promise<string | null>,
+	intercom?: Intercom,
+	subagentId?: string,
 ): Promise<SubagentResult> {
 	const effectiveMaxTurns = Math.max(1, maxTurns ?? 1);
 
@@ -329,7 +333,21 @@ export async function runSubagent(
 			effectivePrompt += "\n\nAdditional context from the conductor:\n" + previousAnswers.join("\n\n");
 		}
 
-		// E11: Try pool first if provided (only on first turn)
+		// E10: Inject pending intercom messages into the task prompt
+	let effectiveTask = task;
+	if (intercom && subagentId && intercom.hasMessages(subagentId)) {
+		const pending = intercom.receiveAndClear(subagentId);
+		if (pending.length > 0) {
+			const msgBlock = formatPendingMessages(pending);
+			effectiveTask += `
+
+Pending messages from other subagents:
+${msgBlock}`;
+			log?.debug("Injected pending intercom messages", { subagentId, count: pending.length });
+		}
+	}
+
+	// E11: Try pool first if provided (only on first turn)
 		if (pool && turn === 0) {
 			const modelStr = `${model.provider}/${model.id}`;
 			const poolEntry = await pool.acquire(cwd, modelStr, thinkingLevel);
@@ -365,8 +383,8 @@ export async function runSubagent(
 			args.push("--append-system-prompt", tmpFilePath);
 		}
 
-		// Pass the task as the prompt argument
-		args.push(task);
+		// Pass the effective task as the prompt argument
+		args.push(effectiveTask);
 
 		const result: SubagentResult = {
 			messages: [],
@@ -471,6 +489,22 @@ export async function runSubagent(
 
 			previousAnswers.push(`Question (turn ${turn + 1}): ${question}\nAnswer: ${answer}`);
 			continue;
+		}
+
+		// E10: Extract outgoing intercom messages from output
+		if (intercom && subagentId) {
+			const finalOutput = getFinalOutputFn(result.messages);
+			const outgoing = extractMessages(finalOutput);
+			for (const msg of outgoing) {
+				if (msg.target === "*") {
+					intercom.broadcast(subagentId, msg.content);
+				} else {
+					intercom.send(subagentId, msg.target, msg.content);
+				}
+			}
+			if (outgoing.length > 0) {
+				log?.debug("Extracted outgoing intercom messages", { subagentId, count: outgoing.length });
+			}
 		}
 
 		return result;
