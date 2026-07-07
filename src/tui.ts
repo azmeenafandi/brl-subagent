@@ -39,6 +39,7 @@ import {
 	EXPANDED_HUNKS_PER_FILE,
 	SANDBOX_TOOLS,
 	MAX_POOL_SIZE,
+	AVAILABLE_BACKENDS,
 	formatTokens,
 	formatUsageStats,
 	formatModel,
@@ -399,6 +400,35 @@ export async function showSandboxLevelSelector(
 
 	state.config.defaultSandboxLevel = result as SandboxLevel;
 	onConfigChanged(ctx, `Default sandbox level set to ${result} — ${sandboxLevelDescription(result as SandboxLevel)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Backend selector (E8)
+// ---------------------------------------------------------------------------
+
+export async function showBackendSelector(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	const items: SelectItem[] = [
+		{
+			value: "pi",
+			label: "pi",
+			description: "Full pi process with tools (default)",
+		},
+		{
+			value: "direct-api",
+			label: "direct-api",
+			description: "Direct HTTP API call, no tools (skeleton)",
+		},
+	];
+
+	const result = await showSelectList(ctx, "Select Default Backend", items, 5);
+	if (!result) return;
+
+	state.config.defaultBackend = result;
+	onConfigChanged(ctx, `Default backend set to ${result}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1455,6 +1485,11 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			value: "sandbox",
 			label: "Set Default Sandbox Level",
 			description: sandboxLevelDescription(state.config.defaultSandboxLevel),
+		},
+		{
+			value: "backend",
+			label: "Set Default Backend",
+			description: state.config.defaultBackend === "pi" ? "pi (full tools)" : state.config.defaultBackend,
 		},
 		{
 			value: "role",

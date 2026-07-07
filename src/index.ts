@@ -59,6 +59,7 @@ import {
 	GRAPH_OUTPUT_PLACEHOLDER_RE,
 	SANDBOX_TOOLS,
 	SANDBOX_EXCLUDE,
+	AVAILABLE_BACKENDS,
 	type GitMode,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
@@ -105,6 +106,7 @@ import {
 	showPresetManager,
 	showTemplateManager,
 	showSandboxLevelSelector,
+	showBackendSelector,
 	showPoolConfig,
 	showSLAConfig,
 	showSLAStats,
@@ -1524,7 +1526,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "costlimit", "graph", "reset", "sla", "sla-stats",
+				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "backend", "costlimit", "graph", "reset", "sla", "sla-stats",
 				"history", "historyentries", "monitor", "dashboard", "preset", "retry", "pool", "schedule", "unschedule",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
@@ -1544,6 +1546,7 @@ export default function (pi: ExtensionAPI) {
 				gitmode: () => showGitModeSelector(ctx, state, applyConfig),
 				approval: () => showApprovalModeSelector(ctx, state, applyConfig),
 				sandbox: () => showSandboxLevelSelector(ctx, state, applyConfig),
+				backend: () => showBackendSelector(ctx, state, applyConfig),
 				costlimit: () => showCostLimitInput(ctx, state, applyConfig),
 				reset: () => resetState(ctx),
 				history: () => showRunHistory(ctx, state, () => state.persistState(pi)),
@@ -2071,6 +2074,13 @@ export default function (pi: ExtensionAPI) {
 				resolvedApprovalMode,
 			} = resolveSubagentParams(params, ctx);
 
+			// E8: Resolve backend: per-call param > state config default
+			const resolvedBackendName: string =
+				(params.backend && AVAILABLE_BACKENDS.includes(params.backend))
+					? params.backend
+					: state.config.defaultBackend;
+			const resolvedBackend: Backend | undefined = getBackend(resolvedBackendName);
+
 			// F1: Validate CWD
 			const cwdResult = validateCwd(effectiveCwd, ctx.cwd);
 			if (!cwdResult.ok) {
@@ -2317,6 +2327,7 @@ export default function (pi: ExtensionAPI) {
 					undefined, // pool
 					effectiveMaxTurns,
 					onQuestionFn,
+					resolvedBackend,
 				);
 
 				// Auto-retry on timeout
@@ -2361,6 +2372,10 @@ export default function (pi: ExtensionAPI) {
 						getFinalOutput,
 						log,
 						childDepth,
+						undefined, // pool
+						undefined, // maxTurns
+						null, // onQuestion
+						resolvedBackend,
 					);
 				}
 
