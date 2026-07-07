@@ -48,6 +48,7 @@ import {
 	isMultiSubagentDetails,
 	isGraphDetails,
 } from "./types";
+import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
 import { ROLE_DEFINITIONS, DEFAULT_ROLE, type RoleName } from "./roles";
 import { extractParamNames } from "./templates";
 import { parseDiff } from "./diff";
@@ -587,6 +588,210 @@ export async function showSLAStats(
 // Preset management UI
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// E5: Compliance Reports
+// ---------------------------------------------------------------------------
+
+export async function showFileAccessReport(
+	ctx: ExtensionContext,
+	state: SessionState,
+): Promise<void> {
+	const runs = state.getRunEntries(ctx);
+	if (runs.length === 0) {
+		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
+		return;
+	}
+
+	const report = buildFileAccessReport(runs);
+	const fileCount = Object.keys(report.files).length;
+
+	if (fileCount === 0) {
+		ctx.ui.notify("No file access detected in run outputs.", "info");
+		return;
+	}
+
+	const lines: string[] = [
+		`File Access Report (${fileCount} files)`,
+		"",
+	];
+
+	// Sort files alphabetically for consistent output
+	const sortedFiles = Object.keys(report.files).sort();
+
+	for (const file of sortedFiles) {
+		const runIds = report.files[file];
+		lines.push(`  ${file}`);
+		lines.push(`    Runs: ${runIds.join(", ")}`);
+	}
+
+	ctx.ui.custom((tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(new Text(theme.fg("accent", theme.bold("File Access Report")), 1, 0));
+		container.addChild(new Text("", 0, 0));
+		for (const line of lines) {
+			container.addChild(new Text(theme.fg("dim", line), 1, 0));
+		}
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				if (data === "q" || data === "\x1b") done(undefined);
+			},
+		};
+	});
+}
+
+export async function showSecretsExposureReport(
+	ctx: ExtensionContext,
+	state: SessionState,
+): Promise<void> {
+	const runs = state.getRunEntries(ctx);
+	if (runs.length === 0) {
+		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
+		return;
+	}
+
+	const report = buildSecretsExposureReport(runs);
+	const exposureCount = report.exposures.length;
+
+	if (exposureCount === 0) {
+		ctx.ui.notify("No sensitive file access detected.", "info");
+		return;
+	}
+
+	const lines: string[] = [
+		`Secrets Exposure Report (${exposureCount} findings)`,
+		"",
+	];
+
+	// Group by severity
+	const highSeverity = report.exposures.filter((e) => e.severity === "high");
+	const mediumSeverity = report.exposures.filter((e) => e.severity === "medium");
+	const lowSeverity = report.exposures.filter((e) => e.severity === "low");
+
+	if (highSeverity.length > 0) {
+		lines.push("  HIGH SEVERITY:");
+		for (const exposure of highSeverity) {
+			lines.push(`    ${exposure.file}`);
+			lines.push(`      Run: ${exposure.runId}${exposure.runLabel ? ` (${exposure.runLabel})` : ""}`);
+		}
+		lines.push("");
+	}
+
+	if (mediumSeverity.length > 0) {
+		lines.push("  MEDIUM SEVERITY:");
+		for (const exposure of mediumSeverity) {
+			lines.push(`    ${exposure.file}`);
+			lines.push(`      Run: ${exposure.runId}${exposure.runLabel ? ` (${exposure.runLabel})` : ""}`);
+		}
+		lines.push("");
+	}
+
+	if (lowSeverity.length > 0) {
+		lines.push("  LOW SEVERITY:");
+		for (const exposure of lowSeverity) {
+			lines.push(`    ${exposure.file}`);
+			lines.push(`      Run: ${exposure.runId}${exposure.runLabel ? ` (${exposure.runLabel})` : ""}`);
+		}
+	}
+
+	ctx.ui.custom((tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Secrets Exposure Report")), 1, 0));
+		container.addChild(new Text("", 0, 0));
+		for (const line of lines) {
+			container.addChild(new Text(theme.fg("dim", line), 1, 0));
+		}
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				if (data === "q" || data === "\x1b") done(undefined);
+			},
+		};
+	});
+}
+
+export async function showFullComplianceSummary(
+	ctx: ExtensionContext,
+	state: SessionState,
+): Promise<void> {
+	const runs = state.getRunEntries(ctx);
+	if (runs.length === 0) {
+		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
+		return;
+	}
+
+	const summary = generateComplianceSummary(runs);
+
+	const lines: string[] = [
+		`Compliance Summary`,
+		"",
+		`  Total Runs:        ${summary.totalRuns}`,
+		`  Date Range:        ${summary.dateRange.earliest ? new Date(summary.dateRange.earliest).toLocaleDateString() : "N/A"} - ${summary.dateRange.latest ? new Date(summary.dateRange.latest).toLocaleDateString() : "N/A"}`,
+		"",
+		`  SLA Metrics:`,
+		`    Success Rate:    ${(summary.metrics.successRate * 100).toFixed(1)}%`,
+		`    Failure Rate:    ${(summary.metrics.failureRate * 100).toFixed(1)}%`,
+		`    Avg Duration:    ${summary.metrics.averageDurationMs.toFixed(0)}ms`,
+		`    p95 Duration:    ${summary.metrics.p95DurationMs.toFixed(0)}ms`,
+		`    Total Cost:      $${summary.metrics.totalCost.toFixed(4)}`,
+		"",
+		`  File Access:       ${summary.filesAccessed} files`,
+		`  Sensitive Files:   ${summary.sensitiveFilesTouched}`,
+		`  High Severity:     ${summary.highSeverityFindings}`,
+	];
+
+	ctx.ui.custom((tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Compliance Summary")), 1, 0));
+		container.addChild(new Text("", 0, 0));
+		for (const line of lines) {
+			container.addChild(new Text(theme.fg("dim", line), 1, 0));
+		}
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				if (data === "q" || data === "\x1b") done(undefined);
+			},
+		};
+	});
+}
+
+export async function showComplianceMenu(
+	ctx: ExtensionContext,
+	state: SessionState,
+): Promise<void> {
+	const items: SelectItem[] = [
+		{ value: "file-access", label: "File Access Report", description: "Shows file → subagent run mapping" },
+		{ value: "secrets", label: "Secrets Exposure Report", description: "Shows sensitive file access findings" },
+		{ value: "full", label: "Full Compliance Summary", description: "Combined summary with metrics" },
+	];
+
+	const result = await showSelectList(ctx, "Compliance Reports", items, 5);
+	if (!result) return;
+
+	switch (result) {
+		case "file-access":
+			await showFileAccessReport(ctx, state);
+			break;
+		case "secrets":
+			await showSecretsExposureReport(ctx, state);
+			break;
+		case "full":
+			await showFullComplianceSummary(ctx, state);
+			break;
+	}
+}
+
+// Preset management UI
 export function getPreset(
 	name: string,
 	builtinPresets: SubagentPreset[],

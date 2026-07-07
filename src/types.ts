@@ -147,6 +147,34 @@ export const DEFAULT_SLA_WINDOW_SIZE = 50;
 export const MIN_SLA_WINDOW_SIZE = 10;
 export const MAX_SLA_WINDOW_SIZE = 500;
 
+// E5: Compliance report types
+export interface FileAccessReport {
+	files: Record<string, string[]>;
+}
+
+export interface SecretsExposureEntry {
+	file: string;
+	runId: string;
+	runLabel?: string;
+	severity: "high" | "medium" | "low";
+}
+
+export interface SecretsExposureReport {
+	exposures: SecretsExposureEntry[];
+}
+
+export interface ComplianceSummary {
+	totalRuns: number;
+	dateRange: {
+		earliest: string;
+		latest: string;
+	};
+	metrics: SLAMetrics;
+	filesAccessed: number;
+	sensitiveFilesTouched: number;
+	highSeverityFindings: number;
+}
+
 export interface SubagentState {
 	model?: { provider: string; id: string };
 	maxThinkingLevel: ThinkingLevel;
