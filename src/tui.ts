@@ -52,7 +52,6 @@ import {
 	isGraphDetails,
 } from "./types";
 import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
-import { ROLE_DEFINITIONS, DEFAULT_ROLE, type RoleName } from "./roles";
 import { extractParamNames } from "./templates";
 import { parseDiff } from "./diff";
 import { formatPresetSummary } from "./presets";
@@ -435,46 +434,6 @@ export async function showBackendSelector(
 
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Role selector (E6)
-// ---------------------------------------------------------------------------
-
-function roleDescription(role: RoleName): string {
-	const def = ROLE_DEFINITIONS[role];
-	if (!def) return "Unknown";
-	return `Tools: ${def.tools.join(", ")}`;
-}
-
-export async function showRoleSelector(
-	ctx: ExtensionContext,
-	state: SessionState,
-	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
-): Promise<void> {
-	const items: SelectItem[] = [
-		{
-			value: "developer",
-			label: "developer",
-			description: "Full development access",
-		},
-		{
-			value: "reviewer",
-			label: "reviewer",
-			description: "Read-only analysis and review",
-		},
-		{
-			value: "auditor",
-			label: "auditor",
-			description: "Read-only security-focused",
-		},
-	];
-
-	const result = await showSelectList(ctx, "Select Default Role", items, 5);
-	if (!result) return;
-
-	state.config.defaultRole = result as RoleName;
-	onConfigChanged(ctx, `Default role set to ${result} — ${roleDescription(result as RoleName)}`);
-}
-
 // Pool configuration UI (E11)
 // ---------------------------------------------------------------------------
 
@@ -589,13 +548,6 @@ export async function showSLAStats(
 		lines.push("", "  Errors by category:");
 		for (const [cat, count] of Object.entries(metrics.errorCategoryBreakdown)) {
 			lines.push(`    ${cat}: ${count}`);
-		}
-	}
-
-	if (Object.keys(metrics.roleBreakdown).length > 0) {
-		lines.push("", "  Runs by role:");
-		for (const [role, count] of Object.entries(metrics.roleBreakdown)) {
-			lines.push(`    ${role}: ${count}`);
 		}
 	}
 
@@ -1522,11 +1474,6 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			value: "backend",
 			label: "Set Default Backend",
 			description: state.config.defaultBackend === "pi" ? "pi (full tools)" : state.config.defaultBackend,
-		},
-		{
-			value: "role",
-			label: "Set Default Role",
-			description: state.config.defaultRole,
 		},
 		{
 			value: "historyentries",

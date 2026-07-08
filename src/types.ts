@@ -125,7 +125,6 @@ export const SANDBOX_EXCLUDE: Record<SandboxLevel, string[] | undefined> = {
 
 export interface SLAMetrics {
 	errorCategoryBreakdown: Record<string, number>;
-	roleBreakdown: Record<string, number>;
 	totalRuns: number;
 	successRate: number;
 	failureRate: number;
@@ -194,7 +193,6 @@ export interface SubagentState {
 	circuitBreaker: CircuitBreakerState;
 	poolEnabled: boolean;
 	poolSize: number;
- defaultRole: string; // E6: RBAC role-based tool permissions
 	defaultBackend: string; // E8: pluggable backend ("pi" or "direct-api")
 	slaTrackingEnabled: boolean; // E4: SLA tracking toggle
 	slaWindowSize: number; // E4: number of recent runs to analyze (10-500)

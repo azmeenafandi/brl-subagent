@@ -54,7 +54,6 @@ export function computeSLAMetrics(runs: SubagentRun[]): SLAMetrics {
 			totalCost: 0,
 			averageCost: 0,
 			errorCategoryBreakdown: {},
-			roleBreakdown: {},
 		};
 	}
 
@@ -96,15 +95,6 @@ export function computeSLAMetrics(runs: SubagentRun[]): SLAMetrics {
 		}
 	}
 
-	// Role breakdown
-	const roleBreakdown: Record<string, number> = {};
-	for (const run of runs) {
-		const role = (run.originalParams as Record<string, unknown>)?.role as string | undefined;
-		if (role) {
-			roleBreakdown[role] = (roleBreakdown[role] ?? 0) + 1;
-		}
-	}
-
 	return {
 		totalRuns,
 		successRate,
@@ -116,7 +106,6 @@ export function computeSLAMetrics(runs: SubagentRun[]): SLAMetrics {
 		totalCost,
 		averageCost,
 		errorCategoryBreakdown,
-		roleBreakdown,
 	};
 }
 

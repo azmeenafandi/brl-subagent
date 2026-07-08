@@ -85,7 +85,6 @@ export class SessionState {
 			poolSize: 2,
 			slaTrackingEnabled: false,
 			slaWindowSize: 50,
-			defaultRole: "developer",
 			defaultBackend: "pi",
 		};
 	}
@@ -113,7 +112,6 @@ export class SessionState {
 			circuitBreaker: this.config.circuitBreaker,
 			poolEnabled: this.config.poolEnabled,
 			poolSize: this.config.poolSize,
-			defaultRole: this.config.defaultRole,
 			defaultBackend: this.config.defaultBackend,
 		slaTrackingEnabled: this.config.slaTrackingEnabled,
 		slaWindowSize: this.config.slaWindowSize,
@@ -187,16 +185,6 @@ export class SessionState {
 			this.config.defaultSandboxLevel = data.defaultSandboxLevel as SandboxLevel;
 		} else {
 			this.config.defaultSandboxLevel = "none";
-		}
-
-		// Restore defaultRole (E6)
-		if (
-			data.defaultRole &&
-			(data.defaultRole === "reviewer" || data.defaultRole === "developer" || data.defaultRole === "auditor")
-		) {
-			this.config.defaultRole = data.defaultRole;
-		} else {
-			this.config.defaultRole = "developer";
 		}
 
 		// Restore defaultBackend (E8)
@@ -415,7 +403,6 @@ export class SessionState {
 		this.config.approvalMode = "writes";
 		this.config.defaultPriority = "normal";
 		this.config.defaultSandboxLevel = "none";
-		this.config.defaultRole = "developer";
 		this.config.defaultBackend = "pi";
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;

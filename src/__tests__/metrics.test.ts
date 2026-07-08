@@ -38,7 +38,6 @@ describe("computeSLAMetrics", () => {
 		expect(metrics.totalCost).toBe(0);
 		expect(metrics.averageCost).toBe(0);
 		expect(metrics.errorCategoryBreakdown).toEqual({});
-		expect(metrics.roleBreakdown).toEqual({});
 	});
 
 	it("returns successRate 1.0 for a single successful run", () => {
@@ -115,37 +114,7 @@ describe("computeSLAMetrics", () => {
 		expect(metrics.errorCategoryBreakdown).toEqual({ timeout: 2, crash: 1 });
 	});
 
-	it("counts roles correctly", () => {
-		const runs = [
-			makeRun({
-				id: "1",
-				status: "done",
-				durationMs: 1000,
-				originalParams: { preset: "test" },
-			}),
-			makeRun({
-				id: "2",
-				status: "done",
-				durationMs: 1000,
-				originalParams: { preset: "test" },
-			}),
-			makeRun({
-				id: "3",
-				status: "done",
-				durationMs: 1000,
-				originalParams: {},
-			}),
-		];
-		// Note: role is read from (originalParams as Record).role
-		// Since SubagentRun.originalParams doesn't have role by default,
-		// we need to set it manually
-		const runsWithRoles = runs.map((r) => ({
-			...r,
-			originalParams: { ...r.originalParams, role: r.id === "3" ? "reviewer" : "developer" },
-		}));
-		const metrics = computeSLAMetrics(runsWithRoles);
-		expect(metrics.roleBreakdown).toEqual({ developer: 2, reviewer: 1 });
-	});
+
 
 	it("excludes running-status runs from duration stats but counts in totalRuns", () => {
 		const runs = [
@@ -187,7 +156,7 @@ describe("computeDegradation", () => {
 		totalCost: 5.0,
 		averageCost: 0.05,
 		errorCategoryBreakdown: {},
-		roleBreakdown: {},
+	
 	};
 
 	it("reports no degradation for similar metrics", () => {

@@ -124,7 +124,6 @@ import {
 	renderDelegateCall,
 	renderDelegateResult,
 } from "./tui";
-import { ROLE_DEFINITIONS, DEFAULT_ROLE, type RoleName } from "./roles";
 import { createLogger, type Logger } from "./logging";
 import { Intercom } from "./messaging";
 
@@ -1764,13 +1763,6 @@ export default function (pi: ExtensionAPI) {
 					description:
 						"Change approval mode: auto (never ask), writes (ask when files changed), " +
 						"always (ask every time). Default is user config (/brl-subagent approval).",
-				}),
-			),
-			role: Type.Optional(
-				Type.String({
-					description:
-						"RBAC role: reviewer (read-only), developer (full), or auditor (security). " +
-						"Defaults to user config or developer.",
 				}),
 			),
 			sandboxLevel: Type.Optional(
