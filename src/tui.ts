@@ -474,6 +474,27 @@ export async function showPoolConfig(
 }
 
 // ---------------------------------------------------------------------------
+// Update check toggle
+// ---------------------------------------------------------------------------
+
+export async function showUpdateCheckToggle(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	const items: SelectItem[] = [
+		{ value: "enabled", label: "Enabled", description: "Check for updates on session start" },
+		{ value: "disabled", label: "Disabled", description: "Skip update check" },
+	];
+
+	const result = await showSelectList(ctx, "Update Check", items, 5);
+	if (!result) return;
+
+	state.config.updateCheckEnabled = result === "enabled";
+	onConfigChanged(ctx, `Update check ${result}`);
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // E4: SLA tracking configuration
 // ---------------------------------------------------------------------------
@@ -1544,6 +1565,11 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			description: state.config.poolEnabled
 				? `Enabled (${state.config.poolSize} process${state.config.poolSize > 1 ? "es" : ""})`
 				: "Disabled",
+		},
+		{
+			value: "update-check",
+			label: "Update Check",
+			description: state.config.updateCheckEnabled ? "Enabled" : "Disabled",
 		},
 	];
 }

@@ -108,6 +108,7 @@ import {
 	showSandboxLevelSelector,
 	showBackendSelector,
 	showPoolConfig,
+	showUpdateCheckToggle,
 	showDefaultPrioritySelector,
 	showGitModeSelector,
 	showSLAConfig,
@@ -126,6 +127,8 @@ import {
 } from "./tui";
 import { createLogger, type Logger } from "./logging";
 import { Intercom } from "./messaging";
+import { checkForUpdates } from "./update";
+import { UPDATE_CHECK_INTERVAL_MS } from "./types";
 
 // ---------------------------------------------------------------------------
 // Extension entry point
@@ -1558,6 +1561,7 @@ export default function (pi: ExtensionAPI) {
 				templates: () => showTemplateManager(ctx, state, () => state.persistState(pi)),
 				retry: () => showRetryMenu(ctx, state),
 				pool: () => showPoolConfig(ctx, state, applyConfig),
+			"update-check": () => showUpdateCheckToggle(ctx, state, applyConfig),
 			sla: () => showSLAConfig(ctx, state, applyConfig),
 			"sla-stats": () => showSLAStats(ctx, state),
 				schedule: async () => {
@@ -2622,6 +2626,23 @@ export default function (pi: ExtensionAPI) {
 
 		// F5/F9: Safe state restoration with type guards
 		state.restoreFromSession(ctx);
+
+		// Check for updates (non-blocking, once per 24h)
+		if (state.config.updateCheckEnabled) {
+			const now = Date.now();
+			if (now - state.config.lastUpdateCheck > UPDATE_CHECK_INTERVAL_MS) {
+				state.config.lastUpdateCheck = now;
+				checkForUpdates("2.0.1", log).then((result) => {
+					if (result?.available) {
+						ctx.ui.notify(
+							"brl-subagent " + result.version + " available (current: 2.0.1). Visit " + result.url + " to update. /brl-subagent update-check to disable.",
+							"info"
+						);
+						log.info("Update available", { current: "2.0.1", latest: result.version });
+					}
+				}).catch(() => {}); // silently ignore errors
+			}
+		}
 
 		// E9: Initialize scheduler with delegate_task executor
 		scheduler = new Scheduler(pi, log, async (task, config) => {

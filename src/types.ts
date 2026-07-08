@@ -197,6 +197,8 @@ export interface SubagentState {
 	slaTrackingEnabled: boolean; // E4: SLA tracking toggle
 	slaWindowSize: number; // E4: number of recent runs to analyze (10-500)
 	lastSLAMetrics?: SLAMetrics; // E4: persisted baseline for degradation comparison
+	updateCheckEnabled: boolean; // Version update notifier toggle
+	lastUpdateCheck: number; // Epoch ms of last update check
 }
 
 export interface SubagentRun {
@@ -468,6 +470,8 @@ export const TEMPLATE_PARAM_RE = /\$\{(\w+)\}/g;
 
 export const DEFAULT_SESSION_COST_LIMIT = 0;
 
+export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 export const CUSTOM_ENTRY_TYPES = {
 	run: "brl-subagent-run",
 	state: "brl-subagent-state",
@@ -646,6 +650,14 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 	// slaWindowSize must be a number 10-500 if present
 	if (v.slaWindowSize !== undefined) {
 		if (typeof v.slaWindowSize !== "number" || v.slaWindowSize < 10 || v.slaWindowSize > 500) return false;
+	}
+
+	// updateCheckEnabled must be a boolean if present
+	if (v.updateCheckEnabled !== undefined && typeof v.updateCheckEnabled !== "boolean") return false;
+
+	// lastUpdateCheck must be a non-negative number if present
+	if (v.lastUpdateCheck !== undefined) {
+		if (typeof v.lastUpdateCheck !== "number" || v.lastUpdateCheck < 0) return false;
 	}
 
 	return true;
