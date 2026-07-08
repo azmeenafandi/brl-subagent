@@ -24,6 +24,7 @@
  *   /brl-subagent reset  - Reset to defaults
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -136,6 +137,16 @@ import { UPDATE_CHECK_INTERVAL_MS } from "./types";
 
 export default function (pi: ExtensionAPI) {
 	const log = createLogger("brl-subagent");
+
+	// Read current version from package.json
+	const currentVersion = (() => {
+		try {
+			const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
+			return pkg.version || "0.0.0";
+		} catch {
+			return "0.0.0";
+		}
+	})();
 
 	// F7: Session-bound state — initialized per session
 	let state = createSessionState(log);
@@ -2632,13 +2643,13 @@ export default function (pi: ExtensionAPI) {
 			const now = Date.now();
 			if (now - state.config.lastUpdateCheck > UPDATE_CHECK_INTERVAL_MS) {
 				state.config.lastUpdateCheck = now;
-				checkForUpdates("2.0.1", log).then((result) => {
+				checkForUpdates(currentVersion, log).then((result) => {
 					if (result?.available) {
 						ctx.ui.notify(
-							"brl-subagent " + result.version + " available (current: 2.0.1). Visit " + result.url + " to update. /brl-subagent update-check to disable.",
+							"brl-subagent " + result.version + " available (current: " + currentVersion + "). Visit " + result.url + " to update. /brl-subagent update-check to disable.",
 							"info"
 						);
-						log.info("Update available", { current: "2.0.1", latest: result.version });
+						log.info("Update available", { current: currentVersion, latest: result.version });
 					}
 				}).catch(() => {}); // silently ignore errors
 			}
