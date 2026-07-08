@@ -108,6 +108,8 @@ import {
 	showSandboxLevelSelector,
 	showBackendSelector,
 	showPoolConfig,
+	showDefaultPrioritySelector,
+	showGitModeSelector,
 	showSLAConfig,
 	showSLAStats,
 	showConfigMenu,
