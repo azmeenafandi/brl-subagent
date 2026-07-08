@@ -1527,8 +1527,8 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "backend", "costlimit", "graph", "reset", "sla", "sla-stats",
-				"history", "historyentries", "monitor", "dashboard", "preset", "retry", "pool", "schedule", "unschedule",
+				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "backend", "costlimit", "reset", "sla", "sla-stats",
+				"history", "historyentries", "monitor", "dashboard", "preset", "templates", "retry", "pool", "schedule", "unschedule",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
