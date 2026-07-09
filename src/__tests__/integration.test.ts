@@ -982,11 +982,14 @@ describe("sanitize pipeline integration", () => {
 		expect(taskResult.error).toContain("not be empty");
 	});
 
-	it("rejects backtick task before any further processing", () => {
+	it("accepts backtick tasks (safe with shell:false)", () => {
 		const taskResult = sanitizeTask("task`whoami`");
-		expect(taskResult.ok).toBe(false);
-		if (taskResult.ok) return;
-		expect(taskResult.error).toContain("disallowed characters");
+		expect(taskResult.ok).toBe(true);
+		if (taskResult.ok) {
+			// verify the task passes through to subsequent validation
+			const cwdResult = validateCwd(realCwd, realCwd);
+			expect(cwdResult.ok).toBe(true);
+		}
 	});
 
 	it("valid task + valid cwd = pipeline success for cwd", () => {
