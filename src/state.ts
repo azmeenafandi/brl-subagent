@@ -30,6 +30,7 @@ import {
 	MAX_CONSECUTIVE_FAILURES,
 	CIRCUIT_BREAKER_RESET_MS,
 	CIRCUIT_DEGRADED_THINKING,
+	AVAILABLE_BACKENDS,
 } from "./types";
 import { cleanupRuns } from "./history";
 import type { Logger } from "./logging";
