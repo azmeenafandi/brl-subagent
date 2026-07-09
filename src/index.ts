@@ -2336,6 +2336,8 @@ export default function (pi: ExtensionAPI) {
 					undefined, // pool
 					effectiveMaxTurns,
 					onQuestionFn,
+					undefined, // intercom
+					undefined, // subagentId
 					resolvedBackend,
 				);
 
@@ -2384,6 +2386,8 @@ export default function (pi: ExtensionAPI) {
 						undefined, // pool
 						undefined, // maxTurns
 						null, // onQuestion
+						undefined, // intercom
+						undefined, // subagentId
 						resolvedBackend,
 					);
 				}
