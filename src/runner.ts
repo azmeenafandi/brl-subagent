@@ -332,12 +332,11 @@ export async function runSubagent(
 	}
 
 	// E10: Inject pending intercom messages into the task prompt
-	let effectiveTask = task;
 	if (intercom && subagentId && intercom.hasMessages(subagentId)) {
 		const pending = intercom.receiveAndClear(subagentId);
 		if (pending.length > 0) {
 			const msgBlock = formatPendingMessages(pending);
-			effectiveTask += `
+			task += `
 
 Pending messages from other subagents:
 ${msgBlock}`;
@@ -374,15 +373,15 @@ ${msgBlock}`;
 		let tmpDir: string | null = null;
 		let tmpFilePath: string | null = null;
 
-		if (effectivePrompt.trim()) {
-			const tmp = await writeToTempFile(cwd, "system", effectivePrompt);
+		if (systemPrompt.trim()) {
+			const tmp = await writeToTempFile(cwd, "system", systemPrompt);
 			tmpDir = tmp.dir;
 			tmpFilePath = tmp.filePath;
 			args.push("--append-system-prompt", tmpFilePath);
 		}
 
 		// Pass the effective task as the prompt argument
-		args.push(effectiveTask);
+		args.push(task);
 
 		const result: SubagentResult = {
 			messages: [],
@@ -396,10 +395,8 @@ ${msgBlock}`;
 			thinkingLevel,
 			cwd,
 			taskPreview: task.slice(0, 80),
-			hasSystemPrompt: effectivePrompt.trim().length > 0,
+			hasSystemPrompt: systemPrompt.trim().length > 0,
 			timeout,
-			turn: turn + 1,
-			maxTurns: effectiveMaxTurns,
 		});
 
 		try {
