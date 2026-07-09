@@ -35,18 +35,6 @@ import { extractMessages, stripMessageLines, formatPendingMessages } from "./mes
 import type { Backend } from "./backend";
 
 // ---------------------------------------------------------------------------
-// Multi-turn: question pattern
-// ---------------------------------------------------------------------------
-
-/**
- * Pattern matching a clarifying question at the start of the final output.
- * The subagent outputs this when it needs more info from the conductor.
- * Questions are returned as output for the conductor to handle — the runner
- * does not attempt to answer them.
- */
-export const QUESTION_PATTERN = /^\[QUESTION\]:(.+)/m;
-
-// ---------------------------------------------------------------------------
 // Pi binary resolution
 // ---------------------------------------------------------------------------
 
@@ -294,18 +282,6 @@ export function parseSubagentLine(
 // ---------------------------------------------------------------------------
 // Process runner
 // ---------------------------------------------------------------------------
-
-/**
- * Detect a [QUESTION]: pattern in the final output of a subagent result.
- * Returns the question text if found, otherwise null.
- * Questions are returned as output for the conductor to handle — the runner
- * does not attempt to answer them.
- */
-export function detectQuestion(result: SubagentResult, getFinalOutputFn: (messages: Array<Record<string, unknown>>) => string): string | null {
-	const output = getFinalOutputFn(result.messages);
-	const match = output.match(QUESTION_PATTERN);
-	return match ? match[1].trim() : null;
-}
 
 export async function runSubagent(
 	cwd: string,

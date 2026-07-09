@@ -83,7 +83,7 @@ import { autoRoutePreset } from "./router";
 import { getPreset as getPresetFn } from "./tui";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
-import { runSubagent, cleanupTempDirs, detectQuestion } from "./runner";
+import { runSubagent, cleanupTempDirs } from "./runner";
 import { getBackend, type Backend, DEFAULT_BACKEND } from "./backend";
 import { ProcessPool } from "./pool";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
@@ -1387,7 +1387,6 @@ export default function (pi: ExtensionAPI) {
 						};
 					}
 
-
 					const subagentId = graphTask.id;
 					intercom.register(subagentId);
 					try {
@@ -1648,7 +1647,6 @@ export default function (pi: ExtensionAPI) {
 			"Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. Built-in presets: code-reviewer, security-auditor, test-engineer, tech-writer, rapid-prototyper, debugger, refactorer, data-analyst.",
 			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
-			"Set maxTurns > 1 to allow the subagent to ask clarifying questions before proceeding. The subagent outputs [QUESTION]:text, the conductor sees it and may re-invoke the subagent with your answer as additional context.",
 		],
 		parameters: Type.Object({
 			task: Type.Optional(Type.String({
@@ -1785,7 +1783,6 @@ export default function (pi: ExtensionAPI) {
 						"Defaults to user config (/brl-subagent sandbox).",
 				}),
 			),
-			maxTurns: Type.Optional(Type.Number({ description: "Maximum conversation turns for the subagent (default: 1 = single-turn). Set > 1 to allow the subagent to ask clarifying questions, returning [QUESTION]: output for the conductor to handle.", default: 1 })),
 			backend: Type.Optional(Type.String({ description: "Subagent backend: pi (default, full tools) or direct-api (no tools, direct API call)." })),
 			chain: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
@@ -1860,7 +1857,6 @@ export default function (pi: ExtensionAPI) {
 				retryOnTimeout?: boolean;
 				gitMode?: string;
 				priority?: string;
-				maxTurns?: number;
 				backend?: string;
 				chain?: Array<{
 					task: string;
@@ -2304,9 +2300,7 @@ export default function (pi: ExtensionAPI) {
 						}
 					: undefined;
 
-				// Run the subagent (E7: multi-turn support)
 				const childDepth = currentDepth + 1;
-
 
 				let result = await runSubagent(
 					resolvedCwd,
