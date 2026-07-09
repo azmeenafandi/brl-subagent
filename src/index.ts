@@ -1653,9 +1653,9 @@ export default function (pi: ExtensionAPI) {
 			"Set maxTurns > 1 to allow the subagent to ask clarifying questions before proceeding. The subagent outputs [QUESTION]:text, the conductor shows it to the user, and the answer is fed back as additional context.",
 		],
 		parameters: Type.Object({
-			task: Type.String({
-				description: "Detailed description of the task for the subagent to complete",
-			}),
+			task: Type.Optional(Type.String({
+				description: "Detailed description of the task for the subagent to complete (required for single mode, optional for chain/tasks/graph)",
+			})),
 			systemPrompt: Type.Optional(
 				Type.String({
 					description:
