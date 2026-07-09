@@ -484,14 +484,4 @@ ${msgBlock}`;
 		}
 
 		return result;
-	}
-
-	// Should not reach here, but return last result as fallback
-	const fallbackResult: SubagentResult = {
-		messages: [],
-		usage: { ...EMPTY_USAGE },
-		exitCode: 0,
-		stderr: "",
-	};
-	return fallbackResult;
 }
