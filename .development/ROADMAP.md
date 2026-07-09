@@ -111,6 +111,17 @@
 
 > **Removal rationale:** E6 was removed as redundant with P7 sandboxing — sandboxLevel already restricts tools. E7 was removed due to architectural issues — the multi-turn protocol was fragile and broken in practice.
 
+## Phase 5 — Hardening (v2.1.0) 🚧 IN PROGRESS
+
+> Goal: Make the extension bulletproof regardless of conductor quality. A distracted, tired, or lazy conductor cannot produce a subagent that silently fails.
+
+| ID | Feature | Effort | Priority | Status |
+|----|---------|--------|----------|--------|
+| H1 | **Pre-task Validation** — Deterministic pre-spawn checks that validate tool configuration and thinking level match the task description | M | P0 | 🚧 |
+| H2 | **Integration Test Suite** — End-to-end tests using real pi subprocesses for every Phase 3+4 feature | L | P0 | 🚧 |
+| H3 | **Post-mortem Diagnostics** — After a subagent fails, analyze why and append suggestions to error messages | S | P0 | 🚧 |
+| H4 | **Conductor Guardrails** — Embed conductor behavior rules in promptGuidelines and SUBAGENT_INSTRUCTIONS | S | P0 | 🚧 |
+
 ---
 
 ## Effort Legend
