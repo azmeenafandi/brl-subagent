@@ -44,15 +44,9 @@ describe("sanitizeTask", () => {
 		expect(result.ok).toBe(false);
 	});
 
-	it("rejects backticks", () => {
-		const dangerous = [
-			"task`whoami`",
-			"`cat /etc/passwd`",
-		];
-		for (const t of dangerous) {
-			const result = sanitizeTask(t);
-			expect(result.ok).toBe(false);
-		}
+	it("rejects empty and whitespace strings", () => {
+		expect(sanitizeTask("").ok).toBe(false);
+		expect(sanitizeTask("   ").ok).toBe(false);
 	});
 
 	it("accepts newlines and shell characters that are safe in non-shell spawn", () => {
@@ -61,6 +55,9 @@ describe("sanitizeTask", () => {
 			"task && echo hacked",
 			"task | cat /etc/passwd",
 			"task $(whoami)",
+			"task`whoami`",
+			"code in `backticks`",
+			"`cat /etc/passwd`",
 			`line1\nline2\nline3`,
 		];
 		for (const t of safe) {
