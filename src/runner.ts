@@ -32,6 +32,7 @@ import { getSafeEnv, DEPTH_ENV_KEY } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
 import { extractMessages, stripMessageLines, formatPendingMessages } from "./messaging";
+import type { Backend } from "./backend";
 
 // ---------------------------------------------------------------------------
 // Multi-turn: question pattern
@@ -40,6 +41,8 @@ import { extractMessages, stripMessageLines, formatPendingMessages } from "./mes
 /**
  * Pattern matching a clarifying question at the start of the final output.
  * The subagent outputs this when it needs more info from the conductor.
+ * Questions are returned as output for the conductor to handle — the runner
+ * does not attempt to answer them.
  */
 export const QUESTION_PATTERN = /^\[QUESTION\]:(.+)/m;
 
@@ -295,6 +298,8 @@ export function parseSubagentLine(
 /**
  * Detect a [QUESTION]: pattern in the final output of a subagent result.
  * Returns the question text if found, otherwise null.
+ * Questions are returned as output for the conductor to handle — the runner
+ * does not attempt to answer them.
  */
 export function detectQuestion(result: SubagentResult, getFinalOutputFn: (messages: Array<Record<string, unknown>>) => string): string | null {
 	const output = getFinalOutputFn(result.messages);
@@ -317,7 +322,6 @@ export async function runSubagent(
 	depth?: number,
 	pool?: ProcessPool,
 	maxTurns?: number,
-	onQuestion?: (question: string, turn: number, maxTurns: number) => Promise<string | null>,
 	intercom?: Intercom,
 	subagentId?: string,
 	backend?: Backend,
@@ -330,15 +334,8 @@ export async function runSubagent(
 		return backend.execute(task, `${model.provider}/${model.id}`, thinkingLevel, signal);
 	}
 
-	// Accumulate context from previous Q&A turns
-	const previousAnswers: string[] = [];
-
 	for (let turn = 0; turn < effectiveMaxTurns; turn++) {
-		// Build the effective system prompt for this turn
-		let effectivePrompt = systemPrompt;
-		if (previousAnswers.length > 0) {
-			effectivePrompt += "\n\nAdditional context from the conductor:\n" + previousAnswers.join("\n\n");
-		}
+		const effectivePrompt = systemPrompt;
 
 		// E10: Inject pending intercom messages into the task prompt
 	let effectiveTask = task;
@@ -479,23 +476,17 @@ ${msgBlock}`;
 			}
 		}
 
-		// Check for [QUESTION]: pattern in the output
+		// Check for [QUESTION]: pattern in the output.
+		// If found and we have turns remaining, return the result as-is.
+		// The conductor will see the question in the output and handle it.
 		const question = detectQuestion(result, getFinalOutputFn);
-		if (question && turn < effectiveMaxTurns - 1 && onQuestion) {
-			log?.debug("Subagent asked a clarifying question", {
+		if (question && turn < effectiveMaxTurns - 1) {
+			log?.debug("Subagent asked a clarifying question — returning for conductor to handle", {
 				question: question.slice(0, 100),
 				turn: turn + 1,
 				maxTurns: effectiveMaxTurns,
 			});
-
-			const answer = await onQuestion(question, turn + 1, effectiveMaxTurns);
-			if (answer === null) {
-				log?.debug("User cancelled multi-turn (returned null)");
-				return result;
-			}
-
-			previousAnswers.push(`Question (turn ${turn + 1}): ${question}\nAnswer: ${answer}`);
-			continue;
+			return result;
 		}
 
 		// E10: Extract outgoing intercom messages from output

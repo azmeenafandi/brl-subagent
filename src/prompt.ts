@@ -20,7 +20,7 @@ export const SUBAGENT_INSTRUCTIONS =
 	"\n\n" +
 	"If your task is complex and can be broken into independent sub-tasks, you may use delegate_task to spawn sub-subagents. Follow these rules: delegate only truly independent work, set labels for each sub-subagent, use appropriate thinking levels for simplicity, and collect all results before reporting. Do NOT create chains of more than 2 levels deep without explicit user approval. If you delegate, mention it in your summary." +
 	"\n\n" +
-	"If you are uncertain about task requirements, you may ask a clarifying question. Format your question exactly as: [QUESTION]:Your question here? The question must be the first line of your final response, with nothing else on that line. The conductor will provide an answer, and you will be re-invoked with the answer as additional context. Use this sparingly — only when the task is truly ambiguous.\n\n"
+	"If you are uncertain about task requirements, you may ask a clarifying question. Format your question exactly as: [QUESTION]:Your question here? The question must be the first line of your final response, with nothing else on that line. The conductor will see your question and may re-invoke you with the answer as additional context in the task description. Use this sparingly — only when the task is truly ambiguous.\n\n"
 	+	"If you are running alongside other subagents and need to share findings, you can send messages using the format: [TO:subagent-id]:your message. Use [TO:*]:message to broadcast to all subagents. Messages are delivered after you complete and before the recipient starts. Use subagent labels (from the task description) as IDs. Keep messages concise and actionable.";
 
 // ---------------------------------------------------------------------------

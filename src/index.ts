@@ -976,7 +976,7 @@ export default function (pi: ExtensionAPI) {
 				currentDepth + 1,
 				undefined, // pool
 				undefined, // maxTurns
-				undefined, // onQuestion
+				
 				intercom,
 				subagentId,
 			);
@@ -1412,7 +1412,7 @@ export default function (pi: ExtensionAPI) {
 							currentDepth + 1,
 							pool,
 							undefined, // maxTurns
-							undefined, // onQuestion
+							
 							intercom,
 							subagentId,
 						);
@@ -1650,7 +1650,7 @@ export default function (pi: ExtensionAPI) {
 			"Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. Built-in presets: code-reviewer, security-auditor, test-engineer, tech-writer, rapid-prototyper, debugger, refactorer, data-analyst.",
 			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
-			"Set maxTurns > 1 to allow the subagent to ask clarifying questions before proceeding. The subagent outputs [QUESTION]:text, the conductor shows it to the user, and the answer is fed back as additional context.",
+			"Set maxTurns > 1 to allow the subagent to ask clarifying questions before proceeding. The subagent outputs [QUESTION]:text, the conductor sees it and may re-invoke the subagent with your answer as additional context.",
 		],
 		parameters: Type.Object({
 			task: Type.Optional(Type.String({
@@ -1787,7 +1787,7 @@ export default function (pi: ExtensionAPI) {
 						"Defaults to user config (/brl-subagent sandbox).",
 				}),
 			),
-			maxTurns: Type.Optional(Type.Number({ description: "Maximum conversation turns for the subagent (default: 1 = single-turn). Set > 1 to allow the subagent to ask clarifying questions.", default: 1 })),
+			maxTurns: Type.Optional(Type.Number({ description: "Maximum conversation turns for the subagent (default: 1 = single-turn). Set > 1 to allow the subagent to ask clarifying questions, returning [QUESTION]: output for the conductor to handle.", default: 1 })),
 			backend: Type.Optional(Type.String({ description: "Subagent backend: pi (default, full tools) or direct-api (no tools, direct API call)." })),
 			chain: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
@@ -2309,16 +2309,6 @@ export default function (pi: ExtensionAPI) {
 				// Run the subagent (E7: multi-turn support)
 				const childDepth = currentDepth + 1;
 
-				// E7: onQuestion callback for multi-turn subagents
-				const effectiveMaxTurns = params.maxTurns ?? 1;
-				const onQuestionFn = ctx.hasUI !== false
-					? async (question: string, turn: number, mt: number): Promise<string | null> => {
-							return ctx.ui.input({
-								prompt: `[Turn ${turn}/${mt}] Subagent asks: ${question}`,
-								default: "",
-							});
-						}
-					: null;
 
 				let result = await runSubagent(
 					resolvedCwd,
@@ -2335,7 +2325,7 @@ export default function (pi: ExtensionAPI) {
 					childDepth,
 					undefined, // pool
 					effectiveMaxTurns,
-					onQuestionFn,
+					
 					undefined, // intercom
 					undefined, // subagentId
 					resolvedBackend,
@@ -2385,7 +2375,7 @@ export default function (pi: ExtensionAPI) {
 						childDepth,
 						undefined, // pool
 						undefined, // maxTurns
-						null, // onQuestion
+						
 						undefined, // intercom
 						undefined, // subagentId
 						resolvedBackend,

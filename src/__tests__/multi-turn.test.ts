@@ -7,6 +7,10 @@
  * NOTE: Cannot import directly from runner.ts due to pi-coding-agent
  * dependency not being available in vitest. Instead, we duplicate the
  * QUESTION_PATTERN regex and detectQuestion logic here for testing.
+ *
+ * NEW DESIGN: Multi-turn loop returns the result as-is when a [QUESTION]:
+ * is found. The conductor sees the question in the output and handles it.
+ * The runner no longer attempts to get an answer via onQuestion callback.
  */
 
 import { describe, it, expect } from "vitest";
@@ -168,12 +172,12 @@ describe("SUBAGENT_INSTRUCTIONS multi-turn guidance", () => {
 		expect(SUBAGENT_INSTRUCTIONS).toContain("[QUESTION]:Your question here?");
 	});
 
-	it("mentions conductor will provide an answer", () => {
-		expect(SUBAGENT_INSTRUCTIONS).toContain("The conductor will provide an answer");
+	it("mentions conductor will see the question", () => {
+		expect(SUBAGENT_INSTRUCTIONS).toContain("conductor will see your question");
 	});
 
-	it("mentions re-invoked with answer as additional context", () => {
-		expect(SUBAGENT_INSTRUCTIONS).toContain("re-invoked with the answer as additional context");
+	it("mentions may re-invoke with answer as additional context", () => {
+		expect(SUBAGENT_INSTRUCTIONS).toContain("may re-invoke you with the answer as additional context");
 	});
 
 	it("mentions using sparingly", () => {
@@ -186,14 +190,17 @@ describe("SUBAGENT_INSTRUCTIONS multi-turn guidance", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Multi-turn loop logic (simulated)
+// Multi-turn loop logic (simulated) — new design
 // ---------------------------------------------------------------------------
 
 describe("Multi-turn loop logic (simulated)", () => {
 	/**
 	 * Simulates the multi-turn loop logic from runSubagent without spawning
-	 * real processes. Tests the core decision-making: when to ask, when to stop,
-	 * and how answers accumulate.
+	 * real processes.
+	 *
+	 * NEW DESIGN: when a [QUESTION]: is detected and we have turns remaining,
+	 * return the result immediately with the question output. The runner
+	 * no longer tries to answer questions or accumulate answers.
 	 */
 
 	interface TurnResult {
@@ -204,9 +211,7 @@ describe("Multi-turn loop logic (simulated)", () => {
 	async function simulateMultiTurn(
 		results: TurnResult[],
 		maxTurns: number,
-		onQuestion: (question: string, turn: number, maxTurns: number) => Promise<string | null>,
-	): Promise<{ finalOutput: string; turnsUsed: number; answers: string[] }> {
-		const answers: string[] = [];
+	): Promise<{ finalOutput: string; turnsUsed: number }> {
 		let finalOutput = "";
 		let turnsUsed = 0;
 
@@ -220,168 +225,90 @@ describe("Multi-turn loop logic (simulated)", () => {
 			// Check for [QUESTION]: pattern (same logic as runner.ts detectQuestion)
 			const match = finalOutput.match(QUESTION_PATTERN);
 			if (match && turn < maxTurns - 1) {
-				const answer = await onQuestion(match[1].trim(), turn + 1, maxTurns);
-				if (answer === null) {
-					break; // Cancelled
-				}
-				answers.push(`Question (turn ${turn + 1}): ${match[1].trim()}\nAnswer: ${answer}`);
-				continue;
+				// Return immediately — the conductor handles the question
+				return { finalOutput, turnsUsed };
 			}
 
 			break; // No question or last turn
 		}
 
-		return { finalOutput, turnsUsed, answers };
+		return { finalOutput, turnsUsed };
 	}
 
 	it("single turn: completes without question", async () => {
 		const results: TurnResult[] = [{ output: "Task completed successfully.", exitCode: 0 }];
-		const { finalOutput, turnsUsed, answers } = await simulateMultiTurn(
-			results,
-			1,
-			async () => null,
-		);
+		const { finalOutput, turnsUsed } = await simulateMultiTurn(results, 1);
 		expect(finalOutput).toBe("Task completed successfully.");
 		expect(turnsUsed).toBe(1);
-		expect(answers).toHaveLength(0);
 	});
 
-	it("multi-turn: question on turn 1, answer on turn 2", async () => {
+	it("single turn with maxTurns=1 but question: returns question output", async () => {
+		const results: TurnResult[] = [
+			{ output: "[QUESTION]:What file should I modify?", exitCode: 0 },
+		];
+		const { finalOutput, turnsUsed } = await simulateMultiTurn(results, 1);
+		// maxTurns=1 means turn 0 has no remaining turns, so no early return
+		// Loop exits naturally with the question in the output
+		expect(finalOutput).toBe("[QUESTION]:What file should I modify?");
+		expect(turnsUsed).toBe(1);
+	});
+
+	it("multi-turn: question detected, returns immediately with question output", async () => {
 		const results: TurnResult[] = [
 			{ output: "[QUESTION]:What file should I modify?", exitCode: 0 },
 			{ output: "Modified src/index.ts as requested.", exitCode: 0 },
 		];
-		const { finalOutput, turnsUsed, answers } = await simulateMultiTurn(
-			results,
-			3,
-			async (question, turn, mt) => {
-				expect(question).toBe("What file should I modify?");
-				expect(turn).toBe(1);
-				expect(mt).toBe(3);
-				return "src/index.ts";
-			},
-		);
-		expect(finalOutput).toBe("Modified src/index.ts as requested.");
-		expect(turnsUsed).toBe(2);
-		expect(answers).toHaveLength(1);
-		expect(answers[0]).toContain("What file should I modify?");
-		expect(answers[0]).toContain("src/index.ts");
+		const { finalOutput, turnsUsed } = await simulateMultiTurn(results, 3);
+		// Returns immediately on turn 1 with the question — does NOT continue
+		expect(finalOutput).toBe("[QUESTION]:What file should I modify?");
+		expect(turnsUsed).toBe(1);
 	});
 
-	it("max turns reached: question on last turn does not trigger another iteration", async () => {
+	it("max turns reached: question on last turn does not trigger early return", async () => {
 		const results: TurnResult[] = [
 			{ output: "[QUESTION]:Should I continue?", exitCode: 0 },
 		];
-		const { finalOutput, turnsUsed, answers } = await simulateMultiTurn(
-			results,
-			1, // Only 1 turn, so question on turn 1 should not trigger onQuestion
-			async () => "yes",
-		);
+		const { finalOutput, turnsUsed } = await simulateMultiTurn(results, 1);
 		expect(finalOutput).toBe("[QUESTION]:Should I continue?");
 		expect(turnsUsed).toBe(1);
-		expect(answers).toHaveLength(0);
-	});
-
-	it("onQuestion returns null: loop cancels and returns partial result", async () => {
-		const results: TurnResult[] = [
-			{ output: "[QUESTION]:What is the target?", exitCode: 0 },
-		];
-		const { finalOutput, turnsUsed, answers } = await simulateMultiTurn(
-			results,
-			3,
-			async () => null, // Cancel
-		);
-		expect(finalOutput).toBe("[QUESTION]:What is the target?");
-		expect(turnsUsed).toBe(1);
-		expect(answers).toHaveLength(0);
-	});
-
-	it("three-turn conversation: question, answer, question, answer, complete", async () => {
-		const results: TurnResult[] = [
-			{ output: "[QUESTION]:What language?", exitCode: 0 },
-			{ output: "[QUESTION]:What framework?", exitCode: 0 },
-			{ output: "Done! Created the TypeScript Express app.", exitCode: 0 },
-		];
-		let callCount = 0;
-		const { finalOutput, turnsUsed, answers } = await simulateMultiTurn(
-			results,
-			4,
-			async (question, turn) => {
-				callCount++;
-				if (turn === 1) return "TypeScript";
-				if (turn === 2) return "Express";
-				return null;
-			},
-		);
-		expect(finalOutput).toBe("Done! Created the TypeScript Express app.");
-		expect(turnsUsed).toBe(3);
-		expect(answers).toHaveLength(2);
-		expect(callCount).toBe(2);
-		expect(answers[0]).toContain("TypeScript");
-		expect(answers[1]).toContain("Express");
 	});
 
 	it("no question on any turn: completes in single turn", async () => {
 		const results: TurnResult[] = [
 			{ output: "No ambiguity here. Task done.", exitCode: 0 },
 		];
-		const { finalOutput, turnsUsed, answers } = await simulateMultiTurn(
-			results,
-			5,
-			async () => "unused",
-		);
+		const { finalOutput, turnsUsed } = await simulateMultiTurn(results, 5);
 		expect(finalOutput).toBe("No ambiguity here. Task done.");
 		expect(turnsUsed).toBe(1);
-		expect(answers).toHaveLength(0);
 	});
 
-	it("maxTurns=2 with question on turn 1: uses 2 turns total", async () => {
+	it("maxTurns=2 with question on turn 1: returns immediately with question", async () => {
 		const results: TurnResult[] = [
 			{ output: "[QUESTION]:Clarify scope?", exitCode: 0 },
 			{ output: "Scope clarified. Done.", exitCode: 0 },
 		];
-		const { finalOutput, turnsUsed } = await simulateMultiTurn(
-			results,
-			2,
-			async () => "Full scope",
-		);
-		expect(finalOutput).toBe("Scope clarified. Done.");
-		expect(turnsUsed).toBe(2);
+		const { finalOutput, turnsUsed } = await simulateMultiTurn(results, 2);
+		expect(finalOutput).toBe("[QUESTION]:Clarify scope?");
+		expect(turnsUsed).toBe(1);
 	});
 
-	it("question pattern not at start of first line (but in middle) is still detected by multiline regex", async () => {
+	it("question pattern not at start of first line is still detected by multiline regex", async () => {
 		const results: TurnResult[] = [
 			{ output: "Analyzing...\n[QUESTION]:Which file?", exitCode: 0 },
 			{ output: "Done.", exitCode: 0 },
 		];
-		const { finalOutput, turnsUsed } = await simulateMultiTurn(
-			results,
-			2,
-			async () => "src/main.ts",
-		);
-		expect(finalOutput).toBe("Done.");
-		expect(turnsUsed).toBe(2);
+		const { finalOutput, turnsUsed } = await simulateMultiTurn(results, 2);
+		expect(finalOutput).toBe("Analyzing...\n[QUESTION]:Which file?");
+		expect(turnsUsed).toBe(1);
 	});
 
-	it("accumulated answers are passed as context on subsequent turns", async () => {
+	it("no question means loop executes then exits normally", async () => {
 		const results: TurnResult[] = [
-			{ output: "[QUESTION]:What language?", exitCode: 0 },
-			{ output: "[QUESTION]:What version?", exitCode: 0 },
-			{ output: "Done with TypeScript 5.", exitCode: 0 },
+			{ output: "Completed step A.", exitCode: 0 },
 		];
-		const allAnswers: string[] = [];
-		await simulateMultiTurn(results, 4, async (question, turn) => {
-			if (turn === 1) {
-				allAnswers.push("TypeScript");
-				return "TypeScript";
-			}
-			if (turn === 2) {
-				allAnswers.push("5.x");
-				return "5.x";
-			}
-			return null;
-		});
-		expect(allAnswers).toEqual(["TypeScript", "5.x"]);
+		const { finalOutput, turnsUsed } = await simulateMultiTurn(results, 3);
+		expect(finalOutput).toBe("Completed step A.");
+		expect(turnsUsed).toBe(1);
 	});
 });
 
