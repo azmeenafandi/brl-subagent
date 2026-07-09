@@ -16,9 +16,7 @@ import * as fs from "node:fs";
  * Shell metacharacters that could enable command injection when passed
  * as CLI arguments. We aggressively reject any task containing these.
  */
-// With spawn({shell: false}), arguments are passed directly to execve with
-// no shell interpretation. No metacharacters are blocked — the only
-// validation is empty check and max length.
+// Intentional no-op: safe with spawn shell:false
 const SHELL_METACHARS = /(?!)/; // matches nothing — safe with shell: false
 
 /**
