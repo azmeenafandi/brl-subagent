@@ -975,8 +975,8 @@ export default function (pi: ExtensionAPI) {
 				log,
 				currentDepth + 1,
 				undefined, // pool
-				undefined, // maxTurns
-				
+
+				undefined, // intercom
 				intercom,
 				subagentId,
 			);
@@ -1411,8 +1411,6 @@ export default function (pi: ExtensionAPI) {
 							log,
 							currentDepth + 1,
 							pool,
-							undefined, // maxTurns
-							
 							intercom,
 							subagentId,
 						);
@@ -2324,8 +2322,6 @@ export default function (pi: ExtensionAPI) {
 					log,
 					childDepth,
 					undefined, // pool
-					effectiveMaxTurns,
-					
 					undefined, // intercom
 					undefined, // subagentId
 					resolvedBackend,
@@ -2374,8 +2370,6 @@ export default function (pi: ExtensionAPI) {
 						log,
 						childDepth,
 						undefined, // pool
-						undefined, // maxTurns
-						
 						undefined, // intercom
 						undefined, // subagentId
 						resolvedBackend,

@@ -321,23 +321,17 @@ export async function runSubagent(
 	log?: Logger,
 	depth?: number,
 	pool?: ProcessPool,
-	maxTurns?: number,
 	intercom?: Intercom,
 	subagentId?: string,
 	backend?: Backend,
 ): Promise<SubagentResult> {
-	const effectiveMaxTurns = Math.max(1, maxTurns ?? 1);
-
 	// E8: Pluggable backend routing
 	if (backend && backend.name !== "pi") {
 		log?.info("Using non-pi backend", { backend: backend.name, model: `${model.provider}/${model.id}` });
 		return backend.execute(task, `${model.provider}/${model.id}`, thinkingLevel, signal);
 	}
 
-	for (let turn = 0; turn < effectiveMaxTurns; turn++) {
-		const effectivePrompt = systemPrompt;
-
-		// E10: Inject pending intercom messages into the task prompt
+	// E10: Inject pending intercom messages into the task prompt
 	let effectiveTask = task;
 	if (intercom && subagentId && intercom.hasMessages(subagentId)) {
 		const pending = intercom.receiveAndClear(subagentId);
@@ -352,7 +346,7 @@ ${msgBlock}`;
 	}
 
 	// E11: Try pool first if provided (only on first turn)
-		if (pool && turn === 0) {
+		if (pool) {
 			const modelStr = `${model.provider}/${model.id}`;
 			const poolEntry = await pool.acquire(cwd, modelStr, thinkingLevel);
 			if (poolEntry) {
@@ -474,19 +468,6 @@ ${msgBlock}`;
 			if (tmpDir && tmpFilePath) {
 				cleanupTempDir(tmpDir, tmpFilePath);
 			}
-		}
-
-		// Check for [QUESTION]: pattern in the output.
-		// If found and we have turns remaining, return the result as-is.
-		// The conductor will see the question in the output and handle it.
-		const question = detectQuestion(result, getFinalOutputFn);
-		if (question && turn < effectiveMaxTurns - 1) {
-			log?.debug("Subagent asked a clarifying question — returning for conductor to handle", {
-				question: question.slice(0, 100),
-				turn: turn + 1,
-				maxTurns: effectiveMaxTurns,
-			});
-			return result;
 		}
 
 		// E10: Extract outgoing intercom messages from output
