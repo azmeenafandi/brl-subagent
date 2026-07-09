@@ -1,8 +1,8 @@
 # brl-subagent
 
-> Enterprise subagent extension for [pi](https://github.com/earendil-works/pi-coding-agent) — delegate tasks to isolated processes with configurable models, thinking levels, tool scoping, RBAC, sandboxing, dependency graphs, and a live observability dashboard.
+> Enterprise subagent extension for [pi](https://github.com/earendil-works/pi-coding-agent) — delegate tasks to isolated processes with configurable models, thinking levels, tool scoping, sandboxing, dependency graphs, and a live observability dashboard.
 
-**Version:** 2.0.0 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.0.2 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -10,7 +10,7 @@
 
 `brl-subagent` gives pi a **`delegate_task`** tool that spawns isolated subagent processes. Each subagent runs in its own `pi` process with its own model, context window, and tool permissions.
 
-**v2.0.0 adds:** dependency graph delegation, task templates, recurring schedules, an observability dashboard, RBAC roles, sandbox levels, change approval workflows, git integration, and subagent-to-subagent messaging.
+**v2.0.2 adds:** dependency graph delegation, task templates, recurring schedules, an observability dashboard, sandbox levels, change approval workflows, git integration, and subagent-to-subagent messaging.
 
 ---
 
@@ -43,7 +43,6 @@ Pi auto-discovers extensions in these directories. To update: `git pull` inside 
 | `/brl-subagent gitmode` | Set git integration mode |
 | `/brl-subagent sandbox` | Set default sandbox level |
 | `/brl-subagent backend` | Set default backend |
-| `/brl-subagent role` | Set default RBAC role |
 | `/brl-subagent approval` | Set change approval mode |
 | `/brl-subagent costlimit` | Set session cost limit |
 | `/brl-subagent historyentries` | Set max history entries |
