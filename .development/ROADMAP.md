@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Generated: 2026-07-07 | Version: 2.0.0
+> Generated: 2026-07-09 | Version: 2.0.2
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -77,8 +77,8 @@
 | E3 | **Recursive delegation** — subagents can delegate sub-tasks to other subagents | L | P3 | ✅ **DONE** |
 | E4 | **SLA tracking** — p50/p95/p99 latency; success rate; cost-per-task; degradation alerts | M | P3 | ✅ **DONE** |
 | E5 | **Compliance reports** — "which subagents touched X?", "secrets accessed?", "cost by agent type" | M | P3 | ✅ **DONE** |
-| E6 | **RBAC matrices** — role-based tool permissions (reviewer, auditor, developer) | M | P3 | ✅ **DONE** |
-| E7 | **Multi-turn subagents** — subagents ask clarifying questions back to conductor | L | P3 | ✅ **DONE** |
+| E6 | **RBAC matrices** — role-based tool permissions (reviewer, auditor, developer) | M | P3 | ❌ **Removed** |
+| E7 | **Multi-turn subagents** — subagents ask clarifying questions back to conductor | L | P3 | ❌ **Removed** |
 | E8 | **Pluggable backends** — support non-pi backends: OpenAI API, Anthropic API, webhook, container | XL | P3 | ✅ **DONE** |
 | E9 | **Scheduling** — cron-like: "run security audit every night at 2am" (via pi agent loop) | M | P3 | ✅ **DONE** |
 | E10 | **Subagent-to-subagent messaging** — direct communication channel between concurrent subagents | L | P3 | ✅ **DONE** |
@@ -103,6 +103,13 @@
 | D13 | **SLA degradation alerts** | `metrics.ts`: baseline comparison with configurable thresholds for performance regression detection |
 | D14 | **Secrets exposure detection** | `reports.ts`: pattern-based scan for `.env`, `.pem`, `credentials.json` in file access reports |
 | D15 | **Schedule management TUI** | `/brl-subagent schedule` and `/brl-subagent unschedule` for recurring task lifecycle |
+| D15 | **Version notifier** | Check for newer versions of brl-subagent on task start; display upgrade notice |
+| D16 | **Backtick code block removal** | Strip triple-backtick fences from subagent prompts to prevent LLM prompt leakage |
+| D17 | **Reserved names** | `RESERVED_NAME_PATTERN` and `RESERVED_COMMAND_NAMES` prevent collision with TUI sentinels |
+| D18 | **Preset guidelines** | `promptGuideline` field on presets provides usage hints |
+| D19 | **Dead code cleanup** | Remove vestigial E6 roles.ts and E7 multi-turn code after removal decision |
+
+> **Removal rationale:** E6 was removed as redundant with P7 sandboxing — sandboxLevel already restricts tools. E7 was removed due to architectural issues — the multi-turn protocol was fragile and broken in practice.
 
 ---
 

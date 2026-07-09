@@ -1,6 +1,6 @@
 # brl-subagent — Architecture
 
-> Generated: 2026-07-07 | Version: 1.6.0
+> Generated: 2026-07-09 | Version: 2.0.2
 
 ## Overview
 

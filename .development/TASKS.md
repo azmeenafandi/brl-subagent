@@ -67,7 +67,7 @@
 | P9 | Task templates | P3 | M | `done` | subagent | `templates.ts`: `resolveTemplate()` with `${param}` substitution, `extractParamNames()` for validation. Template management TUI (add/view/remove). `template`+`params` on `delegate_task`. |
 | P10 | Dependency graph | P3 | L | `done` | subagent | `scheduler.ts`: `detectCycle()` (three-color DFS), `topologicalSort()` (Kahn's algorithm → waves), `validateGraph()`. `runGraphMode()` in index.ts: wave-based execution with `{taskId}` output substitution. Max 12 tasks. |
 
-## Phase 4 — Excellence (v2.0.0) ✅ 11/11
+## Phase 4 — Excellence (v2.0.0) ✅ 9/11 (2 removed)
 
 | ID | Task | Phase | Effort | Status | Assignee | Notes |
 |----|------|-------|--------|--------|----------|-------|
@@ -76,8 +76,8 @@
 | E3 | Recursive delegation | P4 | L | `done` | subagent | Configurable depth limit via `maxSubagentDepth`; prevents infinite chains. Integrated with `BRL_SUBAGENT_DEPTH` env propagation. |
 | E4 | SLA tracking | P4 | M | `done` | subagent | `metrics.ts`: p50/p95/p99 latency, success rate, cost-per-task, degradation detection against baseline. Configurable window size (10-500 runs). |
 | E5 | Compliance reports | P4 | M | `done` | subagent | `reports.ts`: file access tracking, secrets exposure detection, compliance summary with role breakdown. |
-| E6 | RBAC matrices | P4 | M | `done` | subagent | `roles.ts`: three built-in roles (reviewer/developer/auditor) with tool permissions. Per-call override chain: role > sandbox > config. |
-| E7 | Multi-turn subagents | P4 | L | `done` | subagent | `maxTurns` parameter: subagents ask clarifying questions via `[QUESTION]:` format. Conductor feeds answers back as context. |
+| E6 | RBAC matrices | P4 | M | `removed` | — | Redundant with P7 sandboxing — sandboxLevel already restricts tools |
+| E7 | Multi-turn subagents | P4 | L | `removed` | — | Architectural issues — broken in practice |
 | E8 | Pluggable backends | P4 | XL | `done` | subagent | `backend.ts`: Backend abstraction with `pi` (full tools) and `direct-api` (HTTP, no tools) implementations. Configurable via `/brl-subagent backend`. |
 | E9 | Scheduling (cron-like) | P4 | M | `done` | subagent | `schedule.ts`: recurring task schedules with interval-based polling, fire-and-forget execution, enable/disable, `/brl-subagent schedule` TUI. |
 | E10 | Subagent-to-subagent messaging | P4 | L | `done` | subagent | `messaging.ts`: Intercom class with `[TO:agent-id]:` output format, targeted and broadcast messages, message delivery on completion. |
@@ -87,13 +87,13 @@
 
 ## Phase Completion Summary
 
-| Phase | Version | Tasks | Completed | Deferred | Notes |
-|-------|---------|-------|-----------|----------|-------|
+| Phase | Version | Tasks | Completed | Removed | Notes |
+|-------|---------|-------|-----------|---------|-------|
 | P1 — Foundation | v1.4.0 | 10 | 10 | 0 | All security and architecture tasks done |
 | P2 — Reliability | v1.5.0 | 10 | 10 | 0 | Circuit breaker, cost governance, pre-flight checks |
 | P3 — Power | v1.6.0 | 10 | 10 | 0 | All tasks including P8 (now E11) |
-| P4 — Excellence | v2.0.0 | 11 | 11 | 0 | All 11 tasks complete (E1-E11) |
-| **Total** | | **41** | **41** | **0** | All phases complete |
+| P4 — Excellence | v2.0.0 | 11 | 9 | 2 | E6 redundant with P7, E7 broken in practice |
+| **Total** | | **41** | **39** | **2** | E6/E7 removed v2.0.2 |
 
 ## Change Log
 
@@ -131,3 +131,7 @@
 | 2026-07-07 | **E11 — Process pool** complete: `pool.ts` manages warm pi processes, lazy spawn, idle cleanup, configurable pool size. Replaces deferred P8. |
 | 2026-07-07 | **Reserved name validation** added: `RESERVED_NAME_PATTERN` (`/^__.*__$/`) and `RESERVED_COMMAND_NAMES` set prevent collision with TUI sentinels and `/brl-subagent` completions. Applied to presets, templates, and schedules. |
 | 2026-07-07 | **Preset prompt guidelines** added: `promptGuideline` field on presets provides usage hints. Built-in presets include guidelines for when to use each personality (e.g., "For security audits. Use thinkingLevel: high."). dev-agent preset added. |
+| 2026-07-09 | **v2.0.1 fixes**: Various bug fixes and stability improvements |
+| 2026-07-09 | **v2.0.2 fixes**: Further stability improvements and documentation updates |
+| 2026-07-09 | **E6/E7 removed**: E6 RBAC redundant with P7 sandboxing; E7 multi-turn broken in practice |
+| 2026-07-09 | **Dead code cleanup**: Removed vestigial roles.ts and multi-turn code |

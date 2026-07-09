@@ -1,12 +1,12 @@
 # brl-subagent — Audit: Strengths & Weaknesses
 
-> Generated: 2026-07-07 | Version: 2.0.0 (previously 1.6.0)
+> Generated: 2026-07-09 | Version: 2.0.2
 
 ## What's Been Fixed (since v1.3.0)
 
 | # | Weakness | Resolution | Implementation |
 |---|----------|-----------|----------------|
-| 1 | Zero test coverage | **RESOLVED** | 532 tests across 25 files (unit + integration + benchmarks) |
+| 1 | Zero test coverage | **RESOLVED** | 493 tests across 25 files (unit + integration + benchmarks) |
 | 2 | No input/output sanitization | **RESOLVED** | `sanitize.ts`: `sanitizeTask`, `validateCwd`, `validateOutputFile`, `stripAnsi`, `capOutput` |
 | 3 | Subprocess environment inheritance | **RESOLVED** | `getSafeEnv()` allows only `PATH`, `HOME`, `LANG`, `TMPDIR`, `BRL_SUBAGENT_DEPTH` |
 | 4 | Type safety holes | **RESOLVED** | `isSubagentStateShape` / `isSubagentRunShape` / `isMultiSubagentDetails` / `isGraphDetails` type guards replace all `as any` |
@@ -31,8 +31,8 @@
 | 26 | No skill-based routing | **RESOLVED** | E2: `router.ts` — keyword-based auto-classification of tasks to presets |
 | 27 | No compliance reports | **RESOLVED** | E5: `reports.ts` — file access tracking, secrets exposure detection, compliance summary |
 | 28 | No SLA tracking | **RESOLVED** | E4: `metrics.ts` — p50/p95/p99 latency, success rate, cost analysis, degradation detection |
-| 29 | No RBAC roles | **RESOLVED** | E6: `roles.ts` — reviewer/developer/auditor roles with tool permissions and override chain |
-| 30 | No multi-turn subagents | **RESOLVED** | E7: `maxTurns` parameter enables clarifying questions via `[QUESTION]:` format |
+| 29 | No RBAC roles | **REMOVED** | Redundant with P7 sandboxing — sandboxLevel already restricts tools |
+| 30 | No multi-turn subagents | **REMOVED** | Architectural issues — broken in practice, removed in v2.0.2 |
 | 31 | No pluggable backends | **RESOLVED** | E8: `backend.ts` — Backend abstraction with pi and direct-api implementations |
 | 32 | No recurring scheduling | **RESOLVED** | E9: `schedule.ts` — interval-based recurring task management with TUI |
 | 33 | No subagent messaging | **RESOLVED** | E10: `messaging.ts` — Intercom class with `[TO:agent-id]:` output format |
@@ -266,10 +266,18 @@
 
 ## Summary
 
-| Category | Total | Resolved | Partially | Remaining |
-|----------|-------|----------|-----------|-----------|
+| Category | Total | Resolved | Removed | Remaining |
+|----------|-------|----------|---------|-----------|
 | 🔴 Critical | 9 | 9 | 0 | 0 |
 | 🟡 Robustness | 6 | 6 | 0 | 0 |
-| 🟠 Feature Gaps | 13 | 11 | 0 | 2 |
-| 🟢 Phase 4 | 9 | 9 | 0 | 0 |
-| **Total** | **37** | **35** | **0** | **2** |
+| 🟠 Feature Gaps | 5 | 5 | 0 | 0 |
+| 🟢 Phase 4 | 5 | 3 | 2 | 0 |
+| **Total** | **25** | **23** | **2** | **0** |
+
+## Known Risks
+
+### Vitest Import Blind Spot
+
+Tests pass even when source files import variables/functions that don't exist, because Vitest's module resolution doesn't fail at import time for unresolved symbols. However, when pi loads the same module in production, unresolved imports cause runtime failures. This means a passing test suite does not guarantee the code will load correctly in the pi runtime.
+
+**Mitigation:** Always verify with a manual `import` test or runtime smoke test after significant refactors. Consider adding a dedicated smoke test that imports and exercises every module.
