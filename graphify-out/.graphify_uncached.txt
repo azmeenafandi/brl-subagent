@@ -1,0 +1,10 @@
+/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent/README.md
+/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent/presets/code-reviewer.md
+/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent/presets/data-analyst.md
+/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent/presets/debugger.md
+/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent/presets/dev-agent.md
+/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent/presets/rapid-prototyper.md
+/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent/presets/refactorer.md
+/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent/presets/security-auditor.md
+/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent/presets/tech-writer.md
+/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent/presets/test-engineer.md

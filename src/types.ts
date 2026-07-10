@@ -422,6 +422,34 @@ export interface ResolvedParams {
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 // ---------------------------------------------------------------------------
+// Event bus types
+// ---------------------------------------------------------------------------
+
+/** Types of lifecycle events that can be emitted. */
+export type SubagentEventType =
+	| "run:queued"
+	| "run:started"
+	| "run:completed"
+	| "run:failed"
+	| "run:cancelled"
+	| "state:changed"
+	| "pool:task-assigned"
+	| "pool:task-completed"
+	| "pool:worker-spawned"
+	| "pool:worker-died";
+
+/** An event emitted during the subagent lifecycle. */
+export interface SubagentEvent {
+	type: SubagentEventType;
+	agentId: string;
+	timestamp: number;
+	data: Record<string, unknown>;
+}
+
+/** Callback function for event listeners. */
+export type SubagentEventListener = (event: SubagentEvent) => void;
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -507,6 +535,27 @@ export const RESERVED_COMMAND_NAMES = new Set([
 	"sandbox", "costlimit", "historyentries", "sla", "pool",
 	"graph", "sla-stats",
 ]);
+
+// ---------------------------------------------------------------------------
+// Phase 6: Background agent session types
+// ---------------------------------------------------------------------------
+
+export type AgentStatus = "pending" | "running" | "steered" | "completed" | "failed" | "stopped";
+
+export interface BackgroundAgent {
+	id: string;
+	sessionId: string;
+	type: string;
+	description: string;
+	status: AgentStatus;
+	startedAt: number;
+	completedAt?: number;
+	task: string;
+	model: string;
+	thinkingLevel: ThinkingLevel;
+	error?: string;
+	result?: SubagentResult;
+}
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -701,3 +750,59 @@ export function isGraphDetails(value: unknown): value is GraphDetails {
 	if (typeof v.totalTurns !== "number") return false;
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 6: Background execution types
+// ---------------------------------------------------------------------------
+
+/** Status of a background agent */
+export type AgentStatus = "pending" | "running" | "completed" | "failed" | "stopped" | "steered";
+
+/** A background agent record */
+export interface BackgroundAgent {
+	id: string;
+	sessionId: string;
+	type: string;
+	description: string;
+	status: AgentStatus;
+	startedAt: number;
+	completedAt?: number;
+	task: string;
+	model: string;
+	thinkingLevel: ThinkingLevel;
+	transcriptPath?: string;
+	result?: SubagentResult;
+	error?: string;
+}
+
+/** Transcript entry types */
+export type TranscriptEntryType = "system" | "user" | "assistant" | "tool_call" | "tool_result" | "error";
+
+/** A single transcript entry */
+export interface TranscriptEntry {
+	type: TranscriptEntryType;
+	timestamp: number;
+	content: string;
+	metadata?: Record<string, unknown>;
+}
+
+/** Event types for the event bus */
+export type SubagentEventType =
+	| "subagent:created"
+	| "subagent:started"
+	| "subagent:completed"
+	| "subagent:failed"
+	| "subagent:stopped"
+	| "subagent:steered"
+	| "subagent:compacted";
+
+/** Event payload */
+export interface SubagentEvent {
+	type: SubagentEventType;
+	agentId: string;
+	timestamp: number;
+	data: Record<string, unknown>;
+}
+
+/** Event listener */
+export type SubagentEventListener = (event: SubagentEvent) => void;
