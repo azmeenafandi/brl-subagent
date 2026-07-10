@@ -80,7 +80,7 @@ import {
 import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets, getAllPresets } from "./presets";
 import { autoRoutePreset } from "./router";
-import { validatePreTask } from "./validate";
+import { validatePreTask, diagnoseFailure } from "./validate";
 import { getPreset as getPresetFn } from "./tui";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
@@ -2524,12 +2524,28 @@ export default function (pi: ExtensionAPI) {
 						errorCategory: result.errorCategory,
 					});
 
+					// H3: Post-mortem diagnostics — suggest fixes for the failure
+					const suggestions = diagnoseFailure({
+						task,
+						toolOptions,
+						thinkingLevel,
+						gitMode: resolvedGitMode,
+						errorMessage: result.errorMessage,
+						exitCode: result.exitCode,
+						timeout,
+					});
+
 					// R1: Record failure in circuit breaker
 					state.recordFailure();
 
+					let finalMsg = `Subagent failed: ${errorMsg}`;
+					if (suggestions.length > 0) {
+						finalMsg += "\n\nSuggestions:\n" + suggestions.map((s) => `- ${s}`).join("\n");
+					}
+
 					return {
 						content: [
-							{ type: "text" as const, text: `Subagent failed: ${errorMsg}` },
+							{ type: "text" as const, text: finalMsg },
 						],
 						details: result,
 						isError: true,

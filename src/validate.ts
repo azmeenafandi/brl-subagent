@@ -109,6 +109,95 @@ function isToolAvailable(
   return true;
 }
 
+// ── Post-mortem diagnostics (H3) ─────────────────────────────────────
+
+export interface DiagnoseConfig {
+	task: string;
+	toolOptions?: SubagentToolOptions;
+	thinkingLevel?: ThinkingLevel;
+	gitMode?: string;
+	errorMessage?: string;
+	exitCode?: number;
+	timeout?: number;
+}
+
+export function diagnoseFailure(config: DiagnoseConfig): string[] {
+	const suggestions: string[] = [];
+	const taskText = (config.task || '').toLowerCase();
+	const errMsg = (config.errorMessage || '').toLowerCase();
+
+	// Rule 1: Git mode mismatch — task needs git but gitMode is 'none'
+	const gitPatterns = /\b(commit|push|merge|branch)\b/i;
+	if (gitPatterns.test(taskText) && config.gitMode === 'none') {
+		suggestions.push(
+			"Set gitMode to 'branch' or 'auto' to enable git operations",
+		);
+	}
+
+	// Rule 2: Thinking level too low for security
+	const securityPatterns = /\b(security|vulnerability|audit)\b/i;
+	if (
+		securityPatterns.test(taskText) &&
+		(config.thinkingLevel === 'off' || config.thinkingLevel === 'low')
+	) {
+		suggestions.push(
+			"Set thinkingLevel to 'high' or 'xhigh' for security analysis",
+		);
+	}
+
+	// Rule 3: Thinking level too low for debugging
+	const debugPatterns = /\b(debug|diagnose|root.cause)\b/i;
+	if (
+		debugPatterns.test(taskText) &&
+		(config.thinkingLevel === 'off' || config.thinkingLevel === 'low')
+	) {
+		suggestions.push(
+			"Set thinkingLevel to 'high' for complex debugging",
+		);
+	}
+
+	// Rule 4: Write/edit tool excluded but task needs file creation/editing
+	const writePatterns = /\b(write|create|edit|implement)\b/i;
+	if (writePatterns.test(taskText)) {
+		const excluded = config.toolOptions?.excludeTools ?? [];
+		if (excluded.includes('write') || excluded.includes('edit')) {
+			suggestions.push(
+				"Remove 'write' and 'edit' from excludeTools, or set sandboxLevel to 'none'",
+			);
+		}
+	}
+
+	// Rule 5: Bash tool excluded but task needs command execution
+	const runPatterns = /\b(run|execute|test|vitest)\b/i;
+	if (runPatterns.test(taskText)) {
+		const excluded = config.toolOptions?.excludeTools ?? [];
+		if (excluded.includes('bash')) {
+			suggestions.push(
+				"Remove 'bash' from excludeTools to enable command execution",
+			);
+		}
+	}
+
+	// Rule 6: Timeout with xhigh thinking
+	if (
+		errMsg.includes('timed out') &&
+		config.thinkingLevel === 'xhigh'
+	) {
+		suggestions.push(
+			"xhigh thinking is expensive — try 'high' or increase timeout",
+		);
+	}
+
+	// Rule 7: Very low timeout
+	if (errMsg.includes('timed out') && config.timeout !== undefined && config.timeout < 30000) {
+		suggestions.push(
+			"Timeout is very low — consider increasing timeout",
+		);
+	}
+
+	return suggestions;
+}
+
 // ── Main validation ──────────────────────────────────────────────────
 
 export function validatePreTask(config: ValidateConfig): ValidateResult {
