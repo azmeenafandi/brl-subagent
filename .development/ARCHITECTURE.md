@@ -1,6 +1,6 @@
 # brl-subagent — Architecture
 
-> Generated: 2026-07-09 | Version: 2.0.2
+> Generated: 2026-07-11 | Version: 2.2.0
 
 ## Overview
 
@@ -203,6 +203,130 @@ This ensures no stale state leaks across sessions (`/resume`, `/new`).
 | **Total** | | **24 source modules** |
 
 Note: `index.ts` is the orchestrator entry point; all modules are imported from it.
+
+## Background Execution Architecture (Phase 6)
+
+Phase 6 shifts from a **subprocess-based (blocking)** model to a **session-based (non-blocking)** model for background agents.
+
+### Current Architecture (Subprocess-Based)
+
+```
+Conductor (blocking)
+  → delegate_task.execute()
+    → spawn pi child process
+    → wait for completion (blocks caller)
+    → return result
+```
+
+- The conductor blocks while the subagent runs
+- Conductor cannot do other work during delegation
+- Limited to one delegation at a time per conductor
+
+### New Architecture (Session-Based)
+
+```
+Conductor (non-blocking)
+  → delegate_task.execute(background: true)
+    → session-manager.createSession()  
+    → pi sessions start (background)
+    → return agent ID immediately
+    → conductor continues working
+
+  Later: session-manager.getSession(id)
+    → poll status: pending → running → completed/failed
+
+  On demand: session-manager.steerSession(id, msg)
+    → inject message into running agent
+
+  On demand: session-manager.resumeSession(id)
+    → replay transcript, continue from checkpoint
+```
+
+### New Modules (Phase 6)
+
+| Module | Purpose | Dependencies |
+|--------|---------|--------------|
+| `types.ts` (extended) | `BackgroundAgent`, `TranscriptEntry`, `SubagentEvent` types | — |
+| `session-manager.ts` (new) | Create, track, stop, steer, resume background sessions | types.ts, event-bus.ts |
+| `transcript.ts` (new) | JSONL transcript recording for replay and analysis | types.ts |
+| `event-bus.ts` (new) | Lifecycle event pub/sub for cross-module reactions | types.ts |
+
+### Session Manager Design
+
+```typescript
+interface BackgroundAgent {
+  id: string;                    // unique agent ID
+  sessionId: string;             // pi session ID
+  type: string;                  // agent type (label)
+  description: string;           // human-readable description
+  status: AgentStatus;           // pending | running | completed | failed | stopped | steered
+  startedAt: number;             // creation timestamp
+  completedAt?: number;          // completion timestamp
+  task: string;                  // original task text
+  model: string;                 // model used
+  thinkingLevel: ThinkingLevel;  // thinking level used
+  transcriptPath?: string;       // path to JSONL transcript
+  result?: SubagentResult;       // final result (if completed)
+  error?: string;                // error message (if failed)
+}
+```
+
+**Persistence**: Agent records stored in `Map<string, BackgroundAgent>` and persisted to `.pi/subagents/<agentId>.json` for crash recovery.
+
+### Transcript Design
+
+```typescript
+interface TranscriptEntry {
+  type: TranscriptEntryType;     // system | user | assistant | tool_call | tool_result | error
+  timestamp: number;             // entry creation time
+  content: string;               // entry content
+  metadata?: Record<string, unknown>; // optional context (tool name, etc.)
+}
+```
+
+**Storage**: Each agent gets a JSONL file at `.pi/output/agent-<agentId>.jsonl`. Entries are appended as they arrive (streaming, not buffered). Transcripts can be read back for replay, debugging, or mid-run steering.
+
+### Event Bus Design
+
+```typescript
+type SubagentEventType = 
+  | 'subagent:created'
+  | 'subagent:started'
+  | 'subagent:completed'
+  | 'subagent:failed'
+  | 'subagent:stopped'
+  | 'subagent:steered'
+  | 'subagent:compacted';
+
+interface SubagentEvent {
+  type: SubagentEventType;
+  agentId: string;
+  timestamp: number;
+  data: Record<string, unknown>;
+}
+```
+
+**Pattern**: Simple in-memory pub/sub. Synchronous emission. Listeners called in registration order. No persistence — events are ephemeral notifications.
+
+### Steering Protocol
+
+Mid-run steering allows the conductor to inject messages into a running background agent:
+
+1. Conductor calls `steerSession(agentId, "Also check the error handling in login.ts")`
+2. Session manager appends the message to the agent's transcript
+3. Message is injected into the running pi session via stdin/IPC
+4. Agent receives the steering message and adjusts behavior
+5. Transcript records both the steering message and agent's response
+
+### Integration with Existing Modules
+
+| Existing Module | Integration |
+|-----------------|-------------|
+| `concurrency.ts` | Background agents bypass concurrency queue (they run in separate sessions) |
+| `runner.ts` | Background agents use `pi sessions start` instead of direct `spawn()` |
+| `state.ts` | Background agent records persisted alongside run history |
+| `tui.ts` | New views: agent list, agent status, transcript viewer, steering input |
+| `history.ts` | Completed background agents added to run history |
 
 ## Recursion Depth Tracking
 

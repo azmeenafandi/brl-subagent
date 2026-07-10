@@ -20,6 +20,7 @@
 | `P3` | Power (v1.6.0) |
 | `P4` | Excellence (v2.0.0) |
 | `P5` | Hardening (v2.1.0) |
+| `P6` | Background Execution (v2.2.0) |
 
 ---
 
@@ -93,6 +94,15 @@
 | H3 | Post-mortem Diagnostics | P5 | S | `todo` | — | In `validate.ts`: analyze failures; append suggestions to error messages |
 | H4 | Conductor Guardrails | P5 | S | `todo` | — | Embed rules in `promptGuidelines` and `SUBAGENT_INSTRUCTIONS`; updated in index.ts delegate_task registration |
 
+## Phase 6 — Background Execution (v2.2.0) 📋 0/4
+
+| ID | Task | Phase | Effort | Status | Assignee | Notes |
+|----|------|-------|--------|--------|----------|-------|
+| 6.1 | Extend `types.ts` with BackgroundAgent, TranscriptEntry, SubagentEvent types | P6 | S | `todo` | — | New types: AgentStatus, BackgroundAgent, TranscriptEntry, TranscriptEntryType, SubagentEvent, SubagentEventType, SubagentEventListener |
+| 6.2 | Create `src/session-manager.ts` — background agent lifecycle management | P6 | L | `todo` | — | `createSession()`, `getSession()`, `listSessions()`, `stopSession()`, `steerSession()`, `resumeSession()`; persists to `.pi/subagents/` |
+| 6.3 | Create `src/transcript.ts` — JSONL transcript recording | P6 | M | `todo` | — | `startTranscript()`, `appendEntry()`, `getTranscript()`, `listTranscripts()`; writes to `.pi/output/agent-<id>.jsonl` |
+| 6.4 | Create `src/event-bus.ts` — lifecycle event pub/sub | P6 | S | `todo` | — | `on()`, `emit()`, `off()`, `once()`; in-memory, synchronous, registration-order delivery |
+
 ---
 
 ## Phase Completion Summary
@@ -104,7 +114,8 @@
 | P3 — Power | v1.6.0 | 10 | 10 | 0 | All tasks including P8 (now E11) |
 | P4 — Excellence | v2.0.0 | 11 | 9 | 2 | E6 redundant with P7, E7 broken in practice |
 | P5 — Hardening | v2.1.0 | 4 | 0 | 0 | Planned |
-| **Total** | | **45** | **39** | **2** | E6/E7 removed v2.0.2 |
+| P6 — Background Execution | v2.2.0 | 4 | 0 | 0 | Planned |
+| **Total** | | **49** | **39** | **2** | E6/E7 removed v2.0.2 |
 
 ## Change Log
 
@@ -147,3 +158,4 @@
 | 2026-07-09 | **E6/E7 removed**: E6 RBAC redundant with P7 sandboxing; E7 multi-turn broken in practice |
 | 2026-07-09 | **Dead code cleanup**: Removed vestigial roles.ts and multi-turn code |
 | 2026-07-09 | Phase 5 planned: Pre-task validation, integration test suite, post-mortem diagnostics, conductor guardrails |
+| 2026-07-11 | Phase 6 planned: Background execution (v2.2.0) — session manager, transcript recording, event bus. Inspired by pi-subagents. 4 tasks, 0/4 complete. |
