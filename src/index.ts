@@ -80,6 +80,7 @@ import {
 import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets, getAllPresets } from "./presets";
 import { autoRoutePreset } from "./router";
+import { validatePreTask } from "./validate";
 import { getPreset as getPresetFn } from "./tui";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
@@ -2115,6 +2116,28 @@ export default function (pi: ExtensionAPI) {
 				log.warn("Pre-flight check failed", { error: pfResult.error });
 				return {
 					content: [{ type: "text" as const, text: `Pre-flight check failed: ${pfResult.error}` }],
+					isError: true,
+				};
+			}
+
+			// H1: Pre-task validation — deterministic check that tools/thinking match task
+			const validation = validatePreTask({
+				task,
+				toolOptions,
+				thinkingLevel,
+				gitMode: resolvedGitMode,
+			});
+			if (validation.warnings.length > 0) {
+				log.warn("Pre-task validation warnings", { warnings: validation.warnings });
+			}
+			if (!validation.valid) {
+				const errText = validation.errors.join("; ");
+				log.warn("Pre-task validation failed", { errors: validation.errors });
+				return {
+					content: [{
+						type: "text" as const,
+						text: `Pre-task validation failed: ${errText}\n\nAdjust sandbox level, tools, or thinking level to match the task.`,
+					}],
 					isError: true,
 				};
 			}
