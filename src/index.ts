@@ -1648,6 +1648,7 @@ export default function (pi: ExtensionAPI) {
 			"Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. Built-in presets: code-reviewer, security-auditor, test-engineer, tech-writer, rapid-prototyper, debugger, refactorer, data-analyst.",
 			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
+			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. Use get_subagent_result to check status and retrieve results later.",
 			"",
 			"## Conductor Guardrails",
 			"",
@@ -1797,6 +1798,15 @@ export default function (pi: ExtensionAPI) {
 				}),
 			),
 			backend: Type.Optional(Type.String({ description: "Subagent backend: pi (default, full tools) or direct-api (no tools, direct API call)." })),
+			background: Type.Optional(
+				Type.Boolean({
+					description:
+						"Run the subagent in the background without blocking the conductor. " +
+						"When true, the tool returns immediately with an agent ID. " +
+						"Use get_subagent_result to check status and retrieve results. " +
+						"Default: false (blocking mode).",
+				}),
+			),
 			chain: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
 				label: Type.Optional(Type.String({})),
