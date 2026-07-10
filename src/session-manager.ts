@@ -3,6 +3,8 @@ import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, SubagentResult, ThinkingLevel } from './types';
 import { EMPTY_USAGE } from './types';
+import * as eventBus from './event-bus';
+import { createEvent } from './event-bus';
 
 // In-memory store of background agents
 const agents = new Map<string, BackgroundAgent>();
@@ -69,6 +71,13 @@ export function createSession(params: {
   
   agents.set(id, agent);
   persistAgent(agent);
+
+  eventBus.emit(eventBus.createEvent('subagent:created', agent.id, {
+    type: agent.type,
+    description: agent.description,
+    task: agent.task,
+  }));
+
   return agent;
 }
 
@@ -111,6 +120,19 @@ export function updateAgentStatus(id: string, status: AgentStatus, error?: strin
   
   agents.set(id, agent);
   persistAgent(agent);
+
+  if (status === 'running') {
+    eventBus.emit(eventBus.createEvent('subagent:started', id, {}));
+  } else if (status === 'completed') {
+    eventBus.emit(eventBus.createEvent('subagent:completed', id, { error }));
+  } else if (status === 'failed') {
+    eventBus.emit(eventBus.createEvent('subagent:failed', id, { error }));
+  } else if (status === 'stopped') {
+    eventBus.emit(eventBus.createEvent('subagent:stopped', id, {}));
+  } else if (status === 'steered') {
+    eventBus.emit(eventBus.createEvent('subagent:steered', id, {}));
+  }
+
   return agent;
 }
 
@@ -156,6 +178,9 @@ export function steerAgent(id: string, message: string): BackgroundAgent | null 
   agent.status = 'steered';
   agents.set(id, agent);
   persistAgent(agent);
+
+  eventBus.emit(eventBus.createEvent('subagent:steered', agent.id, { message }));
+
   return agent;
 }
 
