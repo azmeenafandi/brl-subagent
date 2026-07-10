@@ -2,7 +2,7 @@
 
 > Enterprise subagent extension for [pi](https://github.com/earendil-works/pi-coding-agent) — delegate tasks to isolated processes with configurable models, thinking levels, tool scoping, sandboxing, dependency graphs, and a live observability dashboard.
 
-**Version:** 2.0.2 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.0.3 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -10,7 +10,7 @@
 
 `brl-subagent` gives pi a **`delegate_task`** tool that spawns isolated subagent processes. Each subagent runs in its own `pi` process with its own model, context window, and tool permissions.
 
-**v2.0.2 adds:** dependency graph delegation, task templates, recurring schedules, an observability dashboard, sandbox levels, change approval workflows, git integration, and subagent-to-subagent messaging.
+**v2.0.3 adds:** dependency graph delegation, task templates, recurring schedules, an observability dashboard, sandbox levels, change approval workflows, git integration, subagent-to-subagent messaging, and Phase 5 hardening features.
 
 ---
 
@@ -78,3 +78,28 @@ All settings persist across sessions.
 | `outputFile` | string | — | Path for the subagent to write full findings. Returns only a summary. |
 | `timeout` | number | — | Max milliseconds. Exceeded → SIGTERM (5s grace) → SIGKILL. |
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
+
+---
+
+## Phase 5 hardening (v2.0.3)
+
+### H1 — Pre-task validation
+
+Deterministic pre-spawn checks that validate tool configuration and thinking level match the task description. Blocks **readonly sandbox + write tasks** and warns about **thinking level mismatches** (e.g., `off` thinking on a complex debugging task).
+
+### H2 — Integration test suite
+
+Two-tier test coverage:
+- **Tier 1:** jiti import verification — confirms the extension loads without errors.
+- **Tier 2:** Subprocess execution — verifies the extension can spawn and communicate with a subagent process.
+
+### H3 — Post-mortem diagnostics
+
+When a subagent fails, analyzes the failure and suggests concrete fixes:
+- Git mode mismatch (e.g., `gitMode: 'branch'` when repo is dirty)
+- Thinking level too low for the task complexity
+- Timeout issues and recommendations for increasing limits
+
+### H4 — Conductor guardrails
+
+Behavior rules embedded in `promptGuidelines` and `SUBAGENT_INSTRUCTIONS` that guide the conductor LLM to configure subagents correctly before spawning. Prevents common misconfigurations at the prompt level.
