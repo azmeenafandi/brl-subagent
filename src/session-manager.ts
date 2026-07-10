@@ -5,6 +5,8 @@ import type { BackgroundAgent, AgentStatus, SubagentResult, ThinkingLevel } from
 import { EMPTY_USAGE } from './types';
 import * as eventBus from './event-bus';
 import { createEvent } from './event-bus';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { createAgentSession, SessionManager, getAgentDir, SettingsManager } from '@earendil-works/pi-coding-agent';
 
 // In-memory store of background agents
 const agents = new Map<string, BackgroundAgent>();
@@ -189,4 +191,89 @@ export function steerAgent(id: string, message: string): BackgroundAgent | null 
  */
 export function getTranscriptPath(id: string): string {
   return join('.pi', 'output', `agent-${id}.jsonl`);
+}
+
+/**
+ * Spawn a background session using pi's session API
+ * 
+ * This creates a real pi session that runs independently.
+ * The session can be polled later with getAgent() or steered with steerAgent().
+ */
+export async function spawnBackgroundSession(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  params: {
+    task: string;
+    type?: string;
+    description?: string;
+    model?: string;
+    thinkingLevel?: ThinkingLevel;
+    systemPrompt?: string;
+    cwd?: string;
+  }
+): Promise<BackgroundAgent> {
+  const id = randomUUID();
+  const effectiveCwd = params.cwd ?? ctx.cwd;
+  const agentDir = getAgentDir();
+  
+  // Create session manager for this background agent
+  const sessionManager = SessionManager.inMemory(effectiveCwd);
+  const settingsManager = new SettingsManager(effectiveCwd);
+  
+  // Create the session
+  const { session } = await createAgentSession({
+    cwd: effectiveCwd,
+    agentDir,
+    sessionManager,
+    settingsManager,
+    modelRegistry: ctx.modelRegistry,
+    tools: ['read', 'bash', 'grep', 'find', 'ls', 'write', 'edit'],
+  });
+  
+  // Set session name
+  session.setSessionName(`background-${id.slice(0, 8)}`);
+  
+  // Create agent record
+  const agent: BackgroundAgent = {
+    id,
+    sessionId: session.id ?? id,
+    type: params.type || 'general-purpose',
+    description: params.description || params.task.slice(0, 50),
+    status: 'running',
+    startedAt: Date.now(),
+    task: params.task,
+    model: params.model || 'unknown',
+    thinkingLevel: params.thinkingLevel || 'medium',
+  };
+  
+  agents.set(id, agent);
+  persistAgent(agent);
+  
+  // Emit created event
+  eventBus.emit(eventBus.createEvent('subagent:created', id, {
+    type: agent.type,
+    description: agent.description,
+    task: agent.task,
+  }));
+  
+  // Start the session in the background (don't await)
+  // The session will run independently
+  session.prompt(params.task).then(() => {
+    // Session completed
+    agent.status = 'completed';
+    agent.completedAt = Date.now();
+    agents.set(id, agent);
+    persistAgent(agent);
+    eventBus.emit(eventBus.createEvent('subagent:completed', id, {}));
+  }).catch((err: Error) => {
+    // Session failed
+    agent.status = 'failed';
+    agent.completedAt = Date.now();
+    agent.error = err.message;
+    agents.set(id, agent);
+    persistAgent(agent);
+    eventBus.emit(eventBus.createEvent('subagent:failed', id, { error: err.message }));
+  });
+  
+  return agent;
 }
