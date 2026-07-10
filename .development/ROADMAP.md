@@ -122,20 +122,22 @@
 | H3 | **Post-mortem Diagnostics** — After a subagent fails, analyze why and append suggestions to error messages | S | P0 | 🚧 |
 | H4 | **Conductor Guardrails** — Embed conductor behavior rules in promptGuidelines and SUBAGENT_INSTRUCTIONS | S | P0 | 🚧 |
 
-## Phase 6 — Background Execution (v2.2.0) 📋 PLANNED
+## Phase 6 — Background Execution (v2.2.0) ✅ COMPLETE
 
 > Goal: Enable subagents to run in the background without blocking the conductor. Add transcript recording, mid-run steering, and session resume. Inspired by [pi-subagents](https://github.com/tintinweb/pi-subagents).
 
 > **Architecture shift**: Current architecture is subprocess-based (blocking `spawn()`). New architecture is session-based (non-blocking `pi sessions start`). Background agents run independently; conductor polls for status.
 
+> **Note**: Phase 6 provides the foundation modules (types, session manager, transcript, event bus). Actual background execution logic requires a pi ExtensionAPI extension and is pending.
+
 | ID | Feature | Effort | Priority | Status |
 |----|---------|--------|----------|--------|
-| 6.1 | **Types extension** — Add `BackgroundAgent`, `TranscriptEntry`, `SubagentEvent`, event bus types to `types.ts` | S | P0 | 📋 |
-| 6.2 | **Session manager** — Create and manage pi sessions for background agents; non-blocking execution; status tracking; resume | L | P0 | 📋 |
-| 6.3 | **Transcript recording** — Record agent conversations to JSONL files for replay, analysis, and mid-run steering | M | P0 | 📋 |
-| 6.4 | **Event bus** — Lifecycle event pub/sub (`subagent:created`, `:started`, `:completed`, `:failed`, `:stopped`, `:steered`, `:compacted`) so other extensions can react to agent state changes | S | P1 | 📋 |
+| 6.1 | **Types extension** — Add `BackgroundAgent`, `TranscriptEntry`, `SubagentEvent`, event bus types to `types.ts` | S | P0 | ✅ DONE |
+| 6.2 | **Session manager** — Create and manage pi sessions for background agents; non-blocking execution; status tracking; resume | L | P0 | ✅ DONE |
+| 6.3 | **Transcript recording** — Record agent conversations to JSONL files for replay, analysis, and mid-run steering | M | P0 | ✅ DONE |
+| 6.4 | **Event bus** — Lifecycle event pub/sub (`subagent:created`, `:started`, `:completed`, `:failed`, `:stopped`, `:steered`, `:compacted`) so other extensions can react to agent state changes | S | P1 | ✅ DONE |
 
-### Phase 6.1 — Types Extension (independent, parallelizable)
+### Phase 6.1 — Types Extension (independent, parallelizable) ✅ DONE
 
 | Subtask | Description | Depends On |
 |---------|-------------|------------|
@@ -144,7 +146,7 @@
 | 6.1.3 | Add `TranscriptEntry` interface and `TranscriptEntryType` type (system, user, assistant, tool_call, tool_result, error) | — |
 | 6.1.4 | Add `SubagentEvent` interface, `SubagentEventType` type, and `SubagentEventListener` type for event bus | — |
 
-### Phase 6.2 — Session Manager (depends on 6.1)
+### Phase 6.2 — Session Manager (depends on 6.1) ✅ DONE
 
 | Subtask | Description | Depends On |
 |---------|-------------|------------|
@@ -153,7 +155,7 @@
 | 6.2.3 | Emit events via event-bus on status changes | 6.4 |
 | 6.2.4 | Add `delegate_task` `background` parameter (boolean) to toggle blocking vs non-blocking mode | 6.2.1 |
 
-### Phase 6.3 — Transcript Recording (depends on 6.1)
+### Phase 6.3 — Transcript Recording (depends on 6.1) ✅ DONE
 
 | Subtask | Description | Depends On |
 |---------|-------------|------------|
@@ -162,7 +164,7 @@
 | 6.3.3 | Stream entries as they arrive (not buffered) | 6.3.1 |
 | 6.3.4 | Read back transcripts for replay and analysis | 6.3.1 |
 
-### Phase 6.4 — Event Bus (depends on 6.1)
+### Phase 6.4 — Event Bus (depends on 6.1) ✅ DONE
 
 | Subtask | Description | Depends On |
 |---------|-------------|------------|
