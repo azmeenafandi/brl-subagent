@@ -1648,6 +1648,18 @@ export default function (pi: ExtensionAPI) {
 			"Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. Built-in presets: code-reviewer, security-auditor, test-engineer, tech-writer, rapid-prototyper, debugger, refactorer, data-analyst.",
 			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
+			"",
+			"## Conductor Guardrails",
+			"",
+			"Before delegating, verify the subagent configuration matches the task:",
+			"",
+			"1. **Sandbox level**: Use sandboxLevel='readonly' for audit/review tasks. Use sandboxLevel='none' for tasks that write files. Use sandboxLevel='safe' for untrusted code execution.",
+			"2. **Thinking level**: Match thinking level to task complexity: off/minimal for trivial tasks (file listing, grep), low for refactoring/docs, medium for code review/debugging, high for security audits/complex debugging, xhigh for multi-step reasoning/novel problems.",
+			"3. **Git mode**: Use gitMode='branch' for tasks that create commits or PRs. Use gitMode='none' for read-only tasks.",
+			"4. **Tools**: Verify the subagent has the tools it needs. If the task writes files, ensure write and edit are not excluded. If the task runs commands, ensure bash is not excluded.",
+			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s.",
+			"",
+			"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1), but getting it right the first time is faster and more efficient.",
 		],
 		parameters: Type.Object({
 			task: Type.Optional(Type.String({

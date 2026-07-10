@@ -90,3 +90,34 @@ describe("describePromptMode", () => {
 		expect(describePromptMode(false, false)).toBe("default (no inheritance)");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// SUBAGENT_INSTRUCTIONS — H4 Conductor Guardrails
+// ---------------------------------------------------------------------------
+
+describe("SUBAGENT_INSTRUCTIONS — configuration detection", () => {
+	it("includes configuration detection section header", () => {
+		expect(SUBAGENT_INSTRUCTIONS).toContain("Configuration Detection");
+	});
+
+	it("includes guidance for missing write tools", () => {
+		expect(SUBAGENT_INSTRUCTIONS).toContain("ERROR: Write tools are not available");
+	});
+
+	it("includes guidance for missing bash tool", () => {
+		expect(SUBAGENT_INSTRUCTIONS).toContain("ERROR: Bash tool is not available");
+	});
+
+	it("includes guidance for insufficient thinking level", () => {
+		expect(SUBAGENT_INSTRUCTIONS).toContain("Thinking level may be insufficient");
+	});
+
+	it("does not break existing instructions content", () => {
+		// Verify core instructions are still present
+		expect(SUBAGENT_INSTRUCTIONS).toContain("Complete the assigned task thoroughly");
+		expect(SUBAGENT_INSTRUCTIONS).toContain("## Completion Status");
+		expect(SUBAGENT_INSTRUCTIONS).toContain("## Blockers");
+		expect(SUBAGENT_INSTRUCTIONS).toContain("delegate_task");
+		expect(SUBAGENT_INSTRUCTIONS).toContain("[TO:subagent-id]");
+	});
+});

@@ -20,7 +20,13 @@ export const SUBAGENT_INSTRUCTIONS =
 	"\n\n" +
 	"If your task is complex and can be broken into independent sub-tasks, you may use delegate_task to spawn sub-subagents. Follow these rules: delegate only truly independent work, set labels for each sub-subagent, use appropriate thinking levels for simplicity, and collect all results before reporting. Do NOT create chains of more than 2 levels deep without explicit user approval. If you delegate, mention it in your summary." +
 	"\n\n" +
-	"If you are running alongside other subagents and need to share findings, you can send messages using the format: [TO:subagent-id]:your message. Use [TO:*]:message to broadcast to all subagents. Messages are delivered after you complete and before the recipient starts. Use subagent labels (from the task description) as IDs. Keep messages concise and actionable.";
+	"If you are running alongside other subagents and need to share findings, you can send messages using the format: [TO:subagent-id]:your message. Use [TO:*]:message to broadcast to all subagents. Messages are delivered after you complete and before the recipient starts. Use subagent labels (from the task description) as IDs. Keep messages concise and actionable." +
+	"\n\n" +
+	"## Configuration Detection\n\n" +
+	"If you detect that your tools or thinking level are insufficient for the task:\n" +
+	"- If you cannot write files but the task requires it, report: \"ERROR: Write tools are not available. Please adjust sandbox level or tools configuration.\"\n" +
+	"- If you cannot run commands but the task requires it, report: \"ERROR: Bash tool is not available. Please adjust tools configuration.\"\n" +
+	"- If you need higher thinking for complex analysis, proceed with your best effort but note: \"NOTE: Thinking level may be insufficient for this task complexity.\"";
 
 // ---------------------------------------------------------------------------
 // Output file instruction block
