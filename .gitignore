@@ -1,3 +1,4 @@
 .pi/
 .development/
+.tmp/
 node_modules/
