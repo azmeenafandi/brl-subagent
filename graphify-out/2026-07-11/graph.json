@@ -4905,9 +4905,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L1",
       "_origin": "ast",
+      "id": "src_session_manager",
       "community": 9,
-      "norm_label": "session-manager.ts",
-      "id": "src_session_manager"
+      "norm_label": "session-manager.ts"
     },
     {
       "label": "agents",
@@ -4915,9 +4915,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L13",
       "_origin": "ast",
+      "id": "src_session_manager_agents",
       "community": 9,
-      "norm_label": "agents",
-      "id": "src_session_manager_agents"
+      "norm_label": "agents"
     },
     {
       "label": "ensureStorageDir()",
@@ -4925,9 +4925,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L21",
       "_origin": "ast",
+      "id": "src_session_manager_ensurestoragedir",
       "community": 9,
-      "norm_label": "ensurestoragedir()",
-      "id": "src_session_manager_ensurestoragedir"
+      "norm_label": "ensurestoragedir()"
     },
     {
       "label": "persistAgent()",
@@ -4935,9 +4935,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L28",
       "_origin": "ast",
+      "id": "src_session_manager_persistagent",
       "community": 9,
-      "norm_label": "persistagent()",
-      "id": "src_session_manager_persistagent"
+      "norm_label": "persistagent()"
     },
     {
       "label": "loadAgent()",
@@ -4945,9 +4945,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L37",
       "_origin": "ast",
+      "id": "src_session_manager_loadagent",
       "community": 9,
-      "norm_label": "loadagent()",
-      "id": "src_session_manager_loadagent"
+      "norm_label": "loadagent()"
     },
     {
       "label": "createSession()",
@@ -4955,9 +4955,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L54",
       "_origin": "ast",
+      "id": "src_session_manager_createsession",
       "community": 9,
-      "norm_label": "createsession()",
-      "id": "src_session_manager_createsession"
+      "norm_label": "createsession()"
     },
     {
       "label": "getAgent()",
@@ -4965,9 +4965,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L93",
       "_origin": "ast",
+      "id": "src_session_manager_getagent",
       "community": 9,
-      "norm_label": "getagent()",
-      "id": "src_session_manager_getagent"
+      "norm_label": "getagent()"
     },
     {
       "label": "listAgents()",
@@ -4975,9 +4975,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L100",
       "_origin": "ast",
+      "id": "src_session_manager_listagents",
       "community": 9,
-      "norm_label": "listagents()",
-      "id": "src_session_manager_listagents"
+      "norm_label": "listagents()"
     },
     {
       "label": "updateAgentStatus()",
@@ -4985,9 +4985,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L117",
       "_origin": "ast",
+      "id": "src_session_manager_updateagentstatus",
       "community": 9,
-      "norm_label": "updateagentstatus()",
-      "id": "src_session_manager_updateagentstatus"
+      "norm_label": "updateagentstatus()"
     },
     {
       "label": "setAgentResult()",
@@ -4995,9 +4995,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L148",
       "_origin": "ast",
+      "id": "src_session_manager_setagentresult",
       "community": 9,
-      "norm_label": "setagentresult()",
-      "id": "src_session_manager_setagentresult"
+      "norm_label": "setagentresult()"
     },
     {
       "label": "stopAgent()",
@@ -5005,9 +5005,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L167",
       "_origin": "ast",
+      "id": "src_session_manager_stopagent",
       "community": 9,
-      "norm_label": "stopagent()",
-      "id": "src_session_manager_stopagent"
+      "norm_label": "stopagent()"
     },
     {
       "label": "steerAgent()",
@@ -5015,9 +5015,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L181",
       "_origin": "ast",
+      "id": "src_session_manager_steeragent",
       "community": 9,
-      "norm_label": "steeragent()",
-      "id": "src_session_manager_steeragent"
+      "norm_label": "steeragent()"
     },
     {
       "label": "getTranscriptPath()",
@@ -5025,9 +5025,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L203",
       "_origin": "ast",
+      "id": "src_session_manager_gettranscriptpath",
       "community": 9,
-      "norm_label": "gettranscriptpath()",
-      "id": "src_session_manager_gettranscriptpath"
+      "norm_label": "gettranscriptpath()"
     },
     {
       "label": "spawnBackgroundSession()",
@@ -5035,9 +5035,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L213",
       "_origin": "ast",
+      "id": "src_session_manager_spawnbackgroundsession",
       "community": 9,
-      "norm_label": "spawnbackgroundsession()",
-      "id": "src_session_manager_spawnbackgroundsession"
+      "norm_label": "spawnbackgroundsession()"
     },
     {
       "label": "NOTE: In v2.0.3, this creates a record but does NOT actually spawn a pi session.",
@@ -5045,9 +5045,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L50",
       "_origin": "ast",
+      "id": "src_session_manager_rationale_50",
       "community": 9,
-      "norm_label": "note: in v2.0.3, this creates a record but does not actually spawn a pi session.",
-      "id": "src_session_manager_rationale_50"
+      "norm_label": "note: in v2.0.3, this creates a record but does not actually spawn a pi session."
     },
     {
       "label": "NOTE: In v2.0.3, this just marks the agent as stopped.",
@@ -5055,9 +5055,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L164",
       "_origin": "ast",
+      "id": "src_session_manager_rationale_164",
       "community": 9,
-      "norm_label": "note: in v2.0.3, this just marks the agent as stopped.",
-      "id": "src_session_manager_rationale_164"
+      "norm_label": "note: in v2.0.3, this just marks the agent as stopped."
     },
     {
       "label": "NOTE: In v2.0.3, this is a placeholder.",
@@ -5065,9 +5065,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L178",
       "_origin": "ast",
+      "id": "src_session_manager_rationale_178",
       "community": 9,
-      "norm_label": "note: in v2.0.3, this is a placeholder.",
-      "id": "src_session_manager_rationale_178"
+      "norm_label": "note: in v2.0.3, this is a placeholder."
     }
   ],
   "links": [
@@ -16220,9 +16220,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L13",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_agents"
+      "target": "src_session_manager_agents",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16230,9 +16230,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L54",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_createsession"
+      "target": "src_session_manager_createsession",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16240,9 +16240,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L21",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_ensurestoragedir"
+      "target": "src_session_manager_ensurestoragedir",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16250,9 +16250,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L93",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_getagent"
+      "target": "src_session_manager_getagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16260,9 +16260,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L203",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_gettranscriptpath"
+      "target": "src_session_manager_gettranscriptpath",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16270,9 +16270,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L100",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_listagents"
+      "target": "src_session_manager_listagents",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16280,9 +16280,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L37",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_loadagent"
+      "target": "src_session_manager_loadagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16290,9 +16290,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L28",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_persistagent"
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16300,9 +16300,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L148",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_setagentresult"
+      "target": "src_session_manager_setagentresult",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16310,9 +16310,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L213",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_spawnbackgroundsession"
+      "target": "src_session_manager_spawnbackgroundsession",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16320,9 +16320,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L181",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_steeragent"
+      "target": "src_session_manager_steeragent",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16330,9 +16330,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L167",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_stopagent"
+      "target": "src_session_manager_stopagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -16340,9 +16340,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L117",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager",
-      "target": "src_session_manager_updateagentstatus"
+      "target": "src_session_manager_updateagentstatus",
+      "confidence_score": 1.0
     },
     {
       "relation": "rationale_for",
@@ -16350,9 +16350,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L164",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_rationale_164",
-      "target": "src_session_manager"
+      "target": "src_session_manager",
+      "confidence_score": 1.0
     },
     {
       "relation": "rationale_for",
@@ -16360,9 +16360,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L178",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_rationale_178",
-      "target": "src_session_manager"
+      "target": "src_session_manager",
+      "confidence_score": 1.0
     },
     {
       "relation": "rationale_for",
@@ -16370,9 +16370,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L50",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_rationale_50",
-      "target": "src_session_manager"
+      "target": "src_session_manager",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16381,9 +16381,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L101",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_listagents",
-      "target": "src_session_manager_ensurestoragedir"
+      "target": "src_session_manager_ensurestoragedir",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16392,9 +16392,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L29",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_persistagent",
-      "target": "src_session_manager_ensurestoragedir"
+      "target": "src_session_manager_ensurestoragedir",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16403,9 +16403,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L76",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_createsession",
-      "target": "src_session_manager_persistagent"
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16414,9 +16414,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L157",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_setagentresult",
-      "target": "src_session_manager_persistagent"
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16425,9 +16425,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L261",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_spawnbackgroundsession",
-      "target": "src_session_manager_persistagent"
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16436,9 +16436,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L193",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_steeragent",
-      "target": "src_session_manager_persistagent"
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16447,9 +16447,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L128",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_updateagentstatus",
-      "target": "src_session_manager_persistagent"
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16458,9 +16458,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L94",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_getagent",
-      "target": "src_session_manager_loadagent"
+      "target": "src_session_manager_loadagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16469,9 +16469,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L107",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_listagents",
-      "target": "src_session_manager_loadagent"
+      "target": "src_session_manager_loadagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16480,9 +16480,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L149",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_setagentresult",
-      "target": "src_session_manager_getagent"
+      "target": "src_session_manager_getagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16491,9 +16491,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L182",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_steeragent",
-      "target": "src_session_manager_getagent"
+      "target": "src_session_manager_getagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16502,9 +16502,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L118",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_updateagentstatus",
-      "target": "src_session_manager_getagent"
+      "target": "src_session_manager_getagent",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -16513,9 +16513,9 @@
       "source_file": "src/session-manager.ts",
       "source_location": "L168",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_session_manager_stopagent",
-      "target": "src_session_manager_updateagentstatus"
+      "target": "src_session_manager_updateagentstatus",
+      "confidence_score": 1.0
     }
   ],
   "hyperedges": [
@@ -16554,5 +16554,5 @@
       "source_file": "README.md"
     }
   ],
-  "built_at_commit": "27f417750e0d13e32179c0687ea33b72f59d783d"
+  "built_at_commit": "b3788aa77107b289481e39b840e42c9ba730d548"
 }
