@@ -175,9 +175,9 @@
     "semantic_hash": "bb828fe66d8ae55bb0a7b1f8b72f0283"
   },
   "src/index.ts": {
-    "mtime": 1783742075.0365868,
-    "ast_hash": "82ba922b398e9f464509d393198ed64f",
-    "semantic_hash": "82ba922b398e9f464509d393198ed64f"
+    "mtime": 1783743415.5722141,
+    "ast_hash": "656149d096df5e0b1b30e092c9b691a2",
+    "semantic_hash": "656149d096df5e0b1b30e092c9b691a2"
   },
   "src/logging.ts": {
     "mtime": 1783333453.1097584,

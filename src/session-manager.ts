@@ -9,6 +9,20 @@ import { createEvent } from './event-bus';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createAgentSession, SessionManager, getAgentDir, SettingsManager } from '@earendil-works/pi-coding-agent';
 
+// Robust UUID generation with fallback
+function generateUUID(): string {
+  try {
+    return randomUUID();
+  } catch {
+    // Fallback for contexts where crypto is not available
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+}
+
 // In-memory store of background agents
 const agents = new Map<string, BackgroundAgent>();
 
@@ -59,7 +73,7 @@ export function createSession(params: {
   thinkingLevel?: ThinkingLevel;
   systemPrompt?: string;
 }): BackgroundAgent {
-  const id = randomUUID();
+  const id = generateUUID();
   const agent: BackgroundAgent = {
     id,
     sessionId: `session-${id}`,
@@ -223,7 +237,7 @@ export async function spawnBackgroundSession(
     cwd?: string;
   }
 ): Promise<BackgroundAgent> {
-  const id = randomUUID();
+  const id = generateUUID();
   const effectiveCwd = params.cwd ?? ctx.cwd;
   const agentDir = getAgentDir();
   

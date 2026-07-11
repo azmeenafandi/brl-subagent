@@ -140,12 +140,12 @@
       "src_types_subagentresult"
     ],
     "2": [
-      "src_concurrency",
-      "src_concurrency_acquireslot",
-      "src_concurrency_priorityinsert",
-      "src_concurrency_releaseslot",
-      "src_concurrency_updateprogressstatus",
-      "src_concurrency_updatestatus",
+      "src_history",
+      "src_history_cleanupruns",
+      "src_history_createemptyresult",
+      "src_history_finalizerunrecord",
+      "src_history_prunesessionruns",
+      "src_history_resolveretryparams",
       "src_prompt",
       "src_prompt_buildoutputblock",
       "src_prompt_buildsubagentprompt",
@@ -163,6 +163,8 @@
       "src_tests_chain_parallel_test_mergesubtaskparams",
       "src_tests_conductor_guardrails_test",
       "src_tests_conductor_guardrails_test_index_src",
+      "src_tests_history_test",
+      "src_tests_history_test_makerun",
       "src_tests_integration_test",
       "src_tests_integration_test_createmockplugincontext",
       "src_tests_integration_test_getpreset",
@@ -171,8 +173,6 @@
       "src_tests_integration_test_mocksessionstate",
       "src_tests_integration_test_mocksessionstate_constructor",
       "src_tests_integration_test_resolvesubagentparams",
-      "src_tests_priority_test",
-      "src_tests_priority_test_queueentry",
       "src_tests_prompt_test",
       "src_tests_sanitize_test",
       "src_tests_test_bench",
@@ -193,55 +193,52 @@
       "src_tests_types_test",
       "src_tests_types_test_makeresult",
       "src_types_empty_usage",
-      "src_types_priority",
-      "src_types_priority_order",
+      "src_types_issubagenterror",
+      "src_types_issubagentrunshape",
       "src_types_resolvethinkinglevel"
     ],
     "3": [
-      "src_history",
-      "src_history_cleanupruns",
-      "src_history_createemptyresult",
-      "src_history_finalizerunrecord",
-      "src_history_prunesessionruns",
-      "src_history_resolveretryparams",
-      "src_state",
-      "src_state_createsessionstate",
-      "src_state_sessionstate",
-      "src_state_sessionstate_checkcircuit",
-      "src_state_sessionstate_checkcostlimit",
-      "src_state_sessionstate_constructor",
-      "src_state_sessionstate_defaultcircuitbreaker",
-      "src_state_sessionstate_finalizelivesubagent",
+      "src_metrics",
+      "src_metrics_computecosttrend",
+      "src_metrics_computedegradation",
+      "src_metrics_computeslametrics",
+      "src_metrics_formatsparkline",
+      "src_metrics_percentile",
+      "src_metrics_sparkline_chars",
+      "src_reports",
+      "src_reports_buildfileaccessreport",
+      "src_reports_buildsecretsexposurereport",
+      "src_reports_extractfilesfromgitdiff",
+      "src_reports_extractfilesfromoutputsummary",
+      "src_reports_file_severity_map",
+      "src_reports_generatecompliancesummary",
+      "src_reports_hassensitivetaskkeywords",
+      "src_reports_issensitivefile",
+      "src_reports_sensitive_file_patterns",
+      "src_reports_sensitive_task_keywords",
       "src_state_sessionstate_findrunbyid",
       "src_state_sessionstate_getrunentries",
-      "src_state_sessionstate_getsessiontotalcost",
-      "src_state_sessionstate_markrunseen",
       "src_state_sessionstate_persistrun",
-      "src_state_sessionstate_recordfailure",
-      "src_state_sessionstate_recordsuccess",
-      "src_state_sessionstate_registerlivesubagent",
-      "src_state_sessionstate_reset",
-      "src_state_sessionstate_updatelivesubagent",
-      "src_tests_circuit_test",
-      "src_tests_circuit_test_createstate",
-      "src_tests_cost_test",
-      "src_tests_cost_test_createmockcontext",
-      "src_tests_cost_test_makerun",
-      "src_tests_history_test",
-      "src_tests_history_test_makerun",
+      "src_tests_metrics_test",
+      "src_tests_metrics_test_makerun",
+      "src_tests_reports_test",
+      "src_tests_reports_test_makerun",
+      "src_tui_buildhorizontalbar",
+      "src_tui_compactduration",
       "src_tui_showcompliancemenu",
+      "src_tui_showdashboard",
       "src_tui_showfileaccessreport",
       "src_tui_showfullcompliancesummary",
       "src_tui_showsecretsexposurereport",
-      "src_types_approvalmode",
-      "src_types_available_backends",
-      "src_types_circuitbreakerstate",
-      "src_types_custom_entry_types",
-      "src_types_issubagenterror",
-      "src_types_issubagentrunshape",
-      "src_types_livesubagent",
-      "src_types_subagentrun",
-      "src_types_subagentstate"
+      "src_tui_showslastats",
+      "src_types_compliancesummary",
+      "src_types_degradationreport",
+      "src_types_errorcategory",
+      "src_types_fileaccessreport",
+      "src_types_secretsexposureentry",
+      "src_types_secretsexposurereport",
+      "src_types_slametrics",
+      "src_types_subagentrun"
     ],
     "4": [
       "src_logging",
@@ -271,13 +268,11 @@
       "src_schedule_scheduler_tick",
       "src_schedule_scheduler_tickfortesting",
       "src_schedule_scheduler_toggleschedule",
-      "src_state_sessionstate_restorefromsession",
       "src_tests_schedule_test",
       "src_tests_schedule_test_createmockapi",
       "src_tests_schedule_test_createmocklogger",
       "src_tests_schedule_test_makescheduleconfig",
       "src_tests_update_test",
-      "src_types_issubagentstateshape",
       "src_types_loglevel",
       "src_update",
       "src_update_checkforupdates",
@@ -285,6 +280,34 @@
       "src_update_updatecheckresult"
     ],
     "5": [
+      "src_state",
+      "src_state_createsessionstate",
+      "src_state_sessionstate",
+      "src_state_sessionstate_checkcircuit",
+      "src_state_sessionstate_checkcostlimit",
+      "src_state_sessionstate_constructor",
+      "src_state_sessionstate_defaultcircuitbreaker",
+      "src_state_sessionstate_finalizelivesubagent",
+      "src_state_sessionstate_getsessiontotalcost",
+      "src_state_sessionstate_markrunseen",
+      "src_state_sessionstate_recordfailure",
+      "src_state_sessionstate_recordsuccess",
+      "src_state_sessionstate_registerlivesubagent",
+      "src_state_sessionstate_reset",
+      "src_state_sessionstate_updatelivesubagent",
+      "src_tests_circuit_test",
+      "src_tests_circuit_test_createstate",
+      "src_tests_cost_test",
+      "src_tests_cost_test_createmockcontext",
+      "src_tests_cost_test_makerun",
+      "src_types_approvalmode",
+      "src_types_available_backends",
+      "src_types_circuitbreakerstate",
+      "src_types_custom_entry_types",
+      "src_types_livesubagent",
+      "src_types_subagentstate"
+    ],
+    "6": [
       "delegatetask_tool",
       "git_integration",
       "h1_pre_task_validation",
@@ -309,53 +332,7 @@
       "sandbox_levels",
       "thinking_levels"
     ],
-    "6": [
-      "src_tests_chain_parallel_test",
-      "src_tests_chain_parallel_test_checkmode",
-      "src_tests_chain_parallel_test_makesubtaskresult",
-      "src_tests_chain_parallel_test_resolvedparamslike",
-      "src_tests_validate_test",
-      "src_types_subagenttooloptions",
-      "src_types_subtaskparams",
-      "src_types_thinkinglevel",
-      "src_types_usagestats",
-      "src_validate",
-      "src_validate_diagnoseconfig",
-      "src_validate_diagnosefailure",
-      "src_validate_istoolavailable",
-      "src_validate_thinking_requirements",
-      "src_validate_thinkinglevelindex",
-      "src_validate_thinkingrequirement",
-      "src_validate_tool_requirements",
-      "src_validate_toolrequirement",
-      "src_validate_validateconfig",
-      "src_validate_validatepretask",
-      "src_validate_validateresult"
-    ],
     "7": [
-      "src_tests_sandbox_test",
-      "src_tests_sandbox_test_applysandbox",
-      "src_types",
-      "src_types_agentstatus",
-      "src_types_backgroundagent",
-      "src_types_chaindetails",
-      "src_types_compliancesummary",
-      "src_types_fileaccessreport",
-      "src_types_gitmode",
-      "src_types_graphdetails",
-      "src_types_graphwave",
-      "src_types_multisubagentdetails",
-      "src_types_paralleldetails",
-      "src_types_resolvedparams",
-      "src_types_sandbox_exclude",
-      "src_types_sandbox_tools",
-      "src_types_sandboxlevel",
-      "src_types_scheduleconfig",
-      "src_types_scheduleentry",
-      "src_types_secretsexposureentry",
-      "src_types_secretsexposurereport"
-    ],
-    "8": [
       "src_presets",
       "src_presets_getallpresets",
       "src_presets_getpreset",
@@ -376,7 +353,7 @@
       "src_types_subagentpreset",
       "src_types_thinking_levels"
     ],
-    "9": [
+    "8": [
       "src_session_manager",
       "src_session_manager_agents",
       "src_session_manager_createsession",
@@ -395,25 +372,25 @@
       "src_session_manager_stopagent",
       "src_session_manager_updateagentstatus"
     ],
-    "10": [
-      "src_metrics",
-      "src_metrics_computecosttrend",
-      "src_metrics_computedegradation",
-      "src_metrics_computeslametrics",
-      "src_metrics_formatsparkline",
-      "src_metrics_percentile",
-      "src_metrics_sparkline_chars",
-      "src_tests_metrics_test",
-      "src_tests_metrics_test_makerun",
-      "src_tui_buildhorizontalbar",
-      "src_tui_compactduration",
-      "src_tui_showdashboard",
-      "src_tui_showslastats",
-      "src_types_degradationreport",
-      "src_types_errorcategory",
-      "src_types_slametrics"
+    "9": [
+      "src_state_sessionstate_restorefromsession",
+      "src_tests_sandbox_test",
+      "src_tests_sandbox_test_applysandbox",
+      "src_types",
+      "src_types_agentstatus",
+      "src_types_backgroundagent",
+      "src_types_gitmode",
+      "src_types_graphdetails",
+      "src_types_graphwave",
+      "src_types_issubagentstateshape",
+      "src_types_resolvedparams",
+      "src_types_sandbox_exclude",
+      "src_types_sandbox_tools",
+      "src_types_sandboxlevel",
+      "src_types_scheduleconfig",
+      "src_types_scheduleentry"
     ],
-    "11": [
+    "10": [
       "src_event_bus",
       "src_event_bus_createevent",
       "src_event_bus_emit",
@@ -429,22 +406,22 @@
       "src_types_subagenteventlistener",
       "src_types_subagenteventtype"
     ],
-    "12": [
-      "src_reports",
-      "src_reports_buildfileaccessreport",
-      "src_reports_buildsecretsexposurereport",
-      "src_reports_extractfilesfromgitdiff",
-      "src_reports_extractfilesfromoutputsummary",
-      "src_reports_file_severity_map",
-      "src_reports_generatecompliancesummary",
-      "src_reports_hassensitivetaskkeywords",
-      "src_reports_issensitivefile",
-      "src_reports_sensitive_file_patterns",
-      "src_reports_sensitive_task_keywords",
-      "src_tests_reports_test",
-      "src_tests_reports_test_makerun"
+    "11": [
+      "src_tests_validate_test",
+      "src_validate",
+      "src_validate_diagnoseconfig",
+      "src_validate_diagnosefailure",
+      "src_validate_istoolavailable",
+      "src_validate_thinking_requirements",
+      "src_validate_thinkinglevelindex",
+      "src_validate_thinkingrequirement",
+      "src_validate_tool_requirements",
+      "src_validate_toolrequirement",
+      "src_validate_validateconfig",
+      "src_validate_validatepretask",
+      "src_validate_validateresult"
     ],
-    "13": [
+    "12": [
       "src_transcript",
       "src_transcript_appendassistantmessage",
       "src_transcript_appendentry",
@@ -459,7 +436,7 @@
       "src_transcript_listtranscripts",
       "src_transcript_starttranscript"
     ],
-    "14": [
+    "13": [
       "package",
       "package_description",
       "package_devdependencies",
@@ -473,7 +450,7 @@
       "ref_src_index_ts",
       "vitest"
     ],
-    "15": [
+    "14": [
       "src_index",
       "src_index_applyconfig",
       "src_index_execute",
@@ -487,7 +464,32 @@
       "src_index_rungraphmode",
       "src_index_runparallelmode"
     ],
+    "15": [
+      "src_tests_chain_parallel_test",
+      "src_tests_chain_parallel_test_checkmode",
+      "src_tests_chain_parallel_test_makesubtaskresult",
+      "src_tests_chain_parallel_test_resolvedparamslike",
+      "src_types_chaindetails",
+      "src_types_multisubagentdetails",
+      "src_types_paralleldetails",
+      "src_types_subagenttooloptions",
+      "src_types_subtaskparams",
+      "src_types_thinkinglevel",
+      "src_types_usagestats"
+    ],
     "16": [
+      "src_concurrency",
+      "src_concurrency_acquireslot",
+      "src_concurrency_priorityinsert",
+      "src_concurrency_releaseslot",
+      "src_concurrency_updateprogressstatus",
+      "src_concurrency_updatestatus",
+      "src_tests_priority_test",
+      "src_tests_priority_test_queueentry",
+      "src_types_priority",
+      "src_types_priority_order"
+    ],
+    "17": [
       "src_git",
       "src_git_capturediff",
       "src_git_createworkbranch",
@@ -498,7 +500,7 @@
       "src_git_mergeworkbranch",
       "src_git_switchtobranch"
     ],
-    "17": [
+    "18": [
       "src_scheduler",
       "src_scheduler_detectcycle",
       "src_scheduler_topologicalsort",
@@ -507,7 +509,7 @@
       "src_tests_scheduler_test_maketask",
       "src_types_graphtask"
     ],
-    "18": [
+    "19": [
       "src_tests_diff_test",
       "src_tests_diff_test_binary_file_diff",
       "src_tests_diff_test_multi_file_diff",
@@ -516,7 +518,7 @@
       "src_tests_diff_test_single_file_diff",
       "src_tests_diff_test_singlefilediff"
     ],
-    "19": [
+    "20": [
       "src_tests_e2e_subprocess_test",
       "src_tests_e2e_subprocess_test_canrunsubprocesstests",
       "src_tests_e2e_subprocess_test_execfileasync",
@@ -524,52 +526,53 @@
       "src_tests_e2e_subprocess_test_rundelegatetask",
       "src_tests_e2e_subprocess_test_tmp_script_dir"
     ],
-    "20": [
+    "21": [
       "src_tests_e2e_test",
       "src_tests_e2e_test_isolated_files",
       "src_tests_e2e_test_jitifactory",
       "src_tests_e2e_test_pi_dependent_files",
       "src_tests_e2e_test_src_dir"
     ],
-    "21": [
+    "22": [
       "src_tests_git_test",
       "src_tests_git_test_expectok",
       "src_tests_git_test_mockexecfilesync"
     ],
-    "22": [
+    "23": [
       "src_tests_preflight_test",
       "src_tests_preflight_test_mockgetpiinvocation",
       "src_tests_preflight_test_realcwd"
     ],
-    "23": [
+    "24": [
       "vitest_config"
     ]
   },
   "cohesion": {
     "0": 0.0640503517215846,
     "1": 0.06775956284153005,
-    "2": 0.06103896103896104,
-    "3": 0.07505285412262157,
-    "4": 0.08367071524966262,
-    "5": 0.15019762845849802,
-    "6": 0.1619047619047619,
-    "7": 0.12380952380952381,
-    "8": 0.19298245614035087,
-    "9": 0.21323529411764705,
-    "10": 0.18333333333333332,
-    "11": 0.15384615384615385,
-    "12": 0.2564102564102564,
-    "13": 0.2948717948717949,
-    "14": 0.16666666666666666,
-    "15": 0.3787878787878788,
-    "16": 0.4166666666666667,
-    "17": 0.5238095238095238,
-    "18": 0.2857142857142857,
-    "19": 0.4666666666666667,
-    "20": 0.4,
-    "21": 0.6666666666666666,
+    "2": 0.06233766233766234,
+    "3": 0.08292682926829269,
+    "4": 0.08708708708708708,
+    "5": 0.10153846153846154,
+    "6": 0.15019762845849802,
+    "7": 0.19298245614035087,
+    "8": 0.21323529411764705,
+    "9": 0.175,
+    "10": 0.15384615384615385,
+    "11": 0.23076923076923078,
+    "12": 0.2948717948717949,
+    "13": 0.16666666666666666,
+    "14": 0.3787878787878788,
+    "15": 0.23636363636363636,
+    "16": 0.35555555555555557,
+    "17": 0.4166666666666667,
+    "18": 0.5238095238095238,
+    "19": 0.2857142857142857,
+    "20": 0.4666666666666667,
+    "21": 0.4,
     "22": 0.6666666666666666,
-    "23": 1.0
+    "23": 0.6666666666666666,
+    "24": 1.0
   },
   "gods": [
     {
@@ -608,11 +611,6 @@
       "degree": 14
     },
     {
-      "id": "src_types_thinkinglevel",
-      "label": "ThinkingLevel",
-      "degree": 14
-    },
-    {
       "id": "src_pool_processpool",
       "label": "ProcessPool",
       "degree": 13
@@ -620,6 +618,11 @@
     {
       "id": "src_messaging_intercom",
       "label": "Intercom",
+      "degree": 11
+    },
+    {
+      "id": "src_types_subagentresult",
+      "label": "SubagentResult",
       "degree": 11
     }
   ],
