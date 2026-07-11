@@ -175,9 +175,9 @@
     "semantic_hash": "bb828fe66d8ae55bb0a7b1f8b72f0283"
   },
   "src/index.ts": {
-    "mtime": 1783678045.1998441,
-    "ast_hash": "8b34a175d748d5fda3233a1f4ce268ea",
-    "semantic_hash": "8b34a175d748d5fda3233a1f4ce268ea"
+    "mtime": 1783726620.3804638,
+    "ast_hash": "f5a6f961e469290ae89015c62d0172ba",
+    "semantic_hash": "f5a6f961e469290ae89015c62d0172ba"
   },
   "src/logging.ts": {
     "mtime": 1783333453.1097584,
@@ -335,9 +335,9 @@
     "semantic_hash": "0c58ef598d02e7e47dfa02d9a127b9f0"
   },
   "src/session-manager.ts": {
-    "mtime": 1783725654.476749,
-    "ast_hash": "61541188b5d9cde0e8b9d64b5c365010",
-    "semantic_hash": "61541188b5d9cde0e8b9d64b5c365010"
+    "mtime": 1783726542.0205114,
+    "ast_hash": "9740f141e6df9a89b02a7c6fb889f0ca",
+    "semantic_hash": "9740f141e6df9a89b02a7c6fb889f0ca"
   },
   "src/transcript.ts": {
     "mtime": 1783725672.624744,

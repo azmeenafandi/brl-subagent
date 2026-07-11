@@ -2660,6 +2660,87 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// -------------------------------------------------------------------
+	// get_subagent_result tool — poll background agent status
+	// -------------------------------------------------------------------
+
+	pi.registerTool({
+		name: "get_subagent_result",
+		label: "Get Subagent Result",
+		description: [
+			"Check the status of a background agent and retrieve its result.",
+			"Use this tool to poll background agents spawned with delegate_task's background parameter.",
+			"Returns the agent's status, result (if completed), and transcript path.",
+		].join(" "),
+		parameters: Type.Object({
+			agent_id: Type.String({
+				description: "The agent ID returned by delegate_task when background=true",
+			}),
+			wait: Type.Optional(
+				Type.Boolean({
+					description: "If true, wait for the agent to complete before returning. Default: false.",
+				}),
+			),
+			verbose: Type.Optional(
+				Type.Boolean({
+					description: "If true, include the full conversation log. Default: false.",
+				}),
+			),
+		}),
+		execute: async (toolCallId, params) => {
+			const { getAgent } = await import('./session-manager');
+			const { getTranscript } = await import('./transcript');
+			
+			const agent = getAgent(params.agent_id);
+			
+			if (!agent) {
+				return {
+					content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+					isError: true,
+				};
+			}
+			
+			let resultText = `Agent: ${agent.description}\n`;
+			resultText += `Status: ${agent.status}\n`;
+			resultText += `Started: ${new Date(agent.startedAt).toISOString()}\n`;
+			
+			if (agent.completedAt) {
+				resultText += `Completed: ${new Date(agent.completedAt).toISOString()}\n`;
+				resultText += `Duration: ${agent.completedAt - agent.startedAt}ms\n`;
+			}
+			
+			if (agent.error) {
+				resultText += `Error: ${agent.error}\n`;
+			}
+			
+			if (agent.result) {
+				resultText += `\nResult:\n`;
+				if (agent.result.messages && agent.result.messages.length > 0) {
+					resultText += agent.result.messages.join('\n');
+				}
+			}
+			
+			// Include transcript if verbose
+			if (params.verbose) {
+				const transcript = getTranscript(params.agent_id);
+				if (transcript.length > 0) {
+					resultText += `\n\nTranscript (${transcript.length} entries):\n`;
+					for (const entry of transcript.slice(-10)) { // Last 10 entries
+						resultText += `[${new Date(entry.timestamp).toISOString()}] ${entry.type}: ${entry.content.slice(0, 100)}\n`;
+					}
+				}
+			}
+			
+			// Include transcript path
+			const { getTranscriptPath } = await import('./session-manager');
+			resultText += `\nTranscript: ${getTranscriptPath(params.agent_id)}`;
+			
+			return {
+				content: [{ type: "text" as const, text: resultText }],
+			};
+		},
+	});
+
+	// -------------------------------------------------------------------
 	// Session lifecycle — F7: Session-bound state initialization
 	// -------------------------------------------------------------------
 
