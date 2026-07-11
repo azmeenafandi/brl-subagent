@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 
 import type { BackgroundAgent, AgentStatus, SubagentResult, ThinkingLevel } from './types';
 import { EMPTY_USAGE } from './types';
 import * as eventBus from './event-bus';
+import * as transcript from './transcript';
 import { createEvent } from './event-bus';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createAgentSession, SessionManager, getAgentDir, SettingsManager } from '@earendil-works/pi-coding-agent';
@@ -73,6 +74,9 @@ export function createSession(params: {
   
   agents.set(id, agent);
   persistAgent(agent);
+
+  // Start transcript for this agent
+  transcript.startTranscript(agent.id, params.task);
 
   eventBus.emit(eventBus.createEvent('subagent:created', agent.id, {
     type: agent.type,
@@ -161,7 +165,11 @@ export function setAgentResult(id: string, result: SubagentResult): BackgroundAg
  * Actual session termination will be implemented when pi's ExtensionAPI supports it.
  */
 export function stopAgent(id: string): BackgroundAgent | null {
-  return updateAgentStatus(id, 'stopped');
+  const result = updateAgentStatus(id, 'stopped');
+  if (result) {
+    transcript.completeTranscript(id, 'stopped');
+  }
+  return result;
 }
 
 /**
@@ -176,7 +184,10 @@ export function steerAgent(id: string, message: string): BackgroundAgent | null 
   if (agent.status !== 'running') {
     throw new Error(`Cannot steer agent ${id}: status is ${agent.status}, not running`);
   }
-  
+
+  // Record steering in transcript
+  transcript.appendEntry(id, 'user', `Steering: ${message}`);
+
   agent.status = 'steered';
   agents.set(id, agent);
   persistAgent(agent);
@@ -249,6 +260,9 @@ export async function spawnBackgroundSession(
   agents.set(id, agent);
   persistAgent(agent);
   
+  // Start transcript for this agent
+  transcript.startTranscript(agent.id, params.task);
+
   // Emit created event
   eventBus.emit(eventBus.createEvent('subagent:created', id, {
     type: agent.type,
@@ -264,6 +278,7 @@ export async function spawnBackgroundSession(
     agent.completedAt = Date.now();
     agents.set(id, agent);
     persistAgent(agent);
+    transcript.completeTranscript(id, 'completed');
     eventBus.emit(eventBus.createEvent('subagent:completed', id, {}));
   }).catch((err: Error) => {
     // Session failed
@@ -272,6 +287,7 @@ export async function spawnBackgroundSession(
     agent.error = err.message;
     agents.set(id, agent);
     persistAgent(agent);
+    transcript.completeTranscript(id, 'failed');
     eventBus.emit(eventBus.createEvent('subagent:failed', id, { error: err.message }));
   });
   
