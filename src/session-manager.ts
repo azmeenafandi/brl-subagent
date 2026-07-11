@@ -229,7 +229,7 @@ export async function spawnBackgroundSession(
   
   // Create session manager for this background agent
   const sessionManager = SessionManager.inMemory(effectiveCwd);
-  const settingsManager = new SettingsManager(effectiveCwd);
+  const settingsManager = SettingsManager.create(effectiveCwd);
   
   // Create the session
   const { session } = await createAgentSession({
