@@ -281,3 +281,31 @@
 Tests pass even when source files import variables/functions that don't exist, because Vitest's module resolution doesn't fail at import time for unresolved symbols. However, when pi loads the same module in production, unresolved imports cause runtime failures. This means a passing test suite does not guarantee the code will load correctly in the pi runtime.
 
 **Mitigation:** Always verify with a manual `import` test or runtime smoke test after significant refactors. Consider adding a dedicated smoke test that imports and exercises every module.
+
+## Phase 6.5 Audit — Pre-sync Findings (2026-07-11)
+
+### Issue 1: session.id vs session.sessionId (Bug)
+- **Location:** src/session-manager.ts:250
+- **Problem:** Code uses `session.id` but `AgentSession` has `sessionId` property
+- **Impact:** `sessionId` will be `undefined`, falls back to generated `id`
+- **Severity:** Low (not a crash, but incorrect)
+- **Fix:** Change `session.id` to `session.sessionId`
+
+### Issue 2: File System Operations (OK)
+- **Location:** src/session-manager.ts, src/transcript.ts
+- **Problem:** Writes to `.pi/subagents/` and `.pi/output/` directories
+- **Impact:** Directories created in current working directory
+- **Severity:** None (expected behavior)
+
+### Issue 3: Error Handling (Minor)
+- **Location:** src/session-manager.ts (spawnBackgroundSession)
+- **Problem:** If `createAgentSession()` fails, error is thrown and not caught
+- **Impact:** Caller must handle the error
+- **Severity:** Low (standard async error handling)
+
+### Issue 4: Session Lifecycle (OK)
+- **Location:** src/session-manager.ts (spawnBackgroundSession)
+- **Problem:** `session.prompt()` is non-blocking (intentional)
+- **Impact:** Session runs independently in background
+- **Severity:** None (by design)
+

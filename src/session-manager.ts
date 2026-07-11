@@ -247,7 +247,7 @@ export async function spawnBackgroundSession(
   // Create agent record
   const agent: BackgroundAgent = {
     id,
-    sessionId: session.id ?? id,
+    sessionId: session.sessionId ?? id,
     type: params.type || 'general-purpose',
     description: params.description || params.task.slice(0, 50),
     status: 'running',

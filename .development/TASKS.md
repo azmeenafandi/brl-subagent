@@ -103,15 +103,15 @@
 | 6.3 | Create `src/transcript.ts` — JSONL transcript recording | P6 | M | `done` | — | `startTranscript()`, `appendEntry()`, `getTranscript()`, `listTranscripts()`; writes to `.pi/output/agent-<id>.jsonl` |
 | 6.4 | Create `src/event-bus.ts` — lifecycle event pub/sub | P6 | S | `done` | — | `on()`, `emit()`, `off()`, `once()`; in-memory, synchronous, registration-order delivery |
 
-## Phase 6.5 — Background Execution Integration (v2.2.0) 📋 0/5
+## Phase 6.5 — Background Execution Integration (v2.2.0) ✅ 5/5
 
 | ID | Task | Phase | Effort | Status | Assignee | Notes |
 |----|------|-------|--------|--------|----------|-------|
-| 6.5.1 | Update `session-manager.ts` to use `createAgentSession()` from pi API | P6.5 | L | `todo` | — | Import `createAgentSession`, `SessionManager`; replace placeholder records with actual session spawning; handle background vs foreground mode |
-| 6.5.2 | Add `get_subagent_result` tool — poll session status and retrieve results | P6.5 | M | `todo` | — | Register new tool; poll session status; return result or "still running"; include transcript path |
-| 6.5.3 | Add `steer_subagent` tool — inject messages into running sessions | P6.5 | M | `todo` | — | Register new tool; validate session is running; inject message; emit `subagent:steered` event |
-| 6.5.4 | Wire transcript recording to session lifecycle events | P6.5 | S | `todo` | — | `startTranscript()` on create; `appendToolCall/Result()` during execution; `completeTranscript()` on end |
-| 6.5.5 | Wire event-bus to session lifecycle (create/complete/fail/stop/steer) | P6.5 | S | `todo` | — | Emit events on session state changes; integrate with session-manager |
+| 6.5.1 | Update `session-manager.ts` to use `createAgentSession()` from pi API | P6.5 | L | `done` | — | Import `createAgentSession`, `SessionManager`; replace placeholder records with actual session spawning; handle background vs foreground mode |
+| 6.5.2 | Add `get_subagent_result` tool — poll session status and retrieve results | P6.5 | M | `done` | — | Register new tool; poll session status; return result or "still running"; include transcript path |
+| 6.5.3 | Add `steer_subagent` tool — inject messages into running sessions | P6.5 | M | `done` | — | Register new tool; validate session is running; inject message; emit `subagent:steered` event |
+| 6.5.4 | Wire transcript recording to session lifecycle events | P6.5 | S | `done` | — | `startTranscript()` on create; `appendToolCall/Result()` during execution; `completeTranscript()` on end |
+| 6.5.5 | Wire event-bus to session lifecycle (create/complete/fail/stop/steer) | P6.5 | S | `done` | — | Emit events on session state changes; integrate with session-manager |
 
 ---
 
@@ -125,8 +125,8 @@
 | P4 — Excellence | v2.0.0 | 11 | 9 | 2 | E6 redundant with P7, E7 broken in practice |
 | P5 — Hardening | v2.1.0 | 4 | 0 | 0 | Planned |
 | P6 — Background Execution | v2.2.0 | 4 | 4 | 0 | Foundation modules complete |
-| P6.5 — Background Integration | v2.2.0 | 5 | 0 | 0 | Planned: wire foundation to pi session API |
-| **Total** | | **54** | **39** | **2** | E6/E7 removed v2.0.2 |
+| P6.5 — Background Integration | v2.2.0 | 5 | 5 | 0 | Session API, tools, transcript, event-bus wired |
+| **Total** | | **54** | **44** | **2** | E6/E7 removed v2.0.2 |
 
 ## Change Log
 
@@ -171,4 +171,5 @@
 | 2026-07-09 | Phase 5 planned: Pre-task validation, integration test suite, post-mortem diagnostics, conductor guardrails |
 | 2026-07-11 | Phase 6 planned: Background execution (v2.2.0) — session manager, transcript recording, event bus. Inspired by pi-subagents. 4 tasks, 0/4 complete.
 | 2026-07-11 | Phase 6 complete: Foundation modules implemented — types.ts extended with BackgroundAgent/TranscriptEntry/SubagentEvent; session-manager.ts created with createSession/getSession/listSessions/stopSession/steerSession/resumeSession; transcript.ts created with startTranscript/appendEntry/getTranscript/listTranscripts (JSONL streaming); event-bus.ts created with on/emit/off/once (in-memory pub/sub). Actual background execution logic requires pi ExtensionAPI extension (pending). |
-| 2026-07-11 | Phase 6.5 planned: Background execution integration (v2.2.0) — wire foundation modules to pi session API (`createAgentSession()`), add `get_subagent_result` and `steer_subagent` tools. 5 tasks, 0/5 complete. |
+| 2026-07-11 | Phase 6.5 planned: Background execution integration (v2.2.0) — wire foundation modules to pi session API (`createAgentSession()`), add `get_subagent_result` and `steer_subagent` tools. 5 tasks, 0/5 complete.
+| 2026-07-11 | Phase 6.5 complete: All integration tasks done — session-manager.ts wired to pi `createAgentSession()` API; `get_subagent_result` tool registered (poll status, retrieve results, include transcript path); `steer_subagent` tool registered (validate running, inject message, emit steered event); transcript recording wired to session lifecycle (start/append/complete); event-bus wired to session state changes (created/completed/failed/stopped/steered). 5/5 complete.

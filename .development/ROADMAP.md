@@ -172,19 +172,19 @@
 | 6.4.2 | Simple in-memory pub/sub; synchronous emission; registration-order delivery | 6.4.1 |
 | 6.4.3 | Integrate with session-manager and transcript modules | 6.4.1 |
 
-## Phase 6.5 — Background Execution Integration (v2.2.0) 📋 PLANNED
+## Phase 6.5 — Background Execution Integration (v2.2.0) ✅ COMPLETE
 
 > Goal: Wire the foundation modules (session-manager, transcript, event-bus) to pi's actual session API (`createAgentSession()` from `@earendil-works/pi-coding-agent`). Add `get_subagent_result` and `steer_subagent` tools.
 
 | ID | Feature | Effort | Priority | Status |
 |----|---------|--------|----------|--------|
-| 6.5.1 | **Session manager integration** — Update `session-manager.ts` to use `createAgentSession()` instead of placeholder records | L | P0 | 📋 |
-| 6.5.2 | **get_subagent_result tool** — Register new tool to poll session status and retrieve results | M | P0 | 📋 |
-| 6.5.3 | **steer_subagent tool** — Register new tool to inject messages into running sessions | M | P0 | 📋 |
-| 6.5.4 | **Transcript integration** — Wire transcript recording to session lifecycle events | S | P1 | 📋 |
-| 6.5.5 | **Event-bus integration** — Wire event-bus to session lifecycle (create/complete/fail/stop/steer) | S | P1 | 📋 |
+| 6.5.1 | **Session manager integration** — Update `session-manager.ts` to use `createAgentSession()` instead of placeholder records | L | P0 | ✅ DONE |
+| 6.5.2 | **get_subagent_result tool** — Register new tool to poll session status and retrieve results | M | P0 | ✅ DONE |
+| 6.5.3 | **steer_subagent tool** — Register new tool to inject messages into running sessions | M | P0 | ✅ DONE |
+| 6.5.4 | **Transcript integration** — Wire transcript recording to session lifecycle events | S | P1 | ✅ DONE |
+| 6.5.5 | **Event-bus integration** — Wire event-bus to session lifecycle (create/complete/fail/stop/steer) | S | P1 | ✅ DONE |
 
-### Phase 6.5.1 — Session Manager Integration (depends on 6.2)
+### Phase 6.5.1 — Session Manager Integration (depends on 6.2) ✅ DONE
 
 | Subtask | Description | Depends On |
 |---------|-------------|------------|
@@ -193,7 +193,7 @@
 | 6.5.1.3 | Handle background vs foreground mode (background returns ID immediately) | 6.5.1.2 |
 | 6.5.1.4 | Store session reference in agent record for later polling/steering | 6.5.1.2 |
 
-### Phase 6.5.2 — get_subagent_result Tool (depends on 6.5.1)
+### Phase 6.5.2 — get_subagent_result Tool (depends on 6.5.1) ✅ DONE
 
 | Subtask | Description | Depends On |
 |---------|-------------|------------|
@@ -202,7 +202,7 @@
 | 6.5.2.3 | Return result or "still running" message | 6.5.2.2 |
 | 6.5.2.4 | Include transcript path in result | 6.5.2.3 |
 
-### Phase 6.5.3 — steer_subagent Tool (depends on 6.5.1)
+### Phase 6.5.3 — steer_subagent Tool (depends on 6.5.1) ✅ DONE
 
 | Subtask | Description | Depends On |
 |---------|-------------|------------|
@@ -211,7 +211,7 @@
 | 6.5.3.3 | Inject message into session conversation | 6.5.3.2 |
 | 6.5.3.4 | Emit `subagent:steered` event | 6.5.3.3 |
 
-### Phase 6.5.4 — Transcript Integration (depends on 6.3)
+### Phase 6.5.4 — Transcript Integration (depends on 6.3) ✅ DONE
 
 | Subtask | Description | Depends On |
 |---------|-------------|------------|
@@ -219,7 +219,7 @@
 | 6.5.4.2 | Call `appendToolCall()` / `appendToolResult()` during execution | 6.5.4.1 |
 | 6.5.4.3 | Call `completeTranscript()` when session ends | 6.5.4.1 |
 
-### Phase 6.5.5 — Event-bus Integration (depends on 6.4)
+### Phase 6.5.5 — Event-bus Integration (depends on 6.4) ✅ DONE
 
 | Subtask | Description | Depends On |
 |---------|-------------|------------|
