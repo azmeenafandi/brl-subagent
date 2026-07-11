@@ -335,9 +335,9 @@
     "semantic_hash": "0c58ef598d02e7e47dfa02d9a127b9f0"
   },
   "src/session-manager.ts": {
-    "mtime": 1783740985.0128837,
-    "ast_hash": "7fbc342fa847cfc3844c09375789b3e7",
-    "semantic_hash": "7fbc342fa847cfc3844c09375789b3e7"
+    "mtime": 1783741667.404699,
+    "ast_hash": "7082ceb0cc62b1c37056e363a634682b",
+    "semantic_hash": "7082ceb0cc62b1c37056e363a634682b"
   },
   "src/transcript.ts": {
     "mtime": 1783725672.624744,

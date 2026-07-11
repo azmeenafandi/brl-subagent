@@ -2036,6 +2036,42 @@ export default function (pi: ExtensionAPI) {
 				return runGraphMode(params, signal, onUpdate, ctx);
 			}
 
+			// Phase 6.5: Background execution — spawn session and return ID immediately
+			if (params.background) {
+				const { spawnBackgroundSession } = await import('./session-manager');
+				
+				try {
+					const agent = await spawnBackgroundSession(pi, ctx, {
+						task: params.task,
+						type: params.preset || 'general-purpose',
+						description: params.label,
+						thinkingLevel: (params.thinkingLevel as ThinkingLevel) || 'medium',
+						systemPrompt: params.systemPrompt,
+						cwd: params.cwd,
+					});
+					
+					log.info("Background agent spawned", { agentId: agent.id, task: params.task });
+					
+					return {
+						content: [{
+							type: "text" as const,
+							text: `Background agent started: ${agent.id}\n\n` +
+								`Description: ${agent.description}\n` +
+								`Task: ${agent.task}\n` +
+								`Status: ${agent.status}\n\n` +
+								`Use get_subagent_result({ agent_id: "${agent.id}" }) to check status and retrieve results.`,
+						}],
+					};
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					log.error("Failed to spawn background agent", { error: message });
+					return {
+						content: [{ type: "text" as const, text: `Failed to spawn background agent: ${message}` }],
+						isError: true,
+					};
+				}
+			}
+
 			// R5: Check session cost limit before spawning
 			// Use a default per-task estimate of $0.05 if no perTaskCostEstimate is set
 			const perTaskEstimate = state.config.perTaskCostEstimate > 0
