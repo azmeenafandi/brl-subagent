@@ -19,41 +19,42 @@ describe("validatePreTask", () => {
 
   // ── Tool validation ──────────────────────────────────────────────
 
-  it("errors when write tool is missing for write task", () => {
+  it("warns when write tool is missing for write task", () => {
     const result = validatePreTask({
       task: "Create a new file with the API endpoint",
       toolOptions: { tools: ["read", "bash", "grep"], excludeTools: ["write", "edit"] },
     });
-    expect(result.valid).toBe(false);
-    expect(result.errors.length).toBeGreaterThan(0);
-    expect(result.errors[0]).toMatch(/write|edit/);
+    expect(result.valid).toBe(true);
+    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.warnings.some(w => /write|edit/.test(w))).toBe(true);
   });
 
-  it("errors when bash is excluded for run task", () => {
+  it("warns when bash is excluded for run task", () => {
     const result = validatePreTask({
       task: "Run the test suite with vitest",
       toolOptions: { tools: ["read", "write", "edit"], excludeTools: ["bash"] },
     });
-    expect(result.valid).toBe(false);
-    expect(result.errors.length).toBeGreaterThan(0);
-    expect(result.errors[0]).toMatch(/bash/);
+    expect(result.valid).toBe(true);
+    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.warnings.some(w => /bash/.test(w))).toBe(true);
   });
 
-  it("errors when edit is missing for refactor task", () => {
+  it("warns when edit is missing for refactor task", () => {
     const result = validatePreTask({
       task: "Refactor the authentication module",
       toolOptions: { tools: ["read", "bash", "grep"], excludeTools: ["write", "edit"] },
     });
-    expect(result.valid).toBe(false);
+    expect(result.valid).toBe(true);
+    expect(result.warnings.some(w => /write|edit/.test(w))).toBe(true);
   });
 
-  it("errors when read is excluded for audit task", () => {
+  it("warns when read is excluded for audit task", () => {
     const result = validatePreTask({
       task: "Audit the security of the authentication flow",
       toolOptions: { excludeTools: ["read"] },
     });
-    expect(result.valid).toBe(false);
-    expect(result.errors[0]).toMatch(/read/);
+    expect(result.valid).toBe(true);
+    expect(result.warnings.some(w => /read/.test(w))).toBe(true);
   });
 
   it("passes when tools are unrestricted (no toolOptions)", () => {
@@ -140,13 +141,13 @@ describe("validatePreTask", () => {
     expect(result.valid).toBe(true);
   });
 
-  it("handles multiple keyword matches", () => {
+  it("warns on multiple keyword matches", () => {
     const result = validatePreTask({
       task: "Create and commit the new feature",
       toolOptions: { excludeTools: ["write", "edit", "bash"] },
     });
-    expect(result.valid).toBe(false);
-    expect(result.errors.length).toBeGreaterThanOrEqual(2);
+    expect(result.valid).toBe(true);
+    expect(result.warnings.length).toBeGreaterThanOrEqual(2);
   });
 });
 

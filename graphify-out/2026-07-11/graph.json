@@ -4780,184 +4780,14 @@
       "id": "src_types_isgraphdetails"
     },
     {
-      "label": "session-manager.ts",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L1",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "session-manager.ts",
-      "id": "src_session_manager"
-    },
-    {
-      "label": "agents",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L13",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "agents",
-      "id": "src_session_manager_agents"
-    },
-    {
-      "label": "ensureStorageDir()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L21",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "ensurestoragedir()",
-      "id": "src_session_manager_ensurestoragedir"
-    },
-    {
-      "label": "persistAgent()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L28",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "persistagent()",
-      "id": "src_session_manager_persistagent"
-    },
-    {
-      "label": "loadAgent()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L37",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "loadagent()",
-      "id": "src_session_manager_loadagent"
-    },
-    {
-      "label": "createSession()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L54",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "createsession()",
-      "id": "src_session_manager_createsession"
-    },
-    {
-      "label": "getAgent()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L93",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "getagent()",
-      "id": "src_session_manager_getagent"
-    },
-    {
-      "label": "listAgents()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L100",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "listagents()",
-      "id": "src_session_manager_listagents"
-    },
-    {
-      "label": "updateAgentStatus()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L117",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "updateagentstatus()",
-      "id": "src_session_manager_updateagentstatus"
-    },
-    {
-      "label": "setAgentResult()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L148",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "setagentresult()",
-      "id": "src_session_manager_setagentresult"
-    },
-    {
-      "label": "stopAgent()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L167",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "stopagent()",
-      "id": "src_session_manager_stopagent"
-    },
-    {
-      "label": "steerAgent()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L181",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "steeragent()",
-      "id": "src_session_manager_steeragent"
-    },
-    {
-      "label": "getTranscriptPath()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L203",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "gettranscriptpath()",
-      "id": "src_session_manager_gettranscriptpath"
-    },
-    {
-      "label": "spawnBackgroundSession()",
-      "file_type": "code",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L213",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "spawnbackgroundsession()",
-      "id": "src_session_manager_spawnbackgroundsession"
-    },
-    {
-      "label": "NOTE: In v2.0.3, this creates a record but does NOT actually spawn a pi session.",
-      "file_type": "rationale",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L50",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "note: in v2.0.3, this creates a record but does not actually spawn a pi session.",
-      "id": "src_session_manager_rationale_50"
-    },
-    {
-      "label": "NOTE: In v2.0.3, this just marks the agent as stopped.",
-      "file_type": "rationale",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L164",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "note: in v2.0.3, this just marks the agent as stopped.",
-      "id": "src_session_manager_rationale_164"
-    },
-    {
-      "label": "NOTE: In v2.0.3, this is a placeholder.",
-      "file_type": "rationale",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L178",
-      "_origin": "ast",
-      "community": 9,
-      "norm_label": "note: in v2.0.3, this is a placeholder.",
-      "id": "src_session_manager_rationale_178"
-    },
-    {
       "label": "index.ts",
       "file_type": "code",
       "source_file": "src/index.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "id": "src_index",
       "community": 15,
-      "norm_label": "index.ts"
+      "norm_label": "index.ts",
+      "id": "src_index"
     },
     {
       "label": "applyConfig()",
@@ -4965,9 +4795,9 @@
       "source_file": "src/index.ts",
       "source_location": "L165",
       "_origin": "ast",
-      "id": "src_index_applyconfig",
       "community": 15,
-      "norm_label": "applyconfig()"
+      "norm_label": "applyconfig()",
+      "id": "src_index_applyconfig"
     },
     {
       "label": "resetState()",
@@ -4975,9 +4805,9 @@
       "source_file": "src/index.ts",
       "source_location": "L171",
       "_origin": "ast",
-      "id": "src_index_resetstate",
       "community": 15,
-      "norm_label": "resetstate()"
+      "norm_label": "resetstate()",
+      "id": "src_index_resetstate"
     },
     {
       "label": "resolveSubagentParams()",
@@ -4985,9 +4815,9 @@
       "source_file": "src/index.ts",
       "source_location": "L182",
       "_origin": "ast",
-      "id": "src_index_resolvesubagentparams",
       "community": 15,
-      "norm_label": "resolvesubagentparams()"
+      "norm_label": "resolvesubagentparams()",
+      "id": "src_index_resolvesubagentparams"
     },
     {
       "label": "resolveSubagentModel()",
@@ -4995,9 +4825,9 @@
       "source_file": "src/index.ts",
       "source_location": "L291",
       "_origin": "ast",
-      "id": "src_index_resolvesubagentmodel",
       "community": 15,
-      "norm_label": "resolvesubagentmodel()"
+      "norm_label": "resolvesubagentmodel()",
+      "id": "src_index_resolvesubagentmodel"
     },
     {
       "label": "mergeSubTaskParams()",
@@ -5005,9 +4835,9 @@
       "source_file": "src/index.ts",
       "source_location": "L325",
       "_origin": "ast",
-      "id": "src_index_mergesubtaskparams",
       "community": 15,
-      "norm_label": "mergesubtaskparams()"
+      "norm_label": "mergesubtaskparams()",
+      "id": "src_index_mergesubtaskparams"
     },
     {
       "label": "runChainMode()",
@@ -5015,9 +4845,9 @@
       "source_file": "src/index.ts",
       "source_location": "L381",
       "_origin": "ast",
-      "id": "src_index_runchainmode",
       "community": 15,
-      "norm_label": "runchainmode()"
+      "norm_label": "runchainmode()",
+      "id": "src_index_runchainmode"
     },
     {
       "label": "runParallelMode()",
@@ -5025,9 +4855,9 @@
       "source_file": "src/index.ts",
       "source_location": "L763",
       "_origin": "ast",
-      "id": "src_index_runparallelmode",
       "community": 15,
-      "norm_label": "runparallelmode()"
+      "norm_label": "runparallelmode()",
+      "id": "src_index_runparallelmode"
     },
     {
       "label": "runGraphMode()",
@@ -5035,9 +4865,9 @@
       "source_file": "src/index.ts",
       "source_location": "L1135",
       "_origin": "ast",
-      "id": "src_index_rungraphmode",
       "community": 15,
-      "norm_label": "rungraphmode()"
+      "norm_label": "rungraphmode()",
+      "id": "src_index_rungraphmode"
     },
     {
       "label": "execute()",
@@ -5045,9 +4875,9 @@
       "source_file": "src/index.ts",
       "source_location": "L1862",
       "_origin": "ast",
-      "id": "src_index_execute",
       "community": 15,
-      "norm_label": "execute()"
+      "norm_label": "execute()",
+      "id": "src_index_execute"
     },
     {
       "label": "renderCall()",
@@ -5055,9 +4885,9 @@
       "source_file": "src/index.ts",
       "source_location": "L2659",
       "_origin": "ast",
-      "id": "src_index_rendercall",
       "community": 15,
-      "norm_label": "rendercall()"
+      "norm_label": "rendercall()",
+      "id": "src_index_rendercall"
     },
     {
       "label": "renderResult()",
@@ -5065,9 +4895,179 @@
       "source_file": "src/index.ts",
       "source_location": "L2682",
       "_origin": "ast",
-      "id": "src_index_renderresult",
       "community": 15,
-      "norm_label": "renderresult()"
+      "norm_label": "renderresult()",
+      "id": "src_index_renderresult"
+    },
+    {
+      "label": "session-manager.ts",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "src_session_manager",
+      "community": 9,
+      "norm_label": "session-manager.ts"
+    },
+    {
+      "label": "agents",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L13",
+      "_origin": "ast",
+      "id": "src_session_manager_agents",
+      "community": 9,
+      "norm_label": "agents"
+    },
+    {
+      "label": "ensureStorageDir()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L21",
+      "_origin": "ast",
+      "id": "src_session_manager_ensurestoragedir",
+      "community": 9,
+      "norm_label": "ensurestoragedir()"
+    },
+    {
+      "label": "persistAgent()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L28",
+      "_origin": "ast",
+      "id": "src_session_manager_persistagent",
+      "community": 9,
+      "norm_label": "persistagent()"
+    },
+    {
+      "label": "loadAgent()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L37",
+      "_origin": "ast",
+      "id": "src_session_manager_loadagent",
+      "community": 9,
+      "norm_label": "loadagent()"
+    },
+    {
+      "label": "createSession()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L54",
+      "_origin": "ast",
+      "id": "src_session_manager_createsession",
+      "community": 9,
+      "norm_label": "createsession()"
+    },
+    {
+      "label": "getAgent()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L93",
+      "_origin": "ast",
+      "id": "src_session_manager_getagent",
+      "community": 9,
+      "norm_label": "getagent()"
+    },
+    {
+      "label": "listAgents()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L100",
+      "_origin": "ast",
+      "id": "src_session_manager_listagents",
+      "community": 9,
+      "norm_label": "listagents()"
+    },
+    {
+      "label": "updateAgentStatus()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L117",
+      "_origin": "ast",
+      "id": "src_session_manager_updateagentstatus",
+      "community": 9,
+      "norm_label": "updateagentstatus()"
+    },
+    {
+      "label": "setAgentResult()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L148",
+      "_origin": "ast",
+      "id": "src_session_manager_setagentresult",
+      "community": 9,
+      "norm_label": "setagentresult()"
+    },
+    {
+      "label": "stopAgent()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L167",
+      "_origin": "ast",
+      "id": "src_session_manager_stopagent",
+      "community": 9,
+      "norm_label": "stopagent()"
+    },
+    {
+      "label": "steerAgent()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L181",
+      "_origin": "ast",
+      "id": "src_session_manager_steeragent",
+      "community": 9,
+      "norm_label": "steeragent()"
+    },
+    {
+      "label": "getTranscriptPath()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L203",
+      "_origin": "ast",
+      "id": "src_session_manager_gettranscriptpath",
+      "community": 9,
+      "norm_label": "gettranscriptpath()"
+    },
+    {
+      "label": "spawnBackgroundSession()",
+      "file_type": "code",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L213",
+      "_origin": "ast",
+      "id": "src_session_manager_spawnbackgroundsession",
+      "community": 9,
+      "norm_label": "spawnbackgroundsession()"
+    },
+    {
+      "label": "NOTE: In v2.0.3, this creates a record but does NOT actually spawn a pi session.",
+      "file_type": "rationale",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L50",
+      "_origin": "ast",
+      "id": "src_session_manager_rationale_50",
+      "community": 9,
+      "norm_label": "note: in v2.0.3, this creates a record but does not actually spawn a pi session."
+    },
+    {
+      "label": "NOTE: In v2.0.3, this just marks the agent as stopped.",
+      "file_type": "rationale",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L164",
+      "_origin": "ast",
+      "id": "src_session_manager_rationale_164",
+      "community": 9,
+      "norm_label": "note: in v2.0.3, this just marks the agent as stopped."
+    },
+    {
+      "label": "NOTE: In v2.0.3, this is a placeholder.",
+      "file_type": "rationale",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L178",
+      "_origin": "ast",
+      "id": "src_session_manager_rationale_178",
+      "community": 9,
+      "norm_label": "note: in v2.0.3, this is a placeholder."
     }
   ],
   "links": [
@@ -15953,315 +15953,12 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L13",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_agents"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L54",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_createsession"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L21",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_ensurestoragedir"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L93",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_getagent"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L203",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_gettranscriptpath"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L100",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_listagents"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L37",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_loadagent"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L28",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_persistagent"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L148",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_setagentresult"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L213",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_spawnbackgroundsession"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L181",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_steeragent"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L167",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_stopagent"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L117",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager",
-      "target": "src_session_manager_updateagentstatus"
-    },
-    {
-      "relation": "rationale_for",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L164",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_rationale_164",
-      "target": "src_session_manager"
-    },
-    {
-      "relation": "rationale_for",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L178",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_rationale_178",
-      "target": "src_session_manager"
-    },
-    {
-      "relation": "rationale_for",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L50",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_rationale_50",
-      "target": "src_session_manager"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L101",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_listagents",
-      "target": "src_session_manager_ensurestoragedir"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L29",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_persistagent",
-      "target": "src_session_manager_ensurestoragedir"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L76",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_createsession",
-      "target": "src_session_manager_persistagent"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L157",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_setagentresult",
-      "target": "src_session_manager_persistagent"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L261",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_spawnbackgroundsession",
-      "target": "src_session_manager_persistagent"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L193",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_steeragent",
-      "target": "src_session_manager_persistagent"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L128",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_updateagentstatus",
-      "target": "src_session_manager_persistagent"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L94",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_getagent",
-      "target": "src_session_manager_loadagent"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L107",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_listagents",
-      "target": "src_session_manager_loadagent"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L149",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_setagentresult",
-      "target": "src_session_manager_getagent"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L182",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_steeragent",
-      "target": "src_session_manager_getagent"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L118",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_updateagentstatus",
-      "target": "src_session_manager_getagent"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/session-manager.ts",
-      "source_location": "L168",
-      "weight": 1.0,
-      "confidence_score": 1.0,
-      "source": "src_session_manager_stopagent",
-      "target": "src_session_manager_updateagentstatus"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
       "source_file": "src/index.ts",
       "source_location": "L165",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index",
-      "target": "src_index_applyconfig",
-      "confidence_score": 1.0
+      "target": "src_index_applyconfig"
     },
     {
       "relation": "contains",
@@ -16269,9 +15966,9 @@
       "source_file": "src/index.ts",
       "source_location": "L1862",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index",
-      "target": "src_index_execute",
-      "confidence_score": 1.0
+      "target": "src_index_execute"
     },
     {
       "relation": "contains",
@@ -16279,9 +15976,9 @@
       "source_file": "src/index.ts",
       "source_location": "L325",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index",
-      "target": "src_index_mergesubtaskparams",
-      "confidence_score": 1.0
+      "target": "src_index_mergesubtaskparams"
     },
     {
       "relation": "contains",
@@ -16289,9 +15986,9 @@
       "source_file": "src/index.ts",
       "source_location": "L2659",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index",
-      "target": "src_index_rendercall",
-      "confidence_score": 1.0
+      "target": "src_index_rendercall"
     },
     {
       "relation": "contains",
@@ -16299,9 +15996,9 @@
       "source_file": "src/index.ts",
       "source_location": "L2682",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index",
-      "target": "src_index_renderresult",
-      "confidence_score": 1.0
+      "target": "src_index_renderresult"
     },
     {
       "relation": "contains",
@@ -16309,9 +16006,9 @@
       "source_file": "src/index.ts",
       "source_location": "L171",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index",
-      "target": "src_index_resetstate",
-      "confidence_score": 1.0
+      "target": "src_index_resetstate"
     },
     {
       "relation": "contains",
@@ -16319,9 +16016,9 @@
       "source_file": "src/index.ts",
       "source_location": "L291",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index",
-      "target": "src_index_resolvesubagentmodel",
-      "confidence_score": 1.0
+      "target": "src_index_resolvesubagentmodel"
     },
     {
       "relation": "contains",
@@ -16329,9 +16026,9 @@
       "source_file": "src/index.ts",
       "source_location": "L182",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index",
-      "target": "src_index_resolvesubagentparams",
-      "confidence_score": 1.0
+      "target": "src_index_resolvesubagentparams"
     },
     {
       "relation": "contains",
@@ -16339,9 +16036,9 @@
       "source_file": "src/index.ts",
       "source_location": "L381",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index",
-      "target": "src_index_runchainmode",
-      "confidence_score": 1.0
+      "target": "src_index_runchainmode"
     },
     {
       "relation": "contains",
@@ -16349,9 +16046,9 @@
       "source_file": "src/index.ts",
       "source_location": "L1135",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index",
-      "target": "src_index_rungraphmode",
-      "confidence_score": 1.0
+      "target": "src_index_rungraphmode"
     },
     {
       "relation": "contains",
@@ -16359,9 +16056,9 @@
       "source_file": "src/index.ts",
       "source_location": "L763",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index",
-      "target": "src_index_runparallelmode",
-      "confidence_score": 1.0
+      "target": "src_index_runparallelmode"
     },
     {
       "relation": "calls",
@@ -16370,9 +16067,9 @@
       "source_file": "src/index.ts",
       "source_location": "L2137",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_execute",
-      "target": "src_index_resolvesubagentparams",
-      "confidence_score": 1.0
+      "target": "src_index_resolvesubagentparams"
     },
     {
       "relation": "calls",
@@ -16381,9 +16078,9 @@
       "source_file": "src/index.ts",
       "source_location": "L440",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_runchainmode",
-      "target": "src_index_resolvesubagentparams",
-      "confidence_score": 1.0
+      "target": "src_index_resolvesubagentparams"
     },
     {
       "relation": "calls",
@@ -16392,9 +16089,9 @@
       "source_file": "src/index.ts",
       "source_location": "L1208",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_rungraphmode",
-      "target": "src_index_resolvesubagentparams",
-      "confidence_score": 1.0
+      "target": "src_index_resolvesubagentparams"
     },
     {
       "relation": "calls",
@@ -16403,9 +16100,9 @@
       "source_file": "src/index.ts",
       "source_location": "L822",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_runparallelmode",
-      "target": "src_index_resolvesubagentparams",
-      "confidence_score": 1.0
+      "target": "src_index_resolvesubagentparams"
     },
     {
       "relation": "calls",
@@ -16414,9 +16111,9 @@
       "source_file": "src/index.ts",
       "source_location": "L2204",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_execute",
-      "target": "src_index_resolvesubagentmodel",
-      "confidence_score": 1.0
+      "target": "src_index_resolvesubagentmodel"
     },
     {
       "relation": "calls",
@@ -16425,9 +16122,9 @@
       "source_file": "src/index.ts",
       "source_location": "L487",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_runchainmode",
-      "target": "src_index_resolvesubagentmodel",
-      "confidence_score": 1.0
+      "target": "src_index_resolvesubagentmodel"
     },
     {
       "relation": "calls",
@@ -16436,9 +16133,9 @@
       "source_file": "src/index.ts",
       "source_location": "L1256",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_rungraphmode",
-      "target": "src_index_resolvesubagentmodel",
-      "confidence_score": 1.0
+      "target": "src_index_resolvesubagentmodel"
     },
     {
       "relation": "calls",
@@ -16447,9 +16144,9 @@
       "source_file": "src/index.ts",
       "source_location": "L869",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_runparallelmode",
-      "target": "src_index_resolvesubagentmodel",
-      "confidence_score": 1.0
+      "target": "src_index_resolvesubagentmodel"
     },
     {
       "relation": "calls",
@@ -16458,9 +16155,9 @@
       "source_file": "src/index.ts",
       "source_location": "L550",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_runchainmode",
-      "target": "src_index_mergesubtaskparams",
-      "confidence_score": 1.0
+      "target": "src_index_mergesubtaskparams"
     },
     {
       "relation": "calls",
@@ -16469,9 +16166,9 @@
       "source_file": "src/index.ts",
       "source_location": "L1356",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_rungraphmode",
-      "target": "src_index_mergesubtaskparams",
-      "confidence_score": 1.0
+      "target": "src_index_mergesubtaskparams"
     },
     {
       "relation": "calls",
@@ -16480,9 +16177,9 @@
       "source_file": "src/index.ts",
       "source_location": "L913",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_runparallelmode",
-      "target": "src_index_mergesubtaskparams",
-      "confidence_score": 1.0
+      "target": "src_index_mergesubtaskparams"
     },
     {
       "relation": "calls",
@@ -16491,9 +16188,9 @@
       "source_file": "src/index.ts",
       "source_location": "L2017",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_execute",
-      "target": "src_index_runchainmode",
-      "confidence_score": 1.0
+      "target": "src_index_runchainmode"
     },
     {
       "relation": "calls",
@@ -16502,9 +16199,9 @@
       "source_file": "src/index.ts",
       "source_location": "L2032",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_execute",
-      "target": "src_index_runparallelmode",
-      "confidence_score": 1.0
+      "target": "src_index_runparallelmode"
     },
     {
       "relation": "calls",
@@ -16513,8 +16210,311 @@
       "source_file": "src/index.ts",
       "source_location": "L2036",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "src_index_execute",
-      "target": "src_index_rungraphmode",
+      "target": "src_index_rungraphmode"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L13",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_agents",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L54",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_createsession",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L21",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_ensurestoragedir",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L93",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_getagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L203",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_gettranscriptpath",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L100",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_listagents",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L37",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_loadagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L28",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L148",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_setagentresult",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L213",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_spawnbackgroundsession",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L181",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_steeragent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L167",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_stopagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L117",
+      "weight": 1.0,
+      "source": "src_session_manager",
+      "target": "src_session_manager_updateagentstatus",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L164",
+      "weight": 1.0,
+      "source": "src_session_manager_rationale_164",
+      "target": "src_session_manager",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L178",
+      "weight": 1.0,
+      "source": "src_session_manager_rationale_178",
+      "target": "src_session_manager",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L50",
+      "weight": 1.0,
+      "source": "src_session_manager_rationale_50",
+      "target": "src_session_manager",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L101",
+      "weight": 1.0,
+      "source": "src_session_manager_listagents",
+      "target": "src_session_manager_ensurestoragedir",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L29",
+      "weight": 1.0,
+      "source": "src_session_manager_persistagent",
+      "target": "src_session_manager_ensurestoragedir",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L76",
+      "weight": 1.0,
+      "source": "src_session_manager_createsession",
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L157",
+      "weight": 1.0,
+      "source": "src_session_manager_setagentresult",
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L261",
+      "weight": 1.0,
+      "source": "src_session_manager_spawnbackgroundsession",
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L193",
+      "weight": 1.0,
+      "source": "src_session_manager_steeragent",
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L128",
+      "weight": 1.0,
+      "source": "src_session_manager_updateagentstatus",
+      "target": "src_session_manager_persistagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L94",
+      "weight": 1.0,
+      "source": "src_session_manager_getagent",
+      "target": "src_session_manager_loadagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L107",
+      "weight": 1.0,
+      "source": "src_session_manager_listagents",
+      "target": "src_session_manager_loadagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L149",
+      "weight": 1.0,
+      "source": "src_session_manager_setagentresult",
+      "target": "src_session_manager_getagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L182",
+      "weight": 1.0,
+      "source": "src_session_manager_steeragent",
+      "target": "src_session_manager_getagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L118",
+      "weight": 1.0,
+      "source": "src_session_manager_updateagentstatus",
+      "target": "src_session_manager_getagent",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/session-manager.ts",
+      "source_location": "L168",
+      "weight": 1.0,
+      "source": "src_session_manager_stopagent",
+      "target": "src_session_manager_updateagentstatus",
       "confidence_score": 1.0
     }
   ],
@@ -16554,5 +16554,5 @@
       "source_file": "README.md"
     }
   ],
-  "built_at_commit": "ef57f77cfae95850cda8c38b59058bacc32d87d6"
+  "built_at_commit": "2c7c2a7a01c6f0cf87f98f505686d6f191c4c122"
 }

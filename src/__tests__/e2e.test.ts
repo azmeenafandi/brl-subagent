@@ -100,9 +100,9 @@ describe("Tier 1: Jiti integration tests", () => {
         task: "Create a new file with the API endpoint",
         toolOptions: { tools: ["read", "bash", "grep"], excludeTools: ["write", "edit"] },
       });
-      expect(result.valid).toBe(false);
-      expect(result.errors.length).toBeGreaterThan(0);
-      expect(result.errors[0]).toMatch(/write|edit/);
+      expect(result.valid).toBe(true);
+      expect(result.warnings.length).toBeGreaterThan(0);
+      expect(result.warnings.some((w: string) => /write|edit/.test(w))).toBe(true);
     });
 
     it("validatePreTask passes when tools are available", () => {

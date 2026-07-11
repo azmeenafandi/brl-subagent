@@ -210,14 +210,14 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
     return { valid: true, warnings: [], errors: [] };
   }
 
-  // Check tool requirements
+  // Check tool requirements (warnings, not errors — conductor can override)
   for (const req of TOOL_REQUIREMENTS) {
     const matches = req.patterns.some(p => p.test(taskText));
     if (!matches) continue;
 
     for (const tool of req.requiredTools) {
       if (!isToolAvailable(tool, config.toolOptions)) {
-        errors.push(
+        warnings.push(
           `Task ${req.description} but '${tool}' is not available (tools=${config.toolOptions?.tools?.join(',') ?? 'all'}, excludeTools=${config.toolOptions?.excludeTools?.join(',') ?? 'none'})`,
         );
       }
@@ -248,7 +248,7 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
   }
 
   return {
-    valid: errors.length === 0,
+    valid: true, // Always valid — warnings are informational
     warnings,
     errors,
   };
