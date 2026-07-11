@@ -2741,6 +2741,56 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// -------------------------------------------------------------------
+	// steer_subagent tool — inject messages into running agents
+	// -------------------------------------------------------------------
+
+	// steer_subagent tool — inject messages into running agents
+	pi.registerTool({
+		name: "steer_subagent",
+		label: "Steer Subagent",
+		description: [
+			"Send a steering message to a running background agent.",
+			"The message interrupts after the current tool execution.",
+			"Use this to redirect an agent's work without restarting it.",
+		].join(" "),
+		parameters: Type.Object({
+			agent_id: Type.String({
+				description: "The agent ID to steer",
+			}),
+			message: Type.String({
+				description: "The message to inject into the agent's conversation",
+			}),
+		}),
+		execute: async (toolCallId, params) => {
+			const { steerAgent } = await import('./session-manager');
+			
+			try {
+				const agent = steerAgent(params.agent_id, params.message);
+				
+				if (!agent) {
+					return {
+						content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+						isError: true,
+					};
+				}
+				
+				return {
+					content: [{
+						type: "text" as const,
+						text: `Steered agent ${params.agent_id}: "${params.message.slice(0, 50)}${params.message.length > 50 ? '...' : ''}"`,
+					}],
+				};
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				return {
+					content: [{ type: "text" as const, text: `Failed to steer agent: ${message}` }],
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// -------------------------------------------------------------------
 	// Session lifecycle — F7: Session-bound state initialization
 	// -------------------------------------------------------------------
 
