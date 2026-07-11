@@ -1661,6 +1661,9 @@ export default function (pi: ExtensionAPI) {
 			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s.",
 			"",
 			"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1), but getting it right the first time is faster and more efficient.",
+			"",
+			"Before delegating, evaluate existing presets to find the best match for the task: tech-writer (documentation), code-reviewer (code review), security-auditor (security analysis), test-engineer (test writing), debugger (debugging), refactorer (refactoring), data-analyst (data analysis), rapid-prototyper (quick prototypes). Use the preset parameter to apply the best match. If no preset fits, use dev-agent for general development tasks.",
+			"The autoRoutePreset() function can automatically select the best preset based on task keywords. Consider using it for preset selection.",
 		],
 		parameters: Type.Object({
 			task: Type.Optional(Type.String({

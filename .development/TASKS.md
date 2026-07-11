@@ -173,3 +173,17 @@
 | 2026-07-11 | Phase 6 complete: Foundation modules implemented — types.ts extended with BackgroundAgent/TranscriptEntry/SubagentEvent; session-manager.ts created with createSession/getSession/listSessions/stopSession/steerSession/resumeSession; transcript.ts created with startTranscript/appendEntry/getTranscript/listTranscripts (JSONL streaming); event-bus.ts created with on/emit/off/once (in-memory pub/sub). Actual background execution logic requires pi ExtensionAPI extension (pending). |
 | 2026-07-11 | Phase 6.5 planned: Background execution integration (v2.2.0) — wire foundation modules to pi session API (`createAgentSession()`), add `get_subagent_result` and `steer_subagent` tools. 5 tasks, 0/5 complete.
 | 2026-07-11 | Phase 6.5 complete: All integration tasks done — session-manager.ts wired to pi `createAgentSession()` API; `get_subagent_result` tool registered (poll status, retrieve results, include transcript path); `steer_subagent` tool registered (validate running, inject message, emit steered event); transcript recording wired to session lifecycle (start/append/complete); event-bus wired to session state changes (created/completed/failed/stopped/steered). 5/5 complete.
+
+## Change Log (Continued)
+
+| Date | Change |
+|------|--------|
+| 2026-07-11 | **Phase 6.5.1 complete**: Session manager integrated with pi session API (`createAgentSession()`) |
+| 2026-07-11 | **Phase 6.5.2 complete**: `get_subagent_result` tool added — poll background agent status |
+| 2026-07-11 | **Phase 6.5.3 complete**: `steer_subagent` tool added — inject messages into running agents |
+| 2026-07-11 | **Phase 6.5.4 complete**: Transcript recording wired to session lifecycle |
+| 2026-07-11 | **Phase 6.5.5 complete**: Event-bus integration verified (already done in 6.2.3) |
+| 2026-07-11 | **Bug fixes**: SettingsManager constructor, background parameter wiring, session.id → session.sessionId |
+| 2026-07-11 | **Background execution verified**: 30-second task ran independently, main interface remained responsive |
+| 2026-07-11 | **Phase 6.5 complete**: All background execution features working end-to-end |
+

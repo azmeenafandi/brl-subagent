@@ -247,3 +247,31 @@
 | P1 | High — strongly desired in current phase |
 | P2 | Medium — nice to have |
 | P3 | Low — future consideration |
+
+## Phase 6.5 Completion Summary
+
+**Status:** ✅ COMPLETE
+
+**What was delivered:**
+- Background execution via `spawnBackgroundSession()` — uses pi's `createAgentSession()` API
+- `get_subagent_result` tool — poll background agent status and retrieve results
+- `steer_subagent` tool — inject messages into running agents
+- Transcript recording — JSONL files for all sessions
+- Event bus — lifecycle events (created, started, completed, failed, stopped, steered)
+
+**Bug fixes during implementation:**
+1. `SettingsManager` has private constructor → use `SettingsManager.create()`
+2. `background` parameter not wired in execute handler → added `if (params.background)` check
+3. `session.id` doesn't exist → use `session.sessionId`
+
+**Verified working:**
+- 30-second background task ran independently
+- Main interface remained responsive during execution
+- Transcript recorded successfully
+
+**Architecture:**
+- Session creation: blocking (~5 seconds)
+- Task execution: non-blocking (runs independently)
+- Status polling: via `get_subagent_result` tool
+- Steering: via `steer_subagent` tool
+

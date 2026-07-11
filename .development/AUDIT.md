@@ -309,3 +309,41 @@ Tests pass even when source files import variables/functions that don't exist, b
 - **Impact:** Session runs independently in background
 - **Severity:** None (by design)
 
+
+## Phase 6.5 Audit — Post-sync Findings (2026-07-11)
+
+### Issue 5: SettingsManager Constructor (Bug — Fixed)
+- **Location:** src/session-manager.ts
+- **Problem:** Used `new SettingsManager(effectiveCwd)` but SettingsManager has private constructor
+- **Impact:** "Cannot convert undefined or null to object" error
+- **Severity:** High (crash)
+- **Fix:** Changed to `SettingsManager.create(effectiveCwd)`
+
+### Issue 6: Background Execution Not Wired (Bug — Fixed)
+- **Location:** src/index.ts (execute handler)
+- **Problem:** `background` parameter defined in schema but execute handler didn't check for it
+- **Impact:** Background tasks ran as foreground tasks
+- **Severity:** High (feature not working)
+- **Fix:** Added `if (params.background)` check before single mode execution
+
+### Issue 7: session.id vs session.sessionId (Bug — Fixed)
+- **Location:** src/session-manager.ts:250
+- **Problem:** Used `session.id` but AgentSession has `sessionId` property
+- **Impact:** sessionId would be undefined, fall back to generated id
+- **Severity:** Low (not a crash, but incorrect)
+- **Fix:** Changed to `session.sessionId`
+
+### Background Execution — Verified Working
+- **Test:** Spawned background task with 30-second wait
+- **Result:** Task ran independently in background
+- **Proof:** Main interface remained responsive while task was running
+- **Duration:** 35 seconds (30s task + 5s session creation overhead)
+- **Transcript:** Created successfully in .pi/output/
+
+### Phase 6.5 Complete — All Features Working
+- ✅ Background execution (spawnBackgroundSession)
+- ✅ Status polling (get_subagent_result)
+- ✅ Mid-run steering (steer_subagent)
+- ✅ Transcript recording (JSONL files)
+- ✅ Event bus (lifecycle events)
+
