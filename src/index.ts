@@ -216,6 +216,11 @@ export default function (pi: ExtensionAPI) {
 		const mergedOutputFile = params.outputFile ?? preset?.outputFile;
 		const mergedTimeout = params.timeout ?? preset?.timeout;
 		const mergedTools = params.tools ?? preset?.tools;
+		// Fix: edit depends on write in pi's tool system.
+		// If edit is in the allowlist but write is not, all tools fail to resolve.
+		const resolvedTools = mergedTools && mergedTools.includes("edit") && !mergedTools.includes("write")
+			? [...mergedTools, "write"]
+			: mergedTools;
 		const mergedExcludeTools = params.excludeTools ?? preset?.excludeTools;
 		const mergedNoBuiltinTools = params.noBuiltinTools ?? preset?.noBuiltinTools;
 
@@ -238,9 +243,9 @@ export default function (pi: ExtensionAPI) {
 		);
 
 		const toolOptions: SubagentToolOptions | undefined =
-			mergedTools || mergedExcludeTools || mergedNoBuiltinTools
+			resolvedTools || mergedExcludeTools || mergedNoBuiltinTools
 				? {
-						tools: mergedTools,
+						tools: resolvedTools,
 						excludeTools: mergedExcludeTools,
 						noBuiltinTools: mergedNoBuiltinTools,
 					}
@@ -319,14 +324,18 @@ export default function (pi: ExtensionAPI) {
 			: globalParams.thinkingLevel;
 
 		const mergedTools = subTask.tools ?? globalParams.toolOptions?.tools;
+		// Fix: edit depends on write in pi's tool system.
+		const resolvedTools = mergedTools && mergedTools.includes("edit") && !mergedTools.includes("write")
+			? [...mergedTools, "write"]
+			: mergedTools;
 		const mergedExcludeTools = subTask.excludeTools ?? globalParams.toolOptions?.excludeTools;
 		const mergedNoBuiltinTools =
 			subTask.noBuiltinTools ?? globalParams.toolOptions?.noBuiltinTools;
 
 		const mergedToolOptions: SubagentToolOptions | undefined =
-			mergedTools || mergedExcludeTools || mergedNoBuiltinTools
+			resolvedTools || mergedExcludeTools || mergedNoBuiltinTools
 				? {
-						tools: mergedTools,
+						tools: resolvedTools,
 						excludeTools: mergedExcludeTools,
 						noBuiltinTools: mergedNoBuiltinTools,
 					}
