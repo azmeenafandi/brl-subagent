@@ -24,7 +24,7 @@ export const SUBAGENT_INSTRUCTIONS =
 	"\n\n" +
 	"## Configuration Detection\n\n" +
 	"If you detect that your tools or thinking level are insufficient for the task:\n" +
-	"- If you cannot write files but the task requires it, report: \"ERROR: Write tools are not available. Please adjust sandbox level or tools configuration.\"\n" +
+	"- If you cannot write files but the task requires it, report: \"ERROR: Write tools are not available. Please adjust tools configuration.\"\n" +
 	"- If you cannot run commands but the task requires it, report: \"ERROR: Bash tool is not available. Please adjust tools configuration.\"\n" +
 	"- If you need higher thinking for complex analysis, proceed with your best effort but note: \"NOTE: Thinking level may be insufficient for this task complexity.\"";
 
