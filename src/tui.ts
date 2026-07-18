@@ -27,7 +27,6 @@ import type {
 	Priority,
 	UsageStats,
 	FileDiff,
-	SandboxLevel,
 	ScheduleEntry,
 } from "./types";
 import {
@@ -37,7 +36,6 @@ import {
 	COLLAPSED_OUTPUT_LINES,
 	COLLAPSED_DIFF_FILES_PREVIEW,
 	EXPANDED_HUNKS_PER_FILE,
-	SANDBOX_TOOLS,
 	MAX_POOL_SIZE,
 	AVAILABLE_BACKENDS,
 	RESERVED_NAME_PATTERN,
@@ -361,46 +359,6 @@ export async function showGitModeSelector(
 
 	state.config.gitMode = result as "branch" | "none";
 	onConfigChanged(ctx, `Git integration mode set to ${result}`);
-}
-
-// ---------------------------------------------------------------------------
-// Sandbox level selector — P7
-// ---------------------------------------------------------------------------
-
-function sandboxLevelDescription(level: SandboxLevel): string {
-	const tools = SANDBOX_TOOLS[level];
-	if (!tools) return "Full access (no sandboxing)";
-	return `Tools: ${tools.join(", ")}`;
-}
-
-export async function showSandboxLevelSelector(
-	ctx: ExtensionContext,
-	state: SessionState,
-	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
-): Promise<void> {
-	const items: SelectItem[] = [
-		{
-			value: "none",
-			label: "none",
-			description: "Full access (no sandboxing)",
-		},
-		{
-			value: "readonly",
-			label: "readonly",
-			description: "Read-only: read, grep, find, ls (audits, reviews)",
-		},
-		{
-			value: "safe",
-			label: "safe",
-			description: "Safe: read, grep, find, ls, bash (debugging, testing)",
-		},
-	];
-
-	const result = await showSelectList(ctx, "Select Default Sandbox Level", items, 5);
-	if (!result) return;
-
-	state.config.defaultSandboxLevel = result as SandboxLevel;
-	onConfigChanged(ctx, `Default sandbox level set to ${result} — ${sandboxLevelDescription(result as SandboxLevel)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1485,11 +1443,6 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 				: state.config.approvalMode === "writes"
 					? "Ask when files changed"
 					: "Ask every time",
-		},
-		{
-			value: "sandbox",
-			label: "Set Default Sandbox Level",
-			description: sandboxLevelDescription(state.config.defaultSandboxLevel),
 		},
 		{
 			value: "backend",

@@ -45,7 +45,6 @@ import type {
 	GraphTask,
 	GraphDetails,
 	GraphWave,
-	SandboxLevel,
 } from "./types";
 import {
 	resolveThinkingLevel,
@@ -58,8 +57,6 @@ import {
 	MAX_GRAPH_TASKS,
 	PREVIOUS_OUTPUT_PLACEHOLDER,
 	GRAPH_OUTPUT_PLACEHOLDER_RE,
-	SANDBOX_TOOLS,
-	SANDBOX_EXCLUDE,
 	AVAILABLE_BACKENDS,
 	type GitMode,
 } from "./types";
@@ -241,34 +238,12 @@ export default function (pi: ExtensionAPI) {
 			state.config.maxThinkingLevel,
 		);
 
-		// P7: Resolve sandbox level: per-call param > preset's sandboxLevel > state config default
-		const resolvedSandboxLevel: SandboxLevel =
-			(params.sandboxLevel === "none" || params.sandboxLevel === "readonly" || params.sandboxLevel === "safe")
-				? (params.sandboxLevel as SandboxLevel)
-				: (preset?.sandboxLevel === "none" || preset?.sandboxLevel === "readonly" || preset?.sandboxLevel === "safe")
-					? (preset.sandboxLevel as SandboxLevel)
-					: state.config.defaultSandboxLevel;
-
-		// P7: Apply sandbox restrictions
-		let finalTools = mergedTools;
-		let finalExcludeTools = mergedExcludeTools;
-		let finalNoBuiltinTools = mergedNoBuiltinTools;
-
-		if (resolvedSandboxLevel !== "none") {
-			const sandboxToolsList = SANDBOX_TOOLS[resolvedSandboxLevel];
-			const sandboxExcludeList = SANDBOX_EXCLUDE[resolvedSandboxLevel];
-
-			// Use explicit user overrides if provided, otherwise use sandbox defaults
-			finalTools = params.tools ?? sandboxToolsList;
-			finalExcludeTools = params.excludeTools ?? sandboxExcludeList;
-		}
-
 		const toolOptions: SubagentToolOptions | undefined =
-			finalTools || finalExcludeTools || finalNoBuiltinTools
+			mergedTools || mergedExcludeTools || mergedNoBuiltinTools
 				? {
-						tools: finalTools,
-						excludeTools: finalExcludeTools,
-						noBuiltinTools: finalNoBuiltinTools,
+						tools: mergedTools,
+						excludeTools: mergedExcludeTools,
+						noBuiltinTools: mergedNoBuiltinTools,
 					}
 				: undefined;
 
@@ -284,7 +259,6 @@ export default function (pi: ExtensionAPI) {
 			toolOptions,
 			resolvedGitMode,
 			resolvedApprovalMode,
-			resolvedSandboxLevel,
 		};
 	}
 
