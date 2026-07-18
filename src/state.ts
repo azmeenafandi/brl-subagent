@@ -17,7 +17,6 @@ import type {
 	ApprovalMode,
 	CircuitBreakerState,
 	Priority,
-	SandboxLevel,
 } from "./types";
 import {
 	isSubagentStateShape,
@@ -75,7 +74,6 @@ export class SessionState {
 			gitMode: "none",
 			approvalMode: "writes",
 			defaultPriority: DEFAULT_PRIORITY,
-			defaultSandboxLevel: "none" as SandboxLevel,
 			sessionCostLimit: DEFAULT_SESSION_COST_LIMIT,
 			perTaskCostEstimate: 0,
 			seenRunIds: [],
@@ -105,7 +103,6 @@ export class SessionState {
 			gitMode: this.config.gitMode,
 			approvalMode: this.config.approvalMode,
 			defaultPriority: this.config.defaultPriority,
-			defaultSandboxLevel: this.config.defaultSandboxLevel,
 			maxHistoryEntries: this.config.maxHistoryEntries,
 			sessionCostLimit: this.config.sessionCostLimit,
 			perTaskCostEstimate: this.config.perTaskCostEstimate,
@@ -180,16 +177,6 @@ export class SessionState {
 			this.config.defaultPriority = data.defaultPriority as Priority;
 		} else {
 			this.config.defaultPriority = "normal";
-		}
-
-		// Restore defaultSandboxLevel (P7)
-		if (
-			data.defaultSandboxLevel &&
-			(data.defaultSandboxLevel === "none" || data.defaultSandboxLevel === "readonly" || data.defaultSandboxLevel === "safe")
-		) {
-			this.config.defaultSandboxLevel = data.defaultSandboxLevel as SandboxLevel;
-		} else {
-			this.config.defaultSandboxLevel = "none";
 		}
 
 		// Restore defaultBackend (E8)
@@ -411,7 +398,6 @@ export class SessionState {
 		this.config.gitMode = "none";
 		this.config.approvalMode = "writes";
 		this.config.defaultPriority = "normal";
-		this.config.defaultSandboxLevel = "none";
 		this.config.defaultBackend = "pi";
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
