@@ -79,7 +79,6 @@ brl-subagent/
 - **Git mode** — `gitMode` ("branch" | "none"); branch-based isolation workflow
 - **Approval mode** — `approvalMode` ("auto" | "writes" | "always"); controls change review flow
 - **Default priority** — `defaultPriority` ("critical" | "high" | "normal" | "low"); FIFO within tier
-- **Default sandbox level** — `defaultSandboxLevel` ("none" | "readonly" | "safe"); tool access restrictions
 - **Cost governance** — `sessionCostLimit` (0 = unlimited); pre-delegation threshold check
 - **Presets** — built-in loaded from `presets/*.md`, custom stored in state
 - **Templates** — user-saved task configurations with `${param}` substitution slots
@@ -87,7 +86,8 @@ brl-subagent/
 
 ### 2. Tool Registration Layer
 - **`delegate_task`** — registered via `pi.registerTool()`
-- Parameters defined via TypeBox schemas with 24+ parameters (13 original + chain, tasks, graph, template, params, retryRunId, gitMode, retryOnTimeout, approvalMode, sandboxLevel, priority)
+- Parameters defined via TypeBox schemas with 24+ parameters (13 original + chain, tasks, graph, template, params, retryRunId, gitMode, retryOnTimeout, approvalMode, priority)
+- **Tool configuration**: `tools` and `excludeTools` parameters allow direct control of which tools are available to subagents (replaces former SandboxLevel system)
 - Supports four execution modes: single, chain, parallel, graph
 - `renderCall` / `renderResult` — custom TUI rendering with mode-specific views
 
@@ -174,7 +174,7 @@ State is persisted as custom session entries, managed by the `SessionState` clas
 
 | Entry Type | Key | Contents |
 |-----------|-----|----------|
-| `brl-subagent-state` | Session-level | `model`, `maxThinkingLevel`, `maxParallel`, `maxSubagentDepth`, `gitMode`, `approvalMode`, `defaultPriority`, `defaultSandboxLevel`, `maxHistoryEntries`, `sessionCostLimit`, `perTaskCostEstimate`, `seenRunIds`, `presets`, `templates`, `circuitBreaker`, `defaultRole`, `defaultBackend`, `slaTrackingEnabled`, `slaWindowSize` |
+| `brl-subagent-state` | Session-level | `model`, `maxThinkingLevel`, `maxParallel`, `maxSubagentDepth`, `gitMode`, `approvalMode`, `defaultPriority`, `maxHistoryEntries`, `sessionCostLimit`, `perTaskCostEstimate`, `seenRunIds`, `presets`, `templates`, `circuitBreaker`, `defaultRole`, `defaultBackend`, `slaTrackingEnabled`, `slaWindowSize` |
 | `brl-subagent-run` | Per-invocation | `id`, `task`, `label`, `status`, `model`, `thinkingLevel`, timestamps, `cost`, `tokensIn/Out`, `outputSummary`, `fullOutput`, `originalParams`, `errorCategory`, `gitBranch`, `gitDiff`, `approved` |
 
 State is restored on `session_start` via `restoreFromSession()` using type guards (`isSubagentStateShape`) — no `as any` casts. Corrupted entries are logged and skipped, falling back to defaults.
@@ -573,39 +573,36 @@ The `resolveTemplate()` function in `templates.ts`:
 - **Delete**: "/brl-subagent templates" → "- Remove Template"
 - **Use**: `delegate_task` `template` param + `params` object for slot values
 
-## Subagent Sandboxing (P7)
+## Tool Configuration
 
-Tool access restrictions for subagents based on sandbox level.
+Tool access for subagents is controlled directly via `tools` and `excludeTools` parameters on `delegate_task`, combined with conductor guardrails.
 
-### SandboxLevel Type
+### Parameter-Based Tool Control
 
-```typescript
-type SandboxLevel = "none" | "readonly" | "safe";
-```
+| Parameter | Purpose |
+|-----------|--------|
+| `tools` | Explicit allowlist of tools available to the subagent |
+| `excludeTools` | Explicit blocklist of tools to remove from defaults |
 
-### Tool Maps
+### Pre-Task Validation (H1)
 
-| Level | Allowed Tools | Excluded Tools |
-|-------|---------------|----------------|
-| `none` | All tools | None |
-| `readonly` | read, grep, find, ls | write, edit, bash |
-| `safe` | read, grep, find, ls, bash | write, edit |
+Deterministic pre-spawn checks validate that tool configuration matches the task description:
+- Warns when a file-modifying task is given read-only tools
+- Errors on hard conflicts (e.g., writing task with `tools: ["read"]`)
 
-### Per-Call Override Semantics
+### Conductor Guardrails (H4)
 
-Resolution order (first non-default wins):
-1. Per-call `sandboxLevel` parameter
-2. Preset's `sandboxLevel` field
-3. State config `defaultSandboxLevel`
+Embeds behavior rules in prompt guidelines:
+- Recommends appropriate tool configurations for different task types
+- Guides conductors to select safe tool sets for untrusted code review
 
-When sandbox level is not `none`:
-- `tools` is set to the sandbox allowlist (unless user provides explicit tools)
-- `excludeTools` is set to the sandbox blocklist (unless user provides explicit excludes)
+### Why SandboxLevel Was Removed (v2.3.0)
 
-### Configuration
-
-- **Default level**: `/brl-subagent sandbox` → select "none" / "readonly" / "safe"
-- **Per-call override**: `sandboxLevel` parameter on `delegate_task`
+The former `SandboxLevel` system (`none`/`readonly`/`safe`) was removed because:
+1. The conductor can specify `tools` and `excludeTools` per-task directly
+2. Pre-task validation (H1) warns about tool mismatches
+3. Conductor guardrails (H4) guides tool selection
+4. Presets can still define default tool restrictions via their `tools`/`excludeTools` fields
 
 ## Dependency Graph (P10)
 
@@ -705,6 +702,8 @@ The `roles.ts` module defines built-in roles and their tool permissions:
 1. Per-call `role` parameter
 2. Preset's `role` field
 3. State config `defaultRole` (default: `"developer"`)
+
+Note: RBAC roles were removed in v2.0.2 as redundant with the sandbox system. The sandbox system was subsequently removed in v2.3.0 — tool access is now controlled directly via `tools` and `excludeTools` parameters on `delegate_task`.
 
 ## Pluggable Backends (E8)
 

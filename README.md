@@ -1,8 +1,8 @@
 # brl-subagent
 
-> Enterprise subagent extension for [pi](https://github.com/earendil-works/pi-coding-agent) — delegate tasks to isolated processes with configurable models, thinking levels, tool scoping, sandboxing, dependency graphs, and a live observability dashboard.
+> Enterprise subagent extension for [pi](https://github.com/earendil-works/pi-coding-agent) — delegate tasks to isolated processes with configurable models, thinking levels, tool scoping via `tools` and `excludeTools`, dependency graphs, and a live observability dashboard.
 
-**Version:** 2.0.3 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.0.4 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -10,7 +10,9 @@
 
 `brl-subagent` gives pi a **`delegate_task`** tool that spawns isolated subagent processes. Each subagent runs in its own `pi` process with its own model, context window, and tool permissions.
 
-**v2.0.3 adds:** dependency graph delegation, task templates, recurring schedules, an observability dashboard, sandbox levels, change approval workflows, git integration, subagent-to-subagent messaging, and Phase 5 hardening features.
+**v2.0.4:** The sandbox system has been removed. Tools are now controlled directly via `tools` and `excludeTools` parameters on `delegate_task`.
+
+**v2.0.3 adds:** dependency graph delegation, task templates, recurring schedules, an observability dashboard, change approval workflows, git integration, subagent-to-subagent messaging, and Phase 5 hardening features.
 
 ---
 
@@ -41,7 +43,6 @@ Pi auto-discovers extensions in these directories. To update: `git pull` inside 
 | `/brl-subagent depth` | Set max recursion depth |
 | `/brl-subagent priority` | Set default priority |
 | `/brl-subagent gitmode` | Set git integration mode |
-| `/brl-subagent sandbox` | Set default sandbox level |
 | `/brl-subagent backend` | Set default backend |
 | `/brl-subagent approval` | Set change approval mode |
 | `/brl-subagent costlimit` | Set session cost limit |
@@ -81,11 +82,11 @@ All settings persist across sessions.
 
 ---
 
-## Phase 5 hardening (v2.0.3)
+## Phase 5 hardening (v2.0.4)
 
 ### H1 — Pre-task validation
 
-Deterministic pre-spawn checks that validate tool configuration and thinking level match the task description. Blocks **readonly sandbox + write tasks** and warns about **thinking level mismatches** (e.g., `off` thinking on a complex debugging task).
+Deterministic pre-spawn checks that validate tool configuration and thinking level match the task description. Warns about **thinking level mismatches** (e.g., `off` thinking on a complex debugging task) and **missing tools** for the requested task.
 
 ### H2 — Integration test suite
 

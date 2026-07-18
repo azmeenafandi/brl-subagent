@@ -48,7 +48,7 @@
 | P4 | **Change approval workflow** — approvalMode (auto/writes/always); TUI dialog with diff preview, apply/discard | L | P1 | ✅ **DONE** |
 | P5 | **Output diffing** — parseDiff for structured file-level summaries; collapsed/expanded/full-diff views; hunk capping | M | P1 | ✅ **DONE** |
 | P6 | **Priority queue** — four tiers (critical/high/normal/low), FIFO within tier, priorityInsert function | M | P2 | ✅ **DONE** |
-| P7 | **Subagent sandboxing** — SandboxLevel (none/readonly/safe), SANDBOX_TOOLS/EXCLUDE maps, per-call override | L | P2 | ✅ **DONE** |
+| P7 | ~~Subagent sandboxing~~ — **REMOVED** in v2.3.0: Redundant with `tools`/`excludeTools` parameters on `delegate_task` | L | P2 | ❌ **REMOVED** |
 | P8 | **Process pool** — keep warm pi processes for reuse (reduces cold-start latency) | L | P2 | ✅ **DONE** (E11) |
 | P9 | **Task templates** — save reusable task configurations with ${param} substitution; template management TUI | M | P2 | ✅ **DONE** |
 | P10 | **Dependency graph** — declare task dependencies; topological sort → wave-based parallel execution; cycle detection | L | P3 | ✅ **DONE** |
@@ -109,7 +109,7 @@
 | D18 | **Preset guidelines** | `promptGuideline` field on presets provides usage hints |
 | D19 | **Dead code cleanup** | Remove vestigial E6 roles.ts and E7 multi-turn code after removal decision |
 
-> **Removal rationale:** E6 was removed as redundant with P7 sandboxing — sandboxLevel already restricts tools. E7 was removed due to architectural issues — the multi-turn protocol was fragile and broken in practice.
+> **Removal rationale:** E6 was removed as redundant with `tools`/`excludeTools` parameters on `delegate_task`. E7 was removed due to architectural issues — the multi-turn protocol was fragile and broken in practice.
 
 ## Phase 5 — Hardening (v2.1.0) 🚧 IN PROGRESS
 

@@ -26,7 +26,7 @@
 | 18 | No task chaining / parallel mode | **RESOLVED** | P1+P2: `runChainMode()` with `{previous}` placeholder; `runParallelMode()` with concurrent fan-out; `runGraphMode()` with dependency-aware waves |
 | 20 | No priority queue | **RESOLVED** | P6: Four priority tiers (critical/high/normal/low), `priorityInsert()` in concurrency queue, FIFO within tier |
 | 21 | No output diffing | **RESOLVED** | P5: `parseDiff()` in `diff.ts`, `FileDiff` interface, hunk capping (10/file), collapsed/expanded/full-diff views |
-| 23 | No RBAC / permission tiers | **RESOLVED** | P7: `SandboxLevel` type ("none"/"readonly"/"safe"), `SANDBOX_TOOLS`/`SANDBOX_EXCLUDE` maps, per-call override semantics. E6: `roles.ts` with reviewer/developer/auditor roles, tool permissions, per-call override chain: role > sandbox > config. |
+| 23 | No RBAC / permission tiers | **REMOVED** | P7 (SandboxLevel) removed in v2.3.0 as redundant with `tools`/`excludeTools` parameters. E6 (roles.ts) removed in v2.0.2. Tool access is now controlled directly via per-task `tools` and `excludeTools` parameters on `delegate_task`. Presets can define default tool restrictions via their `tools`/`excludeTools` fields. |
 | 24 | No task templates | **RESOLVED** | P9: `TaskTemplate` interface, `resolveTemplate()` with `${param}` substitution, template management TUI, `template`+`params` on `delegate_task` |
 | 26 | No skill-based routing | **RESOLVED** | E2: `router.ts` — keyword-based auto-classification of tasks to presets |
 | 27 | No compliance reports | **RESOLVED** | E5: `reports.ts` — file access tracking, secrets exposure detection, compliance summary |
@@ -154,11 +154,12 @@
 - Template management TUI: add, view, remove
 - Integrated with delegate_task via template + params parameters
 
-### Subagent Sandboxing (P7)
-- Three sandbox levels: none, readonly, safe
-- Tool allowlist/blocklist per level
-- Per-call override with resolution chain: call > preset > config
-- Prevents subagents from writing files in readonly mode
+### Subagent Sandboxing (P7) — REMOVED v2.3.0
+- **Removed** as redundant with `tools`/`excludeTools` parameters on `delegate_task`
+- The conductor specifies allowed/excluded tools per-task directly
+- Pre-task validation (H1) warns about tool/task mismatches
+- Conductor guardrails (H4) guides tool selection for different task types
+- Presets can still define default tool restrictions via their `tools`/`excludeTools` fields
 
 ### Dependency Graph (P10)
 - Cycle detection via three-color DFS

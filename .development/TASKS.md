@@ -64,7 +64,7 @@
 | P4 | Change approval workflow (dry-run) | P3 | L | `done` | subagent | `approvalMode` config ("auto"/"writes"/"always"), `showApprovalDialog()` TUI with diff preview, keyboard shortcuts (Y/D/N), merge-or-discard flow integrated with git branch lifecycle. |
 | P5 | Output diffing | P3 | M | `done` | subagent | `diff.ts`: `parseDiff()` produces `FileDiff[]` with additions/deletions/hunks. Hunk capping (MAX_HUNKS_PER_FILE=10). Collapsed file summary, expanded per-file hunks, full raw diff view (D key). |
 | P6 | Priority queue | P3 | M | `done` | subagent | `priorityInsert()` in concurrency.ts: four tiers (critical/high/normal/low), FIFO within tier. `defaultPriority` config + per-call `priority` param override. |
-| P7 | Subagent sandboxing | P3 | L | `done` | subagent | `SandboxLevel` type ("none"/"readonly"/"safe"), `SANDBOX_TOOLS`/`SANDBOX_EXCLUDE` maps. Per-call override chain: call > preset > config. TUI selector via `/brl-subagent sandbox`. |
+| P7 | ~~Subagent sandboxing~~ | P3 | L | `cancelled` | — | **REMOVED in v2.3.0:** Redundant with `tools`/`excludeTools` parameters on `delegate_task`. The conductor can specify `tools` and `excludeTools` per-task directly.
 | P8 | Process pool | P3 | L | `done` | subagent | Implemented as E11 in Phase 4: `pool.ts` manages warm pi processes in RPC mode with lazy spawn, idle cleanup, and configurable pool size. |
 | P9 | Task templates | P3 | M | `done` | subagent | `templates.ts`: `resolveTemplate()` with `${param}` substitution, `extractParamNames()` for validation. Template management TUI (add/view/remove). `template`+`params` on `delegate_task`. |
 | P10 | Dependency graph | P3 | L | `done` | subagent | `scheduler.ts`: `detectCycle()` (three-color DFS), `topologicalSort()` (Kahn's algorithm → waves), `validateGraph()`. `runGraphMode()` in index.ts: wave-based execution with `{taskId}` output substitution. Max 12 tasks. |
@@ -121,12 +121,12 @@
 |-------|---------|-------|-----------|---------|-------|
 | P1 — Foundation | v1.4.0 | 10 | 10 | 0 | All security and architecture tasks done |
 | P2 — Reliability | v1.5.0 | 10 | 10 | 0 | Circuit breaker, cost governance, pre-flight checks |
-| P3 — Power | v1.6.0 | 10 | 10 | 0 | All tasks including P8 (now E11) |
+| P3 — Power | v1.6.0 | 10 | 9 | 1 | All tasks including P8 (now E11); P7 sandboxing removed in v2.3.0 |
 | P4 — Excellence | v2.0.0 | 11 | 9 | 2 | E6 redundant with P7, E7 broken in practice |
 | P5 — Hardening | v2.1.0 | 4 | 0 | 0 | Planned |
 | P6 — Background Execution | v2.2.0 | 4 | 4 | 0 | Foundation modules complete |
 | P6.5 — Background Integration | v2.2.0 | 5 | 5 | 0 | Session API, tools, transcript, event-bus wired |
-| **Total** | | **54** | **44** | **2** | E6/E7 removed v2.0.2 |
+| **Total** | | **54** | **43** | **3** | E6/E7 removed v2.0.2; P7 sandboxing removed v2.3.0 |
 
 ## Change Log
 
@@ -146,11 +146,12 @@
 | 2026-07-07 | **P4 — Change approval workflow** complete: `approvalMode` config ("auto"/"writes"/"always"), `showApprovalDialog()` TUI with diff preview and keyboard shortcuts, merge-or-discard flow. |
 | 2026-07-07 | **P5 — Output diffing** complete: `parseDiff()` in diff.ts, FileDiff interface, hunk capping (10/file), collapsed/expanded/full-diff TUI views. |
 | 2026-07-07 | **P6 — Priority queue** complete: four priority tiers, `priorityInsert()` in concurrency queue, default priority config + per-call override. |
-| 2026-07-07 | **P7 — Subagent sandboxing** complete: SandboxLevel type, SANDBOX_TOOLS/EXCLUDE maps, per-call override chain, TUI selector. |
+| 2026-07-07 | ~~**P7 — Subagent sandboxing**~~ removed in v2.3.0: Redundant with `tools`/`excludeTools` parameters on `delegate_task`. Conductor guardrails (H4) and pre-task validation (H1) provide equivalent safety.
 | 2026-07-07 | **P9 — Task templates** complete: `resolveTemplate()` with ${param} substitution, template management TUI, template+params on delegate_task. |
 | 2026-07-07 | **P10 — Dependency graph** complete: detectCycle (DFS), topologicalSort (Kahn's algorithm), validateGraph, runGraphMode with wave-based execution. Max 12 tasks. |
 | 2026-07-07 | **P8 — Process pool** deferred to Phase 4 (E11). Would reduce cold-start latency but requires significant process lifecycle management. |
 | 2026-07-07 | **Phase 4 complete**: E1-E11 all implemented. 532 tests across 25 files. New modules: router.ts, roles.ts, reports.ts, schedule.ts, metrics.ts, pool.ts, messaging.ts, backend.ts. Total 24 source modules. |
+| 2026-07-12 | **v2.3.0 — Sandbox removal**: Removed SandboxLevel, SANDBOX_TOOLS, SANDBOX_EXCLUDE from codebase. Tool access now controlled directly via `tools` and `excludeTools` parameters on `delegate_task`. Rationale: (1) conductor can specify `tools`/`excludeTools` per-task, (2) pre-task validation (H1) warns about tool mismatches, (3) conductor guardrails (H4) guides tool selection. Removes ~200 lines of code and simplifies the API surface.
 | 2026-07-07 | **E1 — Observability dashboard** complete: real-time metrics dashboard showing active subagents, cost trends, success rates, and SLA metrics. |
 | 2026-07-07 | **E2 — Skill-based routing** complete: `router.ts` auto-classifies task descriptions to best preset via keyword matching rules. |
 | 2026-07-07 | **E3 — Recursive delegation** complete: configurable `maxSubagentDepth` with `BRL_SUBAGENT_DEPTH` env propagation. Prevents infinite subagent chains. |
