@@ -25,12 +25,6 @@ describe("promptGuidelines — conductor guardrails", () => {
 		expect(INDEX_SRC).toContain("## Conductor Guardrails");
 	});
 
-	it("includes sandbox level guidance", () => {
-		expect(INDEX_SRC).toContain("sandboxLevel='readonly'");
-		expect(INDEX_SRC).toContain("sandboxLevel='none'");
-		expect(INDEX_SRC).toContain("sandboxLevel='safe'");
-	});
-
 	it("includes thinking level guidance", () => {
 		expect(INDEX_SRC).toContain("Match thinking level to task complexity");
 	});

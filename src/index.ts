@@ -104,7 +104,6 @@ import {
 	showApprovalDialog,
 	showPresetManager,
 	showTemplateManager,
-	showSandboxLevelSelector,
 	showBackendSelector,
 	showPoolConfig,
 	showUpdateCheckToggle,
@@ -1513,7 +1512,6 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"model", "thinking", "concurrency", "depth", "priority", "gitmode", "approval", "sandbox", "backend", "costlimit", "reset", "sla", "sla-stats",
 				"history", "historyentries", "monitor", "dashboard", "preset", "templates", "retry", "pool", "schedule", "unschedule",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
@@ -1532,7 +1530,6 @@ export default function (pi: ExtensionAPI) {
 				priority: () => showDefaultPrioritySelector(ctx, state, applyConfig),
 				gitmode: () => showGitModeSelector(ctx, state, applyConfig),
 				approval: () => showApprovalModeSelector(ctx, state, applyConfig),
-				sandbox: () => showSandboxLevelSelector(ctx, state, applyConfig),
 				backend: () => showBackendSelector(ctx, state, applyConfig),
 				costlimit: () => showCostLimitInput(ctx, state, applyConfig),
 				reset: () => resetState(ctx),
@@ -1628,7 +1625,6 @@ export default function (pi: ExtensionAPI) {
 			"",
 			"Before delegating, verify the subagent configuration matches the task:",
 			"",
-			"1. **Sandbox level**: Use sandboxLevel='readonly' for audit/review tasks. Use sandboxLevel='none' for tasks that write files. Use sandboxLevel='safe' for untrusted code execution.",
 			"2. **Thinking level**: Match thinking level to task complexity: off/minimal for trivial tasks (file listing, grep), low for refactoring/docs, medium for code review/debugging, high for security audits/complex debugging, xhigh for multi-step reasoning/novel problems.",
 			"3. **Git mode**: Use gitMode='branch' for tasks that create commits or PRs. Use gitMode='none' for read-only tasks.",
 			"4. **Tools**: Verify the subagent has the tools it needs. If the task writes files, ensure write and edit are not excluded. If the task runs commands, ensure bash is not excluded.",
@@ -1765,13 +1761,6 @@ export default function (pi: ExtensionAPI) {
 					description:
 						"Change approval mode: auto (never ask), writes (ask when files changed), " +
 						"always (ask every time). Default is user config (/brl-subagent approval).",
-				}),
-			),
-			sandboxLevel: Type.Optional(
-				Type.String({
-					description:
-						"Sandbox level: none (full access), readonly (audit/review), or safe (debug/verify). " +
-						"Defaults to user config (/brl-subagent sandbox).",
 				}),
 			),
 			backend: Type.Optional(Type.String({ description: "Subagent backend: pi (default, full tools) or direct-api (no tools, direct API call)." })),
@@ -2171,7 +2160,6 @@ export default function (pi: ExtensionAPI) {
 				return {
 					content: [{
 						type: "text" as const,
-						text: `Pre-task validation failed: ${errText}\n\nAdjust sandbox level, tools, or thinking level to match the task.`,
 					}],
 					isError: true,
 				};
