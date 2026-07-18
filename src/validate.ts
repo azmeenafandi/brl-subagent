@@ -162,7 +162,7 @@ export function diagnoseFailure(config: DiagnoseConfig): string[] {
 		const excluded = config.toolOptions?.excludeTools ?? [];
 		if (excluded.includes('write') || excluded.includes('edit')) {
 			suggestions.push(
-				"Remove 'write' and 'edit' from excludeTools, or set sandboxLevel to 'none'",
+				"Remove 'write' and 'edit' from excludeTools",
 			);
 		}
 	}
