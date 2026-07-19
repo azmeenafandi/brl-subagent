@@ -543,6 +543,7 @@ export default function (pi: ExtensionAPI) {
 					merged.inheritSP,
 					merged.customSP,
 					merged.outputFile,
+					merged.toolOptions?.tools,
 				);
 
 				// Create SubTaskResult for this step
@@ -900,6 +901,7 @@ export default function (pi: ExtensionAPI) {
 				merged.inheritSP,
 				merged.customSP,
 				merged.outputFile,
+				merged.toolOptions?.tools,
 			);
 
 			// Create SubTaskResult
@@ -1350,6 +1352,7 @@ export default function (pi: ExtensionAPI) {
 						merged.inheritSP,
 						merged.customSP,
 						merged.outputFile,
+						merged.toolOptions?.tools,
 					);
 
 					// Acquire concurrency slot
@@ -2321,6 +2324,7 @@ export default function (pi: ExtensionAPI) {
 					inheritSP,
 					customSP,
 					resolvedOutputFile,
+					toolOptions?.tools,
 				);
 
 				// Emit initial progress

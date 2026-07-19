@@ -66,11 +66,25 @@ export function buildSubagentPrompt(
 	inheritSystemPrompt: boolean,
 	customSystemPrompt: string | undefined,
 	outputFile?: string,
+	tools?: string[],
 ): string {
 	const parts: string[] = [];
 
 	if (inheritSystemPrompt) {
-		parts.push(basePrompt);
+		// When inheriting the parent prompt, the subagent sees the parent's
+		// tool listing which may include tools it doesn't have. If tools
+		// are explicitly restricted, append a clarification.
+		if (tools && tools.length > 0) {
+			parts.push(basePrompt);
+			parts.push(
+				"## Your Available Tools\n\n" +
+				`You have access to ONLY these tools: ${tools.join(", ")}.\n` +
+				"Any other tools mentioned in the system prompt above are NOT available to you. " +
+				"Do not attempt to use them.",
+			);
+		} else {
+			parts.push(basePrompt);
+		}
 	}
 
 	if (customSystemPrompt) {
