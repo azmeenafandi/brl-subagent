@@ -57,7 +57,6 @@ import {
 	MAX_GRAPH_TASKS,
 	PREVIOUS_OUTPUT_PLACEHOLDER,
 	GRAPH_OUTPUT_PLACEHOLDER_RE,
-	AVAILABLE_BACKENDS,
 	type GitMode,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
@@ -82,7 +81,6 @@ import { getPreset as getPresetFn } from "./tui";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
-import { getBackend, type Backend, DEFAULT_BACKEND } from "./backend";
 import { ProcessPool } from "./pool";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
 import {
@@ -104,7 +102,6 @@ import {
 	showApprovalDialog,
 	showPresetManager,
 	showTemplateManager,
-	showBackendSelector,
 	showPoolConfig,
 	showUpdateCheckToggle,
 	showDefaultPrioritySelector,
@@ -1542,7 +1539,6 @@ export default function (pi: ExtensionAPI) {
 				priority: () => showDefaultPrioritySelector(ctx, state, applyConfig),
 				gitmode: () => showGitModeSelector(ctx, state, applyConfig),
 				approval: () => showApprovalModeSelector(ctx, state, applyConfig),
-				backend: () => showBackendSelector(ctx, state, applyConfig),
 				costlimit: () => showCostLimitInput(ctx, state, applyConfig),
 				reset: () => resetState(ctx),
 				history: () => showRunHistory(ctx, state, () => state.persistState(pi)),
@@ -1775,7 +1771,6 @@ export default function (pi: ExtensionAPI) {
 						"always (ask every time). Default is user config (/brl-subagent approval).",
 				}),
 			),
-			backend: Type.Optional(Type.String({ description: "Subagent backend: pi (default, full tools) or direct-api (no tools, direct API call)." })),
 			background: Type.Optional(
 				Type.Boolean({
 					description:
@@ -1858,7 +1853,6 @@ export default function (pi: ExtensionAPI) {
 				retryOnTimeout?: boolean;
 				gitMode?: string;
 				priority?: string;
-				backend?: string;
 				chain?: Array<{
 					task: string;
 					label?: string;
@@ -2113,13 +2107,6 @@ export default function (pi: ExtensionAPI) {
 				resolvedGitMode,
 				resolvedApprovalMode,
 			} = resolveSubagentParams(params, ctx);
-
-			// E8: Resolve backend: per-call param > state config default
-			const resolvedBackendName: string =
-				(params.backend && AVAILABLE_BACKENDS.includes(params.backend))
-					? params.backend
-					: state.config.defaultBackend;
-			const resolvedBackend: Backend | undefined = getBackend(resolvedBackendName);
 
 			// F1: Validate CWD
 			const cwdResult = validateCwd(effectiveCwd, ctx.cwd);
@@ -2377,7 +2364,6 @@ export default function (pi: ExtensionAPI) {
 					undefined, // pool
 					undefined, // intercom
 					undefined, // subagentId
-					resolvedBackend,
 				);
 
 				// Auto-retry on timeout
@@ -2425,7 +2411,6 @@ export default function (pi: ExtensionAPI) {
 						undefined, // pool
 						undefined, // intercom
 						undefined, // subagentId
-						resolvedBackend,
 					);
 				}
 
