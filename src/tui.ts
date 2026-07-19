@@ -2083,13 +2083,6 @@ export async function showRetryMenu(ctx: ExtensionContext, state: SessionState):
 // delegate_task result rendering (renderCall / renderResult)
 // ---------------------------------------------------------------------------
 
-export function describePromptMode(inheritSP: boolean, hasCustomSP: boolean): string {
-	if (inheritSP && hasCustomSP) return "inherit + custom instructions";
-	if (inheritSP) return "inherit";
-	if (hasCustomSP) return "custom prompt";
-	return "default (no inheritance)";
-}
-
 function buildDelegateLabel(
 	args: { inheritSystemPrompt?: boolean; systemPrompt?: string },
 	theme: { fg: (c: string, t: string) => string; bold: (t: string) => string },
