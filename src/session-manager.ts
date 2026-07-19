@@ -243,8 +243,8 @@ export async function spawnBackgroundSession(
 ): Promise<BackgroundAgent> {
   // Serialize access to pi API to prevent concurrent import races
   const prev = spawnQueue;
-  let resolveNext: () => void;
-  spawnQueue = new Promise(r => { resolveNext = r; });
+  let resolveNext!: () => void;
+  spawnQueue = new Promise<void>(r => { resolveNext = r; });
   await prev;
   
   try {
