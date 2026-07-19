@@ -32,8 +32,6 @@ import { getSafeEnv, DEPTH_ENV_KEY } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
 import { extractMessages, stripMessageLines, formatPendingMessages } from "./messaging";
-import type { Backend } from "./backend";
-
 // ---------------------------------------------------------------------------
 // Pi binary resolution
 // ---------------------------------------------------------------------------
@@ -299,14 +297,7 @@ export async function runSubagent(
 	pool?: ProcessPool,
 	intercom?: Intercom,
 	subagentId?: string,
-	backend?: Backend,
 ): Promise<SubagentResult> {
-	// E8: Pluggable backend routing
-	if (backend && backend.name !== "pi") {
-		log?.info("Using non-pi backend", { backend: backend.name, model: `${model.provider}/${model.id}` });
-		return backend.execute(task, `${model.provider}/${model.id}`, thinkingLevel, signal);
-	}
-
 	// E10: Inject pending intercom messages into the task prompt
 	if (intercom && subagentId && intercom.hasMessages(subagentId)) {
 		const pending = intercom.receiveAndClear(subagentId);
