@@ -15,16 +15,7 @@ import { getPiInvocation } from "./runner";
 // Types
 // ---------------------------------------------------------------------------
 
-export interface PreflightOk {
-	ok: true;
-}
-
-export interface PreflightFail {
-	ok: false;
-	error: string;
-}
-
-export type PreflightResult = PreflightOk | PreflightFail;
+export type PreflightResult = { ok: true } | { ok: false; error: string };
 
 // ---------------------------------------------------------------------------
 // Checks
