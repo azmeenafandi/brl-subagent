@@ -7,7 +7,6 @@ import * as eventBus from './event-bus';
 import * as transcript from './transcript';
 import { createEvent } from './event-bus';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { createAgentSession, SessionManager, getAgentDir, SettingsManager } from '@earendil-works/pi-coding-agent';
 
 // Serialize concurrent spawn attempts — pi's API modules aren't safe for
 // concurrent access from extensions.
@@ -250,6 +249,8 @@ export async function spawnBackgroundSession(
   try {
   const id = generateUUID();
   const effectiveCwd = params.cwd ?? ctx.cwd;
+  // Dynamic import — static import fails under concurrent jiti loads
+  const { getAgentDir, createAgentSession, SessionManager, SettingsManager } = await import('@earendil-works/pi-coding-agent');
   const agentDir = getAgentDir();
   
   // Create session manager for this background agent
