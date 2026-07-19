@@ -9,6 +9,10 @@ import { createEvent } from './event-bus';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createAgentSession, SessionManager, getAgentDir, SettingsManager } from '@earendil-works/pi-coding-agent';
 
+// Serialize concurrent spawn attempts — pi's API modules aren't safe for
+// concurrent access from extensions.
+let spawnQueue: Promise<void> = Promise.resolve();
+
 // Robust UUID generation with fallback
 function generateUUID(): string {
   try {
@@ -237,6 +241,13 @@ export async function spawnBackgroundSession(
     cwd?: string;
   }
 ): Promise<BackgroundAgent> {
+  // Serialize access to pi API to prevent concurrent import races
+  const prev = spawnQueue;
+  let resolveNext: () => void;
+  spawnQueue = new Promise(r => { resolveNext = r; });
+  await prev;
+  
+  try {
   const id = generateUUID();
   const effectiveCwd = params.cwd ?? ctx.cwd;
   const agentDir = getAgentDir();
@@ -306,4 +317,7 @@ export async function spawnBackgroundSession(
   });
   
   return agent;
+  } finally {
+    resolveNext();
+  }
 }
