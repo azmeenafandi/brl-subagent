@@ -19,7 +19,6 @@ const SRC_DIR = resolve(__dirname, "..");
 
 // Files that can be loaded in isolation (no pi/typebox dependencies)
 const ISOLATED_FILES = [
-  "backend",
   "concurrency",
   "diff",
   "git",
