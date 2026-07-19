@@ -11,7 +11,7 @@ import { createAgentSession, SessionManager, getAgentDir, SettingsManager } from
 
 // Serialize concurrent spawn attempts — pi's API modules aren't safe for
 // concurrent access from extensions.
-let spawnQueue: Promise<void> = Promise.resolve();
+var spawnQueue: Promise<void> = Promise.resolve();
 
 // Robust UUID generation with fallback
 function generateUUID(): string {
