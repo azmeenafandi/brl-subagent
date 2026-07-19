@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { mkdirSync, appendFileSync, readFileSync, existsSync, readdirSync } from 'fs';
+import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'fs';
 import type { TranscriptEntry, TranscriptEntryType } from './types';
 
 // Output directory
@@ -77,67 +77,6 @@ export function getTranscript(agentId: string): TranscriptEntry[] {
       return null;
     }
   }).filter((entry): entry is TranscriptEntry => entry !== null);
-}
-
-/**
- * List all transcript files
- */
-export function listTranscripts(): string[] {
-  ensureOutputDir();
-  return readdirSync(OUTPUT_DIR)
-    .filter(f => f.startsWith('agent-') && f.endsWith('.jsonl'))
-    .map(f => f.replace('agent-', '').replace('.jsonl', ''));
-}
-
-/**
- * Check if a transcript exists for an agent
- */
-export function hasTranscript(agentId: string): boolean {
-  return existsSync(getTranscriptPath(agentId));
-}
-
-/**
- * Append a tool call entry
- */
-export function appendToolCall(
-  agentId: string,
-  toolName: string,
-  args: Record<string, unknown>
-): void {
-  appendEntry(agentId, 'tool_call', `Tool call: ${toolName}`, {
-    tool: toolName,
-    args,
-  });
-}
-
-/**
- * Append a tool result entry
- */
-export function appendToolResult(
-  agentId: string,
-  toolName: string,
-  result: string,
-  isError?: boolean
-): void {
-  appendEntry(agentId, 'tool_result', `Tool result: ${toolName}`, {
-    tool: toolName,
-    result,
-    isError,
-  });
-}
-
-/**
- * Append an assistant message entry
- */
-export function appendAssistantMessage(agentId: string, content: string): void {
-  appendEntry(agentId, 'assistant', content);
-}
-
-/**
- * Append an error entry
- */
-export function appendError(agentId: string, error: string): void {
-  appendEntry(agentId, 'error', error);
 }
 
 /**
