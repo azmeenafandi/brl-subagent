@@ -2348,6 +2348,10 @@ export default function (pi: ExtensionAPI) {
 
 				const childDepth = currentDepth + 1;
 
+				// Start transcript for audit trail
+				const { startTranscript, completeTranscript, appendEntry } = await import('./transcript');
+				startTranscript(runId, task);
+
 				let result = await runSubagent(
 					resolvedCwd,
 					subagentPrompt,
@@ -2564,6 +2568,8 @@ export default function (pi: ExtensionAPI) {
 						finalMsg += "\n\nSuggestions:\n" + suggestions.map((s) => `- ${s}`).join("\n");
 					}
 
+				completeTranscript(runId, 'failed');
+
 					return {
 						content: [
 							{ type: "text" as const, text: finalMsg },
@@ -2574,7 +2580,8 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				success = true;
-				log.info("Subagent completed successfully", {
+				completeTranscript(runId, 'completed');
+				log.info("Subagent completed successfully",{
 					runId,
 					tokensIn: result.usage.input,
 					tokensOut: result.usage.output,
@@ -2594,6 +2601,7 @@ export default function (pi: ExtensionAPI) {
 			} catch (err) {
 				// P3: Clean up git branch on crash
 				cleanupGitBranch();
+				completeTranscript(runId, 'failed');
 
 				const errorMessage =
 					(err as Error).message || String(err);
