@@ -29,7 +29,6 @@ import {
 	MAX_CONSECUTIVE_FAILURES,
 	CIRCUIT_BREAKER_RESET_MS,
 	CIRCUIT_DEGRADED_THINKING,
-	AVAILABLE_BACKENDS,
 } from "./types";
 import { cleanupRuns } from "./history";
 import type { Logger } from "./logging";
@@ -84,7 +83,6 @@ export class SessionState {
 			poolSize: 2,
 			slaTrackingEnabled: false,
 			slaWindowSize: 50,
-			defaultBackend: "pi",
 			updateCheckEnabled: true,
 			lastUpdateCheck: 0,
 		};
@@ -112,7 +110,6 @@ export class SessionState {
 			circuitBreaker: this.config.circuitBreaker,
 			poolEnabled: this.config.poolEnabled,
 			poolSize: this.config.poolSize,
-			defaultBackend: this.config.defaultBackend,
 		slaTrackingEnabled: this.config.slaTrackingEnabled,
 		slaWindowSize: this.config.slaWindowSize,
 		lastSLAMetrics: this.config.lastSLAMetrics,
@@ -177,17 +174,6 @@ export class SessionState {
 			this.config.defaultPriority = data.defaultPriority as Priority;
 		} else {
 			this.config.defaultPriority = "normal";
-		}
-
-		// Restore defaultBackend (E8)
-		if (
-			data.defaultBackend &&
-			typeof data.defaultBackend === "string" &&
-			AVAILABLE_BACKENDS.includes(data.defaultBackend)
-		) {
-			this.config.defaultBackend = data.defaultBackend;
-		} else {
-			this.config.defaultBackend = "pi";
 		}
 
 		if (Array.isArray(data.seenRunIds)) this.config.seenRunIds = data.seenRunIds;
@@ -398,7 +384,6 @@ export class SessionState {
 		this.config.gitMode = "none";
 		this.config.approvalMode = "writes";
 		this.config.defaultPriority = "normal";
-		this.config.defaultBackend = "pi";
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
 		this.config.perTaskCostEstimate = 0;
