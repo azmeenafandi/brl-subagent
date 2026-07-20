@@ -2035,7 +2035,7 @@ export default function (pi: ExtensionAPI) {
 					
 					// Update footer counters
 					state.activeSubagents++;
-					updateStatus(state, ctx);
+					updateProgressStatus(state, ctx);
 					
 					// Poll for live progress
 					const pollInterval = setInterval(() => {
@@ -2046,7 +2046,7 @@ export default function (pi: ExtensionAPI) {
 							state.finalizeLiveSubagent(agent.id);
 						state.activeSubagents--;
 						state.failedSubagents++;
-						updateStatus(state, ctx);
+						updateProgressStatus(state, ctx);
 							return;
 						}
 						
@@ -2070,7 +2070,7 @@ export default function (pi: ExtensionAPI) {
 						state.activeSubagents--;
 						state.completedSubagents++;
 						state.unseenSubagents++;
-						updateStatus(state, ctx);
+						updateProgressStatus(state, ctx);
 						}
 					}, 2000);
 					
@@ -2080,7 +2080,7 @@ export default function (pi: ExtensionAPI) {
 						state.finalizeLiveSubagent(agent.id);
 						state.activeSubagents--;
 						state.completedSubagents++;
-						updateStatus(state, ctx);
+						updateProgressStatus(state, ctx);
 					}, 30 * 60 * 1000);
 					
 					log.info("Background agent spawned", { agentId: agent.id, task: params.task });
