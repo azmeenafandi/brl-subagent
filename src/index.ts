@@ -2068,7 +2068,8 @@ export default function (pi: ExtensionAPI) {
 							clearInterval(pollInterval);
 							state.finalizeLiveSubagent(agent.id);
 						state.activeSubagents--;
-						state.failedSubagents++;
+						state.completedSubagents++;
+						state.unseenSubagents++;
 						updateStatus(state, ctx);
 						}
 					}, 2000);
@@ -2078,7 +2079,7 @@ export default function (pi: ExtensionAPI) {
 						clearInterval(pollInterval);
 						state.finalizeLiveSubagent(agent.id);
 						state.activeSubagents--;
-						state.failedSubagents++;
+						state.completedSubagents++;
 						updateStatus(state, ctx);
 					}, 30 * 60 * 1000);
 					
