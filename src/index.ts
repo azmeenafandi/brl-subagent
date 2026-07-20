@@ -2033,6 +2033,10 @@ export default function (pi: ExtensionAPI) {
 						ctx,
 					});
 					
+					// Update footer counters
+					state.activeSubagents++;
+					updateStatus(state, ctx);
+					
 					// Poll for live progress
 					const pollInterval = setInterval(() => {
 						const session = agent._sessionRef;
@@ -2040,6 +2044,9 @@ export default function (pi: ExtensionAPI) {
 							// Session ref not available — session may have crashed
 							clearInterval(pollInterval);
 							state.finalizeLiveSubagent(agent.id);
+						state.activeSubagents--;
+						state.failedSubagents++;
+						updateStatus(state, ctx);
 							return;
 						}
 						
@@ -2060,6 +2067,9 @@ export default function (pi: ExtensionAPI) {
 						if (!session.isStreaming) {
 							clearInterval(pollInterval);
 							state.finalizeLiveSubagent(agent.id);
+						state.activeSubagents--;
+						state.failedSubagents++;
+						updateStatus(state, ctx);
 						}
 					}, 2000);
 					
@@ -2067,6 +2077,9 @@ export default function (pi: ExtensionAPI) {
 					setTimeout(() => {
 						clearInterval(pollInterval);
 						state.finalizeLiveSubagent(agent.id);
+						state.activeSubagents--;
+						state.failedSubagents++;
+						updateStatus(state, ctx);
 					}, 30 * 60 * 1000);
 					
 					log.info("Background agent spawned", { agentId: agent.id, task: params.task });
