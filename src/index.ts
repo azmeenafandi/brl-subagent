@@ -2022,6 +2022,53 @@ export default function (pi: ExtensionAPI) {
 						cwd: params.cwd,
 					});
 					
+					// Register for live monitor
+					state.registerLiveSubagent(agent.id, {
+						id: agent.id,
+						label: agent.description,
+						task: agent.task,
+						model: agent.model,
+						thinkingLevel: agent.thinkingLevel,
+						startedAt: agent.startedAt,
+						ctx,
+					});
+					
+					// Poll for live progress
+					const pollInterval = setInterval(() => {
+						const session = agent._sessionRef;
+						if (!session) {
+							// Session ref not available — session may have crashed
+							clearInterval(pollInterval);
+							state.finalizeLiveSubagent(agent.id);
+							return;
+						}
+						
+						const messages = session.messages;
+						const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+						const output = lastAssistant?.content
+							?.filter(c => c.type === 'text')
+							?.map(c => c.text)
+							?.join('') || '';
+						
+						try {
+							const stats = session.getSessionStats();
+							state.updateLiveSubagent(agent.id, output, stats.tokens.input, stats.tokens.output);
+						} catch {
+							state.updateLiveSubagent(agent.id, output, 0, 0);
+						}
+						
+						if (!session.isStreaming) {
+							clearInterval(pollInterval);
+							state.finalizeLiveSubagent(agent.id);
+						}
+					}, 2000);
+					
+					// Hard cap: stop polling after 30 minutes
+					setTimeout(() => {
+						clearInterval(pollInterval);
+						state.finalizeLiveSubagent(agent.id);
+					}, 30 * 60 * 1000);
+					
 					log.info("Background agent spawned", { agentId: agent.id, task: params.task });
 					
 					return {
