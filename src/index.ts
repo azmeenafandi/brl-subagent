@@ -2039,48 +2039,72 @@ export default function (pi: ExtensionAPI) {
 					
 					// Poll for live progress
 					const pollInterval = setInterval(() => {
-						const session = agent._sessionRef;
-						if (!session) {
-							// Session ref not available — session may have crashed
-							clearInterval(pollInterval);
-							state.finalizeLiveSubagent(agent.id);
-						state.activeSubagents--;
-						state.failedSubagents++;
-						updateProgressStatus(state, ctx);
-							return;
-						}
-						
-						const messages = session.messages;
-						const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
-						const output = lastAssistant?.content
-							?.filter(c => c.type === 'text')
-							?.map(c => c.text)
-							?.join('') || '';
-						
 						try {
-							const stats = session.getSessionStats();
-							state.updateLiveSubagent(agent.id, output, stats.tokens.input, stats.tokens.output);
-						} catch {
-							state.updateLiveSubagent(agent.id, output, 0, 0);
-						}
-						
-						if (!session.isStreaming) {
-							clearInterval(pollInterval);
-							state.finalizeLiveSubagent(agent.id);
-						state.activeSubagents--;
-						state.completedSubagents++;
-						state.unseenSubagents++;
-						updateProgressStatus(state, ctx);
+							if (completed) return;
+							
+							const session = agent._sessionRef;
+							if (!session) {
+								// Session ref not available — session may have crashed
+								completed = true;
+								clearInterval(pollInterval);
+								clearTimeout(hardCapHandle);
+								state.finalizeLiveSubagent(agent.id);
+								state.activeSubagents--;
+								if (state.activeSubagents < 0) state.activeSubagents = 0;
+								state.failedSubagents++;
+								updateProgressStatus(state, ctx);
+								return;
+							}
+							
+							const messages = session.messages;
+							const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+							const output = lastAssistant?.content
+								?.filter(c => c.type === 'text')
+								?.map(c => c.text)
+								?.join('') || '';
+							
+							try {
+								const stats = session.getSessionStats();
+								state.updateLiveSubagent(agent.id, output, stats.tokens.input, stats.tokens.output);
+							} catch {
+								state.updateLiveSubagent(agent.id, output, 0, 0);
+							}
+							
+							if (!session.isStreaming) {
+								completed = true;
+								clearInterval(pollInterval);
+								clearTimeout(hardCapHandle);
+								state.finalizeLiveSubagent(agent.id);
+								state.activeSubagents--;
+								if (state.activeSubagents < 0) state.activeSubagents = 0;
+								state.completedSubagents++;
+								state.unseenSubagents++;
+								updateProgressStatus(state, ctx);
+							}
+						} catch (err) {
+							if (!completed) {
+								completed = true;
+								clearInterval(pollInterval);
+								clearTimeout(hardCapHandle);
+								state.activeSubagents--;
+								if (state.activeSubagents < 0) state.activeSubagents = 0;
+								state.failedSubagents++;
+								updateProgressStatus(state, ctx);
+							}
 						}
 					}, 2000);
 					
 					// Hard cap: stop polling after 30 minutes
-					setTimeout(() => {
-						clearInterval(pollInterval);
-						state.finalizeLiveSubagent(agent.id);
-						state.activeSubagents--;
-						state.completedSubagents++;
-						updateProgressStatus(state, ctx);
+					const hardCapHandle = setTimeout(() => {
+						if (!completed) {
+							completed = true;
+							clearInterval(pollInterval);
+							state.finalizeLiveSubagent(agent.id);
+							state.activeSubagents--;
+							if (state.activeSubagents < 0) state.activeSubagents = 0;
+							state.completedSubagents++;
+							updateProgressStatus(state, ctx);
+						}
 					}, 30 * 60 * 1000);
 					
 					log.info("Background agent spawned", { agentId: agent.id, task: params.task });
