@@ -2036,6 +2036,8 @@ export default function (pi: ExtensionAPI) {
 					// Update footer counters
 					state.activeSubagents++;
 					updateProgressStatus(state, ctx);
+
+				let completed = false;
 					
 					// Poll for live progress
 					const pollInterval = setInterval(() => {
