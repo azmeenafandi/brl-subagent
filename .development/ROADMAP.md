@@ -79,7 +79,7 @@
 | E5 | **Compliance reports** — "which subagents touched X?", "secrets accessed?", "cost by agent type" | M | P3 | ✅ **DONE** |
 | E6 | **RBAC matrices** — role-based tool permissions (reviewer, auditor, developer) | M | P3 | ❌ **Removed** |
 | E7 | **Multi-turn subagents** — subagents ask clarifying questions back to conductor | L | P3 | ❌ **Removed** |
-| E8 | **Pluggable backends** — support non-pi backends: OpenAI API, Anthropic API, webhook, container | XL | P3 | ✅ **DONE** |
+| E8 | ~~Pluggable backends~~ — **REMOVED** in v2.3.0: Dead code, never reached production use | XL | P3 | ❌ **REMOVED** |
 | E9 | **Scheduling** — cron-like: "run security audit every night at 2am" (via pi agent loop) | M | P3 | ✅ **DONE** |
 | E10 | **Subagent-to-subagent messaging** — direct communication channel between concurrent subagents | L | P3 | ✅ **DONE** |
 | E11 | **Process pool** — keep warm pi processes for reuse (reimplemented from P8 in Phase 3) | L | P2 | ✅ **DONE** |
@@ -111,16 +111,16 @@
 
 > **Removal rationale:** E6 was removed as redundant with `tools`/`excludeTools` parameters on `delegate_task`. E7 was removed due to architectural issues — the multi-turn protocol was fragile and broken in practice.
 
-## Phase 5 — Hardening (v2.1.0) 🚧 IN PROGRESS
+## Phase 5 — Hardening (v2.1.0) ✅ COMPLETE
 
 > Goal: Make the extension bulletproof regardless of conductor quality. A distracted, tired, or lazy conductor cannot produce a subagent that silently fails.
 
 | ID | Feature | Effort | Priority | Status |
 |----|---------|--------|----------|--------|
-| H1 | **Pre-task Validation** — Deterministic pre-spawn checks that validate tool configuration and thinking level match the task description | M | P0 | 🚧 |
-| H2 | **Integration Test Suite** — End-to-end tests using real pi subprocesses for every Phase 3+4 feature | L | P0 | 🚧 |
-| H3 | **Post-mortem Diagnostics** — After a subagent fails, analyze why and append suggestions to error messages | S | P0 | 🚧 |
-| H4 | **Conductor Guardrails** — Embed conductor behavior rules in promptGuidelines and SUBAGENT_INSTRUCTIONS | S | P0 | 🚧 |
+| H1 | **Pre-task Validation** — Deterministic pre-spawn checks that validate tool configuration and thinking level match the task description | M | P0 | ✅ |
+| H2 | **Integration Test Suite** — End-to-end tests using real pi subprocesses for every Phase 3+4 feature | L | P0 | ✅ |
+| H3 | **Post-mortem Diagnostics** — After a subagent fails, analyze why and append suggestions to error messages | S | P0 | ✅ |
+| H4 | **Conductor Guardrails** — Embed conductor behavior rules in promptGuidelines and SUBAGENT_INSTRUCTIONS | S | P0 | ✅ |
 
 ## Phase 6 — Background Execution (v2.2.0) ✅ COMPLETE
 
@@ -128,7 +128,11 @@
 
 > **Architecture shift**: Current architecture is subprocess-based (blocking `spawn()`). New architecture is session-based (non-blocking `pi sessions start`). Background agents run independently; conductor polls for status.
 
-> **Note**: Phase 6 provides the foundation modules (types, session manager, transcript, event bus). Actual background execution logic requires a pi ExtensionAPI extension and is pending.
+> **Notes (v2.3.0 updates):**
+> - Dynamic import fix for concurrent background spawns — avoids module caching issues when multiple background agents start simultaneously
+> - Foreground transcript recording added — all sessions now record transcripts, not just background ones
+> - Sandbox system removed (redundant with `tools`/`excludeTools` parameters)
+> - Backend system removed (dead code — pluggable backends never reached production use)
 
 | ID | Feature | Effort | Priority | Status |
 |----|---------|--------|----------|--------|
@@ -227,6 +231,21 @@
 | 6.5.5.2 | Emit `subagent:started` when session starts running | 6.5.5.1 |
 | 6.5.5.3 | Emit `subagent:completed` / `subagent:failed` on session end | 6.5.5.1 |
 | 6.5.5.4 | Emit `subagent:stopped` / `subagent:steered` on user action | 6.5.5.1 |
+
+---
+
+## Phase 7 — Live Monitor for Background Agents (v2.3.0) 📋 PLANNED
+
+> Goal: Provide a real-time TUI dashboard for monitoring and interacting with background agents — live transcript streaming, status indicators, and inline steering.
+
+| ID | Feature | Effort | Priority | Status |
+|----|---------|--------|----------|--------|
+| 7.1 | **Live transcript panel** — real-time streaming of agent conversation as it happens; auto-scroll with pause-on-scroll | L | P0 | 📋 PLANNED |
+| 7.2 | **Agent status sidebar** — list all active/completed/failed agents with status indicators, elapsed time, and token counts | M | P0 | 📋 PLANNED |
+| 7.3 | **Inline steering** — send messages to running agents directly from the monitor panel without switching context | M | P1 | 📋 PLANNED |
+| 7.4 | **Transcript search & filtering** — search across transcripts; filter by agent, status, time range | M | P2 | 📋 PLANNED |
+| 7.5 | **Agent comparison view** — side-by-side diff of two agent transcripts or results | L | P2 | 📋 PLANNED |
+| 7.6 | **Cost & metrics overlay** — per-agent and aggregate cost, tokens, latency displayed in the monitor | S | P1 | 📋 PLANNED |
 
 ---
 

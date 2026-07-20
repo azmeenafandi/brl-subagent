@@ -80,19 +80,19 @@
 | E5 | Compliance reports | P4 | M | `done` | subagent | `reports.ts`: file access tracking, secrets exposure detection, compliance summary with role breakdown. |
 | E6 | RBAC matrices | P4 | M | `removed` | — | Redundant with P7 sandboxing — sandboxLevel already restricts tools |
 | E7 | Multi-turn subagents | P4 | L | `removed` | — | Architectural issues — broken in practice |
-| E8 | Pluggable backends | P4 | XL | `done` | subagent | `backend.ts`: Backend abstraction with `pi` (full tools) and `direct-api` (HTTP, no tools) implementations. Configurable via `/brl-subagent backend`. |
+| E8 | ~~Pluggable backends~~ | P4 | XL | `cancelled` | — | **REMOVED in v2.3.0:** `direct-api` backend was dead code; `pi` backend is the only implementation. Backend abstraction layer removed. |
 | E9 | Scheduling (cron-like) | P4 | M | `done` | subagent | `schedule.ts`: recurring task schedules with interval-based polling, fire-and-forget execution, enable/disable, `/brl-subagent schedule` TUI. |
 | E10 | Subagent-to-subagent messaging | P4 | L | `done` | subagent | `messaging.ts`: Intercom class with `[TO:agent-id]:` output format, targeted and broadcast messages, message delivery on completion. |
 | E11 | Process pool | P4 | L | `done` | subagent | `pool.ts`: warm pi process management in RPC mode, lazy spawn on acquire, idle cleanup timer, configurable pool size. Replaces deferred P8. |
 
-## Phase 5 — Hardening (v2.1.0) 🚧 IN PROGRESS
+## Phase 5 — Hardening (v2.1.0) ✅ 4/4
 
 | ID | Task | Phase | Effort | Status | Assignee | Notes |
 |----|------|-------|--------|--------|----------|-------|
-| H1 | Pre-task Validation | P5 | M | `todo` | — | `validate.ts`: deterministic keyword-to-requirement mapping; warns on mismatch, errors on hard conflicts |
-| H2 | Integration Test Suite | P5 | L | `todo` | — | `__tests__/e2e.test.ts`: real pi subprocess E2E tests for all Phase 3+4 features; CI-safe skip |
-| H3 | Post-mortem Diagnostics | P5 | S | `todo` | — | In `validate.ts`: analyze failures; append suggestions to error messages |
-| H4 | Conductor Guardrails | P5 | S | `todo` | — | Embed rules in `promptGuidelines` and `SUBAGENT_INSTRUCTIONS`; updated in index.ts delegate_task registration |
+| H1 | Pre-task Validation | P5 | M | `done` | — | `validate.ts`: deterministic keyword-to-requirement mapping; warns on mismatch, errors on hard conflicts |
+| H2 | Integration Test Suite | P5 | L | `done` | — | `__tests__/e2e.test.ts`: real pi subprocess E2E tests for all Phase 3+4 features; CI-safe skip |
+| H3 | Post-mortem Diagnostics | P5 | S | `done` | — | In `validate.ts`: analyze failures; append suggestions to error messages |
+| H4 | Conductor Guardrails | P5 | S | `done` | — | Embed rules in `promptGuidelines` and `SUBAGENT_INSTRUCTIONS`; updated in index.ts delegate_task registration |
 
 ## Phase 6 — Background Execution (v2.2.0) ✅ 4/4
 
@@ -122,11 +122,11 @@
 | P1 — Foundation | v1.4.0 | 10 | 10 | 0 | All security and architecture tasks done |
 | P2 — Reliability | v1.5.0 | 10 | 10 | 0 | Circuit breaker, cost governance, pre-flight checks |
 | P3 — Power | v1.6.0 | 10 | 9 | 1 | All tasks including P8 (now E11); P7 sandboxing removed in v2.3.0 |
-| P4 — Excellence | v2.0.0 | 11 | 9 | 2 | E6 redundant with P7, E7 broken in practice |
-| P5 — Hardening | v2.1.0 | 4 | 0 | 0 | Planned |
+| P4 — Excellence | v2.0.0 | 11 | 8 | 3 | E6/E7 removed; E8 (direct-api) removed as dead code |
+| P5 — Hardening | v2.1.0 | 4 | 4 | 0 | All hardening tasks complete |
 | P6 — Background Execution | v2.2.0 | 4 | 4 | 0 | Foundation modules complete |
 | P6.5 — Background Integration | v2.2.0 | 5 | 5 | 0 | Session API, tools, transcript, event-bus wired |
-| **Total** | | **54** | **43** | **3** | E6/E7 removed v2.0.2; P7 sandboxing removed v2.3.0 |
+| **Total** | | **54** | **46** | **4** | E6/E7 removed v2.0.2; P7 sandboxing removed v2.3.0; E8 backend removed v2.3.0 |
 
 ## Change Log
 
@@ -187,4 +187,11 @@
 | 2026-07-11 | **Bug fixes**: SettingsManager constructor, background parameter wiring, session.id → session.sessionId |
 | 2026-07-11 | **Background execution verified**: 30-second task ran independently, main interface remained responsive |
 | 2026-07-11 | **Phase 6.5 complete**: All background execution features working end-to-end |
+| 2026-07-19 | **P7 (Sandbox system) removed**: Redundant with `tools`/`excludeTools` parameters on `delegate_task` |
+| 2026-07-19 | **E8 (Backend system) removed**: `direct-api` was dead code; backend abstraction layer removed |
+| 2026-07-19 | **Tool system fixed**: `edit` auto-includes `write`; prompt clarifies available tools |
+| 2026-07-19 | **Foreground transcript recording added**: All tasks now leave an audit trail |
+| 2026-07-19 | **Concurrent background spawns fixed**: Dynamic import + serialization queue |
+| 2026-07-19 | **Dead code removed**: 12 unused exports across event-bus, transcript, preflight |
+| 2026-07-19 | **Phase 5 (Hardening) complete**: All H1–H4 tasks done |
 

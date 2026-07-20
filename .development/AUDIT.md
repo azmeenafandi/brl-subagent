@@ -348,3 +348,26 @@ Tests pass even when source files import variables/functions that don't exist, b
 - ✅ Transcript recording (JSONL files)
 - ✅ Event bus (lifecycle events)
 
+
+## 2026-07-19 — Tool System & Concurrency Audit
+
+### Tool System Fixes
+1. **edit requires write** — pi's tool dependency chain means edit fails without write. Fixed by auto-including write when edit is in tools list.
+2. **Inherited prompt confusion** — When inheritSystemPrompt=true and tools are restricted, subagent prompt lists tools it doesn't have. Fixed by appending "Your Available Tools" section.
+3. **Sandbox removed** — Redundant. tools/excludeTools + H1 validation + H4 guardrails provide the safety layer.
+4. **Backend removed** — direct-api was a skeleton. Only pi backend was ever used.
+
+### Concurrency Fix
+- **Background spawn serialization** — pi's API modules (getAgentDir, createAgentSession) fail under concurrent access. Fixed with dynamic import + serialization queue.
+- **UUID fallback** — crypto.randomUUID() fails in some contexts. Fixed with Math.random() fallback.
+
+### Dead Code Removed
+- event-bus.ts: on, onAny, once, off, offAll, listenerCount (only emit + createEvent used)
+- transcript.ts: appendToolCall, appendToolResult, appendAssistantMessage, appendError, listTranscripts, hasTranscript
+- preflight.ts: PreflightOk, PreflightFail interfaces (replaced with inline union)
+- tui.ts: describePromptMode duplicate (real one in prompt.ts)
+- backend.ts: entire file deleted (dead code)
+
+### Foreground Transcripts
+- All foreground tasks now create transcripts (previously only background tasks did)
+
