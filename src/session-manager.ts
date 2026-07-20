@@ -289,6 +289,9 @@ export async function spawnBackgroundSession(
   // Start transcript for this agent
   transcript.startTranscript(agent.id, params.task);
 
+  // Store session ref for live monitor polling
+  agent._sessionRef = session;
+
   // Emit created event
   eventBus.emit(eventBus.createEvent('subagent:created', id, {
     type: agent.type,
