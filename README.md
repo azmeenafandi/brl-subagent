@@ -14,7 +14,7 @@
 
 **v2.0.4:** The sandbox system has been removed. Tools are now controlled directly via `tools` and `excludeTools` parameters on `delegate_task`.
 
-**v2.0.3 adds:** dependency graph delegation, task templates, recurring schedules, an observability dashboard, change approval workflows, git integration, subagent-to-subagent messaging, and Phase 5 hardening features.
+**v2.0.3 adds:** Phase 5 hardening features (pre-task validation, integration tests, post-mortem diagnostics, and conductor guardrails).
 
 ---
 
@@ -84,7 +84,7 @@ All settings persist across sessions.
 
 ---
 
-## Phase 5 hardening (v2.0.4)
+## Phase 5 hardening (v2.1.0)
 
 ---
 
@@ -95,7 +95,6 @@ All settings persist across sessions.
 - **Footer live counters:** Footer now shows background subagent activity with live counters.
 - **Background subagent concurrency fix:** Fixed dynamic import and serialization queue for reliable parallel execution.
 - **Tool system fix:** `edit` tool now auto-includes `write`; prompt clarifies which tools are available to subagents.
-- **Sandbox system removed:** Removed the sandbox abstraction layer — now redundant since tools are controlled directly via `tools`/`excludeTools`.
 - **Backend system removed:** Removed dead backend code that was no longer used.
 - **Foreground transcript recording:** All tasks now record transcripts for full observability.
 - **Dead code cleanup:** Removed 12 unused exports across the codebase.
