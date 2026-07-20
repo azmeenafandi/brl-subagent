@@ -2,13 +2,15 @@
 
 > Enterprise subagent extension for [pi](https://github.com/earendil-works/pi-coding-agent) — delegate tasks to isolated processes with configurable models, thinking levels, tool scoping via `tools` and `excludeTools`, dependency graphs, and a live observability dashboard.
 
-**Version:** 2.0.4 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.1.0 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
 ## What it does
 
 `brl-subagent` gives pi a **`delegate_task`** tool that spawns isolated subagent processes. Each subagent runs in its own `pi` process with its own model, context window, and tool permissions.
+
+**v2.1.0:** Background subagent concurrency fixes, tool system overhaul, sandbox and backend removal, transcript recording, and dead code cleanup.
 
 **v2.0.4:** The sandbox system has been removed. Tools are now controlled directly via `tools` and `excludeTools` parameters on `delegate_task`.
 
@@ -83,6 +85,21 @@ All settings persist across sessions.
 ---
 
 ## Phase 5 hardening (v2.0.4)
+
+---
+
+## Changelog
+
+### v2.1.0
+
+- **Footer live counters:** Footer now shows background subagent activity with live counters.
+- **Background subagent concurrency fix:** Fixed dynamic import and serialization queue for reliable parallel execution.
+- **Tool system fix:** `edit` tool now auto-includes `write`; prompt clarifies which tools are available to subagents.
+- **Sandbox system removed:** Removed the sandbox abstraction layer — now redundant since tools are controlled directly via `tools`/`excludeTools`.
+- **Backend system removed:** Removed dead backend code that was no longer used.
+- **Foreground transcript recording:** All tasks now record transcripts for full observability.
+- **Dead code cleanup:** Removed 12 unused exports across the codebase.
+- **Phase 5 Hardening complete (H1–H4):** Pre-task validation, integration tests, post-mortem diagnostics, and conductor guardrails finalized.
 
 ### H1 — Pre-task validation
 
