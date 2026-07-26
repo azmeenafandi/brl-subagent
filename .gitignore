@@ -2,3 +2,5 @@
 .development/
 node_modules/
 graphify-out/
+src/__tests__/
+vitest.config.ts
