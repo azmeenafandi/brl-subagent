@@ -1,3 +1,4 @@
 .pi/
 .development/
 node_modules/
+graphify-out/
