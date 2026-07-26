@@ -64,6 +64,13 @@ export class SessionState {
 	/** Loaded custom presets from user directories */
 	customPresets = new Array<import("./types").SubagentPreset>();
 
+	/**
+	 * Migration: session-persisted presets read during restoreFromSession.
+	 * These are stored here for src/presets.ts:migrateSessionPresets() to
+	 * write to files in a subsequent step, then cleared.
+	 */
+	_migratedPresets?: import("./types").SubagentPreset[];
+
 	/** Logger instance */
 	log: Logger | undefined;
 
@@ -79,7 +86,6 @@ export class SessionState {
 			sessionCostLimit: DEFAULT_SESSION_COST_LIMIT,
 			perTaskCostEstimate: 0,
 			seenRunIds: [],
-			presets: [],
 			templates: [],
 			circuitBreaker: this.defaultCircuitBreaker(),
 			poolEnabled: false,
@@ -108,7 +114,6 @@ export class SessionState {
 			sessionCostLimit: this.config.sessionCostLimit,
 			perTaskCostEstimate: this.config.perTaskCostEstimate,
 			seenRunIds: this.config.seenRunIds,
-			presets: this.config.presets,
 			templates: this.config.templates,
 			circuitBreaker: this.config.circuitBreaker,
 			poolEnabled: this.config.poolEnabled,
@@ -180,7 +185,12 @@ export class SessionState {
 		}
 
 		if (Array.isArray(data.seenRunIds)) this.config.seenRunIds = data.seenRunIds;
-		if (Array.isArray(data.presets)) this.config.presets = data.presets;
+
+		// Migration: old session-persisted presets — store for file-backed migration
+		if (Array.isArray(data.presets) && data.presets.length > 0) {
+			this._migratedPresets = data.presets;
+		}
+
 		if (Array.isArray(data.templates)) this.config.templates = data.templates;
 		if (typeof data.poolEnabled === "boolean") this.config.poolEnabled = data.poolEnabled;
 		if (typeof data.poolSize === "number" && data.poolSize >= 1 && data.poolSize <= 8) {

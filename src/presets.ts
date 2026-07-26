@@ -314,3 +314,62 @@ export function formatPresetSummary(p: SubagentPreset): string {
 	if (p.noBuiltinTools) parts.push("no-builtins");
 	return parts.join(" · ") || "default";
 }
+
+// ---------------------------------------------------------------------------
+// File helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Sanitize a string for use as a filename.
+ * Replaces characters that are problematic in file names with hyphens.
+ */
+export function sanitizeFileName(name: string): string {
+	return name.replace(/[/\\:*?"<>|]/g, "-");
+}
+
+/**
+ * Build just the YAML frontmatter string (without the "---" markers)
+ * from a SubagentPreset object.
+ */
+export function buildFrontmatter(preset: SubagentPreset): string {
+	const lines: string[] = [];
+	lines.push(`name: ${preset.name}`);
+	if (preset.description) lines.push(`description: "${preset.description}"`);
+	if (preset.thinkingLevel) lines.push(`thinkingLevel: ${preset.thinkingLevel}`);
+	if (preset.inheritSystemPrompt === false) lines.push(`inheritSystemPrompt: "false"`);
+	if (preset.noBuiltinTools) lines.push(`noBuiltinTools: "true"`);
+	if (preset.tools?.length) {
+		lines.push("tools:");
+		for (const t of preset.tools) lines.push(`  - ${t}`);
+	}
+	if (preset.excludeTools?.length) {
+		lines.push("excludeTools:");
+		for (const t of preset.excludeTools) lines.push(`  - ${t}`);
+	}
+	if (preset.promptGuideline) lines.push(`promptGuideline: "${preset.promptGuideline}"`);
+	return lines.join("\n");
+}
+
+/**
+ * Build a complete markdown string with YAML frontmatter from a SubagentPreset.
+ * This produces the same format as the built-in preset .md files.
+ */
+export function buildPresetMarkdown(preset: SubagentPreset): string {
+	const frontmatter = buildFrontmatter(preset);
+	const body = preset.systemPrompt || "";
+	return `---\n${frontmatter}\n---\n${body}\n`;
+}
+
+/**
+ * Write a preset to a .md file in the specified directory.
+ * Creates the directory if it doesn't exist.
+ * Returns the full path to the written file.
+ */
+export function writePresetFile(preset: SubagentPreset, dir: string): string {
+	fs.mkdirSync(dir, { recursive: true });
+	const fileName = sanitizeFileName(preset.name) + ".md";
+	const filePath = path.join(dir, fileName);
+	const content = buildPresetMarkdown(preset);
+	fs.writeFileSync(filePath, content, "utf-8");
+	return filePath;
+}
