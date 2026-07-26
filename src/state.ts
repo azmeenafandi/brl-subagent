@@ -61,6 +61,9 @@ export class SessionState {
 	/** Loaded built-in presets */
 	builtinPresets = new Array<import("./types").SubagentPreset>();
 
+	/** Loaded custom presets from user directories */
+	customPresets = new Array<import("./types").SubagentPreset>();
+
 	/** Logger instance */
 	log: Logger | undefined;
 

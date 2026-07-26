@@ -74,7 +74,7 @@ import {
 	mergeWorkBranch,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { loadBuiltinPresets, getAllPresets } from "./presets";
+import { loadBuiltinPresets, loadCustomPresets, getAllPresets } from "./presets";
 import { autoRoutePreset } from "./router";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import { getPreset as getPresetFn } from "./tui";
@@ -2892,6 +2892,7 @@ export default function (pi: ExtensionAPI) {
 		// Load built-in presets
 		const presetsDir = path.join(__dirname, "..", "presets");
 		state.builtinPresets = loadBuiltinPresets(presetsDir, log);
+		state.customPresets = loadCustomPresets(ctx.cwd, log);
 
 		// R2: Clean stale temp dirs from previous sessions
 		cleanupTempDirs(ctx.cwd).then((count) => {

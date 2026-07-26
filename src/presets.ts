@@ -178,6 +178,66 @@ export function loadBuiltinPresets(presetsDir: string, log?: Logger): SubagentPr
 	return presets;
 }
 
+/**
+ * Load custom presets from user directories. User presets override built-ins
+ * with the same name. Survives pi install updates since user directories
+ * are never touched by the install process.
+ *
+ * Searches:
+ *   1. ~/.pi/agent/brl-subagent/presets/ (global)
+ *   2. .pi/brl-subagent/presets/ (project-local, highest priority)
+ */
+export function loadCustomPresets(cwd: string, log?: Logger): SubagentPreset[] {
+	const presets: SubagentPreset[] = [];
+	const homedir = process.env.HOME || process.env.USERPROFILE || "";
+
+	const dirs = [
+		path.join(homedir, ".pi", "agent", "brl-subagent", "presets"),
+		path.join(cwd, ".pi", "brl-subagent", "presets"),
+	];
+
+	for (const dir of dirs) {
+		try {
+			const files = fs.readdirSync(dir);
+			for (const file of files) {
+				if (!file.endsWith(".md")) continue;
+				try {
+					const filePath = path.join(dir, file);
+					const content = fs.readFileSync(filePath, "utf-8");
+					const { meta, body } = parseFrontmatter(content);
+
+					const errors = validatePreset(meta, file);
+					if (errors.length > 0) {
+						for (const err of errors) {
+							log?.warn("Custom preset validation failed", { file, error: err });
+						}
+						continue;
+					}
+
+					const name = meta.name as string;
+					presets.push({
+						name,
+						description: (meta.description as string) || undefined,
+						systemPrompt: body || undefined,
+						thinkingLevel: (meta.thinkingLevel as string) || undefined,
+						inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
+						tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
+						excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
+						noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
+						promptGuideline: (meta.promptGuideline as string) || undefined,
+					});
+				} catch (err) {
+					log?.warn("Failed to load custom preset file", { file, error: (err as Error).message });
+				}
+			}
+		} catch {
+			// Directory doesn't exist — that's fine, no custom presets
+		}
+	}
+
+	return presets;
+}
+
 // ---------------------------------------------------------------------------
 // Preset validation of parsed objects
 // ---------------------------------------------------------------------------
@@ -219,25 +279,28 @@ export function validateAllPresets(presets: SubagentPreset[]): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Look up a preset by name. Built-in presets take precedence over custom ones.
+ * Look up a preset by name. Custom (user) presets take precedence over built-ins,
+ * so users can override any built-in preset with the same name.
  */
 export function getPreset(
 	name: string,
 	builtinPresets: SubagentPreset[],
 	customPresets: SubagentPreset[],
 ): SubagentPreset | undefined {
-	return builtinPresets.find((p) => p.name === name) || customPresets.find((p) => p.name === name);
+	return customPresets.find((p) => p.name === name) || builtinPresets.find((p) => p.name === name);
 }
 
 /**
  * Combine built-in and custom presets into a single array.
- * Built-in presets come first.
+ * Custom (user) presets override built-ins with the same name.
  */
 export function getAllPresets(
 	builtinPresets: SubagentPreset[],
 	customPresets: SubagentPreset[],
 ): SubagentPreset[] {
-	return [...builtinPresets, ...customPresets];
+	const seen = new Set(customPresets.map((p) => p.name));
+	const filteredBuiltins = builtinPresets.filter((p) => !seen.has(p.name));
+	return [...customPresets, ...filteredBuiltins];
 }
 
 /**
