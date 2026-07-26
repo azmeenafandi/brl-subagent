@@ -51,8 +51,10 @@ import {
 import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
 import { extractParamNames } from "./templates";
 import { parseDiff } from "./diff";
-import { formatPresetSummary } from "./presets";
+import { formatPresetSummary, getPreset, writePresetFile, loadCustomPresets, parseFrontmatter } from "./presets";
 import { formatRunDuration } from "./history";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { SessionState } from "./state";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
 
@@ -726,49 +728,41 @@ export async function showComplianceMenu(
 }
 
 // Preset management UI
-export function getPreset(
-	name: string,
-	builtinPresets: SubagentPreset[],
-	customPresets: SubagentPreset[],
-): SubagentPreset | undefined {
-	return (
-		builtinPresets.find((p) => p.name === name) ||
-		customPresets.find((p) => p.name === name)
-	);
-}
 
 export async function showAddPreset(
 	ctx: ExtensionContext,
 	state: SessionState,
-	persistState: () => void,
 ): Promise<void> {
+	// 1. Prompt for name
 	const name = await ctx.ui.input({ prompt: "Preset name (e.g., read-only-audit):" });
 	if (!name?.trim()) return;
 	const trimmedName = name.trim();
 
+	// 2. Validate name (reserved patterns, existing presets)
 	if (RESERVED_NAME_PATTERN.test(trimmedName)) {
-		ctx.ui.notify("Names starting and ending with '__' are reserved. Choose a different name.", "error");
+		ctx.ui.notify("Names starting and ending with '__' are reserved.", "error");
 		return;
 	}
-
 	if (RESERVED_COMMAND_NAMES.has(trimmedName)) {
-		ctx.ui.notify("Name '" + trimmedName + "' is reserved for a command. Choose a different name.", "error");
+		ctx.ui.notify("Name '" + trimmedName + "' is reserved for a command.", "error");
+		return;
+	}
+	if (getPreset(trimmedName, state.builtinPresets, state.customPresets)) {
+		ctx.ui.notify(`Preset "${trimmedName}" already exists.`, "error");
 		return;
 	}
 
-	if (getPreset(trimmedName, state.builtinPresets, state.config.presets)) {
-		ctx.ui.notify(`Preset "${trimmedName}" already exists. Use a different name.`, "error");
-		return;
-	}
+	// 3. Description
+	const description = await ctx.ui.input({ prompt: "Description (optional):" });
 
-	await ctx.ui.input({ prompt: "Description (optional):" });
-
+	// 4. Thinking level
 	const thinkingItems: SelectItem[] = [
 		{ value: "", label: "(not set — use conductor's choice)" },
 		...THINKING_LEVELS.map((level) => ({ value: level, label: level })),
 	];
 	const thinkingResult = await showSelectList(ctx, "Default Thinking Level", thinkingItems, 8);
 
+	// 5. Tool scope
 	const scopeItems: SelectItem[] = [
 		{ value: "all", label: "All tools (default)" },
 		{ value: "readonly", label: "Read-only (read, grep, find, ls)" },
@@ -788,71 +782,130 @@ export async function showAddPreset(
 		if (toolsStr?.trim()) tools = toolsStr.split(",").map((t) => t.trim()).filter(Boolean);
 	}
 
+	// 6. Inheritance
 	const inheritItems: SelectItem[] = [
 		{ value: "true", label: "Inherit system prompt (default)" },
 		{ value: "false", label: "No inheritance (standalone)" },
 	];
 	const inheritResult = await showSelectList(ctx, "System Prompt Inheritance", inheritItems, 3);
 
+	// 7. System prompt body
+	const systemPrompt = await ctx.ui.input({ prompt: "System prompt (optional, multi-line not supported yet):" });
+
+	// 8. Build preset object
 	const preset: SubagentPreset = {
 		name: trimmedName,
-		description: undefined, // user skipped or entered empty
+		description: description?.trim() || undefined,
 		thinkingLevel: thinkingResult || undefined,
 		inheritSystemPrompt: inheritResult === "false" ? false : undefined,
 		tools,
 		excludeTools,
 		noBuiltinTools,
+		systemPrompt: systemPrompt?.trim() || undefined,
 	};
 
-	state.config.presets.push(preset);
-	persistState();
-	ctx.ui.notify(`Preset "${trimmedName}" created`, "info");
+	// 9. Ask where to save
+	const locationItems: SelectItem[] = [
+		{ value: "project", label: "Project (.pi/brl-subagent/presets/)" },
+		{ value: "global", label: "Global (~/.pi/agent/brl-subagent/presets/)" },
+	];
+	const location = await showSelectList(ctx, "Save Location", locationItems, 3);
+	if (!location) return;
+
+	const homedir = process.env.HOME || process.env.USERPROFILE || "";
+	const targetDir = location === "project"
+		? path.join(ctx.cwd, ".pi", "brl-subagent", "presets")
+		: path.join(homedir, ".pi", "agent", "brl-subagent", "presets");
+
+	// 10. Write file
+	try {
+		writePresetFile(preset, targetDir);
+		// 11. Refresh custom presets
+		state.customPresets = loadCustomPresets(ctx.cwd, state.log);
+		ctx.ui.notify(`Preset "${trimmedName}" saved to ${location === "project" ? "project" : "global"} directory`, "info");
+	} catch (err) {
+		ctx.ui.notify(`Failed to save preset: ${(err as Error).message}`, "error");
+	}
 }
 
 export async function showRemovePreset(
 	ctx: ExtensionContext,
 	state: SessionState,
-	persistState: () => void,
 ): Promise<void> {
-	if (state.config.presets.length === 0) {
-		ctx.ui.notify("No custom presets to remove. Built-in presets cannot be removed.", "info");
+	const homedir = process.env.HOME || process.env.USERPROFILE || "";
+	const projectDir = path.join(ctx.cwd, ".pi", "brl-subagent", "presets");
+	const globalDir = path.join(homedir, ".pi", "agent", "brl-subagent", "presets");
+
+	// Scan both directories for .md files
+	const entries: Array<{ name: string; source: "project" | "global"; filePath: string }> = [];
+
+	for (const dir of [projectDir, globalDir]) {
+		const source = dir === projectDir ? "project" : "global";
+		try {
+			const files = fs.readdirSync(dir);
+			for (const file of files) {
+				if (!file.endsWith(".md")) continue;
+				const filePath = path.join(dir, file);
+				try {
+					const content = fs.readFileSync(filePath, "utf-8");
+					const { meta } = parseFrontmatter(content);
+					if (meta.name && typeof meta.name === "string") {
+						entries.push({ name: meta.name as string, source, filePath });
+					}
+				} catch {
+					// Skip unparseable files
+				}
+			}
+		} catch {
+			// Directory doesn't exist — fine
+		}
+	}
+
+	if (entries.length === 0) {
+		ctx.ui.notify("No custom presets to remove.", "info");
 		return;
 	}
 
-	const items: SelectItem[] = state.config.presets.map((p) => ({
-		value: p.name,
-		label: p.name,
-		description: p.description || formatPresetSummary(p),
+	// Show list with source indicators
+	const items: SelectItem[] = entries.map((e) => ({
+		value: e.filePath,
+		label: `[${e.source === "project" ? "P" : "G"}] ${e.name}`,
+		description: e.source === "project" ? "Project-local" : "Global",
 	}));
 
 	const result = await showSelectList(ctx, "Remove Preset", items, 10);
 	if (!result) return;
 
-	state.config.presets = state.config.presets.filter((p) => p.name !== result);
-	persistState();
-	ctx.ui.notify(`Preset "${result}" removed`, "info");
+	// Delete the file
+	try {
+		fs.unlinkSync(result);
+		state.customPresets = loadCustomPresets(ctx.cwd, state.log);
+		ctx.ui.notify("Preset removed", "info");
+	} catch (err) {
+		ctx.ui.notify(`Failed to remove preset: ${(err as Error).message}`, "error");
+	}
 }
 
 export async function showPresetManager(
 	ctx: ExtensionContext,
 	state: SessionState,
-	persistState: () => void,
 ): Promise<void> {
 	const builtinItems: SelectItem[] = state.builtinPresets.map((p) => ({
-		value: p.name,
-		label: p.name,
+		value: `__builtin__:${p.name}`,
+		label: `[B] ${p.name}`,
 		description: p.description || formatPresetSummary(p),
 	}));
 
-	const userItems: SelectItem[] = state.config.presets.map((p) => ({
-		value: p.name,
-		label: p.name,
+	// Custom presets from state (loaded from files on session start)
+	const customItems: SelectItem[] = state.customPresets.map((p) => ({
+		value: `__custom__:${p.name}`,
+		label: `[${findPresetSource(p.name, ctx) === "project" ? "P" : "G"}] ${p.name}`,
 		description: p.description || formatPresetSummary(p),
 	}));
 
 	const items: SelectItem[] = [
 		...builtinItems,
-		...(userItems.length > 0
+		...(customItems.length > 0
 			? [
 					{
 						value: "__divider__",
@@ -861,27 +914,35 @@ export async function showPresetManager(
 					},
 				]
 			: []),
-		...userItems,
-		{ value: "__add__", label: "+ Add Preset", description: "Create a new delegation preset" },
-		{ value: "__remove__", label: "- Remove Preset", description: "Delete a custom preset" },
+		...customItems,
+		{ value: "__add__", label: "+ Add Preset", description: "Create a new preset file" },
+		{ value: "__remove__", label: "- Remove Preset", description: "Delete a custom preset file" },
 	];
 
 	const result = await showSelectList(
 		ctx,
-		`Presets (${state.builtinPresets.length} built-in, ${state.config.presets.length} custom)`,
+		`Presets (${state.builtinPresets.length} built-in, ${state.customPresets.length} custom)`,
 		items,
 		15,
 	);
 	if (!result || result === "__divider__") return;
 
 	if (result === "__add__") {
-		await showAddPreset(ctx, state, persistState);
+		await showAddPreset(ctx, state);
 	} else if (result === "__remove__") {
-		await showRemovePreset(ctx, state, persistState);
+		await showRemovePreset(ctx, state);
 	} else {
-		const preset = getPreset(result, state.builtinPresets, state.config.presets);
+		// Extract preset name from value
+		const isBuiltin = result.startsWith("__builtin__:");
+		const isCustom = result.startsWith("__custom__:");
+		const presetName = isBuiltin
+			? result.slice("__builtin__:".length)
+			: isCustom
+				? result.slice("__custom__:".length)
+				: result;
+
+		const preset = getPreset(presetName, state.builtinPresets, state.customPresets);
 		if (preset) {
-			const isBuiltin = state.builtinPresets.some((p) => p.name === result);
 			await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
 				const container = new Container();
 				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
@@ -917,6 +978,10 @@ export async function showPresetManager(
 					container.addChild(
 						new Text(theme.fg("dim", `Exclude: ${preset.excludeTools.join(", ")}`), 1, 0),
 					);
+				if (preset.systemPrompt)
+					container.addChild(
+						new Text(theme.fg("dim", `System prompt: ${preset.systemPrompt.slice(0, 100)}`), 1, 0),
+					);
 				container.addChild(new Text("", 0, 0));
 				container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
 				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
@@ -928,6 +993,21 @@ export async function showPresetManager(
 			});
 		}
 	}
+}
+
+/**
+ * Determine whether a custom preset comes from the project or global directory.
+ * Checks state.customPresets source by scanning file directories.
+ */
+function findPresetSource(name: string, ctx: ExtensionContext): "project" | "global" {
+	const homedir = process.env.HOME || process.env.USERPROFILE || "";
+	const projectDir = path.join(ctx.cwd, ".pi", "brl-subagent", "presets");
+	const globalDir = path.join(homedir, ".pi", "agent", "brl-subagent", "presets");
+	// Prefer project over global (project has higher priority in loadCustomPresets)
+	const sanitizedName = name.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
+	if (fs.existsSync(path.join(projectDir, sanitizedName + ".md"))) return "project";
+	if (fs.existsSync(path.join(globalDir, sanitizedName + ".md"))) return "global";
+	return "project";
 }
 
 // ---------------------------------------------------------------------------
@@ -1223,7 +1303,7 @@ export async function showAddSchedule(
 			label: p.name,
 			description: p.description || undefined,
 		})),
-		...state.config.presets.map((p) => ({
+		...state.customPresets.map((p) => ({
 			value: p.name,
 			label: p.name,
 			description: p.description || undefined,
@@ -1452,7 +1532,7 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 		{
 			value: "preset",
 			label: "Manage Presets",
-			description: `${state.builtinPresets.length} built-in, ${state.config.presets.length} custom`,
+			description: `${state.builtinPresets.length} built-in, ${state.customPresets.length} custom`,
 		},
 		{
 			value: "templates",
