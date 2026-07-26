@@ -74,7 +74,7 @@ import {
 	mergeWorkBranch,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { loadBuiltinPresets, loadCustomPresets, getAllPresets } from "./presets";
+import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile } from "./presets";
 import { autoRoutePreset } from "./router";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import { getPreset as getPresetFn } from "./tui";
@@ -194,7 +194,7 @@ export default function (pi: ExtensionAPI) {
 		// E2: Auto-route to best preset when neither preset nor template is specified
 		let resolvedPreset = params.preset;
 		if (!resolvedPreset && !params.template) {
-			const allPresets = getAllPresets(state.builtinPresets, state.config.presets);
+			const allPresets = getAllPresets(state.builtinPresets, state.customPresets);
 			const suggested = autoRoutePreset(params.task, allPresets);
 			if (suggested) {
 				resolvedPreset = suggested;
@@ -203,7 +203,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const preset = resolvedPreset
-			? getPresetFn(resolvedPreset, state.builtinPresets, state.config.presets)
+			? getPresetFn(resolvedPreset, state.builtinPresets, state.customPresets)
 			: undefined;
 
 		const mergedThinkingLevel =
@@ -2893,6 +2893,16 @@ export default function (pi: ExtensionAPI) {
 		const presetsDir = path.join(__dirname, "..", "presets");
 		state.builtinPresets = loadBuiltinPresets(presetsDir, log);
 		state.customPresets = loadCustomPresets(ctx.cwd, log);
+
+		// Migration: write any session-persisted presets to files
+		if (state._migratedPresets && state._migratedPresets.length > 0) {
+			for (const preset of state._migratedPresets) {
+				writePresetFile(preset, path.join(ctx.cwd, ".pi", "brl-subagent", "presets"));
+			}
+			state._migratedPresets = undefined;
+			state.customPresets = loadCustomPresets(ctx.cwd, log);
+			log?.info("Migrated presets from session to files");
+		}
 
 		// R2: Clean stale temp dirs from previous sessions
 		cleanupTempDirs(ctx.cwd).then((count) => {
