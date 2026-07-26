@@ -77,7 +77,7 @@ import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile } from "./presets";
 import { autoRoutePreset } from "./router";
 import { validatePreTask, diagnoseFailure } from "./validate";
-import { getPreset as getPresetFn } from "./tui";
+import { getPreset as getPresetFn } from "./presets";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
