@@ -915,8 +915,6 @@ export async function showPresetManager(
 				]
 			: []),
 		...customItems,
-		{ value: "__add__", label: "+ Add Preset", description: "Create a new preset file" },
-		{ value: "__remove__", label: "- Remove Preset", description: "Delete a custom preset file" },
 	];
 
 	const result = await showSelectList(
@@ -927,11 +925,7 @@ export async function showPresetManager(
 	);
 	if (!result || result === "__divider__") return;
 
-	if (result === "__add__") {
-		await showAddPreset(ctx, state);
-	} else if (result === "__remove__") {
-		await showRemovePreset(ctx, state);
-	} else {
+	{
 		// Extract preset name from value
 		const isBuiltin = result.startsWith("__builtin__:");
 		const isCustom = result.startsWith("__custom__:");
