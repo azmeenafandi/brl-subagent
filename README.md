@@ -84,6 +84,35 @@ All settings persist across sessions.
 
 ---
 
+## Presets
+
+Built-in presets ship with the extension. You can also create **custom presets** as `.md` files — no TUI wizard needed.
+
+**Project presets:** `.pi/brl-subagent/presets/<name>.md`  
+**Global presets:** `~/.pi/agent/brl-subagent/presets/<name>.md`
+
+Files use the same format as built-in presets — YAML frontmatter with these fields:
+
+```yaml
+---
+name: my-preset
+description: Debug with verbose thinking and full tool access
+tools:
+  - read
+  - grep
+  - find
+  - bash
+  - edit
+  - write
+thinking: high
+systemPrompt: You are a senior debugging agent. Investigate systematically.
+---
+```
+
+Custom presets override built-ins with the same name and survive `pi install` updates.
+
+Refer to a preset via the `preset` parameter of `delegate_task` (see above). Parameters on `delegate_task` override preset values.
+
 ## Phase 5 hardening (v2.1.0)
 
 ---
