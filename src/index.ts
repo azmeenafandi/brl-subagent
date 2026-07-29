@@ -2055,6 +2055,12 @@ export default function (pi: ExtensionAPI) {
 								if (state.activeSubagents < 0) state.activeSubagents = 0;
 								state.failedSubagents++;
 								updateProgressStatus(state, ctx);
+								pi.sendMessage({
+									customType: "subagent-notification",
+									content: `Background agent "${agent.description}" crashed.`,
+									display: true,
+									details: { agentId: agent.id }
+								}, { deliverAs: "followUp" });
 								return;
 							}
 							
@@ -2082,6 +2088,12 @@ export default function (pi: ExtensionAPI) {
 								state.completedSubagents++;
 								state.unseenSubagents++;
 								updateProgressStatus(state, ctx);
+								pi.sendMessage({
+									customType: "subagent-notification",
+									content: `Background agent "${agent.description}" completed.`,
+									display: true,
+									details: { agentId: agent.id }
+								}, { deliverAs: "followUp" });
 							}
 						} catch (err) {
 							if (!completed) {
@@ -2106,6 +2118,12 @@ export default function (pi: ExtensionAPI) {
 							if (state.activeSubagents < 0) state.activeSubagents = 0;
 							state.completedSubagents++;
 							updateProgressStatus(state, ctx);
+							pi.sendMessage({
+								customType: "subagent-notification",
+								content: `Background agent "${agent.description}" timed out (30min hard cap).`,
+								display: true,
+								details: { agentId: agent.id }
+							}, { deliverAs: "followUp" });
 						}
 					}, 30 * 60 * 1000);
 					
