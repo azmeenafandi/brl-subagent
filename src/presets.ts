@@ -152,6 +152,7 @@ export function loadBuiltinPresets(presetsDir: string, log?: Logger): SubagentPr
 					description: (meta.description as string) || undefined,
 					systemPrompt: body || undefined,
 					thinkingLevel: (meta.thinkingLevel as string) || undefined,
+					model: (meta.model as string) || undefined,
 					inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
 					tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
 					excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
@@ -220,6 +221,7 @@ export function loadCustomPresets(cwd: string, log?: Logger): SubagentPreset[] {
 						description: (meta.description as string) || undefined,
 						systemPrompt: body || undefined,
 						thinkingLevel: (meta.thinkingLevel as string) || undefined,
+						model: (meta.model as string) || undefined,
 						inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
 						tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
 						excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
@@ -336,6 +338,7 @@ export function buildFrontmatter(preset: SubagentPreset): string {
 	lines.push(`name: ${preset.name}`);
 	if (preset.description) lines.push(`description: "${preset.description}"`);
 	if (preset.thinkingLevel) lines.push(`thinkingLevel: ${preset.thinkingLevel}`);
+	if (preset.model) lines.push(`model: ${preset.model}`);
 	if (preset.inheritSystemPrompt === false) lines.push(`inheritSystemPrompt: "false"`);
 	if (preset.noBuiltinTools) lines.push(`noBuiltinTools: "true"`);
 	if (preset.tools?.length) {

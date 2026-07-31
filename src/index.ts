@@ -31,6 +31,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 
 import type {
+	SubagentPreset,
 	SubagentResult,
 	SubagentRun,
 	SubagentToolOptions,
@@ -190,7 +191,11 @@ export default function (pi: ExtensionAPI) {
 			approvalMode?: string;
 		},
 		ctx: ExtensionContext,
-	): ResolvedParams & { resolvedGitMode: GitMode; resolvedApprovalMode: ApprovalMode } {
+	): ResolvedParams & {
+		resolvedGitMode: GitMode;
+		resolvedApprovalMode: ApprovalMode;
+		resolvedPreset?: SubagentPreset;
+	} {
 		// E2: Auto-route to best preset when neither preset nor template is specified
 		let resolvedPreset = params.preset;
 		if (!resolvedPreset && !params.template) {
@@ -260,15 +265,60 @@ export default function (pi: ExtensionAPI) {
 			toolOptions,
 			resolvedGitMode,
 			resolvedApprovalMode,
+			resolvedPreset: preset,
 		};
 	}
 
-	function resolveSubagentModel(ctx: ExtensionContext):
+	/** Parse "provider/model-id" into {provider, id}. Returns null on bad format. */
+	function parseModelString(s: string): { provider: string; id: string } | null {
+		const idx = s.indexOf("/");
+		if (idx <= 0 || idx === s.length - 1) return null;
+		return { provider: s.slice(0, idx), id: s.slice(idx + 1) };
+	}
+
+	/** Check if provider/model combo exists in the model registry. */
+	function modelIsAvailable(ctx: ExtensionContext, m: { provider: string; id: string }): boolean {
+		try {
+			const registry = ctx.modelRegistry;
+			// Prefer find(); fall back to a getAll() scan if find is unavailable.
+			if (registry?.find) {
+				return registry.find(m.provider, m.id) !== undefined;
+			}
+			const models = registry?.getAll?.() ?? [];
+			return models.some((x) => x.provider === m.provider && x.id === m.id);
+		} catch {
+			return false;
+		}
+	}
+
+	function resolveSubagentModel(
+		ctx: ExtensionContext,
+		preset?: SubagentPreset,
+	):
 		| { ok: true; model: { provider: string; id: string } }
 		| { ok: false; error: AgentToolResult<SubagentResult> } {
-		const subagentModel =
-			state.config.model ||
-			(ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined);
+		// Precedence: preset.model > state.config.model > conductor model
+		let subagentModel: { provider: string; id: string } | undefined;
+
+		if (preset?.model) {
+			const parsed = parseModelString(preset.model);
+			if (parsed && modelIsAvailable(ctx, parsed)) {
+				subagentModel = parsed;
+				log.info("Using preset model", { preset: preset.name, model: preset.model });
+			} else {
+				// Fallback: preset model unavailable → configured model
+				log.warn("Preset model unavailable, falling back to configured model", {
+					preset: preset.name,
+					model: preset.model,
+				});
+			}
+		}
+
+		if (!subagentModel) {
+			subagentModel =
+				state.config.model ||
+				(ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined);
+		}
 
 		if (!subagentModel) {
 			return {
@@ -463,7 +513,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// Resolve model once
-		const modelResult = resolveSubagentModel(ctx);
+		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset);
 		if (!modelResult.ok) return modelResult.error;
 		const subagentModel = modelResult.model;
 
@@ -846,7 +896,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// Resolve model once
-		const modelResult = resolveSubagentModel(ctx);
+		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset);
 		if (!modelResult.ok) return modelResult.error;
 		const subagentModel = modelResult.model;
 
@@ -1234,7 +1284,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// Resolve model once
-		const modelResult = resolveSubagentModel(ctx);
+		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset);
 		if (!modelResult.ok) return modelResult.error;
 		const subagentModel = modelResult.model;
 
@@ -1783,7 +1833,6 @@ export default function (pi: ExtensionAPI) {
 			chain: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
 				label: Type.Optional(Type.String({})),
-				preset: Type.Optional(Type.String({})),
 				thinkingLevel: Type.Optional(Type.String({})),
 				cwd: Type.Optional(Type.String({})),
 				timeout: Type.Optional(Type.Number({})),
@@ -1799,7 +1848,6 @@ export default function (pi: ExtensionAPI) {
 			tasks: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description for this parallel subtask" }),
 				label: Type.Optional(Type.String({})),
-				preset: Type.Optional(Type.String({})),
 				thinkingLevel: Type.Optional(Type.String({})),
 				cwd: Type.Optional(Type.String({})),
 				timeout: Type.Optional(Type.Number({})),
@@ -1817,7 +1865,6 @@ export default function (pi: ExtensionAPI) {
 				task: Type.String({ description: "Task description. Use {otherId} to reference output from another task." }),
 				label: Type.Optional(Type.String({})),
 				dependsOn: Type.Optional(Type.Array(Type.String({}), { description: "IDs of tasks that must complete before this one starts" })),
-				preset: Type.Optional(Type.String({})),
 				thinkingLevel: Type.Optional(Type.String({})),
 				cwd: Type.Optional(Type.String({})),
 				timeout: Type.Optional(Type.Number({})),
@@ -1856,7 +1903,6 @@ export default function (pi: ExtensionAPI) {
 				chain?: Array<{
 					task: string;
 					label?: string;
-					preset?: string;
 					thinkingLevel?: string;
 					cwd?: string;
 					timeout?: number;
@@ -1870,7 +1916,6 @@ export default function (pi: ExtensionAPI) {
 				tasks?: Array<{
 					task: string;
 					label?: string;
-					preset?: string;
 					thinkingLevel?: string;
 					cwd?: string;
 					timeout?: number;
@@ -2008,7 +2053,15 @@ export default function (pi: ExtensionAPI) {
 				return runGraphMode(params, signal, onUpdate, ctx);
 			}
 
-			// Phase 6.5: Background execution — spawn session and return ID immediately
+			// Phase 6.5: Background execution — spawn session and return ID immediately.
+			// Resolve the preset and its model BEFORE the background branch so the
+			// preset's model (and system prompt) are honored in background mode.
+			const { resolvedPreset: bgResolvedPreset } = resolveSubagentParams(params, ctx);
+			const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset);
+			const bgModel = bgModelResult.ok
+				? `${bgModelResult.model.provider}/${bgModelResult.model.id}`
+				: undefined;
+
 			if (params.background) {
 				const { spawnBackgroundSession } = await import('./session-manager');
 				
@@ -2017,8 +2070,9 @@ export default function (pi: ExtensionAPI) {
 						task: params.task,
 						type: params.preset || 'general-purpose',
 						description: params.label,
+						model: bgModel,
 						thinkingLevel: (params.thinkingLevel as ThinkingLevel) || 'medium',
-						systemPrompt: params.systemPrompt,
+						systemPrompt: bgResolvedPreset?.systemPrompt || params.systemPrompt,
 						cwd: params.cwd,
 					});
 					
@@ -2127,7 +2181,7 @@ export default function (pi: ExtensionAPI) {
 						}
 					}, 30 * 60 * 1000);
 					
-					log.info("Background agent spawned", { agentId: agent.id, task: params.task });
+					log.info("Background agent spawned", { agentId: agent.id, task: params.task, model: agent.model });
 					
 					return {
 						content: [{
@@ -2211,6 +2265,7 @@ export default function (pi: ExtensionAPI) {
 				toolOptions,
 				resolvedGitMode,
 				resolvedApprovalMode,
+				resolvedPreset,
 			} = resolveSubagentParams(params, ctx);
 
 			// F1: Validate CWD
@@ -2270,7 +2325,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Resolve model
-			const modelResult = resolveSubagentModel(ctx);
+			const modelResult = resolveSubagentModel(ctx, resolvedPreset);
 			if (!modelResult.ok) return modelResult.error;
 			const subagentModel = modelResult.model;
 
