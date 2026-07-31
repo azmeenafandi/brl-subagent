@@ -1833,7 +1833,6 @@ export default function (pi: ExtensionAPI) {
 			chain: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
 				label: Type.Optional(Type.String({})),
-				preset: Type.Optional(Type.String({})),
 				thinkingLevel: Type.Optional(Type.String({})),
 				cwd: Type.Optional(Type.String({})),
 				timeout: Type.Optional(Type.Number({})),
@@ -1849,7 +1848,6 @@ export default function (pi: ExtensionAPI) {
 			tasks: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description for this parallel subtask" }),
 				label: Type.Optional(Type.String({})),
-				preset: Type.Optional(Type.String({})),
 				thinkingLevel: Type.Optional(Type.String({})),
 				cwd: Type.Optional(Type.String({})),
 				timeout: Type.Optional(Type.Number({})),
@@ -1867,7 +1865,6 @@ export default function (pi: ExtensionAPI) {
 				task: Type.String({ description: "Task description. Use {otherId} to reference output from another task." }),
 				label: Type.Optional(Type.String({})),
 				dependsOn: Type.Optional(Type.Array(Type.String({}), { description: "IDs of tasks that must complete before this one starts" })),
-				preset: Type.Optional(Type.String({})),
 				thinkingLevel: Type.Optional(Type.String({})),
 				cwd: Type.Optional(Type.String({})),
 				timeout: Type.Optional(Type.Number({})),
@@ -1906,7 +1903,6 @@ export default function (pi: ExtensionAPI) {
 				chain?: Array<{
 					task: string;
 					label?: string;
-					preset?: string;
 					thinkingLevel?: string;
 					cwd?: string;
 					timeout?: number;
@@ -1920,7 +1916,6 @@ export default function (pi: ExtensionAPI) {
 				tasks?: Array<{
 					task: string;
 					label?: string;
-					preset?: string;
 					thinkingLevel?: string;
 					cwd?: string;
 					timeout?: number;
@@ -2058,7 +2053,15 @@ export default function (pi: ExtensionAPI) {
 				return runGraphMode(params, signal, onUpdate, ctx);
 			}
 
-			// Phase 6.5: Background execution — spawn session and return ID immediately
+			// Phase 6.5: Background execution — spawn session and return ID immediately.
+			// Resolve the preset and its model BEFORE the background branch so the
+			// preset's model (and system prompt) are honored in background mode.
+			const { resolvedPreset: bgResolvedPreset } = resolveSubagentParams(params, ctx);
+			const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset);
+			const bgModel = bgModelResult.ok
+				? `${bgModelResult.model.provider}/${bgModelResult.model.id}`
+				: undefined;
+
 			if (params.background) {
 				const { spawnBackgroundSession } = await import('./session-manager');
 				
@@ -2067,8 +2070,9 @@ export default function (pi: ExtensionAPI) {
 						task: params.task,
 						type: params.preset || 'general-purpose',
 						description: params.label,
+						model: bgModel,
 						thinkingLevel: (params.thinkingLevel as ThinkingLevel) || 'medium',
-						systemPrompt: params.systemPrompt,
+						systemPrompt: bgResolvedPreset?.systemPrompt || params.systemPrompt,
 						cwd: params.cwd,
 					});
 					
@@ -2177,7 +2181,7 @@ export default function (pi: ExtensionAPI) {
 						}
 					}, 30 * 60 * 1000);
 					
-					log.info("Background agent spawned", { agentId: agent.id, task: params.task });
+					log.info("Background agent spawned", { agentId: agent.id, task: params.task, model: agent.model });
 					
 					return {
 						content: [{
