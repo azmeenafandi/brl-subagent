@@ -77,6 +77,7 @@ export interface SubagentPreset {
 	systemPrompt?: string;
 	inheritSystemPrompt?: boolean;
 	thinkingLevel?: string;
+	model?: string; // "provider/model-id", e.g. "anthropic/claude-opus-4-6"
 	outputFile?: string;
 	timeout?: number;
 	tools?: string[];
