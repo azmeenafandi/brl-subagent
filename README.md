@@ -128,10 +128,6 @@ Set `background: true` to spawn the subagent as an independent session that retu
 
 **Extension/skill isolation:** background sessions never import extension or skill code — not from the target `cwd` (which is LLM-controlled and untrusted — there is no trust prompt in background mode) and not from your global `~/.pi/agent/skills`. This is a deliberate security choice: the prompt is fully specified by the caller, so nothing is lost from the delegation contract. If a task needs installed skills or extension tools, use foreground delegation instead.
 
-## Phase 5 hardening (v2.1.0)
-
----
-
 ## Changelog
 
 ### v2.1.2
