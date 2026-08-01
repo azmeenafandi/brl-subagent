@@ -16,6 +16,7 @@ export interface ValidateConfig {
   toolOptions?: SubagentToolOptions;
   thinkingLevel?: ThinkingLevel;
   gitMode?: string;
+  outputFile?: string;
 }
 
 export interface ValidateResult {
@@ -247,8 +248,20 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
     }
   }
 
+  // C: outputFile requires the write tool — a hard conflict, not a warning.
+  // The extension instructs the subagent to write findings to outputFile,
+  // but a preset's excludeTools is a hard constraint nothing can override.
+  // Reject before any tokens are spent (loud failure).
+  if (config.outputFile && !isToolAvailable('write', config.toolOptions)) {
+    errors.push(
+      `outputFile is set but the 'write' tool is not available ` +
+      `(tools=${config.toolOptions?.tools?.join(',') ?? 'all'}, excludeTools=${config.toolOptions?.excludeTools?.join(',') ?? 'none'}). ` +
+      `The subagent cannot write the report. Remove outputFile or adjust the preset/tool restrictions.`
+    );
+  }
+
   return {
-    valid: true, // Always valid — warnings are informational
+    valid: errors.length === 0, // Errors are hard conflicts; warnings are informational
     warnings,
     errors,
   };

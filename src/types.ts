@@ -397,6 +397,8 @@ export interface ResolvedParams {
 	effectiveCwd: string;
 	thinkingLevel: ThinkingLevel;
 	toolOptions: SubagentToolOptions | undefined;
+	/** Set only when autoRoutePreset chose the preset (not explicitly requested). */
+	autoRoutedPreset: SubagentPreset | undefined;
 }
 
 // ---------------------------------------------------------------------------

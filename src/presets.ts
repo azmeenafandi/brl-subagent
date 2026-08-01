@@ -317,6 +317,28 @@ export function formatPresetSummary(p: SubagentPreset): string {
 	return parts.join(" · ") || "default";
 }
 
+/**
+ * Format a one-line summary of a preset's TOOL RESTRICTIONS.
+ *
+ * `excludeTools` is a hard constraint — nothing can override it — so it is
+ * surfaced as "read-only: excludes ...". An explicit `tools` allowlist is a
+ * soft restriction and is shown as "tools: ...". Presets with neither expose
+ * the full toolset ("no tool restrictions").
+ *
+ * Used both in the delegate_task tool description (B1 visibility) and the
+ * auto-route result note (B2) so the conductor sees restrictions before
+ * delegating.
+ */
+export function formatPresetRestriction(p: SubagentPreset): string {
+	if (p.excludeTools?.length) {
+		return `read-only: excludes ${p.excludeTools.join(", ")}`;
+	}
+	if (p.tools?.length) {
+		return `tools: ${p.tools.join(", ")}`;
+	}
+	return "no tool restrictions";
+}
+
 // ---------------------------------------------------------------------------
 // File helpers
 // ---------------------------------------------------------------------------

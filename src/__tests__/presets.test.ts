@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { parseFrontmatter, validatePreset, validateAllPresets } from "../presets";
+import { parseFrontmatter, validatePreset, validateAllPresets, formatPresetRestriction } from "../presets";
 import type { SubagentPreset } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -241,5 +241,41 @@ describe("validateAllPresets", () => {
 
 	it("empty preset array returns empty errors", () => {
 		expect(validateAllPresets([])).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// formatPresetRestriction — tool restriction visibility (issue #32)
+// ---------------------------------------------------------------------------
+
+describe("formatPresetRestriction", () => {
+	it("formats excludeTools as a read-only restriction", () => {
+		const preset: SubagentPreset = {
+			name: "security-auditor",
+			excludeTools: ["write", "edit", "bash"],
+		};
+		expect(formatPresetRestriction(preset)).toBe("read-only: excludes write, edit, bash");
+	});
+
+	it("formats an allowlist as tools only", () => {
+		const preset: SubagentPreset = {
+			name: "data-analyst",
+			tools: ["read", "grep", "find", "ls", "write"],
+		};
+		expect(formatPresetRestriction(preset)).toBe("tools: read, grep, find, ls, write");
+	});
+
+	it("returns no tool restrictions when neither is set", () => {
+		const preset: SubagentPreset = { name: "rapid-prototyper" };
+		expect(formatPresetRestriction(preset)).toBe("no tool restrictions");
+	});
+
+	it("prefers excludeTools over an allowlist when both are set", () => {
+		const preset: SubagentPreset = {
+			name: "debugger",
+			tools: ["read", "grep", "find", "ls", "bash", "write", "edit"],
+			excludeTools: ["write", "edit"],
+		};
+		expect(formatPresetRestriction(preset)).toBe("read-only: excludes write, edit");
 	});
 });

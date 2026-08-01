@@ -46,6 +46,16 @@ describe("promptGuidelines — conductor guardrails", () => {
 		// The guardrails should mention that H1 also validates, for context
 		expect(INDEX_SRC).toContain("validates configuration before spawning");
 	});
+
+	it("exposes preset tool restrictions in the tool description (B1)", () => {
+		// Issue #32 part B1: the conductor must see preset restrictions before
+		// calling delegate_task, so a preset+outputFile combination can't fail
+		// silently. The restriction summary is computed at registration.
+		expect(INDEX_SRC).toContain("presetRestrictionSummary");
+		expect(INDEX_SRC).toContain("IMPORTANT: some presets restrict tools");
+		expect(INDEX_SRC).toContain("outputFile requires the subagent's write tool");
+		expect(INDEX_SRC).toContain("formatPresetRestriction");
+	});
 });
 
 // ---------------------------------------------------------------------------
