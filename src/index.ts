@@ -76,6 +76,7 @@ import {
 } from "./git";
 import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile } from "./presets";
+import { modelIsAvailable } from "./model-availability";
 import { autoRoutePreset } from "./router";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import { getPreset as getPresetFn } from "./presets";
@@ -309,21 +310,6 @@ export default function (pi: ExtensionAPI) {
 		return { provider: s.slice(0, idx), id: s.slice(idx + 1) };
 	}
 
-	/** Check if provider/model combo exists in the model registry. */
-	function modelIsAvailable(ctx: ExtensionContext, m: { provider: string; id: string }): boolean {
-		try {
-			const registry = ctx.modelRegistry;
-			// Prefer find(); fall back to a getAll() scan if find is unavailable.
-			if (registry?.find) {
-				return registry.find(m.provider, m.id) !== undefined;
-			}
-			const models = registry?.getAll?.() ?? [];
-			return models.some((x) => x.provider === m.provider && x.id === m.id);
-		} catch {
-			return false;
-		}
-	}
-
 	function resolveSubagentModel(
 		ctx: ExtensionContext,
 		preset?: SubagentPreset,
@@ -335,7 +321,7 @@ export default function (pi: ExtensionAPI) {
 
 		if (preset?.model) {
 			const parsed = parseModelString(preset.model);
-			if (parsed && modelIsAvailable(ctx, parsed)) {
+			if (parsed && modelIsAvailable(ctx.modelRegistry, parsed)) {
 				subagentModel = parsed;
 				log.info("Using preset model", { preset: preset.name, model: preset.model });
 			} else {
