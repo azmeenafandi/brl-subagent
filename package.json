@@ -5,12 +5,25 @@
   "keywords": [
     "pi-package"
   ],
+  "files": [
+    "src/",
+    "presets/",
+    "README.md",
+    "LICENSE",
+    "!src/__tests__/"
+  ],
   "pi": {
     "extensions": [
       "./src/index.ts"
     ]
   },
   "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.83.0",
+    "@earendil-works/pi-ai": "^0.83.0",
+    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@earendil-works/pi-tui": "^0.83.0",
+    "jiti": "^2.7.0",
+    "typebox": "^1.3.9",
     "vitest": "^4.1.9"
   }
 }
