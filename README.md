@@ -96,16 +96,12 @@ Files use the same format as built-in presets — YAML frontmatter with these fi
 ```yaml
 ---
 name: my-preset
-description: Debug with verbose thinking and full tool access
+description: Debug with verbose thinking
+model: anthropic/claude-opus-4-6   # optional — fallback to configured model if unavailable
 tools:
   - read
-  - grep
-  - find
   - bash
-  - edit
-  - write
 thinking: high
-systemPrompt: You are a senior debugging agent. Investigate systematically.
 ---
 ```
 

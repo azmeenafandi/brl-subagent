@@ -1,7 +1,8 @@
 ---
 name: test-engineer
 description: Test creation and coverage analysis with edge case focus
-promptGuideline: For test creation, coverage analysis, and quality assurance. Use thinkingLevel: medium.
+# model: provider/model-id (optional — pin a model for this preset; unavailable models fall back to the configured model)
+promptGuideline: "For test creation, coverage analysis, and quality assurance. Use thinkingLevel: medium."
 thinkingLevel: medium
 tools:
   - read

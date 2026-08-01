@@ -1,7 +1,8 @@
 ---
 name: dev-agent
 description: Full-access development agent for code implementation, testing, and git operations
-promptGuideline: For production implementation and development work. Use thinkingLevel: medium. Full tool access.
+# model: provider/model-id (optional — pin a model for this preset; unavailable models fall back to the configured model)
+promptGuideline: "For production implementation and development work. Use thinkingLevel: medium. Full tool access."
 thinkingLevel: medium
 tools:
   - read

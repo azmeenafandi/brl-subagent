@@ -1,7 +1,8 @@
 ---
 name: code-reviewer
 description: Constructive code review focused on correctness, security, and maintainability
-promptGuideline: For code review of PRs or modules. Use thinkingLevel: high. Read-only.
+# model: provider/model-id (optional — pin a model for this preset; unavailable models fall back to the configured model)
+promptGuideline: "For code review of PRs or modules. Use thinkingLevel: high. Read-only."
 thinkingLevel: high
 tools:
   - read

@@ -1,7 +1,8 @@
 ---
 name: tech-writer
 description: Technical documentation with clarity and examples
-promptGuideline: For technical documentation, READMEs, and API docs. Use thinkingLevel: medium.
+# model: provider/model-id (optional — pin a model for this preset; unavailable models fall back to the configured model)
+promptGuideline: "For technical documentation, READMEs, and API docs. Use thinkingLevel: medium."
 thinkingLevel: medium
 tools:
   - read
