@@ -1,7 +1,6 @@
-.pi/
 .development/
-node_modules/
 graphify-out/
+node_modules/
+.pi/
 sync-extension.sh
-.tmp/
 .tmp/
