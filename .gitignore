@@ -3,3 +3,4 @@
 node_modules/
 graphify-out/
 sync-extension.sh
+.tmp/
