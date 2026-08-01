@@ -5,3 +5,4 @@ graphify-out/
 src/__tests__/*
 !src/__tests__/preset-model.test.ts
 vitest.config.ts
+sync-extension.sh
