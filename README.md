@@ -83,6 +83,14 @@ All settings persist across sessions.
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
 | `background` | boolean | `false` | Spawn as an independent background session; returns an ID immediately. See [Background execution](#background-execution). |
 
+## Multi-step modes (chain, tasks, graph)
+
+Beyond a single `task`, `delegate_task` accepts three multi-step shapes: `chain` (sequential steps, `{previous}` references the prior step's output), `tasks` (parallel, independent), and `graph` (dependency-ordered, `{otherId}` references another task's output).
+
+Every execution knob can be set per step: `model`, `thinkingLevel`, `tools`, `excludeTools`, `noBuiltinTools`, `systemPrompt`, `inheritSystemPrompt`, `outputFile`, `timeout`, `cwd`. Unset fields inherit from the global parameters (and their preset defaults).
+
+**Per-step model:** `model: "provider/model-id"` on a step overrides the global subagent model for that step only (e.g. a cheap model for extraction steps, an expensive one for synthesis). The override is validated against the model catalog and provider auth before use; if it's unavailable or malformed, the step falls back to the global model with a warning. Note: the global model must still resolve — a session with no configured model at all cannot run multi-step modes even if every step declares one (consistent with single-mode behavior).
+
 ---
 
 ## Presets

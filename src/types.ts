@@ -271,7 +271,6 @@ export interface SubTaskParams {
 	label?: string;
 	/** Model override for this step (provider/model-id, e.g. "anthropic/claude-opus-4-6"). */
 	model?: string;
-	preset?: string;
 	thinkingLevel?: string;
 	systemPrompt?: string;
 	inheritSystemPrompt?: boolean;
@@ -334,7 +333,6 @@ export interface GraphTask {
 	label?: string;
 	/** Model override for this task (provider/model-id, e.g. "anthropic/claude-opus-4-6"). */
 	model?: string;
-	preset?: string;
 	thinkingLevel?: string;
 	cwd?: string;
 	timeout?: number;

@@ -310,9 +310,10 @@ export default function (pi: ExtensionAPI) {
 
 	/** Parse "provider/model-id" into {provider, id}. Returns null on bad format. */
 	function parseModelString(s: string): { provider: string; id: string } | null {
-		const idx = s.indexOf("/");
-		if (idx <= 0 || idx === s.length - 1) return null;
-		return { provider: s.slice(0, idx), id: s.slice(idx + 1) };
+		const trimmed = s.trim();
+		const idx = trimmed.indexOf("/");
+		if (idx <= 0 || idx === trimmed.length - 1) return null;
+		return { provider: trimmed.slice(0, idx), id: trimmed.slice(idx + 1) };
 	}
 
 	function resolveSubagentModel(
@@ -371,11 +372,14 @@ export default function (pi: ExtensionAPI) {
 	): { provider: string; id: string } {
 		if (stepModel) {
 			const parsed = parseModelString(stepModel);
-			if (parsed && modelIsAvailable(ctx.modelRegistry, parsed)) {
+			if (!parsed) {
+				log.warn("Step model is not a valid provider/model-id, falling back to global model", { model: stepModel });
+			} else if (modelIsAvailable(ctx.modelRegistry, parsed)) {
 				log.info("Using step model override", { model: stepModel });
 				return parsed;
+			} else {
+				log.warn("Step model unavailable, falling back to global model", { model: stepModel });
 			}
-			log.warn("Step model unavailable, falling back to global model", { model: stepModel });
 		}
 		return globalModel;
 	}

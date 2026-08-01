@@ -94,6 +94,7 @@ interface ToolEntry {
 }
 
 let tool: ToolEntry;
+let sessionStartHandler: ((_event: unknown, ctx: Record<string, unknown>) => Promise<void>) | undefined;
 
 function setupExtension(): ToolEntry {
 	const registeredTools = new Map<string, ToolEntry>();
@@ -101,7 +102,9 @@ function setupExtension(): ToolEntry {
 		registerTool: (t: ToolEntry) => registeredTools.set(t.name, t),
 		registerCommand: () => {},
 		registerShortcut: () => {},
-		on: () => {},
+		on: (event: string, handler: (_event: unknown, ctx: Record<string, unknown>) => Promise<void>) => {
+			if (event === "session_start") sessionStartHandler = handler;
+		},
 		appendEntry: () => {},
 		sendMessage: () => {},
 		ctx: {
@@ -115,17 +118,23 @@ function setupExtension(): ToolEntry {
 	return toolEntry;
 }
 
-/** Model registry mock: models listed in `available` exist and have configured auth. */
-function makeRegistry(available: string[]): {
+/** Model registry mock: models listed in `available` exist; auth per model via `unauthed` (default: all authed). */
+function makeRegistry(
+	available: string[],
+	unauthed: string[] = [],
+): {
 	find: (provider: string, id: string) => { provider: string; id: string } | undefined;
-	hasConfiguredAuth: () => boolean;
+	hasConfiguredAuth: (model: { provider: string; id: string }) => boolean;
 } {
 	return {
 		find: (provider: string, id: string) => {
 			const key = `${provider}/${id}`;
 			return available.includes(key) ? { provider, id } : undefined;
 		},
-		hasConfiguredAuth: () => true,
+		hasConfiguredAuth: (model: { provider: string; id: string }) => {
+			const key = `${model.provider}/${model.id}`;
+			return !unauthed.includes(key);
+		},
 	};
 }
 
@@ -207,6 +216,39 @@ describe("delegate_task step schemas accept model", () => {
 // ---------------------------------------------------------------------------
 
 describe("chain mode per-step model", () => {
+	it("step override wins over a preset-sourced global model (precedence)", async () => {
+		// Install a custom preset with a model into the test cwd, then run
+		// session_start so state picks it up. The chain step declares a
+		// DIFFERENT model — the step must win.
+		const presetDir = path.join(testCwd, ".pi", "brl-subagent", "presets");
+		fs.mkdirSync(presetDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(presetDir, "preset-with-model.md"),
+			[
+				"---",
+				"name: preset-with-model",
+				"description: Preset with a pinned model",
+				"model: openai/gpt-4o",
+				"---",
+				"",
+				"# Preset With Model",
+			].join("\n"),
+			"utf-8",
+		);
+		if (sessionStartHandler) {
+			await sessionStartHandler({}, makeCtx() as never);
+		}
+
+		const result = await tool.execute("call-p1", {
+			preset: "preset-with-model",
+			chain: [{ task: "step one", model: STEP_MODEL }],
+		}, undefined, undefined, makeCtx());
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		expect(runnerMocks.runSubagent.mock.calls[0][2]).toEqual(STEP_MODEL_PARSED);
+		expect(result.details?.results?.[0]?.model).toBe(STEP_MODEL);
+	});
+
 	it("uses the step model override when available", async () => {
 		const result = await tool.execute("call-1", {
 			chain: [{ task: "step one", model: STEP_MODEL }],
@@ -237,6 +279,84 @@ describe("chain mode per-step model", () => {
 
 		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
 		expect(runnerMocks.runSubagent.mock.calls[0][2]).toEqual(GLOBAL_MODEL);
+	});
+
+	it("falls back to the global model when the step model's provider lacks auth", async () => {
+		// Model IS in the catalog but the provider has no configured auth —
+		// the auth-aware availability check (issue #4 behavior) must reject it.
+		const ctx = makeCtx();
+		ctx.modelRegistry = makeRegistry(
+			[`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`, STEP_MODEL],
+			[STEP_MODEL], // STEP_MODEL catalogued but unauthed
+		);
+		const result = await tool.execute("call-a1", {
+			chain: [{ task: "step one", model: STEP_MODEL }],
+		}, undefined, undefined, ctx);
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		expect(runnerMocks.runSubagent.mock.calls[0][2]).toEqual(GLOBAL_MODEL);
+	});
+
+	it("falls back on whitespace-only, empty-id, and empty-provider strings", async () => {
+		const cases = ["   ", "provider/", "/model", "  openai/gpt-4o  "];
+		for (const bad of cases) {
+			runnerMocks.runSubagent.mockClear();
+			const result = await tool.execute("call-e1", {
+				chain: [{ task: "step one", model: bad }],
+			}, undefined, undefined, makeCtx());
+			expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+			expect(runnerMocks.runSubagent.mock.calls[0][2]).toEqual(GLOBAL_MODEL);
+		}
+	});
+
+	it("accepts provider/model-id with slashes in the id (OpenRouter-style)", async () => {
+		// First-slash split: "openrouter/meta-llama/llama-3.3-70b" → provider
+		// "openrouter", id "meta-llama/llama-3.3-70b". Availability decides.
+		const slashModel = "openrouter/meta-llama/llama-3.3-70b-instruct";
+		const ctx = makeCtx();
+		ctx.modelRegistry = makeRegistry([slashModel]);
+		const result = await tool.execute("call-s1", {
+			chain: [{ task: "step one", model: slashModel }],
+		}, undefined, undefined, ctx);
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		expect(runnerMocks.runSubagent.mock.calls[0][2]).toEqual({
+			provider: "openrouter",
+			id: "meta-llama/llama-3.3-70b-instruct",
+		});
+	});
+
+	it("step override wins over an AUTO-ROUTED preset's model", async () => {
+		// Install a custom preset that SHADOWS a built-in routing name
+		// (security-auditor) with a pinned model. "audit" in the task
+		// auto-routes to it — the step's explicit model must still win.
+		const presetDir = path.join(testCwd, ".pi", "brl-subagent", "presets");
+		fs.mkdirSync(presetDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(presetDir, "security-auditor.md"),
+			[
+				"---",
+				"name: security-auditor",
+				"description: Custom auditor with a pinned model",
+				"model: openai/gpt-4o",
+				"---",
+				"",
+				"# Custom Auditor",
+			].join("\n"),
+			"utf-8",
+		);
+		if (sessionStartHandler) {
+			await sessionStartHandler({}, makeCtx() as never);
+		}
+
+		const result = await tool.execute("call-ar1", {
+			// No explicit preset → auto-route fires on "audit"
+			chain: [{ task: "audit the codebase", model: STEP_MODEL }],
+		}, undefined, undefined, makeCtx());
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		expect(runnerMocks.runSubagent.mock.calls[0][2]).toEqual(STEP_MODEL_PARSED);
+		expect(result.details?.results?.[0]?.model).toBe(STEP_MODEL);
 	});
 
 	it("uses the global model when the step declares no model (unchanged behavior)", async () => {
