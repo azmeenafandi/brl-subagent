@@ -176,6 +176,20 @@ export function setAgentResult(id: string, result: SubagentResult): BackgroundAg
 }
 
 /**
+ * Set the final assistant output captured from the agent's session
+ */
+export function setAgentFinalOutput(id: string, output: string): BackgroundAgent | null {
+  const agent = getAgent(id);
+  if (!agent) return null;
+  
+  agent.finalOutput = output;
+  
+  agents.set(id, agent);
+  persistAgent(agent);
+  return agent;
+}
+
+/**
  * Stop a running agent
  * 
  * NOTE: In v2.0.3, this just marks the agent as stopped.

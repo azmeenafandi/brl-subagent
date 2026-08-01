@@ -536,6 +536,7 @@ export interface BackgroundAgent {
 	thinkingLevel: ThinkingLevel;
 	error?: string;
 	result?: SubagentResult;
+	finalOutput?: string;
 	/** @internal — session reference for live monitor polling */
 	_sessionRef?: import('@earendil-works/pi-coding-agent').AgentSession;
 }

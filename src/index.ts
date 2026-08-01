@@ -80,6 +80,7 @@ import { autoRoutePreset } from "./router";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import { getPreset as getPresetFn } from "./presets";
 import { createSessionState } from "./state";
+import { setAgentFinalOutput } from "./session-manager";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
 import { ProcessPool } from "./pool";
@@ -2100,7 +2101,9 @@ export default function (pi: ExtensionAPI) {
 							
 							const session = agent._sessionRef;
 							if (!session) {
-								// Session ref not available — session may have crashed
+								// Session ref not available — session may have crashed.
+								// Capture whatever output exists (may be empty — fine).
+								setAgentFinalOutput(agent.id, state.subagentSessions.get(agent.id)?.liveOutput ?? '');
 								completed = true;
 								clearInterval(pollInterval);
 								clearTimeout(hardCapHandle);
@@ -2120,22 +2123,23 @@ export default function (pi: ExtensionAPI) {
 							
 							const messages = session.messages;
 							const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
-							const output = lastAssistant?.content
+							const finalOutput = lastAssistant?.content
 								?.filter(c => c.type === 'text')
 								?.map(c => c.text)
 								?.join('') || '';
 							
 							try {
 								const stats = session.getSessionStats();
-								state.updateLiveSubagent(agent.id, output, stats.tokens.input, stats.tokens.output);
+								state.updateLiveSubagent(agent.id, finalOutput, stats.tokens.input, stats.tokens.output);
 							} catch {
-								state.updateLiveSubagent(agent.id, output, 0, 0);
+								state.updateLiveSubagent(agent.id, finalOutput, 0, 0);
 							}
 							
 							if (!session.isStreaming) {
 								completed = true;
 								clearInterval(pollInterval);
 								clearTimeout(hardCapHandle);
+								setAgentFinalOutput(agent.id, finalOutput);
 								state.finalizeLiveSubagent(agent.id);
 								state.activeSubagents--;
 								if (state.activeSubagents < 0) state.activeSubagents = 0;
@@ -2144,7 +2148,7 @@ export default function (pi: ExtensionAPI) {
 								updateProgressStatus(state, ctx);
 								pi.sendMessage({
 									customType: "subagent-notification",
-									content: `Background agent "${agent.description}" completed.`,
+									content: `Background agent "${agent.description}" completed.\n\n${finalOutput.slice(0, 500)}`,
 									display: true,
 									details: { agentId: agent.id }
 								}, { deliverAs: "followUp" });
@@ -2167,6 +2171,15 @@ export default function (pi: ExtensionAPI) {
 						if (!completed) {
 							completed = true;
 							clearInterval(pollInterval);
+							// Capture whatever final output exists in the session
+							const hardCapSession = agent._sessionRef;
+							const hardCapMessages = hardCapSession?.messages ?? [];
+							const hardCapLastAssistant = [...hardCapMessages].reverse().find(m => m.role === 'assistant');
+							const hardCapFinalOutput = hardCapLastAssistant?.content
+								?.filter(c => c.type === 'text')
+								?.map(c => c.text)
+								?.join('') || '';
+							setAgentFinalOutput(agent.id, hardCapFinalOutput);
 							state.finalizeLiveSubagent(agent.id);
 							state.activeSubagents--;
 							if (state.activeSubagents < 0) state.activeSubagents = 0;
@@ -2174,7 +2187,7 @@ export default function (pi: ExtensionAPI) {
 							updateProgressStatus(state, ctx);
 							pi.sendMessage({
 								customType: "subagent-notification",
-								content: `Background agent "${agent.description}" timed out (30min hard cap).`,
+								content: `Background agent "${agent.description}" timed out (30min hard cap).\n\n${hardCapFinalOutput.slice(0, 500)}`,
 								display: true,
 								details: { agentId: agent.id }
 							}, { deliverAs: "followUp" });
@@ -2884,6 +2897,10 @@ export default function (pi: ExtensionAPI) {
 				if (agent.result.messages && agent.result.messages.length > 0) {
 					resultText += agent.result.messages.join('\n');
 				}
+			}
+			
+			if (agent.finalOutput) {
+				resultText += `\n\nFinal output:\n${agent.finalOutput}`;
 			}
 			
 			// Include transcript if verbose
