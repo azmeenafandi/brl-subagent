@@ -1,7 +1,8 @@
 ---
 name: data-analyst
 description: Data analysis with statistical rigor and visualization focus
-promptGuideline: For metrics analysis, statistics, and data-driven reports. Use thinkingLevel: medium.
+# model: provider/model-id (optional — pin a model for this preset; unavailable models fall back to the configured model)
+promptGuideline: "For metrics analysis, statistics, and data-driven reports. Use thinkingLevel: medium."
 thinkingLevel: medium
 tools:
   - read

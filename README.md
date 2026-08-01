@@ -93,19 +93,18 @@ Built-in presets ship with the extension. You can also create **custom presets**
 
 Files use the same format as built-in presets — YAML frontmatter with these fields:
 
+> Note: the parser does not support inline comments — put notes on their own line starting with `#`.
+
 ```yaml
 ---
 name: my-preset
-description: Debug with verbose thinking and full tool access
+description: Debug with verbose thinking
+# optional — pin a model; falls back to the configured model if unavailable
+model: anthropic/claude-opus-4-6
 tools:
   - read
-  - grep
-  - find
   - bash
-  - edit
-  - write
-thinking: high
-systemPrompt: You are a senior debugging agent. Investigate systematically.
+thinkingLevel: high
 ---
 ```
 

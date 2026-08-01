@@ -1,7 +1,8 @@
 ---
 name: rapid-prototyper
 description: Fast, working code over perfection — ship first, refine later
-promptGuideline: For quick prototypes and experimental features. Use thinkingLevel: low. Speed over perfection.
+# model: provider/model-id (optional — pin a model for this preset; unavailable models fall back to the configured model)
+promptGuideline: "For quick prototypes and experimental features. Use thinkingLevel: low. Speed over perfection."
 thinkingLevel: low
 ---
 

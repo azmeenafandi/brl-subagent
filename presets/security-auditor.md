@@ -1,7 +1,8 @@
 ---
 name: security-auditor
 description: Security-focused audit with OWASP and vulnerability patterns
-promptGuideline: For security audits and vulnerability assessments. Use thinkingLevel: high. Read-only.
+# model: provider/model-id (optional — pin a model for this preset; unavailable models fall back to the configured model)
+promptGuideline: "For security audits and vulnerability assessments. Use thinkingLevel: high. Read-only."
 thinkingLevel: high
 tools:
   - read
