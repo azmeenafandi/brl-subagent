@@ -610,6 +610,7 @@ export default function (pi: ExtensionAPI) {
 					merged.customSP,
 					merged.outputFile,
 					merged.toolOptions?.tools,
+					globalParams.resolvedPreset?.promptGuideline,
 				);
 
 				// Create SubTaskResult for this step
@@ -968,6 +969,7 @@ export default function (pi: ExtensionAPI) {
 				merged.customSP,
 				merged.outputFile,
 				merged.toolOptions?.tools,
+				globalParams.resolvedPreset?.promptGuideline,
 			);
 
 			// Create SubTaskResult
@@ -1419,6 +1421,7 @@ export default function (pi: ExtensionAPI) {
 						merged.customSP,
 						merged.outputFile,
 						merged.toolOptions?.tools,
+						globalParams.resolvedPreset?.promptGuideline,
 					);
 
 					// Acquire concurrency slot
@@ -2552,6 +2555,7 @@ export default function (pi: ExtensionAPI) {
 					customSP,
 					resolvedOutputFile,
 					toolOptions?.tools,
+					resolvedPreset?.promptGuideline,
 				);
 
 				// Emit initial progress

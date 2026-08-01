@@ -67,6 +67,32 @@ describe("buildSubagentPrompt", () => {
 		const result = buildSubagentPrompt(basePrompt, true, custom);
 		expect(result).toContain("\n\n");
 	});
+
+	it("includes preset guidance section when promptGuideline is set", () => {
+		const guideline = "For security audits. Use thinkingLevel: high.";
+		const result = buildSubagentPrompt(basePrompt, true, undefined, undefined, undefined, guideline);
+
+		expect(result).toContain("## Preset Guidance");
+		expect(result).toContain(guideline);
+	});
+
+	it("omits preset guidance section when promptGuideline is unset", () => {
+		const result = buildSubagentPrompt(basePrompt, true, undefined);
+		expect(result).not.toContain("## Preset Guidance");
+	});
+
+	it("places preset guidance after custom prompt and before instructions", () => {
+		const custom = "You are a security auditor.";
+		const guideline = "Use when auditing dependencies.";
+		const result = buildSubagentPrompt(basePrompt, true, custom, undefined, undefined, guideline);
+
+		const customIdx = result.indexOf(custom);
+		const guidanceIdx = result.indexOf("## Preset Guidance");
+		const instrIdx = result.indexOf(SUBAGENT_INSTRUCTIONS);
+
+		expect(guidanceIdx).toBeGreaterThan(customIdx);
+		expect(instrIdx).toBeGreaterThan(guidanceIdx);
+	});
 });
 
 // ---------------------------------------------------------------------------
