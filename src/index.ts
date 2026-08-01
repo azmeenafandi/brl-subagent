@@ -2089,13 +2089,37 @@ export default function (pi: ExtensionAPI) {
 				const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput } = await import('./session-manager');
 				
 				try {
+					// F1: Validate cwd + outputFile the same way foreground single mode does —
+					// an unvalidated outputFile would reach the prompt and could steer the
+					// background agent's write tool outside the project root.
+					const bgCwdResult = validateCwd(bgResolved.effectiveCwd, ctx.cwd);
+					if (!bgCwdResult.ok) {
+						return {
+							content: [{ type: "text" as const, text: `Invalid cwd: ${bgCwdResult.error}` }],
+							isError: true,
+						};
+					}
+					let bgResolvedOutputFile: string | undefined;
+					if (bgResolved.outputFile) {
+						const ofResult = validateOutputFile(bgResolved.outputFile, bgCwdResult.value);
+						if (!ofResult.ok) {
+							return {
+								content: [
+									{ type: "text" as const, text: `Invalid outputFile: ${ofResult.error}` },
+								],
+								isError: true,
+							};
+						}
+						bgResolvedOutputFile = ofResult.value;
+					}
+
 					// Build the full prompt the same way foreground single mode does:
 					// base prompt (optionally inherited) + custom prompt + preset guidance.
 					const bgPrompt = buildSubagentPrompt(
 						ctx.getSystemPrompt(),
 						bgResolved.inheritSP,
 						bgResolved.customSP,
-						bgResolved.outputFile,
+						bgResolvedOutputFile,
 						bgResolved.toolOptions?.tools,
 						bgResolvedPreset?.promptGuideline,
 					);
@@ -2107,7 +2131,7 @@ export default function (pi: ExtensionAPI) {
 						model: bgModel,
 						thinkingLevel: bgResolved.thinkingLevel,
 						systemPrompt: bgPrompt,
-						cwd: bgResolved.effectiveCwd,
+						cwd: bgCwdResult.value,
 					});
 					
 					// Register for live monitor
