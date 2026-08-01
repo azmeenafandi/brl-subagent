@@ -60,7 +60,6 @@ Pi auto-discovers extensions in these directories. To update: `git pull` inside 
 | `/brl-subagent dashboard` | Live observability dashboard |
 | `/brl-subagent retry` | Browse failed runs to retry |
 | `/brl-subagent reset` | Reset all configuration |
-| **Ctrl+Shift+O** | Shortcut for live monitor |
 
 All settings persist across sessions.
 

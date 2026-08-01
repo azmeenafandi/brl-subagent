@@ -1700,14 +1700,6 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// Register keyboard shortcut for live monitor
-	pi.registerShortcut("ctrl+shift+o", {
-		description: "Open subagent live monitor",
-		handler: async (_input, ctx) => {
-			await showMonitor(ctx, state);
-		},
-	});
-
 	// -------------------------------------------------------------------
 	// delegate_task tool
 	// -------------------------------------------------------------------
