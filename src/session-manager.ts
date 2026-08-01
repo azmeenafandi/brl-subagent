@@ -294,12 +294,28 @@ export async function spawnBackgroundSession(
   const id = generateUUID();
   const effectiveCwd = params.cwd ?? ctx.cwd;
   // Dynamic import — static import fails under concurrent jiti loads
-  const { getAgentDir, createAgentSession, SessionManager, SettingsManager } = await import('@earendil-works/pi-coding-agent');
+  const { getAgentDir, createAgentSession, SessionManager, SettingsManager, DefaultResourceLoader } = await import('@earendil-works/pi-coding-agent');
   const agentDir = getAgentDir();
   
   // Create session manager for this background agent
   const sessionManager = SessionManager.inMemory(effectiveCwd);
   const settingsManager = SettingsManager.create(effectiveCwd);
+
+  // E20: Inject the subagent prompt into the session's system prompt.
+  // The SDK has no systemPrompt option on createAgentSession — the sanctioned
+  // injection point is the resource loader's appendSystemPrompt (the same
+  // mechanism pi uses for --append-system-prompt).
+  let resourceLoader: InstanceType<typeof DefaultResourceLoader> | undefined;
+  if (params.systemPrompt?.trim()) {
+    const loader = new DefaultResourceLoader({
+      cwd: effectiveCwd,
+      agentDir,
+      settingsManager,
+      appendSystemPrompt: [params.systemPrompt],
+    });
+    await loader.reload();
+    resourceLoader = loader;
+  }
   
   // Create the session
   const { session } = await createAgentSession({
@@ -308,6 +324,7 @@ export async function spawnBackgroundSession(
     sessionManager,
     settingsManager,
     modelRegistry: ctx.modelRegistry,
+    resourceLoader,
     tools: ['read', 'bash', 'grep', 'find', 'ls', 'write', 'edit'],
   });
   

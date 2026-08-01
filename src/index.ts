@@ -2078,7 +2078,8 @@ export default function (pi: ExtensionAPI) {
 			// Phase 6.5: Background execution — spawn session and return ID immediately.
 			// Resolve the preset and its model BEFORE the background branch so the
 			// preset's model (and system prompt) are honored in background mode.
-			const { resolvedPreset: bgResolvedPreset } = resolveSubagentParams(params, ctx);
+			const bgResolved = resolveSubagentParams(params, ctx);
+			const { resolvedPreset: bgResolvedPreset } = bgResolved;
 			const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset);
 			const bgModel = bgModelResult.ok
 				? `${bgModelResult.model.provider}/${bgModelResult.model.id}`
@@ -2088,14 +2089,25 @@ export default function (pi: ExtensionAPI) {
 				const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput } = await import('./session-manager');
 				
 				try {
+					// Build the full prompt the same way foreground single mode does:
+					// base prompt (optionally inherited) + custom prompt + preset guidance.
+					const bgPrompt = buildSubagentPrompt(
+						ctx.getSystemPrompt(),
+						bgResolved.inheritSP,
+						bgResolved.customSP,
+						bgResolved.outputFile,
+						bgResolved.toolOptions?.tools,
+						bgResolvedPreset?.promptGuideline,
+					);
+
 					const agent = await spawnBackgroundSession(pi, ctx, {
 						task: params.task,
 						type: params.preset || 'general-purpose',
 						description: params.label,
 						model: bgModel,
-						thinkingLevel: (params.thinkingLevel as ThinkingLevel) || 'medium',
-						systemPrompt: bgResolvedPreset?.systemPrompt || params.systemPrompt,
-						cwd: params.cwd,
+						thinkingLevel: bgResolved.thinkingLevel,
+						systemPrompt: bgPrompt,
+						cwd: bgResolved.effectiveCwd,
 					});
 					
 					// Register for live monitor
