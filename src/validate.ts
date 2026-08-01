@@ -105,9 +105,19 @@ function isToolAvailable(
   toolName: string,
   toolOptions?: SubagentToolOptions,
 ): boolean {
+  // noBuiltinTools disables ALL built-in tools (read, bash, edit, write, ...)
+  // while keeping extension/custom tools — so no built-in is available.
+  if (toolOptions?.noBuiltinTools && isBuiltinTool(toolName)) return false;
   if (toolOptions?.excludeTools?.includes(toolName)) return false;
   if (toolOptions?.tools && !toolOptions.tools.includes(toolName)) return false;
   return true;
+}
+
+// Built-in tool names pi ships (runner.ts maps noBuiltinTools → --no-builtin-tools).
+const BUILTIN_TOOLS = new Set(['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']);
+
+function isBuiltinTool(toolName: string): boolean {
+  return BUILTIN_TOOLS.has(toolName);
 }
 
 // ── Post-mortem diagnostics (H3) ─────────────────────────────────────

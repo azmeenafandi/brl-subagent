@@ -318,25 +318,40 @@ export function formatPresetSummary(p: SubagentPreset): string {
 }
 
 /**
- * Format a one-line summary of a preset's TOOL RESTRICTIONS.
+ * Format a one-line summary of tool RESTRICTIONS.
  *
  * `excludeTools` is a hard constraint — nothing can override it — so it is
  * surfaced as "read-only: excludes ...". An explicit `tools` allowlist is a
- * soft restriction and is shown as "tools: ...". Presets with neither expose
- * the full toolset ("no tool restrictions").
+ * soft restriction and is shown as "tools: ...". `noBuiltinTools` disables
+ * all pi built-in tools. Config with none of these exposes the full toolset
+ * ("no tool restrictions").
+ */
+export function formatToolRestriction(options: {
+	tools?: string[];
+	excludeTools?: string[];
+	noBuiltinTools?: boolean;
+}): string {
+	if (options.excludeTools?.length) {
+		return `read-only: excludes ${options.excludeTools.join(", ")}`;
+	}
+	if (options.tools?.length) {
+		return `tools: ${options.tools.join(", ")}`;
+	}
+	if (options.noBuiltinTools) {
+		return "no built-in tools";
+	}
+	return "no tool restrictions";
+}
+
+/**
+ * Format a one-line summary of a preset's TOOL RESTRICTIONS.
  *
  * Used both in the delegate_task tool description (B1 visibility) and the
  * auto-route result note (B2) so the conductor sees restrictions before
  * delegating.
  */
 export function formatPresetRestriction(p: SubagentPreset): string {
-	if (p.excludeTools?.length) {
-		return `read-only: excludes ${p.excludeTools.join(", ")}`;
-	}
-	if (p.tools?.length) {
-		return `tools: ${p.tools.join(", ")}`;
-	}
-	return "no tool restrictions";
+	return formatToolRestriction(p);
 }
 
 // ---------------------------------------------------------------------------

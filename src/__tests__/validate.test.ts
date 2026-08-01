@@ -194,6 +194,28 @@ describe("validatePreTask", () => {
     expect(result.errors).toHaveLength(0);
     expect(result.warnings.length).toBeGreaterThan(0);
   });
+
+  it("is invalid when outputFile is set but noBuiltinTools disables write", () => {
+    // noBuiltinTools maps to pi's --no-builtin-tools: write is a built-in
+    // tool, so it is unavailable — the same silent-failure class as #32.
+    const result = validatePreTask({
+      task: "Audit the codebase security",
+      toolOptions: { noBuiltinTools: true },
+      outputFile: "reports/audit.md",
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors[0]).toMatch(/outputFile/);
+  });
+
+  it("is valid when noBuiltinTools is set but no outputFile is used", () => {
+    // No hard conflict — noBuiltinTools alone is a legitimate config.
+    const result = validatePreTask({
+      task: "Review the authentication flow",
+      toolOptions: { noBuiltinTools: true },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
 });
 
 // ── H3: Post-mortem diagnostics ─────────────────────────────────────

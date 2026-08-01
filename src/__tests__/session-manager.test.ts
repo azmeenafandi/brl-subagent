@@ -165,6 +165,49 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 		});
 	});
 
+	describe("toolOptions forwarding (background honors restrictions)", () => {
+		it("passes the tools allowlist to createAgentSession", async () => {
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "do the thing",
+				toolOptions: { tools: ["read", "grep", "find", "ls"] },
+			});
+
+			const options = mocks.createAgentSession.mock.calls[0][0];
+			expect(options.tools).toEqual(["read", "grep", "find", "ls"]);
+		});
+
+		it("passes excludeTools to createAgentSession", async () => {
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "do the thing",
+				toolOptions: { excludeTools: ["write", "edit", "bash"] },
+			});
+
+			const options = mocks.createAgentSession.mock.calls[0][0];
+			expect(options.excludeTools).toEqual(["write", "edit", "bash"]);
+		});
+
+		it("passes noTools: 'builtin' when noBuiltinTools is set", async () => {
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "do the thing",
+				toolOptions: { noBuiltinTools: true },
+			});
+
+			const options = mocks.createAgentSession.mock.calls[0][0];
+			expect(options.noTools).toBe("builtin");
+		});
+
+		it("defaults to the full toolset when no toolOptions are given", async () => {
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "do the thing",
+			});
+
+			const options = mocks.createAgentSession.mock.calls[0][0];
+			expect(options.tools).toEqual(["read", "bash", "grep", "find", "ls", "write", "edit"]);
+			expect(options.excludeTools).toBeUndefined();
+			expect(options.noTools).toBeUndefined();
+		});
+	});
+
 	describe("loader.reload failure", () => {
 		it("propagates the error out of spawnBackgroundSession", async () => {
 			// Make reload reject — the failure must surface, not hang.

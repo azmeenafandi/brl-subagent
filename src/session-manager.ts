@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
-import type { BackgroundAgent, AgentStatus, SubagentResult, ThinkingLevel } from './types';
+import type { BackgroundAgent, AgentStatus, SubagentResult, ThinkingLevel, SubagentToolOptions } from './types';
 import { EMPTY_USAGE } from './types';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -282,6 +282,7 @@ export async function spawnBackgroundSession(
     thinkingLevel?: ThinkingLevel;
     systemPrompt?: string;
     cwd?: string;
+    toolOptions?: SubagentToolOptions;
   }
 ): Promise<BackgroundAgent> {
   // Serialize access to pi API to prevent concurrent import races
@@ -331,7 +332,12 @@ export async function spawnBackgroundSession(
     resourceLoader = loader;
   }
   
-  // Create the session
+  // Create the session — honor the resolved tool restrictions so the
+  // background agent's ACTUAL toolset matches what the prompt tells it
+  // (and what H1 validation checked). Pre-PR this was a hardcoded full
+  // toolset, so an agent told "read-only" by the prompt still had write.
+  const bgTools = params.toolOptions?.tools;
+  const bgExcludeTools = params.toolOptions?.excludeTools;
   const { session } = await createAgentSession({
     cwd: effectiveCwd,
     agentDir,
@@ -341,7 +347,9 @@ export async function spawnBackgroundSession(
     resourceLoader,
     model: resolvedModel,
     thinkingLevel: params.thinkingLevel,
-    tools: ['read', 'bash', 'grep', 'find', 'ls', 'write', 'edit'],
+    tools: bgTools ?? ['read', 'bash', 'grep', 'find', 'ls', 'write', 'edit'],
+    ...(bgExcludeTools ? { excludeTools: bgExcludeTools } : {}),
+    ...(params.toolOptions?.noBuiltinTools ? { noTools: 'builtin' as const } : {}),
   });
   
   // Set session name
