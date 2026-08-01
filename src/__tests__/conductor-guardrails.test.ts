@@ -9,6 +9,7 @@ import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { SUBAGENT_INSTRUCTIONS } from "../prompt";
+import { loadBuiltinPresets, formatPresetRestriction } from "../presets";
 
 // Read source files for static analysis
 const INDEX_SRC = fs.readFileSync(
@@ -45,6 +46,32 @@ describe("promptGuidelines — conductor guardrails", () => {
 	it("references H1 validation in guardrails context", () => {
 		// The guardrails should mention that H1 also validates, for context
 		expect(INDEX_SRC).toContain("validates configuration before spawning");
+	});
+
+	it("exposes preset tool restrictions in the tool description (B1)", () => {
+		// Issue #32 part B1: the conductor must see preset restrictions before
+		// calling delegate_task, so a preset+outputFile combination can't fail
+		// silently. The restriction summary is computed at registration from the
+		// real shipped preset files — assert the RENDERED summary, not just that
+		// the source contains some strings (a broken interpolation or an empty
+		// loadBuiltinPresets result would fail this).
+		const presetsDir = path.resolve(__dirname, "..", "..", "presets");
+		const builtins = loadBuiltinPresets(presetsDir);
+		const summary = builtins
+			.map((p: { name: string; excludeTools?: string[]; tools?: string[] }) =>
+				p.excludeTools?.length || p.tools?.length
+					? `${p.name} (${formatPresetRestriction(p)})`
+					: p.name,
+			)
+			.join(", ");
+
+		// The shipped security-auditor preset is read-only — this is the exact
+		// scenario from issue #32 (outputFile silently failed).
+		expect(summary).toContain("security-auditor (read-only: excludes write, edit, bash)");
+		expect(summary).toContain("code-reviewer (read-only: excludes write, edit, bash)");
+		// And the guideline text references the computed summary + the warning.
+		expect(INDEX_SRC).toContain("IMPORTANT: some presets restrict tools");
+		expect(INDEX_SRC).toContain("outputFile requires the subagent's write tool");
 	});
 });
 

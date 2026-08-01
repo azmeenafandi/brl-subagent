@@ -149,6 +149,73 @@ describe("validatePreTask", () => {
     expect(result.valid).toBe(true);
     expect(result.warnings.length).toBeGreaterThanOrEqual(2);
   });
+
+  // ── Hard conflicts: outputFile vs write tool (issue #32, part C) ─────
+
+  it("is invalid when outputFile is set but write is excluded", () => {
+    const result = validatePreTask({
+      task: "Audit the codebase security",
+      toolOptions: { excludeTools: ["write", "edit", "bash"] },
+      outputFile: "reports/audit.md",
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]).toMatch(/outputFile/);
+    expect(result.errors[0]).toMatch(/write/);
+  });
+
+  it("is invalid when outputFile is set but write is missing from the tools allowlist", () => {
+    const result = validatePreTask({
+      task: "Review the authentication flow",
+      toolOptions: { tools: ["read", "grep", "find", "ls"] },
+      outputFile: "review.md",
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]).toMatch(/outputFile/);
+  });
+
+  it("is valid when outputFile is set and write is available", () => {
+    const result = validatePreTask({
+      task: "Audit the codebase security",
+      toolOptions: { tools: ["read", "grep", "find", "ls", "write", "edit"] },
+      outputFile: "reports/audit.md",
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("no outputFile → existing behavior unchanged (valid:true, no errors)", () => {
+    const result = validatePreTask({
+      task: "Create a new file with the API endpoint",
+      toolOptions: { excludeTools: ["write", "edit"] },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+    expect(result.warnings.length).toBeGreaterThan(0);
+  });
+
+  it("is invalid when outputFile is set but noBuiltinTools disables write", () => {
+    // noBuiltinTools maps to pi's --no-builtin-tools: write is a built-in
+    // tool, so it is unavailable — the same silent-failure class as #32.
+    const result = validatePreTask({
+      task: "Audit the codebase security",
+      toolOptions: { noBuiltinTools: true },
+      outputFile: "reports/audit.md",
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors[0]).toMatch(/outputFile/);
+  });
+
+  it("is valid when noBuiltinTools is set but no outputFile is used", () => {
+    // No hard conflict — noBuiltinTools alone is a legitimate config.
+    const result = validatePreTask({
+      task: "Review the authentication flow",
+      toolOptions: { noBuiltinTools: true },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
 });
 
 // ── H3: Post-mortem diagnostics ─────────────────────────────────────

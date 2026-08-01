@@ -137,7 +137,7 @@ Set `background: true` to spawn the subagent as an independent session that retu
 
 ### H1 — Pre-task validation
 
-Deterministic pre-spawn checks that validate tool configuration and thinking level match the task description. Warns about **thinking level mismatches** (e.g., `off` thinking on a complex debugging task) and **missing tools** for the requested task.
+Deterministic pre-spawn checks that validate tool configuration and thinking level match the task description. Warns about **thinking level mismatches** (e.g., `off` thinking on a complex debugging task) and **missing tools** for the requested task. **Hard-rejects** combinations that cannot work — e.g. `outputFile` when the `write` tool is unavailable (a preset like `security-auditor` excludes it) — with a visible error before any tokens are spent.
 
 ### H2 — Integration test suite
 

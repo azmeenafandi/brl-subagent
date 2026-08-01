@@ -75,7 +75,7 @@ import {
 	mergeWorkBranch,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile } from "./presets";
+import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { autoRoutePreset } from "./router";
 import { validatePreTask, diagnoseFailure } from "./validate";
@@ -229,14 +229,17 @@ export default function (pi: ExtensionAPI) {
 		resolvedGitMode: GitMode;
 		resolvedApprovalMode: ApprovalMode;
 		resolvedPreset?: SubagentPreset;
+		autoRoutedPreset?: SubagentPreset; // set only when autoRoutePreset chose it
 	} {
 		// E2: Auto-route to best preset when neither preset nor template is specified
 		let resolvedPreset = params.preset;
+		let wasAutoRouted = false;
 		if (!resolvedPreset && !params.template) {
 			const allPresets = getAllPresets(state.builtinPresets, state.customPresets);
 			const suggested = autoRoutePreset(params.task, allPresets);
 			if (suggested) {
 				resolvedPreset = suggested;
+				wasAutoRouted = true;
 				log.info("Auto-routed task to preset", { preset: suggested });
 			}
 		}
@@ -244,6 +247,7 @@ export default function (pi: ExtensionAPI) {
 		const preset = resolvedPreset
 			? getPresetFn(resolvedPreset, state.builtinPresets, state.customPresets)
 			: undefined;
+		const autoRoutedPreset = wasAutoRouted ? preset : undefined;
 
 		const mergedThinkingLevel =
 			(params.thinkingLevel as ThinkingLevel | undefined) ?? preset?.thinkingLevel;
@@ -300,6 +304,7 @@ export default function (pi: ExtensionAPI) {
 			resolvedGitMode,
 			resolvedApprovalMode,
 			resolvedPreset: preset,
+			autoRoutedPreset,
 		};
 	}
 
@@ -1674,6 +1679,17 @@ export default function (pi: ExtensionAPI) {
 	// delegate_task tool
 	// -------------------------------------------------------------------
 
+	// B1: Load built-in presets once at registration to expose their tool
+	// restrictions to the conductor before any delegate_task call happens.
+	const registrationPresets = loadBuiltinPresets(path.join(__dirname, "..", "presets"));
+	const presetRestrictionSummary = registrationPresets
+		.map((p) => {
+			const restricted = p.excludeTools?.length || p.tools?.length;
+			if (!restricted) return p.name;
+			return `${p.name} (${formatPresetRestriction(p)})`;
+		})
+		.join(", ");
+
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Delegate Task",
@@ -1696,7 +1712,7 @@ export default function (pi: ExtensionAPI) {
 			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck.",
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
 			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
-			"Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. Built-in presets: code-reviewer, security-auditor, test-engineer, tech-writer, rapid-prototyper, debugger, refactorer, data-analyst.",
+			"Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.",
 			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
 			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. Use get_subagent_result to check status and retrieve results later.",
@@ -1710,7 +1726,7 @@ export default function (pi: ExtensionAPI) {
 			"4. **Tools**: Verify the subagent has the tools it needs. If the task writes files, ensure write and edit are not excluded. If the task runs commands, ensure bash is not excluded.",
 			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s.",
 			"",
-			"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1), but getting it right the first time is faster and more efficient.",
+			"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1): tool warnings are informational, but outputFile with the write tool excluded is a HARD error and the delegation is rejected. Getting it right the first time is faster and more efficient.",
 			"",
 			"Before delegating, evaluate existing presets to find the best match for the task: tech-writer (documentation), code-reviewer (code review), security-auditor (security analysis), test-engineer (test writing), debugger (debugging), refactorer (refactoring), data-analyst (data analysis), rapid-prototyper (quick prototypes). Use the preset parameter to apply the best match. If no preset fits, use dev-agent for general development tasks.",
 			"The autoRoutePreset() function can automatically select the best preset based on task keywords. Consider using it for preset selection.",
@@ -2079,7 +2095,7 @@ export default function (pi: ExtensionAPI) {
 			// Resolve the preset and its model BEFORE the background branch so the
 			// preset's model (and system prompt) are honored in background mode.
 			const bgResolved = resolveSubagentParams(params, ctx);
-			const { resolvedPreset: bgResolvedPreset } = bgResolved;
+			const { resolvedPreset: bgResolvedPreset, autoRoutedPreset: bgAutoRoutedPreset } = bgResolved;
 			const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset);
 			const bgModel = bgModelResult.ok
 				? `${bgModelResult.model.provider}/${bgModelResult.model.id}`
@@ -2113,6 +2129,27 @@ export default function (pi: ExtensionAPI) {
 						bgResolvedOutputFile = ofResult.value;
 					}
 
+					// C: H1 validation for background mode — reject outputFile-vs-write
+					// conflicts before spawning (loud failure, same as single mode).
+					const bgValidation = validatePreTask({
+						task: params.task,
+						toolOptions: bgResolved.toolOptions,
+						thinkingLevel: bgResolved.thinkingLevel,
+						gitMode: bgResolved.resolvedGitMode,
+						outputFile: bgResolvedOutputFile,
+					});
+					if (bgValidation.warnings.length > 0) {
+						log.warn("Background pre-task validation warnings", { warnings: bgValidation.warnings });
+					}
+					if (!bgValidation.valid) {
+						const errText = bgValidation.errors.join("; ");
+						log.warn("Background pre-task validation failed", { errors: bgValidation.errors });
+						return {
+							content: [{ type: "text" as const, text: errText }],
+							isError: true,
+						};
+					}
+
 					// Build the full prompt the same way foreground single mode does:
 					// base prompt (optionally inherited) + custom prompt + preset guidance.
 					const bgPrompt = buildSubagentPrompt(
@@ -2132,6 +2169,7 @@ export default function (pi: ExtensionAPI) {
 						thinkingLevel: bgResolved.thinkingLevel,
 						systemPrompt: bgPrompt,
 						cwd: bgCwdResult.value,
+						toolOptions: bgResolved.toolOptions,
 					});
 					
 					// Register for live monitor
@@ -2301,7 +2339,14 @@ export default function (pi: ExtensionAPI) {
 					}, 30 * 60 * 1000);
 					
 					log.info("Background agent spawned", { agentId: agent.id, task: params.task, model: agent.model });
-					
+
+					// B2: Surface auto-route decisions in background spawn result too.
+					// Derive the restriction from the RESOLVED toolOptions (which reflects
+					// per-call overrides) rather than the preset's declared values.
+					const bgAutoRouteNote = bgAutoRoutedPreset
+						? `\n\n[auto-routed to preset '${bgAutoRoutedPreset.name}' — ${bgResolved.toolOptions ? formatToolRestriction(bgResolved.toolOptions) : formatPresetRestriction(bgAutoRoutedPreset)}]`
+						: "";
+
 					return {
 						content: [{
 							type: "text" as const,
@@ -2309,7 +2354,8 @@ export default function (pi: ExtensionAPI) {
 								`Description: ${agent.description}\n` +
 								`Task: ${agent.task}\n` +
 								`Status: ${agent.status}\n\n` +
-								`Use get_subagent_result({ agent_id: "${agent.id}" }) to check status and retrieve results.`,
+								`Use get_subagent_result({ agent_id: "${agent.id}" }) to check status and retrieve results.` +
+								bgAutoRouteNote,
 						}],
 					};
 				} catch (err) {
@@ -2385,6 +2431,7 @@ export default function (pi: ExtensionAPI) {
 				resolvedGitMode,
 				resolvedApprovalMode,
 				resolvedPreset,
+				autoRoutedPreset,
 			} = resolveSubagentParams(params, ctx);
 
 			// F1: Validate CWD
@@ -2428,6 +2475,7 @@ export default function (pi: ExtensionAPI) {
 				toolOptions,
 				thinkingLevel,
 				gitMode: resolvedGitMode,
+				outputFile: resolvedOutputFile,
 			});
 			if (validation.warnings.length > 0) {
 				log.warn("Pre-task validation warnings", { warnings: validation.warnings });
@@ -2438,6 +2486,7 @@ export default function (pi: ExtensionAPI) {
 				return {
 					content: [{
 						type: "text" as const,
+						text: errText,
 					}],
 					isError: true,
 				};
@@ -2872,9 +2921,17 @@ export default function (pi: ExtensionAPI) {
 				// R1: Record success in circuit breaker
 				state.recordSuccess();
 
+				// B2: Surface auto-route decisions in the tool result so the conductor
+				// sees which preset was applied and what it restricts. Derive the
+				// restriction from the RESOLVED toolOptions (reflects per-call
+				// overrides) rather than the preset's declared values.
+				const autoRouteNote = autoRoutedPreset
+					? `\n\n[auto-routed to preset '${autoRoutedPreset.name}' — ${toolOptions ? formatToolRestriction(toolOptions) : formatPresetRestriction(autoRoutedPreset)}]`
+					: "";
+
 				return {
 					content: [
-						{ type: "text" as const, text: finalOutput || "(no output)" },
+						{ type: "text" as const, text: (finalOutput || "(no output)") + autoRouteNote },
 					],
 					details: result,
 				};

@@ -16,6 +16,7 @@ export interface ValidateConfig {
   toolOptions?: SubagentToolOptions;
   thinkingLevel?: ThinkingLevel;
   gitMode?: string;
+  outputFile?: string;
 }
 
 export interface ValidateResult {
@@ -104,9 +105,19 @@ function isToolAvailable(
   toolName: string,
   toolOptions?: SubagentToolOptions,
 ): boolean {
+  // noBuiltinTools disables ALL built-in tools (read, bash, edit, write, ...)
+  // while keeping extension/custom tools — so no built-in is available.
+  if (toolOptions?.noBuiltinTools && isBuiltinTool(toolName)) return false;
   if (toolOptions?.excludeTools?.includes(toolName)) return false;
   if (toolOptions?.tools && !toolOptions.tools.includes(toolName)) return false;
   return true;
+}
+
+// Built-in tool names pi ships (runner.ts maps noBuiltinTools → --no-builtin-tools).
+const BUILTIN_TOOLS = new Set(['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']);
+
+function isBuiltinTool(toolName: string): boolean {
+  return BUILTIN_TOOLS.has(toolName);
 }
 
 // ── Post-mortem diagnostics (H3) ─────────────────────────────────────
@@ -247,8 +258,20 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
     }
   }
 
+  // C: outputFile requires the write tool — a hard conflict, not a warning.
+  // The extension instructs the subagent to write findings to outputFile,
+  // but a preset's excludeTools is a hard constraint nothing can override.
+  // Reject before any tokens are spent (loud failure).
+  if (config.outputFile && !isToolAvailable('write', config.toolOptions)) {
+    errors.push(
+      `outputFile is set but the 'write' tool is not available ` +
+      `(tools=${config.toolOptions?.tools?.join(',') ?? 'all'}, excludeTools=${config.toolOptions?.excludeTools?.join(',') ?? 'none'}). ` +
+      `The subagent cannot write the report. Remove outputFile or adjust the preset/tool restrictions.`
+    );
+  }
+
   return {
-    valid: true, // Always valid — warnings are informational
+    valid: errors.length === 0, // Errors are hard conflicts; warnings are informational
     warnings,
     errors,
   };
