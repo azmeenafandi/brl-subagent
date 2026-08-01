@@ -135,6 +135,26 @@ Set `background: true` to spawn the subagent as an independent session that retu
 
 ## Changelog
 
+### v2.1.2
+
+- **Per-step model override:** chain/parallel/graph steps can declare their own `model` (`step.model > global preset > config > conductor`), availability-checked with fallback to the global model. Resolves issue #3 (per-step presets intentionally not implemented — see design decision).
+- **Security hardening:** agent ids validated as UUIDs before any filesystem access (`assertSafeAgentId` — closes agent-id path traversal); background sessions never import extension/skill code from the target cwd (loader built with `noExtensions`/`noSkills` — closes cwd→code-execution RCE).
+- **Preset tool visibility:** the `delegate_task` tool description now exposes each preset's tool restrictions (e.g. `security-auditor (read-only: excludes write, edit, bash)`); auto-routed presets are reported in the tool result.
+- **H1 loud failure:** `outputFile` combined with an unavailable `write` tool is now a hard error before spawn (was a silent failure); background mode runs H1 validation too.
+- **Background prompt injection:** background sessions receive the full built prompt (base + custom + preset guidance + subagent instructions) via `DefaultResourceLoader.appendSystemPrompt` — same semantics as pi's `--append-system-prompt`; background honors resolved `toolOptions` and resolves the model string to a real Model object.
+- **Prompt guideline wiring:** `promptGuideline` from presets is now appended to the subagent prompt as a "## Preset Guidance" section.
+- **Auth-aware model availability:** preset models are checked against catalog presence AND provider auth (extracted to `src/model-availability.ts`); SDK contract tests pin the real `ModelRegistry` surface.
+- **SDK contract tests:** new `sdk-contract.test.ts` guards against silent SDK drift (real ModelRegistry, env-independent).
+- 646 tests across 31 files.
+
+### v2.1.1
+
+- **Background agent notifications:** the conductor sees a notification when a background agent completes, crashes, or times out (via `deliverAs: "followUp"`).
+- **Custom preset discovery:** custom presets survive `pi install` updates — `.pi/brl-subagent/presets/` (project-local) and `~/.pi/agent/brl-subagent/presets/` (global), same YAML frontmatter format, override built-ins with the same name.
+- **Live monitor & footer:** background subagents appear in the footer with live counters (running / completed / unseen); polling guards against double-decrement and stale contexts.
+- **Tool system fixes:** `edit` auto-includes `write` (pi tool dependency chain); subagent prompt clarifies exactly which tools are available.
+- **Removed:** sandbox system, backend system (dead code), 12 dead exports, 80K lines of bloat from git tracking.
+
 ### v2.1.0
 
 - **Footer live counters:** Footer now shows background subagent activity with live counters.
