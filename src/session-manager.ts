@@ -44,6 +44,15 @@ function ensureStorageDir(): void {
  * Persist agent record to disk
  */
 function persistAgent(agent: BackgroundAgent): void {
+  // F24: agent.id may come from a disk-loaded record (loadAgent JSON.parse's
+  // the id field unvalidated). A planted record with a traversal id would
+  // make join() escape STORAGE_DIR — validate BEFORE building the write path.
+  try {
+    assertSafeAgentId(agent.id);
+  } catch {
+    console.error(`[brl-subagent] Refusing to persist agent with invalid id: ${agent.id}`);
+    return;
+  }
   ensureStorageDir();
   const filePath = join(STORAGE_DIR, `${agent.id}.json`);
   // Strip live/non-serializable fields before stringify — `_sessionRef` holds the
@@ -340,9 +349,16 @@ export async function spawnBackgroundSession(
   // resourceLoader is undefined, createAgentSession constructs its own
   // DefaultResourceLoader({ cwd, agentDir, settingsManager }) and reload()s it
   // — importing extension/skill code from the LLM-controlled target cwd into
-  // THIS process (RCE; background mode has no trust prompt). noExtensions +
-  // noSkills keep the loader from importing any code from the untrusted cwd;
-  // the prompt is fully specified by the caller, so nothing is lost.
+  // THIS process (RCE; background mode has no trust prompt).
+  //
+  // noExtensions + noSkills are BLANKET (they also disable user-global
+  // extensions/skills from agentDir, e.g. ~/.pi/agent/skills). This is a
+  // deliberate security choice: background sessions have no trust prompt, so
+  // nothing is imported from anywhere — the prompt is fully specified by the
+  // caller. Users needing skills/extensions should use foreground delegation.
+  // (A trust-based alternative — resolveProjectTrust: false — is tracked as a
+  // follow-up issue for users who want user-global resources in background
+  // sessions.)
   const loader = new DefaultResourceLoader({
     cwd: effectiveCwd,
     agentDir,

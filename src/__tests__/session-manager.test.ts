@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mocks must exist before vi.mock factory runs (hoisted).
 const mocks = vi.hoisted(() => ({
@@ -250,6 +250,28 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 
 describe("agent id validation (F24)", () => {
 	const VALID_UUID = "05b8b0d9-4a1e-4f2a-9c3d-6e7f8a9b0c1d";
+	// Separate id for the attack-chain test: steerAgent keeps an in-memory map
+	// entry keyed by the VALID lookup id, which would pollute other tests.
+	const ATTACK_UUID = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+
+	// Clean up any planted records/transcripts/escape targets between tests so
+	// a failed run can't leak state into the next test.
+	const cleanupF24 = () => {
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path") as typeof import("node:path");
+		for (const id of [VALID_UUID, ATTACK_UUID]) {
+			for (const p of [
+				path.join(process.cwd(), ".pi", "subagents", `${id}.json`),
+				path.join(process.cwd(), ".pi", "output", `agent-${id}.jsonl`),
+			]) {
+				try { fs.unlinkSync(p); } catch { /* ok */ }
+			}
+		}
+		try { fs.unlinkSync(path.join(process.cwd(), "..", "brl-persist-bypass-test.json")); } catch { /* ok */ }
+	};
+
+	beforeEach(cleanupF24);
+	afterEach(cleanupF24);
 
 	it("getAgent returns null for a path-traversal id without touching the fs", () => {
 		// A traversal id must never reach loadAgent()'s join(STORAGE_DIR, id+'.json').
@@ -290,5 +312,69 @@ describe("agent id validation (F24)", () => {
 
 	it("transcript.getTranscriptPath throws for a traversal id", () => {
 		expect(() => transcriptGetTranscriptPath("../../etc/passwd")).toThrow();
+	});
+
+	it("persistAgent refuses a planted record with a traversal id (F24 indirection bypass)", () => {
+		// Attack chain from the review: plant a record with a valid-UUID filename
+		// but a traversal id FIELD, then steer it — getAgent passes the UUID
+		// check, loadAgent returns the crafted record, and persistAgent would
+		// write via join(STORAGE_DIR, agent.id) outside the project.
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path") as typeof import("node:path");
+		const plantDir = path.join(process.cwd(), ".pi", "subagents");
+		const transcriptDir = path.join(process.cwd(), ".pi", "output");
+		fs.mkdirSync(plantDir, { recursive: true });
+		fs.mkdirSync(transcriptDir, { recursive: true });
+		const planted = path.join(plantDir, `${ATTACK_UUID}.json`);
+		const escapeTarget = path.join(
+			process.cwd(),
+			"..",
+			"brl-persist-bypass-test.json",
+		);
+		// steerAgent requires the transcript to exist (appendEntry throws otherwise)
+		fs.writeFileSync(
+			path.join(transcriptDir, `agent-${ATTACK_UUID}.jsonl`),
+			"",
+			"utf-8",
+		);
+
+		fs.writeFileSync(
+			planted,
+			JSON.stringify({
+				id: "../../brl-persist-bypass-test", // traversal id field
+				status: "running",
+				task: "planted",
+				startedAt: Date.now(),
+			}),
+			"utf-8",
+		);
+
+		const result = steerAgent(ATTACK_UUID, "hi");
+		expect(result).not.toBeNull(); // getAgent accepted the valid UUID
+		expect(fs.existsSync(escapeTarget)).toBe(false); // NO write outside .pi/subagents
+	});
+
+	it("persistAgent still writes valid records (regression guard)", () => {
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path") as typeof import("node:path");
+		const plantDir = path.join(process.cwd(), ".pi", "subagents");
+		const transcriptDir = path.join(process.cwd(), ".pi", "output");
+		fs.mkdirSync(plantDir, { recursive: true });
+		fs.mkdirSync(transcriptDir, { recursive: true });
+		const planted = path.join(plantDir, `${VALID_UUID}.json`);
+		fs.writeFileSync(
+			path.join(transcriptDir, `agent-${VALID_UUID}.jsonl`),
+			"",
+			"utf-8",
+		);
+		fs.writeFileSync(
+			planted,
+			JSON.stringify({ id: VALID_UUID, status: "running", task: "ok", startedAt: Date.now() }),
+			"utf-8",
+		);
+
+		steerAgent(VALID_UUID, "hi");
+		const persisted = JSON.parse(fs.readFileSync(planted, "utf-8"));
+		expect(persisted.status).toBe("steered"); // valid record persisted normally
 	});
 });
