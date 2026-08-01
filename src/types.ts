@@ -269,6 +269,8 @@ export interface SubagentToolOptions {
 export interface SubTaskParams {
 	task: string;
 	label?: string;
+	/** Model override for this step (provider/model-id, e.g. "anthropic/claude-opus-4-6"). */
+	model?: string;
 	preset?: string;
 	thinkingLevel?: string;
 	systemPrompt?: string;
@@ -330,6 +332,8 @@ export interface GraphTask {
 	id: string;
 	task: string;
 	label?: string;
+	/** Model override for this task (provider/model-id, e.g. "anthropic/claude-opus-4-6"). */
+	model?: string;
 	preset?: string;
 	thinkingLevel?: string;
 	cwd?: string;

@@ -362,6 +362,24 @@ export default function (pi: ExtensionAPI) {
 		return { ok: true, model: subagentModel };
 	}
 
+	// C3: Resolve a step's model override (step.model > global resolved model).
+	// Parsed + availability-checked; falls back to the global model on failure.
+	function resolveStepModel(
+		ctx: ExtensionContext,
+		stepModel: string | undefined,
+		globalModel: { provider: string; id: string },
+	): { provider: string; id: string } {
+		if (stepModel) {
+			const parsed = parseModelString(stepModel);
+			if (parsed && modelIsAvailable(ctx.modelRegistry, parsed)) {
+				log.info("Using step model override", { model: stepModel });
+				return parsed;
+			}
+			log.warn("Step model unavailable, falling back to global model", { model: stepModel });
+		}
+		return globalModel;
+	}
+
 	// -------------------------------------------------------------------
 	// P1+P2: mergeSubTaskParams
 	// -------------------------------------------------------------------
@@ -377,6 +395,7 @@ export default function (pi: ExtensionAPI) {
 	): {
 		task: string;
 		label: string | undefined;
+		model: string | undefined;
 		inheritSP: boolean;
 		customSP: string | undefined;
 		outputFile: string | undefined;
@@ -415,6 +434,7 @@ export default function (pi: ExtensionAPI) {
 		return {
 			task: subTask.task || globalParams.task,
 			label: subTask.label ?? globalParams.label,
+			model: subTask.model,
 			inheritSP: subTask.inheritSystemPrompt ?? globalParams.inheritSP,
 			customSP: subTask.systemPrompt ?? globalParams.customSP,
 			outputFile: subTask.outputFile ?? globalParams.outputFile,
@@ -602,6 +622,9 @@ export default function (pi: ExtensionAPI) {
 				// Merge params for this step
 				const merged = mergeSubTaskParams(globalParams, step);
 
+				// C3: Resolve this step's model override (step.model > global resolved model)
+				const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
+
 				// Substitute {previous} placeholder
 				merged.task = merged.task.replaceAll(
 					PREVIOUS_OUTPUT_PLACEHOLDER,
@@ -660,7 +683,7 @@ export default function (pi: ExtensionAPI) {
 				const result = await runSubagent(
 					resolvedCwd,
 					subagentPrompt,
-					subagentModel,
+					stepModel,
 					merged.thinkingLevel,
 					merged.task,
 					signal,
@@ -967,6 +990,9 @@ export default function (pi: ExtensionAPI) {
 			const step = taskList[index];
 			const merged = mergeSubTaskParams(globalParams, step);
 
+			// C3: Resolve this step's model override (step.model > global resolved model)
+			const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
+
 			// Build system prompt for this task
 			const subagentPrompt = buildSubagentPrompt(
 				basePrompt,
@@ -1022,7 +1048,7 @@ export default function (pi: ExtensionAPI) {
 			const result = await runSubagent(
 				resolvedCwd,
 				subagentPrompt,
-				subagentModel,
+				stepModel,
 				merged.thinkingLevel,
 				merged.task,
 				signal,
@@ -1398,7 +1424,7 @@ export default function (pi: ExtensionAPI) {
 					const subTaskParams: SubTaskParams = {
 						task: graphTask.task,
 						label: graphTask.label,
-						preset: graphTask.preset,
+						model: graphTask.model,
 						thinkingLevel: graphTask.thinkingLevel,
 						cwd: graphTask.cwd,
 						timeout: graphTask.timeout,
@@ -1411,6 +1437,9 @@ export default function (pi: ExtensionAPI) {
 					};
 
 					const merged = mergeSubTaskParams(globalParams, subTaskParams);
+
+					// C3: Resolve this step's model override (step.model > global resolved model)
+					const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
 
 					// Substitute {id} placeholders with previous outputs
 					merged.task = merged.task.replace(GRAPH_OUTPUT_PLACEHOLDER_RE, (_match, id) => {
@@ -1459,7 +1488,7 @@ export default function (pi: ExtensionAPI) {
 						const result = await runSubagent(
 							resolvedCwd,
 							subagentPrompt,
-							subagentModel,
+							stepModel,
 							merged.thinkingLevel,
 							merged.task,
 							signal,
@@ -1871,6 +1900,7 @@ export default function (pi: ExtensionAPI) {
 			chain: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
 				label: Type.Optional(Type.String({})),
+				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
 				thinkingLevel: Type.Optional(Type.String({})),
 				cwd: Type.Optional(Type.String({})),
 				timeout: Type.Optional(Type.Number({})),
@@ -1886,6 +1916,7 @@ export default function (pi: ExtensionAPI) {
 			tasks: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description for this parallel subtask" }),
 				label: Type.Optional(Type.String({})),
+				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
 				thinkingLevel: Type.Optional(Type.String({})),
 				cwd: Type.Optional(Type.String({})),
 				timeout: Type.Optional(Type.Number({})),
@@ -1902,6 +1933,7 @@ export default function (pi: ExtensionAPI) {
 				id: Type.String({ description: "Unique identifier for this task node" }),
 				task: Type.String({ description: "Task description. Use {otherId} to reference output from another task." }),
 				label: Type.Optional(Type.String({})),
+				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
 				dependsOn: Type.Optional(Type.Array(Type.String({}), { description: "IDs of tasks that must complete before this one starts" })),
 				thinkingLevel: Type.Optional(Type.String({})),
 				cwd: Type.Optional(Type.String({})),
@@ -1941,6 +1973,7 @@ export default function (pi: ExtensionAPI) {
 				chain?: Array<{
 					task: string;
 					label?: string;
+					model?: string;
 					thinkingLevel?: string;
 					cwd?: string;
 					timeout?: number;
@@ -1954,6 +1987,23 @@ export default function (pi: ExtensionAPI) {
 				tasks?: Array<{
 					task: string;
 					label?: string;
+					model?: string;
+					thinkingLevel?: string;
+					cwd?: string;
+					timeout?: number;
+					outputFile?: string;
+					tools?: string[];
+					excludeTools?: string[];
+					noBuiltinTools?: boolean;
+					systemPrompt?: string;
+					inheritSystemPrompt?: boolean;
+				}>;
+				graph?: Array<{
+					id: string;
+					task: string;
+					label?: string;
+					model?: string;
+					dependsOn?: string[];
 					thinkingLevel?: string;
 					cwd?: string;
 					timeout?: number;
