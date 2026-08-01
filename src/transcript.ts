@@ -1,6 +1,7 @@
 import { join } from 'path';
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'fs';
 import type { TranscriptEntry, TranscriptEntryType } from './types';
+import { assertSafeAgentId } from './sanitize';
 
 // Output directory
 const OUTPUT_DIR = '.pi/output';
@@ -16,6 +17,12 @@ function ensureOutputDir(): void {
  * Get transcript file path for an agent
  */
 export function getTranscriptPath(agentId: string): string {
+  // F24: single chokepoint for every transcript file path. All internal callers
+  // (startTranscript/appendEntry/getTranscript/completeTranscript) pass
+  // generateUUID() ids, but get_agent_result feeds LLM-controlled ids in via
+  // getTranscript. path.join does not sanitize "../" or absolute segments, so
+  // throw on anything that is not a UUID before it reaches the filesystem.
+  assertSafeAgentId(agentId);
   return join(OUTPUT_DIR, `agent-${agentId}.jsonl`);
 }
 

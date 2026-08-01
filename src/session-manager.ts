@@ -6,6 +6,7 @@ import { EMPTY_USAGE } from './types';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
 import { createEvent } from './event-bus';
+import { assertSafeAgentId } from './sanitize';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 
 // Serialize concurrent spawn attempts — pi's API modules aren't safe for
@@ -117,6 +118,16 @@ export function createSession(params: {
  * Get agent record by ID
  */
 export function getAgent(id: string): BackgroundAgent | null {
+  // F24: id may arrive from LLM tool params (get_agent_status, steer_subagent,
+  // get_agent_result). Validate BEFORE any map/fs access — path.join does not
+  // sanitize "../" or absolute segments, so a traversal id like "../../etc/foo"
+  // would otherwise read arbitrary .json files via loadAgent(). Invalid ids
+  // surface as "agent not found" to tool callers.
+  try {
+    assertSafeAgentId(id);
+  } catch {
+    return null;
+  }
   return agents.get(id) || loadAgent(id);
 }
 
@@ -262,6 +273,10 @@ export function steerAgent(id: string, message: string): BackgroundAgent | null 
  * Get transcript path for an agent
  */
 export function getTranscriptPath(id: string): string {
+  // F24: reachable with LLM-controlled ids (get_agent_result). Throw on invalid
+  // ids — the tool caller surfaces it as an error. (Defense in depth: getAgent
+  // already validated before this is reached with a live agent.)
+  assertSafeAgentId(id);
   return join('.pi', 'output', `agent-${id}.jsonl`);
 }
 
@@ -320,17 +335,24 @@ export async function spawnBackgroundSession(
   // The SDK has no systemPrompt option on createAgentSession — the sanctioned
   // injection point is the resource loader's appendSystemPrompt (the same
   // mechanism pi uses for --append-system-prompt).
-  let resourceLoader: InstanceType<typeof DefaultResourceLoader> | undefined;
-  if (params.systemPrompt?.trim()) {
-    const loader = new DefaultResourceLoader({
-      cwd: effectiveCwd,
-      agentDir,
-      settingsManager,
-      appendSystemPrompt: [params.systemPrompt],
-    });
-    await loader.reload();
-    resourceLoader = loader;
-  }
+  //
+  // F25: ALWAYS build our own loader (even without a systemPrompt). If
+  // resourceLoader is undefined, createAgentSession constructs its own
+  // DefaultResourceLoader({ cwd, agentDir, settingsManager }) and reload()s it
+  // — importing extension/skill code from the LLM-controlled target cwd into
+  // THIS process (RCE; background mode has no trust prompt). noExtensions +
+  // noSkills keep the loader from importing any code from the untrusted cwd;
+  // the prompt is fully specified by the caller, so nothing is lost.
+  const loader = new DefaultResourceLoader({
+    cwd: effectiveCwd,
+    agentDir,
+    settingsManager,
+    ...(params.systemPrompt?.trim() ? { appendSystemPrompt: [params.systemPrompt] } : {}),
+    noExtensions: true,
+    noSkills: true,
+  });
+  await loader.reload();
+  const resourceLoader: InstanceType<typeof DefaultResourceLoader> = loader;
   
   // Create the session — honor the resolved tool restrictions so the
   // background agent's ACTUAL toolset matches what the prompt tells it
