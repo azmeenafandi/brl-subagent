@@ -60,6 +60,10 @@ function buildOutputBlock(outputFile: string): string {
  * - inherit=true,  custom=unset → basePrompt + instructions
  * - inherit=false, custom=set   → customPrompt + instructions
  * - inherit=false, custom=unset → instructions only (bare minimum, saves tokens)
+ *
+ * When a preset with a promptGuideline is resolved for the delegation, the
+ * guideline is appended as a "Preset Guidance" section so the subagent
+ * understands why it was chosen and what behavior is expected.
  */
 export function buildSubagentPrompt(
 	basePrompt: string,
@@ -67,6 +71,7 @@ export function buildSubagentPrompt(
 	customSystemPrompt: string | undefined,
 	outputFile?: string,
 	tools?: string[],
+	promptGuideline?: string,
 ): string {
 	const parts: string[] = [];
 
@@ -89,6 +94,10 @@ export function buildSubagentPrompt(
 
 	if (customSystemPrompt) {
 		parts.push(customSystemPrompt);
+	}
+
+	if (promptGuideline) {
+		parts.push(`## Preset Guidance\n\n${promptGuideline}`);
 	}
 
 	if (outputFile) {
