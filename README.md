@@ -115,7 +115,7 @@ Refer to a preset via the `preset` parameter of `delegate_task` (see above). Par
 
 ## Background execution
 
-Set `background: true` to spawn the subagent as an independent session that returns an ID immediately and keeps running. You can steer it and collect its output via `steerAgent` / `getAgent` while the main session continues.
+Set `background: true` to spawn the subagent as an independent session that returns an ID immediately and keeps running. Its progress is tracked via `getAgent` and the live monitor while the main session continues. (Steering via `steerAgent` currently records the message in the transcript and marks the agent as steered — delivery to the live session is pending pi's extension API.)
 
 **System prompt semantics:** background sessions are spawned with the same built prompt as foreground subagents (base prompt when `inheritSystemPrompt: true`, custom prompt, preset guidance, and subagent instructions). Like pi's own `--append-system-prompt`, supplying this prompt **replaces** any discovered `.pi/APPEND_SYSTEM.md` / global `APPEND_SYSTEM.md` content — this matches foreground subagent behavior exactly. With `inheritSystemPrompt: true` (the default) your conductor session's instructions — including its own appended content — are inherited through the base prompt.
 
