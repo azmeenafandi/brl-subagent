@@ -184,14 +184,25 @@ export function setAgentResult(id: string, result: SubagentResult): BackgroundAg
   return agent;
 }
 
-/** Extract the final assistant text from a session's messages. */
+/**
+ * Extract the final assistant text from a session's messages.
+ * Falls back to the LAST assistant message with non-empty text content — the
+ * final message is often a tool-call-only turn (agent stopped mid-turn, failed,
+ * or hit the hard cap), and that turn carries no text of its own.
+ */
 export function extractFinalOutput(session: { messages: Array<{ role: string; content?: Array<{ type: string; text?: string }> | string | null }> }): string {
-  const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
-  const content = lastAssistant?.content;
-  if (Array.isArray(content)) {
-    return content.filter(c => c.type === 'text').map(c => c.text ?? '').join('') || '';
+  const assistants = [...session.messages].reverse().filter(m => m.role === 'assistant');
+  for (const msg of assistants) {
+    const content = msg.content;
+    let text = '';
+    if (Array.isArray(content)) {
+      text = content.filter(c => c.type === 'text').map(c => c.text ?? '').join('');
+    } else if (typeof content === 'string') {
+      text = content;
+    }
+    if (text.trim()) return text;
   }
-  return typeof content === 'string' ? content : '';
+  return '';
 }
 
 /**

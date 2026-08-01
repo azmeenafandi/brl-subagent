@@ -131,23 +131,30 @@ import { UPDATE_CHECK_INTERVAL_MS } from "./types";
 // ---------------------------------------------------------------------------
 
 /**
- * Sanitize a text preview for markdown-rendered notifications: collapse code
- * fences/backticks, trim to whole non-empty lines, and never split surrogate
- * pairs at the boundary.
+ * Sanitize a text preview for markdown-rendered notifications: strip code
+ * fences (``` and ~~~) and backticks, keep whole non-empty lines with
+ * mid-line truncation for over-long lines, and never split surrogate pairs
+ * at the boundary.
  */
 function sanitizePreview(text: string, maxLen = 500): string {
-  // Collapse markdown fences and backticks, trim to whole lines, avoid splitting surrogate pairs
-  const cleaned = text.replace(/```/g, '').replace(/`/g, '');
+  // Strip markdown fences and backticks
+  const cleaned = text.replace(/```/g, '').replace(/~~~+/g, '').replace(/`/g, '');
   const lines = cleaned.split('\n').filter(l => l.trim());
   let out = '';
   for (const line of lines) {
-    if (out.length + line.length + 1 > maxLen) break;
+    if (out.length + line.length + 1 > maxLen) {
+      // Mid-line truncation: keep as much of this line as fits
+      const remaining = maxLen - out.length - 1;
+      if (remaining > 10) {
+        out += line.slice(0, remaining - 3) + '...\n';
+      }
+      break;
+    }
     out += line + '\n';
   }
-  // Avoid splitting surrogate pairs at the boundary
+  // Avoid splitting surrogate pairs at the boundary (reachable now via slice above)
   const safe = out.slice(0, maxLen);
   const lastChar = safe[safe.length - 1];
-  // simple check: if lastChar is a high surrogate, drop it
   const stripped = lastChar && /[\uD800-\uDBFF]/.test(lastChar) ? safe.slice(0, -1) : safe;
   return stripped.trimEnd();
 }
@@ -2204,10 +2211,20 @@ export default function (pi: ExtensionAPI) {
 								completed = true;
 								clearInterval(pollInterval);
 								clearTimeout(hardCapHandle);
+								try {
+									setAgentFinalOutput(agent.id, extractFinalOutput(agent._sessionRef ?? { messages: [] }));
+								} catch { /* ignore */ }
+								state.finalizeLiveSubagent(agent.id);
 								state.activeSubagents--;
 								if (state.activeSubagents < 0) state.activeSubagents = 0;
 								state.failedSubagents++;
 								updateProgressStatus(state, ctx);
+								pi.sendMessage({
+									customType: "subagent-notification",
+									content: `Background agent "${agent.description}" crashed: ${(err as Error).message}`,
+									display: true,
+									details: { agentId: agent.id }
+								}, { deliverAs: "followUp" });
 							}
 						}
 					}, 2000);
@@ -2236,8 +2253,13 @@ export default function (pi: ExtensionAPI) {
 							} catch (err) {
 								// Defensive: never let the hard-cap timer throw uncaught — that would
 								// skip finalizeLiveSubagent, the counter decrement, and the notification.
+								// Do all fallible work first (output capture), then mutate counters,
+								// then notify — a throw mid-path can't double-fire mutations.
 								completed = true;
 								clearInterval(pollInterval);
+								try {
+									setAgentFinalOutput(agent.id, extractFinalOutput(agent._sessionRef ?? { messages: [] }));
+								} catch { /* ignore */ }
 								state.finalizeLiveSubagent(agent.id);
 								state.activeSubagents--;
 								if (state.activeSubagents < 0) state.activeSubagents = 0;
