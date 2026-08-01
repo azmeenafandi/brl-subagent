@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mocks must exist before vi.mock factory runs (hoisted).
 const mocks = vi.hoisted(() => ({
@@ -38,7 +38,8 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 	};
 });
 
-import { spawnBackgroundSession } from "../session-manager";
+import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus } from "../session-manager";
+import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
 
 const fakePi = {};
 const fakeCtx = {
@@ -77,13 +78,17 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 		expect(options.resourceLoader.options.appendSystemPrompt).toEqual([
 			"## Preset Guidance\n\nFor security audits.",
 		]);
+		// F25: the loader must never import extension/skill code from the
+		// target cwd — it is LLM-controlled and untrusted.
+		expect(options.resourceLoader.options.noExtensions).toBe(true);
+		expect(options.resourceLoader.options.noSkills).toBe(true);
 		// Ordering is the critical property: the SDK returns [] from
 		// getAppendSystemPrompt until reload() runs, so reload MUST have
 		// completed before createAgentSession was invoked.
 		expect(reloadCalledAtCreateTime).toBe(true);
 	});
 
-	it("uses no resourceLoader when systemPrompt is empty", async () => {
+	it("still passes a resourceLoader when systemPrompt is empty (F25)", async () => {
 		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
 			task: "do the thing",
 			systemPrompt: "",
@@ -91,17 +96,37 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 
 		expect(mocks.createAgentSession).toHaveBeenCalledTimes(1);
 		const options = mocks.createAgentSession.mock.calls[0][0];
-		expect(options.resourceLoader).toBeUndefined();
+		// F25: ALWAYS pass our own loader. If resourceLoader were undefined,
+		// createAgentSession would build its own DefaultResourceLoader and
+		// import extensions/skills from the untrusted target cwd (RCE).
+		expect(options.resourceLoader).toBeDefined();
+		expect(options.resourceLoader.options.appendSystemPrompt).toBeUndefined();
+		expect(options.resourceLoader.options.noExtensions).toBe(true);
+		expect(options.resourceLoader.options.noSkills).toBe(true);
 	});
 
-	it("does not create a resourceLoader when systemPrompt is only whitespace", async () => {
+	it("still passes a resourceLoader when systemPrompt is only whitespace (F25)", async () => {
 		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
 			task: "do the thing",
 			systemPrompt: "   \n\t ",
 		});
 
 		const options = mocks.createAgentSession.mock.calls[0][0];
-		expect(options.resourceLoader).toBeUndefined();
+		expect(options.resourceLoader).toBeDefined();
+		expect(options.resourceLoader.options.appendSystemPrompt).toBeUndefined();
+		expect(options.resourceLoader.options.noExtensions).toBe(true);
+		expect(options.resourceLoader.options.noSkills).toBe(true);
+	});
+
+	it("never loads extensions or skills from the target cwd (F25)", async () => {
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "do the thing",
+			systemPrompt: "audit this",
+		});
+
+		const options = mocks.createAgentSession.mock.calls[0][0];
+		expect(options.resourceLoader.options.noExtensions).toBe(true);
+		expect(options.resourceLoader.options.noSkills).toBe(true);
 	});
 
 	it("calls session.prompt with the task", async () => {
@@ -220,5 +245,136 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 				}),
 			).rejects.toThrow("reload exploded");
 		});
+	});
+});
+
+describe("agent id validation (F24)", () => {
+	const VALID_UUID = "05b8b0d9-4a1e-4f2a-9c3d-6e7f8a9b0c1d";
+	// Separate id for the attack-chain test: steerAgent keeps an in-memory map
+	// entry keyed by the VALID lookup id, which would pollute other tests.
+	const ATTACK_UUID = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+
+	// Clean up any planted records/transcripts/escape targets between tests so
+	// a failed run can't leak state into the next test.
+	const cleanupF24 = () => {
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path") as typeof import("node:path");
+		for (const id of [VALID_UUID, ATTACK_UUID]) {
+			for (const p of [
+				path.join(process.cwd(), ".pi", "subagents", `${id}.json`),
+				path.join(process.cwd(), ".pi", "output", `agent-${id}.jsonl`),
+			]) {
+				try { fs.unlinkSync(p); } catch { /* ok */ }
+			}
+		}
+		try { fs.unlinkSync(path.join(process.cwd(), "..", "brl-persist-bypass-test.json")); } catch { /* ok */ }
+	};
+
+	beforeEach(cleanupF24);
+	afterEach(cleanupF24);
+
+	it("getAgent returns null for a path-traversal id without touching the fs", () => {
+		// A traversal id must never reach loadAgent()'s join(STORAGE_DIR, id+'.json').
+		expect(getAgent("../../etc/passwd")).toBeNull();
+	});
+
+	it("getAgent returns null for an absolute-path id", () => {
+		expect(getAgent("/tmp/foo")).toBeNull();
+	});
+
+	it("getAgent returns null for a non-uuid id", () => {
+		expect(getAgent("foo")).toBeNull();
+	});
+
+	it("getAgent accepts a valid uuid (no throw; just not found)", () => {
+		expect(getAgent(VALID_UUID)).toBeNull();
+	});
+
+	it("updateAgentStatus returns null for a traversal id (via getAgent)", () => {
+		expect(updateAgentStatus("../../etc/passwd", "running")).toBeNull();
+	});
+
+	it("steerAgent returns null for a traversal id (via getAgent)", () => {
+		expect(steerAgent("../../etc/passwd", "hi")).toBeNull();
+	});
+
+	it("getTranscriptPath throws for a traversal id", () => {
+		expect(() => getTranscriptPath("../../etc/passwd")).toThrow();
+	});
+
+	it("getTranscriptPath throws for an absolute path", () => {
+		expect(() => getTranscriptPath("/tmp/foo")).toThrow();
+	});
+
+	it("getTranscriptPath accepts a valid uuid", () => {
+		expect(() => getTranscriptPath(VALID_UUID)).not.toThrow();
+	});
+
+	it("transcript.getTranscriptPath throws for a traversal id", () => {
+		expect(() => transcriptGetTranscriptPath("../../etc/passwd")).toThrow();
+	});
+
+	it("persistAgent refuses a planted record with a traversal id (F24 indirection bypass)", () => {
+		// Attack chain from the review: plant a record with a valid-UUID filename
+		// but a traversal id FIELD, then steer it — getAgent passes the UUID
+		// check, loadAgent returns the crafted record, and persistAgent would
+		// write via join(STORAGE_DIR, agent.id) outside the project.
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path") as typeof import("node:path");
+		const plantDir = path.join(process.cwd(), ".pi", "subagents");
+		const transcriptDir = path.join(process.cwd(), ".pi", "output");
+		fs.mkdirSync(plantDir, { recursive: true });
+		fs.mkdirSync(transcriptDir, { recursive: true });
+		const planted = path.join(plantDir, `${ATTACK_UUID}.json`);
+		const escapeTarget = path.join(
+			process.cwd(),
+			"..",
+			"brl-persist-bypass-test.json",
+		);
+		// steerAgent requires the transcript to exist (appendEntry throws otherwise)
+		fs.writeFileSync(
+			path.join(transcriptDir, `agent-${ATTACK_UUID}.jsonl`),
+			"",
+			"utf-8",
+		);
+
+		fs.writeFileSync(
+			planted,
+			JSON.stringify({
+				id: "../../brl-persist-bypass-test", // traversal id field
+				status: "running",
+				task: "planted",
+				startedAt: Date.now(),
+			}),
+			"utf-8",
+		);
+
+		const result = steerAgent(ATTACK_UUID, "hi");
+		expect(result).not.toBeNull(); // getAgent accepted the valid UUID
+		expect(fs.existsSync(escapeTarget)).toBe(false); // NO write outside .pi/subagents
+	});
+
+	it("persistAgent still writes valid records (regression guard)", () => {
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path") as typeof import("node:path");
+		const plantDir = path.join(process.cwd(), ".pi", "subagents");
+		const transcriptDir = path.join(process.cwd(), ".pi", "output");
+		fs.mkdirSync(plantDir, { recursive: true });
+		fs.mkdirSync(transcriptDir, { recursive: true });
+		const planted = path.join(plantDir, `${VALID_UUID}.json`);
+		fs.writeFileSync(
+			path.join(transcriptDir, `agent-${VALID_UUID}.jsonl`),
+			"",
+			"utf-8",
+		);
+		fs.writeFileSync(
+			planted,
+			JSON.stringify({ id: VALID_UUID, status: "running", task: "ok", startedAt: Date.now() }),
+			"utf-8",
+		);
+
+		steerAgent(VALID_UUID, "hi");
+		const persisted = JSON.parse(fs.readFileSync(planted, "utf-8"));
+		expect(persisted.status).toBe("steered"); // valid record persisted normally
 	});
 });

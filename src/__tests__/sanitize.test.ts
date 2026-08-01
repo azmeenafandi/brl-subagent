@@ -14,6 +14,7 @@ import {
 	capOutput,
 	getCurrentDepth,
 	DEPTH_ENV_KEY,
+	assertSafeAgentId,
 } from "../sanitize";
 
 // ---------------------------------------------------------------------------
@@ -284,5 +285,31 @@ describe("getSafeEnv with overrides", () => {
 		// Overrides are trusted — the extension controls what it injects.
 		const env = getSafeEnv({ CUSTOM_VAR: "hello" });
 		expect(env.CUSTOM_VAR).toBe("hello");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// assertSafeAgentId (F24)
+// ---------------------------------------------------------------------------
+
+describe("assertSafeAgentId", () => {
+	it("accepts valid UUIDs", () => {
+		expect(() => assertSafeAgentId("05b8b0d9-4a1e-4f2a-9c3d-6e7f8a9b0c1d")).not.toThrow();
+		expect(() => assertSafeAgentId("05B8B0D9-4A1E-4F2A-9C3D-6E7F8A9B0C1D")).not.toThrow();
+	});
+
+	it("rejects path traversal", () => {
+		expect(() => assertSafeAgentId("../../etc/passwd")).toThrow();
+		expect(() => assertSafeAgentId("..\\..\\etc\\passwd")).toThrow();
+	});
+
+	it("rejects absolute paths", () => {
+		expect(() => assertSafeAgentId("/tmp/foo")).toThrow();
+	});
+
+	it("rejects non-uuid ids", () => {
+		expect(() => assertSafeAgentId("foo")).toThrow();
+		expect(() => assertSafeAgentId("agent-123")).toThrow();
+		expect(() => assertSafeAgentId("")).toThrow();
 	});
 });
