@@ -184,6 +184,16 @@ export function setAgentResult(id: string, result: SubagentResult): BackgroundAg
   return agent;
 }
 
+/** Extract the final assistant text from a session's messages. */
+export function extractFinalOutput(session: { messages: Array<{ role: string; content?: Array<{ type: string; text?: string }> | string | null }> }): string {
+  const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
+  const content = lastAssistant?.content;
+  if (Array.isArray(content)) {
+    return content.filter(c => c.type === 'text').map(c => c.text ?? '').join('') || '';
+  }
+  return typeof content === 'string' ? content : '';
+}
+
 /**
  * Set the final assistant output captured from the agent's session
  */
