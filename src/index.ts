@@ -2102,11 +2102,14 @@ export default function (pi: ExtensionAPI) {
 							const session = agent._sessionRef;
 							if (!session) {
 								// Session ref not available — session may have crashed.
-								// Capture whatever output exists (may be empty — fine).
-								setAgentFinalOutput(agent.id, state.subagentSessions.get(agent.id)?.liveOutput ?? '');
+								// Defensive: the ref is assigned synchronously before the poller starts
+								// and is never nulled, so this is mostly unreachable — but keep the
+								// bookkeeping safe regardless.
 								completed = true;
 								clearInterval(pollInterval);
 								clearTimeout(hardCapHandle);
+								// Capture whatever output exists (may be empty — fine).
+								setAgentFinalOutput(agent.id, state.subagentSessions.get(agent.id)?.liveOutput ?? '');
 								state.finalizeLiveSubagent(agent.id);
 								state.activeSubagents--;
 								if (state.activeSubagents < 0) state.activeSubagents = 0;
@@ -2121,37 +2124,65 @@ export default function (pi: ExtensionAPI) {
 								return;
 							}
 							
-							const messages = session.messages;
-							const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
-							const finalOutput = lastAssistant?.content
-								?.filter(c => c.type === 'text')
-								?.map(c => c.text)
-								?.join('') || '';
-							
-							try {
-								const stats = session.getSessionStats();
-								state.updateLiveSubagent(agent.id, finalOutput, stats.tokens.input, stats.tokens.output);
-							} catch {
-								state.updateLiveSubagent(agent.id, finalOutput, 0, 0);
+							// While running, update the live monitor.
+							// Once completedAt is set, skip straight to finalize below.
+							if (!agent.completedAt) {
+								const messages = session.messages;
+								const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+								const finalOutput = lastAssistant?.content
+									?.filter(c => c.type === 'text')
+									?.map(c => c.text)
+									?.join('') || '';
+								
+								try {
+									const stats = session.getSessionStats();
+									state.updateLiveSubagent(agent.id, finalOutput, stats.tokens.input, stats.tokens.output);
+								} catch {
+									state.updateLiveSubagent(agent.id, finalOutput, 0, 0);
+								}
 							}
 							
-							if (!session.isStreaming) {
+							// Authoritative completion: the prompt promise settled — status and
+							// completedAt are set by .then()/.catch() in spawnBackgroundSession.
+							// Do NOT rely on !session.isStreaming: it is false during prompt()
+							// preflight (auth check, model resolution) and for failed starts.
+							if (agent.completedAt) {
 								completed = true;
 								clearInterval(pollInterval);
 								clearTimeout(hardCapHandle);
+								
+								const messages = session.messages;
+								const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+								const finalOutput = lastAssistant?.content
+									?.filter(c => c.type === 'text')
+									?.map(c => c.text)
+									?.join('') || '';
 								setAgentFinalOutput(agent.id, finalOutput);
+								
 								state.finalizeLiveSubagent(agent.id);
 								state.activeSubagents--;
 								if (state.activeSubagents < 0) state.activeSubagents = 0;
-								state.completedSubagents++;
-								state.unseenSubagents++;
-								updateProgressStatus(state, ctx);
-								pi.sendMessage({
-									customType: "subagent-notification",
-									content: `Background agent "${agent.description}" completed.\n\n${finalOutput.slice(0, 500)}`,
-									display: true,
-									details: { agentId: agent.id }
-								}, { deliverAs: "followUp" });
+								
+								if (agent.status === 'failed' || agent.status === 'stopped') {
+									state.failedSubagents++;
+									updateProgressStatus(state, ctx);
+									pi.sendMessage({
+										customType: "subagent-notification",
+										content: `Background agent "${agent.description}" ${agent.status}.`,
+										display: true,
+										details: { agentId: agent.id }
+									}, { deliverAs: "followUp" });
+								} else {
+									state.completedSubagents++;
+									state.unseenSubagents++;
+									updateProgressStatus(state, ctx);
+									pi.sendMessage({
+										customType: "subagent-notification",
+										content: `Background agent "${agent.description}" completed.\n\n${finalOutput.slice(0, 500)}`,
+										display: true,
+										details: { agentId: agent.id }
+									}, { deliverAs: "followUp" });
+								}
 							}
 						} catch (err) {
 							if (!completed) {

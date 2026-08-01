@@ -45,7 +45,16 @@ function ensureStorageDir(): void {
 function persistAgent(agent: BackgroundAgent): void {
   ensureStorageDir();
   const filePath = join(STORAGE_DIR, `${agent.id}.json`);
-  writeFileSync(filePath, JSON.stringify(agent, null, 2), 'utf-8');
+  // Strip live/non-serializable fields before stringify — `_sessionRef` holds the
+  // ENTIRE live pi session graph (1.4MB+ for an empty session, and uninitialized
+  // getters like Theme can make JSON.stringify throw).
+  const { _sessionRef, ...persistable } = agent;
+  try {
+    writeFileSync(filePath, JSON.stringify(persistable, null, 2), 'utf-8');
+  } catch (err) {
+    // Log but never throw — persistence must not break execution
+    console.error(`[brl-subagent] Failed to persist agent ${agent.id}:`, err);
+  }
 }
 
 /**
