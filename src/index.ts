@@ -2078,7 +2078,8 @@ export default function (pi: ExtensionAPI) {
 			// Phase 6.5: Background execution — spawn session and return ID immediately.
 			// Resolve the preset and its model BEFORE the background branch so the
 			// preset's model (and system prompt) are honored in background mode.
-			const { resolvedPreset: bgResolvedPreset } = resolveSubagentParams(params, ctx);
+			const bgResolved = resolveSubagentParams(params, ctx);
+			const { resolvedPreset: bgResolvedPreset } = bgResolved;
 			const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset);
 			const bgModel = bgModelResult.ok
 				? `${bgModelResult.model.provider}/${bgModelResult.model.id}`
@@ -2088,14 +2089,49 @@ export default function (pi: ExtensionAPI) {
 				const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput } = await import('./session-manager');
 				
 				try {
+					// F1: Validate cwd + outputFile the same way foreground single mode does —
+					// an unvalidated outputFile would reach the prompt and could steer the
+					// background agent's write tool outside the project root.
+					const bgCwdResult = validateCwd(bgResolved.effectiveCwd, ctx.cwd);
+					if (!bgCwdResult.ok) {
+						return {
+							content: [{ type: "text" as const, text: `Invalid cwd: ${bgCwdResult.error}` }],
+							isError: true,
+						};
+					}
+					let bgResolvedOutputFile: string | undefined;
+					if (bgResolved.outputFile) {
+						const ofResult = validateOutputFile(bgResolved.outputFile, bgCwdResult.value);
+						if (!ofResult.ok) {
+							return {
+								content: [
+									{ type: "text" as const, text: `Invalid outputFile: ${ofResult.error}` },
+								],
+								isError: true,
+							};
+						}
+						bgResolvedOutputFile = ofResult.value;
+					}
+
+					// Build the full prompt the same way foreground single mode does:
+					// base prompt (optionally inherited) + custom prompt + preset guidance.
+					const bgPrompt = buildSubagentPrompt(
+						ctx.getSystemPrompt(),
+						bgResolved.inheritSP,
+						bgResolved.customSP,
+						bgResolvedOutputFile,
+						bgResolved.toolOptions?.tools,
+						bgResolvedPreset?.promptGuideline,
+					);
+
 					const agent = await spawnBackgroundSession(pi, ctx, {
 						task: params.task,
 						type: params.preset || 'general-purpose',
 						description: params.label,
 						model: bgModel,
-						thinkingLevel: (params.thinkingLevel as ThinkingLevel) || 'medium',
-						systemPrompt: bgResolvedPreset?.systemPrompt || params.systemPrompt,
-						cwd: params.cwd,
+						thinkingLevel: bgResolved.thinkingLevel,
+						systemPrompt: bgPrompt,
+						cwd: bgCwdResult.value,
 					});
 					
 					// Register for live monitor

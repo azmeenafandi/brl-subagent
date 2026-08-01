@@ -294,12 +294,42 @@ export async function spawnBackgroundSession(
   const id = generateUUID();
   const effectiveCwd = params.cwd ?? ctx.cwd;
   // Dynamic import — static import fails under concurrent jiti loads
-  const { getAgentDir, createAgentSession, SessionManager, SettingsManager } = await import('@earendil-works/pi-coding-agent');
+  const { getAgentDir, createAgentSession, SessionManager, SettingsManager, DefaultResourceLoader } = await import('@earendil-works/pi-coding-agent');
   const agentDir = getAgentDir();
+
+  // Resolve the model STRING to a real Model object — createAgentSession expects
+  // Model<any>, not "provider/id". Passing a string makes provider resolution
+  // yield undefined ("No API key found for undefined") and clamps thinking to "off".
+  // Falls back to undefined → SDK's findInitialModel picks the settings default.
+  let resolvedModel;
+  if (params.model) {
+    const slashIdx = params.model.indexOf('/');
+    if (slashIdx > 0) {
+      const provider = params.model.slice(0, slashIdx);
+      const modelId = params.model.slice(slashIdx + 1);
+      resolvedModel = ctx.modelRegistry.find(provider, modelId);
+    }
+  }
   
   // Create session manager for this background agent
   const sessionManager = SessionManager.inMemory(effectiveCwd);
   const settingsManager = SettingsManager.create(effectiveCwd);
+
+  // E20: Inject the subagent prompt into the session's system prompt.
+  // The SDK has no systemPrompt option on createAgentSession — the sanctioned
+  // injection point is the resource loader's appendSystemPrompt (the same
+  // mechanism pi uses for --append-system-prompt).
+  let resourceLoader: InstanceType<typeof DefaultResourceLoader> | undefined;
+  if (params.systemPrompt?.trim()) {
+    const loader = new DefaultResourceLoader({
+      cwd: effectiveCwd,
+      agentDir,
+      settingsManager,
+      appendSystemPrompt: [params.systemPrompt],
+    });
+    await loader.reload();
+    resourceLoader = loader;
+  }
   
   // Create the session
   const { session } = await createAgentSession({
@@ -308,6 +338,9 @@ export async function spawnBackgroundSession(
     sessionManager,
     settingsManager,
     modelRegistry: ctx.modelRegistry,
+    resourceLoader,
+    model: resolvedModel,
+    thinkingLevel: params.thinkingLevel,
     tools: ['read', 'bash', 'grep', 'find', 'ls', 'write', 'edit'],
   });
   
