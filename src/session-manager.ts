@@ -185,6 +185,27 @@ export function setAgentResult(id: string, result: SubagentResult): BackgroundAg
 }
 
 /**
+ * Extract the final assistant text from a session's messages.
+ * Falls back to the LAST assistant message with non-empty text content — the
+ * final message is often a tool-call-only turn (agent stopped mid-turn, failed,
+ * or hit the hard cap), and that turn carries no text of its own.
+ */
+export function extractFinalOutput(session: { messages: Array<{ role: string; content?: Array<{ type: string; text?: string }> | string | null }> }): string {
+  const assistants = [...session.messages].reverse().filter(m => m.role === 'assistant');
+  for (const msg of assistants) {
+    const content = msg.content;
+    let text = '';
+    if (Array.isArray(content)) {
+      text = content.filter(c => c.type === 'text').map(c => c.text ?? '').join('');
+    } else if (typeof content === 'string') {
+      text = content;
+    }
+    if (text.trim()) return text;
+  }
+  return '';
+}
+
+/**
  * Set the final assistant output captured from the agent's session
  */
 export function setAgentFinalOutput(id: string, output: string): BackgroundAgent | null {

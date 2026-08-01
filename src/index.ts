@@ -80,7 +80,6 @@ import { autoRoutePreset } from "./router";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import { getPreset as getPresetFn } from "./presets";
 import { createSessionState } from "./state";
-import { setAgentFinalOutput } from "./session-manager";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
 import { ProcessPool } from "./pool";
@@ -126,6 +125,39 @@ import { createLogger, type Logger } from "./logging";
 import { Intercom } from "./messaging";
 import { checkForUpdates } from "./update";
 import { UPDATE_CHECK_INTERVAL_MS } from "./types";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Sanitize a text preview for markdown-rendered notifications: strip code
+ * fences (``` and ~~~) and backticks, keep whole non-empty lines with
+ * mid-line truncation for over-long lines, and never split surrogate pairs
+ * at the boundary.
+ */
+function sanitizePreview(text: string, maxLen = 500): string {
+  // Strip markdown fences and backticks
+  const cleaned = text.replace(/```/g, '').replace(/~~~+/g, '').replace(/`/g, '');
+  const lines = cleaned.split('\n').filter(l => l.trim());
+  let out = '';
+  for (const line of lines) {
+    if (out.length + line.length + 1 > maxLen) {
+      // Mid-line truncation: keep as much of this line as fits
+      const remaining = maxLen - out.length - 1;
+      if (remaining > 10) {
+        out += line.slice(0, remaining - 3) + '...\n';
+      }
+      break;
+    }
+    out += line + '\n';
+  }
+  // Avoid splitting surrogate pairs at the boundary (reachable now via slice above)
+  const safe = out.slice(0, maxLen);
+  const lastChar = safe[safe.length - 1];
+  const stripped = lastChar && /[\uD800-\uDBFF]/.test(lastChar) ? safe.slice(0, -1) : safe;
+  return stripped.trimEnd();
+}
 
 // ---------------------------------------------------------------------------
 // Extension entry point
@@ -2064,7 +2096,7 @@ export default function (pi: ExtensionAPI) {
 				: undefined;
 
 			if (params.background) {
-				const { spawnBackgroundSession } = await import('./session-manager');
+				const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput } = await import('./session-manager');
 				
 				try {
 					const agent = await spawnBackgroundSession(pi, ctx, {
@@ -2127,12 +2159,7 @@ export default function (pi: ExtensionAPI) {
 							// While running, update the live monitor.
 							// Once completedAt is set, skip straight to finalize below.
 							if (!agent.completedAt) {
-								const messages = session.messages;
-								const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
-								const finalOutput = lastAssistant?.content
-									?.filter(c => c.type === 'text')
-									?.map(c => c.text)
-									?.join('') || '';
+								const finalOutput = extractFinalOutput(session);
 								
 								try {
 									const stats = session.getSessionStats();
@@ -2151,12 +2178,7 @@ export default function (pi: ExtensionAPI) {
 								clearInterval(pollInterval);
 								clearTimeout(hardCapHandle);
 								
-								const messages = session.messages;
-								const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
-								const finalOutput = lastAssistant?.content
-									?.filter(c => c.type === 'text')
-									?.map(c => c.text)
-									?.join('') || '';
+								const finalOutput = extractFinalOutput(session);
 								setAgentFinalOutput(agent.id, finalOutput);
 								
 								state.finalizeLiveSubagent(agent.id);
@@ -2178,7 +2200,7 @@ export default function (pi: ExtensionAPI) {
 									updateProgressStatus(state, ctx);
 									pi.sendMessage({
 										customType: "subagent-notification",
-										content: `Background agent "${agent.description}" completed.\n\n${finalOutput.slice(0, 500)}`,
+										content: `Background agent "${agent.description}" completed.\n\n${sanitizePreview(finalOutput)}`,
 										display: true,
 										details: { agentId: agent.id }
 									}, { deliverAs: "followUp" });
@@ -2189,10 +2211,20 @@ export default function (pi: ExtensionAPI) {
 								completed = true;
 								clearInterval(pollInterval);
 								clearTimeout(hardCapHandle);
+								try {
+									setAgentFinalOutput(agent.id, extractFinalOutput(agent._sessionRef ?? { messages: [] }));
+								} catch { /* ignore */ }
+								state.finalizeLiveSubagent(agent.id);
 								state.activeSubagents--;
 								if (state.activeSubagents < 0) state.activeSubagents = 0;
 								state.failedSubagents++;
 								updateProgressStatus(state, ctx);
+								pi.sendMessage({
+									customType: "subagent-notification",
+									content: `Background agent "${agent.description}" crashed: ${(err as Error).message}`,
+									display: true,
+									details: { agentId: agent.id }
+								}, { deliverAs: "followUp" });
 							}
 						}
 					}, 2000);
@@ -2200,28 +2232,46 @@ export default function (pi: ExtensionAPI) {
 					// Hard cap: stop polling after 30 minutes
 					const hardCapHandle = setTimeout(() => {
 						if (!completed) {
-							completed = true;
-							clearInterval(pollInterval);
-							// Capture whatever final output exists in the session
-							const hardCapSession = agent._sessionRef;
-							const hardCapMessages = hardCapSession?.messages ?? [];
-							const hardCapLastAssistant = [...hardCapMessages].reverse().find(m => m.role === 'assistant');
-							const hardCapFinalOutput = hardCapLastAssistant?.content
-								?.filter(c => c.type === 'text')
-								?.map(c => c.text)
-								?.join('') || '';
-							setAgentFinalOutput(agent.id, hardCapFinalOutput);
-							state.finalizeLiveSubagent(agent.id);
-							state.activeSubagents--;
-							if (state.activeSubagents < 0) state.activeSubagents = 0;
-							state.completedSubagents++;
-							updateProgressStatus(state, ctx);
-							pi.sendMessage({
-								customType: "subagent-notification",
-								content: `Background agent "${agent.description}" timed out (30min hard cap).\n\n${hardCapFinalOutput.slice(0, 500)}`,
-								display: true,
-								details: { agentId: agent.id }
-							}, { deliverAs: "followUp" });
+							try {
+								completed = true;
+								clearInterval(pollInterval);
+								// Capture whatever final output exists in the session
+								const hardCapSession = agent._sessionRef;
+								const hardCapFinalOutput = hardCapSession ? extractFinalOutput(hardCapSession) : '';
+								setAgentFinalOutput(agent.id, hardCapFinalOutput);
+								state.finalizeLiveSubagent(agent.id);
+								state.activeSubagents--;
+								if (state.activeSubagents < 0) state.activeSubagents = 0;
+								state.completedSubagents++;
+								updateProgressStatus(state, ctx);
+								pi.sendMessage({
+									customType: "subagent-notification",
+									content: `Background agent "${agent.description}" timed out (30min hard cap).\n\n${sanitizePreview(hardCapFinalOutput)}`,
+									display: true,
+									details: { agentId: agent.id }
+								}, { deliverAs: "followUp" });
+							} catch (err) {
+								// Defensive: never let the hard-cap timer throw uncaught — that would
+								// skip finalizeLiveSubagent, the counter decrement, and the notification.
+								// Do all fallible work first (output capture), then mutate counters,
+								// then notify — a throw mid-path can't double-fire mutations.
+								completed = true;
+								clearInterval(pollInterval);
+								try {
+									setAgentFinalOutput(agent.id, extractFinalOutput(agent._sessionRef ?? { messages: [] }));
+								} catch { /* ignore */ }
+								state.finalizeLiveSubagent(agent.id);
+								state.activeSubagents--;
+								if (state.activeSubagents < 0) state.activeSubagents = 0;
+								state.failedSubagents++;
+								updateProgressStatus(state, ctx);
+								pi.sendMessage({
+									customType: "subagent-notification",
+									content: `Background agent "${agent.description}" timed out (error).`,
+									display: true,
+									details: { agentId: agent.id }
+								}, { deliverAs: "followUp" });
+							}
 						}
 					}, 30 * 60 * 1000);
 					
@@ -2931,7 +2981,9 @@ export default function (pi: ExtensionAPI) {
 			}
 			
 			if (agent.finalOutput) {
-				resultText += `\n\nFinal output:\n${agent.finalOutput}`;
+				const full = agent.finalOutput;
+				const truncated = full.length > 8000 ? full.slice(0, 8000) + "\n…[truncated — full output in transcript]" : full;
+				resultText += `\n\nFinal output:\n${truncated}`;
 			}
 			
 			// Include transcript if verbose
