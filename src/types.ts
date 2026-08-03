@@ -176,8 +176,6 @@ export interface SubagentState {
 	presets: SubagentPreset[];
 	templates: TaskTemplate[];
 	circuitBreaker: CircuitBreakerState;
-	poolEnabled: boolean;
-	poolSize: number;
 	slaTrackingEnabled: boolean; // E4: SLA tracking toggle
 	slaWindowSize: number; // E4: number of recent runs to analyze (10-500)
 	lastSLAMetrics?: SLAMetrics; // E4: persisted baseline for degradation comparison
@@ -420,11 +418,7 @@ export type SubagentEventType =
 	| "run:completed"
 	| "run:failed"
 	| "run:cancelled"
-	| "state:changed"
-	| "pool:task-assigned"
-	| "pool:task-completed"
-	| "pool:worker-spawned"
-	| "pool:worker-died";
+	| "state:changed";
 
 /** An event emitted during the subagent lifecycle. */
 export interface SubagentEvent {
@@ -470,10 +464,6 @@ export const DEFAULT_MAX_SUBAGENT_DEPTH = 3;
 export const MAX_RUN_HISTORY_ENTRIES = 500;
 export const MAX_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-// Process pool constants
-export const MAX_POOL_SIZE = 8;
-export const POOL_IDLE_TIMEOUT_MS = 120_000; // 2 minutes
-
 // Circuit breaker constants
 export const MAX_CONSECUTIVE_FAILURES = 5;
 export const CIRCUIT_BREAKER_RESET_MS = 60000; // 1 min auto-recovery
@@ -517,7 +507,7 @@ export const RESERVED_COMMAND_NAMES = new Set([
 	"model", "thinking", "concurrency", "depth", "history", "monitor",
 	"preset", "retry", "reset", "priority", "templates", "schedule",
 	"unschedule", "dashboard", "approval", "gitmode",
- "costlimit", "historyentries", "sla", "pool",
+ "costlimit", "historyentries", "sla",
 	"graph", "sla-stats",
 ]);
 
@@ -666,14 +656,6 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 	// perTaskCostEstimate must be a non-negative number if present
 	if (v.perTaskCostEstimate !== undefined) {
 		if (typeof v.perTaskCostEstimate !== "number" || v.perTaskCostEstimate < 0) return false;
-	}
-
-	// poolEnabled must be a boolean if present
-	if (v.poolEnabled !== undefined && typeof v.poolEnabled !== "boolean") return false;
-
-	// poolSize must be a number 1-8 if present
-	if (v.poolSize !== undefined) {
-		if (typeof v.poolSize !== "number" || v.poolSize < 1 || v.poolSize > 8) return false;
 	}
 
 	// slaTrackingEnabled must be a boolean if present

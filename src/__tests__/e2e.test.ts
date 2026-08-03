@@ -41,7 +41,6 @@ const ISOLATED_FILES = [
 // Files that require pi/typebox — can't load in isolation
 const PI_DEPENDENT_FILES = [
   "index",
-  "pool",
   "preflight",
   "runner",
   "tui",

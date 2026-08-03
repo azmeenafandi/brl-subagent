@@ -51,7 +51,6 @@ Pi auto-discovers extensions in these directories. To update: `git pull` inside 
 | `/brl-subagent historyentries` | Set max history entries |
 | `/brl-subagent sla` | Configure SLA tracking |
 | `/brl-subagent sla-stats` | View SLA statistics |
-| `/brl-subagent pool` | Configure process pool |
 | `/brl-subagent preset` | Manage delegation presets |
 | `/brl-subagent templates` | Manage task templates |
 | `/brl-subagent schedule` | Manage recurring schedules |
