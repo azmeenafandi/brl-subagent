@@ -163,13 +163,17 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 		expect(options.resourceLoader.options.noSkills).toBe(true);
 	});
 
-	it("calls session.prompt with the task", async () => {
+	it("calls session.prompt with the task wrapped in the data fence (F27)", async () => {
 		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
 			task: "do the thing",
 		});
 
 		expect(mocks.session.prompt).toHaveBeenCalledTimes(1);
-		expect(mocks.session.prompt).toHaveBeenCalledWith("do the thing");
+		// F27: the task is wrapped in <task>...</task> — the user message is
+		// DATA, not instructions, so injected text can't hijack the subagent.
+		expect(mocks.session.prompt).toHaveBeenCalledWith(
+			"<task>\ndo the thing\n</task>",
+		);
 	});
 
 	describe("model resolution", () => {

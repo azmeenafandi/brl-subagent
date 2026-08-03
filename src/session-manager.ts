@@ -7,6 +7,7 @@ import * as eventBus from './event-bus';
 import * as transcript from './transcript';
 import { createEvent } from './event-bus';
 import { assertSafeAgentId } from './sanitize';
+import { wrapTask } from './prompt';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 
 // Serialize concurrent spawn attempts — pi's API modules aren't safe for
@@ -446,7 +447,9 @@ export async function spawnBackgroundSession(
   
   // Start the session in the background (don't await)
   // The session will run independently
-  session.prompt(params.task).then(() => {
+  // F27: wrap in the task-as-data fence — the user message is DATA, not
+  // instructions (see SUBAGENT_INSTRUCTIONS Task Boundary).
+  session.prompt(wrapTask(params.task)).then(() => {
     // Session completed
     agent.status = 'completed';
     agent.completedAt = Date.now();

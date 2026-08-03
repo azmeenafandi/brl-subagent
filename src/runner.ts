@@ -14,6 +14,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { wrapTask } from "./prompt";
 import type {
 	SubagentResult,
 	SubagentToolOptions,
@@ -348,7 +349,9 @@ ${msgBlock}`;
 		}
 
 		// Pass the effective task as the prompt argument
-		args.push(task);
+		// F27: wrap in the task-as-data fence — the subagent's user message
+		// is DATA, not instructions (see SUBAGENT_INSTRUCTIONS Task Boundary).
+		args.push(wrapTask(task));
 
 		const result: SubagentResult = {
 			messages: [],
