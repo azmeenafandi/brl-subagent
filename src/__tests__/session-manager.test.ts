@@ -75,8 +75,13 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 		expect(mocks.createAgentSession).toHaveBeenCalledTimes(1);
 		const options = mocks.createAgentSession.mock.calls[0][0];
 		expect(options.resourceLoader).toBeDefined();
+		// F26: the prompt is wrapped in a marker frame. The "/" in
+		// "</system-prompt>" forces a multi-component relative path (never a
+		// single-component name like ".env"), and SUBAGENT_INSTRUCTIONS makes
+		// one component exceed NAME_MAX — so resolvePromptInput's existsSync
+		// can never match. Literal content is preserved inside the frame.
 		expect(options.resourceLoader.options.appendSystemPrompt).toEqual([
-			"## Preset Guidance\n\nFor security audits.",
+			"\n<system-prompt>\n## Preset Guidance\n\nFor security audits.\n</system-prompt>\n",
 		]);
 		// F25: the loader must never import extension/skill code from the
 		// target cwd — it is LLM-controlled and untrusted.
@@ -86,6 +91,35 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 		// getAppendSystemPrompt until reload() runs, so reload MUST have
 		// completed before createAgentSession was invoked.
 		expect(reloadCalledAtCreateTime).toBe(true);
+	});
+
+	it("a path-looking systemPrompt is NOT read as a file (F26 security property)", async () => {
+		// Behavioral test: simulate the real SDK's resolvePromptInput
+		// (existsSync → readFileSync) against a planted .env in the cwd.
+		// Pre-fix, systemPrompt: ".env" would resolve to the file contents;
+		// post-fix the wrapped value must resolve to the literal.
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path") as typeof import("node:path");
+		const envFile = path.join(process.cwd(), ".env");
+		fs.writeFileSync(envFile, "SECRET=planted-file-content", "utf-8");
+		try {
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "do the thing",
+				systemPrompt: ".env",
+			});
+
+			const options = mocks.createAgentSession.mock.calls[0][0];
+			const wrapped = options.resourceLoader.options.appendSystemPrompt[0] as string;
+			// Simulate the SDK's resolvePromptInput on the wrapped value:
+			// if existsSync is true it would readFileSync and substitute.
+			const resolved = fs.existsSync(wrapped)
+				? fs.readFileSync(wrapped, "utf-8")
+				: wrapped;
+			expect(resolved).toBe("\n<system-prompt>\n.env\n</system-prompt>\n");
+			expect(resolved).not.toContain("planted-file-content");
+		} finally {
+			try { fs.unlinkSync(envFile); } catch { /* ok */ }
+		}
 	});
 
 	it("still passes a resourceLoader when systemPrompt is empty (F25)", async () => {
