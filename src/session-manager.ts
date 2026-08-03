@@ -348,9 +348,24 @@ export async function spawnBackgroundSession(
   // F26: resolvePromptInput (resource-loader.js:16) checks existsSync(input)
   // and readFileSync's the string if it matches a real path — a raw prompt
   // value like ".env" or "package.json" would be silently REPLACED by that
-  // file's contents (arbitrary-file-read-into-prompt). Wrap the value in a
-  // marker frame containing newlines so it can never be a valid path —
-  // guaranteeing literal interpretation.
+  // file's contents (arbitrary-file-read-into-prompt).
+  //
+  // The defense is NOT "newlines are invalid in filenames" (false on POSIX —
+  // filenames can contain \n). The actual mechanism:
+  //   1. The "/" in "</system-prompt>" forces a multi-component RELATIVE path
+  //      (never absolute — leading \n guarantees no "/" prefix), so the
+  //      wrapped value can never equal a single-component name like ".env".
+  //   2. buildSubagentPrompt ALWAYS appends SUBAGENT_INSTRUCTIONS (measured
+  //      1644 bytes, no "/"), so one contiguous path component exceeds
+  //      NAME_MAX=255 on mainstream filesystems → the path can never be
+  //      created → existsSync is always false.
+  //   3. Windows: \n, <, > are illegal in filenames — impossible outright.
+  //
+  // Residual (theoretical): a filesystem with component limit > ~1663 bytes,
+  // cwd write access, AND byte-exact prediction of the full prompt could
+  // plant a newline-named dir + symlink leaf. Not exploitable realistically;
+  // do not "simplify" the frame (e.g. dropping the "/" marker) without
+  // re-verifying this property.
   const literalPrompt = params.systemPrompt?.trim()
     ? `\n<system-prompt>\n${params.systemPrompt}\n</system-prompt>\n`
     : undefined;
