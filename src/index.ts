@@ -83,7 +83,6 @@ import { getPreset as getPresetFn } from "./presets";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
-import { ProcessPool } from "./pool";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
 import {
 	finalizeRunRecord,
@@ -104,7 +103,6 @@ import {
 	showApprovalDialog,
 	showPresetManager,
 	showTemplateManager,
-	showPoolConfig,
 	showUpdateCheckToggle,
 	showDefaultPrioritySelector,
 	showGitModeSelector,
@@ -179,9 +177,6 @@ export default function (pi: ExtensionAPI) {
 
 	// F7: Session-bound state — initialized per session
 	let state = createSessionState(log);
-
-	// E11: Process pool — created when poolEnabled, shared across delegate_task calls
-	let pool: ProcessPool | undefined;
 
 	// E9: Recurring task scheduler
 	let scheduler: Scheduler | undefined;
@@ -1062,9 +1057,6 @@ export default function (pi: ExtensionAPI) {
 				getFinalOutput,
 				log,
 				currentDepth + 1,
-				undefined, // pool
-
-				undefined, // intercom
 				intercom,
 				subagentId,
 			);
@@ -1502,7 +1494,6 @@ export default function (pi: ExtensionAPI) {
 							getFinalOutput,
 							log,
 							currentDepth + 1,
-							pool,
 							intercom,
 							subagentId,
 						);
@@ -1631,7 +1622,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"history", "historyentries", "monitor", "dashboard", "preset", "templates", "retry", "pool", "schedule", "unschedule",
+				"history", "historyentries", "monitor", "dashboard", "preset", "templates", "retry", "schedule", "unschedule",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
@@ -1658,7 +1649,6 @@ export default function (pi: ExtensionAPI) {
 				preset: () => showPresetManager(ctx, state, () => state.persistState(pi)),
 				templates: () => showTemplateManager(ctx, state, () => state.persistState(pi)),
 				retry: () => showRetryMenu(ctx, state),
-				pool: () => showPoolConfig(ctx, state, applyConfig),
 			"update-check": () => showUpdateCheckToggle(ctx, state, applyConfig),
 			sla: () => showSLAConfig(ctx, state, applyConfig),
 			"sla-stats": () => showSLAStats(ctx, state),
@@ -2740,7 +2730,6 @@ export default function (pi: ExtensionAPI) {
 					getFinalOutput,
 					log,
 					childDepth,
-					undefined, // pool
 					undefined, // intercom
 					undefined, // subagentId
 				);
@@ -2787,7 +2776,6 @@ export default function (pi: ExtensionAPI) {
 						getFinalOutput,
 						log,
 						childDepth,
-						undefined, // pool
 						undefined, // intercom
 						undefined, // subagentId
 					);
@@ -3260,20 +3248,6 @@ export default function (pi: ExtensionAPI) {
 		});
 		scheduler.start();
 
-		// E11: Pre-warm process pool if enabled
-		if (state.config.poolEnabled) {
-			log.info("Pre-warming process pool", { size: state.config.poolSize });
-			pool = new ProcessPool(state.config.poolSize, 120_000, log);
-			const modelResult = resolveSubagentModel(ctx);
-			if (modelResult.ok) {
-				const modelStr = `${modelResult.model.provider}/${modelResult.model.id}`;
-				pool.preWarm(state.config.poolSize, ctx.cwd, modelStr, state.config.maxThinkingLevel)
-					.catch((err) => {
-						log.warn("Pool pre-warm failed", { error: (err as Error).message });
-					});
-			}
-		}
-
 		updateStatus(state, ctx);
 	});
 
@@ -3286,12 +3260,6 @@ export default function (pi: ExtensionAPI) {
 		// E9: Stop the scheduler
 		scheduler?.stop();
 		scheduler = undefined;
-
-		// E11: Shut down process pool
-		if (pool) {
-			pool.shutdown();
-			pool = undefined;
-		}
 
 		// Clear all live subagent sessions
 		state.subagentSessions.clear();

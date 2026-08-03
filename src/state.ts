@@ -88,8 +88,6 @@ export class SessionState {
 			seenRunIds: [],
 			templates: [],
 			circuitBreaker: this.defaultCircuitBreaker(),
-			poolEnabled: false,
-			poolSize: 2,
 			slaTrackingEnabled: false,
 			slaWindowSize: 50,
 			updateCheckEnabled: true,
@@ -116,8 +114,6 @@ export class SessionState {
 			seenRunIds: this.config.seenRunIds,
 			templates: this.config.templates,
 			circuitBreaker: this.config.circuitBreaker,
-			poolEnabled: this.config.poolEnabled,
-			poolSize: this.config.poolSize,
 		slaTrackingEnabled: this.config.slaTrackingEnabled,
 		slaWindowSize: this.config.slaWindowSize,
 		lastSLAMetrics: this.config.lastSLAMetrics,
@@ -192,10 +188,6 @@ export class SessionState {
 		}
 
 		if (Array.isArray(data.templates)) this.config.templates = data.templates;
-		if (typeof data.poolEnabled === "boolean") this.config.poolEnabled = data.poolEnabled;
-		if (typeof data.poolSize === "number" && data.poolSize >= 1 && data.poolSize <= 8) {
-			this.config.poolSize = data.poolSize;
-		}
 		if (
 			data.circuitBreaker &&
 			typeof data.circuitBreaker === "object" &&
@@ -402,11 +394,9 @@ export class SessionState {
 		this.config.perTaskCostEstimate = 0;
 		this.config.templates = [];
 		this.config.circuitBreaker = this.defaultCircuitBreaker();
-		this.config.poolEnabled = false;
 		this.config.slaTrackingEnabled = false;
 		this.config.slaWindowSize = 50;
 		this.config.lastSLAMetrics = undefined;
-		this.config.poolSize = 2;
 		this.config.updateCheckEnabled = true;
 		this.config.lastUpdateCheck = 0;
 	}

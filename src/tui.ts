@@ -36,7 +36,6 @@ import {
 	COLLAPSED_OUTPUT_LINES,
 	COLLAPSED_DIFF_FILES_PREVIEW,
 	EXPANDED_HUNKS_PER_FILE,
-	MAX_POOL_SIZE,
 	RESERVED_NAME_PATTERN,
 	RESERVED_COMMAND_NAMES,
 	formatTokens,
@@ -360,47 +359,6 @@ export async function showGitModeSelector(
 
 	state.config.gitMode = result as "branch" | "none";
 	onConfigChanged(ctx, `Git integration mode set to ${result}`);
-}
-
-// ---------------------------------------------------------------------------
-
-// Pool configuration UI (E11)
-// ---------------------------------------------------------------------------
-
-export async function showPoolConfig(
-	ctx: ExtensionContext,
-	state: SessionState,
-	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
-): Promise<void> {
-	// Step 1: Enable/disable
-	const enableItems: SelectItem[] = [
-		{ value: "disabled", label: "Disabled", description: "No process pool (cold start for each subagent)" },
-		{ value: "enabled", label: "Enabled", description: "Keep warm pi processes for faster subagent starts" },
-	];
-	const enableResult = await showSelectList(ctx, "Process Pool", enableItems, 5);
-	if (!enableResult) return;
-
-	const enabled = enableResult === "enabled";
-	state.config.poolEnabled = enabled;
-
-	if (!enabled) {
-		onConfigChanged(ctx, "Process pool disabled");
-		return;
-	}
-
-	// Step 2: Pool size
-	const sizeResult = await ctx.ui.input({
-		prompt: `Pool size (1-${MAX_POOL_SIZE}, default 2):`,
-		default: String(state.config.poolSize),
-	});
-	if (sizeResult == null) return;
-	const size = parseInt(sizeResult, 10);
-	if (isNaN(size) || size < 1 || size > MAX_POOL_SIZE) {
-		ctx.ui.notify(`Invalid pool size. Must be 1-${MAX_POOL_SIZE}.`, "error");
-		return;
-	}
-	state.config.poolSize = size;
-	onConfigChanged(ctx, `Process pool enabled with ${size} warm process${size > 1 ? "es" : ""}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1550,13 +1508,6 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			label: "SLA Tracking",
 			description: state.config.slaTrackingEnabled
 				? `Enabled (window: ${state.config.slaWindowSize})`
-				: "Disabled",
-		},
-		{
-			value: "pool",
-			label: "Process Pool",
-			description: state.config.poolEnabled
-				? `Enabled (${state.config.poolSize} process${state.config.poolSize > 1 ? "es" : ""})`
 				: "Disabled",
 		},
 		{
