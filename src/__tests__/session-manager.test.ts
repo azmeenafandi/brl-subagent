@@ -75,8 +75,12 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 		expect(mocks.createAgentSession).toHaveBeenCalledTimes(1);
 		const options = mocks.createAgentSession.mock.calls[0][0];
 		expect(options.resourceLoader).toBeDefined();
+		// F26: the prompt is wrapped in a marker frame containing newlines so
+		// resolvePromptInput can never treat it as a file path (existsSync on
+		// a multi-line value is false — arbitrary-file-read-into-prompt
+		// prevented). The literal content is preserved inside the frame.
 		expect(options.resourceLoader.options.appendSystemPrompt).toEqual([
-			"## Preset Guidance\n\nFor security audits.",
+			"\n<system-prompt>\n## Preset Guidance\n\nFor security audits.\n</system-prompt>\n",
 		]);
 		// F25: the loader must never import extension/skill code from the
 		// target cwd — it is LLM-controlled and untrusted.

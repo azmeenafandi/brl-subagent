@@ -345,6 +345,16 @@ export async function spawnBackgroundSession(
   // injection point is the resource loader's appendSystemPrompt (the same
   // mechanism pi uses for --append-system-prompt).
   //
+  // F26: resolvePromptInput (resource-loader.js:16) checks existsSync(input)
+  // and readFileSync's the string if it matches a real path — a raw prompt
+  // value like ".env" or "package.json" would be silently REPLACED by that
+  // file's contents (arbitrary-file-read-into-prompt). Wrap the value in a
+  // marker frame containing newlines so it can never be a valid path —
+  // guaranteeing literal interpretation.
+  const literalPrompt = params.systemPrompt?.trim()
+    ? `\n<system-prompt>\n${params.systemPrompt}\n</system-prompt>\n`
+    : undefined;
+  //
   // F25: ALWAYS build our own loader (even without a systemPrompt). If
   // resourceLoader is undefined, createAgentSession constructs its own
   // DefaultResourceLoader({ cwd, agentDir, settingsManager }) and reload()s it
@@ -356,14 +366,11 @@ export async function spawnBackgroundSession(
   // deliberate security choice: background sessions have no trust prompt, so
   // nothing is imported from anywhere — the prompt is fully specified by the
   // caller. Users needing skills/extensions should use foreground delegation.
-  // (A trust-based alternative — resolveProjectTrust: false — is tracked as a
-  // follow-up issue for users who want user-global resources in background
-  // sessions.)
   const loader = new DefaultResourceLoader({
     cwd: effectiveCwd,
     agentDir,
     settingsManager,
-    ...(params.systemPrompt?.trim() ? { appendSystemPrompt: [params.systemPrompt] } : {}),
+    ...(literalPrompt ? { appendSystemPrompt: [literalPrompt] } : {}),
     noExtensions: true,
     noSkills: true,
   });
