@@ -78,7 +78,7 @@ import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { autoRoutePreset } from "./router";
-import { validatePreTask, diagnoseFailure } from "./validate";
+import { validatePreTask, diagnoseFailure, normalizeTimeout } from "./validate";
 import { getPreset as getPresetFn } from "./presets";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
@@ -249,7 +249,7 @@ export default function (pi: ExtensionAPI) {
 		const mergedSystemPrompt = params.systemPrompt ?? preset?.systemPrompt;
 		const mergedInheritSP = params.inheritSystemPrompt ?? preset?.inheritSystemPrompt;
 		const mergedOutputFile = params.outputFile ?? preset?.outputFile;
-		const mergedTimeout = params.timeout ?? preset?.timeout;
+		const mergedTimeout = normalizeTimeout(params.timeout ?? preset?.timeout);
 		const mergedTools = params.tools ?? preset?.tools;
 		// Fix: edit depends on write in pi's tool system.
 		// If edit is in the allowlist but write is not, all tools fail to resolve.
@@ -2138,7 +2138,7 @@ export default function (pi: ExtensionAPI) {
 				: undefined;
 
 			if (params.background) {
-				const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput } = await import('./session-manager');
+				const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
 				
 				try {
 					// F1: Validate cwd + outputFile the same way foreground single mode does —
@@ -2206,6 +2206,7 @@ export default function (pi: ExtensionAPI) {
 						systemPrompt: bgPrompt,
 						cwd: bgCwdResult.value,
 						toolOptions: bgResolved.toolOptions,
+						timeout: bgResolved.timeout,
 					});
 					
 					// Register for live monitor
@@ -2294,11 +2295,15 @@ export default function (pi: ExtensionAPI) {
 										details: { agentId: agent.id }
 									}, { deliverAs: "followUp" });
 								} else if (agent.status === 'stopped') {
-									// User-initiated stop (stop_subagent) — not a failure.
+									// User-initiated stop (stop_subagent) or deadline abort
+									// (timeout/hard cap) — not a failure. Include the reason
+									// when the stop carried one.
 									updateProgressStatus(state, ctx);
 									pi.sendMessage({
 										customType: "subagent-notification",
-										content: `Background agent "${agent.description}" stopped.`,
+										content: agent.error
+											? `Background agent "${agent.description}" stopped (${agent.error}).`
+											: `Background agent "${agent.description}" stopped.`,
 										display: true,
 										details: { agentId: agent.id }
 									}, { deliverAs: "followUp" });
@@ -2337,12 +2342,24 @@ export default function (pi: ExtensionAPI) {
 						}
 					}, 2000);
 					
-					// Hard cap: stop polling after 30 minutes
+					// Hard cap: stop polling AND abort the session after the deadline.
+					// W2 (issue #28): previously this only stopped the poller — the pi
+					// session kept running forever (orphaned). Now it pre-sets
+					// 'stopped' (so the .then keeps it, per W1) and aborts the
+					// session. The cap honors a shorter per-agent timeout.
+					const hardCapMs = Math.min(bgResolved.timeout ?? 30 * 60 * 1000, 30 * 60 * 1000);
 					const hardCapHandle = setTimeout(() => {
-						if (!completed) {
+						if (!completed && !agent.completedAt) {
 							try {
 								completed = true;
 								clearInterval(pollInterval);
+								// Pre-set stopped BEFORE aborting so the .then in
+								// spawnBackgroundSession keeps the stopped state.
+								updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
+								agent._sessionRef?.abort().catch(() => {
+									// Abort may reject if the session is mid-dispose;
+									// the status flip above is already recorded.
+								});
 								// Capture whatever final output exists in the session
 								const hardCapSession = agent._sessionRef;
 								const hardCapFinalOutput = hardCapSession ? extractFinalOutput(hardCapSession) : '';
@@ -2350,11 +2367,12 @@ export default function (pi: ExtensionAPI) {
 								state.finalizeLiveSubagent(agent.id);
 								state.activeSubagents--;
 								if (state.activeSubagents < 0) state.activeSubagents = 0;
-								state.completedSubagents++;
+								// m6: deadline abort is a stop, not a completion — mirror the
+								// W3/poller stopped path (no completedSubagents increment).
 								updateProgressStatus(state, ctx);
 								pi.sendMessage({
 									customType: "subagent-notification",
-									content: `Background agent "${agent.description}" timed out (30min hard cap).\n\n${sanitizePreview(hardCapFinalOutput)}`,
+									content: `Background agent "${agent.description}" timed out (${hardCapMs}ms hard cap).\n\n${sanitizePreview(hardCapFinalOutput)}`,
 									display: true,
 									details: { agentId: agent.id }
 								}, { deliverAs: "followUp" });
@@ -2365,6 +2383,13 @@ export default function (pi: ExtensionAPI) {
 								// then notify — a throw mid-path can't double-fire mutations.
 								completed = true;
 								clearInterval(pollInterval);
+								// m3: the try may have thrown BEFORE updateAgentStatus ran (e.g.
+								// persistAgent fs failure) — leave the record terminal so
+								// get_subagent_result doesn't report 'running' and the W3 timer
+								// guard (!agent.completedAt) can't re-fire later.
+								try {
+									updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
+								} catch { /* ignore */ }
 								try {
 									setAgentFinalOutput(agent.id, extractFinalOutput(agent._sessionRef ?? { messages: [] }));
 								} catch { /* ignore */ }
@@ -2381,7 +2406,7 @@ export default function (pi: ExtensionAPI) {
 								}, { deliverAs: "followUp" });
 							}
 						}
-					}, 30 * 60 * 1000);
+					}, hardCapMs);
 					
 					log.info("Background agent spawned", { agentId: agent.id, task: params.task, model: agent.model });
 

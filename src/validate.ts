@@ -276,3 +276,23 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
     errors,
   };
 }
+
+/**
+ * Normalize a user-supplied timeout to a safe deadline value, or undefined for
+ * "no timeout". Guards the setTimeout boundary — Node fires `setTimeout(fn, 0)`,
+ * negative, NaN, and >=2^31-1 delays immediately (~1ms), so an unvalidated
+ * timeout is an instant kill, not a generous deadline (issue #28, PR #49
+ * review M1/m1).
+ *
+ * Returns undefined for: undefined, 0, negative, NaN, Infinity, >=2^31-1.
+ * Returns the value unchanged otherwise (foreground permits >30min timeouts;
+ * the background hard cap applies its own 30min Math.min).
+ */
+export function normalizeTimeout(timeout: number | undefined): number | undefined {
+	if (timeout === undefined) return undefined;
+	if (!Number.isFinite(timeout)) return undefined;
+	if (timeout <= 0) return undefined;
+	// Node's setTimeout overflows to ~1ms at 2^31-1 (TimeoutOverflowWarning).
+	if (timeout >= 2 ** 31 - 1) return undefined;
+	return timeout;
+}
