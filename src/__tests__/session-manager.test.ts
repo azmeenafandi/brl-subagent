@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
 		captureDiff: vi.fn(),
 		switchToBranch: vi.fn(),
 		deleteBranch: vi.fn(),
+		hasUncommittedChanges: vi.fn(),
+		commitAll: vi.fn(),
+		captureWorkingDiff: vi.fn(),
 	},
 	session: {
 		sessionId: "test-session",
@@ -53,6 +56,9 @@ vi.mock("../git", () => ({
 	captureDiff: mocks.git.captureDiff,
 	switchToBranch: mocks.git.switchToBranch,
 	deleteBranch: mocks.git.deleteBranch,
+	hasUncommittedChanges: mocks.git.hasUncommittedChanges,
+	commitAll: mocks.git.commitAll,
+	captureWorkingDiff: mocks.git.captureWorkingDiff,
 }));
 
 import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus } from "../session-manager";
@@ -79,6 +85,13 @@ beforeEach(() => {
 	(fakeCtx.modelRegistry.find as ReturnType<typeof vi.fn>).mockClear();
 	reloadImpl.reload.mockReset();
 	reloadImpl.reload.mockResolvedValue(undefined);
+});
+
+// The per-repo git lock (C2) is held for the agent's lifetime; tests that
+// never settle would leak it into the next test — release before each test.
+beforeEach(async () => {
+	const { __testResetGitBranchLocks } = await import("../session-manager");
+	__testResetGitBranchLocks();
 });
 
 describe("spawnBackgroundSession systemPrompt injection", () => {
@@ -533,6 +546,32 @@ describe("spawnBackgroundSession .then abort discrimination (probe contract)", (
 	});
 });
 
+function resetGitMocks() {
+	mocks.git.getCurrentBranch.mockReset();
+	mocks.git.createWorkBranch.mockReset();
+	mocks.git.captureDiff.mockReset();
+	mocks.git.switchToBranch.mockReset();
+	mocks.git.deleteBranch.mockReset();
+	mocks.git.hasUncommittedChanges.mockReset();
+	mocks.git.commitAll.mockReset();
+	mocks.git.captureWorkingDiff.mockReset();
+	// Setup reads the base branch; the cleanup concurrency guard reads the
+	// current branch and expects it to still be the work branch.
+	mocks.git.getCurrentBranch
+		.mockReturnValueOnce("main")       // setup: base
+		.mockReturnValue("brl-subagent-abc12345"); // cleanup: still on ours
+	mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
+	mocks.git.captureDiff.mockReturnValue({ ok: true, diff: "diff --git a/x.ts b/x.ts" });
+	mocks.git.switchToBranch.mockReturnValue({ ok: true });
+	mocks.git.deleteBranch.mockReturnValue({ ok: true });
+	// C1: base tree clean at setup; agent dirt exists at teardown.
+	mocks.git.hasUncommittedChanges
+		.mockReturnValueOnce(false)         // setup: clean tree
+		.mockReturnValue(true);             // teardown: agent dirt to commit
+	mocks.git.commitAll.mockReturnValue({ ok: true, sha: "abc123" });
+	mocks.git.captureWorkingDiff.mockReturnValue("diff --git a/y.ts b/y.ts");
+}
+
 describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 	const VALID_UUID = "9a8b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d";
 
@@ -644,11 +683,24 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		mocks.git.captureDiff.mockReset();
 		mocks.git.switchToBranch.mockReset();
 		mocks.git.deleteBranch.mockReset();
-		mocks.git.getCurrentBranch.mockReturnValue("main");
+		mocks.git.hasUncommittedChanges.mockReset();
+		mocks.git.commitAll.mockReset();
+		mocks.git.captureWorkingDiff.mockReset();
+		// Setup reads the base branch; the cleanup concurrency guard reads the
+		// current branch and expects it to still be the work branch.
+		mocks.git.getCurrentBranch
+			.mockReturnValueOnce("main")       // setup: base
+			.mockReturnValue("brl-subagent-abc12345"); // cleanup: still on ours
 		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
 		mocks.git.captureDiff.mockReturnValue({ ok: true, diff: "diff --git a/x.ts b/x.ts" });
 		mocks.git.switchToBranch.mockReturnValue({ ok: true });
 		mocks.git.deleteBranch.mockReturnValue({ ok: true });
+		// C1: base tree clean at setup; agent dirt exists at teardown.
+		mocks.git.hasUncommittedChanges
+			.mockReturnValueOnce(false)         // setup: clean tree
+			.mockReturnValue(true);             // teardown: agent dirt to commit
+		mocks.git.commitAll.mockReturnValue({ ok: true, sha: "abc123" });
+		mocks.git.captureWorkingDiff.mockReturnValue("diff --git a/y.ts b/y.ts");
 	}
 
 	it("creates a work branch before the prompt when gitMode=branch", async () => {
@@ -734,5 +786,173 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		const after = getAgent(agent.id);
 		expect(after?.status).toBe("failed");
 		expect(after?.result?.gitDiff).toContain("diff --git");
+	});
+});
+
+describe("W4 concurrency guard — cleanup when another spawn moved the tree", () => {
+	const VALID_UUID = "5e6f7a8b-9c0d-1e2f-3a4b-5c6d7e8f9a0b";
+
+	it("skips switch/delete when the tree is no longer on our work branch", async () => {
+		// Setup: base is main, work branch created.
+		mocks.git.getCurrentBranch.mockReset();
+		mocks.git.createWorkBranch.mockReset();
+		mocks.git.captureDiff.mockReset();
+		mocks.git.switchToBranch.mockReset();
+		mocks.git.deleteBranch.mockReset();
+		mocks.git.hasUncommittedChanges.mockReset();
+		mocks.git.commitAll.mockReset();
+		mocks.git.getCurrentBranch
+			.mockReturnValueOnce("main")       // setup: base
+			.mockReturnValue("brl-subagent-other"); // cleanup: ANOTHER spawn's branch
+		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
+		mocks.git.hasUncommittedChanges.mockReturnValue(false);
+
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test concurrent cleanup",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		// The tree moved — do NOT yank it back, do NOT delete the other's context.
+		expect(mocks.git.switchToBranch).not.toHaveBeenCalled();
+		expect(mocks.git.deleteBranch).not.toHaveBeenCalled();
+	});
+});
+
+describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock", () => {
+	const VALID_UUID = "6a7b8c9d-0e1f-2a3b-4c5d-6e7f8a9b0c1d";
+
+	it("C1: refuses to spawn when the base tree has uncommitted changes", async () => {
+		// Setup-time dirty tree — isolation cannot be guaranteed.
+		mocks.git.getCurrentBranch.mockReset();
+		mocks.git.createWorkBranch.mockReset();
+		mocks.git.hasUncommittedChanges.mockReset();
+		mocks.git.hasUncommittedChanges.mockReturnValue(true);
+		mocks.git.getCurrentBranch.mockReturnValue("main");
+
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "test dirty tree",
+				gitMode: "branch",
+			})
+		).rejects.toThrow(/uncommitted changes/);
+		// No branch was created, no prompt was started.
+		expect(mocks.git.createWorkBranch).not.toHaveBeenCalled();
+		expect(mocks.session.prompt).not.toHaveBeenCalled();
+	});
+
+	it("C1: commits the agent's work before capturing the diff at teardown", async () => {
+		resetGitMocks();
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test commit teardown",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		// Dirty at teardown → commitAll ran before captureDiff.
+		expect(mocks.git.commitAll).toHaveBeenCalledTimes(1);
+		const after = getAgent(agent.id);
+		expect(after?.result?.gitDiff).toContain("diff --git");
+	});
+
+	it("C1: falls back to working-tree diff when commitAll fails (no git identity)", async () => {
+		resetGitMocks();
+		mocks.git.commitAll.mockReturnValue({ ok: false, error: "no identity" });
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test commit fail",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(mocks.git.captureWorkingDiff).toHaveBeenCalledTimes(1);
+		const after = getAgent(agent.id);
+		expect(after?.result?.gitDiff).toContain("diff --git a/y.ts");
+	});
+
+	it("M1: records the diff on the ABORTED path (stop/timeout)", async () => {
+		resetGitMocks();
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [], stopReason: "aborted", errorMessage: "Aborted" },
+		];
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test aborted diff",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("stopped");
+		expect(after?.result?.gitBranch).toBe("brl-subagent-abc12345");
+		expect(after?.result?.gitDiff).toContain("diff --git");
+	});
+
+	it("C2: a second concurrent branch-mode spawn waits for the first's lock", async () => {
+		// First spawn: prompt that we control (deferred).
+		resetGitMocks();
+		let resolveFirstPrompt!: () => void;
+		mocks.session.prompt.mockReturnValue(new Promise<void>((r) => { resolveFirstPrompt = r; }));
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "first" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession } = await import("../session-manager");
+		const first = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "first lock holder",
+			gitMode: "branch",
+		});
+		// First spawn acquired the lock; its getCurrentBranch read 'main'.
+		expect(mocks.git.getCurrentBranch).toHaveBeenCalledTimes(1);
+
+		// Second spawn on the SAME cwd must block until the first settles.
+		mocks.git.getCurrentBranch.mockReset();
+		mocks.git.createWorkBranch.mockReset();
+		mocks.git.hasUncommittedChanges.mockReset();
+		mocks.git.getCurrentBranch.mockReturnValue("main");
+		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-second" });
+		mocks.git.hasUncommittedChanges.mockReturnValue(false);
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+
+		let secondSettled = false;
+		const secondPromise = spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "second waiting",
+			gitMode: "branch",
+		}).then(() => { secondSettled = true; });
+
+		// Give the second spawn a tick — it must NOT have acquired the lock.
+		await new Promise((r) => setTimeout(r, 50));
+		expect(secondSettled).toBe(false);
+		expect(mocks.git.getCurrentBranch).not.toHaveBeenCalled();
+
+		// First settles → its .then runs cleanupWorkBranch → releases the lock.
+		resolveFirstPrompt();
+		await new Promise((r) => setTimeout(r, 0));
+
+		// Second now proceeds: getCurrentBranch (setup) is called again.
+		await new Promise((r) => setTimeout(r, 20));
+		expect(mocks.git.getCurrentBranch).toHaveBeenCalled();
+		await secondPromise;
+		expect(secondSettled).toBe(true);
 	});
 });

@@ -3178,6 +3178,16 @@ export default function (pi: ExtensionAPI) {
 				if (agent.result.messages && agent.result.messages.length > 0) {
 					resultText += agent.result.messages.join('\n');
 				}
+				// W4: surface the background agent's git work-branch diff so the
+				// captured changes are reviewable (the branch itself is discarded).
+				if (agent.result.gitBranch) {
+					resultText += `\nGit branch: ${agent.result.gitBranch}\n`;
+				}
+				if (agent.result.gitDiff) {
+					const diff = agent.result.gitDiff;
+					const truncated = diff.length > 8000 ? diff.slice(0, 8000) + "\n…[diff truncated]" : diff;
+					resultText += `\nGit diff (branch ${agent.result.gitBranch ?? 'work'}):\n${truncated}\n`;
+				}
 			}
 			
 			if (agent.finalOutput) {

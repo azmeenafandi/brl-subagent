@@ -121,3 +121,42 @@ export function deleteBranch(
 		return { ok: false, error: (err as Error).message };
 	}
 }
+
+/**
+ * Stage and commit ALL changes (tracked + untracked) on the current branch.
+ * Used by background gitMode=branch teardown: the agent's work is committed to
+ * the work branch BEFORE the diff is captured and the branch is discarded —
+ * `git diff base...HEAD` only sees committed changes, and switching back with
+ * uncommitted edits would carry them into the base working tree (C1).
+ * Returns { ok: true, sha } on success, { ok: false, error } on failure
+ * (e.g. no git identity configured).
+ */
+export function commitAll(
+	cwd: string,
+	message: string,
+): { ok: true; sha: string } | { ok: false; error: string } {
+	try {
+		execFileSync("git", ["add", "-A"], gitOpts(cwd));
+		execFileSync("git", ["commit", "-m", message], gitOpts(cwd));
+		const sha = execFileSync("git", ["rev-parse", "HEAD"], gitOpts(cwd)).trim();
+		return { ok: true, sha };
+	} catch (err) {
+		return { ok: false, error: (err as Error).message };
+	}
+}
+
+/**
+ * Capture the WORKING-TREE diff (unstaged + staged, i.e. everything `git diff
+ * base...HEAD` misses when the agent never committed). Returns the merged
+ * patch text, or undefined when the tree is clean.
+ */
+export function captureWorkingDiff(cwd: string): string | undefined {
+	try {
+		const unstaged = execFileSync("git", ["diff"], gitOpts(cwd)).toString();
+		const staged = execFileSync("git", ["diff", "--cached"], gitOpts(cwd)).toString();
+		const merged = `${unstaged}${staged}`.trim();
+		return merged.length > 0 ? merged : undefined;
+	} catch {
+		return undefined;
+	}
+}
