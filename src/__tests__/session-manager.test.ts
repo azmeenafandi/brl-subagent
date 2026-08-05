@@ -3,6 +3,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // Mocks must exist before vi.mock factory runs (hoisted).
 const mocks = vi.hoisted(() => ({
 	createAgentSession: vi.fn(),
+	git: {
+		getCurrentBranch: vi.fn(),
+		createWorkBranch: vi.fn(),
+		captureDiff: vi.fn(),
+		switchToBranch: vi.fn(),
+		deleteBranch: vi.fn(),
+	},
 	session: {
 		sessionId: "test-session",
 		setSessionName: vi.fn(),
@@ -38,6 +45,15 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 		DefaultResourceLoader: MockDefaultResourceLoader,
 	};
 });
+
+// W4: mock the git module so branch lifecycle tests never touch a real repo.
+vi.mock("../git", () => ({
+	getCurrentBranch: mocks.git.getCurrentBranch,
+	createWorkBranch: mocks.git.createWorkBranch,
+	captureDiff: mocks.git.captureDiff,
+	switchToBranch: mocks.git.switchToBranch,
+	deleteBranch: mocks.git.deleteBranch,
+}));
 
 import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus } from "../session-manager";
 import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
@@ -616,5 +632,107 @@ describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () => {
+	const VALID_UUID = "4a5b6c7d-8e9f-0a1b-2c3d-4e5f6a7b8c9d";
+
+	function resetGitMocks() {
+		mocks.git.getCurrentBranch.mockReset();
+		mocks.git.createWorkBranch.mockReset();
+		mocks.git.captureDiff.mockReset();
+		mocks.git.switchToBranch.mockReset();
+		mocks.git.deleteBranch.mockReset();
+		mocks.git.getCurrentBranch.mockReturnValue("main");
+		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
+		mocks.git.captureDiff.mockReturnValue({ ok: true, diff: "diff --git a/x.ts b/x.ts" });
+		mocks.git.switchToBranch.mockReturnValue({ ok: true });
+		mocks.git.deleteBranch.mockReturnValue({ ok: true });
+	}
+
+	it("creates a work branch before the prompt when gitMode=branch", async () => {
+		resetGitMocks();
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const { spawnBackgroundSession } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test git mode",
+			gitMode: "branch",
+		});
+
+		expect(mocks.git.getCurrentBranch).toHaveBeenCalledTimes(1);
+		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(1);
+		// The session's prompt was called with the fence-wrapped task.
+		expect(mocks.session.prompt).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not touch git when gitMode is none/undefined", async () => {
+		resetGitMocks();
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test no git",
+		});
+
+		expect(mocks.git.getCurrentBranch).not.toHaveBeenCalled();
+		expect(mocks.git.createWorkBranch).not.toHaveBeenCalled();
+	});
+
+	it("throws (refusing to spawn unisolated) when branch creation fails", async () => {
+		resetGitMocks();
+		mocks.git.createWorkBranch.mockReturnValue({ ok: false, error: "dirty tree" });
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "test git fail",
+				gitMode: "branch",
+			})
+		).rejects.toThrow(/Refusing to spawn the background agent unisolated/);
+		// No session was started.
+		expect(mocks.session.prompt).not.toHaveBeenCalled();
+	});
+
+	it("captures the diff and discards the branch on completion", async () => {
+		resetGitMocks();
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test git complete",
+			gitMode: "branch",
+		});
+		// Let the .then run.
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(mocks.git.captureDiff).toHaveBeenCalledTimes(1);
+		expect(mocks.git.switchToBranch).toHaveBeenCalledWith(expect.anything(), "main");
+		expect(mocks.git.deleteBranch).toHaveBeenCalledTimes(1);
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("completed");
+		expect(after?.result?.gitBranch).toBe("brl-subagent-abc12345");
+		expect(after?.result?.gitDiff).toContain("diff --git");
+	});
+
+	it("captures any partial diff and discards the branch on failure", async () => {
+		resetGitMocks();
+		mocks.session.prompt.mockRejectedValue(new Error("auth failed"));
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test git fail run",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		// Partial work before the failure is still worth capturing; the branch
+		// is discarded either way.
+		expect(mocks.git.captureDiff).toHaveBeenCalledTimes(1);
+		expect(mocks.git.switchToBranch).toHaveBeenCalledTimes(1);
+		expect(mocks.git.deleteBranch).toHaveBeenCalledTimes(1);
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("failed");
+		expect(after?.result?.gitDiff).toContain("diff --git");
 	});
 });
