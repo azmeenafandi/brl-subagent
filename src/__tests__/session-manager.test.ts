@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 		sessionId: "test-session",
 		setSessionName: vi.fn(),
 		prompt: vi.fn().mockResolvedValue(undefined),
+		abort: vi.fn().mockResolvedValue(undefined),
 	},
 }));
 
@@ -513,5 +514,80 @@ describe("spawnBackgroundSession .then abort discrimination (probe contract)", (
 		const after = getAgent(agent.id);
 		expect(after?.status).toBe("stopped");
 		expect(abort).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
+	const VALID_UUID = "9a8b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d";
+
+	it("aborts the session and marks stopped after the deadline", async () => {
+		vi.useFakeTimers();
+		try {
+			// A never-resolving prompt keeps the agent 'running' past the deadline.
+			mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+			mocks.session.abort.mockClear();
+			const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "test timeout",
+				timeout: 5000,
+			});
+
+			// Advance past the deadline — the timer fires, flips status, aborts.
+			await vi.advanceTimersByTimeAsync(5001);
+
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			const after = getAgent(agent.id);
+			expect(after?.status).toBe("stopped");
+			expect(after?.error).toContain("Timed out after 5000ms");
+			expect(after?.completedAt).toBeDefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not abort when the agent completes before the deadline", async () => {
+		vi.useFakeTimers();
+		try {
+			mocks.session.prompt.mockResolvedValue(undefined);
+			mocks.session.messages = [
+				{ role: "user", content: "probe task" },
+				{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+			];
+			mocks.session.abort.mockClear();
+			const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "test completes in time",
+				timeout: 5000,
+			});
+
+			// Let the prompt settle (completed), then pass the deadline.
+			await Promise.resolve();
+			await vi.advanceTimersByTimeAsync(5001);
+
+			const after = getAgent(agent.id);
+			expect(after?.status).toBe("completed");
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("ignores a zero/undefined timeout (no timer armed)", async () => {
+		vi.useFakeTimers();
+		try {
+			mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+			mocks.session.abort.mockClear();
+			const { spawnBackgroundSession } = await import("../session-manager");
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "test no timeout",
+				timeout: 0,
+			});
+
+			await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

@@ -2138,7 +2138,7 @@ export default function (pi: ExtensionAPI) {
 				: undefined;
 
 			if (params.background) {
-				const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput } = await import('./session-manager');
+				const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
 				
 				try {
 					// F1: Validate cwd + outputFile the same way foreground single mode does —
@@ -2206,6 +2206,7 @@ export default function (pi: ExtensionAPI) {
 						systemPrompt: bgPrompt,
 						cwd: bgCwdResult.value,
 						toolOptions: bgResolved.toolOptions,
+						timeout: bgResolved.timeout,
 					});
 					
 					// Register for live monitor
@@ -2294,11 +2295,15 @@ export default function (pi: ExtensionAPI) {
 										details: { agentId: agent.id }
 									}, { deliverAs: "followUp" });
 								} else if (agent.status === 'stopped') {
-									// User-initiated stop (stop_subagent) — not a failure.
+									// User-initiated stop (stop_subagent) or deadline abort
+									// (timeout/hard cap) — not a failure. Include the reason
+									// when the stop carried one.
 									updateProgressStatus(state, ctx);
 									pi.sendMessage({
 										customType: "subagent-notification",
-										content: `Background agent "${agent.description}" stopped.`,
+										content: agent.error
+											? `Background agent "${agent.description}" stopped (${agent.error}).`
+											: `Background agent "${agent.description}" stopped.`,
 										display: true,
 										details: { agentId: agent.id }
 									}, { deliverAs: "followUp" });
@@ -2337,12 +2342,24 @@ export default function (pi: ExtensionAPI) {
 						}
 					}, 2000);
 					
-					// Hard cap: stop polling after 30 minutes
+					// Hard cap: stop polling AND abort the session after the deadline.
+					// W2 (issue #28): previously this only stopped the poller — the pi
+					// session kept running forever (orphaned). Now it pre-sets
+					// 'stopped' (so the .then keeps it, per W1) and aborts the
+					// session. The cap honors a shorter per-agent timeout.
+					const hardCapMs = Math.min(bgResolved.timeout ?? 30 * 60 * 1000, 30 * 60 * 1000);
 					const hardCapHandle = setTimeout(() => {
-						if (!completed) {
+						if (!completed && !agent.completedAt) {
 							try {
 								completed = true;
 								clearInterval(pollInterval);
+								// Pre-set stopped BEFORE aborting so the .then in
+								// spawnBackgroundSession keeps the stopped state.
+								updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
+								agent._sessionRef?.abort().catch(() => {
+									// Abort may reject if the session is mid-dispose;
+									// the status flip above is already recorded.
+								});
 								// Capture whatever final output exists in the session
 								const hardCapSession = agent._sessionRef;
 								const hardCapFinalOutput = hardCapSession ? extractFinalOutput(hardCapSession) : '';
@@ -2354,7 +2371,7 @@ export default function (pi: ExtensionAPI) {
 								updateProgressStatus(state, ctx);
 								pi.sendMessage({
 									customType: "subagent-notification",
-									content: `Background agent "${agent.description}" timed out (30min hard cap).\n\n${sanitizePreview(hardCapFinalOutput)}`,
+									content: `Background agent "${agent.description}" timed out (${hardCapMs}ms hard cap).\n\n${sanitizePreview(hardCapFinalOutput)}`,
 									display: true,
 									details: { agentId: agent.id }
 								}, { deliverAs: "followUp" });
@@ -2381,7 +2398,7 @@ export default function (pi: ExtensionAPI) {
 								}, { deliverAs: "followUp" });
 							}
 						}
-					}, 30 * 60 * 1000);
+					}, hardCapMs);
 					
 					log.info("Background agent spawned", { agentId: agent.id, task: params.task, model: agent.model });
 
