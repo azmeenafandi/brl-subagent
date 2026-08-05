@@ -2284,12 +2284,21 @@ export default function (pi: ExtensionAPI) {
 								state.activeSubagents--;
 								if (state.activeSubagents < 0) state.activeSubagents = 0;
 								
-								if (agent.status === 'failed' || agent.status === 'stopped') {
+								if (agent.status === 'failed') {
 									state.failedSubagents++;
 									updateProgressStatus(state, ctx);
 									pi.sendMessage({
 										customType: "subagent-notification",
-										content: `Background agent "${agent.description}" ${agent.status}.`,
+										content: `Background agent "${agent.description}" failed.`,
+										display: true,
+										details: { agentId: agent.id }
+									}, { deliverAs: "followUp" });
+								} else if (agent.status === 'stopped') {
+									// User-initiated stop (stop_subagent) — not a failure.
+									updateProgressStatus(state, ctx);
+									pi.sendMessage({
+										customType: "subagent-notification",
+										content: `Background agent "${agent.description}" stopped.`,
 										display: true,
 										details: { agentId: agent.id }
 									}, { deliverAs: "followUp" });
@@ -3168,6 +3177,48 @@ export default function (pi: ExtensionAPI) {
 				const message = err instanceof Error ? err.message : String(err);
 				return {
 					content: [{ type: "text" as const, text: `Failed to steer agent: ${message}` }],
+					isError: true,
+				};
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "stop_subagent",
+		label: "Stop Subagent",
+		description: [
+			"Stop a running background agent by aborting its session.",
+			"The agent's current operation is aborted and the session is marked stopped.",
+			"Use this to halt a background agent that is no longer needed.",
+		].join(" "),
+		parameters: Type.Object({
+			agent_id: Type.String({
+				description: "The agent ID to stop",
+			}),
+		}),
+		execute: async (toolCallId, params) => {
+			const { stopAgent } = await import('./session-manager');
+			
+			try {
+				const agent = await stopAgent(params.agent_id);
+				
+				if (!agent) {
+					return {
+						content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+						isError: true,
+					};
+				}
+				
+				return {
+					content: [{
+						type: "text" as const,
+						text: `Stopped agent ${params.agent_id} (${agent.description}).`,
+					}],
+				};
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				return {
+					content: [{ type: "text" as const, text: `Failed to stop agent: ${message}` }],
 					isError: true,
 				};
 			}

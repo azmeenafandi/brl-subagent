@@ -8,6 +8,9 @@ import * as transcript from './transcript';
 import { createEvent } from './event-bus';
 import { assertSafeAgentId } from './sanitize';
 import { wrapTask } from './prompt';
+import { createLogger } from './logging';
+
+const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 
 // Serialize concurrent spawn attempts — pi's API modules aren't safe for
@@ -241,17 +244,41 @@ export function setAgentFinalOutput(id: string, output: string): BackgroundAgent
 }
 
 /**
- * Stop a running agent
- * 
- * NOTE: In v2.0.3, this just marks the agent as stopped.
- * Actual session termination will be implemented when pi's ExtensionAPI supports it.
+ * Stop a running agent — REAL abort (PR #28 W1).
+ *
+ * Probe contract (sdk-abort-contract.test.ts): session.prompt() RESOLVES on
+ * abort — the SDK's runWithLifecycle catches the AbortError and converts it
+ * into a failure message with stopReason "aborted". So:
+ *   1. set status 'stopped' FIRST (the .then in spawnBackgroundSession will
+ *      fire after abort settles and must not overwrite it), then
+ *   2. await session.abort() (waits for the agent to become idle), then
+ *   3. complete the transcript.
  */
-export function stopAgent(id: string): BackgroundAgent | null {
-  const result = updateAgentStatus(id, 'stopped');
-  if (result) {
-    transcript.completeTranscript(id, 'stopped');
+export async function stopAgent(id: string): Promise<BackgroundAgent | null> {
+  const agent = getAgent(id);
+  if (!agent) return null;
+  // Nothing to stop — already terminal.
+  if (agent.status === 'completed' || agent.status === 'failed' || agent.status === 'stopped') {
+    return agent;
   }
-  return result;
+
+  // Mark stopped BEFORE aborting so the spawnBackgroundSession .then handler
+  // (which fires after the run settles) keeps the stopped state.
+  updateAgentStatus(id, 'stopped');
+
+  const session = agent._sessionRef;
+  if (session) {
+    try {
+      await session.abort();
+    } catch (err) {
+      // Abort can throw if the session is mid-dispose; the status flip above
+      // is already recorded, so this is non-fatal.
+      log.warn(`stopAgent: abort failed for ${id}`, { error: (err as Error).message });
+    }
+  }
+
+  transcript.completeTranscript(id, 'stopped');
+  return agent;
 }
 
 /**
@@ -450,6 +477,24 @@ export async function spawnBackgroundSession(
   // F27: wrap in the task-as-data fence — the user message is DATA, not
   // instructions (see SUBAGENT_INSTRUCTIONS Task Boundary).
   session.prompt(wrapTask(params.task)).then(() => {
+    // Probe contract (sdk-abort-contract.test.ts): prompt() RESOLVES on abort
+    // — the SDK's runWithLifecycle catches the AbortError and converts it into
+    // a failure message with stopReason "aborted". So an aborted run lands
+    // HERE, not in .catch. Two signals distinguish stop from completion:
+    //   1. stopAgent pre-set status to 'stopped' before calling abort();
+    //   2. the last assistant message carries stopReason "aborted".
+    const lastAssistant = [...(session.messages ?? [])].reverse().find(m => m.role === 'assistant');
+    const aborted = agent.status === 'stopped' || lastAssistant?.stopReason === 'aborted';
+    if (aborted) {
+      // Session was aborted — mark stopped. If stopAgent already flipped the
+      // status (pre-set 'stopped' + completedAt + event + transcript), only
+      // the transcript note is missing from this path.
+      if (agent.status !== 'stopped') {
+        updateAgentStatus(id, 'stopped');
+        transcript.completeTranscript(id, 'stopped');
+      }
+      return;
+    }
     // Session completed
     agent.status = 'completed';
     agent.completedAt = Date.now();
@@ -458,7 +503,12 @@ export async function spawnBackgroundSession(
     transcript.completeTranscript(id, 'completed');
     eventBus.emit(eventBus.createEvent('subagent:completed', id, {}));
   }).catch((err: Error) => {
-    // Session failed
+    // Session failed — genuine preflight/rejection errors only (auth failure,
+    // model resolution, invalid task). Abort never rejects (probe contract).
+    if (agent.status === 'stopped') {
+      transcript.completeTranscript(id, 'stopped');
+      return;
+    }
     agent.status = 'failed';
     agent.completedAt = Date.now();
     agent.error = err.message;

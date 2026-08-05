@@ -416,3 +416,102 @@ describe("agent id validation (F24)", () => {
 		expect(persisted.status).toBe("steered"); // valid record persisted normally
 	});
 });
+
+describe("stopAgent — real abort (issue #28 W1)", () => {
+	const VALID_UUID = "c7d8e9f0-1a2b-3c4d-5e6f-7a8b9c0d1e2f";
+
+	it("aborts the session ref and marks the agent stopped", async () => {
+		const abort = vi.fn().mockResolvedValue(undefined);
+		// A never-resolving prompt keeps the agent 'running' (real sessions
+		// stay running until the LLM turn settles).
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const { spawnBackgroundSession, stopAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test stop",
+		});
+		agent._sessionRef = { abort } as never;
+
+		const result = await stopAgent(agent.id);
+
+		expect(result?.status).toBe("stopped");
+		expect(abort).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not call abort for an already-completed agent", async () => {
+		const { spawnBackgroundSession, stopAgent, updateAgentStatus } = await import("../session-manager");
+		mocks.session.prompt.mockResolvedValue(undefined);
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test stop completed",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+		updateAgentStatus(agent.id, "completed");
+
+		const abort = vi.fn().mockResolvedValue(undefined);
+		agent._sessionRef = { abort } as never;
+		const result = await stopAgent(agent.id);
+
+		expect(result?.status).toBe("completed");
+		expect(abort).not.toHaveBeenCalled();
+	});
+
+	it("returns null for an unknown id", async () => {
+		const { stopAgent } = await import("../session-manager");
+		expect(await stopAgent("00000000-0000-0000-0000-000000000000")).toBeNull();
+	});
+
+	it("returns null for a traversal id", async () => {
+		const { stopAgent } = await import("../session-manager");
+		expect(await stopAgent("../../etc/passwd")).toBeNull();
+	});
+});
+
+describe("spawnBackgroundSession .then abort discrimination (probe contract)", () => {
+	const VALID_UUID = "1f2e3d4c-5b6a-7f8e-9d0c-1b2a3f4e5d6c";
+
+	it("marks agent stopped (not completed) when prompt resolves with an aborted run", async () => {
+		// Probe contract: abort makes prompt() RESOLVE with the failure message
+		// carrying stopReason "aborted" on the last assistant message.
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [], stopReason: "aborted", errorMessage: "Aborted" },
+		];
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test aborted run",
+		});
+		// Let the .then run.
+		await new Promise((r) => setTimeout(r, 0));
+
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("stopped");
+		expect(after?.completedAt).toBeDefined();
+	});
+
+	it("marks agent stopped when stopAgent pre-set status before abort", async () => {
+		// stopAgent sets 'stopped' FIRST, then abort() resolves the run — the
+		// .then must not overwrite it with 'completed'. The prompt stays
+		// pending until the abort settles, like a real mid-run stop.
+		let resolvePrompt: () => void = () => {};
+		mocks.session.prompt.mockReturnValue(new Promise<void>((r) => { resolvePrompt = r; }));
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession, getAgent, stopAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test pre-stopped",
+		});
+		// stopAgent: flips status to stopped, then aborts the session — the
+		// abort settles the run, which resolves the pending prompt.
+		const abort = vi.fn().mockImplementation(async () => { resolvePrompt(); });
+		agent._sessionRef = { abort } as never;
+		await stopAgent(agent.id);
+		// Let the .then fire after the abort settles.
+		await new Promise((r) => setTimeout(r, 0));
+
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("stopped");
+		expect(abort).toHaveBeenCalledTimes(1);
+	});
+});
