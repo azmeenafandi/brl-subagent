@@ -481,20 +481,32 @@ export async function spawnBackgroundSession(
   const runPromise = session.prompt(wrapTask(params.task));
 
   // W3 (issue #28): per-agent deadline — abort the session when exceeded.
-  // Armed BEFORE the prompt so preflight time also counts. The abort lands in
-  // the .then below as an aborted run (probe contract); we pre-set the status
-  // so the .then keeps 'stopped' with the timeout reason recorded.
+  // Armed immediately after the prompt call so in-prompt preflight (auth
+  // check, model resolution) counts toward the deadline; the abort lands in
+  // the .then below as an aborted run (probe contract). We pre-set the status
+  // so the .then keeps 'stopped' with the timeout reason recorded. The value
+  // is normalized upstream (normalizeTimeout) but clamp again here — a raw
+  // >=2^31 or Infinity would make Node fire the timer at ~1ms (instant kill).
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   if (params.timeout && params.timeout > 0) {
     timeoutHandle = setTimeout(() => {
-      if (agent.completedAt) return; // already settled — nothing to abort
-      updateAgentStatus(id, 'stopped', `Timed out after ${params.timeout}ms`);
-      transcript.completeTranscript(id, 'stopped');
-      session.abort().catch(() => {
-        // Abort can reject if the session is mid-dispose; the status flip
-        // above is already recorded, so this is non-fatal.
-      });
-    }, params.timeout);
+      try {
+        if (agent.completedAt) return; // already settled — nothing to abort
+        updateAgentStatus(id, 'stopped', `Timed out after ${params.timeout}ms`);
+        transcript.completeTranscript(id, 'stopped');
+        session.abort().catch(() => {
+          // Abort can reject if the session is mid-dispose; the status flip
+          // above is already recorded, so this is non-fatal.
+        });
+      } catch (err) {
+        // Timer callbacks must never throw uncaught — that crashes the host
+        // process. updateAgentStatus/completeTranscript can throw (persist
+        // fs failure, transcript deleted); the abort is best-effort.
+        log.warn(`spawnBackgroundSession: timeout handler error for ${id}`, {
+          error: (err as Error).message,
+        });
+      }
+    }, Math.min(params.timeout, 30 * 60 * 1000));
   }
 
   runPromise.then(() => {

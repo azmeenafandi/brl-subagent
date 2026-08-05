@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validatePreTask, diagnoseFailure, type ValidateConfig, type DiagnoseConfig } from "../validate";
+import { validatePreTask, diagnoseFailure, normalizeTimeout, type ValidateConfig, type DiagnoseConfig } from "../validate";
 
 describe("validatePreTask", () => {
   it("returns valid for empty task", () => {
@@ -379,4 +379,33 @@ describe("diagnoseFailure", () => {
     const r2 = diagnoseFailure(config);
     expect(r1).toEqual(r2);
   });
+});
+
+describe("normalizeTimeout (issue #28 PR #49 review M1/m1)", () => {
+	it("returns undefined for no timeout", () => {
+		expect(normalizeTimeout(undefined)).toBeUndefined();
+	});
+
+	it("neutralizes instant-kill values: 0, negative, NaN", () => {
+		expect(normalizeTimeout(0)).toBeUndefined();
+		expect(normalizeTimeout(-5)).toBeUndefined();
+		expect(normalizeTimeout(-1)).toBeUndefined();
+		expect(normalizeTimeout(NaN)).toBeUndefined();
+	});
+
+	it("neutralizes Node setTimeout overflow values: Infinity, >=2^31-1", () => {
+		// Node fires setTimeout(fn, Infinity) and setTimeout(fn, 2^31) at ~1ms
+		// (TimeoutOverflowWarning) — an instant kill, not a generous deadline.
+		expect(normalizeTimeout(Infinity)).toBeUndefined();
+		expect(normalizeTimeout(2 ** 31 - 1)).toBeUndefined();
+		expect(normalizeTimeout(2 ** 31)).toBeUndefined();
+	});
+
+	it("passes through valid deadlines unchanged (foreground may exceed 30min)", () => {
+		expect(normalizeTimeout(5000)).toBe(5000);
+		expect(normalizeTimeout(30 * 60 * 1000)).toBe(30 * 60 * 1000);
+		// Foreground legitimately supports >30min timeouts (runner kill); the
+		// background hard cap applies its own 30min Math.min.
+		expect(normalizeTimeout(45 * 60 * 1000)).toBe(45 * 60 * 1000);
+	});
 });

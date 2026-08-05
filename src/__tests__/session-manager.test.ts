@@ -567,6 +567,9 @@ describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 			const after = getAgent(agent.id);
 			expect(after?.status).toBe("completed");
 			expect(mocks.session.abort).not.toHaveBeenCalled();
+			// M2: the timeout handle must actually be CLEARED, not just guarded
+			// by completedAt — a leaked timer would fire on a future spawn.
+			expect(vi.getTimerCount()).toBe(0);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -586,6 +589,30 @@ describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 			await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
 
 			expect(mocks.session.abort).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("clamps an oversized timeout to the 30min hard cap (m1)", async () => {
+		vi.useFakeTimers();
+		try {
+			mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+			mocks.session.abort.mockClear();
+			const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "test oversized timeout",
+				// Direct spawnBackgroundSession call (no resolveSubagentParams):
+				// a raw overflow value must not become an instant kill.
+				timeout: 2 ** 31,
+			});
+			// Clamped to 30min — 1ms is NOT enough to fire.
+			await vi.advanceTimersByTimeAsync(1);
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+			// It fires at the 30min clamp.
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.status).toBe("stopped");
 		} finally {
 			vi.useRealTimers();
 		}

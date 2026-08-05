@@ -78,7 +78,7 @@ import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { autoRoutePreset } from "./router";
-import { validatePreTask, diagnoseFailure } from "./validate";
+import { validatePreTask, diagnoseFailure, normalizeTimeout } from "./validate";
 import { getPreset as getPresetFn } from "./presets";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
@@ -249,7 +249,7 @@ export default function (pi: ExtensionAPI) {
 		const mergedSystemPrompt = params.systemPrompt ?? preset?.systemPrompt;
 		const mergedInheritSP = params.inheritSystemPrompt ?? preset?.inheritSystemPrompt;
 		const mergedOutputFile = params.outputFile ?? preset?.outputFile;
-		const mergedTimeout = params.timeout ?? preset?.timeout;
+		const mergedTimeout = normalizeTimeout(params.timeout ?? preset?.timeout);
 		const mergedTools = params.tools ?? preset?.tools;
 		// Fix: edit depends on write in pi's tool system.
 		// If edit is in the allowlist but write is not, all tools fail to resolve.
@@ -2367,7 +2367,8 @@ export default function (pi: ExtensionAPI) {
 								state.finalizeLiveSubagent(agent.id);
 								state.activeSubagents--;
 								if (state.activeSubagents < 0) state.activeSubagents = 0;
-								state.completedSubagents++;
+								// m6: deadline abort is a stop, not a completion — mirror the
+								// W3/poller stopped path (no completedSubagents increment).
 								updateProgressStatus(state, ctx);
 								pi.sendMessage({
 									customType: "subagent-notification",
@@ -2382,6 +2383,13 @@ export default function (pi: ExtensionAPI) {
 								// then notify — a throw mid-path can't double-fire mutations.
 								completed = true;
 								clearInterval(pollInterval);
+								// m3: the try may have thrown BEFORE updateAgentStatus ran (e.g.
+								// persistAgent fs failure) — leave the record terminal so
+								// get_subagent_result doesn't report 'running' and the W3 timer
+								// guard (!agent.completedAt) can't re-fire later.
+								try {
+									updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
+								} catch { /* ignore */ }
 								try {
 									setAgentFinalOutput(agent.id, extractFinalOutput(agent._sessionRef ?? { messages: [] }));
 								} catch { /* ignore */ }
