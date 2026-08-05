@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
-import type { BackgroundAgent, AgentStatus, SubagentResult, ThinkingLevel, SubagentToolOptions } from './types';
+import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, ThinkingLevel, SubagentToolOptions } from './types';
 import { EMPTY_USAGE } from './types';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -9,6 +9,7 @@ import { createEvent } from './event-bus';
 import { assertSafeAgentId } from './sanitize';
 import { wrapTask } from './prompt';
 import { createLogger } from './logging';
+import { getCurrentBranch, createWorkBranch, captureDiff, switchToBranch, deleteBranch, hasUncommittedChanges, commitAll, captureWorkingDiff } from './git';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -16,6 +17,19 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 // Serialize concurrent spawn attempts — pi's API modules aren't safe for
 // concurrent access from extensions.
 var spawnQueue: Promise<void> = Promise.resolve();
+
+// C2: per-repo locks serializing the FULL gitMode=branch lifecycle (setup →
+// settle → teardown). Keyed by cwd because different repos don't conflict.
+const gitBranchLocks = new Map<string, Promise<void>>();
+
+/**
+ * TEST-ONLY: release every held git branch lock. The lock is normally held
+ * for the agent's lifetime (released at settle), but tests that never settle
+ * (hanging prompt mocks) would leak it into the next test.
+ */
+export function __testResetGitBranchLocks(): void {
+  gitBranchLocks.clear();
+}
 
 // Robust UUID generation with fallback
 function generateUUID(): string {
@@ -337,6 +351,8 @@ export async function spawnBackgroundSession(
     toolOptions?: SubagentToolOptions;
     /** Per-agent deadline in ms — the session is aborted when exceeded (issue #28 W3). */
     timeout?: number;
+    /** Git isolation for the background run — "branch" creates a work branch (issue #28 W4). */
+    gitMode?: GitMode;
   }
 ): Promise<BackgroundAgent> {
   // Serialize access to pi API to prevent concurrent import races
@@ -467,6 +483,151 @@ export async function spawnBackgroundSession(
   // Store session ref for live monitor polling
   agent._sessionRef = session;
 
+  // W4 (issue #28): git isolation — create a work branch BEFORE the prompt so
+  // the background agent's file writes land on the branch, never on the
+  // working tree's base branch. There is no interactive approval in background
+  // mode, so on completion the diff is captured and the branch is DISCARDED
+  // (the diff is recorded on the agent for review); on failure/abort the
+  // branch is discarded the same way. A branch that cannot be created is a
+  // hard failure — never spawn an unisolated background agent that was asked
+  // for isolation (fail-loud, same principle as foreground's fallback but
+  // background cannot warn-and-continue safely).
+  let originalBranch: string | undefined;
+  let workBranchName: string | undefined;
+  let releaseGitLock: (() => void) | undefined;
+  const gitCwd = params.cwd ?? ctx.cwd;
+  if (params.gitMode === 'branch') {
+    // C2: serialize the FULL branch lifecycle per repo. The spawnQueue only
+    // covers setup; without this lock, a second concurrent branch-mode spawn
+    // would read the first's work branch as its base and both teardowns would
+    // fight over the shared working tree (stranding the repo on an orphan
+    // branch). The lock is released in cleanupWorkBranch (or on setup throw).
+    const prev = gitBranchLocks.get(gitCwd) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const entry = prev.then(() => gate);
+    gitBranchLocks.set(gitCwd, entry);
+    await prev;
+    releaseGitLock = () => {
+      // Delete the map entry ONLY if we are still the head of the chain — a
+      // queued spawn behind us replaced the entry with its own.
+      if (gitBranchLocks.get(gitCwd) === entry) gitBranchLocks.delete(gitCwd);
+      release();
+    };
+
+    try {
+      // C1: isolation is only real when the base tree is clean. A dirty tree
+      // would ride onto the work branch, get clobbered by the agent's writes,
+      // and leak back into the base working tree on switch — refuse loudly.
+      if (hasUncommittedChanges(gitCwd)) {
+        throw new Error(
+          'working tree has uncommitted changes; commit or stash before ' +
+          'requesting background gitMode=branch isolation'
+        );
+      }
+      originalBranch = getCurrentBranch(gitCwd);
+      const branchResult = createWorkBranch(gitCwd, originalBranch);
+      if (branchResult.ok) {
+        workBranchName = branchResult.branch;
+        log.info('Created work branch for background agent', {
+          branch: workBranchName,
+          base: originalBranch,
+          agentId: id,
+        });
+      } else {
+        throw new Error(`createWorkBranch failed: ${branchResult.error}`);
+      }
+    } catch (err) {
+      // The agent record was already persisted as 'running' above — flip it
+      // to 'failed' so no zombie 'running' record survives the refused spawn
+      // (get_subagent_result would otherwise report 'running' forever).
+      releaseGitLock?.();
+      releaseGitLock = undefined;
+      try {
+        updateAgentStatus(id, 'failed',
+          `gitMode 'branch' requested but work branch setup failed: ${(err as Error).message}`);
+        transcript.completeTranscript(id, 'failed');
+      } catch { /* ignore */ }
+      throw new Error(
+        `gitMode 'branch' requested but work branch setup failed: ${(err as Error).message}. ` +
+        `Refusing to spawn the background agent unisolated.`,
+        { cause: err }
+      );
+    }
+  }
+
+  // Branch teardown — commit the agent's work (so the diff is real), capture
+  // the diff, switch back to the original branch, delete the work branch, and
+  // release the per-repo git lock. Runs on EVERY settle path. C1: agents
+  // rarely commit, so captureDiff(base...HEAD) alone would be empty and the
+  // uncommitted edits would leak into the base working tree on switch —
+  // commitAll first makes the diff real and the switch clean.
+  const cleanupWorkBranch = (): { gitBranch?: string; gitDiff?: string } => {
+    if (!workBranchName || !originalBranch) return {};
+    const info: { gitBranch?: string; gitDiff?: string } = { gitBranch: workBranchName };
+    // The lock MUST be released on every exit path — early returns included.
+    try {
+      try {
+        const stillOnOurBranch = getCurrentBranch(gitCwd) === workBranchName;
+        if (!stillOnOurBranch) {
+          log.warn(`cleanupWorkBranch: tree moved off ${workBranchName} — skipping switch/delete`, {
+            agentId: id,
+          });
+          return info;
+        }
+      } catch (err) {
+        log.warn(`getCurrentBranch failed during cleanup for background agent ${id}`, {
+          error: (err as Error).message,
+        });
+        return info;
+      }
+      try {
+        // C1: commit the agent's work so captureDiff sees it. If no identity is
+        // configured, fall back to capturing the working-tree diff directly.
+        const dirty = hasUncommittedChanges(gitCwd);
+        if (dirty) {
+          const commitResult = commitAll(gitCwd, `brl-subagent ${id}: background work`);
+          if (commitResult.ok) {
+            log.info('Committed background agent work on work branch', {
+              sha: commitResult.sha,
+              branch: workBranchName,
+              agentId: id,
+            });
+          } else {
+            log.warn(`commitAll failed for background agent ${id} — capturing working diff`, {
+              error: commitResult.error,
+            });
+            const workingDiff = captureWorkingDiff(gitCwd);
+            if (workingDiff) info.gitDiff = workingDiff;
+          }
+        }
+        const diffResult = captureDiff(gitCwd, originalBranch);
+        if (diffResult.ok && diffResult.diff.trim()) {
+          // Merge committed + working diffs — either can exist alone.
+          info.gitDiff = info.gitDiff
+            ? `${info.gitDiff}\n${diffResult.diff}`
+            : diffResult.diff;
+        }
+      } catch (err) {
+        log.warn(`captureDiff failed for background agent ${id}`, { error: (err as Error).message });
+      }
+      try {
+        switchToBranch(gitCwd, originalBranch);
+      } catch (err) {
+        log.warn(`switchToBranch failed for background agent ${id}`, { error: (err as Error).message });
+      }
+      try {
+        deleteBranch(gitCwd, workBranchName);
+      } catch (err) {
+        log.warn(`deleteBranch failed for background agent ${id}`, { error: (err as Error).message });
+      }
+    } finally {
+      releaseGitLock?.();
+      releaseGitLock = undefined;
+    }
+    return info;
+  };
+
   // Emit created event
   eventBus.emit(eventBus.createEvent('subagent:created', id, {
     type: agent.type,
@@ -478,7 +639,16 @@ export async function spawnBackgroundSession(
   // The session will run independently
   // F27: wrap in the task-as-data fence — the user message is DATA, not
   // instructions (see SUBAGENT_INSTRUCTIONS Task Boundary).
-  const runPromise = session.prompt(wrapTask(params.task));
+  // NOTE: if prompt() throws SYNCHRONOUSLY, the .then/.catch below never
+  // attach and cleanupWorkBranch would never run — catch here so the work
+  // branch is not orphaned (it is a real filesystem branch).
+  let runPromise: Promise<unknown>;
+  try {
+    runPromise = session.prompt(wrapTask(params.task));
+  } catch (err) {
+    cleanupWorkBranch();
+    throw err;
+  }
 
   // W3 (issue #28): per-agent deadline — abort the session when exceeded.
   // Armed immediately after the prompt call so in-prompt preflight (auth
@@ -527,26 +697,88 @@ export async function spawnBackgroundSession(
         updateAgentStatus(id, 'stopped');
         transcript.completeTranscript(id, 'stopped');
       }
+      // W4/M1: capture whatever the branch produced before discarding it — an
+      // aborted background agent's partial work is still worth reviewing, and
+      // must be RECORDED, not just captured-and-deleted.
+      const gitInfo = cleanupWorkBranch();
+      if (gitInfo.gitBranch) {
+        agent.result = {
+          ...(agent.result ?? {}),
+          exitCode: 1,
+          messages: [],
+          stderr: '',
+          usage: agent.result?.usage ?? EMPTY_USAGE,
+          stopReason: 'aborted',
+          gitBranch: gitInfo.gitBranch,
+          gitDiff: gitInfo.gitDiff,
+        } as SubagentResult;
+        agents.set(id, agent);
+        persistAgent(agent);
+      }
       return;
     }
     // Session completed
     agent.status = 'completed';
     agent.completedAt = Date.now();
+    // W4: capture diff + discard the work branch; record branch info on the
+    // agent so the caller can review what the background agent changed.
+    const gitInfo = cleanupWorkBranch();
+    if (gitInfo.gitBranch) {
+      agent.result = {
+        ...(agent.result ?? {}),
+        exitCode: 0,
+        messages: [],
+        stderr: '',
+        usage: agent.result?.usage ?? EMPTY_USAGE,
+        gitBranch: gitInfo.gitBranch,
+        gitDiff: gitInfo.gitDiff,
+      } as SubagentResult;
+    }
     agents.set(id, agent);
     persistAgent(agent);
     transcript.completeTranscript(id, 'completed');
     eventBus.emit(eventBus.createEvent('subagent:completed', id, {}));
   }).catch((err: Error) => {
     if (timeoutHandle) clearTimeout(timeoutHandle);
+    // W4: capture partial work + discard the work branch on failure — a failed
+    // background agent may still have produced reviewable changes.
+    const gitInfo = cleanupWorkBranch();
     // Session failed — genuine preflight/rejection errors only (auth failure,
     // model resolution, invalid task). Abort never rejects (probe contract).
     if (agent.status === 'stopped') {
+      // M1: record the partial work even on the stopped path.
+      if (gitInfo.gitBranch) {
+        agent.result = {
+          ...(agent.result ?? {}),
+          exitCode: 1,
+          messages: [],
+          stderr: '',
+          usage: agent.result?.usage ?? EMPTY_USAGE,
+          stopReason: 'aborted',
+          gitBranch: gitInfo.gitBranch,
+          gitDiff: gitInfo.gitDiff,
+        } as SubagentResult;
+        agents.set(id, agent);
+        persistAgent(agent);
+      }
       transcript.completeTranscript(id, 'stopped');
       return;
     }
     agent.status = 'failed';
     agent.completedAt = Date.now();
     agent.error = err.message;
+    if (gitInfo.gitBranch) {
+      agent.result = {
+        ...(agent.result ?? {}),
+        exitCode: 1,
+        messages: [],
+        stderr: '',
+        usage: agent.result?.usage ?? EMPTY_USAGE,
+        errorMessage: err.message,
+        gitBranch: gitInfo.gitBranch,
+        gitDiff: gitInfo.gitDiff,
+      } as SubagentResult;
+    }
     agents.set(id, agent);
     persistAgent(agent);
     transcript.completeTranscript(id, 'failed');

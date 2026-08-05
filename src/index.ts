@@ -2141,6 +2141,54 @@ export default function (pi: ExtensionAPI) {
 				const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
 				
 				try {
+					// W5 (issue #28): approvalMode 'always' cannot work in background —
+					// there is no interactive dialog to approve the diff. Reject loudly
+					// instead of silently running unattended with write access.
+					if (bgResolved.resolvedApprovalMode === 'always') {
+						return {
+							content: [{ type: "text" as const, text:
+								`Cannot spawn background agent with approvalMode 'always': background agents run unattended ` +
+								`and cannot present the approval dialog. Use approvalMode 'auto' (default) or 'writes'.`
+							}],
+							isError: true,
+						};
+					}
+					// W5: 'writes' in background silently auto-approves — warn once so the
+					// caller knows the diff will NOT be gated on approval.
+					if (bgResolved.resolvedApprovalMode === 'writes') {
+						log.warn("Background agent spawned with approvalMode 'writes' — auto-approving (no dialog in background)", {
+							task: params.task,
+						});
+					}
+
+					// W6 (issue #28): session cost limit must gate background spawns too —
+					// the R5 check after the background branch never runs for them.
+					// Same estimate/limit logic as single mode.
+					const bgPerTaskEstimate = state.config.perTaskCostEstimate > 0
+						? state.config.perTaskCostEstimate
+						: 0.05;
+					if (state.checkCostLimit(bgPerTaskEstimate, ctx)) {
+						const bgLimit = state.config.sessionCostLimit;
+						const bgCurrentTotal = state.getSessionTotalCost(ctx);
+						log.warn("Background delegation rejected: session cost limit reached", {
+							currentTotal: bgCurrentTotal,
+							estimatedCost: bgPerTaskEstimate,
+							limit: bgLimit,
+						});
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text:
+										`Cannot delegate: session cost limit reached ` +
+										`($${bgCurrentTotal.toFixed(4)} spent of $${bgLimit.toFixed(2)} limit). ` +
+										`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
+								},
+							],
+							isError: true,
+						};
+					}
+
 					// F1: Validate cwd + outputFile the same way foreground single mode does —
 					// an unvalidated outputFile would reach the prompt and could steer the
 					// background agent's write tool outside the project root.
@@ -2207,6 +2255,7 @@ export default function (pi: ExtensionAPI) {
 						cwd: bgCwdResult.value,
 						toolOptions: bgResolved.toolOptions,
 						timeout: bgResolved.timeout,
+						gitMode: bgResolved.resolvedGitMode,
 					});
 					
 					// Register for live monitor
@@ -3128,6 +3177,16 @@ export default function (pi: ExtensionAPI) {
 				resultText += `\nResult:\n`;
 				if (agent.result.messages && agent.result.messages.length > 0) {
 					resultText += agent.result.messages.join('\n');
+				}
+				// W4: surface the background agent's git work-branch diff so the
+				// captured changes are reviewable (the branch itself is discarded).
+				if (agent.result.gitBranch) {
+					resultText += `\nGit branch: ${agent.result.gitBranch}\n`;
+				}
+				if (agent.result.gitDiff) {
+					const diff = agent.result.gitDiff;
+					const truncated = diff.length > 8000 ? diff.slice(0, 8000) + "\n…[diff truncated]" : diff;
+					resultText += `\nGit diff (branch ${agent.result.gitBranch ?? 'work'}):\n${truncated}\n`;
 				}
 			}
 			
