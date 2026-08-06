@@ -152,7 +152,7 @@ Set `background: true` to spawn the subagent as an independent session that retu
 
 ## Changelog
 
-### v2.1.3 (unreleased)
+### v2.1.3
 
 - **Real abort for background agents (issue #28):** the `stop_subagent` tool and async `stopAgent()` abort the live session via `session.abort()` — the pending `prompt()` resolves with `stopReason: "aborted"` and the agent is marked `stopped`. Previously steering/stopping only flipped a status flag and the session kept running.
 - **Per-agent timeout + hard cap:** a deadline is armed before the prompt runs; when exceeded the session is aborted and the agent ends `stopped` with the timeout reason. The hard cap actually aborts now (was an orphaned-session leak). Timeouts are normalized (`0`/negative/`NaN`/`Infinity`/`≥2^31` → no timeout) and a double-fire guard prevents acting on an already-settled agent.
