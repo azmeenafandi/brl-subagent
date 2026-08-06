@@ -1,6 +1,6 @@
 # brl-subagent
 
-> Enterprise subagent extension for [pi](https://github.com/earendil-works/pi-coding-agent) — delegate tasks to isolated processes with configurable models, thinking levels, tool scoping via `tools` and `excludeTools`, dependency graphs, and a live observability dashboard.
+> Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
 **Version:** 2.1.3 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
