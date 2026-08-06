@@ -146,17 +146,28 @@ export function commitAll(
 }
 
 /**
- * Capture the WORKING-TREE diff (unstaged + staged, i.e. everything `git diff
- * base...HEAD` misses when the agent never committed). Returns the merged
- * patch text, or undefined when the tree is clean.
+ * Capture the WORKING-TREE diff (unstaged + staged + untracked, i.e.
+ * everything `git diff base...HEAD` misses when the agent never committed).
+ * Uses intent-to-add (`git add -A -N`) so untracked files appear in `git
+ * diff` WITHOUT staging their content, then resets the index to remove the
+ * marks. Returns the merged patch text, or undefined when the tree is clean.
  */
 export function captureWorkingDiff(cwd: string): string | undefined {
 	try {
+		// Gate A (git-real.test.ts): plain `git diff` never shows untracked
+		// files — intent-to-add surfaces them without staging content.
+		execFileSync("git", ["add", "-A", "-N"], gitOpts(cwd));
 		const unstaged = execFileSync("git", ["diff"], gitOpts(cwd)).toString();
 		const staged = execFileSync("git", ["diff", "--cached"], gitOpts(cwd)).toString();
+		// Remove the intent-to-add marks — leave the index as we found it.
+		execFileSync("git", ["reset", "-q"], gitOpts(cwd));
 		const merged = `${unstaged}${staged}`.trim();
 		return merged.length > 0 ? merged : undefined;
 	} catch {
+		try {
+			// Best-effort index restore even if a diff command failed mid-way.
+			execFileSync("git", ["reset", "-q"], gitOpts(cwd));
+		} catch { /* ignore */ }
 		return undefined;
 	}
 }
