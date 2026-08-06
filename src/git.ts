@@ -146,17 +146,42 @@ export function commitAll(
 }
 
 /**
- * Capture the WORKING-TREE diff (unstaged + staged, i.e. everything `git diff
- * base...HEAD` misses when the agent never committed). Returns the merged
- * patch text, or undefined when the tree is clean.
+ * Capture the WORKING-TREE diff (unstaged + staged + untracked, i.e.
+ * everything `git diff base...HEAD` misses when the agent never committed).
+ * Untracked files are surfaced via intent-to-add (`git add -N`) WITHOUT
+ * staging their content, and the index is restored to its original state —
+ * the intent-to-add marks are removed with a path-limited reset that leaves
+ * genuinely staged entries untouched. Returns the merged patch text, or
+ * undefined when the tree is clean.
  */
 export function captureWorkingDiff(cwd: string): string | undefined {
+	let untracked: string[] = [];
 	try {
+		// Identify untracked files FIRST — only these need intent-to-add marks.
+		untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], gitOpts(cwd))
+			.toString().split("\n").filter(Boolean);
+	} catch {
+		return undefined;
+	}
+	try {
+		// Capture staged + unstaged (tracked) first — no index mutation yet.
 		const unstaged = execFileSync("git", ["diff"], gitOpts(cwd)).toString();
 		const staged = execFileSync("git", ["diff", "--cached"], gitOpts(cwd)).toString();
-		const merged = `${unstaged}${staged}`.trim();
+		let untrackedDiff = "";
+		if (untracked.length > 0) {
+			// Surface untracked files via intent-to-add, WITHOUT staging content.
+			execFileSync("git", ["add", "-N", "--", ...untracked], gitOpts(cwd));
+			untrackedDiff = execFileSync("git", ["diff"], gitOpts(cwd)).toString();
+			// Remove ONLY the intent-to-add marks — real staged entries are preserved.
+			execFileSync("git", ["reset", "-q", "--", ...untracked], gitOpts(cwd));
+		}
+		const merged = `${unstaged}${untrackedDiff}${staged}`.trim();
 		return merged.length > 0 ? merged : undefined;
 	} catch {
+		try {
+			// Best-effort index restore even if a diff command failed mid-way.
+			if (untracked.length > 0) execFileSync("git", ["reset", "-q", "--", ...untracked], gitOpts(cwd));
+		} catch { /* ignore */ }
 		return undefined;
 	}
 }
