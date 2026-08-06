@@ -628,6 +628,24 @@ export async function spawnBackgroundSession(
     return info;
   };
 
+  // Issue #53: the settle handlers (.then/.catch below) run in promise
+  // callbacks — a throw from any step (fs failure, deleted transcript, emit
+  // error) would escape as an uncaughtException and kill the whole pi
+  // process. If a handler step throws, log it and best-effort flip the record
+  // terminal so no zombie 'running' record survives; never rethrow.
+  const markTerminalBestEffort = (fallback: AgentStatus): void => {
+    try {
+      if (agent.status !== 'completed' && agent.status !== 'failed' && agent.status !== 'stopped') {
+        agent.status = fallback;
+      }
+      if (!agent.completedAt) agent.completedAt = Date.now();
+      agents.set(id, agent);
+      persistAgent(agent);
+    } catch {
+      // The record may be beyond saving — the process must survive.
+    }
+  };
+
   // Emit created event
   eventBus.emit(eventBus.createEvent('subagent:created', id, {
     type: agent.type,
@@ -681,72 +699,103 @@ export async function spawnBackgroundSession(
 
   runPromise.then(() => {
     if (timeoutHandle) clearTimeout(timeoutHandle);
-    // Probe contract (sdk-abort-contract.test.ts): prompt() RESOLVES on abort
-    // — the SDK's runWithLifecycle catches the AbortError and converts it into
-    // a failure message with stopReason "aborted". So an aborted run lands
-    // HERE, not in .catch. Two signals distinguish stop from completion:
-    //   1. stopAgent pre-set status to 'stopped' before calling abort();
-    //   2. the last assistant message carries stopReason "aborted".
-    const lastAssistant = [...(session.messages ?? [])].reverse().find(m => m.role === 'assistant');
-    const aborted = agent.status === 'stopped' || lastAssistant?.stopReason === 'aborted';
-    if (aborted) {
-      // Session was aborted — mark stopped. If stopAgent already flipped the
-      // status (pre-set 'stopped' + completedAt + event + transcript), only
-      // the transcript note is missing from this path.
-      if (agent.status !== 'stopped') {
-        updateAgentStatus(id, 'stopped');
-        transcript.completeTranscript(id, 'stopped');
+    try {
+      // Probe contract (sdk-abort-contract.test.ts): prompt() RESOLVES on abort
+      // — the SDK's runWithLifecycle catches the AbortError and converts it into
+      // a failure message with stopReason "aborted". So an aborted run lands
+      // HERE, not in .catch. Two signals distinguish stop from completion:
+      //   1. stopAgent pre-set status to 'stopped' before calling abort();
+      //   2. the last assistant message carries stopReason "aborted".
+      const lastAssistant = [...(session.messages ?? [])].reverse().find(m => m.role === 'assistant');
+      const aborted = agent.status === 'stopped' || lastAssistant?.stopReason === 'aborted';
+      if (aborted) {
+        // Session was aborted — mark stopped. If stopAgent already flipped the
+        // status (pre-set 'stopped' + completedAt + event + transcript), only
+        // the transcript note is missing from this path.
+        if (agent.status !== 'stopped') {
+          updateAgentStatus(id, 'stopped');
+          transcript.completeTranscript(id, 'stopped');
+        }
+        // W4/M1: capture whatever the branch produced before discarding it — an
+        // aborted background agent's partial work is still worth reviewing, and
+        // must be RECORDED, not just captured-and-deleted.
+        const gitInfo = cleanupWorkBranch();
+        if (gitInfo.gitBranch) {
+          agent.result = {
+            ...(agent.result ?? {}),
+            exitCode: 1,
+            messages: [],
+            stderr: '',
+            usage: agent.result?.usage ?? EMPTY_USAGE,
+            stopReason: 'aborted',
+            gitBranch: gitInfo.gitBranch,
+            gitDiff: gitInfo.gitDiff,
+          } as SubagentResult;
+          agents.set(id, agent);
+          persistAgent(agent);
+        }
+        return;
       }
-      // W4/M1: capture whatever the branch produced before discarding it — an
-      // aborted background agent's partial work is still worth reviewing, and
-      // must be RECORDED, not just captured-and-deleted.
+      // Session completed
+      agent.status = 'completed';
+      agent.completedAt = Date.now();
+      // W4: capture diff + discard the work branch; record branch info on the
+      // agent so the caller can review what the background agent changed.
       const gitInfo = cleanupWorkBranch();
       if (gitInfo.gitBranch) {
         agent.result = {
           ...(agent.result ?? {}),
-          exitCode: 1,
+          exitCode: 0,
           messages: [],
           stderr: '',
           usage: agent.result?.usage ?? EMPTY_USAGE,
-          stopReason: 'aborted',
           gitBranch: gitInfo.gitBranch,
           gitDiff: gitInfo.gitDiff,
         } as SubagentResult;
-        agents.set(id, agent);
-        persistAgent(agent);
       }
-      return;
+      agents.set(id, agent);
+      persistAgent(agent);
+      transcript.completeTranscript(id, 'completed');
+      eventBus.emit(eventBus.createEvent('subagent:completed', id, {}));
+    } catch (err) {
+      // Issue #53: any throw in this handler would escape as an
+      // uncaughtException and kill pi. Log and mark the record terminal —
+      // never rethrow.
+      log.error(`spawnBackgroundSession: completion handler failed for ${id}`, {
+        error: (err as Error).message,
+      });
+      markTerminalBestEffort('completed');
     }
-    // Session completed
-    agent.status = 'completed';
-    agent.completedAt = Date.now();
-    // W4: capture diff + discard the work branch; record branch info on the
-    // agent so the caller can review what the background agent changed.
-    const gitInfo = cleanupWorkBranch();
-    if (gitInfo.gitBranch) {
-      agent.result = {
-        ...(agent.result ?? {}),
-        exitCode: 0,
-        messages: [],
-        stderr: '',
-        usage: agent.result?.usage ?? EMPTY_USAGE,
-        gitBranch: gitInfo.gitBranch,
-        gitDiff: gitInfo.gitDiff,
-      } as SubagentResult;
-    }
-    agents.set(id, agent);
-    persistAgent(agent);
-    transcript.completeTranscript(id, 'completed');
-    eventBus.emit(eventBus.createEvent('subagent:completed', id, {}));
   }).catch((err: Error) => {
     if (timeoutHandle) clearTimeout(timeoutHandle);
-    // W4: capture partial work + discard the work branch on failure — a failed
-    // background agent may still have produced reviewable changes.
-    const gitInfo = cleanupWorkBranch();
-    // Session failed — genuine preflight/rejection errors only (auth failure,
-    // model resolution, invalid task). Abort never rejects (probe contract).
-    if (agent.status === 'stopped') {
-      // M1: record the partial work even on the stopped path.
+    try {
+      // W4: capture partial work + discard the work branch on failure — a failed
+      // background agent may still have produced reviewable changes.
+      const gitInfo = cleanupWorkBranch();
+      // Session failed — genuine preflight/rejection errors only (auth failure,
+      // model resolution, invalid task). Abort never rejects (probe contract).
+      if (agent.status === 'stopped') {
+        // M1: record the partial work even on the stopped path.
+        if (gitInfo.gitBranch) {
+          agent.result = {
+            ...(agent.result ?? {}),
+            exitCode: 1,
+            messages: [],
+            stderr: '',
+            usage: agent.result?.usage ?? EMPTY_USAGE,
+            stopReason: 'aborted',
+            gitBranch: gitInfo.gitBranch,
+            gitDiff: gitInfo.gitDiff,
+          } as SubagentResult;
+          agents.set(id, agent);
+          persistAgent(agent);
+        }
+        transcript.completeTranscript(id, 'stopped');
+        return;
+      }
+      agent.status = 'failed';
+      agent.completedAt = Date.now();
+      agent.error = err.message;
       if (gitInfo.gitBranch) {
         agent.result = {
           ...(agent.result ?? {}),
@@ -754,35 +803,24 @@ export async function spawnBackgroundSession(
           messages: [],
           stderr: '',
           usage: agent.result?.usage ?? EMPTY_USAGE,
-          stopReason: 'aborted',
+          errorMessage: err.message,
           gitBranch: gitInfo.gitBranch,
           gitDiff: gitInfo.gitDiff,
         } as SubagentResult;
-        agents.set(id, agent);
-        persistAgent(agent);
       }
-      transcript.completeTranscript(id, 'stopped');
-      return;
+      agents.set(id, agent);
+      persistAgent(agent);
+      transcript.completeTranscript(id, 'failed');
+      eventBus.emit(eventBus.createEvent('subagent:failed', id, { error: err.message }));
+    } catch (err) {
+      // Issue #53: any throw in this handler would escape as an
+      // uncaughtException and kill pi. Log and mark the record terminal —
+      // never rethrow.
+      log.error(`spawnBackgroundSession: completion handler failed for ${id}`, {
+        error: (err as Error).message,
+      });
+      markTerminalBestEffort('failed');
     }
-    agent.status = 'failed';
-    agent.completedAt = Date.now();
-    agent.error = err.message;
-    if (gitInfo.gitBranch) {
-      agent.result = {
-        ...(agent.result ?? {}),
-        exitCode: 1,
-        messages: [],
-        stderr: '',
-        usage: agent.result?.usage ?? EMPTY_USAGE,
-        errorMessage: err.message,
-        gitBranch: gitInfo.gitBranch,
-        gitDiff: gitInfo.gitDiff,
-      } as SubagentResult;
-    }
-    agents.set(id, agent);
-    persistAgent(agent);
-    transcript.completeTranscript(id, 'failed');
-    eventBus.emit(eventBus.createEvent('subagent:failed', id, { error: err.message }));
   });
   
   return agent;

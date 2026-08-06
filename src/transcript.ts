@@ -86,9 +86,19 @@ export function getTranscript(agentId: string): TranscriptEntry[] {
   }).filter((entry): entry is TranscriptEntry => entry !== null);
 }
 
-/**
- * Mark transcript as completed
- */
 export function completeTranscript(agentId: string, status: string): void {
+  // Issue #53: completeTranscript is settle-path bookkeeping (called from
+  // promise callbacks in session-manager/index) and must NEVER throw. The
+  // transcript file can legitimately be missing — a spawn that died before
+  // startTranscript ran, or a file deleted during cleanup. A throw here
+  // escapes the promise callback and becomes an uncaughtException that kills
+  // the whole pi process. appendEntry KEEPS its throwing behavior for
+  // startTranscript/appendEntry callers (F24: the file must exist before
+  // appending — that invariant is load-bearing for caller validation).
+  const path = getTranscriptPath(agentId);
+  if (!existsSync(path)) {
+    console.warn(`[brl-subagent] completeTranscript: transcript missing for agent ${agentId} — skipping completion entry`);
+    return;
+  }
   appendEntry(agentId, 'system', `Transcript completed: ${status}`);
 }
