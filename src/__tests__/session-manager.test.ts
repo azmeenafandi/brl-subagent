@@ -61,6 +61,27 @@ vi.mock("../git", () => ({
 	captureWorkingDiff: mocks.git.captureWorkingDiff,
 }));
 
+// Issue #53: mock the event bus so a test can force a throw inside the settle
+// handlers. The REAL event-bus swallows listener errors (emit never throws),
+// so the defensive try/catch around the .then/.catch bodies can only be
+// exercised with a throwing emit mock.
+const eventBusMock = vi.hoisted(() => ({
+	emit: vi.fn(),
+	createEvent: vi.fn(
+		(type: string, agentId: string, data: Record<string, unknown> = {}) => ({
+			type,
+			agentId,
+			timestamp: Date.now(),
+			data,
+		})
+	),
+}));
+
+vi.mock("../event-bus", () => ({
+	emit: eventBusMock.emit,
+	createEvent: eventBusMock.createEvent,
+}));
+
 import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus } from "../session-manager";
 import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
 
@@ -85,6 +106,8 @@ beforeEach(() => {
 	(fakeCtx.modelRegistry.find as ReturnType<typeof vi.fn>).mockClear();
 	reloadImpl.reload.mockReset();
 	reloadImpl.reload.mockResolvedValue(undefined);
+	eventBusMock.emit.mockReset();
+	eventBusMock.emit.mockImplementation(() => {});
 });
 
 // The per-repo git lock (C2) is held for the agent's lifetime; tests that
@@ -954,5 +977,102 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 		expect(mocks.git.getCurrentBranch).toHaveBeenCalled();
 		await secondPromise;
 		expect(secondSettled).toBe(true);
+	});
+});
+
+describe("settle handlers never throw — missing transcript / throwing emit (issue #53)", () => {
+	// Issue #53: spawnBackgroundSession's .then/.catch settle handlers run in
+	// promise callbacks — a throw (fs failure, deleted transcript, emit error)
+	// would escape as an uncaughtException and kill the whole pi process.
+	// These tests pin the defensive try/catch + markTerminalBestEffort.
+	const fs = require("node:fs") as typeof import("node:fs");
+	const path = require("node:path") as typeof import("node:path");
+
+	// Track ids spawned inside this block so afterEach can clean up the
+	// persisted record and transcript files.
+	const spawnedIds: string[] = [];
+
+	const cleanupPiFiles = () => {
+		for (const id of spawnedIds) {
+			try { fs.unlinkSync(path.join(process.cwd(), ".pi", "subagents", `${id}.json`)); } catch { /* ok */ }
+			try { fs.unlinkSync(path.join(process.cwd(), ".pi", "output", `agent-${id}.jsonl`)); } catch { /* ok */ }
+		}
+		spawnedIds.length = 0;
+	};
+
+	afterEach(cleanupPiFiles);
+
+	it("does not crash when the transcript is deleted before a FAILING run settles", async () => {
+		// Deferred reject: the prompt rejects on a later macrotask so the file
+		// can be deleted between spawn and settle (pre-fix, the settle-path
+		// completeTranscript would throw "Transcript not found" → uncaught).
+		mocks.session.prompt.mockReturnValue(
+			new Promise((_, reject) => {
+				setTimeout(() => reject(new Error("auth failed")), 0);
+			})
+		);
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test transcript deleted (fail)",
+		});
+		spawnedIds.push(agent.id);
+		// startTranscript ran during spawn, so the file exists — delete it
+		// BEFORE the deferred rejection settles.
+		fs.unlinkSync(path.join(process.cwd(), ".pi", "output", `agent-${agent.id}.jsonl`));
+
+		// Let the deferred rejection settle.
+		await new Promise((r) => setTimeout(r, 10));
+
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("failed");
+		expect(after?.completedAt).toBeDefined();
+		expect(after?.error).toBe("auth failed");
+	});
+
+	it("does not crash when the failed-event emit throws (defensive wrapper)", async () => {
+		mocks.session.prompt.mockRejectedValue(new Error("auth failed"));
+		// The real event-bus never throws, but any throw from a settle-handler
+		// step must be contained — force emit to blow up on the failure event.
+		eventBusMock.emit.mockImplementation((event: { type: string }) => {
+			if (event.type === "subagent:failed") throw new Error("emit exploded");
+		});
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test emit throws",
+		});
+		spawnedIds.push(agent.id);
+
+		await new Promise((r) => setTimeout(r, 10));
+
+		// The record was already flipped terminal before the emit; the catch
+		// wrapper logs and best-effort keeps it terminal — never rethrows.
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("failed");
+		expect(after?.completedAt).toBeDefined();
+	});
+
+	it("does not crash when the transcript is deleted before a COMPLETING run settles", async () => {
+		mocks.session.prompt.mockReturnValue(
+			new Promise((resolve) => {
+				setTimeout(() => resolve(undefined), 0);
+			})
+		);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test transcript deleted (complete)",
+		});
+		spawnedIds.push(agent.id);
+		fs.unlinkSync(path.join(process.cwd(), ".pi", "output", `agent-${agent.id}.jsonl`));
+
+		// Let the deferred resolve settle.
+		await new Promise((r) => setTimeout(r, 10));
+
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("completed");
+		expect(after?.completedAt).toBeDefined();
 	});
 });
