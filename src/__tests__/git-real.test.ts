@@ -32,6 +32,7 @@ import {
 	switchToBranch,
 	deleteBranch,
 	commitAll,
+	mergeWorkBranch,
 	captureWorkingDiff,
 } from "../git";
 
@@ -53,7 +54,9 @@ const run = (cwd: string, args: string[]) =>
 const gitOpts = (cwd: string) => ({ cwd, encoding: "utf-8" });
 
 function initRepo(dir: string): void {
-	run(dir, ["init", "-q", "-b", "main"]);
+	run(dir, ["init", "-q"]);
+	// Portable: works on git < 2.28 where `init -b` is unavailable.
+	run(dir, ["checkout", "-q", "-b", "main"]);
 	run(dir, ["config", "user.email", "gate-a@test.local"]);
 	run(dir, ["config", "user.name", "Gate A"]);
 }
@@ -97,9 +100,13 @@ describe("git.ts real-git behavior (Gate A)", () => {
 			expect(diff.ok).toBe(true);
 			expect(diff.ok ? diff.diff : "").toBe("");
 
-			// Cleanup: back to main, delete branch.
+			// Cleanup: back to main, delete branch, and remove the staged
+			// agent.txt residue (it was added to the index) so later tests
+			// start from a clean tree.
 			switchToBranch(repo, "main");
 			deleteBranch(repo, workBranch);
+			await rm(join(repo, "agent.txt"), { force: true });
+			run(repo, ["reset", "-q"]);
 		});
 
 		it("checkout carries uncommitted edits into the base working tree (C1 leak)", async () => {
@@ -110,6 +117,9 @@ describe("git.ts real-git behavior (Gate A)", () => {
 
 			// The naive switch: dirty edits ride along onto main.
 			switchToBranch(repo, "main");
+			// Assert the switch actually landed — otherwise this test would
+			// pass for the wrong reason (a no-op switch regression).
+			expect(getCurrentBranch(repo)).toBe("main");
 			const leaked = await import("node:fs/promises").then(fs =>
 				fs.readFile(join(repo, "agent.txt"), "utf-8").catch(() => "MISSING")
 			);
@@ -152,7 +162,44 @@ describe("git.ts real-git behavior (Gate A)", () => {
 
 			await rm(join(repo, "u.txt"), { force: true });
 			await rm(join(repo, "s.txt"), { force: true });
-			run(repo, ["checkout", "-q", "--", "."]);
+			// With the index preserved, `git checkout -- .` would RESURRECT
+			// s.txt from the index (it was staged) — reset, not checkout, is
+			// the correct restore: it unstages the now-removed s.txt entry.
+			run(repo, ["reset", "-q"]);
+		});
+
+		it("hasUncommittedChanges: false on a clean tree, true after a write", async () => {
+			expect(hasUncommittedChanges(repo)).toBe(false);
+
+			await writeFile(join(repo, "dirty.txt"), "dirty\n");
+			expect(hasUncommittedChanges(repo)).toBe(true);
+
+			await rm(join(repo, "dirty.txt"), { force: true });
+			expect(hasUncommittedChanges(repo)).toBe(false);
+		});
+
+		it("mergeWorkBranch merges a committed work branch into main", async () => {
+			const b1 = createWorkBranch(repo, "main");
+			expect(b1.ok).toBe(true);
+			const branch = b1.ok ? b1.branch : "";
+
+			await writeFile(join(repo, "merged.txt"), "from work branch\n");
+			run(repo, ["add", "merged.txt"]);
+			run(repo, ["commit", "-q", "-m", "work on branch"]);
+
+			switchToBranch(repo, "main");
+			const merge = mergeWorkBranch(repo, branch);
+			expect(merge.ok).toBe(true);
+
+			// The committed file now exists on main (merged in).
+			const merged = await import("node:fs/promises").then(fs =>
+				fs.readFile(join(repo, "merged.txt"), "utf-8").catch(() => "MISSING")
+			);
+			expect(merged).toBe("from work branch\n");
+
+			deleteBranch(repo, branch);
+			// merged.txt is now part of main's history — tree is clean.
+			expect(hasUncommittedChanges(repo)).toBe(false);
 		});
 	});
 
@@ -176,12 +223,17 @@ describe("git.ts real-git behavior (Gate A)", () => {
 			expect(b1.ok).toBe(true);
 			const branch1 = b1.ok ? b1.branch : "";
 			await writeFile(join(repo, "live.txt"), "from branch1\n");
+			// COMMIT live.txt on branch1 — an untracked file would ride along
+			// ANY checkout (even from a buggy base), so only a committed file
+			// can prove branch2 was created from branch1's history, not main.
+			run(repo, ["add", "live.txt"]);
+			run(repo, ["commit", "-q", "-m", "live file on branch1"]);
 
 			// Concurrent spawn B: getCurrentBranch reads branch1, not main.
 			const current = getCurrentBranch(repo);
 			expect(current).toBe(branch1);
 
-			// B branches FROM A — inheriting A's uncommitted work (C2 bug).
+			// B branches FROM A — inheriting A's committed work (C2 bug).
 			const b2 = createWorkBranch(repo, current);
 			expect(b2.ok).toBe(true);
 			const branch2 = b2.ok ? b2.branch : "";
@@ -191,11 +243,15 @@ describe("git.ts real-git behavior (Gate A)", () => {
 			expect(inherited).toBe("from branch1\n");
 
 			// Cleanup: switch to branch1, delete branch2, then main, delete branch1.
+			// The committed live.txt disappears from the tree when switching to
+			// main — that is expected, no rm needed.
 			switchToBranch(repo, branch1);
 			deleteBranch(repo, branch2);
 			switchToBranch(repo, "main");
 			deleteBranch(repo, branch1);
-			await rm(join(repo, "live.txt"), { force: true });
+			// DO verify the repo is back on main and clean.
+			expect(getCurrentBranch(repo)).toBe("main");
+			expect(hasUncommittedChanges(repo)).toBe(false);
 		});
 
 		it("sequential lifecycle is clean: branch → commit → switch → delete", async () => {
