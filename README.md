@@ -2,7 +2,7 @@
 
 > Enterprise subagent extension for [pi](https://github.com/earendil-works/pi-coding-agent) — delegate tasks to isolated processes with configurable models, thinking levels, tool scoping via `tools` and `excludeTools`, dependency graphs, and a live observability dashboard.
 
-**Version:** 2.1.0 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.1.3 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
