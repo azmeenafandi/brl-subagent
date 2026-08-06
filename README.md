@@ -1,8 +1,8 @@
 # brl-subagent
 
-> Enterprise subagent extension for [pi](https://github.com/earendil-works/pi-coding-agent) — delegate tasks to isolated processes with configurable models, thinking levels, tool scoping via `tools` and `excludeTools`, dependency graphs, and a live observability dashboard.
+> Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.1.0 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.1.3 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -91,6 +91,22 @@ Every execution knob can be set per step: `model`, `thinkingLevel`, `tools`, `ex
 
 ---
 
+## Tools
+
+Alongside `delegate_task`, the extension registers three companion tools for background agents — `get_subagent_result` (poll status and retrieve results), `steer_subagent` (send a steering message), and `stop_subagent` (abort a running agent). See [Background execution](#background-execution) for the full background model.
+
+### `stop_subagent`
+
+Stops a running background agent — a real abort, not a status flip.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `agent_id` | string | Agent ID of the running background session to stop |
+
+**What it does:** aborts the live session via `session.abort()` — the pending `prompt()` resolves with `stopReason: "aborted"` rather than hanging — and marks the agent `stopped`. Partial work from a `gitMode: 'branch'` run is captured in the result before the work branch is discarded. Returns an error if the agent is not found or already terminal. Use it to halt a background agent that is no longer needed.
+
+---
+
 ## Presets
 
 Built-in presets ship with the extension. You can also create **custom presets** as `.md` files — no TUI wizard needed.
@@ -127,7 +143,23 @@ Set `background: true` to spawn the subagent as an independent session that retu
 
 **Extension/skill isolation:** background sessions never import extension or skill code — not from the target `cwd` (which is LLM-controlled and untrusted — there is no trust prompt in background mode) and not from your global `~/.pi/agent/skills`. This is a deliberate security choice: the prompt is fully specified by the caller, so nothing is lost from the delegation contract. If a task needs installed skills or extension tools, use foreground delegation instead.
 
+**Background safety controls (issue #28):** background agents honor the same safety controls as foreground runs — no more unattended sessions that bypass approval, git isolation, deadlines, or cost:
+
+- **Per-agent timeout** — the deadline is armed before the prompt starts (preflight time counts toward it). On expiry the session is aborted and the agent ends with status `stopped` and the timeout reason. Timeout values are normalized (`0`/negative/`NaN`/`Infinity`/`≥ 2^31` → no timeout) and a double-fire guard prevents the timer from acting on an already-settled agent.
+- **Session cost limit (R5)** — the cost check runs before the background spawn, so a session at its limit cannot bypass it by delegating to background.
+- **Approval mode** — `approvalMode: 'always'` is rejected for background agents (there is no interactive dialog to approve a diff while running unattended); `'writes'` silently auto-approves with a warning logged.
+- **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
+
 ## Changelog
+
+### v2.1.3
+
+- **Real abort for background agents (issue #28):** the `stop_subagent` tool and async `stopAgent()` abort the live session via `session.abort()` — the pending `prompt()` resolves with `stopReason: "aborted"` and the agent is marked `stopped`. Previously steering/stopping only flipped a status flag and the session kept running.
+- **Per-agent timeout + hard cap:** a deadline is armed before the prompt runs; when exceeded the session is aborted and the agent ends `stopped` with the timeout reason. The hard cap actually aborts now (was an orphaned-session leak). Timeouts are normalized (`0`/negative/`NaN`/`Infinity`/`≥2^31` → no timeout) and a double-fire guard prevents acting on an already-settled agent.
+- **Background safety controls:** `gitMode: 'branch'` creates a work branch before the run, commits and captures the diff at teardown (surfaced via `get_subagent_result`), then discards the branch — dirty working trees are refused; `approvalMode: 'always'` is rejected in background (no dialog) and `'writes'` auto-approves with a warning; the R5 session cost limit gates background spawns.
+- **Real-git test tier (Gate A):** new `*-real.test.ts` convention runs real git against scratch repos, covering the branch lifecycle and the `captureWorkingDiff` untracked-file fix.
+- **Crash fix (incidental):** transcript completion no-ops on a missing transcript file (was an uncaughtException killing pi); defensive settle-handler wrappers across the background lifecycle.
+- Shipped as 4 PRs (#47 real abort, #49 timeouts, #50 safety controls, #51 Gate A) + incidentals (#48 CI flake, #54 crash fix). Live-verified 2026-08-06 — foreground, background, timeout abort (stopped @ 20s), gitMode=branch lifecycle (branch created/discarded, diff rendered), stop_subagent — all pass. 684 tests across 34 files.
 
 ### v2.1.2
 
