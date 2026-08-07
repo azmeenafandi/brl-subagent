@@ -1784,7 +1784,7 @@ export async function showMonitor(
 						theme.fg("accent", `${spinner} ${name}`) +
 							theme.fg(
 								"dim",
-								`  \u2191${formatTokens(session.usage.input)} \u2193${formatTokens(session.usage.output)}  ${elapsedStr}`,
+								`  [${id.slice(0, 8)}]  \u2191${formatTokens(session.usage.input)} \u2193${formatTokens(session.usage.output)}  ${elapsedStr}`,
 							),
 						1,
 						0,
@@ -1907,7 +1907,7 @@ export async function showDashboard(
 							theme.fg("accent", `  ${spinner} ${name}`) +
 								theme.fg(
 									"dim",
-									`  \u2191${formatTokens(session.usage.input)} \u2193${formatTokens(session.usage.output)}  ${elapsedStr}`,
+									`  [${id.slice(0, 8)}]  \u2191${formatTokens(session.usage.input)} \u2193${formatTokens(session.usage.output)}  ${elapsedStr}`,
 							),
 						1,
 						0,
