@@ -54,7 +54,8 @@ import { formatPresetSummary, getPreset, writePresetFile, loadCustomPresets, par
 import { formatRunDuration } from "./history";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { SessionState } from "./state";
+import { sweepStaleLiveSubagents, type SessionState } from "./state";
+import { getAgent } from "./session-manager";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
 
 // ---------------------------------------------------------------------------
@@ -1741,6 +1742,11 @@ export async function showMonitor(
 	ctx: ExtensionContext,
 	state: SessionState,
 ): Promise<void> {
+	// Issue #52: self-heal stale live entries BEFORE the empty guard — a map
+	// holding only terminal entries (poller died mid-run) must render as
+	// empty, not as a live monitor full of ghosts.
+	sweepStaleLiveSubagents(state, getAgent);
+
 	if (state.subagentSessions.size === 0) {
 		ctx.ui.notify(
 			"No subagents are currently running. Delegate a task to see live activity.",
@@ -1751,6 +1757,11 @@ export async function showMonitor(
 
 	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 		const buildView = () => {
+			// Issue #52: continuous self-heal — a background agent can complete
+			// (poller dead) while the monitor is already open; sweep on every
+			// render pass. Idempotent, so racing the poller is safe.
+			sweepStaleLiveSubagents(state, getAgent);
+
 			const container = new Container();
 			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 			container.addChild(
@@ -1864,6 +1875,10 @@ export async function showDashboard(
 ): Promise<void> {
 	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 		const buildView = () => {
+			// Issue #52: self-heal stale live entries on every render pass —
+			// an agent whose poller died shows as "running" forever otherwise.
+			sweepStaleLiveSubagents(state, getAgent);
+
 			const container = new Container();
 			const now = new Date();
 			const refreshStr = `refreshing \u00b7 ${now.toLocaleTimeString()}`;

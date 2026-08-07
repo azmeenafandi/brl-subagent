@@ -2381,9 +2381,13 @@ export default function (pi: ExtensionAPI) {
 								clearTimeout(hardCapHandle);
 								// Capture whatever output exists (may be empty — fine).
 								setAgentFinalOutput(agent.id, state.subagentSessions.get(agent.id)?.liveOutput ?? '');
-								state.finalizeLiveSubagent(agent.id);
-								state.activeSubagents--;
-								if (state.activeSubagents < 0) state.activeSubagents = 0;
+								// Gate the counter on the finalize claim: if the
+								// stale sweep already finalized this entry, the
+								// decrement happened there (PR #71 review).
+								if (state.finalizeLiveSubagent(agent.id)) {
+									state.activeSubagents--;
+									if (state.activeSubagents < 0) state.activeSubagents = 0;
+								}
 								state.failedSubagents++;
 								updateProgressStatus(state, ctx);
 								pi.sendMessage({
@@ -2420,9 +2424,13 @@ export default function (pi: ExtensionAPI) {
 								const finalOutput = extractFinalOutput(session);
 								setAgentFinalOutput(agent.id, finalOutput);
 								
-								state.finalizeLiveSubagent(agent.id);
-								state.activeSubagents--;
-								if (state.activeSubagents < 0) state.activeSubagents = 0;
+								// Gate the counter on the finalize claim: if the
+								// stale sweep already finalized this entry, the
+								// decrement happened there (PR #71 review).
+								if (state.finalizeLiveSubagent(agent.id)) {
+									state.activeSubagents--;
+									if (state.activeSubagents < 0) state.activeSubagents = 0;
+								}
 								
 								if (agent.status === 'failed') {
 									state.failedSubagents++;
@@ -2466,9 +2474,13 @@ export default function (pi: ExtensionAPI) {
 								try {
 									setAgentFinalOutput(agent.id, extractFinalOutput(agent._sessionRef ?? { messages: [] }));
 								} catch { /* ignore */ }
-								state.finalizeLiveSubagent(agent.id);
-								state.activeSubagents--;
-								if (state.activeSubagents < 0) state.activeSubagents = 0;
+								// Gate the counter on the finalize claim: if the
+								// stale sweep already finalized this entry, the
+								// decrement happened there (PR #71 review).
+								if (state.finalizeLiveSubagent(agent.id)) {
+									state.activeSubagents--;
+									if (state.activeSubagents < 0) state.activeSubagents = 0;
+								}
 								state.failedSubagents++;
 								updateProgressStatus(state, ctx);
 								pi.sendMessage({
@@ -2503,9 +2515,13 @@ export default function (pi: ExtensionAPI) {
 								const hardCapSession = agent._sessionRef;
 								const hardCapFinalOutput = hardCapSession ? extractFinalOutput(hardCapSession) : '';
 								setAgentFinalOutput(agent.id, hardCapFinalOutput);
-								state.finalizeLiveSubagent(agent.id);
-								state.activeSubagents--;
-								if (state.activeSubagents < 0) state.activeSubagents = 0;
+								// Gate the counter on the finalize claim: if the
+								// stale sweep already finalized this entry, the
+								// decrement happened there (PR #71 review).
+								if (state.finalizeLiveSubagent(agent.id)) {
+									state.activeSubagents--;
+									if (state.activeSubagents < 0) state.activeSubagents = 0;
+								}
 								// m6: deadline abort is a stop, not a completion — mirror the
 								// W3/poller stopped path (no completedSubagents increment).
 								updateProgressStatus(state, ctx);
@@ -2532,9 +2548,13 @@ export default function (pi: ExtensionAPI) {
 								try {
 									setAgentFinalOutput(agent.id, extractFinalOutput(agent._sessionRef ?? { messages: [] }));
 								} catch { /* ignore */ }
-								state.finalizeLiveSubagent(agent.id);
-								state.activeSubagents--;
-								if (state.activeSubagents < 0) state.activeSubagents = 0;
+								// Gate the counter on the finalize claim: if the
+								// stale sweep already finalized this entry, the
+								// decrement happened there (PR #71 review).
+								if (state.finalizeLiveSubagent(agent.id)) {
+									state.activeSubagents--;
+									if (state.activeSubagents < 0) state.activeSubagents = 0;
+								}
 								state.failedSubagents++;
 								updateProgressStatus(state, ctx);
 								pi.sendMessage({
@@ -3504,6 +3524,10 @@ export default function (pi: ExtensionAPI) {
 
 		// Clear all live subagent sessions
 		state.subagentSessions.clear();
+		// Drop pending finalize claims too (PR #71 review: the claim set must
+		// not outlive the map it guards — a fresh session could otherwise
+		// no-op on an id a stale claim still remembers).
+		state.resetLiveFinalizeClaims();
 		// Reset counters
 		state.activeSubagents = 0;
 		state.completedSubagents = 0;

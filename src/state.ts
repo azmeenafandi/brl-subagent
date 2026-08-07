@@ -34,6 +34,32 @@ import { cleanupRuns } from "./history";
 import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
+// Live-monitor staleness sweep (issue #52 part 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a finalized live entry stays visible in the monitor map before it
+ * is deleted (the poller's "brief reset window" — see finalizeLiveSubagent).
+ */
+export const FINALIZE_RESET_WINDOW_MS = 3000;
+
+/**
+ * Background-progress poller tick interval (src/index.ts, `setInterval(..., 2000)`
+ * in the background spawn branch).
+ */
+const POLLER_TICK_MS = 2000;
+
+/**
+ * Liveness boundary for the stale sweep. The poller finalizes a completed
+ * agent on its NEXT tick after `completedAt` is set, i.e. within at most one
+ * POLLER_TICK_MS. A terminal record that is OLDER than this boundary and
+ * still present in the live map therefore proves the poller can no longer be
+ * the one to finalize it — it died mid-run — so the sweep may claim the
+ * finalize (and its counter adjustment) without racing a live poller.
+ */
+export const STALE_FINALIZE_GRACE_MS = POLLER_TICK_MS + 1000;
+
+// ---------------------------------------------------------------------------
 // SessionState — session-bound mutable state
 // ---------------------------------------------------------------------------
 
@@ -57,6 +83,13 @@ export class SessionState {
 
 	/** Live subagent sessions for the monitor dashboard */
 	subagentSessions = new Map<string, LiveSubagent>();
+
+	/**
+	 * Ids whose live entry has been finalized (deferred delete pending).
+	 * Makes finalizeLiveSubagent idempotent so the stale sweep and the poller
+	 * can race the same id without double-finalizing (issue #52).
+	 */
+	private _finalizedLiveIds = new Set<string>();
 
 	/** Loaded built-in presets */
 	builtinPresets = new Array<import("./types").SubagentPreset>();
@@ -263,11 +296,65 @@ export class SessionState {
 		}
 	}
 
-	finalizeLiveSubagent(id: string): void {
-		// Keep for a brief reset window, then clean up
+	finalizeLiveSubagent(id: string): boolean {
+		// Idempotent: the poller (completion/crash paths) and the stale sweep
+		// can both race to finalize the same id — the first call claims it,
+		// repeats are no-ops. Returns true when THIS call claimed the finalize,
+		// so callers that adjust counters can gate on it (issue #52, PR #71
+		// review: the poller must not decrement when the sweep already did).
+		if (this._finalizedLiveIds.has(id)) return false;
+		this._finalizedLiveIds.add(id);
 		setTimeout(() => {
 			this.subagentSessions.delete(id);
-		}, 3000);
+			this._finalizedLiveIds.delete(id);
+		}, FINALIZE_RESET_WINDOW_MS);
+		return true;
+	}
+
+	/** True when the live entry has been finalized (deferred delete pending). */
+	isLiveEntryFinalized(id: string): boolean {
+		return this._finalizedLiveIds.has(id);
+	}
+
+	/**
+	 * Race-safe stale-entry finalize used by the monitor's staleness sweep
+	 * (issue #52 part 2). Claims the finalize for `id` exactly once and
+	 * removes the entry from the live map IMMEDIATELY (stale entries must not
+	 * linger — a stale-only map must render as empty right away).
+	 *
+	 * Returns false (no-op) when:
+	 *  - the entry is already finalized (poller or an earlier sweep pass), or
+	 *  - `completedAt` is set but too fresh: a live poller finalizes within one
+	 *    poller tick of completion, so a fresher record means the poller may
+	 *    still fire — finalizing here would double-decrement the counter.
+	 *
+	 * NOTE: this method does NOT touch activeSubagents — callers that know the
+	 * entry was counted (background agents) must mirror the poller's
+	 * decrement+clamp after a truthy return.
+	 */
+	finalizeStaleLiveSubagent(id: string, completedAt?: number): boolean {
+		if (this._finalizedLiveIds.has(id)) return false;
+		if (completedAt !== undefined && Date.now() - completedAt < STALE_FINALIZE_GRACE_MS) {
+			return false;
+		}
+		// Claim through finalizeLiveSubagent (the shared claim set makes this
+		// race-safe with the poller), then remove the entry synchronously —
+		// stale entries must not linger. Return the claim result explicitly so
+		// the sweep's caller knows WHO won the race (PR #71 review).
+		const claimed = this.finalizeLiveSubagent(id);
+		this.subagentSessions.delete(id);
+		return claimed;
+	}
+
+	/**
+	 * Session-shutdown hygiene: drop all pending finalize claims so a fresh
+	 * session can claim the same ids again. Claims are time-bounded anyway
+	 * (FINALIZE_RESET_WINDOW_MS), but the shutdown handler clears the live
+	 * map and counters too — the claim set must follow suit or a new session
+	 * would no-op on an id a stale claim still remembers (PR #71 review).
+	 */
+	resetLiveFinalizeClaims(): void {
+		this._finalizedLiveIds.clear();
 	}
 
 	// -------------------------------------------------------------------
@@ -408,4 +495,72 @@ export class SessionState {
 
 export function createSessionState(log?: Logger): SessionState {
 	return new SessionState(log);
+}
+
+// ---------------------------------------------------------------------------
+// Live-monitor staleness sweep (issue #52 part 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Self-healing sweep for stale live-monitor entries.
+ *
+ * Staleness vector: the live map (`state.subagentSessions`) is only emptied
+ * when the background poller's completion/crash paths call finalizeLiveSubagent
+ * or when session_shutdown clears the whole map. If the poller dies mid-run
+ * (extension reload, process kill, hard-cap crash), the map entry survives and
+ * the monitor shows "running" for an agent whose disk record is terminal.
+ *
+ * This sweep runs in the monitor/dashboard render path and finalizes every
+ * entry that is provably terminal:
+ *  - `getAgent(id)` returns a record with `completedAt` set → the background
+ *    agent is terminal (completed/failed/stopped) but the poller never
+ *    finalized it → finalize + mirror the poller's activeSubagents bookkeeping
+ *    (decrement + clamp at 0). The grace window inside
+ *    finalizeStaleLiveSubagent guarantees the poller can no longer fire, so
+ *    the counter cannot be double-decremented.
+ *  - `getAgent(id)` returns null → no agent record. Background agents ALWAYS
+ *    have a record (in-memory + disk), so a null record means either a
+ *    FOREGROUND run (registered with a runId, never persisted as an agent) or
+ *    a record removed out-of-band. Foreground runs persist run entries, so a
+ *    'running' run entry proves the entry is genuinely live; anything else
+ *    (done/failed, or no run entry) is stale → finalize WITHOUT counter
+ *    adjustment (foreground entries are never counted in activeSubagents).
+ *
+ * The sweep never touches `completedSubagents`/`failedSubagents`/
+ * `unseenSubagents`: those are incremented by the poller's own completion
+ * paths, and the sweep exists only to cover the poller-DEAD case.
+ *
+ * Returns the number of entries finalized (0 when nothing was stale).
+ */
+export function sweepStaleLiveSubagents(
+	state: SessionState,
+	getAgent: (id: string) => { completedAt?: number } | null,
+): number {
+	let finalized = 0;
+
+	// Snapshot: sweep-finalized entries are deleted synchronously, so the map
+	// changes under iteration — iterate a copy to stay well-defined.
+	for (const [id, session] of Array.from(state.subagentSessions)) {
+		const agent = getAgent(id);
+		if (agent) {
+			// Background agent with a record. Terminal on disk but still in the
+			// live map = the poller died before its finalize tick.
+			if (agent.completedAt && state.finalizeStaleLiveSubagent(id, agent.completedAt)) {
+				// Mirror the poller's counter bookkeeping exactly (index.ts):
+				// finalize, decrement, clamp at 0.
+				state.activeSubagents--;
+				if (state.activeSubagents < 0) state.activeSubagents = 0;
+				finalized++;
+			}
+		} else {
+			// No agent record — foreground run or a removed record. A foreground
+			// run is live only while its run entry says 'running'.
+			const runStatus = state.getRunEntries(session.ctx).find((r) => r.id === id)?.status;
+			if (runStatus !== "running" && state.finalizeStaleLiveSubagent(id)) {
+				finalized++;
+			}
+		}
+	}
+
+	return finalized;
 }
