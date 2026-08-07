@@ -3,8 +3,17 @@ import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'fs';
 import type { TranscriptEntry, TranscriptEntryType } from './types';
 import { assertSafeAgentId } from './sanitize';
 
-// Output directory
-const OUTPUT_DIR = '.pi/output';
+// Output directory — overridable for tests (issue #52): unit tests must NOT
+// write into the real repo .pi/ dir; the setter is test-only.
+let OUTPUT_DIR = '.pi/output';
+
+/**
+ * TEST-ONLY: point the transcript output at an alternate directory.
+ * The tests call this in beforeEach to isolate from the real repo .pi/.
+ */
+export function __setOutputDir(dir: string): void {
+  OUTPUT_DIR = dir;
+}
 
 /**
  * Ensure output directory exists
