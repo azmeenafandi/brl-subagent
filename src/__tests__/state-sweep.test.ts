@@ -233,15 +233,53 @@ describe("sweepStaleLiveSubagents — idempotency and poller racing", () => {
 		expect(state.subagentSessions.has("bg-1")).toBe(true); // still in reset window
 	});
 
-	it("finalizeLiveSubagent is idempotent (first call wins, deferred delete once)", () => {
+	it("finalizeLiveSubagent is idempotent (first call claims, repeat returns false)", () => {
 		vi.useFakeTimers();
 		const state = createSessionState();
 		state.registerLiveSubagent("bg-1", makeLiveEntry("bg-1", {} as ExtensionContext));
 
-		state.finalizeLiveSubagent("bg-1");
-		state.finalizeLiveSubagent("bg-1"); // repeat — must be a no-op
+		expect(state.finalizeLiveSubagent("bg-1")).toBe(true); // THIS call claimed the finalize
+		expect(state.finalizeLiveSubagent("bg-1")).toBe(false); // repeat — no-op
 
 		expect(state.subagentSessions.has("bg-1")).toBe(true); // reset window
+		vi.advanceTimersByTime(FINALIZE_RESET_WINDOW_MS + 1);
+		expect(state.subagentSessions.has("bg-1")).toBe(false);
+	});
+
+	it("double-decrement race: sweep claims first, a delayed poller finalize returns false (PR #71 review)", () => {
+		vi.useFakeTimers();
+		const state = createSessionState();
+		state.activeSubagents = 1;
+		state.registerLiveSubagent("bg-1", makeLiveEntry("bg-1", {} as ExtensionContext));
+		const getAgent = fakeGetAgent(new Map([["bg-1", { completedAt: OLD() }]]));
+
+		// The stale sweep wins the race (grace expired): it claims the finalize
+		// and mirrors the poller's decrement — exactly once.
+		expect(sweepStaleLiveSubagents(state, getAgent)).toBe(1);
+		expect(state.activeSubagents).toBe(0);
+		expect(state.finalizeStaleLiveSubagent("bg-1", OLD())).toBe(false); // second sweep pass: no re-claim
+
+		// The delayed poller tick finally fires (agent completedAt → terminal):
+		// finalizeLiveSubagent must return FALSE — the sweep claimed the id — so
+		// the caller (index.ts) skips its activeSubagents--. Without this, the
+		// poller would double-decrement (counter drift, clamp hides it).
+		expect(state.finalizeLiveSubagent("bg-1")).toBe(false);
+		expect(state.activeSubagents).toBe(0); // no double decrement
+	});
+
+	it("resetLiveFinalizeClaims drops pending claims (previously-claimed id claimable again)", () => {
+		vi.useFakeTimers();
+		const state = createSessionState();
+		state.registerLiveSubagent("bg-1", makeLiveEntry("bg-1", {} as ExtensionContext));
+
+		expect(state.finalizeLiveSubagent("bg-1")).toBe(true);
+		expect(state.finalizeLiveSubagent("bg-1")).toBe(false); // claim held
+
+		// session_shutdown hygiene: claims are cleared alongside the live map.
+		state.resetLiveFinalizeClaims();
+		expect(state.finalizeLiveSubagent("bg-1")).toBe(true); // claimable again — not sticky
+
+		// The re-claimed entry still gets the deferred cleanup.
 		vi.advanceTimersByTime(FINALIZE_RESET_WINDOW_MS + 1);
 		expect(state.subagentSessions.has("bg-1")).toBe(false);
 	});

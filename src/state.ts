@@ -296,17 +296,19 @@ export class SessionState {
 		}
 	}
 
-	finalizeLiveSubagent(id: string): void {
+	finalizeLiveSubagent(id: string): boolean {
 		// Idempotent: the poller (completion/crash paths) and the stale sweep
 		// can both race to finalize the same id — the first call claims it,
-		// repeats are no-ops (issue #52).
-		if (this._finalizedLiveIds.has(id)) return;
+		// repeats are no-ops. Returns true when THIS call claimed the finalize,
+		// so callers that adjust counters can gate on it (issue #52, PR #71
+		// review: the poller must not decrement when the sweep already did).
+		if (this._finalizedLiveIds.has(id)) return false;
 		this._finalizedLiveIds.add(id);
-		// Keep for a brief reset window, then clean up
 		setTimeout(() => {
 			this.subagentSessions.delete(id);
 			this._finalizedLiveIds.delete(id);
 		}, FINALIZE_RESET_WINDOW_MS);
+		return true;
 	}
 
 	/** True when the live entry has been finalized (deferred delete pending). */
@@ -335,9 +337,24 @@ export class SessionState {
 		if (completedAt !== undefined && Date.now() - completedAt < STALE_FINALIZE_GRACE_MS) {
 			return false;
 		}
-		this.finalizeLiveSubagent(id);
+		// Claim through finalizeLiveSubagent (the shared claim set makes this
+		// race-safe with the poller), then remove the entry synchronously —
+		// stale entries must not linger. Return the claim result explicitly so
+		// the sweep's caller knows WHO won the race (PR #71 review).
+		const claimed = this.finalizeLiveSubagent(id);
 		this.subagentSessions.delete(id);
-		return true;
+		return claimed;
+	}
+
+	/**
+	 * Session-shutdown hygiene: drop all pending finalize claims so a fresh
+	 * session can claim the same ids again. Claims are time-bounded anyway
+	 * (FINALIZE_RESET_WINDOW_MS), but the shutdown handler clears the live
+	 * map and counters too — the claim set must follow suit or a new session
+	 * would no-op on an id a stale claim still remembers (PR #71 review).
+	 */
+	resetLiveFinalizeClaims(): void {
+		this._finalizedLiveIds.clear();
 	}
 
 	// -------------------------------------------------------------------
