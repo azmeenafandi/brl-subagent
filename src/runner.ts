@@ -28,7 +28,7 @@ import {
 	MAX_TEMP_DIR_AGE_MS,
 	classifyError,
 } from "./types";
-import { getSafeEnv, DEPTH_ENV_KEY } from "./sanitize";
+import { getSafeEnv, DEPTH_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
 import { extractMessages, stripMessageLines, formatPendingMessages } from "./messaging";
@@ -380,7 +380,13 @@ ${msgBlock}`;
 				});
 
 				proc.on("error", (err) => {
-					result.errorMessage = `Subprocess error: ${err.message}`;
+					// F7 (issue #30): subprocess errors can embed the spawn command
+					// (absolute paths to the pi binary, temp files, cwd) — sanitize the
+					// errorMessage before it reaches the conductor. stderr is left RAW:
+					// it is the subagent's own output (already in-scope of the subagent's
+					// context), and the conductor sees it in full via the result. Only
+					// OUR error text (errorMessage) is path-sanitized.
+					result.errorMessage = `Subprocess error: ${sanitizeErrorMessage(err.message, cwd)}`;
 					result.stderr += err.message;
 					log?.error("Subagent process error", { error: err.message });
 					resolve(1);

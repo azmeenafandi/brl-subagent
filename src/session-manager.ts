@@ -6,7 +6,7 @@ import { EMPTY_USAGE } from './types';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
 import { createEvent } from './event-bus';
-import { assertSafeAgentId } from './sanitize';
+import { assertSafeAgentId, sanitizeErrorMessage } from './sanitize';
 import { wrapTask } from './prompt';
 import { createLogger } from './logging';
 import { getCurrentBranch, createWorkBranch, captureDiff, switchToBranch, deleteBranch, hasUncommittedChanges, commitAll, captureWorkingDiff } from './git';
@@ -545,11 +545,11 @@ export async function spawnBackgroundSession(
       releaseGitLock = undefined;
       try {
         updateAgentStatus(id, 'failed',
-          `gitMode 'branch' requested but work branch setup failed: ${(err as Error).message}`);
+          `gitMode 'branch' requested but work branch setup failed: ${sanitizeErrorMessage((err as Error).message, effectiveCwd)}`);
         transcript.completeTranscript(id, 'failed');
       } catch { /* ignore */ }
       throw new Error(
-        `gitMode 'branch' requested but work branch setup failed: ${(err as Error).message}. ` +
+        `gitMode 'branch' requested but work branch setup failed: ${sanitizeErrorMessage((err as Error).message, effectiveCwd)}. ` +
         `Refusing to spawn the background agent unisolated.`,
         { cause: err }
       );
@@ -795,7 +795,11 @@ export async function spawnBackgroundSession(
       }
       agent.status = 'failed';
       agent.completedAt = Date.now();
-      agent.error = err.message;
+      // F7 (issue #30): err.message may contain absolute paths (CWD prefixes,
+      // spawn commands) — sanitize BEFORE persisting/echoing so the local
+      // filesystem structure does not leak into the main agent's context or
+      // onto disk.
+      agent.error = sanitizeErrorMessage(err.message, effectiveCwd);
       if (gitInfo.gitBranch) {
         agent.result = {
           ...(agent.result ?? {}),
@@ -803,7 +807,7 @@ export async function spawnBackgroundSession(
           messages: [],
           stderr: '',
           usage: agent.result?.usage ?? EMPTY_USAGE,
-          errorMessage: err.message,
+          errorMessage: sanitizeErrorMessage(err.message, effectiveCwd),
           gitBranch: gitInfo.gitBranch,
           gitDiff: gitInfo.gitDiff,
         } as SubagentResult;
@@ -811,7 +815,7 @@ export async function spawnBackgroundSession(
       agents.set(id, agent);
       persistAgent(agent);
       transcript.completeTranscript(id, 'failed');
-      eventBus.emit(eventBus.createEvent('subagent:failed', id, { error: err.message }));
+      eventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizeErrorMessage(err.message, effectiveCwd) }));
     } catch (err) {
       // Issue #53: any throw in this handler would escape as an
       // uncaughtException and kill pi. Log and mark the record terminal —

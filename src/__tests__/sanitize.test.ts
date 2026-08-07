@@ -15,6 +15,7 @@ import {
 	getCurrentDepth,
 	DEPTH_ENV_KEY,
 	assertSafeAgentId,
+	sanitizeErrorMessage,
 } from "../sanitize";
 
 // ---------------------------------------------------------------------------
@@ -289,8 +290,76 @@ describe("getSafeEnv with overrides", () => {
 });
 
 // ---------------------------------------------------------------------------
-// assertSafeAgentId (F24)
+// sanitizeErrorMessage (F7 / issue #30)
 // ---------------------------------------------------------------------------
+
+describe("sanitizeErrorMessage", () => {
+	const cwd = "/home/testuser/project";
+
+	it("replaces the cwd absolute prefix with <cwd>", () => {
+		const msg = "Cannot read file /home/testuser/project/src/foo.ts: No such file";
+		expect(sanitizeErrorMessage(msg, cwd)).toBe(
+			"Cannot read file <cwd>/src/foo.ts: No such file"
+		);
+	});
+
+	it("replaces the parent (home) prefix with <home>", () => {
+		const msg = "Cannot read file /home/testuser/other-project/bar.ts";
+		expect(sanitizeErrorMessage(msg, cwd)).toBe(
+			"Cannot read file <home>/other-project/bar.ts"
+		);
+	});
+
+	it("replaces a bare cwd-equal message with <cwd>", () => {
+		expect(sanitizeErrorMessage("/home/testuser/project", cwd)).toBe("<cwd>");
+	});
+
+	it("strips ANSI escape sequences before path neutralization", () => {
+		const msg = "\u001B[31mboom\u001B[0m at /home/testuser/project/x.ts";
+		expect(sanitizeErrorMessage(msg, cwd)).toBe("boom at <cwd>/x.ts");
+	});
+
+	it("caps length with an ellipsis marker", () => {
+		const long = "verbose error ".repeat(500); // 3500 chars
+		const out = sanitizeErrorMessage(long);
+		expect(out.length).toBeLessThan(long.length);
+		expect(out).toContain("…[truncated]");
+		// First 2000 chars preserved for debugging.
+		expect(out.startsWith(long.slice(0, 2000))).toBe(true);
+	});
+
+	it("leaves short clean messages unchanged", () => {
+		const msg = "auth failed: invalid API key";
+		expect(sanitizeErrorMessage(msg, cwd)).toBe(msg);
+	});
+
+	it("handles empty strings safely", () => {
+		expect(sanitizeErrorMessage("")).toBe("");
+	});
+
+	it("uses process.cwd() when no cwd is passed", () => {
+		const msg = `Cannot open ${process.cwd()}/src/index.ts`;
+		expect(sanitizeErrorMessage(msg)).toBe("Cannot open <cwd>/src/index.ts");
+	});
+
+	it("does not clobber sibling directories sharing the cwd prefix", () => {
+		const msg = "Error in /home/testuser/project2/src/x.ts";
+		expect(sanitizeErrorMessage(msg, cwd)).toBe("Error in <home>/project2/src/x.ts");
+	});
+
+	it("does not destroy the message when cwd is the filesystem root", () => {
+		const msg = "failed near /usr/bin/node";
+		expect(sanitizeErrorMessage(msg, "/")).toBe(msg);
+	});
+
+	it("leaves non-cwd absolute paths as-is (documented policy)", () => {
+		const msg = "cannot stat /etc/passwd after /home/testuser/project/build failed";
+		expect(sanitizeErrorMessage(msg, cwd)).toBe(
+			"cannot stat /etc/passwd after <cwd>/build failed"
+		);
+	});
+});
+
 
 describe("assertSafeAgentId", () => {
 	it("accepts valid UUIDs", () => {
