@@ -55,7 +55,9 @@ const STORAGE_DIR = '.pi/subagents';
  * Ensure storage directory exists
  */
 function ensureStorageDir(): void {
-  mkdirSync(STORAGE_DIR, { recursive: true });
+  // F6 (issue #29): records hold the full task/result conversation — the dir
+  // must be owner-only (0o700) so other local users cannot list the files.
+  mkdirSync(STORAGE_DIR, { recursive: true, mode: 0o700 });
 }
 
 /**
@@ -78,7 +80,11 @@ function persistAgent(agent: BackgroundAgent): void {
   // getters like Theme can make JSON.stringify throw).
   const { _sessionRef, ...persistable } = agent;
   try {
-    writeFileSync(filePath, JSON.stringify(persistable, null, 2), 'utf-8');
+    // F6 (issue #29): records contain task, error, result.messages (full
+    // conversation) and finalOutput — write owner-only (0o600) so other local
+    // users cannot read subagent tasks/output. mode applies on file CREATE;
+    // pre-existing files keep their old mode (not retroactive).
+    writeFileSync(filePath, JSON.stringify(persistable, null, 2), { encoding: 'utf-8', mode: 0o600 });
   } catch (err) {
     // Log but never throw — persistence must not break execution
     console.error(`[brl-subagent] Failed to persist agent ${agent.id}:`, err);

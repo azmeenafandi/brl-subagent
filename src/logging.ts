@@ -57,10 +57,12 @@ export function setLogLevel(level: LogLevel): void {
 export function createLogger(prefix: string, cwd?: string): Logger {
 	const logDir = cwd ? path.join(cwd, ".pi", "subagent-logs") : undefined;
 
-	// Ensure log directory exists
+	// Ensure log directory exists — owner-only (0o700) so other local users
+	// cannot list log files (F6 / issue #29). File writes below already use
+	// 0o600.
 	if (logDir) {
 		try {
-			fs.mkdirSync(logDir, { recursive: true });
+			fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
 		} catch {
 			// Can't create log dir — fall back to console-only logging
 		}

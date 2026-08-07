@@ -35,6 +35,17 @@ describe("transcript completeTranscript (issue #53)", () => {
 		expect(last.content).toContain("Transcript completed: completed");
 	});
 
+	it("writes the transcript file owner-only (F6 / issue #29)", () => {
+		// Transcripts hold the full subagent conversation — the file must be
+		// created 0o600 (mode applies on CREATE; not retroactive). POSIX-only:
+		// Windows reports default 0666 regardless of the mode argument.
+		if (process.platform === "win32") return;
+		startTranscript(UUID_PRESENT, "test task");
+		const { statSync } = require("node:fs") as typeof import("node:fs");
+		const mode = statSync(transcriptPath(UUID_PRESENT)).mode & 0o777;
+		expect(mode).toBe(0o600);
+	});
+
 	it("still throws for an invalid non-UUID id (F24 preserved)", () => {
 		// F24: getTranscriptPath → assertSafeAgentId still rejects traversal ids
 		// BEFORE any filesystem access — completeTranscript must not skip it.
