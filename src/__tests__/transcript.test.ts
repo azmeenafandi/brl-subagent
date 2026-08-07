@@ -1,21 +1,35 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { join } from "path";
-import { unlinkSync } from "fs";
-import { startTranscript, completeTranscript, appendEntry, getTranscript } from "../transcript";
+import { mkdtempSync, rmSync, unlinkSync } from "fs";
+import { tmpdir } from "os";
+import { startTranscript, completeTranscript, appendEntry, getTranscript, __setOutputDir } from "../transcript";
 
 describe("transcript completeTranscript (issue #53)", () => {
 	// Valid-format UUID constants — assertSafeAgentId only accepts UUIDs.
 	const UUID_MISSING = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 	const UUID_PRESENT = "b2c3d4e5-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
 
+	// Issue #52: the transcript output dir is redirected to a throwaway temp
+	// dir so these tests never touch the real repo .pi/output.
+	let tempOutputDir = "";
+
 	const transcriptPath = (id: string) =>
-		join(process.cwd(), ".pi", "output", `agent-${id}.jsonl`);
+		join(tempOutputDir, `agent-${id}.jsonl`);
 
 	const cleanup = () => {
 		for (const id of [UUID_MISSING, UUID_PRESENT]) {
 			try { unlinkSync(transcriptPath(id)); } catch { /* ok */ }
 		}
 	};
+
+	beforeAll(() => {
+		tempOutputDir = mkdtempSync(join(tmpdir(), "brl-transcript-test-output-"));
+		__setOutputDir(tempOutputDir);
+	});
+
+	afterAll(() => {
+		rmSync(tempOutputDir, { recursive: true, force: true });
+	});
 
 	beforeEach(cleanup);
 	afterEach(cleanup);

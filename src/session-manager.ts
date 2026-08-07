@@ -48,8 +48,17 @@ function generateUUID(): string {
 // In-memory store of background agents
 const agents = new Map<string, BackgroundAgent>();
 
-// Persistence directory
-const STORAGE_DIR = '.pi/subagents';
+// Persistence directory — overridable for tests (issue #52): unit tests must
+// NOT write into the real repo .pi/ dir; the setter is test-only.
+let STORAGE_DIR = '.pi/subagents';
+
+/**
+ * TEST-ONLY: point the agent-record storage at an alternate directory.
+ * The tests call this in beforeEach to isolate from the real repo .pi/.
+ */
+export function __setStorageDir(dir: string): void {
+  STORAGE_DIR = dir;
+}
 
 /**
  * Ensure storage directory exists

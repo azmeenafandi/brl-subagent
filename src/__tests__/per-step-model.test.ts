@@ -12,7 +12,7 @@
  * advertised on the tool parameters.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -55,6 +55,12 @@ vi.mock("@earendil-works/pi-tui", () => {
 
 import initExtension from "../index";
 import type { SubagentResult } from "../types";
+// Issue #52: the setters redirect the real execute handler's transcript (and
+// agent-record) writes away from the repo .pi/ — they reach the SAME module
+// instance index.ts's dynamic import('./transcript') resolves to (vitest
+// module cache), pinned by the crash-test probe below.
+import { __setOutputDir } from "../transcript";
+import { __setStorageDir } from "../session-manager";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -172,7 +178,21 @@ function makeResult(modelStr: string): SubagentResult {
 	};
 }
 
+// Issue #52: per-test temp dirs standing in for the real repo .pi/. The real
+// execute handler writes transcripts under the transcript module's OUTPUT_DIR
+// (and records under session-manager's STORAGE_DIR) — both are redirected here
+// so no test run ever touches <repo>/.pi.
+let tempPiBase = ""; // <tmpdir>/brl-step-model-pi-XXXX, fresh per test
+let tempOutputDir = "";
+let tempStorageDir = "";
+
 beforeEach(() => {
+	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
+	tempPiBase = fs.mkdtempSync(path.join(os.tmpdir(), "brl-step-model-pi-"));
+	tempOutputDir = path.join(tempPiBase, "output");
+	tempStorageDir = path.join(tempPiBase, "subagents");
+	__setOutputDir(tempOutputDir);
+	__setStorageDir(tempStorageDir);
 	testCwd = fs.mkdtempSync(path.join(os.tmpdir(), "brl-per-step-model-"));
 	runnerMocks.runSubagent.mockReset();
 	runnerMocks.runSubagent.mockImplementation(
@@ -182,6 +202,10 @@ beforeEach(() => {
 	runnerMocks.getPiInvocation.mockReset();
 	runnerMocks.getPiInvocation.mockReturnValue({ command: process.execPath, args: [] });
 	tool = setupExtension();
+});
+
+afterAll(() => {
+	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -800,35 +824,28 @@ describe("crash-path error sanitization (issue #65)", () => {
 
 	it("single-mode crash sanitizes the cwd out of the tool result", async () => {
 		// Same disclosure class on the foreground single-mode catch ("Subagent
-		// crashed: ..."). The run writes a transcript under .pi/output in the
-		// repo cwd — snapshot and clean up the new file afterwards.
-		const piOutput = path.join(process.cwd(), ".pi", "output");
-		let before: string[] = [];
-		try { before = fs.readdirSync(piOutput); } catch { /* dir may not exist */ }
-
+		// crashed: ..."). The run writes a transcript — issue #52 redirects it
+		// to the TEMP output dir; asserting it landed there doubles as the
+		// module-cache probe: the __setOutputDir setter must reach the SAME
+		// instance the execute handler's dynamic import('./transcript') resolves
+		// to, or the file would land in the real repo .pi/output.
 		runnerMocks.runSubagent.mockRejectedValue(
 			new Error(`spawn failed: ${testCwd}/bin/pi`),
 		);
 
-		try {
-			const result = await tool.execute("call-crash-2", {
-				task: "single step",
-			}, undefined, undefined, makeCtx());
+		const result = await tool.execute("call-crash-2", {
+			task: "single step",
+		}, undefined, undefined, makeCtx());
 
-			expect(result.isError).toBe(true);
-			const text = (result.content as Array<{ type: string; text: string }>)[0].text;
-			expect(text).toContain("Subagent crashed:");
-			expect(text).toContain("spawn failed: <cwd>/bin/pi");
-			expect(text).not.toContain(testCwd);
-		} finally {
-			// Remove any transcript created by this crash run.
-			try {
-				for (const f of fs.readdirSync(piOutput)) {
-					if (!before.includes(f)) {
-						try { fs.unlinkSync(path.join(piOutput, f)); } catch { /* ok */ }
-					}
-				}
-			} catch { /* ok */ }
-		}
+		expect(result.isError).toBe(true);
+		const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+		expect(text).toContain("Subagent crashed:");
+		expect(text).toContain("spawn failed: <cwd>/bin/pi");
+		expect(text).not.toContain(testCwd);
+
+		// Issue #52 probe: the crash transcript landed in the TEMP output dir.
+		const tempFiles = fs.readdirSync(tempOutputDir);
+		expect(tempFiles).toHaveLength(1);
+		expect(tempFiles[0]).toMatch(/^agent-[0-9a-f-]+\.jsonl$/);
 	});
 });
