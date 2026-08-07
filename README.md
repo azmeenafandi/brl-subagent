@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.1.3 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.1.4 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -151,6 +151,15 @@ Set `background: true` to spawn the subagent as an independent session that retu
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
 
 ## Changelog
+
+### v2.1.4
+
+- **Monitor liveness self-healing (issue #52):** the live monitor no longer shows stale "running" entries after the background poller dies mid-run (extension reload, crash). Both render loops sweep the live map and finalize entries that are provably terminal; `finalizeLiveSubagent` returns its claim so the sweep and a delayed poller can never double-decrement the active counter. Test storage is now injectable, so unit tests no longer pollute real `.pi/subagents` state.
+- **Error & secret hygiene (issues #29 #30 #65):** persisted run data is written with owner-only permissions; error messages are sanitized before persist/echo (paths, trailing slashes, Windows boundaries), closing the residual raw-echo class across foreground, background tool-level, chain/graph, and runner paths.
+- **H1 pre-task validation (issue #34):** chain/parallel/graph modes now run the same pre-task validation as single mode — `outputFile` + `readonly` conflicts are caught before dispatch instead of silently ignored.
+- **Auto-route intent (issue #57):** an explicitly-specified `preset` in `delegate_task` is no longer overridden by auto-route.
+- **Monitor row disambiguation (issue #55):** the live monitor shows a short agent id per row, so same-named subagents are distinguishable.
+- Shipped as 8 commits (#58, #60, #62, #63, #64, #67, #70, #71). 732 tests across 35 files.
 
 ### v2.1.3
 
