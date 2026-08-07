@@ -252,7 +252,12 @@ const MAX_ERROR_MESSAGE_LENGTH = 2000;
 function neutralizePathPrefix(text: string, prefix: string, replacement: string): string {
 	if (!prefix || prefix === "/") return text;
 	const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	return text.replace(new RegExp(`${escaped}(?=[\\/]|$)`, "g"), replacement);
+	// The boundary class must contain BOTH separators: in this template literal,
+	// `\\\\` is the escaped backslash in the compiled regex source, so the
+	// character class matches `\` (Windows) and `/` (POSIX). With only `/`, a
+	// Windows path like `C:\Users\me\project\node_modules\...` would never
+	// match mid-string (Fix 2, PR #63 review) and the raw cwd would leak.
+	return text.replace(new RegExp(`${escaped}(?=[\\\\/]|$)`, "g"), replacement);
 }
 
 /**
@@ -278,7 +283,14 @@ function neutralizePathPrefix(text: string, prefix: string, replacement: string)
  */
 export function sanitizeErrorMessage(msg: string, cwd?: string): string {
 	let out = stripAnsi(msg);
-	const base = cwd ? path.normalize(cwd) : process.cwd();
+	let base = cwd ? path.normalize(cwd) : process.cwd();
+	// path.normalize preserves a trailing separator, which defeats the boundary
+	// lookahead mid-string (Fix 1, PR #63 review): a cwd of `/home/u/project/`
+	// would never match `/home/u/project/src/...` and the raw cwd would leak as
+	// `<home>/project/src/...`. Strip trailing separators — but keep `/` for a
+	// bare root cwd (the root-cwd test relies on `/` being left untouched).
+	base = base.replace(/[\\/]+$/, "");
+	if (!base) base = "/";
 	out = neutralizePathPrefix(out, base, "<cwd>");
 	const parent = path.dirname(base);
 	if (parent !== base) {

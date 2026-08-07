@@ -352,6 +352,26 @@ describe("sanitizeErrorMessage", () => {
 		expect(sanitizeErrorMessage(msg, "/")).toBe(msg);
 	});
 
+	it("strips a trailing slash from the cwd so the boundary still matches mid-string (Fix 1)", () => {
+		// path.normalize preserves a trailing separator, so `/home/u/project/`
+		// used to fall through to the parent pass and leak as `<home>/project/...`.
+		const out = sanitizeErrorMessage("Error at /home/u/project/src/x.ts", "/home/u/project/");
+		expect(out).toContain("<cwd>");
+		expect(out).not.toContain("/project/src");
+		expect(out).toBe("Error at <cwd>/src/x.ts");
+	});
+
+	it("neutralizes Windows-style cwd paths mid-string (Fix 2)", () => {
+		// Boundary class must match both `\` and `/` — with only `/` the
+		// backslash after `project` never matched and the raw cwd leaked.
+		const out = sanitizeErrorMessage(
+			"Error: ENOENT at C:\\Users\\me\\project\\node_modules\\x",
+			"C:\\Users\\me\\project"
+		);
+		expect(out).not.toContain("C:\\Users\\me\\project");
+		expect(out).toContain("<cwd>");
+	});
+
 	it("leaves non-cwd absolute paths as-is (documented policy)", () => {
 		const msg = "cannot stat /etc/passwd after /home/testuser/project/build failed";
 		expect(sanitizeErrorMessage(msg, cwd)).toBe(
