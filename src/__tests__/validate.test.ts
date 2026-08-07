@@ -216,6 +216,55 @@ describe("validatePreTask", () => {
     expect(result.valid).toBe(true);
     expect(result.errors).toHaveLength(0);
   });
+
+  // ── Empty top-level task (chain/parallel/graph mode entry, issue #34) ────
+  // Chain/parallel/graph top-level tasks are empty (modeCount forbids
+  // task+chain/tasks/graph). The hard outputFile-vs-write check (C) must still
+  // run for those — the empty-task skip only suppresses keyword warnings, not
+  // the hard conflict. Keyword patterns cannot match empty text, so no
+  // warnings can false-fire from this path.
+
+  it("is invalid when outputFile is set with an empty task and write is excluded", () => {
+    const result = validatePreTask({
+      task: "",
+      toolOptions: { excludeTools: ["write", "edit", "bash"] },
+      outputFile: "reports/audit.md",
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]).toMatch(/outputFile/);
+    expect(result.errors[0]).toMatch(/write/);
+  });
+
+  it("is invalid when outputFile is set with an empty task and write is missing from the allowlist", () => {
+    const result = validatePreTask({
+      task: "  ",
+      toolOptions: { tools: ["read", "grep", "find", "ls"] },
+      outputFile: "review.md",
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors[0]).toMatch(/outputFile/);
+  });
+
+  it("is valid when outputFile is set with an empty task and write IS available", () => {
+    const result = validatePreTask({
+      task: "",
+      toolOptions: { tools: ["read", "grep", "find", "ls", "write", "edit"] },
+      outputFile: "reports/audit.md",
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("empty task without outputFile still skips all checks (no false warnings)", () => {
+    const result = validatePreTask({
+      task: "",
+      toolOptions: { excludeTools: ["write", "edit", "bash"] },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+    expect(result.errors).toHaveLength(0);
+  });
 });
 
 // ── H3: Post-mortem diagnostics ─────────────────────────────────────

@@ -216,8 +216,12 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
   const errors: string[] = [];
   const taskText = config.task || '';
 
-  // Skip validation for empty tasks (chain/parallel/graph don't always have task)
-  if (!taskText.trim()) {
+  // Skip validation for empty tasks (chain/parallel/graph don't always have
+  // task). Exception: an outputFile is a HARD conflict check (block C below)
+  // that must run even with empty top-level task text — chain/parallel/graph
+  // validate the mode-level outputFile at mode entry (issue #34). Empty text
+  // matches no keyword patterns, so no warnings can false-fire from this path.
+  if (!taskText.trim() && !config.outputFile) {
     return { valid: true, warnings: [], errors: [] };
   }
 

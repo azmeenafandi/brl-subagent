@@ -675,3 +675,101 @@ describe("auto-route respects explicit tool intent (issue #57)", () => {
 		expect(result.content[0].text).not.toContain("[auto-routed to preset");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// H1 pre-task validation at mode entry (issue #34)
+//
+// The exact bug class from #32 (outputFile + preset excluding write → silent
+// failure) applied to chain/parallel/graph: those modes ran NO validatePreTask
+// and NO outputFile-vs-write conflict check, so `chain + security-auditor
+// (read-only) + outputFile` silently failed — the subagent could not write the
+// report and nobody was told.
+//
+// The fix: each mode runs the same H1 validation once at entry (right after
+// preflight), using the mode-level globalParams. Top-level tasks are empty for
+// these modes (modeCount forbids task+chain/tasks/graph), so keyword warnings
+// skip — only the hard outputFile-vs-write check applies. These tests drive the
+// REAL delegate_task execute handler with the repo's BUILTIN presets loaded via
+// session_start and the runner mocked, exactly like the issue #57 block above.
+// ---------------------------------------------------------------------------
+
+describe("H1 pre-task validation at mode entry (issue #34)", () => {
+	const READONLY_PRESET = "security-auditor"; // tools: read/grep/find/ls; excludes write/edit/bash
+
+	/** Load the repo's builtin presets so `preset` resolves to real tool restrictions. */
+	async function loadBuiltins(): Promise<void> {
+		if (sessionStartHandler) {
+			await sessionStartHandler({}, makeCtx() as never);
+		}
+	}
+
+	it("chain + outputFile + read-only preset → rejected loudly, no subagent spawned", async () => {
+		await loadBuiltins();
+
+		const result = await tool.execute("call-34a", {
+			preset: READONLY_PRESET,
+			outputFile: "reports/audit.md",
+			chain: [{ task: "audit src/" }],
+		}, undefined, undefined, makeCtx());
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/outputFile/);
+		expect(result.content[0].text).toMatch(/write/);
+		expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
+	});
+
+	it("parallel + outputFile + read-only preset → rejected loudly, no subagent spawned", async () => {
+		await loadBuiltins();
+
+		const result = await tool.execute("call-34b", {
+			preset: READONLY_PRESET,
+			outputFile: "reports/audit.md",
+			tasks: [{ task: "audit src/" }],
+		}, undefined, undefined, makeCtx());
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/outputFile/);
+		expect(result.content[0].text).toMatch(/write/);
+		expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
+	});
+
+	it("graph + outputFile + read-only preset → rejected loudly, no subagent spawned", async () => {
+		await loadBuiltins();
+
+		const result = await tool.execute("call-34c", {
+			preset: READONLY_PRESET,
+			outputFile: "reports/audit.md",
+			graph: [{ id: "a", task: "audit src/", dependsOn: [] }],
+		}, undefined, undefined, makeCtx());
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/outputFile/);
+		expect(result.content[0].text).toMatch(/write/);
+		expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
+	});
+
+	it("chain WITHOUT outputFile + read-only preset → still allowed (no false rejection)", async () => {
+		await loadBuiltins();
+
+		const result = await tool.execute("call-34d", {
+			preset: READONLY_PRESET,
+			chain: [{ task: "audit src/" }],
+		}, undefined, undefined, makeCtx());
+
+		expect(result.isError).toBeFalsy();
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+	});
+
+	it("chain + outputFile + preset WITH write → still allowed (no false rejection)", async () => {
+		await loadBuiltins();
+
+		const result = await tool.execute("call-34e", {
+			preset: "dev-agent", // full-access preset: write IS available
+			outputFile: "reports/audit.md",
+			chain: [{ task: "audit src/" }],
+		}, undefined, undefined, makeCtx());
+
+		expect(result.isError).toBeFalsy();
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+	});
+});

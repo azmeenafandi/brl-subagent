@@ -562,6 +562,31 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
+		// H1: Pre-task validation at mode entry — deterministic check that
+		// tools/thinking match the task (mirrors single/background modes, issue
+		// #32). Chain top-level tasks are empty (modeCount forbids task+chain), so
+		// keyword warnings skip on empty text and only the hard outputFile-vs-write
+		// conflict applies (issue #34). The mode-level outputFile on globalParams is
+		// the one validated; per-step outputFiles are future work (issue #3).
+		const validation = validatePreTask({
+			task: globalParams.task,
+			toolOptions: globalParams.toolOptions,
+			thinkingLevel: globalParams.thinkingLevel,
+			gitMode: globalParams.resolvedGitMode,
+			outputFile: globalParams.outputFile,
+		});
+		if (validation.warnings.length > 0) {
+			log.warn("Chain pre-task validation warnings", { warnings: validation.warnings });
+		}
+		if (!validation.valid) {
+			const errText = validation.errors.join("; ");
+			log.warn("Chain pre-task validation failed", { errors: validation.errors });
+			return {
+				content: [{ type: "text" as const, text: errText }],
+				isError: true,
+			};
+		}
+
 		// Resolve model once
 		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset);
 		if (!modelResult.ok) return modelResult.error;
@@ -945,6 +970,32 @@ export default function (pi: ExtensionAPI) {
 						text: `Pre-flight check failed: ${pfResult.error}`,
 					},
 				],
+				isError: true,
+			};
+		}
+
+		// H1: Pre-task validation at mode entry — deterministic check that
+		// tools/thinking match the task (mirrors single/background modes, issue
+		// #32). Parallel top-level tasks are empty (modeCount forbids task+tasks),
+		// so keyword warnings skip on empty text and only the hard
+		// outputFile-vs-write conflict applies (issue #34). The mode-level
+		// outputFile on globalParams is the one validated; per-step outputFiles
+		// are future work (issue #3).
+		const validation = validatePreTask({
+			task: globalParams.task,
+			toolOptions: globalParams.toolOptions,
+			thinkingLevel: globalParams.thinkingLevel,
+			gitMode: globalParams.resolvedGitMode,
+			outputFile: globalParams.outputFile,
+		});
+		if (validation.warnings.length > 0) {
+			log.warn("Parallel pre-task validation warnings", { warnings: validation.warnings });
+		}
+		if (!validation.valid) {
+			const errText = validation.errors.join("; ");
+			log.warn("Parallel pre-task validation failed", { errors: validation.errors });
+			return {
+				content: [{ type: "text" as const, text: errText }],
 				isError: true,
 			};
 		}
@@ -1334,6 +1385,32 @@ export default function (pi: ExtensionAPI) {
 						text: `Pre-flight check failed: ${pfResult.error}`,
 					},
 				],
+				isError: true,
+			};
+		}
+
+		// H1: Pre-task validation at mode entry — deterministic check that
+		// tools/thinking match the task (mirrors single/background modes, issue
+		// #32). Graph top-level tasks are empty (modeCount forbids task+graph),
+		// so keyword warnings skip on empty text and only the hard
+		// outputFile-vs-write conflict applies (issue #34). The mode-level
+		// outputFile on globalParams is the one validated; per-step outputFiles
+		// are future work (issue #3).
+		const validation = validatePreTask({
+			task: globalParams.task,
+			toolOptions: globalParams.toolOptions,
+			thinkingLevel: globalParams.thinkingLevel,
+			gitMode: globalParams.resolvedGitMode,
+			outputFile: globalParams.outputFile,
+		});
+		if (validation.warnings.length > 0) {
+			log.warn("Graph pre-task validation warnings", { warnings: validation.warnings });
+		}
+		if (!validation.valid) {
+			const errText = validation.errors.join("; ");
+			log.warn("Graph pre-task validation failed", { errors: validation.errors });
+			return {
+				content: [{ type: "text" as const, text: errText }],
 				isError: true,
 			};
 		}
