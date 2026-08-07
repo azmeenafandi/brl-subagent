@@ -1051,6 +1051,38 @@ describe("settle handlers never throw — missing transcript / throwing emit (is
 		expect(after?.completedAt).toBeDefined();
 	});
 
+	it("sanitizes error messages (issue #30) before persist/echo — cwd paths are neutralized", async () => {
+		// F7: prompt() rejection messages can embed absolute paths (cwd prefixes,
+		// spawn commands). The .catch handler persists agent.error (disk) and
+		// echoes it into the subagent:failed event — both must carry the
+		// SANITIZED form so the local filesystem structure does not leak into the
+		// main agent's context or onto disk.
+		mocks.session.prompt.mockRejectedValue(
+			new Error("config load failed: /tmp/brl-test-cwd/.pi/settings.json")
+		);
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test error sanitization",
+		});
+		spawnedIds.push(agent.id);
+
+		await new Promise((r) => setTimeout(r, 10));
+
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("failed");
+		expect(after?.error).toContain("<cwd>");
+		expect(after?.error).toContain(".pi/settings.json");
+		expect(after?.error).not.toContain("/tmp/brl-test-cwd");
+
+		// The subagent:failed event must carry the sanitized form too.
+		const failedEvents = eventBusMock.emit.mock.calls
+			.map(([e]) => e as { type: string; data?: { error?: string } })
+			.filter((e) => e.type === "subagent:failed");
+		expect(failedEvents.length).toBe(1);
+		expect(failedEvents[0].data?.error).not.toContain("/tmp/brl-test-cwd");
+		expect(failedEvents[0].data?.error).toContain("<cwd>");
+	});
+
 	it("does not crash when the transcript is deleted before a COMPLETING run settles", async () => {
 		mocks.session.prompt.mockReturnValue(
 			new Promise((resolve) => {

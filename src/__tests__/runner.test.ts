@@ -137,3 +137,43 @@ describe("getPiInvocation", () => {
 		expect(inv.args).toContain("json");
 	});
 });
+
+describe("runSubagent subprocess error sanitization (issue #30 / F7)", () => {
+	it("sanitizes errorMessage but leaves stderr raw", async () => {
+		// proc "error" (spawn failure) messages can embed the spawn command and
+		// absolute paths. errorMessage is surfaced to the conductor → sanitized;
+		// stderr is the subagent's OWN output → deliberately left raw.
+		let errorCb: ((err: Error) => void) | undefined;
+		const proc = {
+			stdout: { on: vi.fn() },
+			stderr: { on: vi.fn() },
+			on: vi.fn((event: string, cb: (err?: Error) => void) => {
+				if (event === "error") errorCb = cb;
+				return proc;
+			}),
+			kill: vi.fn(),
+		};
+		mocks.spawn.mockReturnValue(proc);
+
+		const promise = runSubagent(
+			"/home/testuser/project",
+			"",
+			{ provider: "test", id: "model" },
+			"medium",
+			"task",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			() => "",
+		);
+		errorCb?.(new Error("spawn /home/testuser/project/node_modules/.bin/pi ENOENT"));
+		const result = await promise;
+
+		expect(result.errorMessage).toBe("Subprocess error: spawn <cwd>/node_modules/.bin/pi ENOENT");
+		expect(result.errorMessage).not.toContain("/home/testuser/project");
+		// stderr keeps the raw message — the subagent's own output, already
+		// in-scope of the subagent's context.
+		expect(result.stderr).toContain("/home/testuser/project/node_modules/.bin/pi");
+	});
+});

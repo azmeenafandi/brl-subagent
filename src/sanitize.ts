@@ -234,6 +234,62 @@ function formatBytes(bytes: number): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+/**
+ * Maximum length for a sanitized error message (issue #30). Error text is
+ * persisted to disk AND echoed into the main agent's context — a runaway
+ * message (e.g. a swallowed tool dump) would bloat both.
+ */
+const MAX_ERROR_MESSAGE_LENGTH = 2000;
+
+/**
+ * Replace every occurrence of an absolute path prefix with a neutral
+ * placeholder, but ONLY at path boundaries (followed by a path separator or
+ * the end of the string). Boundary matching means neutralizing the cwd
+ * `/home/user/project` does not clobber a sibling like `/home/user/project2`,
+ * and a bare `/` root cwd is left untouched (it would otherwise match every
+ * separator in the message).
+ */
+function neutralizePathPrefix(text: string, prefix: string, replacement: string): string {
+	if (!prefix || prefix === "/") return text;
+	const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return text.replace(new RegExp(`${escaped}(?=[\\/]|$)`, "g"), replacement);
+}
+
+/**
+ * Sanitize an error message before persisting/echoing (issue #30, F7).
+ *
+ * 1. Strips ANSI escape sequences (reuses `stripAnsi`).
+ * 2. Neutralizes the project root: the cwd absolute prefix (the passed `cwd`
+ *    or `process.cwd()`) becomes `<cwd>` — `/home/user/project/src/foo.ts` →
+ *    `<cwd>/src/foo.ts`.
+ * 3. Neutralizes the directory CONTAINING the project root (typically the
+ *    user's home in a `~/project` layout): it becomes `<home>`. The label is
+ *    a neutral placeholder — when the project does not live directly under
+ *    the home dir (e.g. `/var/www/app` → parent `/var/www`), the parent is
+ *    still replaced so the workspace root never leaks.
+ * 4. Caps length at 2000 chars with an ellipsis marker.
+ *
+ * Remaining-absolute-path policy: paths OUTSIDE the project root and its
+ * parent are left as-is (e.g. `/etc/passwd`, `/usr/bin/node`, `/tmp/x.log`).
+ * Issue #30 is specifically about CWD/home disclosure; system paths carry no
+ * personal structure and keeping them preserves debugging value. Messages
+ * that are short and clean (no ANSI, no cwd/parent prefixes) pass through
+ * unchanged. Pure and dependency-free.
+ */
+export function sanitizeErrorMessage(msg: string, cwd?: string): string {
+	let out = stripAnsi(msg);
+	const base = cwd ? path.normalize(cwd) : process.cwd();
+	out = neutralizePathPrefix(out, base, "<cwd>");
+	const parent = path.dirname(base);
+	if (parent !== base) {
+		out = neutralizePathPrefix(out, parent, "<home>");
+	}
+	if (out.length > MAX_ERROR_MESSAGE_LENGTH) {
+		out = `${out.slice(0, MAX_ERROR_MESSAGE_LENGTH)}…[truncated]`;
+	}
+	return out;
+}
+
 // ---------------------------------------------------------------------------
 // Recursion depth tracking
 // ---------------------------------------------------------------------------
