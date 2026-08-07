@@ -1108,3 +1108,50 @@ describe("settle handlers never throw — missing transcript / throwing emit (is
 		expect(after?.completedAt).toBeDefined();
 	});
 });
+
+describe("persisted file modes (F6 / issue #29)", () => {
+	it("writes agent records and transcripts owner-only (0o600)", async () => {
+		// Records hold task/error/result.messages (full conversation) and
+		// finalOutput; transcripts hold the full conversation too — both must
+		// be created 0o600 and their dirs 0o700 (mode applies on CREATE; not
+		// retroactive). POSIX-only: Windows reports default 0666/0755.
+		if (process.platform === "win32") return;
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path") as typeof import("node:path");
+
+		// Never-resolving prompt keeps the agent 'running' so the record and
+		// transcript (created synchronously during spawn) stay in place.
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+
+		// mkdirSync mode applies only when the dir is CREATED — record whether
+		// the .pi subdirs pre-exist so the dir-mode assertions below are
+		// deterministic either way.
+		const subagentsExisted = fs.existsSync(path.join(process.cwd(), ".pi", "subagents"));
+		const outputExisted = fs.existsSync(path.join(process.cwd(), ".pi", "output"));
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test file modes",
+		});
+
+		const recordPath = path.join(process.cwd(), ".pi", "subagents", `${agent.id}.json`);
+		const transcriptPath = path.join(process.cwd(), ".pi", "output", `agent-${agent.id}.jsonl`);
+		try {
+			expect(getAgent(agent.id)).not.toBeNull();
+			expect(fs.existsSync(recordPath)).toBe(true);
+			expect(fs.existsSync(transcriptPath)).toBe(true);
+			expect(fs.statSync(recordPath).mode & 0o777).toBe(0o600);
+			expect(fs.statSync(transcriptPath).mode & 0o777).toBe(0o600);
+			// Freshly-created .pi subdirs must be 0o700 (owner-only).
+			if (!subagentsExisted) {
+				expect(fs.statSync(path.join(process.cwd(), ".pi", "subagents")).mode & 0o777).toBe(0o700);
+			}
+			if (!outputExisted) {
+				expect(fs.statSync(path.join(process.cwd(), ".pi", "output")).mode & 0o777).toBe(0o700);
+			}
+		} finally {
+			try { fs.unlinkSync(recordPath); } catch { /* ok */ }
+			try { fs.unlinkSync(transcriptPath); } catch { /* ok */ }
+		}
+	});
+});

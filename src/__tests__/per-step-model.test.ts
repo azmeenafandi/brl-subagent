@@ -773,3 +773,62 @@ describe("H1 pre-task validation at mode entry (issue #34)", () => {
 		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Crash-path error sanitization (issue #65)
+// ---------------------------------------------------------------------------
+
+describe("crash-path error sanitization (issue #65)", () => {
+	it("chain mode crash sanitizes the cwd out of the tool result", async () => {
+		// The chain crash catch echoes err.message into the main agent's
+		// context ("Chain mode crashed: ..."). A message embedding the subagent
+		// cwd must arrive as <cwd>/... — never the raw absolute path.
+		runnerMocks.runSubagent.mockRejectedValue(
+			new Error(`config load failed: ${testCwd}/.pi/settings.json`),
+		);
+
+		const result = await tool.execute("call-crash-1", {
+			chain: [{ task: "step one" }],
+		}, undefined, undefined, makeCtx());
+
+		expect(result.isError).toBe(true);
+		const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+		expect(text).toContain("Chain mode crashed:");
+		expect(text).toContain("config load failed: <cwd>/.pi/settings.json");
+		expect(text).not.toContain(testCwd);
+	});
+
+	it("single-mode crash sanitizes the cwd out of the tool result", async () => {
+		// Same disclosure class on the foreground single-mode catch ("Subagent
+		// crashed: ..."). The run writes a transcript under .pi/output in the
+		// repo cwd — snapshot and clean up the new file afterwards.
+		const piOutput = path.join(process.cwd(), ".pi", "output");
+		let before: string[] = [];
+		try { before = fs.readdirSync(piOutput); } catch { /* dir may not exist */ }
+
+		runnerMocks.runSubagent.mockRejectedValue(
+			new Error(`spawn failed: ${testCwd}/bin/pi`),
+		);
+
+		try {
+			const result = await tool.execute("call-crash-2", {
+				task: "single step",
+			}, undefined, undefined, makeCtx());
+
+			expect(result.isError).toBe(true);
+			const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+			expect(text).toContain("Subagent crashed:");
+			expect(text).toContain("spawn failed: <cwd>/bin/pi");
+			expect(text).not.toContain(testCwd);
+		} finally {
+			// Remove any transcript created by this crash run.
+			try {
+				for (const f of fs.readdirSync(piOutput)) {
+					if (!before.includes(f)) {
+						try { fs.unlinkSync(path.join(piOutput, f)); } catch { /* ok */ }
+					}
+				}
+			} catch { /* ok */ }
+		}
+	});
+});

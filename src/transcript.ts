@@ -10,7 +10,9 @@ const OUTPUT_DIR = '.pi/output';
  * Ensure output directory exists
  */
 function ensureOutputDir(): void {
-  mkdirSync(OUTPUT_DIR, { recursive: true });
+  // F6 (issue #29): transcripts contain the full subagent conversation — the
+  // dir must be owner-only (0o700) so other local users cannot list the files.
+  mkdirSync(OUTPUT_DIR, { recursive: true, mode: 0o700 });
 }
 
 /**
@@ -41,7 +43,9 @@ export function startTranscript(agentId: string, task: string): string {
     metadata: { task },
   };
   
-  appendFileSync(path, JSON.stringify(entry) + '\n', 'utf-8');
+  // F6 (issue #29): transcripts hold the full conversation — append
+  // owner-only (0o600) on file CREATE (mode is not retroactive).
+  appendFileSync(path, JSON.stringify(entry) + '\n', { encoding: 'utf-8', mode: 0o600 });
   return path;
 }
 
@@ -66,7 +70,9 @@ export function appendEntry(
     metadata,
   };
   
-  appendFileSync(path, JSON.stringify(entry) + '\n', 'utf-8');
+  // F6 (issue #29): transcripts hold the full conversation — append
+  // owner-only (0o600) on file CREATE (mode is not retroactive).
+  appendFileSync(path, JSON.stringify(entry) + '\n', { encoding: 'utf-8', mode: 0o600 });
 }
 
 /**

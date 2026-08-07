@@ -64,7 +64,7 @@ import { validateGraph, topologicalSort } from "./scheduler";
 import { resolveTemplate } from "./templates";
 import { Scheduler, type ScheduleConfig } from "./schedule";
 
-import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth } from "./sanitize";
+import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage } from "./sanitize";
 import {
 	getCurrentBranch,
 	hasUncommittedChanges,
@@ -842,7 +842,10 @@ export default function (pi: ExtensionAPI) {
 				details: chainDetails as unknown as SubagentResult,
 			};
 		} catch (err) {
-			const errorMessage = (err as Error).message || String(err);
+			// F7 (issue #65): err.message may embed absolute paths — sanitize
+			// BEFORE it reaches the main agent's context (tool result content +
+			// details.errorMessage). resolvedCwd is the validated subagent cwd.
+			const errorMessage = sanitizeErrorMessage((err as Error).message || String(err), resolvedCwd);
 			log.error("Chain mode crashed", { error: errorMessage });
 			return {
 				content: [
@@ -1675,7 +1678,10 @@ export default function (pi: ExtensionAPI) {
 				details: graphDetails as unknown as SubagentResult,
 			};
 		} catch (err) {
-			const errorMessage = (err as Error).message || String(err);
+			// F7 (issue #65): err.message may embed absolute paths — sanitize
+			// BEFORE it reaches the main agent's context (tool result content +
+			// details.errorMessage). resolvedCwd is the validated subagent cwd.
+			const errorMessage = sanitizeErrorMessage((err as Error).message || String(err), resolvedCwd);
 			log.error("Graph mode crashed", { error: errorMessage });
 			return {
 				content: [
@@ -2467,7 +2473,7 @@ export default function (pi: ExtensionAPI) {
 								updateProgressStatus(state, ctx);
 								pi.sendMessage({
 									customType: "subagent-notification",
-									content: `Background agent "${agent.description}" crashed: ${(err as Error).message}`,
+									content: `Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, bgResolved.effectiveCwd)}`,
 									display: true,
 									details: { agentId: agent.id }
 								}, { deliverAs: "followUp" });
@@ -2562,7 +2568,10 @@ export default function (pi: ExtensionAPI) {
 						}],
 					};
 				} catch (err) {
-					const message = err instanceof Error ? err.message : String(err);
+					const message = sanitizeErrorMessage(
+						err instanceof Error ? err.message : String(err),
+						bgResolved.effectiveCwd,
+					);
 					log.error("Failed to spawn background agent", { error: message });
 					return {
 						content: [{ type: "text" as const, text: `Failed to spawn background agent: ${message}` }],
@@ -2834,6 +2843,14 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			let success = false;
+
+			// F7 (issue #65): import BEFORE the try — the crash-path catch calls
+			// completeTranscript, and block-scoped consts declared inside the try
+			// are invisible in its catch (pre-fix, a crash here threw
+			// "completeTranscript is not defined" instead of returning the
+			// sanitized crash result).
+			const { startTranscript, completeTranscript } = await import('./transcript');
+
 			try {
 				// Build system prompt
 				const basePrompt = ctx.getSystemPrompt();
@@ -2881,7 +2898,6 @@ export default function (pi: ExtensionAPI) {
 				const childDepth = currentDepth + 1;
 
 				// Start transcript for audit trail
-				const { startTranscript, completeTranscript, appendEntry } = await import('./transcript');
 				startTranscript(runId, task);
 
 				let result = await runSubagent(
@@ -3142,7 +3158,7 @@ export default function (pi: ExtensionAPI) {
 				completeTranscript(runId, 'failed');
 
 				const errorMessage =
-					(err as Error).message || String(err);
+					sanitizeErrorMessage((err as Error).message || String(err), resolvedCwd);
 				log.error("Subagent crashed", { runId, error: errorMessage });
 				return {
 					content: [
@@ -3342,7 +3358,10 @@ export default function (pi: ExtensionAPI) {
 					}],
 				};
 			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
+				// F7 (issue #65): sanitize BEFORE the message reaches the main
+				// agent's context. No cwd is in scope here (tool execute has only
+				// toolCallId/params) — the helper falls back to process.cwd().
+				const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
 				return {
 					content: [{ type: "text" as const, text: `Failed to steer agent: ${message}` }],
 					isError: true,
@@ -3384,7 +3403,10 @@ export default function (pi: ExtensionAPI) {
 					}],
 				};
 			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
+				// F7 (issue #65): sanitize BEFORE the message reaches the main
+				// agent's context. No cwd is in scope here (tool execute has only
+				// toolCallId/params) — the helper falls back to process.cwd().
+				const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
 				return {
 					content: [{ type: "text" as const, text: `Failed to stop agent: ${message}` }],
 					isError: true,
