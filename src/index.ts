@@ -226,10 +226,17 @@ export default function (pi: ExtensionAPI) {
 		resolvedPreset?: SubagentPreset;
 		autoRoutedPreset?: SubagentPreset; // set only when autoRoutePreset chose it
 	} {
-		// E2: Auto-route to best preset when neither preset nor template is specified
+		// E2: Auto-route to best preset only when the conductor expressed NO
+		// explicit preference — an explicit preset, template, or tool
+		// parameters (tools/excludeTools/noBuiltinTools) all count as intent
+		// that must win over keyword-based routing (issue #57).
 		let resolvedPreset = params.preset;
 		let wasAutoRouted = false;
-		if (!resolvedPreset && !params.template) {
+		const hasExplicitToolPreference =
+			params.tools !== undefined ||
+			params.excludeTools !== undefined ||
+			params.noBuiltinTools !== undefined;
+		if (!resolvedPreset && !params.template && !hasExplicitToolPreference) {
 			const allPresets = getAllPresets(state.builtinPresets, state.customPresets);
 			const suggested = autoRoutePreset(params.task, allPresets);
 			if (suggested) {

@@ -481,3 +481,197 @@ describe("graph mode per-step model", () => {
 		expect(models).toEqual([STEP_MODEL_PARSED, GLOBAL_MODEL]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Auto-route vs explicit tool intent (issue #57)
+//
+// The REAL resolveSubagentParams auto-route block used to fire whenever no
+// preset/template was given — even when the conductor pinned an explicit
+// tool preference. The routed preset's systemPrompt/promptGuideline then
+// merged in, fighting the conductor's explicit choice (e.g. explicit
+// tools: [read, bash] auto-routing to code-reviewer → the subagent believed
+// it was read-only despite having bash). The fix: any explicit tool
+// parameters (tools/excludeTools/noBuiltinTools) count as conductor intent
+// and suppress keyword-based auto-routing entirely.
+//
+// These tests drive the real delegate_task execute handler (runner mocked)
+// with the repo's BUILTIN presets loaded via session_start, and assert on
+// the built prompt (runSubagent arg 1), the resolved toolOptions
+// (runSubagent arg 7), and the auto-route note in the tool result.
+// ---------------------------------------------------------------------------
+
+describe("auto-route respects explicit tool intent (issue #57)", () => {
+	const REVIEW_TASK = "review this PR for code quality"; // keywords → code-reviewer
+	const ROUTED_PERSONA = "Code Reviewer"; // code-reviewer preset systemPrompt
+	const ROUTED_GUIDELINE = "Read-only"; // code-reviewer preset promptGuideline
+
+	/** Load the repo's builtin presets (required for auto-route to have candidates). */
+	async function loadBuiltins(): Promise<void> {
+		if (sessionStartHandler) {
+			await sessionStartHandler({}, makeCtx() as never);
+		}
+	}
+
+	it("auto-routes when no explicit preference is given", async () => {
+		await loadBuiltins();
+
+		const result = await tool.execute("call-57a", {
+			task: REVIEW_TASK,
+		}, undefined, undefined, makeCtx());
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		const prompt = runnerMocks.runSubagent.mock.calls[0][1] as string;
+		// Routed persona + guidance merged in (the pre-fix behavior for no preference)
+		expect(prompt).toContain(ROUTED_PERSONA);
+		expect(prompt).toContain(ROUTED_GUIDELINE);
+		// Routed preset's own tool restriction is applied
+		expect(runnerMocks.runSubagent.mock.calls[0][7]).toEqual({
+			tools: ["read", "grep", "find", "ls"],
+			excludeTools: ["write", "edit", "bash"],
+			noBuiltinTools: undefined,
+		});
+		// B2: the auto-route decision is surfaced in the result
+		expect(result.content[0].text).toContain("[auto-routed to preset 'code-reviewer'");
+	});
+
+	it("does NOT auto-route when tools are explicitly given", async () => {
+		await loadBuiltins();
+
+		const result = await tool.execute("call-57b", {
+			task: REVIEW_TASK,
+			tools: ["read", "bash"],
+		}, undefined, undefined, makeCtx());
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		const prompt = runnerMocks.runSubagent.mock.calls[0][1] as string;
+		// No routed persona/guideline — explicit tool intent wins over routing
+		expect(prompt).not.toContain(ROUTED_PERSONA);
+		expect(prompt).not.toContain("Preset Guidance");
+		// The EXPLICIT tools are what the subagent gets
+		expect(prompt).toContain("You have access to ONLY these tools: read, bash");
+		expect(runnerMocks.runSubagent.mock.calls[0][7]).toEqual({
+			tools: ["read", "bash"],
+			excludeTools: undefined,
+			noBuiltinTools: undefined,
+		});
+		expect(result.content[0].text).not.toContain("[auto-routed to preset");
+	});
+
+	it("does NOT auto-route when excludeTools are explicitly given", async () => {
+		await loadBuiltins();
+
+		const result = await tool.execute("call-57c", {
+			task: REVIEW_TASK,
+			excludeTools: ["write"],
+		}, undefined, undefined, makeCtx());
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		const prompt = runnerMocks.runSubagent.mock.calls[0][1] as string;
+		expect(prompt).not.toContain(ROUTED_PERSONA);
+		expect(runnerMocks.runSubagent.mock.calls[0][7]).toEqual({
+			tools: undefined,
+			excludeTools: ["write"],
+			noBuiltinTools: undefined,
+		});
+		expect(result.content[0].text).not.toContain("[auto-routed to preset");
+	});
+
+	it("does NOT auto-route when noBuiltinTools is explicitly given", async () => {
+		await loadBuiltins();
+
+		const result = await tool.execute("call-57d", {
+			task: REVIEW_TASK,
+			noBuiltinTools: true,
+		}, undefined, undefined, makeCtx());
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		const prompt = runnerMocks.runSubagent.mock.calls[0][1] as string;
+		expect(prompt).not.toContain(ROUTED_PERSONA);
+		expect(runnerMocks.runSubagent.mock.calls[0][7]).toEqual({
+			tools: undefined,
+			excludeTools: undefined,
+			noBuiltinTools: true,
+		});
+		expect(result.content[0].text).not.toContain("[auto-routed to preset");
+	});
+
+	it("template flows are unchanged: template with no preset/tools does not auto-route", async () => {
+		// Templates resolve BEFORE the auto-route block (they overwrite params.task
+		// and optionally params.preset/tools), and params.template stays set, so the
+		// pre-existing `!params.template` guard already gates template flows — issue
+		// #57 adds the explicit-tool gate WITHOUT touching that path.
+		const ctx = makeCtx();
+		ctx.sessionManager = {
+			getEntries: () => [
+				{
+					type: "custom",
+					customType: "brl-subagent-state",
+					data: {
+						templates: [
+							{ name: "review-notes", task: REVIEW_TASK }, // no preset, no tools
+						],
+					},
+				},
+			],
+			appendCustomEntry: () => {},
+		};
+		if (sessionStartHandler) {
+			await sessionStartHandler({}, ctx as never);
+		}
+
+		const result = await tool.execute("call-57e", {
+			task: "placeholder", // sanitizer runs before template resolution; template task replaces it
+			template: "review-notes",
+			params: {},
+		}, undefined, undefined, ctx);
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		const prompt = runnerMocks.runSubagent.mock.calls[0][1] as string;
+		// Template's task resolved; the template carried no preset/tools and the
+		// template param itself gates auto-route → no persona merged, unchanged
+		// from before the fix.
+		expect(runnerMocks.runSubagent.mock.calls[0][4]).toBe(REVIEW_TASK); // task arg = template task
+		expect(prompt).not.toContain(ROUTED_PERSONA);
+		expect(runnerMocks.runSubagent.mock.calls[0][7]).toBeUndefined();
+		expect(result.content[0].text).not.toContain("[auto-routed to preset");
+	});
+
+	it("template with tools still suppresses auto-route (template intent wins)", async () => {
+		const ctx = makeCtx();
+		ctx.sessionManager = {
+			getEntries: () => [
+				{
+					type: "custom",
+					customType: "brl-subagent-state",
+					data: {
+						templates: [
+							{ name: "read-only-review", task: REVIEW_TASK, tools: ["read"] },
+						],
+					},
+				},
+			],
+			appendCustomEntry: () => {},
+		};
+		if (sessionStartHandler) {
+			await sessionStartHandler({}, ctx as never);
+		}
+
+		const result = await tool.execute("call-57f", {
+			task: "placeholder", // sanitizer runs before template resolution; template task replaces it
+			template: "read-only-review",
+			params: {},
+		}, undefined, undefined, ctx);
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		const prompt = runnerMocks.runSubagent.mock.calls[0][1] as string;
+		expect(prompt).not.toContain(ROUTED_PERSONA);
+		// The template's explicit tools reach the subagent
+		expect(prompt).toContain("You have access to ONLY these tools: read");
+		expect(runnerMocks.runSubagent.mock.calls[0][7]).toEqual({
+			tools: ["read"],
+			excludeTools: undefined,
+			noBuiltinTools: undefined,
+		});
+		expect(result.content[0].text).not.toContain("[auto-routed to preset");
+	});
+});
