@@ -57,6 +57,7 @@ import * as path from "node:path";
 import { sweepStaleLiveSubagents, type SessionState } from "./state";
 import { getAgent } from "./session-manager";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
+import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim } from "./tui-format";
 
 // ---------------------------------------------------------------------------
 // SelectList helper
@@ -331,35 +332,6 @@ export async function showDefaultPrioritySelector(
 
 	state.config.defaultPriority = result as Priority;
 	onConfigChanged(ctx, `Default priority set to ${result}`);
-}
-
-// ---------------------------------------------------------------------------
-// Git mode selector — P3
-// ---------------------------------------------------------------------------
-
-export async function showGitModeSelector(
-	ctx: ExtensionContext,
-	state: SessionState,
-	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
-): Promise<void> {
-	const items: SelectItem[] = [
-		{
-			value: "none",
-			label: "none",
-			description: "No git integration",
-		},
-		{
-			value: "branch",
-			label: "branch",
-			description: "Branch-based workflow (creates a work branch per subagent call)",
-		},
-	];
-
-	const result = await showSelectList(ctx, "Select Git Integration Mode", items, 5);
-	if (!result) return;
-
-	state.config.gitMode = result as "branch" | "none";
-	onConfigChanged(ctx, `Git integration mode set to ${result}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1432,13 +1404,6 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			description: state.config.defaultPriority,
 		},
 		{
-			value: "gitmode",
-			label: "Set Git Integration Mode",
-			description: state.config.gitMode === "branch"
-				? "Branch-based workflow"
-				: "No git integration",
-		},
-		{
 			value: "approval",
 			label: "Set Change Approval Mode",
 			description: state.config.approvalMode === "auto"
@@ -1781,21 +1746,16 @@ export async function showMonitor(
 
 			let idx = 0;
 			for (const [id, session] of state.subagentSessions) {
-				const elapsed = Math.round((Date.now() - session.startedAt) / 1000);
-				const elapsedStr =
-					elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
-				const name = session.label || session.task.slice(0, 40);
-				const spinner =
-					["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"][
-						Math.floor(Date.now() / 150) % 10
-					];
+				const elapsedStr = formatElapsed(Date.now() - session.startedAt);
+				const name = liveRowName(session.label, session.task);
+				const spinner = liveSpinner(Date.now());
 
 				container.addChild(
 					new Text(
 						theme.fg("accent", `${spinner} ${name}`) +
 							theme.fg(
 								"dim",
-								`  [${id.slice(0, 8)}]  \u2191${formatTokens(session.usage.input)} \u2193${formatTokens(session.usage.output)}  ${elapsedStr}`,
+								formatLiveRowDim(id, session.usage, elapsedStr),
 							),
 						1,
 						0,
@@ -1909,24 +1869,19 @@ export async function showDashboard(
 			} else {
 				let idx = 0;
 				for (const [id, session] of state.subagentSessions) {
-					const elapsed = Math.round((Date.now() - session.startedAt) / 1000);
-					const elapsedStr =
-						elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m${elapsed % 60}s`;
-					const name = session.label || session.task.slice(0, 40);
-					const spinner =
-						["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"][
-							Math.floor(Date.now() / 150) % 10
-					];
+					const elapsedStr = formatElapsed(Date.now() - session.startedAt);
+					const name = liveRowName(session.label, session.task);
+					const spinner = liveSpinner(Date.now());
 					container.addChild(
 						new Text(
 							theme.fg("accent", `  ${spinner} ${name}`) +
 								theme.fg(
 									"dim",
-									`  [${id.slice(0, 8)}]  \u2191${formatTokens(session.usage.input)} \u2193${formatTokens(session.usage.output)}  ${elapsedStr}`,
-							),
-						1,
-						0,
-					),
+									formatLiveRowDim(id, session.usage, elapsedStr),
+								),
+							1,
+							0,
+						),
 					);
 					idx++;
 					if (idx < activeCount) container.addChild(new Text("", 0, 0));
