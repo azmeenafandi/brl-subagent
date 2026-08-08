@@ -498,6 +498,15 @@ export async function spawnBackgroundSession(
   // Store session ref for live monitor polling
   agent._sessionRef = session;
 
+  // Issue #31 (PR #76 review, DRY): every terminal branch must capture the
+  // final output while the session is still live, THEN release the ref — the
+  // capture must always precede the release or the output dies with the
+  // session graph. Single helper for all four settlement paths.
+  const captureAndReleaseSession = (): void => {
+    setAgentFinalOutput(id, extractFinalOutput(session));
+    agent._sessionRef = undefined;
+  };
+
   // W4 (issue #28): git isolation — create a work branch BEFORE the prompt so
   // the background agent's file writes land on the branch, never on the
   // working tree's base branch. There is no interactive approval in background
@@ -652,12 +661,28 @@ export async function spawnBackgroundSession(
   // terminal so no zombie 'running' record survives; never rethrow.
   const markTerminalBestEffort = (fallback: AgentStatus): void => {
     try {
+      // Issue #31 (PR #76 review): this catch-all fires when a settle handler
+      // threw — either BEFORE the branch's own capture (ref still live: capture
+      // now, it is the last chance to record the session's output) or AFTER it
+      // (finalOutput already recorded: never clobber it with a re-capture of a
+      // released ref, which would yield ''). Guard on finalOutput to cover both.
+      if (agent.finalOutput === undefined) {
+        try {
+          setAgentFinalOutput(id, extractFinalOutput(agent._sessionRef ?? { messages: [] }));
+        } catch {
+          // Output capture is best-effort — it must never block the terminal
+          // flip or the ref release below.
+        }
+      }
       if (agent.status !== 'completed' && agent.status !== 'failed' && agent.status !== 'stopped') {
         agent.status = fallback;
       }
       if (!agent.completedAt) agent.completedAt = Date.now();
       agents.set(id, agent);
       persistAgent(agent);
+      // Issue #31: the live session ref must not survive terminal paths —
+      // including this catch-all, which fires when a settle handler throws.
+      agent._sessionRef = undefined;
     } catch {
       // The record may be beyond saving — the process must survive.
     }
@@ -751,6 +776,10 @@ export async function spawnBackgroundSession(
           agents.set(id, agent);
           persistAgent(agent);
         }
+        // Issue #31: capture the final output while the session is still
+        // live, then release the ref on the terminal path (memory retention;
+        // the poller treats a nulled ref on a terminal agent as expected).
+        captureAndReleaseSession();
         return;
       }
       // Session completed
@@ -770,6 +799,10 @@ export async function spawnBackgroundSession(
           gitDiff: gitInfo.gitDiff,
         } as SubagentResult;
       }
+      // Issue #31: capture the final output while the session is still live,
+      // then release the ref before the branch's persist — the persisted
+      // record is consistent and the live session graph is freed.
+      captureAndReleaseSession();
       agents.set(id, agent);
       persistAgent(agent);
       transcript.completeTranscript(id, 'completed');
@@ -807,6 +840,8 @@ export async function spawnBackgroundSession(
           agents.set(id, agent);
           persistAgent(agent);
         }
+        // Issue #31: the stopped path is terminal too — capture + release.
+        captureAndReleaseSession();
         transcript.completeTranscript(id, 'stopped');
         return;
       }
@@ -829,6 +864,10 @@ export async function spawnBackgroundSession(
           gitDiff: gitInfo.gitDiff,
         } as SubagentResult;
       }
+      // Issue #31: capture the final output while the session is still live,
+      // then release the ref before the branch's persist — the persisted
+      // record is consistent and the live session graph is freed.
+      captureAndReleaseSession();
       agents.set(id, agent);
       persistAgent(agent);
       transcript.completeTranscript(id, 'failed');

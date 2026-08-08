@@ -59,6 +59,7 @@ import {
 	PREVIOUS_OUTPUT_PLACEHOLDER,
 	GRAPH_OUTPUT_PLACEHOLDER_RE,
 	type GitMode,
+	type BackgroundAgent,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
 import { resolveTemplate } from "./templates";
@@ -2229,6 +2230,11 @@ export default function (pi: ExtensionAPI) {
 
 			if (params.background) {
 				const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
+				// Issue #31 (PR #76 review, DRY): extract final output from a
+				// possibly-released ref — the poller may observe a terminal agent
+				// whose ref was already nulled by the settlement path.
+				const extractAgentFinalOutput = (a: BackgroundAgent): string =>
+					extractFinalOutput(a._sessionRef ?? { messages: [] });
 				
 				try {
 					// W5 (issue #28): approvalMode 'always' cannot work in background —
@@ -2371,7 +2377,11 @@ export default function (pi: ExtensionAPI) {
 							if (completed) return;
 							
 							const session = agent._sessionRef;
-							if (!session) {
+							// Issue #31: a nulled ref on a TERMINAL agent is expected (the
+							// settlement path releases the ref) — fall through to finalize
+							// below instead of treating it as a crash. A nulled ref on a
+							// live agent is still a crash.
+							if (!session && !agent.completedAt) {
 								// Session ref not available — session may have crashed.
 								// Defensive: the ref is assigned synchronously before the poller starts
 								// and is never nulled, so this is mostly unreachable — but keep the
@@ -2421,7 +2431,10 @@ export default function (pi: ExtensionAPI) {
 								clearInterval(pollInterval);
 								clearTimeout(hardCapHandle);
 								
-								const finalOutput = extractFinalOutput(session);
+								// Issue #31: prefer the output already captured at settlement;
+								// the ref may already be nulled on terminal agents, so never
+								// overwrite with empty and stay null-safe.
+								const finalOutput = agent.finalOutput ?? extractAgentFinalOutput(agent);
 								setAgentFinalOutput(agent.id, finalOutput);
 								
 								// Gate the counter on the finalize claim: if the
@@ -2472,7 +2485,7 @@ export default function (pi: ExtensionAPI) {
 								clearInterval(pollInterval);
 								clearTimeout(hardCapHandle);
 								try {
-									setAgentFinalOutput(agent.id, extractFinalOutput(agent._sessionRef ?? { messages: [] }));
+									setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
 								} catch { /* ignore */ }
 								// Gate the counter on the finalize claim: if the
 								// stale sweep already finalized this entry, the
@@ -2546,7 +2559,7 @@ export default function (pi: ExtensionAPI) {
 									updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
 								} catch { /* ignore */ }
 								try {
-									setAgentFinalOutput(agent.id, extractFinalOutput(agent._sessionRef ?? { messages: [] }));
+									setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
 								} catch { /* ignore */ }
 								// Gate the counter on the finalize claim: if the
 								// stale sweep already finalized this entry, the
