@@ -2,19 +2,19 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.1.4 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.1.5 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
 ## What it does
 
-`brl-subagent` gives pi a **`delegate_task`** tool that spawns isolated subagent processes. Each subagent runs in its own `pi` process with its own model, context window, and tool permissions.
+`brl-subagent` is **one of the most capable subagent orchestration extensions for pi** — one `delegate_task` tool that spawns fully isolated subagent processes, each with its own model, context window, tool permissions, and thinking level.
 
-**v2.1.0:** Background subagent concurrency fixes, tool system overhaul, sandbox and backend removal, transcript recording, and dead code cleanup.
-
-**v2.0.4:** The sandbox system has been removed. Tools are now controlled directly via `tools` and `excludeTools` parameters on `delegate_task`.
-
-**v2.0.3 adds:** Phase 5 hardening features (pre-task validation, integration tests, post-mortem diagnostics, and conductor guardrails).
+- **Multi-step delegation, natively** — chain, parallel, and dependency-graph modes with per-step model routing, so a complex task fans out exactly as you design it.
+- **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and hard caps. Nothing orphans; nothing leaks.
+- **Preset-driven tool scoping** — every subagent runs with exactly the tools its job needs, restricted by preset or per-call `tools`/`excludeTools`, with auto-route that picks the right preset when you don't.
+- **Templates with slots** — saved, file-backed task templates with `${param}` placeholders for workflows you run again and again.
+- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence, and a 700+ test suite pinning every contract against the real pi SDK.
 
 ---
 
@@ -233,6 +233,17 @@ Set `background: true` to spawn the subagent as an independent session that retu
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
 
 ## Changelog
+
+### v2.1.5
+
+- **DevDeps aligned with the pi runtime (issue #69):** all four `@earendil-works/*` packages bumped to `^0.84.1` — the caret on a 0.x range previously forbade the running version, so the contract tests verified the wrong SDK. The delta was pre-investigated safe (abort contract byte-identical); the contract-test tripwire passes.
+- **Dependabot live (issue #69 part 2):** grouped weekly updates (`pi-sdk` lockstep group + `other` group); every bump PR runs the full test suite as the tripwire. First PR merged (typebox 1.3.10).
+- **Memory retention fixed (issue #31):** `_sessionRef` is released on every terminal path — a completed background agent no longer holds a live session object. The poller was made null-safe so the release can't be misread as a crash.
+- **Silent test drift killed (issue #59):** `resolveSubagentParams` extracted from the index.ts closure into `src/params.ts`; the drifting test replica was deleted and 29 tests now exercise the real function — mutation-verified to catch regressions.
+- **TUI hygiene (issues #61 #45):** the monitor row-render is DRY via pure `src/tui-format.ts` helpers (caught an already-drifted elapsed format and unified it); the misleading `/brl-subagent gitmode` menu was removed — the per-call `gitMode` param is the real control.
+- **File-backed task templates (issue #66):** templates now live as frontmatter+body `.md` files (body = task, multiline by construction) in `~/.pi/agent/brl-subagent/templates/` or `<project>/.pi/brl-subagent/templates/` — mirroring the proven custom-preset pattern. The single-line TUI add/remove was removed; `/brl-subagent templates` browses. Dogfooded on a real review.
+- **Crash-result builder (issue #68):** the 3× duplicated crash-catch envelope is now one `buildCrashResult`; `steer_subagent`/`stop_subagent` error paths pass `ctx.cwd` so sibling-project paths are properly masked.
+- Shipped as 8 commits (#72, #73, #74, #76, #77, #78, #79, #80). 792 tests across 37 files.
 
 ### v2.1.4
 
