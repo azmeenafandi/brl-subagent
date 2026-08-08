@@ -1310,7 +1310,7 @@ describe("issue #31 — terminal paths release agent._sessionRef", () => {
 		mocks.session.prompt.mockReturnValue(new Promise<void>((r) => { resolvePrompt = r; }));
 		mocks.session.messages = [
 			{ role: "user", content: "probe task" },
-			{ role: "assistant", content: [], stopReason: "aborted", errorMessage: "Aborted" },
+			{ role: "assistant", content: [{ type: "text", text: "partial output before the settle throw" }], stopReason: "aborted", errorMessage: "Aborted" },
 		];
 		eventBusMock.emit.mockImplementation((event: { type: string }) => {
 			if (event.type === "subagent:stopped") throw new Error("emit exploded");
@@ -1325,9 +1325,45 @@ describe("issue #31 — terminal paths release agent._sessionRef", () => {
 		await new Promise((r) => setTimeout(r, 10));
 
 		// updateAgentStatus flipped the status before the emit threw — the record
-		// stays terminal, and markTerminalBestEffort nulled the ref.
+		// stays terminal, and markTerminalBestEffort captured the output (while
+		// the ref was still live) and nulled the ref. The finalOutput assertion
+		// FAILS without the capture-before-release fix (finalOutput would be
+		// undefined — the session's output would die with the released graph).
 		expect(agent.status).toBe("stopped");
 		expect(agent.completedAt).toBeDefined();
+		expect(agent.finalOutput).toBe("partial output before the settle throw");
+		expect(agent._sessionRef).toBeUndefined();
+	});
+
+	it("releases the ref on the stopped-in-catch path (rejecting prompt while already stopped)", async () => {
+		// The .catch stopped branch (session-manager ~824) is only reachable when
+		// the prompt REJECTS while the status is already 'stopped' — e.g. stopAgent
+		// flipped the status, then the run rejects. It must capture the final
+		// output and release the ref just like the other terminal paths.
+		let rejectPrompt: (err: Error) => void = () => {};
+		mocks.session.prompt.mockReturnValue(new Promise<void>((_, reject) => { rejectPrompt = reject; }));
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "stopped mid-run" }], stopReason: "aborted", errorMessage: "Aborted" },
+		];
+		const { stopAgent } = await import("../session-manager");
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "#31 ref release (stopped in catch)",
+		});
+		expect(agent._sessionRef).toBeDefined();
+
+		// stopAgent flips the status to 'stopped' (real stop_subagent flow) —
+		// then the run rejects, landing in the .catch stopped branch.
+		await stopAgent(agent.id);
+		expect(agent.status).toBe("stopped");
+
+		rejectPrompt(new Error("run rejected after stop"));
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(agent.status).toBe("stopped");
+		expect(agent.completedAt).toBeDefined();
+		expect(agent.finalOutput).toBe("stopped mid-run");
 		expect(agent._sessionRef).toBeUndefined();
 	});
 });
