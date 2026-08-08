@@ -65,7 +65,7 @@ import { validateGraph, topologicalSort } from "./scheduler";
 import { resolveTemplate, loadCustomTemplates } from "./templates";
 import { Scheduler, type ScheduleConfig } from "./schedule";
 
-import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage } from "./sanitize";
+import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage, buildCrashResult } from "./sanitize";
 import {
 	getCurrentBranch,
 	hasUncommittedChanges,
@@ -742,24 +742,9 @@ export default function (pi: ExtensionAPI) {
 			// F7 (issue #65): err.message may embed absolute paths — sanitize
 			// BEFORE it reaches the main agent's context (tool result content +
 			// details.errorMessage). resolvedCwd is the validated subagent cwd.
-			const errorMessage = sanitizeErrorMessage((err as Error).message || String(err), resolvedCwd);
-			log.error("Chain mode crashed", { error: errorMessage });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Chain mode crashed: ${errorMessage}`,
-					},
-				],
-				details: {
-					messages: [],
-					usage: { ...EMPTY_USAGE },
-					exitCode: 1,
-					stderr: String(err),
-					errorMessage,
-				},
-				isError: true,
-			};
+			const result = buildCrashResult("Chain mode", err, resolvedCwd);
+			log.error("Chain mode crashed", { error: result.details.errorMessage });
+			return result;
 		} finally {
 			releaseSlot(state, chainSuccess, ctx);
 		}
@@ -1582,24 +1567,9 @@ export default function (pi: ExtensionAPI) {
 			// F7 (issue #65): err.message may embed absolute paths — sanitize
 			// BEFORE it reaches the main agent's context (tool result content +
 			// details.errorMessage). resolvedCwd is the validated subagent cwd.
-			const errorMessage = sanitizeErrorMessage((err as Error).message || String(err), resolvedCwd);
-			log.error("Graph mode crashed", { error: errorMessage });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Graph mode crashed: ${errorMessage}`,
-					},
-				],
-				details: {
-					messages: [],
-					usage: { ...EMPTY_USAGE },
-					exitCode: 1,
-					stderr: String(err),
-					errorMessage,
-				},
-				isError: true,
-			};
+			const result = buildCrashResult("Graph mode", err, resolvedCwd);
+			log.error("Graph mode crashed", { error: result.details.errorMessage });
+			return result;
 		} finally {
 			releaseSlot(state, chainSuccess, ctx);
 		}
@@ -3090,25 +3060,9 @@ export default function (pi: ExtensionAPI) {
 				cleanupGitBranch();
 				completeTranscript(runId, 'failed');
 
-				const errorMessage =
-					sanitizeErrorMessage((err as Error).message || String(err), resolvedCwd);
-				log.error("Subagent crashed", { runId, error: errorMessage });
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Subagent crashed: ${errorMessage}`,
-						},
-					],
-					details: {
-						messages: [],
-						usage: { ...EMPTY_USAGE },
-						exitCode: 1,
-						stderr: String(err),
-						errorMessage,
-					},
-					isError: true,
-				};
+				const result = buildCrashResult("Subagent", err, resolvedCwd);
+				log.error("Subagent crashed", { runId, error: result.details.errorMessage });
+				return result;
 			} finally {
 				releaseSlot(state, success, ctx);
 			}
@@ -3271,7 +3225,7 @@ export default function (pi: ExtensionAPI) {
 				description: "The message to inject into the agent's conversation",
 			}),
 		}),
-		execute: async (toolCallId, params) => {
+		execute: async (toolCallId, params, _signal, _onUpdate, ctx) => {
 			const { steerAgent } = await import('./session-manager');
 			
 			try {
@@ -3292,9 +3246,10 @@ export default function (pi: ExtensionAPI) {
 				};
 			} catch (err) {
 				// F7 (issue #65): sanitize BEFORE the message reaches the main
-				// agent's context. No cwd is in scope here (tool execute has only
-				// toolCallId/params) — the helper falls back to process.cwd().
-				const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
+				// agent's context. pi passes ctx as the 5th arg to tool execute,
+				// so ctx.cwd is in scope — sibling-project paths are properly
+				// masked (defensive process.cwd() fallback if ctx is undefined).
+				const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err), ctx?.cwd);
 				return {
 					content: [{ type: "text" as const, text: `Failed to steer agent: ${message}` }],
 					isError: true,
@@ -3316,7 +3271,7 @@ export default function (pi: ExtensionAPI) {
 				description: "The agent ID to stop",
 			}),
 		}),
-		execute: async (toolCallId, params) => {
+		execute: async (toolCallId, params, _signal, _onUpdate, ctx) => {
 			const { stopAgent } = await import('./session-manager');
 			
 			try {
@@ -3337,9 +3292,10 @@ export default function (pi: ExtensionAPI) {
 				};
 			} catch (err) {
 				// F7 (issue #65): sanitize BEFORE the message reaches the main
-				// agent's context. No cwd is in scope here (tool execute has only
-				// toolCallId/params) — the helper falls back to process.cwd().
-				const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
+				// agent's context. pi passes ctx as the 5th arg to tool execute,
+				// so ctx.cwd is in scope — sibling-project paths are properly
+				// masked (defensive process.cwd() fallback if ctx is undefined).
+				const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err), ctx?.cwd);
 				return {
 					content: [{ type: "text" as const, text: `Failed to stop agent: ${message}` }],
 					isError: true,

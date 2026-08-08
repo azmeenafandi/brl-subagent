@@ -16,6 +16,7 @@ import {
 	DEPTH_ENV_KEY,
 	assertSafeAgentId,
 	sanitizeErrorMessage,
+	buildCrashResult,
 } from "../sanitize";
 
 // ---------------------------------------------------------------------------
@@ -400,5 +401,54 @@ describe("assertSafeAgentId", () => {
 		expect(() => assertSafeAgentId("foo")).toThrow();
 		expect(() => assertSafeAgentId("agent-123")).toThrow();
 		expect(() => assertSafeAgentId("")).toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// buildCrashResult (DRY extraction, issue #68)
+// ---------------------------------------------------------------------------
+
+describe("buildCrashResult", () => {
+	const cwd = "/home/testuser/project";
+
+	it("builds the crash envelope with sanitized content and raw stderr", () => {
+		const err = new Error(`config load failed: ${cwd}/.pi/settings.json`);
+		const result = buildCrashResult("Chain mode", err, cwd);
+
+		expect(result.isError).toBe(true);
+		// Content is what pi serializes into the LLM context — cwd masked.
+		expect(result.content).toEqual([{ type: "text", text: "Chain mode crashed: config load failed: <cwd>/.pi/settings.json" }]);
+		expect(result.content[0].text).not.toContain(cwd);
+
+		// Details shape matches the pre-extraction inline construction exactly.
+		expect(result.details.messages).toEqual([]);
+		expect(result.details.usage).toEqual({
+			input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0,
+		});
+		expect(result.details.exitCode).toBe(1);
+		// stderr stays RAW (issue #68 framing) — only errorMessage is sanitized.
+		expect(result.details.stderr).toBe(`Error: config load failed: ${cwd}/.pi/settings.json`);
+		expect(result.details.stderr).toContain(cwd);
+		expect(result.details.errorMessage).toBe("config load failed: <cwd>/.pi/settings.json");
+	});
+
+	it("keeps the mode prefix and sanitizes non-Error throws", () => {
+		const result = buildCrashResult("Graph mode", `boom at ${cwd}/src/x.ts`, cwd);
+
+		expect(result.content[0].text).toBe("Graph mode crashed: boom at <cwd>/src/x.ts");
+		expect(result.details.stderr).toBe(`boom at ${cwd}/src/x.ts`);
+		expect(result.details.errorMessage).toBe("boom at <cwd>/src/x.ts");
+	});
+
+	it("preserves the exact mode strings used by the three call sites", () => {
+		expect(buildCrashResult("Subagent", "x", cwd).content[0].text).toBe("Subagent crashed: x");
+	});
+
+	it("falls back to String(err) when an Error is thrown with an empty message", () => {
+		const result = buildCrashResult("Chain mode", new Error(), cwd);
+
+		// An empty-message Error renders as its class name, never an empty string.
+		expect(result.details.errorMessage).toBe("Error");
+		expect(result.content[0].text).toBe("Chain mode crashed: Error");
 	});
 });
