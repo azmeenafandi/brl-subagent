@@ -330,7 +330,7 @@ export function buildCrashResult(mode: string, err: unknown, cwd: string): {
 	isError: true;
 } {
 	const errorMessage = sanitizeErrorMessage(
-		err instanceof Error ? err.message : String(err),
+		err instanceof Error ? (err.message || String(err)) : String(err),
 		cwd,
 	);
 	return {

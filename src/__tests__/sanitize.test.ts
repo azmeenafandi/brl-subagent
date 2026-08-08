@@ -443,4 +443,12 @@ describe("buildCrashResult", () => {
 	it("preserves the exact mode strings used by the three call sites", () => {
 		expect(buildCrashResult("Subagent", "x", cwd).content[0].text).toBe("Subagent crashed: x");
 	});
+
+	it("falls back to String(err) when an Error is thrown with an empty message", () => {
+		const result = buildCrashResult("Chain mode", new Error(), cwd);
+
+		// An empty-message Error renders as its class name, never an empty string.
+		expect(result.details.errorMessage).toBe("Error");
+		expect(result.content[0].text).toBe("Chain mode crashed: Error");
+	});
 });
