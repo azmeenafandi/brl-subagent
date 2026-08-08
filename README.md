@@ -206,6 +206,7 @@ delegate_task({
   `explicit delegate_task param > template field > preset defaults > config fallback`
 
   The template's own `preset:` field slots in as a *template field*: an explicit `preset` param wins over the template's `preset:`, and the resolved preset's defaults (thinkingLevel, systemPrompt, tools, …) fill whatever the params and template leave unset. Config-level defaults (gitMode, approvalMode, maxThinkingLevel caps, …) apply last.
+- **Tool fields are replaced, never merged.** A template's `tools` fully overrides the referenced preset's `tools` (same for `excludeTools`/`noBuiltinTools`) — the template's list wins entirely, it is not unioned with the preset's. Mixing still works per-field: a template that sets only `tools` still inherits the preset's `excludeTools`/`noBuiltinTools`.
 - **Silent nonexistent-preset gap (known).** A template whose `preset:` names a preset that does not exist runs preset-less **silently** — no warning at load or use — and, because the template's `preset` was set, auto-route is suppressed too. A typo'd preset therefore means a preset-less run with no rescue. Documented as a known gap; keep `preset:` names in sync with installed presets.
 
 | Template `preset:` | Result |
