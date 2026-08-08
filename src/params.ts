@@ -95,6 +95,11 @@ export function resolveSubagentParams(
 	const mergedExcludeTools = params.excludeTools ?? preset?.excludeTools;
 	const mergedNoBuiltinTools = params.noBuiltinTools ?? preset?.noBuiltinTools;
 
+	// QUIRK (pre-existing, preserved from the original closure): gitMode merges
+	// from preset?.NAME, not a preset gitMode field (SubagentPreset has none).
+	// A preset literally named "branch"/"none" would silently set gitMode.
+	// Deliberately NOT changed here — altering it is a behavior change beyond
+	// issue #59's scope.
 	const mergedGitMode = (params.gitMode as GitMode | undefined) ?? preset?.name;
 	const resolvedGitMode: GitMode =
 		mergedGitMode === "branch" || mergedGitMode === "none"

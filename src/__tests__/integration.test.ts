@@ -400,6 +400,38 @@ describe("resolveSubagentParams integration", () => {
 		expect(result.resolvedPreset).toBeUndefined();
 	});
 
+	it("does NOT auto-route when excludeTools is explicitly given (issue #57 intent rule)", () => {
+		const state = new SessionState();
+		state.builtinPresets = [auditorPreset];
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "run a security audit of the auth module", excludeTools: ["write"] },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.autoRoutedPreset).toBeUndefined();
+		expect(result.resolvedPreset).toBeUndefined();
+	});
+
+	it("does NOT auto-route when noBuiltinTools is explicitly given (issue #57 intent rule)", () => {
+		const state = new SessionState();
+		state.builtinPresets = [auditorPreset];
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "run a security audit of the auth module", noBuiltinTools: true },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.autoRoutedPreset).toBeUndefined();
+		expect(result.resolvedPreset).toBeUndefined();
+	});
+
 	it("does NOT auto-route when a template is given (issue #57 intent rule)", () => {
 		const state = new SessionState();
 		state.builtinPresets = [auditorPreset];
