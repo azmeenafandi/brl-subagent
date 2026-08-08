@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      pi-sdk:
+        patterns:
+          - "@earendil-works/*"
+      other:
+        patterns:
+          - "jiti"
+          - "typebox"
+          - "vitest"
