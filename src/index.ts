@@ -76,11 +76,10 @@ import {
 	mergeWorkBranch,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
+import { loadBuiltinPresets, loadCustomPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
-import { autoRoutePreset } from "./router";
-import { validatePreTask, diagnoseFailure, normalizeTimeout } from "./validate";
-import { getPreset as getPresetFn } from "./presets";
+import { validatePreTask, diagnoseFailure } from "./validate";
+import { resolveSubagentParams } from "./params";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
@@ -200,116 +199,8 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// -------------------------------------------------------------------
-	// Parameter resolution
+	// Parameter resolution (extracted to src/params.ts — issue #59)
 	// -------------------------------------------------------------------
-
-	function resolveSubagentParams(
-		params: {
-			task: string;
-			label?: string;
-			preset?: string;
-			systemPrompt?: string;
-			inheritSystemPrompt?: boolean;
-			thinkingLevel?: string;
-			outputFile?: string;
-			timeout?: number;
-			cwd?: string;
-			tools?: string[];
-			excludeTools?: string[];
-			noBuiltinTools?: boolean;
-			gitMode?: string;
-			approvalMode?: string;
-		},
-		ctx: ExtensionContext,
-	): ResolvedParams & {
-		resolvedGitMode: GitMode;
-		resolvedApprovalMode: ApprovalMode;
-		resolvedPreset?: SubagentPreset;
-		autoRoutedPreset?: SubagentPreset; // set only when autoRoutePreset chose it
-	} {
-		// E2: Auto-route to best preset only when the conductor expressed NO
-		// explicit preference — an explicit preset, template, or tool
-		// parameters (tools/excludeTools/noBuiltinTools) all count as intent
-		// that must win over keyword-based routing (issue #57).
-		let resolvedPreset = params.preset;
-		let wasAutoRouted = false;
-		const hasExplicitToolPreference =
-			params.tools !== undefined ||
-			params.excludeTools !== undefined ||
-			params.noBuiltinTools !== undefined;
-		if (!resolvedPreset && !params.template && !hasExplicitToolPreference) {
-			const allPresets = getAllPresets(state.builtinPresets, state.customPresets);
-			const suggested = autoRoutePreset(params.task, allPresets);
-			if (suggested) {
-				resolvedPreset = suggested;
-				wasAutoRouted = true;
-				log.info("Auto-routed task to preset", { preset: suggested });
-			}
-		}
-
-		const preset = resolvedPreset
-			? getPresetFn(resolvedPreset, state.builtinPresets, state.customPresets)
-			: undefined;
-		const autoRoutedPreset = wasAutoRouted ? preset : undefined;
-
-		const mergedThinkingLevel =
-			(params.thinkingLevel as ThinkingLevel | undefined) ?? preset?.thinkingLevel;
-		const mergedSystemPrompt = params.systemPrompt ?? preset?.systemPrompt;
-		const mergedInheritSP = params.inheritSystemPrompt ?? preset?.inheritSystemPrompt;
-		const mergedOutputFile = params.outputFile ?? preset?.outputFile;
-		const mergedTimeout = normalizeTimeout(params.timeout ?? preset?.timeout);
-		const mergedTools = params.tools ?? preset?.tools;
-		// Fix: edit depends on write in pi's tool system.
-		// If edit is in the allowlist but write is not, all tools fail to resolve.
-		const resolvedTools = mergedTools && mergedTools.includes("edit") && !mergedTools.includes("write")
-			? [...mergedTools, "write"]
-			: mergedTools;
-		const mergedExcludeTools = params.excludeTools ?? preset?.excludeTools;
-		const mergedNoBuiltinTools = params.noBuiltinTools ?? preset?.noBuiltinTools;
-
-		const mergedGitMode = (params.gitMode as GitMode | undefined) ?? preset?.name;
-		const resolvedGitMode: GitMode =
-			mergedGitMode === "branch" || mergedGitMode === "none"
-				? mergedGitMode
-				: state.config.gitMode;
-
-		// P4: Resolve approval mode: per-call param > state config > default "writes"
-		const mergedApprovalMode = params.approvalMode as ApprovalMode | undefined;
-		const resolvedApprovalMode: ApprovalMode =
-			mergedApprovalMode === "auto" || mergedApprovalMode === "writes" || mergedApprovalMode === "always"
-				? mergedApprovalMode
-				: state.config.approvalMode;
-
-		const thinkingLevel = resolveThinkingLevel(
-			mergedThinkingLevel,
-			state.config.maxThinkingLevel,
-		);
-
-		const toolOptions: SubagentToolOptions | undefined =
-			resolvedTools || mergedExcludeTools || mergedNoBuiltinTools
-				? {
-						tools: resolvedTools,
-						excludeTools: mergedExcludeTools,
-						noBuiltinTools: mergedNoBuiltinTools,
-					}
-				: undefined;
-
-		return {
-			task: params.task,
-			label: params.label?.trim() || undefined,
-			inheritSP: mergedInheritSP !== false,
-			customSP: mergedSystemPrompt,
-			outputFile: mergedOutputFile,
-			timeout: mergedTimeout,
-			effectiveCwd: params.cwd || ctx.cwd,
-			thinkingLevel,
-			toolOptions,
-			resolvedGitMode,
-			resolvedApprovalMode,
-			resolvedPreset: preset,
-			autoRoutedPreset,
-		};
-	}
 
 	/** Parse "provider/model-id" into {provider, id}. Returns null on bad format. */
 	function parseModelString(s: string): { provider: string; id: string } | null {
@@ -533,7 +424,9 @@ export default function (pi: ExtensionAPI) {
 				noBuiltinTools?: boolean;
 				gitMode?: string;
 			},
+			state,
 			ctx,
+			log,
 		);
 
 		// Validate CWD once
@@ -948,7 +841,9 @@ export default function (pi: ExtensionAPI) {
 				noBuiltinTools?: boolean;
 				gitMode?: string;
 			},
+			state,
 			ctx,
+			log,
 		);
 
 		// Validate CWD once
@@ -1363,7 +1258,9 @@ export default function (pi: ExtensionAPI) {
 				gitMode?: string;
 				approvalMode?: string;
 			},
+			state,
 			ctx,
+			log,
 		);
 
 		// Validate CWD once
@@ -2221,7 +2118,7 @@ export default function (pi: ExtensionAPI) {
 			// Phase 6.5: Background execution — spawn session and return ID immediately.
 			// Resolve the preset and its model BEFORE the background branch so the
 			// preset's model (and system prompt) are honored in background mode.
-			const bgResolved = resolveSubagentParams(params, ctx);
+			const bgResolved = resolveSubagentParams(params, state, ctx, log);
 			const { resolvedPreset: bgResolvedPreset, autoRoutedPreset: bgAutoRoutedPreset } = bgResolved;
 			const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset);
 			const bgModel = bgModelResult.ok
@@ -2677,7 +2574,7 @@ export default function (pi: ExtensionAPI) {
 				resolvedApprovalMode,
 				resolvedPreset,
 				autoRoutedPreset,
-			} = resolveSubagentParams(params, ctx);
+			} = resolveSubagentParams(params, state, ctx, log);
 
 			// F1: Validate CWD
 			const cwdResult = validateCwd(effectiveCwd, ctx.cwd);

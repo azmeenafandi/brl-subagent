@@ -7,14 +7,17 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { resolveThinkingLevel, classifyError, EMPTY_USAGE, formatTokens, formatUsageStats } from "../types";
-import type { SubagentPreset, SubagentResult, SubagentRun, ThinkingLevel } from "../types";
+import { classifyError, EMPTY_USAGE, formatTokens, formatUsageStats } from "../types";
+import type { SubagentPreset, SubagentResult, SubagentRun } from "../types";
 import { buildSubagentPrompt, describePromptMode, SUBAGENT_INSTRUCTIONS } from "../prompt";
 import { finalizeRunRecord, resolveRetryParams, formatRunDuration } from "../history";
 import { sanitizeTask, validateCwd, validateOutputFile, getCurrentDepth, DEPTH_ENV_KEY } from "../sanitize";
+import { resolveSubagentParams } from "../params";
 
 // Minimal inline SessionState mock to avoid pi package dependencies in vitest.
 // Only includes the subset of fields/methods used by integration tests.
+// Fields read by the REAL resolveSubagentParams (src/params.ts): builtinPresets,
+// customPresets, config.maxThinkingLevel, config.gitMode, config.approvalMode.
 class MockSessionState {
 	config: {
 		maxThinkingLevel: string;
@@ -24,12 +27,15 @@ class MockSessionState {
 		sessionCostLimit: number;
 		seenRunIds: string[];
 		presets: any[];
+		gitMode: string;
+		approvalMode: string;
 	};
 	activeSubagents = 0;
 	completedSubagents = 0;
 	failedSubagents = 0;
 	unseenSubagents = 0;
 	builtinPresets: any[] = [];
+	customPresets: any[] = [];
 	pendingQueue: Array<{ run: () => void; signal: AbortSignal | undefined; ctx: any }> = [];
 
 	constructor() {
@@ -41,10 +47,22 @@ class MockSessionState {
 			sessionCostLimit: 0,
 			seenRunIds: [],
 			presets: [],
+			// Defaults mirror src/state.ts SessionState constructor.
+			gitMode: "none",
+			approvalMode: "writes",
 		};
 	}
 }
 const SessionState = MockSessionState;
+
+// Stub logger for the REAL resolveSubagentParams — it calls log.info when a
+// task is auto-routed to a preset (E2).
+const log = {
+	debug: () => {},
+	info: () => {},
+	warn: () => {},
+	error: () => {},
+};
 
 import { acquireSlot, releaseSlot, updateProgressStatus } from "../concurrency";
 
@@ -94,82 +112,16 @@ function createMockPluginContext(overrides: Partial<ExtensionContext> = {}): Ext
 	} as unknown as ExtensionContext;
 }
 
-// Inline helpers to avoid importing pi-dependent modules
-function getPreset(
-	name: string,
-	builtinPresets: SubagentPreset[],
-	customPresets: SubagentPreset[],
-): SubagentPreset | undefined {
-	return customPresets.find((p) => p.name === name) || builtinPresets.find((p) => p.name === name);
-}
-
 // =========================================================================
 // 1. resolveSubagentParams integration: preset merging + override + cap
 // =========================================================================
 
 describe("resolveSubagentParams integration", () => {
 	/**
-	 * Replicates index.ts resolveSubagentParams logic to test the full
-	 * parameter resolution pipeline (preset lookup, merging, thinking cap).
+	 * Drives the REAL resolveSubagentParams from src/params.ts (extracted from
+	 * index.ts — issue #59). The old replica of this function silently drifted
+	 * from the real behavior; tests now pin the real implementation directly.
 	 */
-	function resolveSubagentParams(
-		params: {
-			task: string;
-			label?: string;
-			preset?: string;
-			systemPrompt?: string;
-			inheritSystemPrompt?: boolean;
-			thinkingLevel?: string;
-			outputFile?: string;
-			timeout?: number;
-			cwd?: string;
-			tools?: string[];
-			excludeTools?: string[];
-			noBuiltinTools?: boolean;
-		},
-		state: SessionState,
-		ctx: ExtensionContext,
-	) {
-		const preset = params.preset
-			? getPreset(params.preset, state.builtinPresets, state.config.presets)
-			: undefined;
-
-		const mergedThinkingLevel =
-			(params.thinkingLevel as ThinkingLevel | undefined) ?? preset?.thinkingLevel;
-		const mergedSystemPrompt = params.systemPrompt ?? preset?.systemPrompt;
-		const mergedInheritSP = params.inheritSystemPrompt ?? preset?.inheritSystemPrompt;
-		const mergedOutputFile = params.outputFile ?? preset?.outputFile;
-		const mergedTimeout = params.timeout ?? preset?.timeout;
-		const mergedTools = params.tools ?? preset?.tools;
-		const mergedExcludeTools = params.excludeTools ?? preset?.excludeTools;
-		const mergedNoBuiltinTools = params.noBuiltinTools ?? preset?.noBuiltinTools;
-
-		const thinkingLevel = resolveThinkingLevel(
-			mergedThinkingLevel as ThinkingLevel | undefined,
-			state.config.maxThinkingLevel,
-		);
-
-		const toolOptions =
-			mergedTools || mergedExcludeTools || mergedNoBuiltinTools
-				? {
-						tools: mergedTools,
-						excludeTools: mergedExcludeTools,
-						noBuiltinTools: mergedNoBuiltinTools,
-					}
-				: undefined;
-
-		return {
-			task: params.task,
-			label: params.label?.trim() || undefined,
-			inheritSP: mergedInheritSP !== false,
-			customSP: mergedSystemPrompt,
-			outputFile: mergedOutputFile,
-			timeout: mergedTimeout,
-			effectiveCwd: params.cwd || ctx.cwd,
-			thinkingLevel,
-			toolOptions,
-		};
-	}
 
 	// ── Preset fixtures ──────────────────────────────────────────────
 
@@ -209,6 +161,7 @@ describe("resolveSubagentParams integration", () => {
 			},
 			state,
 			ctx,
+			log,
 		);
 
 		expect(result.task).toBe("Audit the codebase");
@@ -234,6 +187,7 @@ describe("resolveSubagentParams integration", () => {
 			},
 			state,
 			ctx,
+			log,
 		);
 
 		// reviewerPreset says "high" but max is "low" → capped
@@ -253,6 +207,7 @@ describe("resolveSubagentParams integration", () => {
 			},
 			state,
 			ctx,
+			log,
 		);
 
 		expect(result.thinkingLevel).toBe("medium");
@@ -262,7 +217,7 @@ describe("resolveSubagentParams integration", () => {
 		const state = new SessionState();
 		const ctx = createMockPluginContext({ cwd: "/workspace/my-project" });
 
-		const result = resolveSubagentParams({ task: "test" }, state, ctx);
+		const result = resolveSubagentParams({ task: "test" }, state, ctx, log);
 
 		expect(result.effectiveCwd).toBe("/workspace/my-project");
 	});
@@ -271,7 +226,7 @@ describe("resolveSubagentParams integration", () => {
 		const state = new SessionState();
 		const ctx = createMockPluginContext({ cwd: "/workspace/my-project" });
 
-		const result = resolveSubagentParams({ task: "test", cwd: "/other/dir" }, state, ctx);
+		const result = resolveSubagentParams({ task: "test", cwd: "/other/dir" }, state, ctx, log);
 
 		expect(result.effectiveCwd).toBe("/other/dir");
 	});
@@ -289,6 +244,7 @@ describe("resolveSubagentParams integration", () => {
 			},
 			state,
 			ctx,
+			log,
 		);
 
 		expect(result.toolOptions).toBeDefined();
@@ -310,6 +266,7 @@ describe("resolveSubagentParams integration", () => {
 			},
 			state,
 			ctx,
+			log,
 		);
 
 		// tools comes from preset, excludeTools from override
@@ -321,7 +278,7 @@ describe("resolveSubagentParams integration", () => {
 		const state = new SessionState();
 		const ctx = createMockPluginContext();
 
-		const result = resolveSubagentParams({ task: "test", label: "  " }, state, ctx);
+		const result = resolveSubagentParams({ task: "test", label: "  " }, state, ctx, log);
 		expect(result.label).toBeUndefined();
 	});
 
@@ -329,7 +286,7 @@ describe("resolveSubagentParams integration", () => {
 		const state = new SessionState();
 		const ctx = createMockPluginContext();
 
-		const result = resolveSubagentParams({ task: "test" }, state, ctx);
+		const result = resolveSubagentParams({ task: "test" }, state, ctx, log);
 		expect(result.inheritSP).toBe(true);
 	});
 
@@ -339,7 +296,7 @@ describe("resolveSubagentParams integration", () => {
 
 		const ctx = createMockPluginContext();
 
-		const result = resolveSubagentParams({ task: "test", preset: "code-reviewer" }, state, ctx);
+		const result = resolveSubagentParams({ task: "test", preset: "code-reviewer" }, state, ctx, log);
 		expect(result.inheritSP).toBe(false);
 	});
 
@@ -353,6 +310,7 @@ describe("resolveSubagentParams integration", () => {
 			{ task: "test", preset: "code-reviewer", inheritSystemPrompt: true },
 			state,
 			ctx,
+			log,
 		);
 		expect(result.inheritSP).toBe(true);
 	});
@@ -361,7 +319,7 @@ describe("resolveSubagentParams integration", () => {
 		const state = new SessionState();
 		const ctx = createMockPluginContext();
 
-		const result = resolveSubagentParams({ task: "test", preset: "nonexistent" }, state, ctx);
+		const result = resolveSubagentParams({ task: "test", preset: "nonexistent" }, state, ctx, log);
 
 		// Should still resolve — preset is undefined, falls back to defaults
 		expect(result.task).toBe("test");
@@ -373,7 +331,7 @@ describe("resolveSubagentParams integration", () => {
 		const state = new SessionState();
 		const ctx = createMockPluginContext();
 
-		const result = resolveSubagentParams({ task: "minimal" }, state, ctx);
+		const result = resolveSubagentParams({ task: "minimal" }, state, ctx, log);
 
 		expect(result.task).toBe("minimal");
 		expect(result.inheritSP).toBe(true);
@@ -381,6 +339,216 @@ describe("resolveSubagentParams integration", () => {
 		expect(result.outputFile).toBeUndefined();
 		expect(result.timeout).toBeUndefined();
 		expect(result.toolOptions).toBeUndefined();
+	});
+
+	// ── Drift-coverage tests (issue #59) ──────────────────────────
+	// The deleted replica was missing four REAL behaviors; these tests pin
+	// them against the real implementation so a regression cannot go
+	// unnoticed again.
+
+	// E2: auto-route to best preset only when NO explicit preference
+	// (preset/template/tools) is expressed (issue #57 intent rule).
+	it("auto-routes to a preset whose keywords match the task (E2)", () => {
+		const state = new SessionState();
+		state.builtinPresets = [auditorPreset];
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "run a security audit of the auth module" },
+			state,
+			ctx,
+			log,
+		);
+
+		// Keyword "security" routes to the security-auditor preset
+		expect(result.autoRoutedPreset).toBeDefined();
+		expect(result.autoRoutedPreset!.name).toBe("security-auditor");
+		expect(result.resolvedPreset?.name).toBe("security-auditor");
+		// The routed preset's tool restriction flows through
+		expect(result.toolOptions?.noBuiltinTools).toBe(true);
+	});
+
+	it("does NOT auto-route when an explicit preset is given (issue #57 intent rule)", () => {
+		const state = new SessionState();
+		state.builtinPresets = [reviewerPreset, auditorPreset];
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "run a security audit of the auth module", preset: "code-reviewer" },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.autoRoutedPreset).toBeUndefined();
+		expect(result.resolvedPreset?.name).toBe("code-reviewer");
+	});
+
+	it("does NOT auto-route when tools are explicitly given (issue #57 intent rule)", () => {
+		const state = new SessionState();
+		state.builtinPresets = [auditorPreset];
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "run a security audit of the auth module", tools: ["read", "bash"] },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.autoRoutedPreset).toBeUndefined();
+		expect(result.resolvedPreset).toBeUndefined();
+	});
+
+	it("does NOT auto-route when a template is given (issue #57 intent rule)", () => {
+		const state = new SessionState();
+		state.builtinPresets = [auditorPreset];
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "run a security audit of the auth module", template: "some-template" },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.autoRoutedPreset).toBeUndefined();
+		expect(result.resolvedPreset).toBeUndefined();
+	});
+
+	// edit→write fix: edit depends on write in pi's tool system.
+	it("edit→write fix: edit-only allowlist gains write", () => {
+		const state = new SessionState();
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "fix the bug", tools: ["read", "edit"] },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.toolOptions?.tools).toEqual(["read", "edit", "write"]);
+	});
+
+	it("edit→write fix: explicit write is not duplicated", () => {
+		const state = new SessionState();
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "fix the bug", tools: ["read", "edit", "write"] },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.toolOptions?.tools).toEqual(["read", "edit", "write"]);
+	});
+
+	// gitMode resolution: per-call param > state config.
+	it("per-call gitMode 'branch' wins over state config", () => {
+		const state = new SessionState();
+		state.config.gitMode = "none";
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "test", gitMode: "branch" },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.resolvedGitMode).toBe("branch");
+	});
+
+	it("per-call gitMode 'none' wins over state config", () => {
+		const state = new SessionState();
+		state.config.gitMode = "branch";
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "test", gitMode: "none" },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.resolvedGitMode).toBe("none");
+	});
+
+	it("invalid gitMode falls back to state config", () => {
+		const state = new SessionState();
+		state.config.gitMode = "branch";
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "test", gitMode: "banana" },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.resolvedGitMode).toBe("branch");
+	});
+
+	// approvalMode resolution: per-call param > state config > default "writes".
+	it("per-call approvalMode wins over state config", () => {
+		const state = new SessionState();
+		state.config.approvalMode = "writes";
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "test", approvalMode: "always" },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.resolvedApprovalMode).toBe("always");
+	});
+
+	it("approvalMode falls back to state config when not specified", () => {
+		const state = new SessionState();
+		state.config.approvalMode = "auto";
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams({ task: "test" }, state, ctx, log);
+
+		expect(result.resolvedApprovalMode).toBe("auto");
+	});
+
+	it("invalid approvalMode falls back to state config", () => {
+		const state = new SessionState();
+		state.config.approvalMode = "always";
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams(
+			{ task: "test", approvalMode: "banana" },
+			state,
+			ctx,
+			log,
+		);
+
+		expect(result.resolvedApprovalMode).toBe("always");
+	});
+
+	// normalizeTimeout: unsafe deadline values resolve to undefined.
+	it("normalizeTimeout: timeout 0 resolves to undefined (no instant kill)", () => {
+		const state = new SessionState();
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams({ task: "test", timeout: 0 }, state, ctx, log);
+
+		expect(result.timeout).toBeUndefined();
+	});
+
+	it("normalizeTimeout: a valid timeout passes through unchanged", () => {
+		const state = new SessionState();
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams({ task: "test", timeout: 5000 }, state, ctx, log);
+
+		expect(result.timeout).toBe(5000);
 	});
 });
 
