@@ -7,6 +7,7 @@
 
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { EMPTY_USAGE } from "./types";
 
 // ---------------------------------------------------------------------------
 // F1: Input sanitization
@@ -300,6 +301,49 @@ export function sanitizeErrorMessage(msg: string, cwd?: string): string {
 		out = `${out.slice(0, MAX_ERROR_MESSAGE_LENGTH)}…[truncated]`;
 	}
 	return out;
+}
+
+// ---------------------------------------------------------------------------
+// Crash-result builder (DRY, issue #68)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the shared crash-result envelope used by the chain, graph, and single
+ * mode catches in index.ts (previously 3× duplicated construction, issue #68).
+ *
+ * - `details.errorMessage` is sanitized (F7, issues #30/#65) so absolute paths
+ *   never reach the main agent's context or the persisted errorMessage field.
+ * - `details.stderr` is intentionally the RAW error (`String(err)`) — pi only
+ *   serializes `content` into the LLM context, while the raw text persists to
+ *   the session file for post-mortems (issue #68 framing: extraction is DRY,
+ *   not a stderr-content change).
+ */
+export function buildCrashResult(mode: string, err: unknown, cwd: string): {
+	content: Array<{ type: "text"; text: string }>;
+	details: {
+		messages: [];
+		usage: typeof EMPTY_USAGE;
+		exitCode: number;
+		stderr: string;
+		errorMessage: string;
+	};
+	isError: true;
+} {
+	const errorMessage = sanitizeErrorMessage(
+		err instanceof Error ? err.message : String(err),
+		cwd,
+	);
+	return {
+		content: [{ type: "text", text: `${mode} crashed: ${errorMessage}` }],
+		details: {
+			messages: [],
+			usage: { ...EMPTY_USAGE },
+			exitCode: 1,
+			stderr: String(err),
+			errorMessage,
+		},
+		isError: true,
+	};
 }
 
 // ---------------------------------------------------------------------------
