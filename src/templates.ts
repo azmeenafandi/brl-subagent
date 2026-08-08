@@ -180,7 +180,8 @@ export function validateTemplate(meta: Record<string, unknown>, fileName: string
  *   2. .pi/brl-subagent/templates/ (project-local)
  *
  * The markdown body IS the task (multiline by construction). Invalid files
- * are skipped with log warnings; missing directories are skipped silently.
+ * (including empty/whitespace-only bodies) are skipped with log warnings;
+ * missing directories are skipped silently.
  */
 export function loadCustomTemplates(cwd: string, log?: Logger): TaskTemplate[] {
 	const templates: TaskTemplate[] = [];
@@ -206,6 +207,18 @@ export function loadCustomTemplates(cwd: string, log?: Logger): TaskTemplate[] {
 						for (const err of errors) {
 							log?.warn("Custom template validation failed", { file, error: err });
 						}
+						continue;
+					}
+
+					// Reject empty/whitespace-only bodies at load: shipping task: ""
+					// would later trip mode-detection with the confusing "Provide
+					// exactly one of: task/chain/..." error instead of a load-time
+					// warn-and-skip (parseFrontmatter already trims the body).
+					if (!body.trim()) {
+						log?.warn("Custom template validation failed", {
+							file,
+							error: `Template "${meta.name}" has empty task body`,
+						});
 						continue;
 					}
 

@@ -197,6 +197,23 @@ delegate_task({
 - The template's task **replaces** `params.task` entirely.
 - Extra keys in `params` are ignored.
 
+**Templates and presets — how they interact:**
+
+- **Dependency runs one way.** A template MAY declare a `preset:` dependency; presets know nothing about templates. Deleting or renaming a preset silently leaves templates that reference it without it.
+- **Preset-less templates are not rescued by auto-route.** A template without a `preset:` field runs preset-less — `params.template` itself counts as explicit intent, so the E2 keyword auto-router does NOT kick in. (The same suppression applies when `preset`, `tools`, `excludeTools`, or `noBuiltinTools` are given explicitly.)
+- **Full precedence chain** (highest first):
+
+  `explicit delegate_task param > template field > preset defaults > config fallback`
+
+  The template's own `preset:` field slots in as a *template field*: an explicit `preset` param wins over the template's `preset:`, and the resolved preset's defaults (thinkingLevel, systemPrompt, tools, …) fill whatever the params and template leave unset. Config-level defaults (gitMode, approvalMode, maxThinkingLevel caps, …) apply last.
+- **Silent nonexistent-preset gap (known).** A template whose `preset:` names a preset that does not exist runs preset-less **silently** — no warning at load or use — and, because the template's `preset` was set, auto-route is suppressed too. A typo'd preset therefore means a preset-less run with no rescue. Documented as a known gap; keep `preset:` names in sync with installed presets.
+
+| Template `preset:` | Result |
+|---|---|
+| names an existing preset | preset applied (template-field slot in the precedence chain) |
+| absent | template runs **preset-less**; auto-route does NOT rescue it |
+| names a nonexistent preset | **silent** preset-less run, auto-route suppressed — known gap |
+
 `/brl-subagent templates` now **browses only** — it lists your saved templates and shows their details; creation and editing happen in your editor.
 
 ## Background execution

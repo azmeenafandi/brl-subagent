@@ -192,6 +192,10 @@ export default function (pi: ExtensionAPI) {
 
 	function resetState(ctx: ExtensionContext) {
 		state.reset();
+		// Templates are file-backed (issue #66): state.reset() clears
+		// state.config.templates, so reload them from disk — otherwise
+		// template lookups stay empty until the next session_start.
+		state.config.templates = loadCustomTemplates(ctx.cwd, log);
 		updateStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify("Subagent configuration reset", "info");

@@ -753,6 +753,8 @@ export async function showAddPreset(
 		writePresetFile(preset, targetDir);
 		// 11. Refresh custom presets
 		state.customPresets = loadCustomPresets(ctx.cwd, state.log);
+		// Reload templates alongside presets — both are file-derived, and a
+		// preset add/remove may fix (or break) a template's `preset:` reference.
 		state.config.templates = loadCustomTemplates(ctx.cwd, state.log);
 		ctx.ui.notify(`Preset "${trimmedName}" saved to ${location === "project" ? "project" : "global"} directory`, "info");
 	} catch (err) {
@@ -812,6 +814,8 @@ export async function showRemovePreset(
 	try {
 		fs.unlinkSync(result);
 		state.customPresets = loadCustomPresets(ctx.cwd, state.log);
+		// Reload templates too — a removed preset may orphan a template's
+		// `preset:` reference, so both file-derived collections refresh together.
 		state.config.templates = loadCustomTemplates(ctx.cwd, state.log);
 		ctx.ui.notify("Preset removed", "info");
 	} catch (err) {

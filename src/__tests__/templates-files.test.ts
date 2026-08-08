@@ -158,6 +158,32 @@ describe("loadCustomTemplates", () => {
 		expect(log.warn).toHaveBeenCalledWith("Custom template validation failed", expect.anything());
 	});
 
+	it("skips empty-bodied templates with a warning (no empty task tripping mode-detection later)", () => {
+		const cwd = makeTempDir();
+		writeProjectTemplate(
+			cwd,
+			"empty.md",
+			["---", "name: empty", "---", "", "   "].join("\n"),
+		);
+		writeProjectTemplate(
+			cwd,
+			"whitespace-only.md",
+			["---", "name: ws", "---", "\n\t \n"].join("\n"),
+		);
+
+		const log = { warn: vi.fn() } as unknown as Logger;
+		const templates = loadCustomTemplates(cwd, log);
+		expect(templates).toHaveLength(0);
+		expect(log.warn).toHaveBeenCalledWith("Custom template validation failed", expect.anything());
+		const calls = log.warn.mock.calls.filter((c) => c[0] === "Custom template validation failed");
+		expect(calls).toHaveLength(2);
+		const errors = calls.map((c) => (c[1] as { error: string }).error);
+		expect(errors).toEqual([
+			'Template "empty" has empty task body',
+			'Template "ws" has empty task body',
+		]);
+	});
+
 	it("skips non-.md files", () => {
 		const cwd = makeTempDir();
 		writeProjectTemplate(
@@ -198,6 +224,40 @@ describe("loadCustomTemplates", () => {
 		});
 
 		expect(templates.map((t) => t.name).sort()).toEqual(["global-one", "project-one"]);
+	});
+
+	it("duplicate names: GLOBAL (~/.pi/agent/...) wins over project-local (homedir scanned first, no dedup)", () => {
+		const home = makeTempDir();
+		const cwd = makeTempDir();
+
+		const globalDir = path.join(home, ".pi", "agent", "brl-subagent", "templates");
+		fs.mkdirSync(globalDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(globalDir, "dupe.md"),
+			["---", "name: dupe", "---", "Global version."].join("\n"),
+			"utf-8",
+		);
+
+		writeProjectTemplate(
+			cwd,
+			"dupe.md",
+			["---", "name: dupe", "---", "Project version."].join("\n"),
+		);
+
+		let templates: ReturnType<typeof loadCustomTemplates> = [];
+		withHome(home, () => {
+			templates = loadCustomTemplates(cwd);
+		});
+
+		// No dedup: BOTH files load, and the homedir dir is scanned FIRST — so
+		// the lookup site's .find() (first match) returns the GLOBAL entry,
+		// despite any "project-local, highest priority" framing. Presets have
+		// the same first-wins reality (src/presets.ts).
+		expect(templates).toHaveLength(2);
+		expect(templates.filter((t) => t.name === "dupe")).toHaveLength(2);
+		expect(templates[0].name).toBe("dupe");
+		expect(templates[0].task).toBe("Global version.");
+		expect(templates[1].task).toBe("Project version.");
 	});
 });
 

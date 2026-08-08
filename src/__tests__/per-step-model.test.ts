@@ -188,6 +188,9 @@ let tempStorageDir = "";
 
 beforeEach(() => {
 	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
+	// testCwd leaks too (template/preset seed dirs under it); rm the previous
+	// one before creating the next, mirroring tempPiBase.
+	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
 	tempPiBase = fs.mkdtempSync(path.join(os.tmpdir(), "brl-step-model-pi-"));
 	tempOutputDir = path.join(tempPiBase, "output");
 	tempStorageDir = path.join(tempPiBase, "subagents");
@@ -206,6 +209,7 @@ beforeEach(() => {
 
 afterAll(() => {
 	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
+	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
