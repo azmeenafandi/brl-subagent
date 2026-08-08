@@ -196,10 +196,11 @@ describe("modelIsAvailable against the REAL pi SDK registry", () => {
 		const { registry, runtime } = await createRealRegistry();
 		const model = pickUnconfiguredModel(registry);
 
-		// allowNetwork: false — the refresh inside setRuntimeApiKey would
-		// otherwise validate the fake key against the real provider API and
-		// hang on slow/no network (this suite is explicitly network-free).
-		await runtime.setRuntimeApiKey(model.provider, "contract-test-key", { allowNetwork: false });
+		// Since 0.84.1, setRuntimeApiKey takes AuthOperationOptions ({ signal? })
+		// and its internal credential sync hard-codes allowNetwork: false — the
+		// catalog refresh never touches the network, so this suite stays
+		// network-free without passing any options.
+		await runtime.setRuntimeApiKey(model.provider, "contract-test-key");
 		expect(registry.hasConfiguredAuth(registry.find(model.provider, model.id)!)).toBe(true);
 
 		expect(modelIsAvailable(registry, model)).toBe(true);
