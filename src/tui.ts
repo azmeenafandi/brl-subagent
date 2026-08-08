@@ -48,7 +48,7 @@ import {
 	isGraphDetails,
 } from "./types";
 import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
-import { extractParamNames } from "./templates";
+import { extractParamNames, loadCustomTemplates } from "./templates";
 import { parseDiff } from "./diff";
 import { formatPresetSummary, getPreset, writePresetFile, loadCustomPresets, parseFrontmatter } from "./presets";
 import { formatRunDuration } from "./history";
@@ -753,6 +753,9 @@ export async function showAddPreset(
 		writePresetFile(preset, targetDir);
 		// 11. Refresh custom presets
 		state.customPresets = loadCustomPresets(ctx.cwd, state.log);
+		// Reload templates alongside presets — both are file-derived, and a
+		// preset add/remove may fix (or break) a template's `preset:` reference.
+		state.config.templates = loadCustomTemplates(ctx.cwd, state.log);
 		ctx.ui.notify(`Preset "${trimmedName}" saved to ${location === "project" ? "project" : "global"} directory`, "info");
 	} catch (err) {
 		ctx.ui.notify(`Failed to save preset: ${(err as Error).message}`, "error");
@@ -811,6 +814,9 @@ export async function showRemovePreset(
 	try {
 		fs.unlinkSync(result);
 		state.customPresets = loadCustomPresets(ctx.cwd, state.log);
+		// Reload templates too — a removed preset may orphan a template's
+		// `preset:` reference, so both file-derived collections refresh together.
+		state.config.templates = loadCustomTemplates(ctx.cwd, state.log);
 		ctx.ui.notify("Preset removed", "info");
 	} catch (err) {
 		ctx.ui.notify(`Failed to remove preset: ${(err as Error).message}`, "error");
@@ -946,96 +952,6 @@ export function getTemplate(
 	return templates.find((t) => t.name === name);
 }
 
-export async function showAddTemplate(
-	ctx: ExtensionContext,
-	state: SessionState,
-	persistState: () => void,
-): Promise<void> {
-	const name = await ctx.ui.input({ prompt: "Template name (e.g., owasp-audit):" });
-	if (!name?.trim()) return;
-	const trimmedName = name.trim();
-
-	if (RESERVED_NAME_PATTERN.test(trimmedName)) {
-		ctx.ui.notify("Names starting and ending with '__' are reserved. Choose a different name.", "error");
-		return;
-	}
-
-	if (RESERVED_COMMAND_NAMES.has(trimmedName)) {
-		ctx.ui.notify("Name '" + trimmedName + "' is reserved for a command. Choose a different name.", "error");
-		return;
-	}
-
-	if (getTemplate(trimmedName, state.config.templates)) {
-		ctx.ui.notify(`Template "${trimmedName}" already exists. Use a different name.`, "error");
-		return;
-	}
-
-	const description = await ctx.ui.input({ prompt: "Description (optional):" });
-
-	const task = await ctx.ui.input({
-		prompt: "Task description (use ${param} for slots, e.g. 'Audit ${file} for security issues'):",
-	});
-	if (!task?.trim()) {
-		ctx.ui.notify("Task description is required.", "error");
-		return;
-	}
-
-	// Show parsed params as hint
-	const parsedParams = extractParamNames(task);
-	if (parsedParams.length > 0) {
-		ctx.ui.notify(`Detected params: ${parsedParams.join(", ")}`, "info");
-	}
-
-	const preset = await ctx.ui.input({ prompt: "Preset name (optional, e.g. security-auditor):" });
-
-	const thinkingItems: SelectItem[] = [
-		{ value: "", label: "(not set)" },
-		...THINKING_LEVELS.map((level) => ({ value: level, label: level })),
-	];
-	const thinkingResult = await showSelectList(ctx, "Default Thinking Level", thinkingItems, 8);
-
-	const outputFile = await ctx.ui.input({
-		prompt: "Output file (optional, e.g. audit-${file}.md):",
-	});
-
-	const template: TaskTemplate = {
-		name: trimmedName,
-		description: description?.trim() || undefined,
-		task: task.trim(),
-		preset: preset?.trim() || undefined,
-		thinkingLevel: thinkingResult || undefined,
-		outputFile: outputFile?.trim() || undefined,
-	};
-
-	state.config.templates.push(template);
-	persistState();
-	ctx.ui.notify(`Template "${trimmedName}" created`, "info");
-}
-
-export async function showRemoveTemplate(
-	ctx: ExtensionContext,
-	state: SessionState,
-	persistState: () => void,
-): Promise<void> {
-	if (state.config.templates.length === 0) {
-		ctx.ui.notify("No templates to remove.", "info");
-		return;
-	}
-
-	const items: SelectItem[] = state.config.templates.map((t) => ({
-		value: t.name,
-		label: t.name,
-		description: t.description || t.task.slice(0, 60),
-	}));
-
-	const result = await showSelectList(ctx, "Remove Template", items, 10);
-	if (!result) return;
-
-	state.config.templates = state.config.templates.filter((t) => t.name !== result);
-	persistState();
-	ctx.ui.notify(`Template "${result}" removed`, "info");
-}
-
 export async function showViewTemplate(
 	ctx: ExtensionContext,
 	state: SessionState,
@@ -1093,35 +1009,31 @@ export async function showViewTemplate(
 export async function showTemplateManager(
 	ctx: ExtensionContext,
 	state: SessionState,
-	persistState: () => void,
 ): Promise<void> {
+	if (state.config.templates.length === 0) {
+		ctx.ui.notify(
+			"No task templates found. Create .md files in ~/.pi/agent/brl-subagent/templates/ or " +
+			"<project>/.pi/brl-subagent/templates/.",
+			"info",
+		);
+		return;
+	}
+
 	const templateItems: SelectItem[] = state.config.templates.map((t) => ({
 		value: t.name,
 		label: t.name,
 		description: t.description || t.task.slice(0, 60),
 	}));
 
-	const items: SelectItem[] = [
-		...templateItems,
-		{ value: "__add__", label: "+ Add Template", description: "Create a new task template" },
-		{ value: "__remove__", label: "- Remove Template", description: "Delete a template" },
-	];
-
 	const result = await showSelectList(
 		ctx,
-		`Templates (${state.config.templates.length} saved)`,
-		items,
+		`Templates (${state.config.templates.length})`,
+		templateItems,
 		15,
 	);
 	if (!result) return;
 
-	if (result === "__add__") {
-		await showAddTemplate(ctx, state, persistState);
-	} else if (result === "__remove__") {
-		await showRemoveTemplate(ctx, state, persistState);
-	} else {
-		await showViewTemplate(ctx, state, result);
-	}
+	await showViewTemplate(ctx, state, result);
 }
 
 // ---------------------------------------------------------------------------

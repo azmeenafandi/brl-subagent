@@ -62,7 +62,7 @@ import {
 	type BackgroundAgent,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
-import { resolveTemplate } from "./templates";
+import { resolveTemplate, loadCustomTemplates } from "./templates";
 import { Scheduler, type ScheduleConfig } from "./schedule";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage } from "./sanitize";
@@ -192,6 +192,10 @@ export default function (pi: ExtensionAPI) {
 
 	function resetState(ctx: ExtensionContext) {
 		state.reset();
+		// Templates are file-backed (issue #66): state.reset() clears
+		// state.config.templates, so reload them from disk — otherwise
+		// template lookups stay empty until the next session_start.
+		state.config.templates = loadCustomTemplates(ctx.cwd, log);
 		updateStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify("Subagent configuration reset", "info");
@@ -1633,7 +1637,7 @@ export default function (pi: ExtensionAPI) {
 				monitor: () => showMonitor(ctx, state),
 				dashboard: () => showDashboard(ctx, state),
 				preset: () => showPresetManager(ctx, state, () => state.persistState(pi)),
-				templates: () => showTemplateManager(ctx, state, () => state.persistState(pi)),
+				templates: () => showTemplateManager(ctx, state),
 				retry: () => showRetryMenu(ctx, state),
 			"update-check": () => showUpdateCheckToggle(ctx, state, applyConfig),
 			sla: () => showSLAConfig(ctx, state, applyConfig),
@@ -1819,7 +1823,8 @@ export default function (pi: ExtensionAPI) {
 				Type.String({
 					description:
 						"Name of a saved task template. Use with params to fill template slots. " +
-						"Templates are created via /brl-subagent templates.",
+						"Templates are file-backed: create .md files in ~/.pi/agent/brl-subagent/templates/ or " +
+						".pi/brl-subagent/templates/ (browse via /brl-subagent templates).",
 				}),
 			),
 			params: Type.Optional(
@@ -3352,6 +3357,7 @@ export default function (pi: ExtensionAPI) {
 		const presetsDir = path.join(__dirname, "..", "presets");
 		state.builtinPresets = loadBuiltinPresets(presetsDir, log);
 		state.customPresets = loadCustomPresets(ctx.cwd, log);
+		state.config.templates = loadCustomTemplates(ctx.cwd, log);
 
 		// Migration: write any session-persisted presets to files
 		if (state._migratedPresets && state._migratedPresets.length > 0) {
@@ -3360,6 +3366,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			state._migratedPresets = undefined;
 			state.customPresets = loadCustomPresets(ctx.cwd, log);
+			state.config.templates = loadCustomTemplates(ctx.cwd, log);
 			log?.info("Migrated presets from session to files");
 		}
 

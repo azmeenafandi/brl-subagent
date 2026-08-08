@@ -145,7 +145,6 @@ export class SessionState {
 			sessionCostLimit: this.config.sessionCostLimit,
 			perTaskCostEstimate: this.config.perTaskCostEstimate,
 			seenRunIds: this.config.seenRunIds,
-			templates: this.config.templates,
 			circuitBreaker: this.config.circuitBreaker,
 		slaTrackingEnabled: this.config.slaTrackingEnabled,
 		slaWindowSize: this.config.slaWindowSize,
@@ -220,7 +219,7 @@ export class SessionState {
 			this._migratedPresets = data.presets;
 		}
 
-		if (Array.isArray(data.templates)) this.config.templates = data.templates;
+		// Templates are file-backed only (issue #66) — never persisted to session state.
 		if (
 			data.circuitBreaker &&
 			typeof data.circuitBreaker === "object" &&
