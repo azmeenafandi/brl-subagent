@@ -2,8 +2,12 @@
  * brl-subagent — Task Templates
  *
  * Task templates are user-saved delegate_task configurations with ${param}
- * placeholder slots. They are stored in session state and are personal
- * to the user.
+ * placeholder slots. They are FILE-BACKED: each template is a .md file with
+ * YAML frontmatter (name, description, preset, thinkingLevel, outputFile,
+ * timeout, tools, excludeTools, noBuiltinTools, inheritSystemPrompt) whose
+ * body IS the task — multiline by construction. This mirrors the proven
+ * custom-preset pattern (issue #66): the old TUI add flow used single-line
+ * input, which is unusable for a task body.
  *
  * Usage:
  *   const resolved = resolveTemplate(template, { file: "src/main.ts" });
@@ -11,8 +15,12 @@
  *   // resolved.value.task now has placeholders filled
  */
 
-import type { TaskTemplate } from "./types";
-import { TEMPLATE_PARAM_RE } from "./types";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import type { TaskTemplate, ThinkingLevel } from "./types";
+import { TEMPLATE_PARAM_RE, THINKING_LEVELS } from "./types";
+import type { Logger } from "./logging";
+import { parseFrontmatter, sanitizeFileName } from "./presets";
 
 // ---------------------------------------------------------------------------
 // Param extraction
@@ -83,4 +91,200 @@ export function resolveTemplate(
 	};
 
 	return { ok: true, value: resolved };
+}
+
+// ---------------------------------------------------------------------------
+// Template validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate that a parsed template has the required name field and valid
+ * option values. Returns validation errors, or empty array if valid.
+ *
+ * Mirrors validatePreset (src/presets.ts) plus template-specific fields:
+ * timeout must be numeric, tools/excludeTools must be lists, preset must be
+ * a string.
+ */
+export function validateTemplate(meta: Record<string, unknown>, fileName: string): string[] {
+	const errors: string[] = [];
+
+	if (!meta.name || typeof meta.name !== "string") {
+		errors.push(`Template "${fileName}" is missing required "name" field.`);
+		return errors;
+	}
+
+	if (meta.thinkingLevel !== undefined) {
+		const level = meta.thinkingLevel as string;
+		if (!THINKING_LEVELS.includes(level as ThinkingLevel)) {
+			errors.push(
+				`Template "${meta.name}" (${fileName}): invalid thinkingLevel "${level}". ` +
+				`Must be one of: ${THINKING_LEVELS.join(", ")}.`,
+			);
+		}
+	}
+
+	if (meta.inheritSystemPrompt !== undefined) {
+		const val = meta.inheritSystemPrompt;
+		if (val !== "true" && val !== "false") {
+			errors.push(
+				`Template "${meta.name}" (${fileName}): inheritSystemPrompt must be "true" or "false", got "${val}".`,
+			);
+		}
+	}
+
+	if (meta.noBuiltinTools !== undefined) {
+		const val = meta.noBuiltinTools;
+		if (val !== "true" && val !== "false") {
+			errors.push(
+				`Template "${meta.name}" (${fileName}): noBuiltinTools must be "true" or "false", got "${val}".`,
+			);
+		}
+	}
+
+	if (meta.timeout !== undefined) {
+		const val = Number(meta.timeout);
+		if (Number.isNaN(val)) {
+			errors.push(
+				`Template "${meta.name}" (${fileName}): timeout must be numeric, got "${meta.timeout}".`,
+			);
+		}
+	}
+
+	if (meta.tools !== undefined && !Array.isArray(meta.tools)) {
+		errors.push(`Template "${meta.name}" (${fileName}): tools must be a list.`);
+	}
+
+	if (meta.excludeTools !== undefined && !Array.isArray(meta.excludeTools)) {
+		errors.push(`Template "${meta.name}" (${fileName}): excludeTools must be a list.`);
+	}
+
+	if (meta.preset !== undefined && typeof meta.preset !== "string") {
+		errors.push(`Template "${meta.name}" (${fileName}): preset must be a string.`);
+	}
+
+	return errors;
+}
+
+// ---------------------------------------------------------------------------
+// Loading
+// ---------------------------------------------------------------------------
+
+/**
+ * Load custom task templates from user directories. Templates are
+ * file-backed, mirroring the custom-preset pattern (issue #66) — the TUI
+ * add/remove flows were removed because single-line input cannot express a
+ * task body.
+ *
+ * Searches:
+ *   1. ~/.pi/agent/brl-subagent/templates/ (global)
+ *   2. .pi/brl-subagent/templates/ (project-local)
+ *
+ * The markdown body IS the task (multiline by construction). Invalid files
+ * are skipped with log warnings; missing directories are skipped silently.
+ */
+export function loadCustomTemplates(cwd: string, log?: Logger): TaskTemplate[] {
+	const templates: TaskTemplate[] = [];
+	const homedir = process.env.HOME || process.env.USERPROFILE || "";
+
+	const dirs = [
+		path.join(homedir, ".pi", "agent", "brl-subagent", "templates"),
+		path.join(cwd, ".pi", "brl-subagent", "templates"),
+	];
+
+	for (const dir of dirs) {
+		try {
+			const files = fs.readdirSync(dir);
+			for (const file of files) {
+				if (!file.endsWith(".md")) continue;
+				try {
+					const filePath = path.join(dir, file);
+					const content = fs.readFileSync(filePath, "utf-8");
+					const { meta, body } = parseFrontmatter(content);
+
+					const errors = validateTemplate(meta, file);
+					if (errors.length > 0) {
+						for (const err of errors) {
+							log?.warn("Custom template validation failed", { file, error: err });
+						}
+						continue;
+					}
+
+					const name = meta.name as string;
+					templates.push({
+						name,
+						description: (meta.description as string) || undefined,
+						task: body,
+						preset: (meta.preset as string) || undefined,
+						thinkingLevel: (meta.thinkingLevel as string) || undefined,
+						outputFile: (meta.outputFile as string) || undefined,
+						timeout: meta.timeout !== undefined ? Number(meta.timeout) : undefined,
+						tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
+						excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
+						noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
+						inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
+					});
+				} catch (err) {
+					log?.warn("Failed to load custom template file", { file, error: (err as Error).message });
+				}
+			}
+		} catch {
+			// Directory doesn't exist — that's fine, no custom templates
+		}
+	}
+
+	return templates;
+}
+
+// ---------------------------------------------------------------------------
+// File helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build just the YAML frontmatter string (without the "---" markers)
+ * from a TaskTemplate object. Mirrors buildFrontmatter's key format
+ * (src/presets.ts) exactly: scalars unquoted, description quoted,
+ * boolean-only fields quoted, lists as indented "- item" lines.
+ */
+export function buildTemplateFrontmatter(template: TaskTemplate): string {
+	const lines: string[] = [];
+	lines.push(`name: ${template.name}`);
+	if (template.description) lines.push(`description: "${template.description}"`);
+	if (template.preset) lines.push(`preset: ${template.preset}`);
+	if (template.thinkingLevel) lines.push(`thinkingLevel: ${template.thinkingLevel}`);
+	if (template.outputFile) lines.push(`outputFile: ${template.outputFile}`);
+	if (template.timeout !== undefined) lines.push(`timeout: ${template.timeout}`);
+	if (template.noBuiltinTools) lines.push(`noBuiltinTools: "true"`);
+	if (template.inheritSystemPrompt === false) lines.push(`inheritSystemPrompt: "false"`);
+	if (template.tools?.length) {
+		lines.push("tools:");
+		for (const t of template.tools) lines.push(`  - ${t}`);
+	}
+	if (template.excludeTools?.length) {
+		lines.push("excludeTools:");
+		for (const t of template.excludeTools) lines.push(`  - ${t}`);
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Build a complete markdown string with YAML frontmatter from a TaskTemplate.
+ * The body is the task, so multiline tasks are natural.
+ */
+export function buildTemplateMarkdown(template: TaskTemplate): string {
+	const frontmatter = buildTemplateFrontmatter(template);
+	return `---\n${frontmatter}\n---\n${template.task}\n`;
+}
+
+/**
+ * Write a template to a .md file in the specified directory.
+ * Creates the directory if it doesn't exist.
+ * Returns the full path to the written file.
+ */
+export function writeTemplateFile(template: TaskTemplate, dir: string): string {
+	fs.mkdirSync(dir, { recursive: true });
+	const fileName = sanitizeFileName(template.name) + ".md";
+	const filePath = path.join(dir, fileName);
+	const content = buildTemplateMarkdown(template);
+	fs.writeFileSync(filePath, content, "utf-8");
+	return filePath;
 }

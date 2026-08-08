@@ -620,25 +620,17 @@ describe("auto-route respects explicit tool intent (issue #57)", () => {
 	});
 
 	it("template flows are unchanged: template with no preset/tools does not auto-route", async () => {
-		// Templates resolve BEFORE the auto-route block (they overwrite params.task
-		// and optionally params.preset/tools), and params.template stays set, so the
-		// pre-existing `!params.template` guard already gates template flows — issue
-		// #57 adds the explicit-tool gate WITHOUT touching that path.
+		// Templates are FILE-BACKED since issue #66 — seed via a template .md
+		// file in the project dir (mirroring custom presets) instead of
+		// session-persisted state, which was removed.
 		const ctx = makeCtx();
-		ctx.sessionManager = {
-			getEntries: () => [
-				{
-					type: "custom",
-					customType: "brl-subagent-state",
-					data: {
-						templates: [
-							{ name: "review-notes", task: REVIEW_TASK }, // no preset, no tools
-						],
-					},
-				},
-			],
-			appendCustomEntry: () => {},
-		};
+		const templatesDir = path.join(ctx.cwd, ".pi", "brl-subagent", "templates");
+		fs.mkdirSync(templatesDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(templatesDir, "review-notes.md"),
+			["---", "name: review-notes", "---", REVIEW_TASK].join("\n"),
+			"utf-8",
+		);
 		if (sessionStartHandler) {
 			await sessionStartHandler({}, ctx as never);
 		}
@@ -662,20 +654,13 @@ describe("auto-route respects explicit tool intent (issue #57)", () => {
 
 	it("template with tools still suppresses auto-route (template intent wins)", async () => {
 		const ctx = makeCtx();
-		ctx.sessionManager = {
-			getEntries: () => [
-				{
-					type: "custom",
-					customType: "brl-subagent-state",
-					data: {
-						templates: [
-							{ name: "read-only-review", task: REVIEW_TASK, tools: ["read"] },
-						],
-					},
-				},
-			],
-			appendCustomEntry: () => {},
-		};
+		const templatesDir = path.join(ctx.cwd, ".pi", "brl-subagent", "templates");
+		fs.mkdirSync(templatesDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(templatesDir, "read-only-review.md"),
+			["---", "name: read-only-review", "tools:", "  - read", "---", REVIEW_TASK].join("\n"),
+			"utf-8",
+		);
 		if (sessionStartHandler) {
 			await sessionStartHandler({}, ctx as never);
 		}

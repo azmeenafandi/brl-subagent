@@ -52,7 +52,7 @@ Pi auto-discovers extensions in these directories. To update: `git pull` inside 
 | `/brl-subagent sla` | Configure SLA tracking |
 | `/brl-subagent sla-stats` | View SLA statistics |
 | `/brl-subagent preset` | Manage delegation presets |
-| `/brl-subagent templates` | Manage task templates |
+| `/brl-subagent templates` | Browse task templates |
 | `/brl-subagent schedule` | Manage recurring schedules |
 | `/brl-subagent history` | Browse past subagent runs |
 | `/brl-subagent monitor` | Live monitor running subagents |
@@ -73,6 +73,8 @@ All settings persist across sessions.
 | `task` | string | *required* | What the subagent should do. Be specific — it doesn't see your conversation history. |
 | `label` | string | — | Human-readable name (e.g., `"security-audit"`). Shows in status bar, result header, and history. |
 | `preset` | string | — | Named delegation preset. Preset values are defaults; explicit params override. |
+| `template` | string | — | Named task template. See [Task Templates](#task-templates). |
+| `params` | object | — | Values for `${param}` slots in the template. All slots must be filled; missing ones error. |
 | `systemPrompt` | string | — | Extra instructions or a different persona for the subagent. |
 | `inheritSystemPrompt` | boolean | `true` | Whether to inherit the main agent's system prompt. Set `false` to save tokens. |
 | `thinkingLevel` | string | — | `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. Capped at user's configured max. |
@@ -134,6 +136,68 @@ thinkingLevel: high
 Custom presets override built-ins with the same name and survive `pi install` updates.
 
 Refer to a preset via the `preset` parameter of `delegate_task` (see above). Parameters on `delegate_task` override preset values.
+
+---
+
+## Task Templates
+
+Task templates are named, saved `delegate_task` configurations with `${param}` placeholder slots. Where presets shape the *persona*, templates capture the **task body itself** — a full, often multi-line instruction with slots filled at call time.
+
+**Templates are file-backed** — you create and edit them as `.md` files, exactly like custom presets. The old TUI add/remove flows were removed because single-line input cannot express a task body; use your editor instead.
+
+**Project templates:** `.pi/brl-subagent/templates/<name>.md`  
+**Global templates:** `~/.pi/agent/brl-subagent/templates/<name>.md`
+
+Files are markdown with YAML frontmatter; the **body is the task** (multiline by construction):
+
+```yaml
+---
+name: code-review
+preset: code-reviewer
+thinkingLevel: medium
+---
+Review PR ${pr} in this repository.
+
+Focus on:
+- correctness bugs and race conditions
+- style and naming consistency
+- missing test coverage
+
+Report findings as a numbered list with file:line references.
+```
+
+Supported frontmatter fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | *required* — template name used in `delegate_task` |
+| `description` | string | One-line summary shown in the browse UI |
+| `preset` | string | Preset applied when the template is used |
+| `thinkingLevel` | string | `off` / `minimal` / `low` / `medium` / `high` / `xhigh` |
+| `outputFile` | string | Output file path (may contain `${param}` slots) |
+| `timeout` | number | Max milliseconds for the delegated run |
+| `tools` | list | Tool allowlist |
+| `excludeTools` | list | Tools to exclude |
+| `noBuiltinTools` | `"true"` / `"false"` | Disable all pi built-in tools |
+| `inheritSystemPrompt` | `"true"` / `"false"` | Override system-prompt inheritance (default `true`) |
+
+Invalid files (missing `name`, bad `thinkingLevel`, non-numeric `timeout`, …) are skipped with a logged warning. Both directories are scanned on session start. Templates survive `pi install` updates — the same property as custom presets.
+
+**Usage:** pass the template name plus parameter values to `delegate_task`:
+
+```js
+delegate_task({
+  template: "code-review",
+  params: { pr: "https://github.com/org/repo/pull/42" },
+});
+```
+
+- Every `${param}` slot in the template must be provided in `params` — a missing slot fails the call with an error listing the missing names.
+- Template fields are **defaults**: explicitly-provided `delegate_task` parameters override them.
+- The template's task **replaces** `params.task` entirely.
+- Extra keys in `params` are ignored.
+
+`/brl-subagent templates` now **browses only** — it lists your saved templates and shows their details; creation and editing happen in your editor.
 
 ## Background execution
 
