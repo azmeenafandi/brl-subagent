@@ -2371,7 +2371,11 @@ export default function (pi: ExtensionAPI) {
 							if (completed) return;
 							
 							const session = agent._sessionRef;
-							if (!session) {
+							// Issue #31: a nulled ref on a TERMINAL agent is expected (the
+							// settlement path releases the ref) — fall through to finalize
+							// below instead of treating it as a crash. A nulled ref on a
+							// live agent is still a crash.
+							if (!session && !agent.completedAt) {
 								// Session ref not available — session may have crashed.
 								// Defensive: the ref is assigned synchronously before the poller starts
 								// and is never nulled, so this is mostly unreachable — but keep the
@@ -2421,7 +2425,10 @@ export default function (pi: ExtensionAPI) {
 								clearInterval(pollInterval);
 								clearTimeout(hardCapHandle);
 								
-								const finalOutput = extractFinalOutput(session);
+								// Issue #31: prefer the output already captured at settlement;
+								// the ref may already be nulled on terminal agents, so never
+								// overwrite with empty and stay null-safe.
+								const finalOutput = agent.finalOutput ?? extractFinalOutput(agent._sessionRef ?? { messages: [] });
 								setAgentFinalOutput(agent.id, finalOutput);
 								
 								// Gate the counter on the finalize claim: if the

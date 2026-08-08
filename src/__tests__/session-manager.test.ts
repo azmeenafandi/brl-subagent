@@ -1222,3 +1222,112 @@ describe("test storage isolation (issue #52)", () => {
 		expect(list(realOutput)).toEqual(outputBefore);
 	});
 });
+
+describe("issue #31 — terminal paths release agent._sessionRef", () => {
+	// Issue #31: the live session ref must not survive terminal paths — the
+	// settlement branches (completed/aborted/stopped/failed) capture the final
+	// output while the session is still live, then null the ref. The index.ts
+	// poller treats a nulled ref on a terminal agent as EXPECTED (it gates the
+	// crash branch on !agent.completedAt and prefers agent.finalOutput), so a
+	// released ref must never read as a crash. These tests pin the settlement
+	// side of that contract: after a mocked run settles, the in-memory agent
+	// (the same object the poller holds) has _sessionRef === undefined.
+	//
+	// NOTE: assert the ref is live BEFORE settling via a manually-controlled
+	// (deferred) prompt — an immediately-resolved prompt settles during spawn's
+	// own microtask drain, before the test body resumes.
+
+	it("releases the ref on the completed path (finalOutput captured first)", async () => {
+		let resolvePrompt: () => void = () => {};
+		mocks.session.prompt.mockReturnValue(new Promise<void>((r) => { resolvePrompt = r; }));
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "#31 ref release (completed)",
+		});
+		// Live ref while the run is pending — the poller still polls this.
+		expect(agent._sessionRef).toBeDefined();
+
+		resolvePrompt();
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(agent.status).toBe("completed");
+		expect(agent.completedAt).toBeDefined();
+		// The final output was captured BEFORE the ref was released — this is
+		// what index.ts's `agent.finalOutput ?? ...` prefers at finalize.
+		expect(agent.finalOutput).toBe("done");
+		expect(agent._sessionRef).toBeUndefined();
+	});
+
+	it("releases the ref on the aborted/stopped path", async () => {
+		let resolvePrompt: () => void = () => {};
+		mocks.session.prompt.mockReturnValue(new Promise<void>((r) => { resolvePrompt = r; }));
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [], stopReason: "aborted", errorMessage: "Aborted" },
+		];
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "#31 ref release (aborted)",
+		});
+		expect(agent._sessionRef).toBeDefined();
+
+		resolvePrompt();
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(agent.status).toBe("stopped");
+		expect(agent.completedAt).toBeDefined();
+		expect(agent._sessionRef).toBeUndefined();
+	});
+
+	it("releases the ref on the failed path", async () => {
+		let rejectPrompt: (err: Error) => void = () => {};
+		mocks.session.prompt.mockReturnValue(new Promise<void>((_, reject) => { rejectPrompt = reject; }));
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "#31 ref release (failed)",
+		});
+		expect(agent._sessionRef).toBeDefined();
+
+		rejectPrompt(new Error("auth failed"));
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(agent.status).toBe("failed");
+		expect(agent.completedAt).toBeDefined();
+		expect(agent._sessionRef).toBeUndefined();
+	});
+
+	it("releases the ref via markTerminalBestEffort when a settle handler throws", async () => {
+		// The aborted branch calls updateAgentStatus(id, 'stopped') BEFORE its own
+		// ref release — if that emit throws (settle-handler step failure), the
+		// handler jumps to markTerminalBestEffort, which must still null the ref.
+		// This is the one path where markTerminalBestEffort's release is
+		// load-bearing (the primary branch never reached its release line).
+		let resolvePrompt: () => void = () => {};
+		mocks.session.prompt.mockReturnValue(new Promise<void>((r) => { resolvePrompt = r; }));
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [], stopReason: "aborted", errorMessage: "Aborted" },
+		];
+		eventBusMock.emit.mockImplementation((event: { type: string }) => {
+			if (event.type === "subagent:stopped") throw new Error("emit exploded");
+		});
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "#31 ref release (settle throw)",
+		});
+		expect(agent._sessionRef).toBeDefined();
+
+		resolvePrompt();
+		await new Promise((r) => setTimeout(r, 10));
+
+		// updateAgentStatus flipped the status before the emit threw — the record
+		// stays terminal, and markTerminalBestEffort nulled the ref.
+		expect(agent.status).toBe("stopped");
+		expect(agent.completedAt).toBeDefined();
+		expect(agent._sessionRef).toBeUndefined();
+	});
+});

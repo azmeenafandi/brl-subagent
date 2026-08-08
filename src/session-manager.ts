@@ -658,6 +658,9 @@ export async function spawnBackgroundSession(
       if (!agent.completedAt) agent.completedAt = Date.now();
       agents.set(id, agent);
       persistAgent(agent);
+      // Issue #31: the live session ref must not survive terminal paths —
+      // including this catch-all, which fires when a settle handler throws.
+      agent._sessionRef = undefined;
     } catch {
       // The record may be beyond saving — the process must survive.
     }
@@ -751,6 +754,11 @@ export async function spawnBackgroundSession(
           agents.set(id, agent);
           persistAgent(agent);
         }
+        // Issue #31: capture the final output while the session is still
+        // live, then release the ref on the terminal path (memory retention;
+        // the poller treats a nulled ref on a terminal agent as expected).
+        setAgentFinalOutput(id, extractFinalOutput(session));
+        agent._sessionRef = undefined;
         return;
       }
       // Session completed
@@ -770,6 +778,11 @@ export async function spawnBackgroundSession(
           gitDiff: gitInfo.gitDiff,
         } as SubagentResult;
       }
+      // Issue #31: capture the final output while the session is still live,
+      // then release the ref before the branch's persist — the persisted
+      // record is consistent and the live session graph is freed.
+      setAgentFinalOutput(id, extractFinalOutput(session));
+      agent._sessionRef = undefined;
       agents.set(id, agent);
       persistAgent(agent);
       transcript.completeTranscript(id, 'completed');
@@ -807,6 +820,9 @@ export async function spawnBackgroundSession(
           agents.set(id, agent);
           persistAgent(agent);
         }
+        // Issue #31: the stopped path is terminal too — release the ref.
+        setAgentFinalOutput(id, extractFinalOutput(session));
+        agent._sessionRef = undefined;
         transcript.completeTranscript(id, 'stopped');
         return;
       }
@@ -829,6 +845,11 @@ export async function spawnBackgroundSession(
           gitDiff: gitInfo.gitDiff,
         } as SubagentResult;
       }
+      // Issue #31: capture the final output while the session is still live,
+      // then release the ref before the branch's persist — the persisted
+      // record is consistent and the live session graph is freed.
+      setAgentFinalOutput(id, extractFinalOutput(session));
+      agent._sessionRef = undefined;
       agents.set(id, agent);
       persistAgent(agent);
       transcript.completeTranscript(id, 'failed');
