@@ -145,8 +145,11 @@ Task templates are named, saved `delegate_task` configurations with `${param}` p
 
 **Templates are file-backed** — you create and edit them as `.md` files, exactly like custom presets. The old TUI add/remove flows were removed because single-line input cannot express a task body; use your editor instead.
 
+**Built-in templates:** `templates/<name>.md` (ships with the extension — one thin companion per builtin preset)  
 **Project templates:** `.pi/brl-subagent/templates/<name>.md`  
 **Global templates:** `~/.pi/agent/brl-subagent/templates/<name>.md`
+
+Precedence is **PROJECT > USER > BUILTIN** (issue #84 + builtin tier): a custom template with the same `name` as a built-in one overrides it, so you can copy a built-in file into your project directory and edit it to customize. The built-in tier is the fallback — it only appears when no custom template claims the name.
 
 Files are markdown with YAML frontmatter; the **body is the task** (multiline by construction):
 
@@ -182,6 +185,22 @@ Supported frontmatter fields:
 | `inheritSystemPrompt` | `"true"` / `"false"` | Override system-prompt inheritance (default `true`) |
 
 Invalid files (missing `name`, bad `thinkingLevel`, non-numeric `timeout`, …) are skipped with a logged warning. Both directories are scanned on session start. Templates survive `pi install` updates — the same property as custom presets.
+
+**Built-in templates shipped with the extension** (VERB-form names, deliberately distinct from their companion presets):
+
+| Template | Companion preset | thinkingLevel | Task shape |
+|---|---|---|---|
+| `code-review` | `code-reviewer` | medium | Review ${target} for correctness, security, style |
+| `security-audit` | `security-auditor` | high | Audit ${target} — injection, authz, secrets, dependencies |
+| `write-tests` | `test-engineer` | medium | Write tests for ${file} incl. edge cases |
+| `debug-issue` | `debugger` | medium | Debug ${symptom}: reproduce, isolate, fix |
+| `refactor` | `refactorer` | medium | Refactor ${target}, preserve behavior |
+| `write-docs` | `tech-writer` | low | Document ${topic} with an example |
+| `analyze-data` | `data-analyst` | medium | Analyze ${dataset}: patterns, outliers, trends |
+| `implement-feature` | `dev-agent` | medium | Implement ${feature} per project conventions |
+| `prototype` | `rapid-prototyper` | low | Prototype ${idea} fast, working > polished |
+
+These are deliberately THIN teaching examples — 2-4 line bodies showing `${param}` slots in action, with `preset:` pointing at their companion. Copy one into your project `templates/` dir to customize it (the copy then overrides the built-in).
 
 **Usage:** pass the template name plus parameter values to `delegate_task`:
 

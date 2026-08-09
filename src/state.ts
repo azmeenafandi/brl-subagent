@@ -94,6 +94,9 @@ export class SessionState {
 	/** Loaded built-in presets */
 	builtinPresets = new Array<import("./types").SubagentPreset>();
 
+	/** Loaded built-in task templates (companions to the builtin presets) */
+	builtinTemplates = new Array<import("./types").TaskTemplate>();
+
 	/** Loaded custom presets from user directories */
 	customPresets = new Array<import("./types").SubagentPreset>();
 

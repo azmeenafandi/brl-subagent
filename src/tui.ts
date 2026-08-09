@@ -48,7 +48,7 @@ import {
 	isGraphDetails,
 } from "./types";
 import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
-import { extractParamNames, loadCustomTemplates } from "./templates";
+import { extractParamNames, loadAllTemplates } from "./templates";
 import { parseDiff } from "./diff";
 import { formatPresetSummary, getPreset, writePresetFile, loadCustomPresets, parseFrontmatter } from "./presets";
 import { formatRunDuration } from "./history";
@@ -755,7 +755,8 @@ export async function showAddPreset(
 		state.customPresets = loadCustomPresets(ctx.cwd, state.log);
 		// Reload templates alongside presets — both are file-derived, and a
 		// preset add/remove may fix (or break) a template's `preset:` reference.
-		state.config.templates = loadCustomTemplates(ctx.cwd, state.log);
+		// Full stack: custom (project+global) merged over builtins.
+		state.config.templates = loadAllTemplates(ctx.cwd, state.log);
 		ctx.ui.notify(`Preset "${trimmedName}" saved to ${location === "project" ? "project" : "global"} directory`, "info");
 	} catch (err) {
 		ctx.ui.notify(`Failed to save preset: ${(err as Error).message}`, "error");
@@ -816,7 +817,8 @@ export async function showRemovePreset(
 		state.customPresets = loadCustomPresets(ctx.cwd, state.log);
 		// Reload templates too — a removed preset may orphan a template's
 		// `preset:` reference, so both file-derived collections refresh together.
-		state.config.templates = loadCustomTemplates(ctx.cwd, state.log);
+		// Full stack: custom (project+global) merged over builtins.
+		state.config.templates = loadAllTemplates(ctx.cwd, state.log);
 		ctx.ui.notify("Preset removed", "info");
 	} catch (err) {
 		ctx.ui.notify(`Failed to remove preset: ${(err as Error).message}`, "error");

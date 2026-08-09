@@ -8,7 +8,16 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { loadCustomTemplates, writeTemplateFile, validateTemplate } from "../templates";
+import {
+	loadBuiltinTemplates,
+	loadCustomTemplates,
+	loadAllTemplates,
+	getAllTemplates,
+	getTemplate,
+	extractParamNames,
+	writeTemplateFile,
+	validateTemplate,
+} from "../templates";
 import type { Logger } from "../logging";
 import type { TaskTemplate } from "../types";
 
@@ -433,5 +442,336 @@ describe("writeTemplateFile", () => {
 		expect(content).not.toContain("noBuiltinTools:");
 		expect(content).not.toContain("inheritSystemPrompt:");
 		expect(content).toContain("---\nname: sparse\n---\nSparse task\n");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// loadBuiltinTemplates
+// ---------------------------------------------------------------------------
+
+function writeBuiltinTemplate(dir: string, fileName: string, content: string): void {
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, fileName), content, "utf-8");
+}
+
+describe("loadBuiltinTemplates", () => {
+	it("loads a valid file with the markdown body as the task (mirrors loadCustomTemplates mapping)", () => {
+		const dir = makeTempDir();
+		writeBuiltinTemplate(
+			dir,
+			"code-review.md",
+			[
+				"---",
+				"name: code-review",
+				"description: Review code for correctness, security, and style",
+				"preset: code-reviewer",
+				"thinkingLevel: medium",
+				"---",
+				"Review ${target} for correctness, security, and style.",
+				"",
+				"Report findings with file:line references.",
+			].join("\n"),
+		);
+
+		const templates = loadBuiltinTemplates(dir);
+		expect(templates).toHaveLength(1);
+		const t = templates[0];
+		expect(t.name).toBe("code-review");
+		expect(t.description).toBe("Review code for correctness, security, and style");
+		expect(t.task).toBe("Review ${target} for correctness, security, and style.\n\nReport findings with file:line references.");
+		expect(t.preset).toBe("code-reviewer");
+		expect(t.thinkingLevel).toBe("medium");
+		// Defaulted fields map to undefined, same as custom loader
+		expect(t.outputFile).toBeUndefined();
+		expect(t.timeout).toBeUndefined();
+		expect(t.tools).toBeUndefined();
+		expect(t.excludeTools).toBeUndefined();
+		expect(t.noBuiltinTools).toBeUndefined();
+		expect(t.inheritSystemPrompt).toBeUndefined();
+	});
+
+	it("skips invalid files (bad thinkingLevel) with a warning", () => {
+		const dir = makeTempDir();
+		writeBuiltinTemplate(dir, "good.md", ["---", "name: good", "---", "A fine task."].join("\n"));
+		writeBuiltinTemplate(
+			dir,
+			"bad.md",
+			["---", "name: bad", "thinkingLevel: turbo", "---", "A task."].join("\n"),
+		);
+
+		const log = { warn: vi.fn() } as unknown as Logger;
+		const templates = loadBuiltinTemplates(dir, log);
+		expect(templates).toHaveLength(1);
+		expect(templates[0].name).toBe("good");
+		expect(log.warn).toHaveBeenCalled();
+		const call = log.warn.mock.calls.find((c) => c[0] === "Builtin template validation failed");
+		expect(call).toBeDefined();
+		expect((call as unknown[])[1]).toMatchObject({ file: "bad.md" });
+	});
+
+	it("skips files missing the required name field", () => {
+		const dir = makeTempDir();
+		writeBuiltinTemplate(
+			dir,
+			"unnamed.md",
+			["---", "description: no name here", "---", "A task."].join("\n"),
+		);
+
+		const log = { warn: vi.fn() } as unknown as Logger;
+		expect(loadBuiltinTemplates(dir, log)).toHaveLength(0);
+		expect(log.warn).toHaveBeenCalledWith("Builtin template validation failed", expect.anything());
+	});
+
+	it("keeps the empty-body guard (consistency with loadCustomTemplates)", () => {
+		const dir = makeTempDir();
+		writeBuiltinTemplate(
+			dir,
+			"empty.md",
+			["---", "name: empty", "---", "", "   "].join("\n"),
+		);
+
+		const log = { warn: vi.fn() } as unknown as Logger;
+		expect(loadBuiltinTemplates(dir, log)).toHaveLength(0);
+		const calls = log.warn.mock.calls.filter((c) => c[0] === "Builtin template validation failed");
+		expect(calls).toHaveLength(1);
+		expect((calls[0][1] as { error: string }).error).toBe('Template "empty" has empty task body');
+	});
+
+	it("skips non-.md files", () => {
+		const dir = makeTempDir();
+		writeBuiltinTemplate(dir, "notes.txt", ["---", "name: nope", "---", "task"].join("\n"));
+		expect(loadBuiltinTemplates(dir)).toHaveLength(0);
+	});
+
+	it("returns an empty list when the directory is missing (logs info)", () => {
+		const dir = path.join(makeTempDir(), "does-not-exist");
+		const log = { info: vi.fn() } as unknown as Logger;
+		expect(loadBuiltinTemplates(dir, log)).toEqual([]);
+		expect(log.info).toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getAllTemplates — custom overrides builtin (mirror of getAllPresets)
+// ---------------------------------------------------------------------------
+
+const builtinReview = (task: string) => ({
+	name: "code-review",
+	description: "builtin",
+	task,
+	preset: "code-reviewer",
+	thinkingLevel: "medium",
+});
+
+const customReview = (task: string) => ({
+	name: "code-review",
+	description: "custom",
+	task,
+	preset: "code-reviewer",
+	thinkingLevel: "high",
+});
+
+describe("getAllTemplates", () => {
+	it("custom overrides builtin with the same name (ONE entry, custom's content)", () => {
+		const merged = getAllTemplates([builtinReview("builtin task")], [customReview("custom task")]);
+		expect(merged).toHaveLength(1);
+		expect(merged[0].name).toBe("code-review");
+		expect(merged[0].task).toBe("custom task");
+	});
+
+	it("distinct names → both present, builtins AFTER customs", () => {
+		const builtins = [builtinReview("builtin task"), { name: "security-audit", task: "audit" }];
+		const customs = [{ name: "my-template", task: "mine" }];
+		const merged = getAllTemplates(builtins as never[], customs as never[]);
+		expect(merged.map((t) => t.name)).toEqual(["my-template", "code-review", "security-audit"]);
+	});
+
+	it("no customs → all builtins returned", () => {
+		const merged = getAllTemplates([builtinReview("a"), { name: "b", task: "b" } as never], []);
+		expect(merged).toHaveLength(2);
+	});
+
+	it("no builtins → customs only", () => {
+		const merged = getAllTemplates([], [customReview("c")]);
+		expect(merged).toHaveLength(1);
+		expect(merged[0].task).toBe("c");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getTemplate — custom-first lookup (mirror of getPreset)
+// ---------------------------------------------------------------------------
+
+describe("getTemplate", () => {
+	it("custom wins when the name exists in both tiers", () => {
+		const t = getTemplate(
+			"code-review",
+			[builtinReview("builtin task")],
+			[customReview("custom task")],
+		);
+		expect(t?.task).toBe("custom task");
+	});
+
+	it("falls back to builtin when only the builtin has the name", () => {
+		const t = getTemplate("code-review", [builtinReview("builtin task")], []);
+		expect(t?.task).toBe("builtin task");
+	});
+
+	it("returns undefined when neither tier has the name", () => {
+		expect(getTemplate("missing", [builtinReview("x")], [])).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// loadAllTemplates — full three-tier precedence (PROJECT > USER > BUILTIN)
+// ---------------------------------------------------------------------------
+
+function writeGlobalTemplate(home: string, fileName: string, content: string): void {
+	const dir = path.join(home, ".pi", "agent", "brl-subagent", "templates");
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, fileName), content, "utf-8");
+}
+
+describe("loadAllTemplates — three-tier precedence", () => {
+	it("same name in all three tiers → PROJECT wins (the money test after issue #84)", () => {
+		const home = makeTempDir();
+		const cwd = makeTempDir();
+		const builtinDir = makeTempDir();
+
+		// All three tiers define the same template name with different bodies.
+		writeBuiltinTemplate(
+			builtinDir,
+			"code-review.md",
+			["---", "name: code-review", "---", "BUILTIN version."].join("\n"),
+		);
+		writeGlobalTemplate(
+			home,
+			"code-review.md",
+			["---", "name: code-review", "---", "GLOBAL version."].join("\n"),
+		);
+		writeProjectTemplate(
+			cwd,
+			"code-review.md",
+			["---", "name: code-review", "---", "PROJECT version."].join("\n"),
+		);
+
+		let merged: ReturnType<typeof loadAllTemplates> = [];
+		withHome(home, () => {
+			merged = loadAllTemplates(cwd, undefined, builtinDir);
+		});
+
+		expect(merged).toHaveLength(1);
+		expect(merged[0].name).toBe("code-review");
+		expect(merged[0].task).toBe("PROJECT version.");
+	});
+
+	it("project absent → USER (global) wins over builtin", () => {
+		const home = makeTempDir();
+		const cwd = makeTempDir();
+		const builtinDir = makeTempDir();
+
+		writeBuiltinTemplate(
+			builtinDir,
+			"code-review.md",
+			["---", "name: code-review", "---", "BUILTIN version."].join("\n"),
+		);
+		writeGlobalTemplate(
+			home,
+			"code-review.md",
+			["---", "name: code-review", "---", "GLOBAL version."].join("\n"),
+		);
+
+		let merged: ReturnType<typeof loadAllTemplates> = [];
+		withHome(home, () => {
+			merged = loadAllTemplates(cwd, undefined, builtinDir);
+		});
+
+		expect(merged).toHaveLength(1);
+		expect(merged[0].task).toBe("GLOBAL version.");
+	});
+
+	it("no customs → builtins fill the stack", () => {
+		const home = makeTempDir();
+		const cwd = makeTempDir();
+		const builtinDir = makeTempDir();
+
+		writeBuiltinTemplate(
+			builtinDir,
+			"code-review.md",
+			["---", "name: code-review", "---", "BUILTIN version."].join("\n"),
+		);
+
+		let merged: ReturnType<typeof loadAllTemplates> = [];
+		withHome(home, () => {
+			merged = loadAllTemplates(cwd, undefined, builtinDir);
+		});
+
+		expect(merged).toHaveLength(1);
+		expect(merged[0].task).toBe("BUILTIN version.");
+	});
+
+	it("customs with distinct names coexist with builtins (builtins after customs)", () => {
+		const home = makeTempDir();
+		const cwd = makeTempDir();
+		const builtinDir = makeTempDir();
+
+		writeBuiltinTemplate(
+			builtinDir,
+			"code-review.md",
+			["---", "name: code-review", "---", "BUILTIN review."].join("\n"),
+		);
+		writeProjectTemplate(
+			cwd,
+			"my-flow.md",
+			["---", "name: my-flow", "---", "PROJECT flow."].join("\n"),
+		);
+
+		let merged: ReturnType<typeof loadAllTemplates> = [];
+		withHome(home, () => {
+			merged = loadAllTemplates(cwd, undefined, builtinDir);
+		});
+
+		expect(merged.map((t) => t.name)).toEqual(["my-flow", "code-review"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Shipped builtin templates (repo templates/ dir) — pin the 9 companions
+// ---------------------------------------------------------------------------
+
+describe("shipped builtin templates", () => {
+	it("loads all 9 companions: correct preset + thinkingLevel, one ${param} slot, 2-4 line body", () => {
+		const templatesDir = path.resolve(__dirname, "..", "..", "templates");
+		const builtins = loadBuiltinTemplates(templatesDir);
+
+		// The 9 companions per the design table (name → preset, thinkingLevel).
+		const companions: Array<[string, string, string]> = [
+			["code-review", "code-reviewer", "medium"],
+			["security-audit", "security-auditor", "high"],
+			["write-tests", "test-engineer", "medium"],
+			["debug-issue", "debugger", "medium"],
+			["refactor", "refactorer", "medium"],
+			["write-docs", "tech-writer", "low"],
+			["analyze-data", "data-analyst", "medium"],
+			["implement-feature", "dev-agent", "medium"],
+			["prototype", "rapid-prototyper", "low"],
+		];
+
+		expect(builtins).toHaveLength(companions.length);
+		expect(builtins.map((t) => t.name).sort()).toEqual(companions.map((c) => c[0]).sort());
+
+		const byName = new Map(builtins.map((t) => [t.name, t]));
+		for (const [name, preset, thinkingLevel] of companions) {
+			const t = byName.get(name);
+			expect(t, `template "${name}" should load`).toBeDefined();
+			expect(t!.preset).toBe(preset);
+			expect(t!.thinkingLevel).toBe(thinkingLevel);
+			// Thin teaching examples: exactly ONE ${param} slot each.
+			expect(extractParamNames(t!.task), `${name} has one param`).toHaveLength(1);
+			// Bodies are short multiline markdown (2-4 lines).
+			const lineCount = t!.task.split("\n").length;
+			expect(lineCount, `${name} body lines`).toBeGreaterThanOrEqual(2);
+			expect(lineCount, `${name} body lines`).toBeLessThanOrEqual(4);
+		}
 	});
 });
