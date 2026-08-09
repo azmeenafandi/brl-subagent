@@ -943,6 +943,25 @@ function findPresetSource(name: string, ctx: ExtensionContext): "project" | "glo
 	return "project";
 }
 
+/**
+ * Determine which tier a template comes from: project, global, or builtin.
+ * Scans the project templates dir first, then the user-global dir; a name
+ * found in neither is a builtin. Mirrors findPresetSource.
+ */
+function findTemplateSource(
+	name: string,
+	ctx: ExtensionContext,
+): "project" | "global" | "builtin" {
+	const homedir = process.env.HOME || process.env.USERPROFILE || "";
+	const projectDir = path.join(ctx.cwd, ".pi", "brl-subagent", "templates");
+	const globalDir = path.join(homedir, ".pi", "agent", "brl-subagent", "templates");
+	// Prefer project over global (project has higher priority in loadCustomTemplates)
+	const sanitizedName = name.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
+	if (fs.existsSync(path.join(projectDir, sanitizedName + ".md"))) return "project";
+	if (fs.existsSync(path.join(globalDir, sanitizedName + ".md"))) return "global";
+	return "builtin";
+}
+
 // ---------------------------------------------------------------------------
 // Template management UI
 // ---------------------------------------------------------------------------
@@ -962,13 +981,28 @@ export async function showViewTemplate(
 	const template = getTemplate(name, state.config.templates);
 	if (!template) return;
 
+	// Tier suffix mirrors the preset view's dim "(built-in)" treatment, extended
+	// to project/global so the detail view matches the manager's tier labels.
+	const templateTier = findTemplateSource(template.name, ctx);
+	const tierSuffix =
+		templateTier === "builtin"
+			? " (built-in)"
+			: templateTier === "project"
+				? " (project)"
+				: " (global)";
+
 	const paramNames = extractParamNames(template.task + (template.outputFile || ""));
 
 	await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 		container.addChild(
-			new Text(theme.fg("accent", theme.bold(`Template: ${template.name}`)), 1, 0),
+			new Text(
+				theme.fg("accent", theme.bold(`Template: ${template.name}`)) +
+					theme.fg("dim", tierSuffix),
+				1,
+				0,
+			),
 		);
 		if (template.description)
 			container.addChild(new Text(theme.fg("dim", template.description), 1, 0));
@@ -1014,18 +1048,24 @@ export async function showTemplateManager(
 ): Promise<void> {
 	if (state.config.templates.length === 0) {
 		ctx.ui.notify(
-			"No task templates found. Create .md files in ~/.pi/agent/brl-subagent/templates/ or " +
-			"<project>/.pi/brl-subagent/templates/.",
+			"No task templates loaded — built-in templates ship with the extension and " +
+			"should always be present. Add custom .md files in " +
+			"~/.pi/agent/brl-subagent/templates/ or <project>/.pi/brl-subagent/templates/.",
 			"info",
 		);
 		return;
 	}
 
-	const templateItems: SelectItem[] = state.config.templates.map((t) => ({
-		value: t.name,
-		label: t.name,
-		description: t.description || t.task.slice(0, 60),
-	}));
+	// Tier-prefixed labels mirror showPresetManager: [P]roject / [G]lobal / [B]uiltin.
+	const templateItems: SelectItem[] = state.config.templates.map((t) => {
+		const source = findTemplateSource(t.name, ctx);
+		const tierLabel = source === "project" ? "P" : source === "global" ? "G" : "B";
+		return {
+			value: t.name,
+			label: `[${tierLabel}] ${t.name}`,
+			description: t.description || t.task.slice(0, 60),
+		};
+	});
 
 	const result = await showSelectList(
 		ctx,
