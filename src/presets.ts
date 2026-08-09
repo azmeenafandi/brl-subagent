@@ -184,17 +184,23 @@ export function loadBuiltinPresets(presetsDir: string, log?: Logger): SubagentPr
  * with the same name. Survives pi install updates since user directories
  * are never touched by the install process.
  *
+ * Precedence: PROJECT-LOCAL > USER-GLOBAL. The project dir is scanned first
+ * and duplicates by name are skipped, so a project-local preset always wins
+ * over a user-global one with the same name. The custom > builtin override
+ * happens in getAllPresets/getPreset, not here.
+ *
  * Searches:
- *   1. ~/.pi/agent/brl-subagent/presets/ (global)
- *   2. .pi/brl-subagent/presets/ (project-local, highest priority)
+ *   1. .pi/brl-subagent/presets/ (project-local, highest priority)
+ *   2. ~/.pi/agent/brl-subagent/presets/ (global)
  */
 export function loadCustomPresets(cwd: string, log?: Logger): SubagentPreset[] {
 	const presets: SubagentPreset[] = [];
+	const seenNames = new Set<string>();
 	const homedir = process.env.HOME || process.env.USERPROFILE || "";
 
 	const dirs = [
-		path.join(homedir, ".pi", "agent", "brl-subagent", "presets"),
 		path.join(cwd, ".pi", "brl-subagent", "presets"),
+		path.join(homedir, ".pi", "agent", "brl-subagent", "presets"),
 	];
 
 	for (const dir of dirs) {
@@ -216,6 +222,10 @@ export function loadCustomPresets(cwd: string, log?: Logger): SubagentPreset[] {
 					}
 
 					const name = meta.name as string;
+					// Dedup by name: the first occurrence (project-local, scanned
+					// first) wins; user-global duplicates are skipped.
+					if (seenNames.has(name)) continue;
+					seenNames.add(name);
 					presets.push({
 						name,
 						description: (meta.description as string) || undefined,
