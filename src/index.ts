@@ -62,7 +62,7 @@ import {
 	type BackgroundAgent,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
-import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates } from "./templates";
+import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates, validateTemplatePresetRefs } from "./templates";
 import { Scheduler, type ScheduleConfig } from "./schedule";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage, buildCrashResult } from "./sanitize";
@@ -76,7 +76,7 @@ import {
 	mergeWorkBranch,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { loadBuiltinPresets, loadCustomPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
+import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import { resolveSubagentParams } from "./params";
@@ -197,6 +197,14 @@ export default function (pi: ExtensionAPI) {
 		// template lookups stay empty until the next session_start.
 		// Full stack: custom (project+global) merged over builtins.
 		state.config.templates = loadAllTemplates(ctx.cwd, log);
+		// Issue #81: cross-check template `preset:` refs against the full
+		// preset universe now that both loads are complete — warn (never skip)
+		// for dangling references instead of running preset-less silently.
+		validateTemplatePresetRefs(
+			state.config.templates,
+			getAllPresets(state.builtinPresets, state.customPresets),
+			log,
+		);
 		updateStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify("Subagent configuration reset", "info");
@@ -3320,6 +3328,16 @@ export default function (pi: ExtensionAPI) {
 		const templatesDir = path.join(__dirname, "..", "templates");
 		state.builtinTemplates = loadBuiltinTemplates(templatesDir, log);
 		state.config.templates = loadAllTemplates(ctx.cwd, log, templatesDir);
+
+		// Issue #81: cross-check template `preset:` refs against the full
+		// preset universe now that both loads are complete — warn (never skip)
+		// for dangling references instead of running preset-less silently with
+		// auto-route suppressed.
+		validateTemplatePresetRefs(
+			state.config.templates,
+			getAllPresets(state.builtinPresets, state.customPresets),
+			log,
+		);
 
 		// Migration: write any session-persisted presets to files
 		if (state._migratedPresets && state._migratedPresets.length > 0) {

@@ -48,9 +48,9 @@ import {
 	isGraphDetails,
 } from "./types";
 import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
-import { extractParamNames, loadAllTemplates } from "./templates";
+import { extractParamNames, loadAllTemplates, validateTemplatePresetRefs } from "./templates";
 import { parseDiff } from "./diff";
-import { formatPresetSummary, getPreset, writePresetFile, loadCustomPresets, parseFrontmatter } from "./presets";
+import { formatPresetSummary, getPreset, getAllPresets, writePresetFile, loadCustomPresets, parseFrontmatter } from "./presets";
 import { formatRunDuration } from "./history";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -757,6 +757,13 @@ export async function showAddPreset(
 		// preset add/remove may fix (or break) a template's `preset:` reference.
 		// Full stack: custom (project+global) merged over builtins.
 		state.config.templates = loadAllTemplates(ctx.cwd, state.log);
+		// Issue #81: re-check template `preset:` refs after the mutation — warn
+		// (never skip) for dangling references instead of preset-less runs.
+		validateTemplatePresetRefs(
+			state.config.templates,
+			getAllPresets(state.builtinPresets, state.customPresets),
+			state.log,
+		);
 		ctx.ui.notify(`Preset "${trimmedName}" saved to ${location === "project" ? "project" : "global"} directory`, "info");
 	} catch (err) {
 		ctx.ui.notify(`Failed to save preset: ${(err as Error).message}`, "error");
@@ -819,6 +826,13 @@ export async function showRemovePreset(
 		// `preset:` reference, so both file-derived collections refresh together.
 		// Full stack: custom (project+global) merged over builtins.
 		state.config.templates = loadAllTemplates(ctx.cwd, state.log);
+		// Issue #81: re-check template `preset:` refs after the mutation — warn
+		// (never skip) for dangling references instead of preset-less runs.
+		validateTemplatePresetRefs(
+			state.config.templates,
+			getAllPresets(state.builtinPresets, state.customPresets),
+			state.log,
+		);
 		ctx.ui.notify("Preset removed", "info");
 	} catch (err) {
 		ctx.ui.notify(`Failed to remove preset: ${(err as Error).message}`, "error");
