@@ -1794,8 +1794,10 @@ export default function (pi: ExtensionAPI) {
 				Type.String({
 					description:
 						"Name of a saved task template. Use with params to fill template slots. " +
-						"Templates are file-backed: create .md files in ~/.pi/agent/brl-subagent/templates/ or " +
-						".pi/brl-subagent/templates/ (browse via /brl-subagent templates).",
+						"Templates are file-backed: 9 builtin templates ship with the extension " +
+						"(browse via /brl-subagent templates); override or add via .md files in " +
+						"~/.pi/agent/brl-subagent/templates/ or .pi/brl-subagent/templates/ " +
+						"(project-local wins over user-global over builtin).",
 				}),
 			),
 			params: Type.Optional(
