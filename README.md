@@ -226,13 +226,13 @@ delegate_task({
 
   The template's own `preset:` field slots in as a *template field*: an explicit `preset` param wins over the template's `preset:`, and the resolved preset's defaults (thinkingLevel, systemPrompt, tools, …) fill whatever the params and template leave unset. Config-level defaults (gitMode, approvalMode, maxThinkingLevel caps, …) apply last.
 - **Tool fields are replaced, never merged.** A template's `tools` fully overrides the referenced preset's `tools` (same for `excludeTools`/`noBuiltinTools`) — the template's list wins entirely, it is not unioned with the preset's. Mixing still works per-field: a template that sets only `tools` still inherits the preset's `excludeTools`/`noBuiltinTools`.
-- **Silent nonexistent-preset gap (known).** A template whose `preset:` names a preset that does not exist runs preset-less **silently** — no warning at load or use — and, because the template's `preset` was set, auto-route is suppressed too. A typo'd preset therefore means a preset-less run with no rescue. Documented as a known gap; keep `preset:` names in sync with installed presets.
+- **Nonexistent-preset refs warn at session start (issue #81).** A template whose `preset:` names a preset that does not exist is caught by a load-time cross-check: `validateTemplatePresetRefs` warns at session start (and on preset add/remove) naming the template, the dangling reference, and the consequence — the delegation would otherwise run preset-less **silently** with auto-route suppressed. Warn-not-skip: the run still proceeds preset-less, but it is no longer silent. A typo'd preset now produces a visible warning; keep `preset:` names in sync with installed presets.
 
 | Template `preset:` | Result |
 |---|---|
 | names an existing preset | preset applied (template-field slot in the precedence chain) |
 | absent | template runs **preset-less**; auto-route does NOT rescue it |
-| names a nonexistent preset | **silent** preset-less run, auto-route suppressed — known gap |
+| names a nonexistent preset | **warned** preset-less run (session-start warning names template + dangling ref), auto-route still suppressed (issue #81) |
 
 `/brl-subagent templates` now **browses only** — it lists your saved templates and shows their details; creation and editing happen in your editor.
 

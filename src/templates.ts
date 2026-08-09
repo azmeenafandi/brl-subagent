@@ -23,7 +23,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { TaskTemplate, ThinkingLevel } from "./types";
+import type { TaskTemplate, ThinkingLevel, SubagentPreset } from "./types";
 import { TEMPLATE_PARAM_RE, THINKING_LEVELS } from "./types";
 import type { Logger } from "./logging";
 import { parseFrontmatter, sanitizeFileName } from "./presets";
@@ -375,6 +375,43 @@ export function getAllTemplates(
 export function loadAllTemplates(cwd: string, log?: Logger, templatesDir?: string): TaskTemplate[] {
 	const builtinDir = templatesDir ?? path.join(__dirname, "..", "templates");
 	return getAllTemplates(loadBuiltinTemplates(builtinDir, log), loadCustomTemplates(cwd, log));
+}
+
+// ---------------------------------------------------------------------------
+// Cross-check: template preset references vs. the preset universe
+// ---------------------------------------------------------------------------
+
+/**
+ * Cross-check every loaded template's `preset:` reference against the full
+ * preset universe (builtin + custom). Warns (never skips) for each template
+ * whose preset: names a preset that doesn't exist — the delegation would
+ * otherwise run preset-less silently with auto-route suppressed (issue #81).
+ * Must run AFTER both preset and template loads complete (order-independent
+ * by design — it takes both universes as parameters).
+ *
+ * @param templates - the FULL merged template stack (state.config.templates)
+ * @param allPresets - the FULL merged preset universe (getAllPresets result)
+ * @param log - logger for the warn; omitted → no-op
+ * @returns the count of templates with dangling preset references (0 = clean)
+ */
+export function validateTemplatePresetRefs(
+	templates: TaskTemplate[],
+	allPresets: SubagentPreset[],
+	log?: Logger,
+): number {
+	let dangling = 0;
+	for (const template of templates) {
+		if (!template.preset) continue;
+		if (!allPresets.some((p) => p.name === template.preset)) {
+			dangling++;
+			log?.warn(
+				`Template "${template.name}" references preset "${template.preset}" which does not exist ` +
+				"— delegation will run preset-less with auto-route suppressed (issue #81)",
+				{ template: template.name, preset: template.preset },
+			);
+		}
+	}
+	return dangling;
 }
 
 // ---------------------------------------------------------------------------

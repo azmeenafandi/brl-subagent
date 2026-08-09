@@ -2,9 +2,10 @@
  * Tests for templates.ts — resolveTemplate and extractParamNames.
  */
 
-import { describe, it, expect } from "vitest";
-import { resolveTemplate, extractParamNames } from "../templates";
-import type { TaskTemplate } from "../types";
+import { describe, it, expect, vi } from "vitest";
+import { resolveTemplate, extractParamNames, validateTemplatePresetRefs } from "../templates";
+import type { TaskTemplate, SubagentPreset } from "../types";
+import type { Logger } from "../logging";
 
 // ---------------------------------------------------------------------------
 // extractParamNames
@@ -181,5 +182,95 @@ describe("resolveTemplate", () => {
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 		expect(result.value.task).toBe("Static task with no placeholders");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// validateTemplatePresetRefs (issue #81 — load-time cross-check)
+// ---------------------------------------------------------------------------
+
+describe("validateTemplatePresetRefs", () => {
+	const makePreset = (name: string): SubagentPreset => ({ name });
+	const makeTemplate = (name: string, preset?: string): TaskTemplate => ({
+		name,
+		task: "Do the thing",
+		...(preset ? { preset } : {}),
+	});
+
+	it("warns for a template whose preset: names a nonexistent preset and returns count 1", () => {
+		const log = { warn: vi.fn() } as unknown as Logger;
+		const templates = [makeTemplate("code-review", "typo-preset")];
+		const allPresets = [makePreset("code-reviewer")];
+
+		const count = validateTemplatePresetRefs(templates, allPresets, log);
+
+		expect(count).toBe(1);
+		expect(log.warn).toHaveBeenCalledTimes(1);
+		expect(log.warn).toHaveBeenCalledWith(
+			expect.stringContaining('Template "code-review"'),
+			expect.objectContaining({ template: "code-review", preset: "typo-preset" }),
+		);
+		expect(log.warn.mock.calls[0][0]).toContain('preset "typo-preset"');
+		expect(log.warn.mock.calls[0][0]).toContain("preset-less with auto-route suppressed");
+	});
+
+	it("counts multiple dangling references (one warn per template)", () => {
+		const log = { warn: vi.fn() } as unknown as Logger;
+		const templates = [
+			makeTemplate("a", "missing-a"),
+			makeTemplate("b", "missing-b"),
+			makeTemplate("c", "exists"),
+		];
+		const allPresets = [makePreset("exists")];
+
+		const count = validateTemplatePresetRefs(templates, allPresets, log);
+
+		expect(count).toBe(2);
+		expect(log.warn).toHaveBeenCalledTimes(2);
+	});
+
+	it("no warning when all preset: refs resolve (builtin + custom preset names), returns 0", () => {
+		const log = { warn: vi.fn() } as unknown as Logger;
+		const templates = [
+			makeTemplate("builtin-ref", "security-auditor"),
+			makeTemplate("custom-ref", "my-custom"),
+		];
+		const allPresets = [makePreset("my-custom"), makePreset("security-auditor")];
+
+		const count = validateTemplatePresetRefs(templates, allPresets, log);
+
+		expect(count).toBe(0);
+		expect(log.warn).not.toHaveBeenCalled();
+	});
+
+	it("no warning for templates WITHOUT a preset field, returns 0", () => {
+		const log = { warn: vi.fn() } as unknown as Logger;
+		const templates = [makeTemplate("plain-a"), makeTemplate("plain-b")];
+
+		const count = validateTemplatePresetRefs(templates, [], log);
+
+		expect(count).toBe(0);
+		expect(log.warn).not.toHaveBeenCalled();
+	});
+
+	it("is order-independent: presets may be empty while templates reference them", () => {
+		// The function takes both universes as parameters and only reads them,
+		// so it behaves identically regardless of load order — including when
+		// the preset universe is empty.
+		const log = { warn: vi.fn() } as unknown as Logger;
+		const templates = [makeTemplate("orphan", "ghost-preset")];
+
+		const count = validateTemplatePresetRefs(templates, [], log);
+
+		expect(count).toBe(1);
+		expect(log.warn).toHaveBeenCalledTimes(1);
+	});
+
+	it("returns the count even when log is omitted (warn is a no-op)", () => {
+		const templates = [makeTemplate("dangling", "ghost-preset")];
+
+		const count = validateTemplatePresetRefs(templates, []);
+
+		expect(count).toBe(1);
 	});
 });

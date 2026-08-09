@@ -690,6 +690,53 @@ describe("auto-route respects explicit tool intent (issue #57)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Load-time cross-check: template preset refs (issue #81)
+//
+// A template whose `preset:` names a nonexistent preset must produce a
+// session-start warning naming the template + the dangling ref + the
+// consequence — otherwise the delegation would run preset-less SILENTLY with
+// auto-route suppressed. Warn-not-skip: the run still proceeds, the warn
+// fires at load. Drives the real session_start handler (index.ts) with a
+// project-seeded typo'd template; the real logger's warn → console.warn.
+// ---------------------------------------------------------------------------
+
+describe("session_start warns on dangling template preset refs (issue #81)", () => {
+	it("seeds a project template with a typo'd preset and asserts the session-start warn", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const ctx = makeCtx();
+			const templatesDir = path.join(ctx.cwd, ".pi", "brl-subagent", "templates");
+			fs.mkdirSync(templatesDir, { recursive: true });
+			fs.writeFileSync(
+				path.join(templatesDir, "typo-preset.md"),
+				[
+					"---",
+					"name: typo-preset-template",
+					"preset: typo-preset",
+					"---",
+					"Do the thing.",
+				].join("\n"),
+				"utf-8",
+			);
+			if (sessionStartHandler) {
+				await sessionStartHandler({}, ctx as never);
+			}
+
+			// The warn names the template, the dangling ref, and the consequence.
+			expect(warnSpy).toHaveBeenCalled();
+			const warnCall = warnSpy.mock.calls.find((c) =>
+				String(c[0]).includes('references preset "typo-preset"'),
+			);
+			expect(warnCall).toBeDefined();
+			expect(String(warnCall![0])).toContain("typo-preset-template");
+			expect(String(warnCall![0])).toContain("preset-less with auto-route suppressed");
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
 // H1 pre-task validation at mode entry (issue #34)
 //
 // The exact bug class from #32 (outputFile + preset excluding write → silent
