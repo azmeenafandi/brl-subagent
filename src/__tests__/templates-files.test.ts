@@ -226,7 +226,7 @@ describe("loadCustomTemplates", () => {
 		expect(templates.map((t) => t.name).sort()).toEqual(["global-one", "project-one"]);
 	});
 
-	it("duplicate names: GLOBAL (~/.pi/agent/...) wins over project-local (homedir scanned first, no dedup)", () => {
+	it("duplicate names: PROJECT-LOCAL wins over global (~/.pi/agent/...) (project scanned first, dedup by name)", () => {
 		const home = makeTempDir();
 		const cwd = makeTempDir();
 
@@ -249,15 +249,78 @@ describe("loadCustomTemplates", () => {
 			templates = loadCustomTemplates(cwd);
 		});
 
-		// No dedup: BOTH files load, and the homedir dir is scanned FIRST — so
-		// the lookup site's .find() (first match) returns the GLOBAL entry,
-		// despite any "project-local, highest priority" framing. Presets have
-		// the same first-wins reality (src/presets.ts).
-		expect(templates).toHaveLength(2);
-		expect(templates.filter((t) => t.name === "dupe")).toHaveLength(2);
+		// Dedup by name: only ONE entry loads, and the project dir is scanned
+		// FIRST — so the project version wins and the global duplicate is
+		// skipped (issue #84).
+		expect(templates).toHaveLength(1);
 		expect(templates[0].name).toBe("dupe");
-		expect(templates[0].task).toBe("Global version.");
-		expect(templates[1].task).toBe("Project version.");
+		expect(templates[0].task).toBe("Project version.");
+	});
+
+	it("precedence: same name in both dirs (different file names) → project's version wins, one entry", () => {
+		const home = makeTempDir();
+		const cwd = makeTempDir();
+
+		const globalDir = path.join(home, ".pi", "agent", "brl-subagent", "templates");
+		fs.mkdirSync(globalDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(globalDir, "global-name.md"),
+			["---", "name: shared", "---", "Global task."].join("\n"),
+			"utf-8",
+		);
+
+		writeProjectTemplate(
+			cwd,
+			"project-name.md",
+			["---", "name: shared", "---", "Project task."].join("\n"),
+		);
+
+		let templates: ReturnType<typeof loadCustomTemplates> = [];
+		withHome(home, () => {
+			templates = loadCustomTemplates(cwd);
+		});
+
+		// Dedup is by frontmatter name (not file name): the global file with
+		// the same `name:` is skipped, the project version is the sole entry.
+		expect(templates).toHaveLength(1);
+		expect(templates[0].name).toBe("shared");
+		expect(templates[0].task).toBe("Project task.");
+	});
+
+	it("distinct names in both dirs → all load (no over-dedup)", () => {
+		const home = makeTempDir();
+		const cwd = makeTempDir();
+
+		const globalDir = path.join(home, ".pi", "agent", "brl-subagent", "templates");
+		fs.mkdirSync(globalDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(globalDir, "global-one.md"),
+			["---", "name: global-one", "---", "Global task."].join("\n"),
+			"utf-8",
+		);
+		fs.writeFileSync(
+			path.join(globalDir, "global-two.md"),
+			["---", "name: global-two", "---", "Another global task."].join("\n"),
+			"utf-8",
+		);
+
+		writeProjectTemplate(
+			cwd,
+			"project-one.md",
+			["---", "name: project-one", "---", "Project task."].join("\n"),
+		);
+
+		let templates: ReturnType<typeof loadCustomTemplates> = [];
+		withHome(home, () => {
+			templates = loadCustomTemplates(cwd);
+		});
+
+		// No name collisions → every file loads exactly once.
+		expect(templates.map((t) => t.name).sort()).toEqual([
+			"global-one",
+			"global-two",
+			"project-one",
+		]);
 	});
 });
 

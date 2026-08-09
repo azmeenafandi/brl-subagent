@@ -175,9 +175,13 @@ export function validateTemplate(meta: Record<string, unknown>, fileName: string
  * add/remove flows were removed because single-line input cannot express a
  * task body.
  *
+ * Precedence: PROJECT-LOCAL > USER-GLOBAL. The project dir is scanned first
+ * and duplicates by name are skipped, so a project-local template always
+ * wins over a user-global one with the same name.
+ *
  * Searches:
- *   1. ~/.pi/agent/brl-subagent/templates/ (global)
- *   2. .pi/brl-subagent/templates/ (project-local)
+ *   1. .pi/brl-subagent/templates/ (project-local, highest priority)
+ *   2. ~/.pi/agent/brl-subagent/templates/ (global)
  *
  * The markdown body IS the task (multiline by construction). Invalid files
  * (including empty/whitespace-only bodies) are skipped with log warnings;
@@ -185,11 +189,12 @@ export function validateTemplate(meta: Record<string, unknown>, fileName: string
  */
 export function loadCustomTemplates(cwd: string, log?: Logger): TaskTemplate[] {
 	const templates: TaskTemplate[] = [];
+	const seenNames = new Set<string>();
 	const homedir = process.env.HOME || process.env.USERPROFILE || "";
 
 	const dirs = [
-		path.join(homedir, ".pi", "agent", "brl-subagent", "templates"),
 		path.join(cwd, ".pi", "brl-subagent", "templates"),
+		path.join(homedir, ".pi", "agent", "brl-subagent", "templates"),
 	];
 
 	for (const dir of dirs) {
@@ -223,6 +228,10 @@ export function loadCustomTemplates(cwd: string, log?: Logger): TaskTemplate[] {
 					}
 
 					const name = meta.name as string;
+					// Dedup by name: the first occurrence (project-local, scanned
+					// first) wins; user-global duplicates are skipped.
+					if (seenNames.has(name)) continue;
+					seenNames.add(name);
 					templates.push({
 						name,
 						description: (meta.description as string) || undefined,
