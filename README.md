@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.1.5 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.1.6 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -252,6 +252,14 @@ Set `background: true` to spawn the subagent as an independent session that retu
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
 
 ## Changelog
+
+### v2.1.6
+
+- **Preset/template precedence fixed (issue #84):** the documented intent (PROJECT-LOCAL > USER-GLOBAL > BUILTIN) is now the actual behavior — both loaders dedup by name with project-first scanning. Previously a user-global override silently beat a project-local one; a test that had pinned the buggy behavior was inverted.
+- **Builtin task templates (issue #66 follow-up):** 9 companion templates ship with the extension (`code-review`, `security-audit`, `write-tests`, `debug-issue`, `refactor`, `write-docs`, `analyze-data`, `implement-feature`, `prototype`) — one per builtin preset, each a thin teaching example with a `${param}` slot. The template architecture is now fully symmetric with presets: three tiers (builtin / user-global / project-local), identical precedence, same load lifecycle.
+- **Tier labels in template browse:** `/brl-subagent templates` now shows `[B]`/`[G]`/`[P]` prefixes (and the detail view a tier suffix), so you can see at a glance which file to edit to override a template — mirroring the preset manager's convention.
+- **Dangling preset references warn at load (issue #81):** a template whose `preset:` names a nonexistent preset no longer fails silently — a session-start cross-check warns naming the template, the dangling reference, and the consequence. Warn-not-skip: the run still proceeds preset-less, but the footgun is visible.
+- Shipped as 4 commits (#85, #86, #87, #88). 827 tests across 38 files.
 
 ### v2.1.5
 
