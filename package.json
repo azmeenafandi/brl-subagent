@@ -8,6 +8,7 @@
   "files": [
     "src/",
     "presets/",
+    "templates/",
     "README.md",
     "LICENSE",
     "!src/__tests__/"

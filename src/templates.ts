@@ -9,6 +9,12 @@
  * custom-preset pattern (issue #66): the old TUI add flow used single-line
  * input, which is unusable for a task body.
  *
+ * Built-in templates ship with the extension (templates/ dir) as thin
+ * teaching examples — one companion per builtin preset, VERB-form names,
+ * with ${param} slots shown in action. Custom templates override builtins
+ * with the same name (PROJECT > USER > BUILTIN), mirroring the preset tier
+ * added in issue #84.
+ *
  * Usage:
  *   const resolved = resolveTemplate(template, { file: "src/main.ts" });
  *   if (!resolved.ok) { /* handle error *\/ }
@@ -177,7 +183,8 @@ export function validateTemplate(meta: Record<string, unknown>, fileName: string
  *
  * Precedence: PROJECT-LOCAL > USER-GLOBAL. The project dir is scanned first
  * and duplicates by name are skipped, so a project-local template always
- * wins over a user-global one with the same name.
+ * wins over a user-global one with the same name. The custom > builtin
+ * override happens in getAllTemplates/getTemplate, not here.
  *
  * Searches:
  *   1. .pi/brl-subagent/templates/ (project-local, highest priority)
@@ -255,6 +262,119 @@ export function loadCustomTemplates(cwd: string, log?: Logger): TaskTemplate[] {
 	}
 
 	return templates;
+}
+
+/**
+ * Load built-in task templates from a directory of markdown files. Files
+ * must have YAML frontmatter with at least a `name` field. Invalid files
+ * (including empty/whitespace-only bodies, kept for consistency with
+ * loadCustomTemplates) are skipped with log warnings. Mirrors
+ * loadBuiltinPresets (src/presets.ts).
+ */
+export function loadBuiltinTemplates(templatesDir: string, log?: Logger): TaskTemplate[] {
+	const templates: TaskTemplate[] = [];
+
+	try {
+		const files = fs.readdirSync(templatesDir);
+		for (const file of files) {
+			if (!file.endsWith(".md")) continue;
+
+			try {
+				const filePath = path.join(templatesDir, file);
+				const content = fs.readFileSync(filePath, "utf-8");
+				const { meta, body } = parseFrontmatter(content);
+
+				const errors = validateTemplate(meta, file);
+				if (errors.length > 0) {
+					for (const err of errors) {
+						log?.warn("Builtin template validation failed", { file, error: err });
+					}
+					continue;
+				}
+
+				// Same empty-body guard as loadCustomTemplates: shipped templates
+				// are authored non-empty, but keep the check so a regressed copy
+				// warns at load time instead of tripping mode-detection later.
+				if (!body.trim()) {
+					log?.warn("Builtin template validation failed", {
+						file,
+						error: `Template "${meta.name}" has empty task body`,
+					});
+					continue;
+				}
+
+				const name = meta.name as string;
+
+				templates.push({
+					name,
+					description: (meta.description as string) || undefined,
+					task: body,
+					preset: (meta.preset as string) || undefined,
+					thinkingLevel: (meta.thinkingLevel as string) || undefined,
+					outputFile: (meta.outputFile as string) || undefined,
+					timeout: meta.timeout !== undefined ? Number(meta.timeout) : undefined,
+					tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
+					excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
+					noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
+					inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
+				});
+			} catch (err) {
+				log?.warn("Failed to load builtin template file", { file, error: (err as Error).message });
+			}
+		}
+	} catch {
+		// Templates directory doesn't exist or can't be read — no built-in templates
+		log?.info("No built-in templates directory found", { dir: templatesDir });
+	}
+
+	return templates;
+}
+
+// ---------------------------------------------------------------------------
+// Template lookup
+// ---------------------------------------------------------------------------
+
+/**
+ * Look up a template by name. Custom (user) templates take precedence over
+ * built-ins, so users can override any built-in template with the same name.
+ * Mirrors getPreset (src/presets.ts).
+ */
+export function getTemplate(
+	name: string,
+	builtinTemplates: TaskTemplate[],
+	customTemplates: TaskTemplate[],
+): TaskTemplate | undefined {
+	return customTemplates.find((t) => t.name === name) || builtinTemplates.find((t) => t.name === name);
+}
+
+/**
+ * Combine built-in and custom templates into a single array.
+ * Custom (user) templates override built-ins with the same name.
+ * Mirrors getAllPresets (src/presets.ts).
+ */
+export function getAllTemplates(
+	builtinTemplates: TaskTemplate[],
+	customTemplates: TaskTemplate[],
+): TaskTemplate[] {
+	const seen = new Set(customTemplates.map((t) => t.name));
+	const filteredBuiltins = builtinTemplates.filter((t) => !seen.has(t.name));
+	return [...customTemplates, ...filteredBuiltins];
+}
+
+/**
+ * Load and merge the FULL template stack in one call: built-in templates
+ * (shipped in the extension's templates/ dir) plus custom templates from the
+ * project and user-global directories. Custom overrides builtin by name, so
+ * precedence is PROJECT > USER > BUILTIN (issue #84 + builtin tier).
+ *
+ * This is the single entry point used by index.ts, tui.ts, and resetState so
+ * every reload site stays in sync. `templatesDir` overrides the builtin
+ * location (used by tests); it defaults to the shipped templates/ dir next to
+ * the extension's presets/ dir.
+ */
+export function loadAllTemplates(cwd: string, log?: Logger, templatesDir?: string): TaskTemplate[] {
+	const builtinDir = templatesDir ?? path.join(__dirname, "..", "templates");
+	return getAllTemplates(loadBuiltinTemplates(builtinDir, log), loadCustomTemplates(cwd, log));
 }
 
 // ---------------------------------------------------------------------------

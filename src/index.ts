@@ -62,7 +62,7 @@ import {
 	type BackgroundAgent,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
-import { resolveTemplate, loadCustomTemplates } from "./templates";
+import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates } from "./templates";
 import { Scheduler, type ScheduleConfig } from "./schedule";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage, buildCrashResult } from "./sanitize";
@@ -195,7 +195,8 @@ export default function (pi: ExtensionAPI) {
 		// Templates are file-backed (issue #66): state.reset() clears
 		// state.config.templates, so reload them from disk — otherwise
 		// template lookups stay empty until the next session_start.
-		state.config.templates = loadCustomTemplates(ctx.cwd, log);
+		// Full stack: custom (project+global) merged over builtins.
+		state.config.templates = loadAllTemplates(ctx.cwd, log);
 		updateStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify("Subagent configuration reset", "info");
@@ -1793,8 +1794,10 @@ export default function (pi: ExtensionAPI) {
 				Type.String({
 					description:
 						"Name of a saved task template. Use with params to fill template slots. " +
-						"Templates are file-backed: create .md files in ~/.pi/agent/brl-subagent/templates/ or " +
-						".pi/brl-subagent/templates/ (browse via /brl-subagent templates).",
+						"Templates are file-backed: 9 builtin templates ship with the extension " +
+						"(browse via /brl-subagent templates); override or add via .md files in " +
+						"~/.pi/agent/brl-subagent/templates/ or .pi/brl-subagent/templates/ " +
+						"(project-local wins over user-global over builtin).",
 				}),
 			),
 			params: Type.Optional(
@@ -3313,7 +3316,10 @@ export default function (pi: ExtensionAPI) {
 		const presetsDir = path.join(__dirname, "..", "presets");
 		state.builtinPresets = loadBuiltinPresets(presetsDir, log);
 		state.customPresets = loadCustomPresets(ctx.cwd, log);
-		state.config.templates = loadCustomTemplates(ctx.cwd, log);
+		// Builtin templates + merged full stack (custom overrides builtin)
+		const templatesDir = path.join(__dirname, "..", "templates");
+		state.builtinTemplates = loadBuiltinTemplates(templatesDir, log);
+		state.config.templates = loadAllTemplates(ctx.cwd, log, templatesDir);
 
 		// Migration: write any session-persisted presets to files
 		if (state._migratedPresets && state._migratedPresets.length > 0) {
@@ -3322,7 +3328,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			state._migratedPresets = undefined;
 			state.customPresets = loadCustomPresets(ctx.cwd, log);
-			state.config.templates = loadCustomTemplates(ctx.cwd, log);
+			state.config.templates = loadAllTemplates(ctx.cwd, log);
 			log?.info("Migrated presets from session to files");
 		}
 
@@ -3333,6 +3339,7 @@ export default function (pi: ExtensionAPI) {
 
 		log.info("Session started", {
 			builtinPresets: state.builtinPresets.length,
+			builtinTemplates: state.builtinTemplates.length,
 			presetsDir,
 		});
 
