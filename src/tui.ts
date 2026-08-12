@@ -58,6 +58,10 @@ import { sweepStaleLiveSubagents, type SessionState } from "./state";
 import { getAgent } from "./session-manager";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
 import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim } from "./tui-format";
+import {
+	renderTranscriptMessages,
+	type TranscriptLineStyle,
+} from "./transcript-tail";
 
 // ---------------------------------------------------------------------------
 // SelectList helper
@@ -1689,6 +1693,12 @@ export async function showMonitor(
 	}
 
 	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+		// Selected row index (0-based). Clamped to the map size on every
+		// render — entries can be swept while the monitor is open.
+		let selectedIndex = 0;
+		// Guards against stacking drill-in overlays on repeated Enter.
+		let detailOpen = false;
+
 		const buildView = () => {
 			// Issue #52: continuous self-heal — a background agent can complete
 			// (poller dead) while the monitor is already open; sweep on every
@@ -1708,23 +1718,29 @@ export async function showMonitor(
 				),
 			);
 			container.addChild(
-				new Text(theme.fg("dim", "esc close"), 1, 0),
+				new Text(theme.fg("dim", "esc close · ↑/↓ select · enter drill-in"), 1, 0),
 			);
 			container.addChild(new Text("", 0, 0));
 
+			const entries = Array.from(state.subagentSessions.entries());
+			const selIdx = Math.min(selectedIndex, Math.max(0, entries.length - 1));
+
 			let idx = 0;
-			for (const [id, session] of state.subagentSessions) {
+			for (const [id, session] of entries) {
 				const elapsedStr = formatElapsed(Date.now() - session.startedAt);
 				const name = liveRowName(session.label, session.task);
 				const spinner = liveSpinner(Date.now());
+				// Selection marker: a "›" prefix on the selected row only. The
+				// rest of the row (spinner/name/dim/muted lines) is unchanged.
+				const marker = idx === selIdx ? "› " : "";
 
 				container.addChild(
 					new Text(
-						theme.fg("accent", `${spinner} ${name}`) +
-							theme.fg(
-								"dim",
-								formatLiveRowDim(id, session.usage, elapsedStr),
-							),
+						theme.fg("accent", `${marker}${spinner} ${name}`) +
+						theme.fg(
+							"dim",
+							formatLiveRowDim(id, session.usage, elapsedStr),
+						),
 						1,
 						0,
 					),
@@ -1754,7 +1770,7 @@ export async function showMonitor(
 				}
 
 				idx++;
-				if (idx < state.subagentSessions.size) container.addChild(new Text("", 0, 0));
+				if (idx < entries.length) container.addChild(new Text("", 0, 0));
 			}
 
 			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
@@ -1767,12 +1783,222 @@ export async function showMonitor(
 		return {
 			render: (w: number) => buildView().render(w),
 			invalidate: () => {},
-			handleInput: (_data: string) => {
-				cleanup();
-				done();
+			handleInput: (data: string) => {
+				// esc / q: close the monitor (existing behavior).
+				if (_kb.matches(data, "tui.select.cancel") || data === "q") {
+					cleanup();
+					done();
+					return;
+				}
+				// up / down: move the selection, wrapping like SelectList.
+				if (_kb.matches(data, "tui.select.up")) {
+					const count = state.subagentSessions.size;
+					selectedIndex = count > 0 ? (selectedIndex - 1 + count) % count : 0;
+					tui.requestRender();
+					return;
+				}
+				if (_kb.matches(data, "tui.select.down")) {
+					const count = state.subagentSessions.size;
+					selectedIndex = count > 0 ? (selectedIndex + 1) % count : 0;
+					tui.requestRender();
+					return;
+				}
+				// enter: open the full-screen drill-in overlay for the selected agent.
+				// The overlay's done() returns to the list — the monitor stays open
+				// beneath it (fire-and-forget; handleInput is synchronous).
+				if (_kb.matches(data, "tui.select.confirm")) {
+					const ids = Array.from(state.subagentSessions.keys());
+					const id = ids[Math.min(selectedIndex, ids.length - 1)];
+					if (id && !detailOpen) {
+						detailOpen = true;
+						showAgentDetail(ctx, state, id).finally(() => {
+							detailOpen = false;
+						});
+					}
+				}
 			},
 		};
 	});
+}
+
+// ---------------------------------------------------------------------------
+// Drill-in overlay: full-screen transcript tail for one agent
+// ---------------------------------------------------------------------------
+
+/** Map a planned transcript line style to a theme color name. */
+function styleToColor(
+	theme: { fg: (c: string, t: string) => string },
+	style: TranscriptLineStyle,
+	text: string,
+): string {
+	switch (style) {
+		case "user":
+			return theme.fg("muted", text);
+		case "thinking":
+			return theme.fg("dim", text);
+		case "text":
+			return theme.fg("toolOutput", text);
+		case "toolCall":
+			return theme.fg("accent", text);
+		case "toolResult":
+			return theme.fg("muted", text);
+		case "note":
+			return theme.fg("dim", text);
+		case "streaming":
+			return theme.fg("accent", text);
+	}
+	return theme.fg("dim", text);
+}
+
+/**
+ * Full-screen drill-in: the live transcript TAIL of one running agent.
+ *
+ * Rendered via ctx.ui.custom with a full-screen overlay (width "100%",
+ * maxHeight "100%"; the component pads itself to the terminal height). The
+ * overlay tracks the agent's session ref (`getAgent(id)._sessionRef`) and
+ * refreshes at 200ms while open. Esc returns to the list monitor beneath
+ * (this overlay's done() only closes the overlay).
+ *
+ * Access path verified: `getAgent(agentId)` (session-manager) returns the
+ * BackgroundAgent whose `_sessionRef` is the live AgentSession; the transcript
+ * is `_sessionRef.messages`, the in-progress message is
+ * `_sessionRef.state.streamingMessage`, and liveness is `_sessionRef.isStreaming`.
+ * When the agent completes, the settle handler releases `_sessionRef`
+ * (issue #31) — the overlay then renders a cached tail once and stops
+ * refreshing.
+ */
+export async function showAgentDetail(
+	ctx: ExtensionContext,
+	state: SessionState,
+	agentId: string,
+): Promise<void> {
+	await ctx.ui.custom<void>(
+		(tui, theme, _kb, done) => {
+			// Set once the session ref is gone (agent finished / record removed):
+			// renders the finished view once and stops the refresh loop.
+			let finished = false;
+			// Tail captured at finish time for the one-shot "finished" render.
+			let cachedTail = "";
+
+			const buildView = () => {
+				const agent = getAgent(agentId);
+				const session = agent?._sessionRef;
+				const live = state.subagentSessions.get(agentId);
+
+				const container = new Container();
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+				const name = liveRowName(
+					live?.label,
+					live?.task ?? agent?.task ?? "",
+				);
+				const shortId = agentId.slice(0, 8);
+				const modelShort =
+					(live?.model ?? agent?.model ?? "").split("/").pop() ||
+					live?.model ||
+					agent?.model ||
+					"";
+				const thinkingLevel = live?.thinkingLevel ?? agent?.thinkingLevel ?? "";
+				const startedAt = live?.startedAt ?? agent?.startedAt ?? Date.now();
+				const elapsed = formatElapsed(Date.now() - startedAt);
+
+				container.addChild(
+					new Text(
+						theme.fg("accent", theme.bold(name)) +
+							theme.fg(
+								"dim",
+								`  [${shortId}]  ${modelShort} · ${thinkingLevel} · ${elapsed}`,
+							),
+						1,
+						0,
+					),
+				);
+				container.addChild(new Text(theme.fg("dim", "esc close"), 1, 0));
+				container.addChild(new Spacer(1));
+
+				if (!session) {
+					// The agent completed (or its record vanished) while the overlay
+					// was open — capture the last known output once and stop.
+					if (!finished) {
+						finished = true;
+						cachedTail = live?.liveOutput ?? agent?.finalOutput ?? "";
+					}
+					container.addChild(
+						new Text(theme.fg("dim", "agent finished — transcript ends here"), 1, 0),
+					);
+					const tailLines = cachedTail.split("\n").filter(Boolean).slice(-10);
+					if (tailLines.length > 0) {
+						container.addChild(new Spacer(1));
+						for (const line of tailLines) {
+							container.addChild(new Text(theme.fg("toolOutput", line), 1, 0));
+						}
+					}
+					container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+					return container;
+				}
+
+				const messages = session.messages ?? [];
+				const streaming = session.state?.streamingMessage;
+				const planned = renderTranscriptMessages(
+					streaming ? [...messages, streaming] : messages,
+					{
+						maxLines: Math.max(6, tui.terminal.rows - 5),
+						maxWidth: Math.max(20, tui.terminal.columns - 4),
+						streaming: Boolean(streaming),
+						spinner: liveSpinner(Date.now()),
+					},
+				);
+
+				if (planned.length === 0) {
+					// No messages yet — the agent is still in preflight.
+					container.addChild(
+						new Text(theme.fg("dim", "waiting for first output…"), 1, 0),
+					);
+				} else {
+					for (const line of planned) {
+						container.addChild(new Text(styleToColor(theme, line.style, line.text), 1, 0));
+					}
+				}
+
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+				return container;
+			};
+
+			// Live refresh while open (D2b — the overlay tracks the agent).
+			const interval = setInterval(() => {
+				if (finished) return; // terminal view rendered once — no more redraws
+				tui.requestRender();
+			}, 200);
+			const cleanup = () => clearInterval(interval);
+
+			return {
+				render: (w: number) => {
+					const lines = buildView().render(w);
+					// Full-screen: pad the overlay content to the terminal height so
+					// the drill-in occupies the whole screen (the tui overlay sizes
+					// to its rendered content otherwise).
+					const rows = tui.terminal.rows;
+					for (let i = lines.length; i < rows; i++) lines.push(" ".repeat(w));
+					return lines;
+				},
+				invalidate: () => {},
+				handleInput: (data: string) => {
+					if (_kb.matches(data, "tui.select.cancel") || data === "q") {
+						cleanup();
+						done();
+					}
+				},
+			};
+		},
+		{
+			overlay: true,
+			overlayOptions: {
+				width: "100%",
+				maxHeight: "100%",
+				anchor: "center",
+			},
+		},
+	);
 }
 
 // ---------------------------------------------------------------------------
