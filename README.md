@@ -55,6 +55,7 @@ Pi auto-discovers extensions in these directories. To update: `git pull` inside 
 | `/brl-subagent monitor` | Live monitor running subagents |
 | `/brl-subagent dashboard` | Live observability dashboard |
 | `/brl-subagent retry` | Browse failed runs to retry |
+| `/brl-subagent update-check` | Toggle update check on startup |
 | `/brl-subagent reset` | Reset all configuration |
 
 All settings persist across sessions.

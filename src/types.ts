@@ -487,7 +487,7 @@ export const RESERVED_NAME_PATTERN = /^__.*__$/;
 export const RESERVED_COMMAND_NAMES = new Set([
 	"model", "thinking", "concurrency", "depth", "history", "monitor",
 	"preset", "retry", "reset", "priority", "templates", "dashboard", "approval",
- "costlimit", "historyentries", "sla",
+ "costlimit", "historyentries", "sla", "update-check",
 	"graph", "sla-stats",
 ]);
 
