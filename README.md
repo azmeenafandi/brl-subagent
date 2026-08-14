@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.1.6 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.1.7 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -251,6 +251,14 @@ Set `background: true` to spawn the subagent as an independent session that retu
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
 
 ## Changelog
+
+### v2.1.7
+
+- **Monitor drill-in — full-screen transcript overlay (issue #89):** in `/brl-subagent monitor`, select a row (↑/↓) and press enter for a **full-screen live view of the subagent's chain of thought** — the last ~6 messages rendered from the live session: 🧠 thinking blocks (dimmed tail), 🛠 tool calls, 💬 user messages, 📝 assistant text, plus the in-progress streaming message, refreshing every 200ms. Esc returns to the list. Prototype-first: built on a branch, tested live against a real background review, then promoted.
+- **Top-level `model` param (issue #96):** `delegate_task` now accepts `model: "provider/model-id"` to override the model per call — previously only per-step (chain/tasks) had this, and a top-level `model:` was silently ignored (running the default instead). Precedence: per-call > preset > config > conductor; an invalid or unavailable override falls back with a warning.
+- **Recurring-task scheduler removed (issue #91):** `/brl-subagent schedule` is gone — it only ran while pi was open (cron is the right tool for real recurrence), reached `delegate_task` through a fragile private API, and was never used. The graph-mode scheduler is unaffected.
+- **README commands table pinned (issue #92):** a test now asserts the documented commands match the real dispatch in both directions — it already caught a stale row and an undocumented command.
+- Shipped as 5 commits (#90, #93, #94, #97 + docs). 846 tests across 39 files.
 
 ### v2.1.6
 
