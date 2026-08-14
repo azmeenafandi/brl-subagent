@@ -216,12 +216,25 @@ export default function (pi: ExtensionAPI) {
 
 	function resolveSubagentModel(
 		ctx: ExtensionContext,
-		preset?: SubagentPreset,
+		preset: SubagentPreset | undefined,
+		perCallModel?: string, // NEW: top-level delegate_task model param (issue #96)
 	):
 		| { ok: true; model: { provider: string; id: string } }
 		| { ok: false; error: AgentToolResult<SubagentResult> } {
-		// Precedence: preset.model > state.config.model > conductor model
+		// Precedence: per-call model > preset.model > state.config.model > conductor model
 		let subagentModel: { provider: string; id: string } | undefined;
+
+		if (perCallModel) {
+			const parsed = parseModelString(perCallModel);
+			if (!parsed) {
+				log.warn("Model override is not a valid provider/model-id, falling back", { model: perCallModel });
+			} else if (modelIsAvailable(ctx.modelRegistry, parsed)) {
+				log.info("Using per-call model override", { model: perCallModel });
+				return { ok: true, model: parsed };
+			} else {
+				log.warn("Model override unavailable, falling back", { model: perCallModel });
+			}
+		}
 
 		if (preset?.model) {
 			const parsed = parseModelString(preset.model);
@@ -485,8 +498,8 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
-		// Resolve model once
-		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset);
+		// Resolve model once (per-call top-level model override beats preset)
+		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
 		if (!modelResult.ok) return modelResult.error;
 		const subagentModel = modelResult.model;
 
@@ -888,8 +901,8 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
-		// Resolve model once
-		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset);
+		// Resolve model once (per-call top-level model override beats preset)
+		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
 		if (!modelResult.ok) return modelResult.error;
 		const subagentModel = modelResult.model;
 
@@ -1305,8 +1318,8 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
-		// Resolve model once
-		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset);
+		// Resolve model once (per-call top-level model override beats preset)
+		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
 		if (!modelResult.ok) return modelResult.error;
 		const subagentModel = modelResult.model;
 
@@ -1727,6 +1740,7 @@ export default function (pi: ExtensionAPI) {
 						"Omit to use the default anonymous counter.",
 				}),
 			),
+			model: Type.Optional(Type.String({ description: "Model override (provider/model-id). Defaults to the global subagent model." })),
 			timeout: Type.Optional(
 				Type.Number({
 					description:
@@ -1880,6 +1894,7 @@ export default function (pi: ExtensionAPI) {
 			params: {
 				task: string;
 				label?: string;
+				model?: string;
 				preset?: string;
 				systemPrompt?: string;
 				inheritSystemPrompt?: boolean;
@@ -2072,7 +2087,7 @@ export default function (pi: ExtensionAPI) {
 			// preset's model (and system prompt) are honored in background mode.
 			const bgResolved = resolveSubagentParams(params, state, ctx, log);
 			const { resolvedPreset: bgResolvedPreset, autoRoutedPreset: bgAutoRoutedPreset } = bgResolved;
-			const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset);
+			const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset, params.model);
 			const bgModel = bgModelResult.ok
 				? `${bgModelResult.model.provider}/${bgModelResult.model.id}`
 				: undefined;
@@ -2586,8 +2601,8 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			// Resolve model
-			const modelResult = resolveSubagentModel(ctx, resolvedPreset);
+			// Resolve model (per-call top-level model override beats preset)
+			const modelResult = resolveSubagentModel(ctx, resolvedPreset, params.model);
 			if (!modelResult.ok) return modelResult.error;
 			const subagentModel = modelResult.model;
 
@@ -2621,6 +2636,7 @@ export default function (pi: ExtensionAPI) {
 				originalParams: {
 					systemPrompt: params.systemPrompt,
 					inheritSystemPrompt: params.inheritSystemPrompt,
+					model: params.model,
 					thinkingLevel: params.thinkingLevel,
 					outputFile: params.outputFile,
 					timeout: params.timeout,

@@ -70,6 +70,7 @@ All settings persist across sessions.
 |---|---|---|---|
 | `task` | string | *required* | What the subagent should do. Be specific — it doesn't see your conversation history. |
 | `label` | string | — | Human-readable name (e.g., `"security-audit"`). Shows in status bar, result header, and history. |
+| `model` | string | — | Model override (`provider/model-id`). Defaults to the global subagent model. Validated against the catalog and provider auth; falls back with a warning if unavailable or malformed. Per-step `model` on chain/tasks/graph still wins for that step. |
 | `preset` | string | — | Named delegation preset. Preset values are defaults; explicit params override. |
 | `template` | string | — | Named task template. See [Task Templates](#task-templates). |
 | `params` | object | — | Values for `${param}` slots in the template. All slots must be filled; missing ones error. |

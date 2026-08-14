@@ -120,6 +120,7 @@ export function resolveRetryParams(
 	params: {
 		task: string;
 		label?: string;
+		model?: string;
 		preset?: string;
 		systemPrompt?: string;
 		inheritSystemPrompt?: boolean;
@@ -139,6 +140,7 @@ export function resolveRetryParams(
 	return {
 		task: params.task || run.task,
 		label: params.label ?? run.label,
+		model: params.model ?? orig?.model,
 		preset: params.preset ?? orig?.preset,
 		systemPrompt: params.systemPrompt ?? orig?.systemPrompt,
 		inheritSystemPrompt: params.inheritSystemPrompt ?? orig?.inheritSystemPrompt,
