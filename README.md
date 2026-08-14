@@ -44,8 +44,6 @@ Pi auto-discovers extensions in these directories. To update: `git pull` inside 
 | `/brl-subagent concurrency` | Set max parallel limit |
 | `/brl-subagent depth` | Set max recursion depth |
 | `/brl-subagent priority` | Set default priority |
-| `/brl-subagent gitmode` | Set git integration mode |
-| `/brl-subagent backend` | Set default backend |
 | `/brl-subagent approval` | Set change approval mode |
 | `/brl-subagent costlimit` | Set session cost limit |
 | `/brl-subagent historyentries` | Set max history entries |
