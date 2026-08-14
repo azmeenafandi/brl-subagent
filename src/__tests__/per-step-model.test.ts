@@ -87,6 +87,7 @@ interface ToolEntry {
 				type: string;
 				items: { properties: { model?: { type?: string; description?: string } } };
 			};
+			model?: { type?: string; description?: string };
 		};
 	};
 	execute: (...args: unknown[]) => Promise<{
@@ -507,6 +508,163 @@ describe("graph mode per-step model", () => {
 			.map((call) => call[2])
 			.sort((a, b) => (a.provider < b.provider ? -1 : 1));
 		expect(models).toEqual([STEP_MODEL_PARSED, GLOBAL_MODEL]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Top-level model override (issue #96)
+//
+// delegate_task previously had NO top-level `model` param — model existed only
+// on chain[].model / tasks[].model / graph[].model (per-step overrides, issue
+// #3). Typebox silently drops unknown properties, so a top-level `model:` was
+// ignored and the delegation ran on the DEFAULT model with zero feedback
+// (live incident 2026-08-14: requested deepseek-v4-pro, ran deepseek-v4-flash).
+//
+// The fix mirrors resolveStepModel's parse→validate→warn-fallback pattern at
+// the top level. Precedence: per-call model > preset.model > state.config.model
+// > ctx.model. These tests drive the REAL execute handler (runner mocked) and
+// assert the model argument passed to runSubagent.
+// ---------------------------------------------------------------------------
+
+describe("top-level model override (issue #96)", () => {
+	const TOP_MODEL = "deepseek/deepseek-v4-pro";
+	const TOP_MODEL_PARSED = { provider: "deepseek", id: "deepseek-v4-pro" };
+	const CONFIG_MODEL = { provider: "anthropic", id: "claude-sonnet-4" };
+	const PRESET_MODEL = "openai/gpt-4o";
+
+	it("top-level schema advertises an optional model string", () => {
+		const model = tool.parameters.properties.model as { type?: string; description?: string } | undefined;
+		expect(model).toBeDefined();
+		expect(model?.type).toBe("string");
+		expect(model?.description).toContain("provider/model-id");
+	});
+
+	it("top-level model reaches runSubagent (single mode)", async () => {
+		const ctx = makeCtx();
+		ctx.modelRegistry = makeRegistry([`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`, TOP_MODEL]);
+		const result = await tool.execute("call-top-1", {
+			task: "do the thing",
+			model: TOP_MODEL,
+		}, undefined, undefined, ctx);
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		expect(runnerMocks.runSubagent.mock.calls[0][2]).toEqual(TOP_MODEL_PARSED);
+		expect(result.isError).toBeFalsy();
+	});
+
+	it("top-level model applies globally in chain mode; per-step override still wins", async () => {
+		const ctx = makeCtx();
+		ctx.modelRegistry = makeRegistry([
+			`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`,
+			TOP_MODEL,
+			STEP_MODEL,
+		]);
+		const result = await tool.execute("call-top-2", {
+			model: TOP_MODEL,
+			chain: [
+				{ task: "step one" }, // inherits the top-level model
+				{ task: "step two", model: STEP_MODEL }, // per-step still overrides
+			],
+		}, undefined, undefined, ctx);
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(2);
+		expect(runnerMocks.runSubagent.mock.calls[0][2]).toEqual(TOP_MODEL_PARSED);
+		expect(runnerMocks.runSubagent.mock.calls[1][2]).toEqual(STEP_MODEL_PARSED);
+	});
+
+	it("top-level model beats preset.model AND state.config.model (precedence)", async () => {
+		const ctx = makeCtx();
+		ctx.modelRegistry = makeRegistry([
+			`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`,
+			TOP_MODEL,
+			PRESET_MODEL,
+			`${CONFIG_MODEL.provider}/${CONFIG_MODEL.id}`,
+		]);
+		// Seed a session-persisted config.model (restored on session_start)
+		ctx.sessionManager = {
+			getEntries: () => [
+				{ type: "custom", customType: "brl-subagent-state", data: { model: CONFIG_MODEL } },
+			],
+			appendCustomEntry: () => {},
+		};
+		// Preset with a DIFFERENT pinned model
+		const presetDir = path.join(testCwd, ".pi", "brl-subagent", "presets");
+		fs.mkdirSync(presetDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(presetDir, "preset-with-model.md"),
+			[
+				"---",
+				"name: preset-with-model",
+				"description: Preset with a pinned model",
+				`model: ${PRESET_MODEL}`,
+				"---",
+				"",
+				"# Preset With Model",
+			].join("\n"),
+			"utf-8",
+		);
+		if (sessionStartHandler) {
+			await sessionStartHandler({}, ctx as never);
+		}
+
+		const result = await tool.execute("call-top-3", {
+			task: "do the thing",
+			model: TOP_MODEL,
+			preset: "preset-with-model",
+		}, undefined, undefined, ctx);
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		expect(runnerMocks.runSubagent.mock.calls[0][2]).toEqual(TOP_MODEL_PARSED);
+		expect(result.isError).toBeFalsy();
+	});
+
+	it("falls back with a warn on a malformed top-level model string", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const ctx = makeCtx();
+			const result = await tool.execute("call-top-4", {
+				task: "do the thing",
+				model: "not-a-model",
+			}, undefined, undefined, ctx);
+
+			expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+			expect(runnerMocks.runSubagent.mock.calls[0][2]).toEqual(GLOBAL_MODEL);
+			expect(result.isError).toBeFalsy();
+			expect(warnSpy).toHaveBeenCalled();
+			const warn = warnSpy.mock.calls.find((c) =>
+				String(c[0]).includes("not a valid provider/model-id"),
+			);
+			expect(warn).toBeDefined();
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
+	it("falls back with a warn when the top-level model is unauthed", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const ctx = makeCtx();
+			// TOP_MODEL IS in the catalog but the provider has no configured auth
+			ctx.modelRegistry = makeRegistry(
+				[`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`, TOP_MODEL],
+				[TOP_MODEL],
+			);
+			const result = await tool.execute("call-top-5", {
+				task: "do the thing",
+				model: TOP_MODEL,
+			}, undefined, undefined, ctx);
+
+			expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+			expect(runnerMocks.runSubagent.mock.calls[0][2]).toEqual(GLOBAL_MODEL);
+			expect(result.isError).toBeFalsy();
+			expect(warnSpy).toHaveBeenCalled();
+			const warn = warnSpy.mock.calls.find((c) =>
+				String(c[0]).includes("Model override unavailable"),
+			);
+			expect(warn).toBeDefined();
+		} finally {
+			warnSpy.mockRestore();
+		}
 	});
 });
 

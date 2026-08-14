@@ -202,6 +202,7 @@ export interface SubagentRun {
 	originalParams?: {
 		systemPrompt?: string;
 		inheritSystemPrompt?: boolean;
+		model?: string;
 		thinkingLevel?: string;
 		outputFile?: string;
 		timeout?: number;
