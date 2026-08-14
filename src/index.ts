@@ -63,7 +63,6 @@ import {
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
 import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates, validateTemplatePresetRefs } from "./templates";
-import { Scheduler, type ScheduleConfig } from "./schedule";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage, buildCrashResult } from "./sanitize";
 import {
@@ -112,10 +111,6 @@ import {
 	showMonitor,
 	showDashboard,
 	showRetryMenu,
-	showScheduleManager,
-	showAddSchedule,
-	showRemoveSchedule,
-	showScheduleList,
 	renderDelegateCall,
 	renderDelegateResult,
 } from "./tui";
@@ -176,9 +171,6 @@ export default function (pi: ExtensionAPI) {
 
 	// F7: Session-bound state — initialized per session
 	let state = createSessionState(log);
-
-	// E9: Recurring task scheduler
-	let scheduler: Scheduler | undefined;
 
 	// -------------------------------------------------------------------
 	// Config change callback
@@ -1592,7 +1584,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"history", "historyentries", "monitor", "dashboard", "preset", "templates", "retry", "schedule", "unschedule",
+				"history", "historyentries", "monitor", "dashboard", "preset", "templates", "retry",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
@@ -1621,30 +1613,6 @@ export default function (pi: ExtensionAPI) {
 			"update-check": () => showUpdateCheckToggle(ctx, state, applyConfig),
 			sla: () => showSLAConfig(ctx, state, applyConfig),
 			"sla-stats": () => showSLAStats(ctx, state),
-				schedule: async () => {
-					if (!scheduler) {
-						ctx.ui.notify("Scheduler not initialized.", "error");
-						return;
-					}
-					await showScheduleManager(ctx, state, scheduler.getSchedules(), () => state.persistState(pi), {
-						addSchedule: () => showAddSchedule(ctx, state, scheduler!.getSchedules(), () => state.persistState(pi), {
-							addScheduleEntry: (config: ScheduleConfig) => scheduler!.addSchedule(config.name, config),
-						}),
-						removeSchedule: () => showRemoveSchedule(ctx, scheduler!.getSchedules(), () => state.persistState(pi), {
-							removeScheduleEntry: (id: string) => scheduler!.removeSchedule(id),
-						}),
-						listSchedules: () => showScheduleList(ctx, scheduler!.getSchedules()),
-					});
-				},
-				unschedule: async () => {
-					if (!scheduler) {
-						ctx.ui.notify("Scheduler not initialized.", "error");
-						return;
-					}
-					await showRemoveSchedule(ctx, scheduler.getSchedules(), () => state.persistState(pi), {
-						removeScheduleEntry: (id: string) => scheduler!.removeSchedule(id),
-					});
-				},
 			};
 
 			if (trimmed && trimmed in handlers) {
@@ -3381,30 +3349,6 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
-		// E9: Initialize scheduler with delegate_task executor
-		scheduler = new Scheduler(pi, log, async (task, config) => {
-			// Fire-and-forget: execute a scheduled task via delegate_task flow
-			const toolEntry = (pi as unknown as { _tools?: Map<string, { execute: Function }> })._tools?.get("delegate_task");
-			if (toolEntry) {
-				const params: Record<string, unknown> = { task };
-				if (config.preset) params.preset = config.preset;
-				if (config.thinkingLevel) params.thinkingLevel = config.thinkingLevel;
-				try {
-					await toolEntry.execute("scheduled", params, undefined, undefined, ctx);
-				} catch (err) {
-					log.error("Scheduled task delegate_task failed", {
-						task: task.slice(0, 60),
-						error: (err as Error).message,
-					});
-				}
-			} else {
-				log.warn("delegate_task tool not available for scheduled execution", {
-					task: task.slice(0, 60),
-				});
-			}
-		});
-		scheduler.start();
-
 		updateStatus(state, ctx);
 	});
 
@@ -3413,10 +3357,6 @@ export default function (pi: ExtensionAPI) {
 		log.info("Session shutting down", {
 			activeSubagents: state.activeSubagents,
 		});
-
-		// E9: Stop the scheduler
-		scheduler?.stop();
-		scheduler = undefined;
 
 		// Clear all live subagent sessions
 		state.subagentSessions.clear();
