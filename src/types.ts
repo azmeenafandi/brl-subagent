@@ -365,25 +365,6 @@ export interface GraphDetails {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// E9: Scheduling types
-// ---------------------------------------------------------------------------
-
-export interface ScheduleConfig {
-	name: string;
-	task: string;
-	preset?: string;
-	thinkingLevel?: string;
-	intervalMinutes: number;
-	enabled: boolean;
-}
-
-export interface ScheduleEntry extends ScheduleConfig {
-	id: string;
-	lastRun?: number;
-	nextRun: number;
-}
-
-// ---------------------------------------------------------------------------
 // Resolved params (after preset merging + validation)
 // ---------------------------------------------------------------------------
 
@@ -505,8 +486,7 @@ export const RESERVED_NAME_PATTERN = /^__.*__$/;
 /** Command names that collide with /brl-subagent completions. */
 export const RESERVED_COMMAND_NAMES = new Set([
 	"model", "thinking", "concurrency", "depth", "history", "monitor",
-	"preset", "retry", "reset", "priority", "templates", "schedule",
-	"unschedule", "dashboard", "approval",
+	"preset", "retry", "reset", "priority", "templates", "dashboard", "approval",
  "costlimit", "historyentries", "sla",
 	"graph", "sla-stats",
 ]);

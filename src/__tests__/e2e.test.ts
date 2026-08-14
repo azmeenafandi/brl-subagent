@@ -31,7 +31,6 @@ const ISOLATED_FILES = [
   "router",
   "sanitize",
   "scheduler",
-  "schedule",
   "state",
   "templates",
   "update",
