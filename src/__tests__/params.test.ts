@@ -9,21 +9,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { findUnknownParams } from "../params";
-
-/**
- * Pin of the exact delegate_task schema key list (src/index.ts
- * KNOWN_DELEGATE_KEYS, kept in sync with the schema's Type.Object block).
- * Passed explicitly per the issue #99 contract so the unit tests are
- * independent of index.ts's module state.
- */
-const KNOWN_DELEGATE_KEYS = new Set([
-	"task", "systemPrompt", "inheritSystemPrompt", "thinkingLevel",
-	"outputFile", "label", "model", "timeout", "cwd", "tools",
-	"excludeTools", "noBuiltinTools", "preset", "template", "params",
-	"retryRunId", "gitMode", "retryOnTimeout", "approvalMode", "background",
-	"priority", "chain", "tasks", "graph",
-] as const);
+import { findUnknownParams, KNOWN_DELEGATE_KEYS } from "../params";
 
 describe("findUnknownParams (issue #99)", () => {
 	it("returns [] when all received keys are known", () => {

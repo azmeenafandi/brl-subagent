@@ -78,7 +78,7 @@ import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure } from "./validate";
-import { findUnknownParams, resolveSubagentParams } from "./params";
+import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams } from "./params";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
@@ -151,25 +151,6 @@ function sanitizePreview(text: string, maxLen = 500): string {
   const stripped = lastChar && /[\uD800-\uDBFF]/.test(lastChar) ? safe.slice(0, -1) : safe;
   return stripped.trimEnd();
 }
-
-// ---------------------------------------------------------------------------
-// delegate_task known keys (issue #99)
-// ---------------------------------------------------------------------------
-
-/**
- * Keys the delegate_task schema declares (plus priority, the live victim of
- * issue #99). TypeBox's Type.Object allows additional properties by default,
- * so this set is the source of truth for the unknown-param warn: any received
- * key outside it is silently ignored by execute and worth a warn.
- * Keep in sync with the schema's Type.Object({ ... }) block.
- */
-const KNOWN_DELEGATE_KEYS = new Set([
-	"task", "systemPrompt", "inheritSystemPrompt", "thinkingLevel",
-	"outputFile", "label", "model", "timeout", "cwd", "tools",
-	"excludeTools", "noBuiltinTools", "preset", "template", "params",
-	"retryRunId", "gitMode", "retryOnTimeout", "approvalMode", "background",
-	"priority", "chain", "tasks", "graph",
-] as const);
 
 // ---------------------------------------------------------------------------
 // Extension entry point
@@ -1863,7 +1844,7 @@ export default function (pi: ExtensionAPI) {
 					Type.Literal("normal"),
 					Type.Literal("low"),
 				], {
-					description: "Concurrency priority for this delegation (overrides the default). Affects queue ordering in acquireSlot.",
+					description: "Concurrency priority for this delegation: critical, high, normal, or low. Overrides the configured default; higher-priority delegations queue ahead.",
 				})
 			),
 			chain: Type.Optional(Type.Array(Type.Object({
@@ -2789,8 +2770,15 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			// Resolve priority (issue #99 R2: single mode honors priority like chain/parallel/graph)
+			const singlePriority: Priority = (
+				params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+					? (params.priority as Priority)
+					: state.config.defaultPriority
+			);
+
 			// Acquire concurrency slot
-			const acquired = await acquireSlot(state, ctx, signal);
+			const acquired = await acquireSlot(state, ctx, signal, singlePriority);
 			if (!acquired) {
 				cleanupGitBranch();
 				return {

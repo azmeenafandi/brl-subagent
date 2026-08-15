@@ -54,6 +54,7 @@ vi.mock("@earendil-works/pi-tui", () => {
 });
 
 import initExtension from "../index";
+import { KNOWN_DELEGATE_KEYS } from "../params";
 import type { SubagentResult } from "../types";
 // Issue #52: the setters redirect the real execute handler's transcript (and
 // agent-record) writes away from the repo .pi/ — they reach the SAME module
@@ -257,6 +258,26 @@ describe("delegate_task schema declares priority (issue #99)", () => {
 		expect(priority).toBeDefined();
 		expect(priority?.anyOf?.map((o) => o.const)).toEqual(["critical", "high", "normal", "low"]);
 		expect(priority?.description).toContain("Concurrency priority");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #99 R1 (review): KNOWN_DELEGATE_KEYS ratchets against the REAL
+// registered schema.
+//
+// The unknown-param warn compares received keys against KNOWN_DELEGATE_KEYS
+// (src/params.ts, single source of truth). If the schema's Type.Object block
+// grows a key and the set doesn't follow, the new key is silently ignored AND
+// worth a warn — the exact #108-class drift issue #99 targeted. This test
+// closes the loop by asserting the set equals the REAL schema's top-level
+// properties (the same registered tool this file's other tests drive).
+// ---------------------------------------------------------------------------
+
+describe("KNOWN_DELEGATE_KEYS ratchet (issue #99 R1)", () => {
+	it("KNOWN_DELEGATE_KEYS matches the registered delegate_task schema (ratchet, issue #99 R1)", async () => {
+		expect(Object.keys(tool.parameters.properties).sort()).toEqual(
+			[...KNOWN_DELEGATE_KEYS].sort(),
+		);
 	});
 });
 
