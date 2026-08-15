@@ -60,6 +60,7 @@ import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim } from "./tui
 import {
 	renderTranscriptMessages,
 	type TranscriptLineStyle,
+	type TranscriptMessage,
 } from "./transcript-tail";
 
 // ---------------------------------------------------------------------------
@@ -1629,6 +1630,10 @@ export async function showAgentDetail(
 			let finished = false;
 			// Tail captured at finish time for the one-shot "finished" render.
 			let cachedTail = "";
+			// Last seen live transcript (foreground runs — issue #105), cached so
+			// the one-shot finished render still shows it after the live entry is
+			// finalized and deleted.
+			let cachedTranscript: TranscriptMessage[] | undefined;
 
 			const buildView = () => {
 				const agent = getAgent(agentId);
@@ -1665,6 +1670,79 @@ export async function showAgentDetail(
 				);
 				container.addChild(new Text(theme.fg("dim", "esc close"), 1, 0));
 				container.addChild(new Spacer(1));
+
+				if (!agent) {
+					// Foreground run (issue #105): no BackgroundAgent record exists —
+					// the live transcript comes from the streaming JSON pipeline,
+					// threaded through the live entry, and is rendered through the
+					// SAME planner the background path uses. The refresh loop keeps
+					// ticking while the live entry exists.
+					if (live) {
+						const transcript = live.transcript ?? [];
+						cachedTranscript = transcript;
+						cachedTail = live.liveOutput;
+						container.addChild(new Spacer(1));
+						if (transcript.length === 0) {
+							// No messages yet — the agent is still in preflight.
+							container.addChild(
+								new Text(theme.fg("dim", "waiting for first output…"), 1, 0),
+							);
+						} else {
+							const planned = renderTranscriptMessages(transcript, {
+								maxLines: Math.max(6, tui.terminal.rows - 5),
+								maxWidth: Math.max(20, tui.terminal.columns - 4),
+								streaming: !state.isLiveEntryFinalized(agentId),
+								spinner: liveSpinner(Date.now()),
+							});
+							for (const line of planned) {
+								container.addChild(
+									new Text(styleToColor(theme, line.style, line.text), 1, 0),
+								);
+							}
+						}
+						container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+						return container;
+					}
+
+					// The foreground run completed and its live entry was finalized
+					// and deleted — render the last captured transcript once and stop.
+					if (!finished) {
+						finished = true;
+					}
+					container.addChild(
+						new Text(theme.fg("dim", "agent finished — transcript ends here"), 1, 0),
+					);
+					if (cachedTranscript && cachedTranscript.length > 0) {
+						container.addChild(new Spacer(1));
+						const planned = renderTranscriptMessages(cachedTranscript, {
+							maxLines: Math.max(6, tui.terminal.rows - 5),
+							maxWidth: Math.max(20, tui.terminal.columns - 4),
+						});
+						for (const line of planned) {
+							container.addChild(
+								new Text(styleToColor(theme, line.style, line.text), 1, 0),
+							);
+						}
+					} else {
+						// R3 (review): stale foreground selection — the live entry was
+						// finalized and deleted before first render, so neither the
+						// transcript nor the live tail were ever captured here. Fall
+						// back to the persisted run record's fullOutput (the completion
+						// path persists it), mirroring the background path's
+						// `agent?.finalOutput` fallback.
+						const runOutput =
+							cachedTail || state.findRunById(ctx, agentId)?.fullOutput || "";
+						const tailLines = runOutput.split("\n").filter(Boolean).slice(-10);
+						if (tailLines.length > 0) {
+							container.addChild(new Spacer(1));
+							for (const line of tailLines) {
+								container.addChild(new Text(theme.fg("toolOutput", line), 1, 0));
+							}
+						}
+					}
+					container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+					return container;
+				}
 
 				if (!session) {
 					// The agent completed (or its record vanished) while the overlay

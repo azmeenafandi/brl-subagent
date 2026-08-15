@@ -17,7 +17,7 @@ vi.mock("node:child_process", () => ({
 	spawn: mocks.spawn,
 }));
 
-import { runSubagent, getPiInvocation } from "../runner";
+import { runSubagent, getPiInvocation, parseSubagentLine, toTranscriptMessage, LIVE_TRANSCRIPT_MAX_MESSAGES, LIVE_TRANSCRIPT_MAX_BYTES } from "../runner";
 import { wrapTask } from "../prompt";
 import type { SubagentResult } from "../types";
 
@@ -175,5 +175,296 @@ describe("runSubagent subprocess error sanitization (issue #30 / F7)", () => {
 		// stderr keeps the raw message — the subagent's own output, already
 		// in-scope of the subagent's context.
 		expect(result.stderr).toContain("/home/testuser/project/node_modules/.bin/pi");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #105: foreground drill-in parity — message_update transcript capture
+// ---------------------------------------------------------------------------
+// Event shapes fed here match what pi 0.84.2's json mode emits (verified
+// empirically with probe runs): `message_update` wraps an
+// `assistantMessageEvent` carrying text/thinking/toolcall deltas.
+
+describe("parseSubagentLine message_update capture (issue #105)", () => {
+	// Event-line builders (JSON strings, exactly as the subprocess stdout emits).
+	const mu = (assistantMessageEvent: Record<string, unknown>): string =>
+		JSON.stringify({
+			type: "message_update",
+			usage: { input: 0, output: 0 },
+			assistantMessageEvent,
+		});
+	const me = (role: string, content?: unknown[]): string =>
+		JSON.stringify({
+			type: "message_end",
+			message: { role, ...(content !== undefined ? { content } : {}) },
+		});
+	const userMe = (text: string): string => me("user", [{ type: "text", text }]);
+	const toolResultEnd = (): string =>
+		JSON.stringify({
+			type: "tool_result_end",
+			message: {
+				role: "toolResult",
+				toolCallId: "call_1",
+				toolName: "bash",
+				content: [{ type: "text", text: "ok" }],
+			},
+		});
+
+	function feed(lines: string[], onUpdate?: Parameters<typeof parseSubagentLine>[2]): SubagentResult {
+		const result: SubagentResult = {
+			messages: [],
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+			exitCode: 0,
+			stderr: "",
+		};
+		for (const line of lines) {
+			parseSubagentLine(line, result, onUpdate, () => "");
+		}
+		return result;
+	}
+
+	it("accumulates text deltas into a live assistant message", () => {
+		const result = feed([
+			userMe("Do the thing"),
+			mu({ type: "text_start", contentIndex: 0 }),
+			mu({ type: "text_delta", contentIndex: 0, delta: "Hel" }),
+			mu({ type: "text_delta", contentIndex: 0, delta: "lo" }),
+			mu({ type: "text_end", contentIndex: 0, content: "Hello" }),
+			me("assistant", [{ type: "text", text: "Hello" }]),
+		]);
+		expect(result.liveTranscript).toEqual([
+			{ role: "user", content: [{ type: "text", text: "Do the thing" }] },
+			{ role: "assistant", content: [{ type: "text", text: "Hello" }] },
+		]);
+	});
+
+	it("accumulates thinking deltas alongside text", () => {
+		const result = feed([
+			userMe("task"),
+			mu({ type: "thinking_start", contentIndex: 0 }),
+			mu({ type: "thinking_delta", contentIndex: 0, delta: "step 1" }),
+			mu({ type: "thinking_end", contentIndex: 0, content: "step 1 done" }),
+			mu({ type: "text_delta", contentIndex: 1, delta: "ok" }),
+			me("assistant", [
+				{ type: "thinking", thinking: "step 1 done" },
+				{ type: "text", text: "ok" },
+			]),
+		]);
+		expect(result.liveTranscript?.[1]?.content).toEqual([
+			{ type: "thinking", thinking: "step 1 done" },
+			{ type: "text", text: "ok" },
+		]);
+	});
+
+	it("accumulates toolCall name + parsed arguments from toolcall events", () => {
+		const result = feed([
+			userMe("run it"),
+			mu({ type: "toolcall_start", contentIndex: 0 }),
+			mu({ type: "toolcall_delta", contentIndex: 0, delta: "{" }),
+			mu({ type: "toolcall_delta", contentIndex: 0, delta: "\"command\":" }),
+			mu({ type: "toolcall_delta", contentIndex: 0, delta: "\"echo hi\"}" }),
+			mu({
+				type: "toolcall_end",
+				contentIndex: 0,
+				toolCall: {
+					type: "toolCall",
+					id: "call_1",
+					name: "bash",
+					arguments: { command: "echo hi" },
+				},
+			}),
+			me("assistant", [
+				{ type: "toolCall", id: "call_1", name: "bash", arguments: { command: "echo hi" } },
+			]),
+		]);
+		expect(result.liveTranscript?.[1]?.content).toEqual([
+			{ type: "toolCall", name: "bash", arguments: { command: "echo hi" } },
+		]);
+	});
+
+	it("preserves block order across out-of-order contentIndex deltas", () => {
+		const result = feed([
+			userMe("task"),
+			// index 1 arrives before index 0 — the gap filler must not corrupt order.
+			mu({ type: "text_delta", contentIndex: 1, delta: "result" }),
+			mu({ type: "thinking_delta", contentIndex: 0, delta: "think" }),
+			mu({ type: "toolcall_start", contentIndex: 2 }),
+			mu({ type: "toolcall_end", contentIndex: 2, toolCall: { name: "read", arguments: {} } }),
+			me("assistant", [
+				{ type: "thinking", thinking: "think" },
+				{ type: "text", text: "result" },
+				{ type: "toolCall", name: "read", arguments: {} },
+			]),
+		]);
+		expect(result.liveTranscript?.[1]?.content).toEqual([
+			{ type: "thinking", thinking: "think" },
+			{ type: "text", text: "result" },
+			{ type: "toolCall", name: "read", arguments: {} },
+		]);
+	});
+
+	it("keeps toolResult echoes (tool_result_end) with the toolName preserved", () => {
+		const result = feed([
+			userMe("task"),
+			me("assistant", [{ type: "text", text: "calling" }]),
+			toolResultEnd(),
+		]);
+		expect(result.liveTranscript).toEqual([
+			{ role: "user", content: [{ type: "text", text: "task" }] },
+			{ role: "assistant", content: [{ type: "text", text: "calling" }] },
+			{ role: "toolResult", toolName: "bash", content: [{ type: "text", text: "ok" }] },
+		]);
+	});
+
+	it("captures toolResult via message_end — the REAL pi 0.84.2 path (review R4)", () => {
+		// tool_result_end is never emitted by pi 0.84.2 (0 occurrences in a real
+		// tool probe); toolResults arrive as message_end with role "toolResult"
+		// and flow through pushLiveTranscriptMessage. Pin that live path — the
+		// toolName must survive the transcript conversion.
+		const result = feed([
+			userMe("task"),
+			me("assistant", [{ type: "text", text: "calling" }]),
+			JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "toolResult",
+					toolCallId: "call_1",
+					toolName: "bash",
+					content: [{ type: "text", text: "ok" }],
+				},
+			}),
+		]);
+		expect(result.liveTranscript).toEqual([
+			{ role: "user", content: [{ type: "text", text: "task" }] },
+			{ role: "assistant", content: [{ type: "text", text: "calling" }] },
+			{ role: "toolResult", toolName: "bash", content: [{ type: "text", text: "ok" }] },
+		]);
+		// message_end semantics unchanged: the raw message still accumulates.
+		expect(result.messages.length).toBe(3);
+	});
+
+	it("throttles mid-block deltas but forces block-boundary updates", () => {
+		const nowSpy = vi.spyOn(Date, "now");
+		let now = 1000;
+		nowSpy.mockImplementation(() => now);
+		try {
+			const onUpdate = vi.fn();
+			const result = feed(
+				[
+					userMe("task"),
+					mu({ type: "text_start", contentIndex: 0 }),
+					mu({ type: "text_delta", contentIndex: 0, delta: "A" }),
+				],
+				onUpdate as never,
+			);
+			now = 1050;
+			parseSubagentLine(mu({ type: "text_delta", contentIndex: 0, delta: "B" }), result, onUpdate as never, () => "");
+			now = 1100;
+			parseSubagentLine(mu({ type: "text_delta", contentIndex: 0, delta: "C" }), result, onUpdate as never, () => "");
+			now = 1300;
+			parseSubagentLine(mu({ type: "text_delta", contentIndex: 0, delta: "D" }), result, onUpdate as never, () => "");
+			now = 1301;
+			parseSubagentLine(mu({ type: "text_end", contentIndex: 0, content: "ABCD" }), result, onUpdate as never, () => "");
+
+			// message_end(user), text_start, first-throttle-passing delta, text_end.
+			expect(onUpdate).toHaveBeenCalledTimes(4);
+			// The throttled deltas still accumulate into the transcript.
+			expect(result.liveTranscript?.[1]?.content).toEqual([{ type: "text", text: "ABCD" }]);
+			// The last emitted partial carries the liveTranscript.
+			const lastPartial = onUpdate.mock.calls[3][0] as { details: SubagentResult };
+			expect(lastPartial.details.liveTranscript?.[1]?.content).toEqual([{ type: "text", text: "ABCD" }]);
+		} finally {
+			nowSpy.mockRestore();
+		}
+	});
+
+	it("caps the transcript tail at LIVE_TRANSCRIPT_MAX_MESSAGES", () => {
+		const lines: string[] = [];
+		for (let i = 0; i < 45; i++) {
+			lines.push(userMe(`task ${i}`));
+			lines.push(me("assistant", [{ type: "text", text: `out ${i}` }]));
+		}
+		const result = feed(lines);
+		expect(result.liveTranscript?.length).toBe(LIVE_TRANSCRIPT_MAX_MESSAGES);
+		// 90 messages → drop the oldest 50 → first kept is user "task 25".
+		expect(result.liveTranscript?.[0]).toEqual({
+			role: "user",
+			content: [{ type: "text", text: "task 25" }],
+		});
+		expect(result.liveTranscript?.[LIVE_TRANSCRIPT_MAX_MESSAGES - 1]).toEqual({
+			role: "assistant",
+			content: [{ type: "text", text: "out 44" }],
+		});
+	});
+
+	it("byte-cap keeps the NEWEST messages under budget — no drop-all-but-one (review R1)", () => {
+		// 8 × ~10KB assistant messages + 1 small user message ≈ 82KB total — over
+		// the 64KB budget. The OLD code re-read builder.bytes (never decremented)
+		// in the byte loop, so once over the cap it shifted down to the last
+		// message only (reviewer reproduction: length 3, ~10KB kept — 1 assistant
+		// survives). The fix drops the oldest just until the budget fits: ~62KB /
+		// 13 messages / 6 assistant messages must survive.
+		const big = "x".repeat(10 * 1024); // ~10KB per message
+		const lines: string[] = [];
+		for (let i = 0; i < 8; i++) {
+			lines.push(userMe(`task ${i}`));
+			lines.push(me("assistant", [{ type: "text", text: big }]));
+		}
+		lines.push(userMe("final small task"));
+		const result = feed(lines);
+		const transcript = result.liveTranscript ?? [];
+
+		// Not collapsed to a single message (or the ~3-message drop-all-but-one
+		// tail) — the budget must keep the newest bulk of the conversation.
+		expect(transcript.length).toBeGreaterThanOrEqual(8);
+		expect(
+			transcript.filter((m) => m.role === "assistant").length,
+		).toBeGreaterThanOrEqual(5);
+		// The NEWEST messages are preserved — the final small message is last.
+		expect(transcript[transcript.length - 1]).toEqual({
+			role: "user",
+			content: [{ type: "text", text: "final small task" }],
+		});
+		// Total serialized size stays under the budget.
+		const total = transcript.reduce(
+			(acc, m) => acc + (JSON.stringify(m)?.length ?? 0),
+			0,
+		);
+		expect(total).toBeLessThanOrEqual(LIVE_TRANSCRIPT_MAX_BYTES);
+	});
+
+	it("does not change message_end semantics (messages + usage still accumulate)", () => {
+		const result = feed([
+			JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					usage: { input: 100, output: 10, cacheRead: 5, cacheWrite: 2, cost: { total: 0.01 }, totalTokens: 200 },
+					model: "deepseek/deepseek-v4-flash",
+					stopReason: "stop",
+				},
+			}),
+		]);
+		expect(result.messages.length).toBe(1);
+		expect(result.usage.input).toBe(100);
+		expect(result.usage.output).toBe(10);
+		expect(result.usage.cacheRead).toBe(5);
+		expect(result.usage.turns).toBe(1);
+		expect(result.model).toBe("deepseek/deepseek-v4-flash");
+		expect(result.stopReason).toBe("stop");
+	});
+
+	it("converts authoritative messages to the transcript shape (toolName preserved)", () => {
+		expect(
+			toTranscriptMessage({
+				role: "toolResult",
+				toolName: "bash",
+				content: [{ type: "text", text: "ok" }],
+			}),
+		).toEqual({ role: "toolResult", toolName: "bash", content: [{ type: "text", text: "ok" }] });
+		expect(toTranscriptMessage({ role: "user", content: "plain" })).toEqual({
+			role: "user",
+		});
 	});
 });

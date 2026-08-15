@@ -18,6 +18,7 @@ import type {
 	CircuitBreakerState,
 	Priority,
 } from "./types";
+import type { TranscriptMessage } from "./transcript-tail";
 import {
 	isSubagentStateShape,
 	isSubagentRunShape,
@@ -290,11 +291,21 @@ export class SessionState {
 		this.subagentSessions.set(id, { ...data, liveOutput: "", usage: { input: 0, output: 0 } });
 	}
 
-	updateLiveSubagent(id: string, output: string, input: number, outputTokens: number): void {
+	updateLiveSubagent(
+		id: string,
+		output: string,
+		input: number,
+		outputTokens: number,
+		transcript?: TranscriptMessage[],
+	): void {
 		const s = this.subagentSessions.get(id);
 		if (s) {
 			s.liveOutput = output;
 			s.usage = { input, output: outputTokens };
+			// Issue #105: foreground streaming transcript — stored by reference
+			// (the runner mutates the same tail array; the 200ms drill-in tick
+			// re-reads it, so no copy is needed).
+			if (transcript) s.transcript = transcript;
 		}
 	}
 

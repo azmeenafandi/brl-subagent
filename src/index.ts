@@ -2845,11 +2845,14 @@ export default function (pi: ExtensionAPI) {
 					? (partial: AgentToolResult<SubagentResult>) => {
 							onUpdate(partial);
 							if (partial.details) {
+								// Issue #105: thread the streaming transcript into the live
+								// monitor — the drill-in renders it for foreground runs.
 								state.updateLiveSubagent(
 									runId,
 									getFinalOutput(partial.details.messages),
 									partial.details.usage.input,
 									partial.details.usage.output,
+									partial.details.liveTranscript,
 								);
 							}
 						}
@@ -3119,6 +3122,23 @@ export default function (pi: ExtensionAPI) {
 
 				const result = buildCrashResult("Subagent", err, resolvedCwd);
 				log.error("Subagent crashed", { runId, error: result.details.errorMessage });
+
+				// R2 (review): mirror the completion path — finalize the live entry
+				// and persist a FAILED run record. Without this the live entry stays
+				// 'running' forever, the stale sweep never reclaims it, and the
+				// drill-in loops on the live branch indefinitely. finalizeLiveSubagent
+				// is idempotent (true = THIS call claimed it; the foreground path has
+				// no activeSubagents counters to gate).
+				state.finalizeLiveSubagent(runId);
+				const crashOutput = state.subagentSessions.get(runId)?.liveOutput ?? "";
+				finalizeRunRecord(
+					run,
+					result.details,
+					crashOutput,
+					new Date(run.startedAt).getTime(),
+				);
+				state.persistRun(pi, run);
+
 				return result;
 			} finally {
 				releaseSlot(state, success, ctx);

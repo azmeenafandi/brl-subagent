@@ -5,6 +5,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { TranscriptMessage } from "./transcript-tail";
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -229,6 +230,14 @@ export interface LiveSubagent {
 	liveOutput: string;
 	usage: { input: number; output: number };
 	ctx: ExtensionContext;
+	/**
+	 * Issue #105: live streaming transcript for FOREGROUND runs — captured from
+	 * the subprocess's `message_update` JSONL events (thinking/text/toolCall
+	 * deltas) and threaded through the live monitor. Background runs render
+	 * from `_sessionRef` instead; this field is populated only on the
+	 * foreground path.
+	 */
+	transcript?: TranscriptMessage[];
 }
 
 export interface UsageStats {
@@ -251,6 +260,13 @@ export interface SubagentResult {
 	stderr: string;
 	label?: string;
 	errorCategory?: ErrorCategory;
+	/**
+	 * Issue #105: streaming transcript captured from the subprocess's
+	 * `message_update` JSONL events (foreground parity with the background
+	 * drill-in). Populated incrementally while the subprocess runs; the array
+	 * is a live tail capped at LIVE_TRANSCRIPT_MAX_MESSAGES / 64KB (runner.ts).
+	 */
+	liveTranscript?: TranscriptMessage[];
 	// P3: Git integration fields
 	gitBranch?: string;
 	gitDiff?: string;
