@@ -5,9 +5,16 @@ on:
     branches: [main]
   pull_request:
 
+# A new push supersedes the previous run (no dead-weight runs holding queue slots).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A hung vitest run must not burn to GitHub's 6-hour ceiling (sdk-contract flake class).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
