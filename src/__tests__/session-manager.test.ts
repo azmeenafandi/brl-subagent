@@ -1379,6 +1379,12 @@ describe("issue #31 — terminal paths release agent._sessionRef", () => {
 // in lockstep with the agent record.
 // =========================================================================
 describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
+	// Review F1: sync-throw finalization is covered by the dedicated test
+	// below. Review F2 (catch-all status derivation) fires only when a
+	// settle handler throws between the agent-status flip and its own
+	// finalizeRunEntry call — exercising it deterministically would need
+	// an injectable persistAgent/emit throw, so the derivation is covered
+	// by code review + the passing done/failed/aborted tests here.
 	it("persists a session run entry with the agent id at spawn", async () => {
 		// A never-resolving prompt keeps the agent 'running' — only the spawn
 		// entry is written, no finalization yet.
@@ -1398,6 +1404,9 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		expect(run.status).toBe("running");
 		expect(run.task).toBe("retryable background task");
 		expect(run.description).toBe("bg-label");
+		// Review F3: consumers (history/retry menu/reports) read run.label —
+		// the background label must land there, not only in description.
+		expect(run.label).toBe("bg-label");
 		expect(run.model).toBe("anthropic/claude-sonnet-4-5");
 		expect(run.thinkingLevel).toBe("high");
 	});
@@ -1475,5 +1484,27 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		expect(run.id).toBe(agent.id);
 		expect(run.status).toBe("failed");
 		expect(run.errorMessage).toBe("Aborted or timed out");
+	});
+
+	it("finalizes the run entry to failed when prompt() throws synchronously (review F1)", async () => {
+		// A synchronous prompt() throw means the .then/.catch settle handlers
+		// never attach — without the F1 catch path a zombie 'running' entry
+		// would survive and findRunById would retry a run that never started.
+		mocks.session.prompt.mockImplementation(() => {
+			throw new Error("sync preflight failure");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync-throws" })
+		).rejects.toThrow("sync preflight failure");
+
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		const spawnRun = fakePi.appendEntry.mock.calls[0][1];
+		expect(spawnRun.status).toBe("running");
+		const finalRun = fakePi.appendEntry.mock.calls[1][1];
+		expect(finalRun.id).toBe(spawnRun.id);
+		expect(finalRun.status).toBe("failed");
+		expect(finalRun.errorMessage).toBe("sync preflight failure");
+		expect(finalRun.finishedAt).toBeDefined();
 	});
 });

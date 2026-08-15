@@ -506,6 +506,10 @@ export async function spawnBackgroundSession(
     id, // SAME as agent.id — the caller holds this id
     task: params.task,
     description: params.description,
+    // Issue #98 (review F3): history/reports consumers read run.label —
+    // the background label (params.description) must land there too, not
+    // only in description.
+    label: params.description,
     status: "running",
     model: params.model || "unknown",
     thinkingLevel: params.thinkingLevel || "medium",
@@ -718,8 +722,11 @@ export async function spawnBackgroundSession(
       if (!agent.completedAt) agent.completedAt = Date.now();
       agents.set(id, agent);
       persistAgent(agent);
-      // Issue #98: the run entry mirrors the best-effort terminal flip too.
-      finalizeRunEntry('failed', agent.error);
+      // Issue #98 (review F2): derive the run-entry status from the agent
+      // record's terminal state — the catch-all fires on ANY settle-handler
+      // throw, so hardcoding 'failed' would mislabel a run whose completion
+      // branch already flipped the agent to 'completed'.
+      finalizeRunEntry(agent.status === 'completed' ? 'done' : 'failed', agent.error);
       // Issue #31: the live session ref must not survive terminal paths —
       // including this catch-all, which fires when a settle handler throws.
       agent._sessionRef = undefined;
@@ -747,6 +754,11 @@ export async function spawnBackgroundSession(
     runPromise = session.prompt(wrapTask(params.task));
   } catch (err) {
     cleanupWorkBranch();
+    // Issue #98 (review F1): a synchronous prompt() throw never reaches the
+    // settle handlers — finalize the run entry so no zombie 'running' entry
+    // survives (findRunById would otherwise resolve and retry a run that
+    // never started).
+    finalizeRunEntry('failed', sanitizeErrorMessage((err as Error).message, effectiveCwd));
     throw err;
   }
 
