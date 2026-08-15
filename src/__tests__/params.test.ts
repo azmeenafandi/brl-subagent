@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { findUnknownParams, KNOWN_DELEGATE_KEYS } from "../params";
+import { findUnknownParams, KNOWN_DELEGATE_KEYS, snapshotOriginalParams } from "../params";
 
 describe("findUnknownParams (issue #99)", () => {
 	it("returns [] when all received keys are known", () => {
@@ -64,5 +64,58 @@ describe("findUnknownParams (issue #99)", () => {
 		const minimal = new Set(["task"]);
 		expect(findUnknownParams({ task: "x" }, minimal)).toEqual([]);
 		expect(findUnknownParams({ task: "x", label: "y" }, minimal)).toEqual(["label"]);
+	});
+});
+
+describe("snapshotOriginalParams (issue #108)", () => {
+	it("copies exactly the 11 retry-override fields with values preserved", () => {
+		const snap = snapshotOriginalParams({
+			systemPrompt: "custom sys",
+			inheritSystemPrompt: false,
+			model: "openai/gpt-4o",
+			thinkingLevel: "high",
+			outputFile: "report.md",
+			timeout: 120_000,
+			cwd: "/tmp/proj",
+			tools: ["read", "grep"],
+			excludeTools: ["bash"],
+			noBuiltinTools: true,
+			preset: "security-auditor",
+		});
+		expect(snap).toEqual({
+			systemPrompt: "custom sys",
+			inheritSystemPrompt: false,
+			model: "openai/gpt-4o",
+			thinkingLevel: "high",
+			outputFile: "report.md",
+			timeout: 120_000,
+			cwd: "/tmp/proj",
+			tools: ["read", "grep"],
+			excludeTools: ["bash"],
+			noBuiltinTools: true,
+			preset: "security-auditor",
+		});
+	});
+
+	it("leaves unprovided fields undefined (no defaults, no garbage values)", () => {
+		expect(snapshotOriginalParams({})).toEqual({});
+		const snap = snapshotOriginalParams({ timeout: 5_000 });
+		expect(snap).toEqual({ timeout: 5_000 });
+		// undefined for missing fields — only the provided field carries a defined value
+		expect(Object.entries(snap).filter(([, v]) => v !== undefined)).toEqual([["timeout", 5_000]]);
+	});
+
+	it("never copies non-override keys (params/task/label/background are not retry overrides)", () => {
+		// The typed signature already excludes them, but ratchet the contract:
+		// a schema-drifted extra key must not leak into the retry snapshot.
+		const input = {
+			systemPrompt: "x",
+			timeout: 1,
+			params: { slot: "v" },
+			task: "do it",
+			label: "lbl",
+			background: true,
+		} as unknown as Parameters<typeof snapshotOriginalParams>[0];
+		expect(snapshotOriginalParams(input)).toEqual({ systemPrompt: "x", timeout: 1 });
 	});
 });

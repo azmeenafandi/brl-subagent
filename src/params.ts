@@ -67,6 +67,43 @@ export function findUnknownParams(
 	return Object.keys(received).filter((k) => !knownKeys.has(k));
 }
 
+/**
+ * Issue #108: snapshot the caller's raw delegate_task params onto a run
+ * record's originalParams — single source of truth for the retry merge
+ * (resolveRetryParams). The background and foreground run-record creation
+ * sites previously duplicated this 11-field literal; a future param added
+ * to one and not the other would silently degrade retries of that path.
+ * NOTE: the schema's `params` (template slots) key is intentionally NOT
+ * snapshotted — it is a template-resolution input, not a retry override.
+ */
+export function snapshotOriginalParams(params: {
+	systemPrompt?: string;
+	inheritSystemPrompt?: boolean;
+	model?: string;
+	thinkingLevel?: string;
+	outputFile?: string;
+	timeout?: number;
+	cwd?: string;
+	tools?: string[];
+	excludeTools?: string[];
+	noBuiltinTools?: boolean;
+	preset?: string;
+}): Record<string, unknown> {
+	return {
+		systemPrompt: params.systemPrompt,
+		inheritSystemPrompt: params.inheritSystemPrompt,
+		model: params.model,
+		thinkingLevel: params.thinkingLevel,
+		outputFile: params.outputFile,
+		timeout: params.timeout,
+		cwd: params.cwd,
+		tools: params.tools,
+		excludeTools: params.excludeTools,
+		noBuiltinTools: params.noBuiltinTools,
+		preset: params.preset,
+	};
+}
+
 export function resolveSubagentParams(
 	params: {
 		task: string;
