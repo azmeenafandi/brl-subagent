@@ -87,8 +87,11 @@ vi.mock("../event-bus", () => ({
 
 import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, __setStorageDir } from "../session-manager";
 import { getTranscriptPath as transcriptGetTranscriptPath, __setOutputDir } from "../transcript";
+import { CUSTOM_ENTRY_TYPES } from "../types";
 
-const fakePi = {};
+// Issue #98: spawnBackgroundSession persists session run entries via
+// pi.appendEntry (same store the foreground path writes to).
+const fakePi = { appendEntry: vi.fn() };
 const fakeCtx = {
 	cwd: "/tmp/brl-test-cwd",
 	modelRegistry: {
@@ -114,6 +117,7 @@ beforeEach(() => {
 	tempOutputDir = join(tempPiBase, "output");
 	__setStorageDir(tempStorageDir);
 	__setOutputDir(tempOutputDir);
+	fakePi.appendEntry.mockClear();
 });
 
 afterAll(() => {
@@ -1365,5 +1369,111 @@ describe("issue #31 — terminal paths release agent._sessionRef", () => {
 		expect(agent.completedAt).toBeDefined();
 		expect(agent.finalOutput).toBe("stopped mid-run");
 		expect(agent._sessionRef).toBeUndefined();
+	});
+});
+
+// =========================================================================
+// Issue #98: background run entries — spawn persist + settle finalization.
+// Background runs must be retry-able: the spawn entry (id == agent id) is
+// what state.findRunById resolves, and the finalize entry keeps its status
+// in lockstep with the agent record.
+// =========================================================================
+describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
+	it("persists a session run entry with the agent id at spawn", async () => {
+		// A never-resolving prompt keeps the agent 'running' — only the spawn
+		// entry is written, no finalization yet.
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "retryable background task",
+			description: "bg-label",
+			model: "anthropic/claude-sonnet-4-5",
+			thinkingLevel: "high",
+		});
+
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(1);
+		const [customType, run] = fakePi.appendEntry.mock.calls[0];
+		expect(customType).toBe(CUSTOM_ENTRY_TYPES.run);
+		// id == agent id — the id the caller holds IS the retry-able run id.
+		expect(run.id).toBe(agent.id);
+		expect(run.status).toBe("running");
+		expect(run.task).toBe("retryable background task");
+		expect(run.description).toBe("bg-label");
+		expect(run.model).toBe("anthropic/claude-sonnet-4-5");
+		expect(run.thinkingLevel).toBe("high");
+	});
+
+	it("persists originalParams on the spawn run entry (retry merge source)", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "bg task",
+			originalParams: {
+				systemPrompt: "bg prompt",
+				model: "anthropic/claude-sonnet-4-5",
+				thinkingLevel: "high",
+				preset: "code-reviewer",
+			},
+		});
+
+		const run = fakePi.appendEntry.mock.calls[0][1];
+		expect(run.originalParams).toEqual({
+			systemPrompt: "bg prompt",
+			model: "anthropic/claude-sonnet-4-5",
+			thinkingLevel: "high",
+			preset: "code-reviewer",
+		});
+	});
+
+	it("finalizes the run entry to done when the agent completes", async () => {
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "completes",
+		});
+		// Let the .then settle handler run.
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.id).toBe(agent.id);
+		expect(run.status).toBe("done");
+		expect(run.finishedAt).toBeDefined();
+		expect(run.durationMs).toBeGreaterThanOrEqual(0);
+	});
+
+	it("finalizes the run entry to failed when the session rejects", async () => {
+		mocks.session.prompt.mockRejectedValue(new Error("auth failed"));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "fails",
+		});
+		// Let the .catch settle handler run.
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.id).toBe(agent.id);
+		expect(run.status).toBe("failed");
+		expect(run.errorMessage).toBe("auth failed");
+	});
+
+	it("finalizes the run entry to failed when the run is aborted", async () => {
+		// Probe contract: abort makes prompt() RESOLVE with stopReason "aborted".
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [], stopReason: "aborted", errorMessage: "Aborted" },
+		];
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "aborts",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.id).toBe(agent.id);
+		expect(run.status).toBe("failed");
+		expect(run.errorMessage).toBe("Aborted or timed out");
 	});
 });

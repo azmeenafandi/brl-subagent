@@ -932,6 +932,43 @@ describe("resolveRetryParams", () => {
 		expect(params.timeout).toBe(60000);
 		expect(params.task).toBe("Overridden task");
 	});
+
+	it("merges background-style originalParams (model + thinkingLevel + preset)", () => {
+		// Issue #98: background runs now persist originalParams on their run
+		// entry (id == agent id) — pin that the retry merge picks up the
+		// background-style fields (model/thinkingLevel/preset) so a retried
+		// background run is not silently downgraded to defaults.
+		const run: SubagentRun = {
+			...makeRun("bg-retry-1"),
+			task: "Background task",
+			originalParams: {
+				systemPrompt: "bg prompt",
+				inheritSystemPrompt: false,
+				model: "anthropic/claude-sonnet-4-5",
+				thinkingLevel: "high",
+				preset: "code-reviewer",
+				cwd: "/some/repo",
+				tools: ["read", "grep"],
+				excludeTools: ["write"],
+				noBuiltinTools: true,
+			},
+		};
+
+		const params = resolveRetryParams(
+			{ task: "", retryRunId: "bg-retry-1" },
+			run,
+		);
+
+		expect(params.task).toBe("Background task");
+		expect(params.model).toBe("anthropic/claude-sonnet-4-5");
+		expect(params.thinkingLevel).toBe("high");
+		expect(params.preset).toBe("code-reviewer");
+		expect(params.inheritSystemPrompt).toBe(false);
+		expect(params.cwd).toBe("/some/repo");
+		expect(params.tools).toEqual(["read", "grep"]);
+		expect(params.excludeTools).toEqual(["write"]);
+		expect(params.noBuiltinTools).toBe(true);
+	});
 });
 
 // =========================================================================

@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
-import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, ThinkingLevel, SubagentToolOptions } from './types';
-import { EMPTY_USAGE } from './types';
+import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions } from './types';
+import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES } from './types';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
 import { createEvent } from './event-bus';
@@ -368,6 +368,10 @@ export async function spawnBackgroundSession(
     timeout?: number;
     /** Git isolation for the background run — "branch" creates a work branch (issue #28 W4). */
     gitMode?: GitMode;
+    /** Issue #98: snapshot of the caller's raw params — lets retryRunId restore
+     *  the original model/thinkingLevel/preset for background runs (mirrors the
+     *  foreground run-record creation in index.ts). */
+    originalParams?: SubagentRun["originalParams"];
   }
 ): Promise<BackgroundAgent> {
   // Serialize access to pi API to prevent concurrent import races
@@ -492,6 +496,36 @@ export async function spawnBackgroundSession(
   agents.set(id, agent);
   persistAgent(agent);
   
+  // Issue #98: background runs must be retry-able — persist a session run
+  // entry at spawn (id == agent id, so retryRunId: <agent-id> resolves via
+  // state.findRunById → getRunEntries). The entry lives in the same session
+  // custom-entry store the foreground path writes to (state.persistRun); the
+  // background path previously never wrote there, so retries silently no-oped.
+  const startedAtMs = agent.startedAt; // reuse the agent record's start clock
+  const run: SubagentRun = {
+    id, // SAME as agent.id — the caller holds this id
+    task: params.task,
+    description: params.description,
+    status: "running",
+    model: params.model || "unknown",
+    thinkingLevel: params.thinkingLevel || "medium",
+    startedAt: new Date().toISOString(),
+    originalParams: params.originalParams,
+  };
+  pi.appendEntry(CUSTOM_ENTRY_TYPES.run, run);
+
+  // Issue #98: keep the session run entry in lockstep with the agent record —
+  // every terminal branch that flips agent.status also finalizes the run entry
+  // ("done"/"failed"). The guard keeps the entry single-finalized even when a
+  // settle handler throws after finalizing (markTerminalBestEffort catch-all).
+  let runFinalized = false;
+  const finalizeRunEntry = (status: "done" | "failed", error?: string): void => {
+    if (runFinalized) return;
+    runFinalized = true;
+    const entry = { ...run, status, errorMessage: error, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedAtMs };
+    pi.appendEntry(CUSTOM_ENTRY_TYPES.run, entry);
+  };
+
   // Start transcript for this agent
   transcript.startTranscript(agent.id, params.task);
 
@@ -571,6 +605,10 @@ export async function spawnBackgroundSession(
       const sanitizedError = sanitizeErrorMessage((err as Error).message, effectiveCwd);
       try {
         updateAgentStatus(id, 'failed',
+          `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}`);
+        // Issue #98: the refused spawn is a failure — finalize the run entry so
+        // no zombie 'running' entry survives (lockstep with the record flip).
+        finalizeRunEntry('failed',
           `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}`);
         transcript.completeTranscript(id, 'failed');
       } catch { /* ignore */ }
@@ -680,6 +718,8 @@ export async function spawnBackgroundSession(
       if (!agent.completedAt) agent.completedAt = Date.now();
       agents.set(id, agent);
       persistAgent(agent);
+      // Issue #98: the run entry mirrors the best-effort terminal flip too.
+      finalizeRunEntry('failed', agent.error);
       // Issue #31: the live session ref must not survive terminal paths —
       // including this catch-all, which fires when a settle handler throws.
       agent._sessionRef = undefined;
@@ -776,6 +816,9 @@ export async function spawnBackgroundSession(
           agents.set(id, agent);
           persistAgent(agent);
         }
+        // Issue #98: aborts/timeouts are retryable failures (retry schema:
+        // timeout/abort counts as failure) — finalize the run entry.
+        finalizeRunEntry('failed', agent.error ?? 'Aborted or timed out');
         // Issue #31: capture the final output while the session is still
         // live, then release the ref on the terminal path (memory retention;
         // the poller treats a nulled ref on a terminal agent as expected).
@@ -805,6 +848,8 @@ export async function spawnBackgroundSession(
       captureAndReleaseSession();
       agents.set(id, agent);
       persistAgent(agent);
+      // Issue #98: mirror the agent-record flip in the session run entry.
+      finalizeRunEntry('done');
       transcript.completeTranscript(id, 'completed');
       eventBus.emit(eventBus.createEvent('subagent:completed', id, {}));
     } catch (err) {
@@ -840,6 +885,9 @@ export async function spawnBackgroundSession(
           agents.set(id, agent);
           persistAgent(agent);
         }
+        // Issue #98: the stopped path is a retryable failure too — finalize
+        // the run entry alongside the agent record flip.
+        finalizeRunEntry('failed', agent.error ?? 'Aborted or timed out');
         // Issue #31: the stopped path is terminal too — capture + release.
         captureAndReleaseSession();
         transcript.completeTranscript(id, 'stopped');
@@ -870,6 +918,8 @@ export async function spawnBackgroundSession(
       captureAndReleaseSession();
       agents.set(id, agent);
       persistAgent(agent);
+      // Issue #98: mirror the agent-record flip in the session run entry.
+      finalizeRunEntry('failed', sanitizedError);
       transcript.completeTranscript(id, 'failed');
       eventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizedError }));
     } catch (err) {

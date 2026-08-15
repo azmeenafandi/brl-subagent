@@ -1982,7 +1982,17 @@ export default function (pi: ExtensionAPI) {
 				if (runEntry) {
 					params = resolveRetryParams(params, runEntry);
 				} else {
+					// Issue #98: a silent no-op here made retries of background runs
+					// (which previously never wrote run entries) start as FRESH runs
+					// with no signal to the caller. Fail loudly instead.
 					log.warn("Retry run ID not found", { retryRunId: params.retryRunId });
+					return {
+						content: [{
+							type: "text" as const,
+							text: `Retry run ID not found: ${params.retryRunId}. The run may have been pruned, or it was a background run created before the run-entry fix (issue #98). Pass the run's agent ID — for background runs the agent ID and run ID are now the same.`,
+						}],
+						isError: true,
+					};
 				}
 			}
 
@@ -2216,6 +2226,22 @@ export default function (pi: ExtensionAPI) {
 						toolOptions: bgResolved.toolOptions,
 						timeout: bgResolved.timeout,
 						gitMode: bgResolved.resolvedGitMode,
+						// Issue #98: snapshot the caller's raw params on the run entry so a
+						// retry of this background run restores them — mirrors the foreground
+						// run-record creation (index.ts, same 11 fields).
+						originalParams: {
+							systemPrompt: params.systemPrompt,
+							inheritSystemPrompt: params.inheritSystemPrompt,
+							model: params.model,
+							thinkingLevel: params.thinkingLevel,
+							outputFile: params.outputFile,
+							timeout: params.timeout,
+							cwd: params.cwd,
+							tools: params.tools,
+							excludeTools: params.excludeTools,
+							noBuiltinTools: params.noBuiltinTools,
+							preset: params.preset,
+						},
 					});
 					
 					// Register for live monitor
