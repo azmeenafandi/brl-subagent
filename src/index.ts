@@ -1977,6 +1977,16 @@ export default function (pi: ExtensionAPI) {
 			const unknownKeys = findUnknownParams(params, KNOWN_DELEGATE_KEYS);
 			if (unknownKeys.length > 0) {
 				log.warn("delegate_task: unknown param(s) ignored — check spelling or add to schema", { unknown: unknownKeys });
+				// Issue #110: log.warn alone is invisible — pi's TUI swallows extension
+				// console output. Route through pi.sendMessage (the subagent-notification
+				// pattern, index.ts ~2312) so BOTH the LLM (followUp enters the
+				// conversation) and the human (session transcript) see the correction.
+				pi.sendMessage({
+					customType: "delegate-notification",
+					content: `delegate_task: unknown param(s) ignored — check spelling or add to schema: ${unknownKeys.join(", ")}`,
+					display: true,
+					details: { unknown: unknownKeys },
+				}, { deliverAs: "followUp" });
 			}
 
 			// F1: Sanitize task input — skip for chain/parallel modes
