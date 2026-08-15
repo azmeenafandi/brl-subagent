@@ -78,7 +78,7 @@ import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure } from "./validate";
-import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams } from "./params";
+import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams, snapshotOriginalParams } from "./params";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
@@ -2256,21 +2256,9 @@ export default function (pi: ExtensionAPI) {
 						timeout: bgResolved.timeout,
 						gitMode: bgResolved.resolvedGitMode,
 						// Issue #98: snapshot the caller's raw params on the run entry so a
-						// retry of this background run restores them — mirrors the foreground
-						// run-record creation (index.ts, same 11 fields).
-						originalParams: {
-							systemPrompt: params.systemPrompt,
-							inheritSystemPrompt: params.inheritSystemPrompt,
-							model: params.model,
-							thinkingLevel: params.thinkingLevel,
-							outputFile: params.outputFile,
-							timeout: params.timeout,
-							cwd: params.cwd,
-							tools: params.tools,
-							excludeTools: params.excludeTools,
-							noBuiltinTools: params.noBuiltinTools,
-							preset: params.preset,
-						},
+						// retry of this background run restores them — single source of truth
+						// snapshotOriginalParams (issue #108: no more duplicated 11-field literal).
+						originalParams: snapshotOriginalParams(params),
 					});
 					
 					// Register for live monitor
@@ -2688,19 +2676,7 @@ export default function (pi: ExtensionAPI) {
 				model: `${subagentModel.provider}/${subagentModel.id}`,
 				thinkingLevel,
 				startedAt: new Date().toISOString(),
-				originalParams: {
-					systemPrompt: params.systemPrompt,
-					inheritSystemPrompt: params.inheritSystemPrompt,
-					model: params.model,
-					thinkingLevel: params.thinkingLevel,
-					outputFile: params.outputFile,
-					timeout: params.timeout,
-					cwd: params.cwd,
-					tools: params.tools,
-					excludeTools: params.excludeTools,
-					noBuiltinTools: params.noBuiltinTools,
-					preset: params.preset,
-				},
+				originalParams: snapshotOriginalParams(params),
 			};
 			state.persistRun(pi, run);
 
