@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.1.7 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.2.0 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -252,6 +252,16 @@ Set `background: true` to spawn the subagent as an independent session that retu
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
 
 ## Changelog
+
+### v2.2.0
+
+- **Foreground drill-in parity (issue #105):** the full-screen transcript overlay now works for **foreground** delegations too — the streaming `message_update` deltas (thinking/text/toolCall) that were previously discarded are captured and rendered through the same planner as the background path. Foreground runs also finalize + persist failed run entries on crash (no more stuck "running" rows) and fall back to the run entry's full output on stale selection. The monitor is now category-agnostic.
+- **Background runs are retry-able (issue #98):** `spawnBackgroundSession` now persists a session run entry (`id == agent.id`) with an `originalParams` snapshot, finalized on every settle path — so `retryRunId: <agent-id>` resolves for background runs instead of silently no-oping. Unknown retry ids now fail loudly instead of warning quietly.
+- **Warn on unknown `delegate_task` params (issue #99):** TypeBox's `Type.Object` allows additional properties by default and pi passes them through — a typo like `thinkinglevel` was silently ignored. `findUnknownParams` diffs received keys against the schema's known set and warns (never rejects). `priority` (critical/high/normal/low) is now a first-class schema param — fully plumbed to the concurrency queue for chain/parallel/graph/single modes. A ratchet test ties the known-key set to the registered schema, so the two can never drift.
+- **Warn visibility (issue #110):** the unknown-param warn routes through `pi.sendMessage` (`delegate-notification`, `display: true`) so both the LLM and the human actually *see* the correction — `console.warn` alone is swallowed by the TUI.
+- **Worktree tooling (issues #100/#106):** `worktree-prep.sh --force-isolated` for dependency-bump worktrees (with dangling-symlink repair and a pre-flight wiring), a post-merge staleness WARN in cleanup, and a worktree-guard backstop that blocks `npm install`/`npm ci` through a symlinked `node_modules`.
+- **CI hardening (issue #104):** concurrency group with `cancel-in-progress` + 15-minute job timeout.
+- **DRY (issue #108):** the 11-field `originalParams` snapshot is a single `snapshotOriginalParams` helper shared by both run-record creation sites.
 
 ### v2.1.7
 
