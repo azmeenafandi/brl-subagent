@@ -2845,11 +2845,14 @@ export default function (pi: ExtensionAPI) {
 					? (partial: AgentToolResult<SubagentResult>) => {
 							onUpdate(partial);
 							if (partial.details) {
+								// Issue #105: thread the streaming transcript into the live
+								// monitor — the drill-in renders it for foreground runs.
 								state.updateLiveSubagent(
 									runId,
 									getFinalOutput(partial.details.messages),
 									partial.details.usage.input,
 									partial.details.usage.output,
+									partial.details.liveTranscript,
 								);
 							}
 						}

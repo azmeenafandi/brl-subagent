@@ -32,6 +32,11 @@ import { getSafeEnv, DEPTH_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
 import { extractMessages, stripMessageLines, formatPendingMessages } from "./messaging";
+import type {
+	TranscriptMessage,
+	TranscriptContentBlock,
+	TranscriptToolCallBlock,
+} from "./transcript-tail";
 // ---------------------------------------------------------------------------
 // Pi binary resolution
 // ---------------------------------------------------------------------------
@@ -231,6 +236,339 @@ function emitSubagentUpdate(
 	});
 }
 
+// ---------------------------------------------------------------------------
+// Live transcript capture (issue #105 — foreground drill-in parity)
+// ---------------------------------------------------------------------------
+
+/**
+ * Foreground subagents stream thinking/text/toolCall deltas via `message_update`
+ * JSONL events. Previously discarded, these are now accumulated into a live
+ * transcript tail (`result.liveTranscript`) that the drill-in overlay renders —
+ * parity with the background path's `_sessionRef` transcript.
+ *
+ * Event shapes EMPIRICALLY VERIFIED (pi 0.84.2 probe runs):
+ *   { "type": "message_update", "usage": {...},
+ *     "assistantMessageEvent": { "type": "text_delta", "contentIndex": 0, "delta": "PRO" } }
+ *   text/thinking: *_start {contentIndex} · *_delta {contentIndex, delta} ·
+ *                  *_end {contentIndex, content}
+ *   toolcall:      toolcall_start {contentIndex} · toolcall_delta {contentIndex,
+ *                  delta = partial args JSON} · toolcall_end {contentIndex,
+ *                  toolCall: { name, arguments }}
+ */
+
+/** Tail cap: keep at most this many transcript messages per run. */
+export const LIVE_TRANSCRIPT_MAX_MESSAGES = 40;
+/** Approximate byte budget for the captured transcript tail. */
+export const LIVE_TRANSCRIPT_MAX_BYTES = 64 * 1024;
+/** Min interval between throttled live updates (~5/sec; the drill-in ticks at 200ms). */
+export const LIVE_UPDATE_MIN_INTERVAL_MS = 200;
+
+type LiveBlockKind = "text" | "thinking" | "toolCall";
+
+/** Per-result streaming-accumulation state (keyed by the result object). */
+interface LiveTranscriptBuilder {
+	/** Completed messages + the in-flight assistant message (last element). */
+	messages: TranscriptMessage[];
+	/** Approximate byte cost of `messages` (recomputed at block boundaries). */
+	bytes: number;
+	/** True while an assistant message is being streamed (not yet finalized). */
+	streamingOpen: boolean;
+	/** Timestamp of the last emitted live update (throttle). */
+	lastEmit: number;
+}
+
+const liveBuilders = new WeakMap<SubagentResult, LiveTranscriptBuilder>();
+
+function getLiveBuilder(result: SubagentResult): LiveTranscriptBuilder {
+	let builder = liveBuilders.get(result);
+	if (!builder) {
+		builder = {
+			messages: [],
+			bytes: 0,
+			streamingOpen: false,
+			lastEmit: 0,
+		};
+		liveBuilders.set(result, builder);
+	}
+	return builder;
+}
+
+/**
+ * Convert an authoritative `message_end` message into the transcript shape the
+ * drill-in planner understands (role + content blocks of text/thinking/toolCall).
+ */
+export function toTranscriptMessage(msg: Record<string, unknown>): TranscriptMessage {
+	const role = typeof msg.role === "string" ? msg.role : undefined;
+	const toolName = typeof msg.toolName === "string" ? msg.toolName : undefined;
+	const content = Array.isArray(msg.content) ? msg.content : undefined;
+	if (!content) {
+		return { role, ...(toolName ? { toolName } : {}) };
+	}
+	const blocks: TranscriptContentBlock[] = [];
+	for (const part of content) {
+		if (!part || typeof part !== "object") continue;
+		const p = part as Record<string, unknown>;
+		if (p.type === "text" && typeof p.text === "string") {
+			blocks.push({ type: "text", text: p.text });
+		} else if (p.type === "thinking" && typeof p.thinking === "string") {
+			blocks.push({ type: "thinking", thinking: p.thinking });
+		} else if (p.type === "toolCall") {
+			blocks.push({
+				type: "toolCall",
+				name: typeof p.name === "string" ? p.name : undefined,
+				arguments: p.arguments,
+			});
+		}
+	}
+	return { role, content: blocks, ...(toolName ? { toolName } : {}) };
+}
+
+function recomputeLiveBytes(builder: LiveTranscriptBuilder): void {
+	let total = 0;
+	for (const m of builder.messages) {
+		try {
+			total += JSON.stringify(m)?.length ?? 0;
+		} catch {
+			/* non-serializable block — ignore */
+		}
+	}
+	builder.bytes = total;
+}
+
+/** Enforce the ring-buffer tail cap — oldest messages dropped, in-flight kept. */
+function trimLiveTranscript(builder: LiveTranscriptBuilder): void {
+	while (
+		builder.messages.length > LIVE_TRANSCRIPT_MAX_MESSAGES &&
+		builder.messages.length > 1
+	) {
+		builder.messages.shift();
+	}
+	while (builder.bytes > LIVE_TRANSCRIPT_MAX_BYTES && builder.messages.length > 1) {
+		builder.messages.shift();
+	}
+	recomputeLiveBytes(builder);
+}
+
+/** Return the in-flight assistant message, creating a new one if needed. */
+function ensureInFlightAssistant(builder: LiveTranscriptBuilder): TranscriptMessage {
+	const last = builder.messages[builder.messages.length - 1];
+	if (last && last.role === "assistant" && builder.streamingOpen) {
+		return last;
+	}
+	builder.streamingOpen = true;
+	const msg: TranscriptMessage = { role: "assistant", content: [] };
+	builder.messages.push(msg);
+	return msg;
+}
+
+/**
+ * Get (or create) the block at `contentIndex` of the in-flight assistant
+ * message. Placeholders fill gaps so arbitrary contentIndex order works; the
+ * drill-in planner skips empty placeholder blocks.
+ */
+function getOrCreateBlock(
+	builder: LiveTranscriptBuilder,
+	index: number,
+	kind: LiveBlockKind,
+): TranscriptContentBlock {
+	const msg = ensureInFlightAssistant(builder);
+	if (!Array.isArray(msg.content)) msg.content = [];
+	const content = msg.content as TranscriptContentBlock[];
+	while (content.length <= index) {
+		content.push({ type: "thinking", thinking: "" });
+	}
+	const existing = content[index];
+	const wantType = kind === "toolCall" ? "toolCall" : kind;
+	if (!existing || typeof existing !== "object" || existing.type !== wantType) {
+		const block: TranscriptContentBlock =
+			kind === "toolCall"
+				? { type: "toolCall", name: "", arguments: "" }
+				: kind === "text"
+					? { type: "text", text: "" }
+					: { type: "thinking", thinking: "" };
+		content[index] = block;
+		return block;
+	}
+	return existing;
+}
+
+/** Append `delta` to a text/thinking block field; returns the added chars. */
+function appendDeltaText(
+	block: TranscriptContentBlock,
+	field: "text" | "thinking",
+	delta: string,
+): number {
+	const rec = block as Record<string, unknown>;
+	const prev = typeof rec[field] === "string" ? (rec[field] as string) : "";
+	rec[field] = prev + delta;
+	return delta.length;
+}
+
+/** Replace a text/thinking block field with the authoritative `content`. */
+function setDeltaContent(
+	block: TranscriptContentBlock,
+	field: "text" | "thinking",
+	content: string,
+): number {
+	const rec = block as Record<string, unknown>;
+	const prev = typeof rec[field] === "string" ? (rec[field] as string) : "";
+	rec[field] = content;
+	return content.length - prev.length;
+}
+
+/**
+ * Throttled live-transcript emission. Block boundaries (start/end) force an
+ * update; mid-block deltas are throttled to ~5/sec — the drill-in monitor
+ * re-reads state at a 200ms tick, so per-delta emissions would be wasteful
+ * and would flood the conductor's update channel.
+ */
+function emitLiveUpdate(
+	result: SubagentResult,
+	onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
+	getFinalOutputFn: (messages: Array<Record<string, unknown>>) => string,
+	builder: LiveTranscriptBuilder,
+	force: boolean,
+): void {
+	if (!onUpdate) return;
+	const now = Date.now();
+	if (!force && now - builder.lastEmit < LIVE_UPDATE_MIN_INTERVAL_MS) return;
+	builder.lastEmit = now;
+	result.liveTranscript = builder.messages;
+	emitSubagentUpdate(result, onUpdate, getFinalOutputFn);
+}
+
+/**
+ * Handle one `message_update` JSONL event: apply the delta to the in-flight
+ * assistant message and (throttled) emit a live update.
+ */
+function handleMessageUpdate(
+	event: Record<string, unknown>,
+	result: SubagentResult,
+	onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
+	getFinalOutputFn: (messages: Array<Record<string, unknown>>) => string,
+): void {
+	const deltaEvent = event.assistantMessageEvent as Record<string, unknown> | undefined;
+	if (!deltaEvent || typeof deltaEvent.type !== "string") return;
+
+	const type = deltaEvent.type;
+	const index =
+		typeof deltaEvent.contentIndex === "number" ? deltaEvent.contentIndex : 0;
+	const builder = getLiveBuilder(result);
+
+	switch (type) {
+		case "text_start":
+		case "thinking_start":
+		case "toolcall_start": {
+			const kind: LiveBlockKind =
+				type === "text_start"
+					? "text"
+					: type === "thinking_start"
+						? "thinking"
+						: "toolCall";
+			getOrCreateBlock(builder, index, kind);
+			emitLiveUpdate(result, onUpdate, getFinalOutputFn, builder, true);
+			return;
+		}
+		case "text_delta":
+		case "thinking_delta": {
+			if (typeof deltaEvent.delta !== "string" || deltaEvent.delta === "") return;
+			const block = getOrCreateBlock(
+				builder,
+				index,
+				type === "text_delta" ? "text" : "thinking",
+			);
+			builder.bytes += appendDeltaText(
+				block,
+				type === "text_delta" ? "text" : "thinking",
+				deltaEvent.delta,
+			);
+			emitLiveUpdate(result, onUpdate, getFinalOutputFn, builder, false);
+			return;
+		}
+		case "text_end":
+		case "thinking_end": {
+			if (typeof deltaEvent.content !== "string") return;
+			const block = getOrCreateBlock(
+				builder,
+				index,
+				type === "text_end" ? "text" : "thinking",
+			);
+			builder.bytes += setDeltaContent(
+				block,
+				type === "text_end" ? "text" : "thinking",
+				deltaEvent.content,
+			);
+			emitLiveUpdate(result, onUpdate, getFinalOutputFn, builder, true);
+			return;
+		}
+		case "toolcall_delta": {
+			// Empirically: `delta` carries PARTIAL JSON of the tool arguments.
+			if (typeof deltaEvent.delta !== "string" || deltaEvent.delta === "") return;
+			const block = getOrCreateBlock(builder, index, "toolCall") as TranscriptToolCallBlock;
+			const prev = typeof block.arguments === "string" ? block.arguments : "";
+			block.arguments = prev + deltaEvent.delta;
+			builder.bytes += deltaEvent.delta.length;
+			emitLiveUpdate(result, onUpdate, getFinalOutputFn, builder, false);
+			return;
+		}
+		case "toolcall_end": {
+			// Empirically: carries the FULL ToolCall — name + parsed arguments.
+			const block = getOrCreateBlock(builder, index, "toolCall") as TranscriptToolCallBlock;
+			const toolCall = deltaEvent.toolCall as Record<string, unknown> | undefined;
+			if (block && toolCall) {
+				if (typeof toolCall.name === "string") block.name = toolCall.name;
+				if (toolCall.arguments !== undefined) {
+					const prevLen = typeof block.arguments === "string" ? block.arguments.length : 0;
+					let newLen = 0;
+					try {
+						newLen = JSON.stringify(toolCall.arguments)?.length ?? 0;
+					} catch {
+						newLen = 0;
+					}
+					builder.bytes += newLen - prevLen;
+					block.arguments = toolCall.arguments;
+				}
+			}
+			emitLiveUpdate(result, onUpdate, getFinalOutputFn, builder, true);
+			return;
+		}
+	}
+}
+
+/**
+ * On assistant `message_end`: replace the delta-built in-flight message with
+ * the authoritative message (deltas may have missed trailing blocks), then
+ * enforce the tail caps. Purely additive — existing message_end semantics
+ * (messages/usage/update emission) are untouched.
+ */
+function finalizeLiveAssistantMessage(
+	result: SubagentResult,
+	builder: LiveTranscriptBuilder,
+	msg: Record<string, unknown>,
+): void {
+	const authoritative = toTranscriptMessage(msg);
+	const last = builder.messages[builder.messages.length - 1];
+	if (last && last.role === "assistant" && builder.streamingOpen) {
+		builder.messages[builder.messages.length - 1] = authoritative;
+	} else {
+		builder.messages.push(authoritative);
+	}
+	builder.streamingOpen = false;
+	trimLiveTranscript(builder);
+	result.liveTranscript = builder.messages;
+}
+
+/** Append a completed non-assistant message (user echo / toolResult). */
+function pushLiveTranscriptMessage(
+	result: SubagentResult,
+	builder: LiveTranscriptBuilder,
+	msg: Record<string, unknown>,
+): void {
+	builder.messages.push(toTranscriptMessage(msg));
+	trimLiveTranscript(builder);
+	result.liveTranscript = builder.messages;
+}
+
 export function parseSubagentLine(
 	line: string,
 	result: SubagentResult,
@@ -246,6 +584,11 @@ export function parseSubagentLine(
 		const snippet = line.trim().slice(0, 200);
 		result.stderr += `[parse error] ${snippet}\n`;
 		log?.warn("Failed to parse subagent stdout line", { snippet });
+		return;
+	}
+
+	if (event.type === "message_update") {
+		handleMessageUpdate(event, result, onUpdate, getFinalOutputFn);
 		return;
 	}
 
@@ -266,13 +609,23 @@ export function parseSubagentLine(
 				tokensIn: result.usage.input,
 				tokensOut: result.usage.output,
 			});
+
+			// Issue #105: sync the live transcript with the authoritative message
+			// (replaces the delta-built in-flight assistant message).
+			finalizeLiveAssistantMessage(result, getLiveBuilder(result), msg);
+		} else {
+			// Issue #105: keep the user echo / toolResult in the live transcript.
+			pushLiveTranscriptMessage(result, getLiveBuilder(result), msg);
 		}
 
 		emitSubagentUpdate(result, onUpdate, getFinalOutputFn);
 	}
 
 	if (event.type === "tool_result_end" && event.message) {
-		result.messages.push(event.message as Record<string, unknown>);
+		const msg = event.message as Record<string, unknown>;
+		result.messages.push(msg);
+		// Issue #105: keep the toolResult echo in the live transcript.
+		pushLiveTranscriptMessage(result, getLiveBuilder(result), msg);
 		emitSubagentUpdate(result, onUpdate, getFinalOutputFn);
 	}
 }
