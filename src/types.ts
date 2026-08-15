@@ -187,6 +187,10 @@ export interface SubagentRun {
 	id: string;
 	task: string;
 	label?: string;
+	// Issue #98: background run entries carry the agent description (the label
+	// the caller passed at spawn) — kept separate from `label` for symmetry
+	// with the background agent record.
+	description?: string;
 	status: "running" | "done" | "failed";
 	model: string;
 	thinkingLevel: string;
