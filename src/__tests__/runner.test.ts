@@ -17,7 +17,7 @@ vi.mock("node:child_process", () => ({
 	spawn: mocks.spawn,
 }));
 
-import { runSubagent, getPiInvocation, parseSubagentLine, toTranscriptMessage, LIVE_TRANSCRIPT_MAX_MESSAGES } from "../runner";
+import { runSubagent, getPiInvocation, parseSubagentLine, toTranscriptMessage, LIVE_TRANSCRIPT_MAX_MESSAGES, LIVE_TRANSCRIPT_MAX_BYTES } from "../runner";
 import { wrapTask } from "../prompt";
 import type { SubagentResult } from "../types";
 
@@ -316,6 +316,33 @@ describe("parseSubagentLine message_update capture (issue #105)", () => {
 		]);
 	});
 
+	it("captures toolResult via message_end — the REAL pi 0.84.2 path (review R4)", () => {
+		// tool_result_end is never emitted by pi 0.84.2 (0 occurrences in a real
+		// tool probe); toolResults arrive as message_end with role "toolResult"
+		// and flow through pushLiveTranscriptMessage. Pin that live path — the
+		// toolName must survive the transcript conversion.
+		const result = feed([
+			userMe("task"),
+			me("assistant", [{ type: "text", text: "calling" }]),
+			JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "toolResult",
+					toolCallId: "call_1",
+					toolName: "bash",
+					content: [{ type: "text", text: "ok" }],
+				},
+			}),
+		]);
+		expect(result.liveTranscript).toEqual([
+			{ role: "user", content: [{ type: "text", text: "task" }] },
+			{ role: "assistant", content: [{ type: "text", text: "calling" }] },
+			{ role: "toolResult", toolName: "bash", content: [{ type: "text", text: "ok" }] },
+		]);
+		// message_end semantics unchanged: the raw message still accumulates.
+		expect(result.messages.length).toBe(3);
+	});
+
 	it("throttles mid-block deltas but forces block-boundary updates", () => {
 		const nowSpy = vi.spyOn(Date, "now");
 		let now = 1000;
@@ -368,6 +395,42 @@ describe("parseSubagentLine message_update capture (issue #105)", () => {
 			role: "assistant",
 			content: [{ type: "text", text: "out 44" }],
 		});
+	});
+
+	it("byte-cap keeps the NEWEST messages under budget — no drop-all-but-one (review R1)", () => {
+		// 8 × ~10KB assistant messages + 1 small user message ≈ 82KB total — over
+		// the 64KB budget. The OLD code re-read builder.bytes (never decremented)
+		// in the byte loop, so once over the cap it shifted down to the last
+		// message only (reviewer reproduction: length 3, ~10KB kept — 1 assistant
+		// survives). The fix drops the oldest just until the budget fits: ~62KB /
+		// 13 messages / 6 assistant messages must survive.
+		const big = "x".repeat(10 * 1024); // ~10KB per message
+		const lines: string[] = [];
+		for (let i = 0; i < 8; i++) {
+			lines.push(userMe(`task ${i}`));
+			lines.push(me("assistant", [{ type: "text", text: big }]));
+		}
+		lines.push(userMe("final small task"));
+		const result = feed(lines);
+		const transcript = result.liveTranscript ?? [];
+
+		// Not collapsed to a single message (or the ~3-message drop-all-but-one
+		// tail) — the budget must keep the newest bulk of the conversation.
+		expect(transcript.length).toBeGreaterThanOrEqual(8);
+		expect(
+			transcript.filter((m) => m.role === "assistant").length,
+		).toBeGreaterThanOrEqual(5);
+		// The NEWEST messages are preserved — the final small message is last.
+		expect(transcript[transcript.length - 1]).toEqual({
+			role: "user",
+			content: [{ type: "text", text: "final small task" }],
+		});
+		// Total serialized size stays under the budget.
+		const total = transcript.reduce(
+			(acc, m) => acc + (JSON.stringify(m)?.length ?? 0),
+			0,
+		);
+		expect(total).toBeLessThanOrEqual(LIVE_TRANSCRIPT_MAX_BYTES);
 	});
 
 	it("does not change message_end semantics (messages + usage still accumulate)", () => {

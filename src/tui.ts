@@ -1724,7 +1724,15 @@ export async function showAgentDetail(
 							);
 						}
 					} else {
-						const tailLines = cachedTail.split("\n").filter(Boolean).slice(-10);
+						// R3 (review): stale foreground selection — the live entry was
+						// finalized and deleted before first render, so neither the
+						// transcript nor the live tail were ever captured here. Fall
+						// back to the persisted run record's fullOutput (the completion
+						// path persists it), mirroring the background path's
+						// `agent?.finalOutput` fallback.
+						const runOutput =
+							cachedTail || state.findRunById(ctx, agentId)?.fullOutput || "";
+						const tailLines = runOutput.split("\n").filter(Boolean).slice(-10);
 						if (tailLines.length > 0) {
 							container.addChild(new Spacer(1));
 							for (const line of tailLines) {

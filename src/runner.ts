@@ -323,14 +323,20 @@ export function toTranscriptMessage(msg: Record<string, unknown>): TranscriptMes
 	return { role, content: blocks, ...(toolName ? { toolName } : {}) };
 }
 
+/** Serialized size of one transcript message (same accounting as recomputeLiveBytes). */
+function messageSize(m: TranscriptMessage): number {
+	try {
+		return JSON.stringify(m)?.length ?? 0;
+	} catch {
+		/* non-serializable block — ignore */
+		return 0;
+	}
+}
+
 function recomputeLiveBytes(builder: LiveTranscriptBuilder): void {
 	let total = 0;
 	for (const m of builder.messages) {
-		try {
-			total += JSON.stringify(m)?.length ?? 0;
-		} catch {
-			/* non-serializable block — ignore */
-		}
+		total += messageSize(m);
 	}
 	builder.bytes = total;
 }
@@ -344,7 +350,12 @@ function trimLiveTranscript(builder: LiveTranscriptBuilder): void {
 		builder.messages.shift();
 	}
 	while (builder.bytes > LIVE_TRANSCRIPT_MAX_BYTES && builder.messages.length > 1) {
-		builder.messages.shift();
+		// Review R1: the byte budget must shrink as messages drop — the OLD code
+		// re-read builder.bytes (never decremented), so once over the cap it kept
+		// shifting until messages.length === 1, collapsing the drill-in to the
+		// last message only (reproduced: 8×~10KB → length 3, ~10KB kept).
+		const dropped = builder.messages.shift();
+		if (dropped) builder.bytes -= messageSize(dropped);
 	}
 	recomputeLiveBytes(builder);
 }
