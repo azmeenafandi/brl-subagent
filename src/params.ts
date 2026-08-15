@@ -28,6 +28,21 @@ import { normalizeTimeout } from "./validate";
 import type { SessionState } from "./state";
 import type { Logger } from "./logging";
 
+/**
+ * Issue #99: warn-worthy unknown keys in a delegate_task params object.
+ * TypeBox's Type.Object allows additional properties by default and pi's
+ * validateToolArguments returns validated args UNCHANGED — so unknown keys
+ * survive to execute and are silently ignored. Comparing received keys
+ * against the schema's known keys converts that silent class into a
+ * visible one (warn-not-reject: never break a delegation).
+ */
+export function findUnknownParams(
+	received: Record<string, unknown>,
+	knownKeys: ReadonlySet<string>,
+): string[] {
+	return Object.keys(received).filter((k) => !knownKeys.has(k));
+}
+
 export function resolveSubagentParams(
 	params: {
 		task: string;

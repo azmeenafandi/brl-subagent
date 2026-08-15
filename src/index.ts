@@ -78,7 +78,7 @@ import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure } from "./validate";
-import { resolveSubagentParams } from "./params";
+import { findUnknownParams, resolveSubagentParams } from "./params";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
@@ -151,6 +151,25 @@ function sanitizePreview(text: string, maxLen = 500): string {
   const stripped = lastChar && /[\uD800-\uDBFF]/.test(lastChar) ? safe.slice(0, -1) : safe;
   return stripped.trimEnd();
 }
+
+// ---------------------------------------------------------------------------
+// delegate_task known keys (issue #99)
+// ---------------------------------------------------------------------------
+
+/**
+ * Keys the delegate_task schema declares (plus priority, the live victim of
+ * issue #99). TypeBox's Type.Object allows additional properties by default,
+ * so this set is the source of truth for the unknown-param warn: any received
+ * key outside it is silently ignored by execute and worth a warn.
+ * Keep in sync with the schema's Type.Object({ ... }) block.
+ */
+const KNOWN_DELEGATE_KEYS = new Set([
+	"task", "systemPrompt", "inheritSystemPrompt", "thinkingLevel",
+	"outputFile", "label", "model", "timeout", "cwd", "tools",
+	"excludeTools", "noBuiltinTools", "preset", "template", "params",
+	"retryRunId", "gitMode", "retryOnTimeout", "approvalMode", "background",
+	"priority", "chain", "tasks", "graph",
+] as const);
 
 // ---------------------------------------------------------------------------
 // Extension entry point
@@ -1837,6 +1856,16 @@ export default function (pi: ExtensionAPI) {
 						"Default: false (blocking mode).",
 				}),
 			),
+			priority: Type.Optional(
+				Type.Union([
+					Type.Literal("critical"),
+					Type.Literal("high"),
+					Type.Literal("normal"),
+					Type.Literal("low"),
+				], {
+					description: "Concurrency priority for this delegation (overrides the default). Affects queue ordering in acquireSlot.",
+				})
+			),
 			chain: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
 				label: Type.Optional(Type.String({})),
@@ -1960,6 +1989,15 @@ export default function (pi: ExtensionAPI) {
 			onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
 			ctx: ExtensionContext,
 		) {
+			// Issue #99: warn on unknown params — typebox allows additional properties
+			// by default (pi's validateToolArguments passes unknown keys through), so a
+			// typo like `thinkinglevel` or a schema-drifted param is otherwise silently
+			// ignored. Warn-not-reject: never break a delegation.
+			const unknownKeys = findUnknownParams(params, KNOWN_DELEGATE_KEYS);
+			if (unknownKeys.length > 0) {
+				log.warn("delegate_task: unknown param(s) ignored — check spelling or add to schema", { unknown: unknownKeys });
+			}
+
 			// F1: Sanitize task input — skip for chain/parallel modes
 			const hasChain = params.chain && params.chain.length > 0;
 			const hasParallel = params.tasks && params.tasks.length > 0;

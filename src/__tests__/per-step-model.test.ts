@@ -88,6 +88,10 @@ interface ToolEntry {
 				items: { properties: { model?: { type?: string; description?: string } } };
 			};
 			model?: { type?: string; description?: string };
+			priority?: {
+				anyOf?: Array<{ type?: string; const?: string }>;
+				description?: string;
+			};
 		};
 	};
 	execute: (...args: unknown[]) => Promise<{
@@ -237,6 +241,22 @@ describe("delegate_task step schemas accept model", () => {
 		expect(graph).toBeDefined();
 		expect(graph?.items.properties.model).toBeDefined();
 		expect(graph?.items.properties.model?.type).toBe("string");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #99: top-level priority is declared on the schema (the live victim —
+// the handler read params.priority in chain/parallel/graph and passed it to
+// acquireSlot, but the schema never declared it, so the LLM never saw it as
+// valid and hand-sent values were unvalidated/ignored).
+// ---------------------------------------------------------------------------
+
+describe("delegate_task schema declares priority (issue #99)", () => {
+	it("top-level schema advertises an optional priority literal union", () => {
+		const priority = tool.parameters.properties.priority;
+		expect(priority).toBeDefined();
+		expect(priority?.anyOf?.map((o) => o.const)).toEqual(["critical", "high", "normal", "low"]);
+		expect(priority?.description).toContain("Concurrency priority");
 	});
 });
 
