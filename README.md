@@ -81,6 +81,7 @@ All settings persist across sessions.
 | `timeout` | number | — | Max milliseconds. Exceeded → SIGTERM (5s grace) → SIGKILL. |
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
 | `background` | boolean | `false` | Spawn as an independent background session; returns an ID immediately. See [Background execution](#background-execution). |
+| `priority` | string | — | Concurrency priority: `critical` / `high` / `normal` / `low`. Overrides the configured default; higher-priority delegations queue ahead. |
 
 ## Multi-step modes (chain, tasks, graph)
 

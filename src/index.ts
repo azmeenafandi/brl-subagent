@@ -78,7 +78,7 @@ import { preflightCheck } from "./preflight";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure } from "./validate";
-import { resolveSubagentParams } from "./params";
+import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams } from "./params";
 import { createSessionState } from "./state";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
@@ -1837,6 +1837,16 @@ export default function (pi: ExtensionAPI) {
 						"Default: false (blocking mode).",
 				}),
 			),
+			priority: Type.Optional(
+				Type.Union([
+					Type.Literal("critical"),
+					Type.Literal("high"),
+					Type.Literal("normal"),
+					Type.Literal("low"),
+				], {
+					description: "Concurrency priority for this delegation: critical, high, normal, or low. Overrides the configured default; higher-priority delegations queue ahead.",
+				})
+			),
 			chain: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
 				label: Type.Optional(Type.String({})),
@@ -1960,6 +1970,15 @@ export default function (pi: ExtensionAPI) {
 			onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
 			ctx: ExtensionContext,
 		) {
+			// Issue #99: warn on unknown params — typebox allows additional properties
+			// by default (pi's validateToolArguments passes unknown keys through), so a
+			// typo like `thinkinglevel` or a schema-drifted param is otherwise silently
+			// ignored. Warn-not-reject: never break a delegation.
+			const unknownKeys = findUnknownParams(params, KNOWN_DELEGATE_KEYS);
+			if (unknownKeys.length > 0) {
+				log.warn("delegate_task: unknown param(s) ignored — check spelling or add to schema", { unknown: unknownKeys });
+			}
+
 			// F1: Sanitize task input — skip for chain/parallel modes
 			const hasChain = params.chain && params.chain.length > 0;
 			const hasParallel = params.tasks && params.tasks.length > 0;
@@ -2751,8 +2770,15 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			// Resolve priority (issue #99 R2: single mode honors priority like chain/parallel/graph)
+			const singlePriority: Priority = (
+				params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+					? (params.priority as Priority)
+					: state.config.defaultPriority
+			);
+
 			// Acquire concurrency slot
-			const acquired = await acquireSlot(state, ctx, signal);
+			const acquired = await acquireSlot(state, ctx, signal, singlePriority);
 			if (!acquired) {
 				cleanupGitBranch();
 				return {

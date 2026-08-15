@@ -28,6 +28,45 @@ import { normalizeTimeout } from "./validate";
 import type { SessionState } from "./state";
 import type { Logger } from "./logging";
 
+// ---------------------------------------------------------------------------
+// delegate_task known keys (issue #99)
+// ---------------------------------------------------------------------------
+
+/**
+ * Keys the delegate_task schema declares. TypeBox's Type.Object allows
+ * additional properties by default, so this set is the source of truth for
+ * the unknown-param warn: any received key outside it is silently ignored
+ * by execute and worth a warn.
+ *
+ * Single source of truth (review R1): index.ts imports this instead of
+ * carrying a duplicate, and per-step-model.test.ts ratchets it against the
+ * REAL registered schema (the #108-class drift that #99's fix targeted can
+ * never silently return). Keep in sync with the schema's Type.Object({ ... })
+ * block in index.ts.
+ */
+export const KNOWN_DELEGATE_KEYS = new Set([
+	"task", "systemPrompt", "inheritSystemPrompt", "thinkingLevel",
+	"outputFile", "label", "model", "timeout", "cwd", "tools",
+	"excludeTools", "noBuiltinTools", "preset", "template", "params",
+	"retryRunId", "gitMode", "retryOnTimeout", "approvalMode", "background",
+	"priority", "chain", "tasks", "graph",
+] as const);
+
+/**
+ * Issue #99: warn-worthy unknown keys in a delegate_task params object.
+ * TypeBox's Type.Object allows additional properties by default and pi's
+ * validateToolArguments returns validated args UNCHANGED — so unknown keys
+ * survive to execute and are silently ignored. Comparing received keys
+ * against the schema's known keys converts that silent class into a
+ * visible one (warn-not-reject: never break a delegation).
+ */
+export function findUnknownParams(
+	received: Record<string, unknown>,
+	knownKeys: ReadonlySet<string>,
+): string[] {
+	return Object.keys(received).filter((k) => !knownKeys.has(k));
+}
+
 export function resolveSubagentParams(
 	params: {
 		task: string;
