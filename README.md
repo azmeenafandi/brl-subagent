@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.2.0 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.2.1 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -253,6 +253,10 @@ Set `background: true` to spawn the subagent as an independent session that retu
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
 
 ## Changelog
+
+### v2.2.1
+
+- **Priority: from config knob to per-unit arbitration (issue #114):** the `/brl-subagent priority` menu item is removed — priority is decomposition-relative (a unit's importance is unknowable until the conductor plans), so it belongs in the conversation, not configuration. In its place: **per-unit `priority` on `tasks[]`/`graph[]` items** (the units that actually compete for concurrency slots; `chain[]` deliberately excluded — the array order IS the priority). Retries now **preserve priority** (the retry snapshot was missing it — a per-call `critical` delegation silently lost its priority on retry). The drill-in monitor shows `p:<priority>` on runs that declare it. Known limitation: parallel subtasks have no per-subtask run entries (pre-existing), so their priority is arbitration-only, not yet visible in the monitor.
 
 ### v2.2.0
 
