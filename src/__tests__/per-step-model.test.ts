@@ -78,15 +78,15 @@ interface ToolEntry {
 		properties: {
 			chain?: {
 				type: string;
-				items: { properties: { model?: { type?: string; description?: string } } };
+				items: { properties: { model?: { type?: string; description?: string }; priority?: { anyOf?: Array<{ const?: string }>; description?: string } } };
 			};
 			tasks?: {
 				type: string;
-				items: { properties: { model?: { type?: string; description?: string } } };
+				items: { properties: { model?: { type?: string; description?: string }; priority?: { anyOf?: Array<{ const?: string }>; description?: string } } };
 			};
 			graph?: {
 				type: string;
-				items: { properties: { model?: { type?: string; description?: string } } };
+				items: { properties: { model?: { type?: string; description?: string }; priority?: { anyOf?: Array<{ const?: string }>; description?: string } } };
 			};
 			model?: { type?: string; description?: string };
 			priority?: {
@@ -258,6 +258,42 @@ describe("delegate_task schema declares priority (issue #99)", () => {
 		expect(priority).toBeDefined();
 		expect(priority?.anyOf?.map((o) => o.const)).toEqual(["critical", "high", "normal", "low"]);
 		expect(priority?.description).toContain("Concurrency priority");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #114: per-unit priority on tasks[]/graph[] step schemas only.
+//
+// Priority is decomposition-relative — a unit's importance is unknowable until
+// the conductor plans — so it lives per-unit on the items that actually compete
+// for concurrency slots (tasks[], graph[]). chain[] steps deliberately do NOT
+// carry it: a chain holds ONE slot for its whole duration, so steps never
+// compete — array order IS the priority. Pinning the ABSENCE ratchets the
+// rationale: if someone later adds priority to chain[], they must first
+// justify why chain steps should queue against each other.
+// ---------------------------------------------------------------------------
+
+describe("nested step schemas carry per-unit priority (issue #114)", () => {
+	it("tasks[] item schema advertises the 4-literal priority union", () => {
+		const tasks = tool.parameters.properties.tasks;
+		expect(tasks).toBeDefined();
+		expect(tasks?.items.properties.priority).toBeDefined();
+		expect(tasks?.items.properties.priority?.anyOf?.map((o) => o.const))
+			.toEqual(["critical", "high", "normal", "low"]);
+	});
+
+	it("graph[] item schema advertises the 4-literal priority union", () => {
+		const graph = tool.parameters.properties.graph;
+		expect(graph).toBeDefined();
+		expect(graph?.items.properties.priority).toBeDefined();
+		expect(graph?.items.properties.priority?.anyOf?.map((o) => o.const))
+			.toEqual(["critical", "high", "normal", "low"]);
+	});
+
+	it("chain[] item schema does NOT carry priority (chain holds one slot; array order IS the priority)", () => {
+		const chain = tool.parameters.properties.chain;
+		expect(chain).toBeDefined();
+		expect(chain?.items.properties.priority).toBeUndefined();
 	});
 });
 

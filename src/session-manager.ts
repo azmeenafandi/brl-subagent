@@ -372,6 +372,9 @@ export async function spawnBackgroundSession(
      *  the original model/thinkingLevel/preset for background runs (mirrors the
      *  foreground run-record creation in index.ts). */
     originalParams?: SubagentRun["originalParams"];
+    /** Issue #114: per-unit priority — recorded on the run entry + agent record
+     *  so the drill-in header and history carry it (absent → no segment). */
+    priority?: string;
   }
 ): Promise<BackgroundAgent> {
   // Serialize access to pi API to prevent concurrent import races
@@ -491,6 +494,7 @@ export async function spawnBackgroundSession(
     task: params.task,
     model: params.model || 'unknown',
     thinkingLevel: params.thinkingLevel || 'medium',
+    priority: params.priority,
   };
   
   agents.set(id, agent);
@@ -513,6 +517,7 @@ export async function spawnBackgroundSession(
     status: "running",
     model: params.model || "unknown",
     thinkingLevel: params.thinkingLevel || "medium",
+    priority: params.priority,
     startedAt: new Date().toISOString(),
     originalParams: params.originalParams,
   };

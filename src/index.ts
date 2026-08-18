@@ -46,6 +46,7 @@ import type {
 	GraphTask,
 	GraphDetails,
 	GraphWave,
+	Priority,
 } from "./types";
 import {
 	resolveThinkingLevel,
@@ -58,6 +59,7 @@ import {
 	MAX_GRAPH_TASKS,
 	PREVIOUS_OUTPUT_PLACEHOLDER,
 	GRAPH_OUTPUT_PLACEHOLDER_RE,
+	DEFAULT_PRIORITY,
 	type GitMode,
 	type BackgroundAgent,
 } from "./types";
@@ -103,7 +105,6 @@ import {
 	showPresetManager,
 	showTemplateManager,
 	showUpdateCheckToggle,
-	showDefaultPrioritySelector,
 	showSLAConfig,
 	showSLAStats,
 	showConfigMenu,
@@ -317,6 +318,7 @@ export default function (pi: ExtensionAPI) {
 		timeout: number | undefined;
 		effectiveCwd: string;
 		thinkingLevel: ThinkingLevel;
+		priority: Priority | undefined;
 		toolOptions: SubagentToolOptions | undefined;
 		resolvedGitMode: GitMode;
 		resolvedApprovalMode: ApprovalMode;
@@ -356,6 +358,11 @@ export default function (pi: ExtensionAPI) {
 			timeout: subTask.timeout ?? globalParams.timeout,
 			effectiveCwd: subTask.cwd ?? globalParams.effectiveCwd,
 			thinkingLevel: mergedThinkingLevel,
+			// Issue #114: per-unit priority — undefined when the step declares none
+			// (the caller then falls back to the call-level priority).
+			priority: subTask.priority && ["critical", "high", "normal", "low"].includes(subTask.priority)
+				? (subTask.priority as Priority)
+				: undefined,
 			toolOptions: mergedToolOptions,
 			resolvedGitMode: globalParams.resolvedGitMode,
 			resolvedApprovalMode: globalParams.resolvedApprovalMode,
@@ -530,11 +537,11 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
-		// Resolve priority
+		// Resolve priority (issue #114: no config knob — the call-level default)
 		const chainPriority: Priority = (
 			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
 				? (params.priority as Priority)
-				: state.config.defaultPriority
+				: DEFAULT_PRIORITY
 		);
 
 		// Acquire concurrency slot for the chain
@@ -944,9 +951,10 @@ export default function (pi: ExtensionAPI) {
 		const intercom = new Intercom();
 
 		// Individual task runner (captures merged params, runs subagent)
-		const runTask = async (index: number): Promise<void> => {
-			const step = taskList[index];
-			const merged = mergeSubTaskParams(globalParams, step);
+		const runTask = async (
+			index: number,
+			merged: ReturnType<typeof mergeSubTaskParams>,
+		): Promise<void> => {
 
 			// C3: Resolve this step's model override (step.model > global resolved model)
 			const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
@@ -1076,16 +1084,20 @@ export default function (pi: ExtensionAPI) {
 			});
 		};
 
-		// Resolve priority
+		// Resolve priority — the FALLBACK for per-unit priority (issue #114): a
+		// task-level priority on tasks[] items wins per slot; this is the floor.
 		const parallelPriority: Priority = (
 			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
 				? (params.priority as Priority)
-				: state.config.defaultPriority
+				: DEFAULT_PRIORITY
 		);
 
 		// Launch all tasks concurrently using acquireSlot for natural concurrency limiting
 		const promises = taskList.map(async (_, index) => {
-			const acquired = await acquireSlot(state, ctx, signal, parallelPriority);
+			// Issue #114: per-unit priority wins the slot — the step's merged
+			// priority (if any) beats the call-level parallelPriority fallback.
+			const merged = mergeSubTaskParams(globalParams, taskList[index]);
+			const acquired = await acquireSlot(state, ctx, signal, merged.priority ?? parallelPriority);
 			if (!acquired) {
 				results[index] = {
 					task: taskList[index].task,
@@ -1101,7 +1113,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			try {
-				await runTask(index);
+				await runTask(index, merged);
 			} finally {
 				// Release slot — always mark success=false since we track success per-task
 				releaseSlot(state, false, ctx);
@@ -1350,11 +1362,12 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
-		// Resolve priority
+		// Resolve priority — the FALLBACK for per-unit priority (issue #114): a
+		// task-level priority on graph[] items wins per slot; this is the floor.
 		const graphPriority: Priority = (
 			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
 				? (params.priority as Priority)
-				: state.config.defaultPriority
+				: DEFAULT_PRIORITY
 		);
 
 		// Topological sort → execution waves
@@ -1409,6 +1422,7 @@ export default function (pi: ExtensionAPI) {
 						label: graphTask.label,
 						model: graphTask.model,
 						thinkingLevel: graphTask.thinkingLevel,
+						priority: graphTask.priority,
 						cwd: graphTask.cwd,
 						timeout: graphTask.timeout,
 						outputFile: graphTask.outputFile,
@@ -1441,8 +1455,9 @@ export default function (pi: ExtensionAPI) {
 						globalParams.resolvedPreset?.promptGuideline,
 					);
 
-					// Acquire concurrency slot
-					const acquired = await acquireSlot(state, ctx, signal, graphPriority);
+					// Acquire concurrency slot — issue #114: per-unit priority wins the
+					// slot; the call-level graphPriority is the fallback.
+					const acquired = await acquireSlot(state, ctx, signal, merged.priority ?? graphPriority);
 					if (!acquired) {
 						return {
 							id: graphTask.id,
@@ -1612,7 +1627,6 @@ export default function (pi: ExtensionAPI) {
 				thinking: () => showThinkingSelector(ctx, state, applyConfig),
 				concurrency: () => showConcurrencyInput(ctx, state, applyConfig),
 				depth: () => showDepthInput(ctx, state, applyConfig),
-				priority: () => showDefaultPrioritySelector(ctx, state, applyConfig),
 				approval: () => showApprovalModeSelector(ctx, state, applyConfig),
 				costlimit: () => showCostLimitInput(ctx, state, applyConfig),
 				reset: () => resetState(ctx),
@@ -1844,9 +1858,12 @@ export default function (pi: ExtensionAPI) {
 					Type.Literal("normal"),
 					Type.Literal("low"),
 				], {
-					description: "Concurrency priority for this delegation: critical, high, normal, or low. Overrides the configured default; higher-priority delegations queue ahead.",
+					description: "Concurrency priority for this delegation: critical, high, normal, or low. Higher-priority delegations queue ahead. Defaults to normal.",
 				})
 			),
+			// Issue #114: NO per-step `priority` on chain[] — chain steps never
+			// compete for concurrency slots (the chain holds ONE slot for its whole
+			// duration); array order IS the priority.
 			chain: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
 				label: Type.Optional(Type.String({})),
@@ -1868,6 +1885,14 @@ export default function (pi: ExtensionAPI) {
 				label: Type.Optional(Type.String({})),
 				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
 				thinkingLevel: Type.Optional(Type.String({})),
+				priority: Type.Optional(
+					Type.Union([
+						Type.Literal("critical"),
+						Type.Literal("high"),
+						Type.Literal("normal"),
+						Type.Literal("low"),
+					], { description: "Concurrency priority for this subtask (overrides the call-level default)." })
+				),
 				cwd: Type.Optional(Type.String({})),
 				timeout: Type.Optional(Type.Number({})),
 				outputFile: Type.Optional(Type.String({})),
@@ -1886,6 +1911,14 @@ export default function (pi: ExtensionAPI) {
 				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
 				dependsOn: Type.Optional(Type.Array(Type.String({}), { description: "IDs of tasks that must complete before this one starts" })),
 				thinkingLevel: Type.Optional(Type.String({})),
+				priority: Type.Optional(
+					Type.Union([
+						Type.Literal("critical"),
+						Type.Literal("high"),
+						Type.Literal("normal"),
+						Type.Literal("low"),
+					], { description: "Concurrency priority for this subtask (overrides the call-level default)." })
+				),
 				cwd: Type.Optional(Type.String({})),
 				timeout: Type.Optional(Type.Number({})),
 				outputFile: Type.Optional(Type.String({})),
@@ -1940,6 +1973,7 @@ export default function (pi: ExtensionAPI) {
 					label?: string;
 					model?: string;
 					thinkingLevel?: string;
+					priority?: string;
 					cwd?: string;
 					timeout?: number;
 					outputFile?: string;
@@ -1956,6 +1990,7 @@ export default function (pi: ExtensionAPI) {
 					model?: string;
 					dependsOn?: string[];
 					thinkingLevel?: string;
+					priority?: string;
 					cwd?: string;
 					timeout?: number;
 					outputFile?: string;
@@ -2250,6 +2285,9 @@ export default function (pi: ExtensionAPI) {
 						description: params.label,
 						model: bgModel,
 						thinkingLevel: bgResolved.thinkingLevel,
+						// Issue #114: per-unit priority rides the spawn so the background
+						// run entry + drill-in header carry it like foreground runs.
+						priority: params.priority,
 						systemPrompt: bgPrompt,
 						cwd: bgCwdResult.value,
 						toolOptions: bgResolved.toolOptions,
@@ -2268,6 +2306,7 @@ export default function (pi: ExtensionAPI) {
 						task: agent.task,
 						model: agent.model,
 						thinkingLevel: agent.thinkingLevel,
+						priority: agent.priority,
 						startedAt: agent.startedAt,
 						ctx,
 					});
@@ -2675,6 +2714,9 @@ export default function (pi: ExtensionAPI) {
 				status: "running",
 				model: `${subagentModel.provider}/${subagentModel.id}`,
 				thinkingLevel,
+				// Issue #114: record-level visibility — the run's priority (absent
+				// when the caller left it to the default).
+				priority: params.priority,
 				startedAt: new Date().toISOString(),
 				originalParams: snapshotOriginalParams(params),
 			};
@@ -2693,6 +2735,7 @@ export default function (pi: ExtensionAPI) {
 				task,
 				model: run.model,
 				thinkingLevel,
+				priority: params.priority,
 				startedAt: Date.now(),
 				ctx,
 			});
@@ -2760,7 +2803,7 @@ export default function (pi: ExtensionAPI) {
 			const singlePriority: Priority = (
 				params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
 					? (params.priority as Priority)
-					: state.config.defaultPriority
+					: DEFAULT_PRIORITY
 			);
 
 			// Acquire concurrency slot
@@ -2869,6 +2912,7 @@ export default function (pi: ExtensionAPI) {
 						task,
 						model: run.model,
 						thinkingLevel,
+						priority: params.priority,
 						startedAt: Date.now(),
 						ctx,
 					});

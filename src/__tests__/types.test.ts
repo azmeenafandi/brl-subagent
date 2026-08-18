@@ -300,6 +300,20 @@ describe("isSubagentStateShape", () => {
 			}),
 		).toBe(false);
 	});
+
+	it("accepts pre-#114 state with legacy defaultPriority (forward-compat)", () => {
+		// Issue #114 removed the defaultPriority knob; sessions persisted before
+		// the upgrade may still carry it. Unknown keys are tolerated, so resuming
+		// old sessions must keep working — ratchet this tolerance against future
+		// validator tightening.
+		expect(
+			isSubagentStateShape({
+				maxThinkingLevel: "off",
+				maxParallel: 0,
+				defaultPriority: "normal",
+			}),
+		).toBe(true);
+	});
 });
 
 // ---------------------------------------------------------------------------

@@ -26,7 +26,6 @@ import {
 	MAX_RUN_HISTORY_ENTRIES,
 	DEFAULT_MAX_SUBAGENT_DEPTH,
 	DEFAULT_SESSION_COST_LIMIT,
-	DEFAULT_PRIORITY,
 	MAX_CONSECUTIVE_FAILURES,
 	CIRCUIT_BREAKER_RESET_MS,
 	CIRCUIT_DEGRADED_THINKING,
@@ -119,7 +118,6 @@ export class SessionState {
 			maxSubagentDepth: DEFAULT_MAX_SUBAGENT_DEPTH,
 			gitMode: "none",
 			approvalMode: "writes",
-			defaultPriority: DEFAULT_PRIORITY,
 			sessionCostLimit: DEFAULT_SESSION_COST_LIMIT,
 			perTaskCostEstimate: 0,
 			seenRunIds: [],
@@ -144,7 +142,6 @@ export class SessionState {
 			maxSubagentDepth: this.config.maxSubagentDepth,
 			gitMode: this.config.gitMode,
 			approvalMode: this.config.approvalMode,
-			defaultPriority: this.config.defaultPriority,
 			maxHistoryEntries: this.config.maxHistoryEntries,
 			sessionCostLimit: this.config.sessionCostLimit,
 			perTaskCostEstimate: this.config.perTaskCostEstimate,
@@ -207,14 +204,6 @@ export class SessionState {
 		if (data.maxHistoryEntries !== undefined) this.config.maxHistoryEntries = data.maxHistoryEntries;
 		if (data.sessionCostLimit !== undefined) this.config.sessionCostLimit = data.sessionCostLimit;
 		if (data.perTaskCostEstimate !== undefined) this.config.perTaskCostEstimate = data.perTaskCostEstimate;
-		if (
-			data.defaultPriority &&
-			["critical", "high", "normal", "low"].includes(data.defaultPriority)
-		) {
-			this.config.defaultPriority = data.defaultPriority as Priority;
-		} else {
-			this.config.defaultPriority = "normal";
-		}
 
 		if (Array.isArray(data.seenRunIds)) this.config.seenRunIds = data.seenRunIds;
 
@@ -488,7 +477,6 @@ export class SessionState {
 		this.config.maxSubagentDepth = DEFAULT_MAX_SUBAGENT_DEPTH;
 		this.config.gitMode = "none";
 		this.config.approvalMode = "writes";
-		this.config.defaultPriority = "normal";
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
 		this.config.perTaskCostEstimate = 0;

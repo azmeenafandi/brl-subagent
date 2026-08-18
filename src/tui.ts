@@ -24,7 +24,6 @@ import type {
 	GraphTask,
 	SubTaskResult,
 	ThinkingLevel,
-	Priority,
 	UsageStats,
 	FileDiff,
 } from "./types";
@@ -313,29 +312,6 @@ export async function showApprovalModeSelector(
 
 	state.config.approvalMode = result as "auto" | "writes" | "always";
 	onConfigChanged(ctx, `Change approval mode set to ${result}`);
-}
-
-// ---------------------------------------------------------------------------
-// Default priority selector — P6
-// ---------------------------------------------------------------------------
-
-export async function showDefaultPrioritySelector(
-	ctx: ExtensionContext,
-	state: SessionState,
-	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
-): Promise<void> {
-	const items: SelectItem[] = [
-		{ value: "critical", label: "critical", description: "Highest priority — queued ahead of all others" },
-		{ value: "high", label: "high", description: "High priority — above normal and low" },
-		{ value: "normal", label: "normal (default)", description: "Normal priority — below critical and high" },
-		{ value: "low", label: "low", description: "Lowest priority — queued behind all others" },
-	];
-
-	const result = await showSelectList(ctx, "Select Default Priority", items, 5);
-	if (!result) return;
-
-	state.config.defaultPriority = result as Priority;
-	onConfigChanged(ctx, `Default priority set to ${result}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1127,11 +1103,6 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 				: `Subagents can delegate up to ${state.config.maxSubagentDepth} level${state.config.maxSubagentDepth > 1 ? "s" : ""} deep`,
 		},
 		{
-			value: "priority",
-			label: "Set Default Priority",
-			description: state.config.defaultPriority,
-		},
-		{
 			value: "approval",
 			label: "Set Change Approval Mode",
 			description: state.config.approvalMode === "auto"
@@ -1654,15 +1625,21 @@ export async function showAgentDetail(
 					agent?.model ||
 					"";
 				const thinkingLevel = live?.thinkingLevel ?? agent?.thinkingLevel ?? "";
+				const priority = live?.priority ?? agent?.priority;
 				const startedAt = live?.startedAt ?? agent?.startedAt ?? Date.now();
 				const elapsed = formatElapsed(Date.now() - startedAt);
+				// Issue #114: per-unit priority is part of the identity line when the
+				// run carried one (p:critical etc.); absent → no segment at all.
+				const metaSegment = [modelShort, thinkingLevel, priority ? `p:${priority}` : null]
+					.filter(Boolean)
+					.join(" · ");
 
 				container.addChild(
 					new Text(
 						theme.fg("accent", theme.bold(name)) +
 							theme.fg(
 								"dim",
-								`  [${shortId}]  ${modelShort} · ${thinkingLevel} · ${elapsed}`,
+								`  [${shortId}]  ${metaSegment} · ${elapsed}`,
 							),
 						1,
 						0,
