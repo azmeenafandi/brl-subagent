@@ -125,6 +125,7 @@ export function resolveRetryParams(
 		systemPrompt?: string;
 		inheritSystemPrompt?: boolean;
 		thinkingLevel?: string;
+		priority?: string;
 		outputFile?: string;
 		timeout?: number;
 		cwd?: string;
@@ -145,6 +146,7 @@ export function resolveRetryParams(
 		systemPrompt: params.systemPrompt ?? orig?.systemPrompt,
 		inheritSystemPrompt: params.inheritSystemPrompt ?? orig?.inheritSystemPrompt,
 		thinkingLevel: params.thinkingLevel ?? orig?.thinkingLevel,
+		priority: params.priority ?? orig?.priority,
 		outputFile: params.outputFile ?? orig?.outputFile,
 		timeout: params.timeout ?? orig?.timeout,
 		cwd: params.cwd ?? orig?.cwd,

@@ -68,12 +68,13 @@ describe("findUnknownParams (issue #99)", () => {
 });
 
 describe("snapshotOriginalParams (issue #108)", () => {
-	it("copies exactly the 11 retry-override fields with values preserved", () => {
+	it("copies exactly the 12 retry-override fields with values preserved (priority since issue #114)", () => {
 		const snap = snapshotOriginalParams({
 			systemPrompt: "custom sys",
 			inheritSystemPrompt: false,
 			model: "openai/gpt-4o",
 			thinkingLevel: "high",
+			priority: "critical",
 			outputFile: "report.md",
 			timeout: 120_000,
 			cwd: "/tmp/proj",
@@ -87,6 +88,7 @@ describe("snapshotOriginalParams (issue #108)", () => {
 			inheritSystemPrompt: false,
 			model: "openai/gpt-4o",
 			thinkingLevel: "high",
+			priority: "critical",
 			outputFile: "report.md",
 			timeout: 120_000,
 			cwd: "/tmp/proj",
@@ -95,6 +97,14 @@ describe("snapshotOriginalParams (issue #108)", () => {
 			noBuiltinTools: true,
 			preset: "security-auditor",
 		});
+	});
+
+	it("includes priority when provided (issue #114)", () => {
+		expect(snapshotOriginalParams({ priority: "low" })).toEqual({ priority: "low" });
+		// Absent → no defined priority value (the toEqual form ignores undefined
+		// properties, mirroring the existing "leaves unprovided fields undefined" test).
+		expect(snapshotOriginalParams({})).toEqual({});
+		expect(snapshotOriginalParams({}).priority).toBeUndefined();
 	});
 
 	it("leaves unprovided fields undefined (no defaults, no garbage values)", () => {

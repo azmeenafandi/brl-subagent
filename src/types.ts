@@ -169,7 +169,6 @@ export interface SubagentState {
 	maxSubagentDepth: number; // 0 = no recursion allowed, 1 = one level, etc.
 	gitMode: GitMode; // P3: branch-based git workflow
 	approvalMode: ApprovalMode; // P4: change approval workflow
-	defaultPriority: Priority; // P6: default priority for subagent tasks
 	maxHistoryEntries: number; // 0 = unlimited
 	sessionCostLimit: number; // 0 = unlimited
 	perTaskCostEstimate: number; // 0 = no estimate, use default
@@ -195,6 +194,9 @@ export interface SubagentRun {
 	status: "running" | "done" | "failed";
 	model: string;
 	thinkingLevel: string;
+	// Issue #114: per-unit priority (may be absent — the run's slot priority
+	// then fell back to the call-level default, which is not recorded here).
+	priority?: string;
 	startedAt: string;
 	finishedAt?: string;
 	durationMs?: number;
@@ -226,6 +228,8 @@ export interface LiveSubagent {
 	task: string;
 	model: string;
 	thinkingLevel: string;
+	// Issue #114: per-unit priority for the drill-in header (`p:critical` etc.).
+	priority?: string;
 	startedAt: number;
 	liveOutput: string;
 	usage: { input: number; output: number };
@@ -291,6 +295,8 @@ export interface SubTaskParams {
 	/** Model override for this step (provider/model-id, e.g. "anthropic/claude-opus-4-6"). */
 	model?: string;
 	thinkingLevel?: string;
+	/** Issue #114: per-unit concurrency priority for tasks[]/graph[] items. */
+	priority?: string;
 	systemPrompt?: string;
 	inheritSystemPrompt?: boolean;
 	cwd?: string;
@@ -353,6 +359,8 @@ export interface GraphTask {
 	/** Model override for this task (provider/model-id, e.g. "anthropic/claude-opus-4-6"). */
 	model?: string;
 	thinkingLevel?: string;
+	/** Issue #114: per-unit concurrency priority for this graph node. */
+	priority?: string;
 	cwd?: string;
 	timeout?: number;
 	outputFile?: string;
@@ -529,6 +537,8 @@ export interface BackgroundAgent {
 	task: string;
 	model: string;
 	thinkingLevel: ThinkingLevel;
+	// Issue #114: per-unit priority for the drill-in header (`p:critical` etc.).
+	priority?: string;
 	error?: string;
 	result?: SubagentResult;
 	finalOutput?: string;
@@ -637,11 +647,6 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 	// approvalMode must be "auto", "writes", or "always" if present
 	if (v.approvalMode !== undefined) {
 		if (v.approvalMode !== "auto" && v.approvalMode !== "writes" && v.approvalMode !== "always") return false;
-	}
-
-	// defaultPriority must be a valid priority if present
-	if (v.defaultPriority !== undefined) {
-		if (!["critical", "high", "normal", "low"].includes(v.defaultPriority as string)) return false;
 	}
 
 	// maxHistoryEntries must be a non-negative number if present

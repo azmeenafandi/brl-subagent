@@ -19,6 +19,7 @@ import {
 	type ThinkingLevel,
 	type SubagentToolOptions,
 	type UsageStats,
+	type Priority,
 } from "../types";
 
 // =========================================================================
@@ -65,6 +66,8 @@ interface ResolvedParamsLike {
 	timeout: number | undefined;
 	effectiveCwd: string;
 	thinkingLevel: ThinkingLevel;
+	/** Issue #114: per-unit priority — undefined when the step declares none. */
+	priority: Priority | undefined;
 	toolOptions: SubagentToolOptions | undefined;
 	resolvedGitMode: "branch" | "none";
 }
@@ -114,6 +117,7 @@ describe("mergeSubTaskParams", () => {
 			timeout: subTask.timeout ?? globalParams.timeout,
 			effectiveCwd: subTask.cwd ?? globalParams.effectiveCwd,
 			thinkingLevel: mergedThinkingLevel,
+			priority: subTask.priority as Priority | undefined,
 			toolOptions: mergedToolOptions,
 			resolvedGitMode: globalParams.resolvedGitMode,
 		};
@@ -128,6 +132,7 @@ describe("mergeSubTaskParams", () => {
 		timeout: 120000,
 		effectiveCwd: "/workspace",
 		thinkingLevel: "medium",
+		priority: undefined,
 		toolOptions: {
 			tools: ["read", "grep", "find"],
 			excludeTools: ["write"],
@@ -259,6 +264,28 @@ describe("mergeSubTaskParams", () => {
 			maxThinkingLevel,
 		);
 		expect(result.resolvedGitMode).toBe("branch");
+	});
+
+	// Issue #114: per-unit priority rides the merged result — the acquireSlot
+	// call sites use `merged.priority ?? <call-level fallback>`, so the step's
+	// priority must survive the merge (and absent step priority must stay
+	// undefined so the fallback actually fires).
+	it("SubTask priority is carried through the merge (per-step override)", () => {
+		const result = mergeSubTaskParams(
+			baseGlobal,
+			{ task: "test", priority: "critical" },
+			maxThinkingLevel,
+		);
+		expect(result.priority).toBe("critical");
+	});
+
+	it("SubTask without priority → merged priority is undefined (fallback fires at acquireSlot)", () => {
+		const result = mergeSubTaskParams(
+			baseGlobal,
+			{ task: "test" },
+			maxThinkingLevel,
+		);
+		expect(result.priority).toBeUndefined();
 	});
 });
 

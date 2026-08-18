@@ -71,8 +71,9 @@ export function findUnknownParams(
  * Issue #108: snapshot the caller's raw delegate_task params onto a run
  * record's originalParams — single source of truth for the retry merge
  * (resolveRetryParams). The background and foreground run-record creation
- * sites previously duplicated this 11-field literal; a future param added
- * to one and not the other would silently degrade retries of that path.
+ * sites previously duplicated this 12-field literal (priority added, issue
+ * #114); a future param added to one and not the other would silently
+ * degrade retries of that path.
  * NOTE: the schema's `params` (template slots) key is intentionally NOT
  * snapshotted — it is a template-resolution input, not a retry override.
  */
@@ -81,6 +82,7 @@ export function snapshotOriginalParams(params: {
 	inheritSystemPrompt?: boolean;
 	model?: string;
 	thinkingLevel?: string;
+	priority?: string;
 	outputFile?: string;
 	timeout?: number;
 	cwd?: string;
@@ -94,6 +96,7 @@ export function snapshotOriginalParams(params: {
 		inheritSystemPrompt: params.inheritSystemPrompt,
 		model: params.model,
 		thinkingLevel: params.thinkingLevel,
+		priority: params.priority,
 		outputFile: params.outputFile,
 		timeout: params.timeout,
 		cwd: params.cwd,
