@@ -360,7 +360,9 @@ export default function (pi: ExtensionAPI) {
 			thinkingLevel: mergedThinkingLevel,
 			// Issue #114: per-unit priority — undefined when the step declares none
 			// (the caller then falls back to the call-level priority).
-			priority: subTask.priority as Priority | undefined,
+			priority: subTask.priority && ["critical", "high", "normal", "low"].includes(subTask.priority)
+				? (subTask.priority as Priority)
+				: undefined,
 			toolOptions: mergedToolOptions,
 			resolvedGitMode: globalParams.resolvedGitMode,
 			resolvedApprovalMode: globalParams.resolvedApprovalMode,
@@ -949,9 +951,10 @@ export default function (pi: ExtensionAPI) {
 		const intercom = new Intercom();
 
 		// Individual task runner (captures merged params, runs subagent)
-		const runTask = async (index: number): Promise<void> => {
-			const step = taskList[index];
-			const merged = mergeSubTaskParams(globalParams, step);
+		const runTask = async (
+			index: number,
+			merged: ReturnType<typeof mergeSubTaskParams>,
+		): Promise<void> => {
 
 			// C3: Resolve this step's model override (step.model > global resolved model)
 			const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
@@ -1110,7 +1113,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			try {
-				await runTask(index);
+				await runTask(index, merged);
 			} finally {
 				// Release slot — always mark success=false since we track success per-task
 				releaseSlot(state, false, ctx);
@@ -1855,7 +1858,7 @@ export default function (pi: ExtensionAPI) {
 					Type.Literal("normal"),
 					Type.Literal("low"),
 				], {
-					description: "Concurrency priority for this delegation: critical, high, normal, or low. Overrides the configured default; higher-priority delegations queue ahead.",
+					description: "Concurrency priority for this delegation: critical, high, normal, or low. Higher-priority delegations queue ahead. Defaults to normal.",
 				})
 			),
 			// Issue #114: NO per-step `priority` on chain[] — chain steps never
@@ -1970,6 +1973,7 @@ export default function (pi: ExtensionAPI) {
 					label?: string;
 					model?: string;
 					thinkingLevel?: string;
+					priority?: string;
 					cwd?: string;
 					timeout?: number;
 					outputFile?: string;
@@ -1986,6 +1990,7 @@ export default function (pi: ExtensionAPI) {
 					model?: string;
 					dependsOn?: string[];
 					thinkingLevel?: string;
+					priority?: string;
 					cwd?: string;
 					timeout?: number;
 					outputFile?: string;

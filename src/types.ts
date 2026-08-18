@@ -211,6 +211,9 @@ export interface SubagentRun {
 		inheritSystemPrompt?: boolean;
 		model?: string;
 		thinkingLevel?: string;
+		// Issue #114: per-unit priority survives retries — the snapshot carries
+		// it through so a retried run keeps its priority.
+		priority?: string;
 		outputFile?: string;
 		timeout?: number;
 		cwd?: string;
