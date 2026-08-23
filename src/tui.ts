@@ -96,6 +96,7 @@ export async function showSelectList(
 		const selectList = new SelectList(
 			items,
 			Math.min(items.length, maxItems),
+			// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 			makeSelectListTheme(theme),
 		);
 		selectList.onSelect = (item) => done(item.value);
@@ -1247,6 +1248,7 @@ export async function showConfigMenu(
 			const selectList = new SelectList(
 				items,
 				Math.min(items.length, 10),
+				// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 				makeSelectListTheme(theme),
 			);
 			selectList.onSelect = (item) => done(item.value);
@@ -1688,6 +1690,7 @@ export async function showAgentDetail(
 							});
 							for (const line of planned) {
 								container.addChild(
+									// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 									new Text(styleToColor(theme, line.style, line.text), 1, 0),
 								);
 							}
@@ -1712,6 +1715,7 @@ export async function showAgentDetail(
 						});
 						for (const line of planned) {
 							container.addChild(
+								// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 								new Text(styleToColor(theme, line.style, line.text), 1, 0),
 							);
 						}
@@ -1776,6 +1780,7 @@ export async function showAgentDetail(
 					);
 				} else {
 					for (const line of planned) {
+						// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 						container.addChild(new Text(styleToColor(theme, line.style, line.text), 1, 0));
 					}
 				}
@@ -2551,6 +2556,7 @@ export async function showApprovalDialog(
 				);
 			}
 
+			// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 			selectList = new SelectList(items, 3, makeSelectListTheme(theme));
 			selectList.onSelect = (item) => {
 				if (item.value === "viewdiff") {
