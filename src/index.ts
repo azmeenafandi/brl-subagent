@@ -27,7 +27,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type {
@@ -47,6 +47,7 @@ import type {
 	GraphDetails,
 	GraphWave,
 	Priority,
+	ToolResult,
 } from "./types";
 import {
 	resolveThinkingLevel,
@@ -221,7 +222,7 @@ export default function (pi: ExtensionAPI) {
 		perCallModel?: string, // NEW: top-level delegate_task model param (issue #96)
 	):
 		| { ok: true; model: { provider: string; id: string } }
-		| { ok: false; error: AgentToolResult<SubagentResult> } {
+		| { ok: false; error: ToolResult<SubagentResult | undefined> } {
 		// Precedence: per-call model > preset.model > state.config.model > conductor model
 		let subagentModel: { provider: string; id: string } | undefined;
 
@@ -267,6 +268,7 @@ export default function (pi: ExtensionAPI) {
 							text: "No model available. Configure API keys first, then use /brl-subagent to set a model.",
 						},
 					],
+					details: undefined,
 					isError: true,
 				},
 			};
@@ -377,10 +379,10 @@ export default function (pi: ExtensionAPI) {
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
 		onUpdate:
-			| ((partial: AgentToolResult<SubagentResult>) => void)
+			| ((partial: AgentToolResult<SubagentResult | MultiSubagentDetails | undefined>) => void)
 			| undefined,
 		ctx: ExtensionContext,
-	): Promise<AgentToolResult<Record<string, unknown>>> {
+	): Promise<ToolResult<SubagentResult | ChainDetails | undefined>> {
 		const chainSteps = params.chain as SubTaskParams[];
 
 		// R5: Check session cost limit before spawning
@@ -406,6 +408,7 @@ export default function (pi: ExtensionAPI) {
 							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -427,6 +430,7 @@ export default function (pi: ExtensionAPI) {
 							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -460,6 +464,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -476,6 +481,7 @@ export default function (pi: ExtensionAPI) {
 						text: `Pre-flight check failed: ${pfResult.error}`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -501,6 +507,7 @@ export default function (pi: ExtensionAPI) {
 			log.warn("Chain pre-task validation failed", { errors: validation.errors });
 			return {
 				content: [{ type: "text" as const, text: errText }],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -522,6 +529,7 @@ export default function (pi: ExtensionAPI) {
 							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -533,6 +541,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: circuitCheck.message! },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -554,6 +563,7 @@ export default function (pi: ExtensionAPI) {
 						text: "Chain cancelled while waiting for concurrency slot.",
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -779,10 +789,10 @@ export default function (pi: ExtensionAPI) {
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
 		onUpdate:
-			| ((partial: AgentToolResult<SubagentResult>) => void)
+			| ((partial: AgentToolResult<SubagentResult | MultiSubagentDetails | undefined>) => void)
 			| undefined,
 		ctx: ExtensionContext,
-	): Promise<AgentToolResult<Record<string, unknown>>> {
+	): Promise<ToolResult<SubagentResult | ParallelDetails | undefined>> {
 		const taskList = params.tasks as SubTaskParams[];
 
 		// R5: Check session cost limit before spawning
@@ -808,6 +818,7 @@ export default function (pi: ExtensionAPI) {
 							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -829,6 +840,7 @@ export default function (pi: ExtensionAPI) {
 							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -862,6 +874,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -878,6 +891,7 @@ export default function (pi: ExtensionAPI) {
 						text: `Pre-flight check failed: ${pfResult.error}`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -904,6 +918,7 @@ export default function (pi: ExtensionAPI) {
 			log.warn("Parallel pre-task validation failed", { errors: validation.errors });
 			return {
 				content: [{ type: "text" as const, text: errText }],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -925,6 +940,7 @@ export default function (pi: ExtensionAPI) {
 							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -936,6 +952,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: circuitCheck.message! },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1318,10 +1335,10 @@ export default function (pi: ExtensionAPI) {
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
 		onUpdate:
-			| ((partial: AgentToolResult<SubagentResult>) => void)
+			| ((partial: AgentToolResult<SubagentResult | MultiSubagentDetails | undefined>) => void)
 			| undefined,
 		ctx: ExtensionContext,
-	): Promise<AgentToolResult<Record<string, unknown>>> {
+	): Promise<ToolResult<SubagentResult | GraphDetails | undefined>> {
 		const graphTasks = params.graph as GraphTask[];
 
 		// Validate graph
@@ -1334,6 +1351,7 @@ export default function (pi: ExtensionAPI) {
 						text: `Graph validation failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1361,6 +1379,7 @@ export default function (pi: ExtensionAPI) {
 							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1382,6 +1401,7 @@ export default function (pi: ExtensionAPI) {
 							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1416,6 +1436,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1432,6 +1453,7 @@ export default function (pi: ExtensionAPI) {
 						text: `Pre-flight check failed: ${pfResult.error}`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1458,6 +1480,7 @@ export default function (pi: ExtensionAPI) {
 			log.warn("Graph pre-task validation failed", { errors: validation.errors });
 			return {
 				content: [{ type: "text" as const, text: errText }],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1479,6 +1502,7 @@ export default function (pi: ExtensionAPI) {
 							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1490,6 +1514,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: circuitCheck.message! },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1509,6 +1534,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: `Graph scheduling failed: ${sortResult.error}` },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -2134,7 +2160,9 @@ export default function (pi: ExtensionAPI) {
 				}>;
 			},
 			signal: AbortSignal | undefined,
-			onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
+			onUpdate:
+				| ((partial: AgentToolResult<SubagentResult | MultiSubagentDetails | undefined>) => void)
+				| undefined,
 			ctx: ExtensionContext,
 		) {
 			// Issue #99: warn on unknown params — typebox allows additional properties
@@ -2166,6 +2194,7 @@ export default function (pi: ExtensionAPI) {
 					log.warn("Task rejected by sanitizer", { error: taskResult.error });
 					return {
 						content: [{ type: "text" as const, text: `Invalid task: ${taskResult.error}` }],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2187,6 +2216,7 @@ export default function (pi: ExtensionAPI) {
 							type: "text" as const,
 							text: `Retry run ID not found: ${params.retryRunId}. The run may have been pruned, or it was a background run created before the run-entry fix (issue #98). Pass the run's agent ID — for background runs the agent ID and run ID are now the same.`,
 						}],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2204,6 +2234,7 @@ export default function (pi: ExtensionAPI) {
 								text: `Template '${params.template}' not found. Available: ${available}`,
 							},
 						],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2217,6 +2248,7 @@ export default function (pi: ExtensionAPI) {
 								text: `Template '${params.template}' resolution failed: ${resolved.error}`,
 							},
 						],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2250,6 +2282,7 @@ export default function (pi: ExtensionAPI) {
 								"Provide exactly one of: task (single), chain (sequential), tasks (parallel), or graph (dependency graph).",
 						},
 					],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2263,6 +2296,7 @@ export default function (pi: ExtensionAPI) {
 								text: `Chain exceeds max ${MAX_CHAIN_STEPS} steps.`,
 							},
 						],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2278,6 +2312,7 @@ export default function (pi: ExtensionAPI) {
 								text: `Parallel exceeds max ${MAX_PARALLEL_TASKS} tasks.`,
 							},
 						],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2316,6 +2351,7 @@ export default function (pi: ExtensionAPI) {
 								`Cannot spawn background agent with approvalMode 'always': background agents run unattended ` +
 								`and cannot present the approval dialog. Use approvalMode 'auto' (default) or 'writes'.`
 							}],
+							details: undefined,
 							isError: true,
 						};
 					}
@@ -2351,6 +2387,7 @@ export default function (pi: ExtensionAPI) {
 										`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
 								},
 							],
+							details: undefined,
 							isError: true,
 						};
 					}
@@ -2362,6 +2399,7 @@ export default function (pi: ExtensionAPI) {
 					if (!bgCwdResult.ok) {
 						return {
 							content: [{ type: "text" as const, text: `Invalid cwd: ${bgCwdResult.error}` }],
+							details: undefined,
 							isError: true,
 						};
 					}
@@ -2373,6 +2411,7 @@ export default function (pi: ExtensionAPI) {
 								content: [
 									{ type: "text" as const, text: `Invalid outputFile: ${ofResult.error}` },
 								],
+								details: undefined,
 								isError: true,
 							};
 						}
@@ -2396,6 +2435,7 @@ export default function (pi: ExtensionAPI) {
 						log.warn("Background pre-task validation failed", { errors: bgValidation.errors });
 						return {
 							content: [{ type: "text" as const, text: errText }],
+							details: undefined,
 							isError: true,
 						};
 					}
@@ -2686,6 +2726,7 @@ export default function (pi: ExtensionAPI) {
 					log.error("Failed to spawn background agent", { error: message });
 					return {
 						content: [{ type: "text" as const, text: `Failed to spawn background agent: ${message}` }],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2714,6 +2755,7 @@ export default function (pi: ExtensionAPI) {
 								`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
 						},
 					],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2737,6 +2779,7 @@ export default function (pi: ExtensionAPI) {
 								`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 						},
 					],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2762,6 +2805,7 @@ export default function (pi: ExtensionAPI) {
 			if (!cwdResult.ok) {
 				return {
 					content: [{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` }],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2776,6 +2820,7 @@ export default function (pi: ExtensionAPI) {
 						content: [
 							{ type: "text" as const, text: `Invalid outputFile: ${ofResult.error}` },
 						],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2788,6 +2833,7 @@ export default function (pi: ExtensionAPI) {
 				log.warn("Pre-flight check failed", { error: pfResult.error });
 				return {
 					content: [{ type: "text" as const, text: `Pre-flight check failed: ${pfResult.error}` }],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2811,6 +2857,7 @@ export default function (pi: ExtensionAPI) {
 						type: "text" as const,
 						text: errText,
 					}],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2833,6 +2880,7 @@ export default function (pi: ExtensionAPI) {
 								"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
 						},
 					],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2927,6 +2975,7 @@ export default function (pi: ExtensionAPI) {
 				cleanupGitBranch();
 				return {
 					content: [{ type: "text" as const, text: circuitCheck.message! }],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2949,6 +2998,7 @@ export default function (pi: ExtensionAPI) {
 							text: "Subagent cancelled while waiting for concurrency slot.",
 						},
 					],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -3372,6 +3422,7 @@ export default function (pi: ExtensionAPI) {
 			if (!agent) {
 				return {
 					content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -3463,6 +3514,7 @@ export default function (pi: ExtensionAPI) {
 				if (!agent) {
 					return {
 						content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -3481,6 +3533,7 @@ export default function (pi: ExtensionAPI) {
 				const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err), ctx?.cwd);
 				return {
 					content: [{ type: "text" as const, text: `Failed to steer agent: ${message}` }],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -3509,6 +3562,7 @@ export default function (pi: ExtensionAPI) {
 				if (!agent) {
 					return {
 						content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -3527,6 +3581,7 @@ export default function (pi: ExtensionAPI) {
 				const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err), ctx?.cwd);
 				return {
 					content: [{ type: "text" as const, text: `Failed to stop agent: ${message}` }],
+					details: undefined,
 					isError: true,
 				};
 			}

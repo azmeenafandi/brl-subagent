@@ -472,7 +472,9 @@ export async function spawnBackgroundSession(
     agentDir,
     sessionManager,
     settingsManager,
-    modelRegistry: ctx.modelRegistry,
+    // NOTE: modelRegistry is NOT part of CreateAgentSessionOptions (pi 0.84
+    // SDK surface) and the runtime never reads it — the model is passed
+    // explicitly via `model: resolvedModel` above, so this option was dead.
     resourceLoader,
     model: resolvedModel,
     thinkingLevel: params.thinkingLevel,

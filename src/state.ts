@@ -118,9 +118,11 @@ export class SessionState {
 			maxSubagentDepth: DEFAULT_MAX_SUBAGENT_DEPTH,
 			gitMode: "none",
 			approvalMode: "writes",
+			maxHistoryEntries: MAX_RUN_HISTORY_ENTRIES,
 			sessionCostLimit: DEFAULT_SESSION_COST_LIMIT,
 			perTaskCostEstimate: 0,
 			seenRunIds: [],
+			presets: [],
 			templates: [],
 			circuitBreaker: this.defaultCircuitBreaker(),
 			slaTrackingEnabled: false,
@@ -258,7 +260,7 @@ export class SessionState {
 			.filter((e: { type: string; customType?: string }) =>
 				e.type === "custom" && e.customType === CUSTOM_ENTRY_TYPES.run,
 			)
-			.map((e: { data?: unknown }) => {
+			.map((e: { type: string; data?: unknown }) => {
 				const data = e.data;
 				if (isSubagentRunShape(data)) return data;
 				this.log?.warn("Corrupted run entry skipped", { entryType: typeof data });
