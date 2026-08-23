@@ -26,8 +26,11 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	AgentToolResult,
+	AgentToolUpdateCallback,
+} from "@earendil-works/pi-agent-core";
+import type { ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type {
@@ -46,7 +49,9 @@ import type {
 	GraphTask,
 	GraphDetails,
 	GraphWave,
+	DelegateTaskDetails,
 	Priority,
+	ToolResult,
 } from "./types";
 import {
 	resolveThinkingLevel,
@@ -221,7 +226,7 @@ export default function (pi: ExtensionAPI) {
 		perCallModel?: string, // NEW: top-level delegate_task model param (issue #96)
 	):
 		| { ok: true; model: { provider: string; id: string } }
-		| { ok: false; error: AgentToolResult<SubagentResult> } {
+		| { ok: false; error: ToolResult<SubagentResult | undefined> } {
 		// Precedence: per-call model > preset.model > state.config.model > conductor model
 		let subagentModel: { provider: string; id: string } | undefined;
 
@@ -267,6 +272,7 @@ export default function (pi: ExtensionAPI) {
 							text: "No model available. Configure API keys first, then use /brl-subagent to set a model.",
 						},
 					],
+					details: undefined,
 					isError: true,
 				},
 			};
@@ -376,11 +382,9 @@ export default function (pi: ExtensionAPI) {
 	async function runChainMode(
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
-		onUpdate:
-			| ((partial: AgentToolResult<SubagentResult>) => void)
-			| undefined,
+		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
-	): Promise<AgentToolResult<Record<string, unknown>>> {
+	): Promise<ToolResult<SubagentResult | ChainDetails | undefined>> {
 		const chainSteps = params.chain as SubTaskParams[];
 
 		// R5: Check session cost limit before spawning
@@ -406,6 +410,7 @@ export default function (pi: ExtensionAPI) {
 							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -427,6 +432,7 @@ export default function (pi: ExtensionAPI) {
 							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -460,6 +466,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -476,6 +483,7 @@ export default function (pi: ExtensionAPI) {
 						text: `Pre-flight check failed: ${pfResult.error}`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -501,6 +509,7 @@ export default function (pi: ExtensionAPI) {
 			log.warn("Chain pre-task validation failed", { errors: validation.errors });
 			return {
 				content: [{ type: "text" as const, text: errText }],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -522,6 +531,7 @@ export default function (pi: ExtensionAPI) {
 							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -533,13 +543,14 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: circuitCheck.message! },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
 
 		// Resolve priority (issue #114: no config knob — the call-level default)
 		const chainPriority: Priority = (
-			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+			params.priority && ["critical", "high", "normal", "low"].includes(params.priority as string)
 				? (params.priority as Priority)
 				: DEFAULT_PRIORITY
 		);
@@ -554,6 +565,7 @@ export default function (pi: ExtensionAPI) {
 						text: "Chain cancelled while waiting for concurrency slot.",
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -757,7 +769,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: JSON.stringify(chainDetails, null, 2) },
 				],
-				details: chainDetails as unknown as SubagentResult,
+				details: chainDetails,
 			};
 		} catch (err) {
 			// F7 (issue #65): err.message may embed absolute paths — sanitize
@@ -778,11 +790,9 @@ export default function (pi: ExtensionAPI) {
 	async function runParallelMode(
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
-		onUpdate:
-			| ((partial: AgentToolResult<SubagentResult>) => void)
-			| undefined,
+		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
-	): Promise<AgentToolResult<Record<string, unknown>>> {
+	): Promise<ToolResult<SubagentResult | ParallelDetails | undefined>> {
 		const taskList = params.tasks as SubTaskParams[];
 
 		// R5: Check session cost limit before spawning
@@ -808,6 +818,7 @@ export default function (pi: ExtensionAPI) {
 							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -829,6 +840,7 @@ export default function (pi: ExtensionAPI) {
 							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -862,6 +874,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -878,6 +891,7 @@ export default function (pi: ExtensionAPI) {
 						text: `Pre-flight check failed: ${pfResult.error}`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -904,6 +918,7 @@ export default function (pi: ExtensionAPI) {
 			log.warn("Parallel pre-task validation failed", { errors: validation.errors });
 			return {
 				content: [{ type: "text" as const, text: errText }],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -925,6 +940,7 @@ export default function (pi: ExtensionAPI) {
 							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -936,6 +952,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: circuitCheck.message! },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1219,7 +1236,7 @@ export default function (pi: ExtensionAPI) {
 		// Resolve priority — the FALLBACK for per-unit priority (issue #114): a
 		// task-level priority on tasks[] items wins per slot; this is the floor.
 		const parallelPriority: Priority = (
-			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+			params.priority && ["critical", "high", "normal", "low"].includes(params.priority as string)
 				? (params.priority as Priority)
 				: DEFAULT_PRIORITY
 		);
@@ -1306,7 +1323,7 @@ export default function (pi: ExtensionAPI) {
 			content: [
 				{ type: "text" as const, text: JSON.stringify(parallelDetails, null, 2) },
 			],
-			details: parallelDetails as unknown as SubagentResult,
+			details: parallelDetails,
 		};
 	}
 
@@ -1317,11 +1334,9 @@ export default function (pi: ExtensionAPI) {
 	async function runGraphMode(
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
-		onUpdate:
-			| ((partial: AgentToolResult<SubagentResult>) => void)
-			| undefined,
+		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
-	): Promise<AgentToolResult<Record<string, unknown>>> {
+	): Promise<ToolResult<SubagentResult | GraphDetails | undefined>> {
 		const graphTasks = params.graph as GraphTask[];
 
 		// Validate graph
@@ -1334,6 +1349,7 @@ export default function (pi: ExtensionAPI) {
 						text: `Graph validation failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1361,6 +1377,7 @@ export default function (pi: ExtensionAPI) {
 							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1382,6 +1399,7 @@ export default function (pi: ExtensionAPI) {
 							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1416,6 +1434,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1432,6 +1451,7 @@ export default function (pi: ExtensionAPI) {
 						text: `Pre-flight check failed: ${pfResult.error}`,
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1458,6 +1478,7 @@ export default function (pi: ExtensionAPI) {
 			log.warn("Graph pre-task validation failed", { errors: validation.errors });
 			return {
 				content: [{ type: "text" as const, text: errText }],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1479,6 +1500,7 @@ export default function (pi: ExtensionAPI) {
 							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
 					},
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1490,6 +1512,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: circuitCheck.message! },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1497,7 +1520,7 @@ export default function (pi: ExtensionAPI) {
 		// Resolve priority — the FALLBACK for per-unit priority (issue #114): a
 		// task-level priority on graph[] items wins per slot; this is the floor.
 		const graphPriority: Priority = (
-			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+			params.priority && ["critical", "high", "normal", "low"].includes(params.priority as string)
 				? (params.priority as Priority)
 				: DEFAULT_PRIORITY
 		);
@@ -1509,6 +1532,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: `Graph scheduling failed: ${sortResult.error}` },
 				],
+				details: undefined,
 				isError: true,
 			};
 		}
@@ -1674,6 +1698,7 @@ export default function (pi: ExtensionAPI) {
 
 				// Emit progress update
 				onUpdate?.({
+					details: undefined,
 					content: [
 						{
 							type: "text" as const,
@@ -1722,7 +1747,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: JSON.stringify(graphDetails, null, 2) },
 				],
-				details: graphDetails as unknown as SubagentResult,
+				details: graphDetails,
 			};
 		} catch (err) {
 			// F7 (issue #65): err.message may embed absolute paths — sanitize
@@ -1766,7 +1791,7 @@ export default function (pi: ExtensionAPI) {
 				historyentries: () => showHistoryEntriesInput(ctx, state, applyConfig),
 				monitor: () => showMonitor(ctx, state),
 				dashboard: () => showDashboard(ctx, state),
-				preset: () => showPresetManager(ctx, state, () => state.persistState(pi)),
+				preset: () => showPresetManager(ctx, state),
 				templates: () => showTemplateManager(ctx, state),
 				retry: () => showRetryMenu(ctx, state),
 			"update-check": () => showUpdateCheckToggle(ctx, state, applyConfig),
@@ -2067,7 +2092,9 @@ export default function (pi: ExtensionAPI) {
 		async execute(
 			_toolCallId: string,
 			params: {
-				task: string;
+				// Schema registers task as Type.Optional — required for single mode only,
+				// omitted by chain/tasks/graph calls. Aligned with Static<TParams>.
+				task?: string;
 				label?: string;
 				model?: string;
 				preset?: string;
@@ -2084,6 +2111,7 @@ export default function (pi: ExtensionAPI) {
 				params?: Record<string, string>;
 				retryRunId?: string;
 				retryOnTimeout?: boolean;
+				background?: boolean;
 				gitMode?: string;
 				priority?: string;
 				chain?: Array<{
@@ -2134,7 +2162,7 @@ export default function (pi: ExtensionAPI) {
 				}>;
 			},
 			signal: AbortSignal | undefined,
-			onUpdate: ((partial: AgentToolResult<SubagentResult>) => void) | undefined,
+			onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 			ctx: ExtensionContext,
 		) {
 			// Issue #99: warn on unknown params — typebox allows additional properties
@@ -2161,11 +2189,15 @@ export default function (pi: ExtensionAPI) {
 			const hasParallel = params.tasks && params.tasks.length > 0;
 			const hasGraph = params.graph && params.graph.length > 0;
 			if (!hasChain && !hasParallel && !hasGraph) {
-				const taskResult = sanitizeTask(params.task);
+				// task is optional per the schema; single mode requires it. When absent,
+				// feed "" to the sanitizer — same rejection path ("Task must not be
+				// empty.") as when task was a required field.
+				const taskResult = sanitizeTask(params.task ?? "");
 				if (!taskResult.ok) {
 					log.warn("Task rejected by sanitizer", { error: taskResult.error });
 					return {
 						content: [{ type: "text" as const, text: `Invalid task: ${taskResult.error}` }],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2187,6 +2219,7 @@ export default function (pi: ExtensionAPI) {
 							type: "text" as const,
 							text: `Retry run ID not found: ${params.retryRunId}. The run may have been pruned, or it was a background run created before the run-entry fix (issue #98). Pass the run's agent ID — for background runs the agent ID and run ID are now the same.`,
 						}],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2204,6 +2237,7 @@ export default function (pi: ExtensionAPI) {
 								text: `Template '${params.template}' not found. Available: ${available}`,
 							},
 						],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2217,6 +2251,7 @@ export default function (pi: ExtensionAPI) {
 								text: `Template '${params.template}' resolution failed: ${resolved.error}`,
 							},
 						],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2250,6 +2285,7 @@ export default function (pi: ExtensionAPI) {
 								"Provide exactly one of: task (single), chain (sequential), tasks (parallel), or graph (dependency graph).",
 						},
 					],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2263,6 +2299,7 @@ export default function (pi: ExtensionAPI) {
 								text: `Chain exceeds max ${MAX_CHAIN_STEPS} steps.`,
 							},
 						],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2278,6 +2315,7 @@ export default function (pi: ExtensionAPI) {
 								text: `Parallel exceeds max ${MAX_PARALLEL_TASKS} tasks.`,
 							},
 						],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2288,10 +2326,15 @@ export default function (pi: ExtensionAPI) {
 				return runGraphMode(params, signal, onUpdate, ctx);
 			}
 
+			// Single mode: isSingle is true (modeCount===1, none of chain/parallel/graph),
+			// so params.task is a non-empty string. TS can't infer this through the
+			// boolean-array filter — assert, mirroring params.chain!/params.tasks! above.
+			const singleTask = params.task!; // non-empty (sanitizer guarantees; isSingle confirms)
+
 			// Phase 6.5: Background execution — spawn session and return ID immediately.
 			// Resolve the preset and its model BEFORE the background branch so the
 			// preset's model (and system prompt) are honored in background mode.
-			const bgResolved = resolveSubagentParams(params, state, ctx, log);
+			const bgResolved = resolveSubagentParams({ ...params, task: singleTask }, state, ctx, log);
 			const { resolvedPreset: bgResolvedPreset, autoRoutedPreset: bgAutoRoutedPreset } = bgResolved;
 			const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset, params.model);
 			const bgModel = bgModelResult.ok
@@ -2316,6 +2359,7 @@ export default function (pi: ExtensionAPI) {
 								`Cannot spawn background agent with approvalMode 'always': background agents run unattended ` +
 								`and cannot present the approval dialog. Use approvalMode 'auto' (default) or 'writes'.`
 							}],
+							details: undefined,
 							isError: true,
 						};
 					}
@@ -2351,6 +2395,7 @@ export default function (pi: ExtensionAPI) {
 										`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
 								},
 							],
+							details: undefined,
 							isError: true,
 						};
 					}
@@ -2362,6 +2407,7 @@ export default function (pi: ExtensionAPI) {
 					if (!bgCwdResult.ok) {
 						return {
 							content: [{ type: "text" as const, text: `Invalid cwd: ${bgCwdResult.error}` }],
+							details: undefined,
 							isError: true,
 						};
 					}
@@ -2373,6 +2419,7 @@ export default function (pi: ExtensionAPI) {
 								content: [
 									{ type: "text" as const, text: `Invalid outputFile: ${ofResult.error}` },
 								],
+								details: undefined,
 								isError: true,
 							};
 						}
@@ -2382,7 +2429,7 @@ export default function (pi: ExtensionAPI) {
 					// C: H1 validation for background mode — reject outputFile-vs-write
 					// conflicts before spawning (loud failure, same as single mode).
 					const bgValidation = validatePreTask({
-						task: params.task,
+						task: singleTask,
 						toolOptions: bgResolved.toolOptions,
 						thinkingLevel: bgResolved.thinkingLevel,
 						gitMode: bgResolved.resolvedGitMode,
@@ -2396,6 +2443,7 @@ export default function (pi: ExtensionAPI) {
 						log.warn("Background pre-task validation failed", { errors: bgValidation.errors });
 						return {
 							content: [{ type: "text" as const, text: errText }],
+							details: undefined,
 							isError: true,
 						};
 					}
@@ -2412,7 +2460,7 @@ export default function (pi: ExtensionAPI) {
 					);
 
 					const agent = await spawnBackgroundSession(pi, ctx, {
-						task: params.task,
+						task: singleTask,
 						type: params.preset || 'general-purpose',
 						description: params.label,
 						model: bgModel,
@@ -2489,11 +2537,15 @@ export default function (pi: ExtensionAPI) {
 							
 							// While running, update the live monitor.
 							// Once completedAt is set, skip straight to finalize below.
+							// Issue #31: past the guard above, the only nulled-ref path left is a
+							// TERMINAL agent (settlement releases the ref), so a live agent always
+							// has its session — the guard already returned on the live-nulled-ref
+							// crash path. The compiler can't correlate the two checks, so assert it.
 							if (!agent.completedAt) {
-								const finalOutput = extractFinalOutput(session);
+								const finalOutput = extractFinalOutput(session!);
 								
 								try {
-									const stats = session.getSessionStats();
+									const stats = session!.getSessionStats();
 									state.updateLiveSubagent(agent.id, finalOutput, stats.tokens.input, stats.tokens.output);
 								} catch {
 									state.updateLiveSubagent(agent.id, finalOutput, 0, 0);
@@ -2677,6 +2729,7 @@ export default function (pi: ExtensionAPI) {
 								`Use get_subagent_result({ agent_id: "${agent.id}" }) to check status and retrieve results.` +
 								bgAutoRouteNote,
 						}],
+						details: undefined,
 					};
 				} catch (err) {
 					const message = sanitizeErrorMessage(
@@ -2686,6 +2739,7 @@ export default function (pi: ExtensionAPI) {
 					log.error("Failed to spawn background agent", { error: message });
 					return {
 						content: [{ type: "text" as const, text: `Failed to spawn background agent: ${message}` }],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2714,6 +2768,7 @@ export default function (pi: ExtensionAPI) {
 								`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
 						},
 					],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2737,6 +2792,7 @@ export default function (pi: ExtensionAPI) {
 								`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
 						},
 					],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2755,13 +2811,14 @@ export default function (pi: ExtensionAPI) {
 				resolvedApprovalMode,
 				resolvedPreset,
 				autoRoutedPreset,
-			} = resolveSubagentParams(params, state, ctx, log);
+			} = resolveSubagentParams({ ...params, task: singleTask }, state, ctx, log);
 
 			// F1: Validate CWD
 			const cwdResult = validateCwd(effectiveCwd, ctx.cwd);
 			if (!cwdResult.ok) {
 				return {
 					content: [{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` }],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2776,6 +2833,7 @@ export default function (pi: ExtensionAPI) {
 						content: [
 							{ type: "text" as const, text: `Invalid outputFile: ${ofResult.error}` },
 						],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -2788,6 +2846,7 @@ export default function (pi: ExtensionAPI) {
 				log.warn("Pre-flight check failed", { error: pfResult.error });
 				return {
 					content: [{ type: "text" as const, text: `Pre-flight check failed: ${pfResult.error}` }],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2811,6 +2870,7 @@ export default function (pi: ExtensionAPI) {
 						type: "text" as const,
 						text: errText,
 					}],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2833,6 +2893,7 @@ export default function (pi: ExtensionAPI) {
 								"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
 						},
 					],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2927,6 +2988,7 @@ export default function (pi: ExtensionAPI) {
 				cleanupGitBranch();
 				return {
 					content: [{ type: "text" as const, text: circuitCheck.message! }],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -2949,6 +3011,7 @@ export default function (pi: ExtensionAPI) {
 							text: "Subagent cancelled while waiting for concurrency slot.",
 						},
 					],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -3311,25 +3374,16 @@ export default function (pi: ExtensionAPI) {
 				excludeTools?: string[];
 				noBuiltinTools?: boolean;
 			},
-			theme: {
-				fg: (color: string, text: string) => string;
-				bold: (text: string) => string;
-			},
+			theme: Theme,
 			_context: unknown,
 		) {
 			return renderDelegateCall(args, theme);
 		},
 
 		renderResult(
-			result: {
-				content: Array<{ type: string; text: string }>;
-				details?: SubagentResult;
-			},
-			options: { expanded: boolean },
-			theme: {
-				fg: (color: string, text: string) => string;
-				bold: (text: string) => string;
-			},
+			result: AgentToolResult<DelegateTaskDetails>,
+			options: ToolRenderResultOptions,
+			theme: Theme,
 			_context: unknown,
 		) {
 			return renderDelegateResult(result, options, theme);
@@ -3372,6 +3426,7 @@ export default function (pi: ExtensionAPI) {
 			if (!agent) {
 				return {
 					content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -3429,6 +3484,7 @@ export default function (pi: ExtensionAPI) {
 			
 			return {
 				content: [{ type: "text" as const, text: resultText }],
+				details: undefined,
 			};
 		},
 	});
@@ -3463,6 +3519,7 @@ export default function (pi: ExtensionAPI) {
 				if (!agent) {
 					return {
 						content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -3472,6 +3529,7 @@ export default function (pi: ExtensionAPI) {
 						type: "text" as const,
 						text: `Steered agent ${params.agent_id}: "${params.message.slice(0, 50)}${params.message.length > 50 ? '...' : ''}"`,
 					}],
+					details: undefined,
 				};
 			} catch (err) {
 				// F7 (issue #65): sanitize BEFORE the message reaches the main
@@ -3481,6 +3539,7 @@ export default function (pi: ExtensionAPI) {
 				const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err), ctx?.cwd);
 				return {
 					content: [{ type: "text" as const, text: `Failed to steer agent: ${message}` }],
+					details: undefined,
 					isError: true,
 				};
 			}
@@ -3509,6 +3568,7 @@ export default function (pi: ExtensionAPI) {
 				if (!agent) {
 					return {
 						content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+						details: undefined,
 						isError: true,
 					};
 				}
@@ -3518,6 +3578,7 @@ export default function (pi: ExtensionAPI) {
 						type: "text" as const,
 						text: `Stopped agent ${params.agent_id} (${agent.description}).`,
 					}],
+					details: undefined,
 				};
 			} catch (err) {
 				// F7 (issue #65): sanitize BEFORE the message reaches the main
@@ -3527,6 +3588,7 @@ export default function (pi: ExtensionAPI) {
 				const message = sanitizeErrorMessage(err instanceof Error ? err.message : String(err), ctx?.cwd);
 				return {
 					content: [{ type: "text" as const, text: `Failed to stop agent: ${message}` }],
+					details: undefined,
 					isError: true,
 				};
 			}

@@ -6,7 +6,12 @@
  * delegate_task result rendering.
  */
 
-import type { ExtensionContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionContext,
+	ExtensionAPI,
+	Theme,
+	ToolRenderResultOptions,
+} from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Spacer, Text, Markdown } from "@earendil-works/pi-tui";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -21,6 +26,7 @@ import type {
 	ChainDetails,
 	ParallelDetails,
 	GraphDetails,
+	DelegateTaskDetails,
 	GraphTask,
 	SubTaskResult,
 	ThinkingLevel,
@@ -90,6 +96,7 @@ export async function showSelectList(
 		const selectList = new SelectList(
 			items,
 			Math.min(items.length, maxItems),
+			// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 			makeSelectListTheme(theme),
 		);
 		selectList.onSelect = (item) => done(item.value);
@@ -176,6 +183,7 @@ export async function showConcurrencyInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const result = await ctx.ui.input({
 		prompt: "Max parallel subagents (0 = unlimited):",
 		default: formatMaxParallel(state.config.maxParallel),
@@ -199,6 +207,7 @@ export async function showDepthInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const result = await ctx.ui.input({
 		prompt: "Max subagent recursion depth (0 = subagents cannot delegate, 1 = one level, etc.):",
 		default: String(state.config.maxSubagentDepth),
@@ -229,6 +238,7 @@ export async function showHistoryEntriesInput(
 		state.config.maxHistoryEntries === 0
 			? "unlimited"
 			: String(state.config.maxHistoryEntries);
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const result = await ctx.ui.input({
 		prompt: "Max run history entries (0 = unlimited, default 500):",
 		default: current,
@@ -261,6 +271,7 @@ export async function showCostLimitInput(
 		state.config.sessionCostLimit === 0
 			? "0 (unlimited)"
 			: String(state.config.sessionCostLimit);
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const result = await ctx.ui.input({
 		prompt: "Session cost limit in USD (0 = unlimited, e.g. 1.00 for $1):",
 		default: current,
@@ -362,6 +373,7 @@ export async function showSLAConfig(
 	}
 
 	// Step 2: Window size input
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const sizeResult = await ctx.ui.input({
 		prompt: `Window size (10-500, default ${state.config.slaWindowSize}):`,
 		default: String(state.config.slaWindowSize),
@@ -645,6 +657,7 @@ export async function showAddPreset(
 	state: SessionState,
 ): Promise<void> {
 	// 1. Prompt for name
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const name = await ctx.ui.input({ prompt: "Preset name (e.g., read-only-audit):" });
 	if (!name?.trim()) return;
 	const trimmedName = name.trim();
@@ -664,6 +677,7 @@ export async function showAddPreset(
 	}
 
 	// 3. Description
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const description = await ctx.ui.input({ prompt: "Description (optional):" });
 
 	// 4. Thinking level
@@ -689,6 +703,7 @@ export async function showAddPreset(
 		tools = ["read", "grep", "find", "ls"];
 		excludeTools = ["write", "edit", "bash"];
 	} else if (scopeResult === "custom") {
+		// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 		const toolsStr = await ctx.ui.input({ prompt: "Tools (comma-separated):" });
 		if (toolsStr?.trim()) tools = toolsStr.split(",").map((t) => t.trim()).filter(Boolean);
 	}
@@ -701,6 +716,7 @@ export async function showAddPreset(
 	const inheritResult = await showSelectList(ctx, "System Prompt Inheritance", inheritItems, 3);
 
 	// 7. System prompt body
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const systemPrompt = await ctx.ui.input({ prompt: "System prompt (optional, multi-line not supported yet):" });
 
 	// 8. Build preset object
@@ -1232,6 +1248,7 @@ export async function showConfigMenu(
 			const selectList = new SelectList(
 				items,
 				Math.min(items.length, 10),
+				// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 				makeSelectListTheme(theme),
 			);
 			selectList.onSelect = (item) => done(item.value);
@@ -1673,6 +1690,7 @@ export async function showAgentDetail(
 							});
 							for (const line of planned) {
 								container.addChild(
+									// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 									new Text(styleToColor(theme, line.style, line.text), 1, 0),
 								);
 							}
@@ -1697,6 +1715,7 @@ export async function showAgentDetail(
 						});
 						for (const line of planned) {
 							container.addChild(
+								// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 								new Text(styleToColor(theme, line.style, line.text), 1, 0),
 							);
 						}
@@ -1761,6 +1780,7 @@ export async function showAgentDetail(
 					);
 				} else {
 					for (const line of planned) {
+						// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 						container.addChild(new Text(styleToColor(theme, line.style, line.text), 1, 0));
 					}
 				}
@@ -2079,7 +2099,7 @@ export async function showRetryMenu(ctx: ExtensionContext, state: SessionState):
 
 function buildDelegateLabel(
 	args: { inheritSystemPrompt?: boolean; systemPrompt?: string },
-	theme: { fg: (c: string, t: string) => string; bold: (t: string) => string },
+	theme: Theme,
 ): string {
 	const inherit = args.inheritSystemPrompt !== false;
 	const hasCustom = Boolean(args.systemPrompt);
@@ -2097,7 +2117,7 @@ function buildDelegateLabel(
 
 function buildScopeLabel(
 	args: { tools?: string[]; excludeTools?: string[]; noBuiltinTools?: boolean },
-	theme: { fg: (c: string, t: string) => string },
+	theme: Theme,
 ): string {
 	if (args.noBuiltinTools) return theme.fg("muted", " [no-builtins]");
 	if (args.tools?.length) return theme.fg("muted", ` [tools:${args.tools.join(",")}]`);
@@ -2110,7 +2130,7 @@ function renderExpandedResult(
 	isError: boolean,
 	icon: string,
 	finalOutput: string,
-	theme: { fg: (c: string, t: string) => string; bold: (t: string) => string },
+	theme: Theme,
 	mdTheme: ReturnType<typeof getMarkdownTheme>,
 ): Container {
 	const container = new Container();
@@ -2151,7 +2171,7 @@ function renderCollapsedText(
 	isError: boolean,
 	icon: string,
 	finalOutput: string,
-	theme: { fg: (c: string, t: string) => string; bold: (t: string) => string },
+	theme: Theme,
 ): string {
 	let text =
 		`${icon} ${theme.fg("toolTitle", theme.bold("subagent"))}` +
@@ -2209,10 +2229,7 @@ function renderSubTaskSummary(
 
 function renderCollapsedChain(
 	details: ChainDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 ): string {
 	const allSucceeded = details.results.every(
 		(r) =>
@@ -2255,10 +2272,7 @@ function renderCollapsedChain(
 
 function renderCollapsedParallel(
 	details: ParallelDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 ): string {
 	const icon =
 		details.failed === 0
@@ -2297,10 +2311,7 @@ function renderCollapsedParallel(
 
 function renderExpandedChain(
 	details: ChainDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 	mdTheme: ReturnType<typeof getMarkdownTheme>,
 ): Container {
 	const container = new Container();
@@ -2386,10 +2397,7 @@ function renderExpandedChain(
 
 function renderExpandedParallel(
 	details: ParallelDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 	mdTheme: ReturnType<typeof getMarkdownTheme>,
 ): Container {
 	const container = new Container();
@@ -2548,12 +2556,14 @@ export async function showApprovalDialog(
 				);
 			}
 
+			// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 			selectList = new SelectList(items, 3, makeSelectListTheme(theme));
 			selectList.onSelect = (item) => {
 				if (item.value === "viewdiff") {
 					currentView = "diff";
 					tui.requestRender();
 				} else {
+					// @ts-expect-error — SDK surface drift, issue #124 (string vs apply/discard/null union); deliberate fix with UI verification
 					done(item.value);
 				}
 			};
@@ -2635,9 +2645,7 @@ export async function showApprovalDialog(
  */
 function renderCollapsedDiffSummary(
 	gitDiff: string | undefined,
-	theme: {
-		fg: (color: string, text: string) => string;
-	},
+	theme: Theme,
 ): string {
 	if (!gitDiff?.trim()) return "";
 	const files = parseDiff(gitDiff);
@@ -2666,9 +2674,7 @@ function renderCollapsedDiffSummary(
 function addExpandedDiffSection(
 	container: Container,
 	gitDiff: string | undefined,
-	theme: {
-		fg: (color: string, text: string) => string;
-	},
+	theme: Theme,
 ): boolean {
 	if (!gitDiff?.trim()) return false;
 	const files = parseDiff(gitDiff);
@@ -2731,10 +2737,7 @@ function addExpandedDiffSection(
 function withDiffKeybinding(
 	container: Container,
 	gitDiff: string | undefined,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 ): Container | { render(w: number): string[]; handleInput(d: string): void; invalidate(): void } {
 	if (!gitDiff?.trim()) return container;
 
@@ -2764,6 +2767,7 @@ function withDiffKeybinding(
 				showFullDiff = true;
 				return;
 			}
+			// @ts-expect-error — SDK surface drift, issue #124 (Container.handleInput missing from SDK type); deliberate fix with UI verification
 			container.handleInput?.(data);
 		},
 		invalidate() {
@@ -2782,10 +2786,7 @@ function withDiffKeybinding(
  */
 function renderCollapsedGraph(
 	details: GraphDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 ): string {
 	const totalTasks = details.waves.reduce((s, w) => s + w.tasks.length, 0);
 	const allSucceeded = details.waves.every((w) =>
@@ -2843,10 +2844,7 @@ ${theme.fg("muted", "(Ctrl+O to expand)")}`;
  */
 function renderExpandedGraph(
 	details: GraphDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 	mdTheme: ReturnType<typeof getMarkdownTheme>,
 ): Container {
 	const container = new Container();
@@ -2966,10 +2964,7 @@ export function renderDelegateCall(
 		tasks?: SubTaskParams[];
 		graph?: GraphTask[];
 	},
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 ): Text {
 	// Graph mode
 	if (args.graph && args.graph.length > 0) {
@@ -3035,15 +3030,9 @@ ${theme.fg("dim", `+${n - 3} more`)}`;
 }
 
 export function renderDelegateResult(
-	result: {
-		content: Array<{ type: string; text: string }>;
-		details?: SubagentResult | MultiSubagentDetails;
-	},
-	options: { expanded: boolean },
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	result: AgentToolResult<DelegateTaskDetails>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
 ): Container | Text | ReturnType<typeof withDiffKeybinding> {
 	const details = result.details;
 

@@ -7,7 +7,7 @@
 
 import type { SubagentRun, SubagentResult } from "./types";
 import { isSubagentError, getFinalOutput, isSubagentRunShape, CUSTOM_ENTRY_TYPES, MAX_RUN_HISTORY_ENTRIES } from "./types";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // Run pruning — R2: Disk usage policy
@@ -65,7 +65,10 @@ export function pruneSessionRuns(
 	if (prunedCount <= 0) return 0;
 
 	// Append a prune marker entry for reference (actual filtering is in getRunEntries)
-	ctx.sessionManager.appendCustomEntry(CUSTOM_ENTRY_TYPES.run + ":prune", {
+	// ctx.sessionManager is typed ReadonlySessionManager, but the runtime object
+	// IS the full SessionManager (runner exposes it unwrapped) — appendCustomEntry
+	// is the only way to persist a marker here (no `pi` handle in scope).
+	(ctx.sessionManager as SessionManager).appendCustomEntry(CUSTOM_ENTRY_TYPES.run + ":prune", {
 		prunedCount,
 		keptCount: pruned.length,
 		timestamp: Date.now(),
@@ -118,7 +121,10 @@ export function finalizeRunRecord(
  */
 export function resolveRetryParams(
 	params: {
-		task: string;
+		// task is optional here by design: the retry path is reachable in
+		// chain/parallel/graph modes where the top-level task is legitimately
+		// absent — it falls back to the original run's task below.
+		task?: string;
 		label?: string;
 		model?: string;
 		preset?: string;

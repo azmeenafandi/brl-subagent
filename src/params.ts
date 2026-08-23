@@ -160,7 +160,8 @@ export function resolveSubagentParams(
 	const autoRoutedPreset = wasAutoRouted ? preset : undefined;
 
 	const mergedThinkingLevel =
-		(params.thinkingLevel as ThinkingLevel | undefined) ?? preset?.thinkingLevel;
+		(params.thinkingLevel as ThinkingLevel | undefined) ??
+		(preset?.thinkingLevel as ThinkingLevel | undefined);
 	const mergedSystemPrompt = params.systemPrompt ?? preset?.systemPrompt;
 	const mergedInheritSP = params.inheritSystemPrompt ?? preset?.inheritSystemPrompt;
 	const mergedOutputFile = params.outputFile ?? preset?.outputFile;

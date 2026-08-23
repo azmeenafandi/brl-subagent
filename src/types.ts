@@ -5,6 +5,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { TranscriptMessage } from "./transcript-tail";
 
 // ---------------------------------------------------------------------------
@@ -182,6 +183,17 @@ export interface SubagentState {
 	updateCheckEnabled: boolean; // Version update notifier toggle
 	lastUpdateCheck: number; // Epoch ms of last update check
 }
+
+/**
+ * Result shape returned by brl-subagent tool handlers.
+ *
+ * `AgentToolResult<T>` is the pi SDK contract (details is required). The
+ * handlers extend it with the legacy `isError` flag the tool contract and
+ * tests pin — the pi runtime ignores `isError` on returned results (v0.84
+ * signals errors by throwing), so it is metadata for the repo's own contract,
+ * not a pi behavior switch.
+ */
+export type ToolResult<T = unknown> = AgentToolResult<T> & { isError?: boolean };
 
 export interface SubagentRun {
 	id: string;
@@ -392,6 +404,20 @@ export interface GraphDetails {
 	totalTurns: number;
 }
 
+/**
+ * Union of every details shape delegate_task can produce — the tool's TDetails
+ * generic (issue #117). Single mode yields SubagentResult; chain / parallel /
+ * graph modes yield their mode-specific aggregates (GraphDetails does NOT
+ * extend MultiSubagentDetails, so it must be a member explicitly); error paths
+ * yield undefined.
+ */
+export type DelegateTaskDetails =
+	| SubagentResult
+	| ChainDetails
+	| ParallelDetails
+	| GraphDetails
+	| undefined;
+
 // ---------------------------------------------------------------------------
 // Resolved params (after preset merging + validation)
 // ---------------------------------------------------------------------------
@@ -426,12 +452,12 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 
 /** Types of lifecycle events that can be emitted. */
 export type SubagentEventType =
-	| "run:queued"
-	| "run:started"
-	| "run:completed"
-	| "run:failed"
-	| "run:cancelled"
-	| "state:changed";
+	| "subagent:created"
+	| "subagent:started"
+	| "subagent:completed"
+	| "subagent:failed"
+	| "subagent:stopped"
+	| "subagent:steered";
 
 /** An event emitted during the subagent lifecycle. */
 export interface SubagentEvent {
@@ -443,6 +469,21 @@ export interface SubagentEvent {
 
 /** Callback function for event listeners. */
 export type SubagentEventListener = (event: SubagentEvent) => void;
+
+// ---------------------------------------------------------------------------
+// Transcript (agent conversation log) types
+// ---------------------------------------------------------------------------
+
+/** Entry kinds written to an agent's transcript file. */
+export type TranscriptEntryType = "system" | "user";
+
+/** A single line in an agent's transcript file. */
+export interface TranscriptEntry {
+	type: TranscriptEntryType;
+	timestamp: number;
+	content: string;
+	metadata?: Record<string, unknown>;
+}
 
 // ---------------------------------------------------------------------------
 // Constants

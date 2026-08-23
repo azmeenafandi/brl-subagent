@@ -10,6 +10,7 @@
  */
 
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -202,7 +203,7 @@ export function accumulateUsage(
 // ---------------------------------------------------------------------------
 
 function attachAbortHandler(
-	proc: { kill: (signal: string) => boolean; killed: boolean },
+	proc: ChildProcess,
 	signal: AbortSignal,
 ): void {
 	const killProc = () => {
@@ -409,7 +410,7 @@ function appendDeltaText(
 	field: "text" | "thinking",
 	delta: string,
 ): number {
-	const rec = block as Record<string, unknown>;
+	const rec = block as unknown as Record<string, unknown>;
 	const prev = typeof rec[field] === "string" ? (rec[field] as string) : "";
 	rec[field] = prev + delta;
 	return delta.length;
@@ -421,7 +422,7 @@ function setDeltaContent(
 	field: "text" | "thinking",
 	content: string,
 ): number {
-	const rec = block as Record<string, unknown>;
+	const rec = block as unknown as Record<string, unknown>;
 	const prev = typeof rec[field] === "string" ? (rec[field] as string) : "";
 	rec[field] = content;
 	return content.length - prev.length;
