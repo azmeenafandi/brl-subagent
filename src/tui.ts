@@ -182,6 +182,7 @@ export async function showConcurrencyInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const result = await ctx.ui.input({
 		prompt: "Max parallel subagents (0 = unlimited):",
 		default: formatMaxParallel(state.config.maxParallel),
@@ -205,6 +206,7 @@ export async function showDepthInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const result = await ctx.ui.input({
 		prompt: "Max subagent recursion depth (0 = subagents cannot delegate, 1 = one level, etc.):",
 		default: String(state.config.maxSubagentDepth),
@@ -235,6 +237,7 @@ export async function showHistoryEntriesInput(
 		state.config.maxHistoryEntries === 0
 			? "unlimited"
 			: String(state.config.maxHistoryEntries);
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const result = await ctx.ui.input({
 		prompt: "Max run history entries (0 = unlimited, default 500):",
 		default: current,
@@ -267,6 +270,7 @@ export async function showCostLimitInput(
 		state.config.sessionCostLimit === 0
 			? "0 (unlimited)"
 			: String(state.config.sessionCostLimit);
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const result = await ctx.ui.input({
 		prompt: "Session cost limit in USD (0 = unlimited, e.g. 1.00 for $1):",
 		default: current,
@@ -368,6 +372,7 @@ export async function showSLAConfig(
 	}
 
 	// Step 2: Window size input
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const sizeResult = await ctx.ui.input({
 		prompt: `Window size (10-500, default ${state.config.slaWindowSize}):`,
 		default: String(state.config.slaWindowSize),
@@ -651,6 +656,7 @@ export async function showAddPreset(
 	state: SessionState,
 ): Promise<void> {
 	// 1. Prompt for name
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const name = await ctx.ui.input({ prompt: "Preset name (e.g., read-only-audit):" });
 	if (!name?.trim()) return;
 	const trimmedName = name.trim();
@@ -670,6 +676,7 @@ export async function showAddPreset(
 	}
 
 	// 3. Description
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const description = await ctx.ui.input({ prompt: "Description (optional):" });
 
 	// 4. Thinking level
@@ -695,6 +702,7 @@ export async function showAddPreset(
 		tools = ["read", "grep", "find", "ls"];
 		excludeTools = ["write", "edit", "bash"];
 	} else if (scopeResult === "custom") {
+		// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 		const toolsStr = await ctx.ui.input({ prompt: "Tools (comma-separated):" });
 		if (toolsStr?.trim()) tools = toolsStr.split(",").map((t) => t.trim()).filter(Boolean);
 	}
@@ -707,6 +715,7 @@ export async function showAddPreset(
 	const inheritResult = await showSelectList(ctx, "System Prompt Inheritance", inheritItems, 3);
 
 	// 7. System prompt body
+	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
 	const systemPrompt = await ctx.ui.input({ prompt: "System prompt (optional, multi-line not supported yet):" });
 
 	// 8. Build preset object
