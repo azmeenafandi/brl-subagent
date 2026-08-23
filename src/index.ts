@@ -1006,7 +1006,11 @@ export default function (pi: ExtensionAPI) {
 					inheritSystemPrompt: merged.inheritSP,
 					model: merged.model,
 					thinkingLevel: merged.thinkingLevel,
-					priority: merged.priority,
+					// Issue #119 R3: snapshot the RESOLVED priority (per-unit wins, the
+					// call-level parallelPriority is the floor) so a retry of a
+					// fallback-priority subtask restores the same priority the run
+					// entry itself carried (issue #114 intent).
+					priority: merged.priority ?? parallelPriority,
 					outputFile: merged.outputFile,
 					timeout: merged.timeout,
 					cwd: merged.effectiveCwd,
@@ -1059,60 +1063,117 @@ export default function (pi: ExtensionAPI) {
 				},
 			});
 
-			// Wrap onUpdate for per-task progress
+			// Wrap onUpdate for per-task progress — also feed the live monitor so
+			// the drill-in streams output instead of showing "waiting for first
+			// output…" for the whole run (mirrors single mode's liveOnUpdate).
 			const taskOnUpdate = onUpdate
 				? (partial: AgentToolResult<SubagentResult>) => {
 						onUpdate(partial);
+						if (partial.details) {
+							state.updateLiveSubagent(
+								runId,
+								getFinalOutput(partial.details.messages),
+								partial.details.usage.input,
+								partial.details.usage.output,
+								partial.details.liveTranscript,
+							);
+						}
 					}
 				: undefined;
 
-			// Run subagent
-			const result = await runSubagent(
-				resolvedCwd,
-				subagentPrompt,
-				stepModel,
-				merged.thinkingLevel,
-				merged.task,
-				signal,
-				taskOnUpdate,
-				merged.toolOptions,
-				merged.timeout,
-				getFinalOutput,
-				log,
-				currentDepth + 1,
-				intercom,
-				subagentId,
-			);
+			// Run subagent — the post-spawn body is crash-protected (issue #119
+			// R1, C1 fix): a throw here (e.g. runner writeToTempFile) must
+			// finalize the run entry and release the live monitor, or the entry
+			// stays 'running' forever and sweepStaleLiveSubagents cannot reclaim
+			// the live ghost (grace logic treats a 'running' record as live).
+			try {
+				const result = await runSubagent(
+					resolvedCwd,
+					subagentPrompt,
+					stepModel,
+					merged.thinkingLevel,
+					merged.task,
+					signal,
+					taskOnUpdate,
+					merged.toolOptions,
+					merged.timeout,
+					getFinalOutput,
+					log,
+					currentDepth + 1,
+					intercom,
+					subagentId,
+				);
 
-			// Fill SubTaskResult
-			subTaskResult.exitCode = result.exitCode;
-			subTaskResult.messages = result.messages;
-			subTaskResult.stderr = result.stderr;
-			subTaskResult.usage = result.usage;
-			subTaskResult.model = result.model;
-			subTaskResult.stopReason = result.stopReason;
-			subTaskResult.errorMessage = result.errorMessage;
-			subTaskResult.errorCategory = classifyError(result);
-			subTaskResult.gitBranch = result.gitBranch;
-			subTaskResult.gitDiff = result.gitDiff;
+				// Fill SubTaskResult
+				subTaskResult.exitCode = result.exitCode;
+				subTaskResult.messages = result.messages;
+				subTaskResult.stderr = result.stderr;
+				subTaskResult.usage = result.usage;
+				subTaskResult.model = result.model;
+				subTaskResult.stopReason = result.stopReason;
+				subTaskResult.errorMessage = result.errorMessage;
+				subTaskResult.errorCategory = classifyError(result);
+				subTaskResult.gitBranch = result.gitBranch;
+				subTaskResult.gitDiff = result.gitDiff;
 
-			results[index] = subTaskResult;
-			completedCount++;
+				results[index] = subTaskResult;
+				completedCount++;
 
-			// Issue #119: finalize the per-subtask run entry — status, duration,
-			// cost, tokens and sanitized output land on the entry (mirrors
-			// single-mode finalization; result carries the SubagentResult shape
-			// finalizeRunRecord expects, errorCategory included).
-			const subFinalOutput = capOutput(stripAnsi(getFinalOutput(result.messages)));
-			finalizeRunRecord(run, result, subFinalOutput, new Date(run.startedAt).getTime());
-			run.originalParams = {
-				...run.originalParams,
-				errorCategory: result.errorCategory,
-			};
-			state.persistRun(pi, run);
-			state.finalizeLiveSubagent(runId);
+				// Issue #119: finalize the per-subtask run entry — status, duration,
+				// cost, tokens and sanitized output land on the entry (mirrors
+				// single-mode finalization; result carries the SubagentResult shape
+				// finalizeRunRecord expects, errorCategory included).
+				const subFinalOutput = capOutput(stripAnsi(getFinalOutput(result.messages)));
+				finalizeRunRecord(run, result, subFinalOutput, new Date(run.startedAt).getTime());
+				run.originalParams = {
+					...run.originalParams,
+					errorCategory: result.errorCategory,
+				};
+				state.persistRun(pi, run);
 
-			log.debug("Parallel subtask run finalized", { runId, index, status: run.status });
+				// R2: Prune old run entries after the finalize persist — mirrors
+				// single mode's finalize-time prune (issue #119 R2). Spawn-time
+				// pruning alone could leave N finalized entries past
+				// maxHistoryEntries when many subtasks complete together.
+				if (state.config.maxHistoryEntries > 0) {
+					const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
+					if (p > 0) log.debug("Run history pruned", { pruned: p });
+				}
+
+				state.finalizeLiveSubagent(runId);
+
+				log.debug("Parallel subtask run finalized", { runId, index, status: run.status });
+			} catch (err) {
+				// Issue #119 R1 (C1 fix): mirror the single-mode crash catch — a
+				// post-spawn throw must finalize the entry as failed and release
+				// the live monitor, or the persisted entry stays 'running' and
+				// the live drill-in loops forever. finalizeLiveSubagent is
+				// idempotent; the rethrow keeps Promise.allSettled semantics (the
+				// caller's finally still releases the concurrency slot).
+				const result = buildCrashResult("Parallel subtask", err, resolvedCwd);
+				state.finalizeLiveSubagent(runId);
+				const crashOutput = state.subagentSessions.get(runId)?.liveOutput ?? "";
+				finalizeRunRecord(
+					run,
+					result.details,
+					crashOutput,
+					new Date(run.startedAt).getTime(),
+				);
+				// buildCrashResult.details carries no errorCategory — classify it
+				// so the entry follows the completion path's errorCategory
+				// convention (issue #114 retry-snapshot visibility).
+				run.originalParams = {
+					...run.originalParams,
+					errorCategory: classifyError(result.details),
+				};
+				state.persistRun(pi, run);
+				log.error("Parallel subtask crashed", {
+					runId,
+					index,
+					error: result.details.errorMessage,
+				});
+				throw err;
+			}
 
 			// Emit progress update
 			const completed = results.filter(Boolean).length;
@@ -1763,7 +1824,7 @@ export default function (pi: ExtensionAPI) {
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
 			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
 			"Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.",
-			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
+			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Parallel-origin entries retry as a single-subtask run carrying that subtask's task, label, and priority. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
 			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. Use get_subagent_result to check status and retrieve results later.",
 			"",

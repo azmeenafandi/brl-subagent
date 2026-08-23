@@ -1225,4 +1225,111 @@ describe("parallel subtask run entries (issue #119)", () => {
 		expect(entries[1].model).toBe(STEP_MODEL);
 		expect(entries[1].originalParams?.model).toBe(STEP_MODEL);
 	});
+
+	// Issue #119 R1 (C1 fix): a post-spawn throw (e.g. the real runner's
+	// writeToTempFile) previously skipped the finalize block entirely — the
+	// persisted entry stayed 'running' forever and sweepStaleLiveSubagents
+	// could not reclaim the live ghost (its grace logic treats a 'running'
+	// record as live). This test drives the crash catch: the entry must be
+	// finalized as 'failed' with a sanitized errorMessage, and the parallel
+	// mode must still settle (Promise.allSettled swallows the rethrown error;
+	// vitest fails the test on any unhandled rejection). The live-subagent
+	// finalize (idempotent claim in the same catch) is exercised here too —
+	// its observable effect is the finalized entry below.
+	it("crash path: rejected runSubagent finalizes the entry as failed and the mode still settles (R1 C1 fix)", async () => {
+		runnerMocks.runSubagent.mockRejectedValue(
+			new Error(`spawn failed: ${testCwd}/bin/pi`),
+		);
+
+		let settled = true;
+		let result: Awaited<ReturnType<ToolEntry["execute"]>> | undefined;
+		try {
+			result = await tool.execute("call-r-crash", {
+				tasks: [{ task: "boom" }, { task: "also boom" }],
+			}, undefined, undefined, makeCtx());
+		} catch {
+			settled = false;
+		}
+
+		expect(settled).toBe(true);
+		expect(result?.isError).toBeFalsy();
+
+		const entries = runEntries();
+		// 2 subtasks × (spawn write + crash finalize) — the crash path must
+		// persist a final entry too, or the count would stop at 2 'running'.
+		expect(entries).toHaveLength(4);
+
+		const byId = new Map<string, SubagentRun[]>();
+		for (const e of entries) {
+			const list = byId.get(e.id) ?? [];
+			list.push(e);
+			byId.set(e.id, list);
+		}
+		expect(byId.size).toBe(2);
+
+		for (const [, list] of byId) {
+			expect(list[0].status).toBe("running"); // spawn write
+			const finalized = list[1];
+			expect(finalized.status).toBe("failed"); // crash finalize — the leak fix
+			expect(finalized.errorMessage).toBeDefined();
+			// F7: the crash error is sanitized before it reaches the entry
+			expect(finalized.errorMessage).toContain("<cwd>/bin/pi");
+			expect(finalized.errorMessage).not.toContain(testCwd);
+			// classifyError on the crash details (spawn-class error)
+			expect(finalized.originalParams?.errorCategory).toBe("tool_error");
+		}
+	});
+
+	it("finalizes a failing subtask entry as failed with errorCategory (non-zero exitCode)", async () => {
+		runnerMocks.runSubagent.mockImplementation(
+			async (_cwd: string, _prompt: string, model: { provider: string; id: string }) => ({
+				...makeResult(`${model.provider}/${model.id}`),
+				exitCode: 2,
+				stopReason: "error",
+				stderr: "subtask blew up",
+				errorMessage: "exit code 2",
+				errorCategory: "exit_error",
+			}),
+		);
+
+		await tool.execute("call-r-fail", {
+			tasks: [{ task: "failing task" }],
+		}, undefined, undefined, makeCtx());
+
+		const entries = runEntries();
+		expect(entries).toHaveLength(2);
+		expect(entries[0].status).toBe("running");
+		const finalized = entries[1];
+		expect(finalized.status).toBe("failed");
+		expect(finalized.errorMessage).toBe("exit code 2");
+		expect(finalized.originalParams?.errorCategory).toBe("exit_error");
+	});
+
+	it("two subtasks with the SAME label produce two distinct run entries, both persisted", async () => {
+		await tool.execute("call-r-dup", {
+			tasks: [
+				{ task: "task X", label: "dup-label" },
+				{ task: "task Y", label: "dup-label" },
+			],
+		}, undefined, undefined, makeCtx());
+
+		const entries = runEntries();
+		// 2 subtasks × (spawn + finalize), keyed by DISTINCT run ids
+		expect(entries).toHaveLength(4);
+
+		const byId = new Map<string, SubagentRun[]>();
+		for (const e of entries) {
+			const list = byId.get(e.id) ?? [];
+			list.push(e);
+			byId.set(e.id, list);
+		}
+		expect(byId.size).toBe(2);
+
+		const ids = [...byId.keys()];
+		expect(ids[0]).not.toBe(ids[1]);
+
+		const finalized = [...byId.values()].map((list) => list[1]);
+		expect(finalized.every((r) => r.status === "done")).toBe(true);
+		expect(finalized.map((r) => r.label)).toEqual(["dup-label", "dup-label"]);
+	});
 });
