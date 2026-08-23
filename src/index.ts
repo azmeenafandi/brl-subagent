@@ -26,7 +26,10 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type {
+	AgentToolResult,
+	AgentToolUpdateCallback,
+} from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -2164,9 +2167,7 @@ export default function (pi: ExtensionAPI) {
 				}>;
 			},
 			signal: AbortSignal | undefined,
-			onUpdate:
-				| ((partial: AgentToolResult<SubagentResult | MultiSubagentDetails | undefined>) => void)
-				| undefined,
+			onUpdate: AgentToolUpdateCallback<SubagentResult | undefined> | undefined,
 			ctx: ExtensionContext,
 		) {
 			// Issue #99: warn on unknown params — typebox allows additional properties
