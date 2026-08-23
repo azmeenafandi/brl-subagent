@@ -26,6 +26,7 @@ import type {
 	ChainDetails,
 	ParallelDetails,
 	GraphDetails,
+	DelegateTaskDetails,
 	GraphTask,
 	SubTaskResult,
 	ThinkingLevel,
@@ -3012,7 +3013,7 @@ ${theme.fg("dim", `+${n - 3} more`)}`;
 }
 
 export function renderDelegateResult(
-	result: AgentToolResult<SubagentResult | MultiSubagentDetails | undefined>,
+	result: AgentToolResult<DelegateTaskDetails>,
 	options: ToolRenderResultOptions,
 	theme: Theme,
 ): Container | Text | ReturnType<typeof withDiffKeybinding> {

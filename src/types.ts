@@ -404,6 +404,20 @@ export interface GraphDetails {
 	totalTurns: number;
 }
 
+/**
+ * Union of every details shape delegate_task can produce — the tool's TDetails
+ * generic (issue #117). Single mode yields SubagentResult; chain / parallel /
+ * graph modes yield their mode-specific aggregates (GraphDetails does NOT
+ * extend MultiSubagentDetails, so it must be a member explicitly); error paths
+ * yield undefined.
+ */
+export type DelegateTaskDetails =
+	| SubagentResult
+	| ChainDetails
+	| ParallelDetails
+	| GraphDetails
+	| undefined;
+
 // ---------------------------------------------------------------------------
 // Resolved params (after preset merging + validation)
 // ---------------------------------------------------------------------------

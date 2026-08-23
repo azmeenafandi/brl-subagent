@@ -49,6 +49,7 @@ import type {
 	GraphTask,
 	GraphDetails,
 	GraphWave,
+	DelegateTaskDetails,
 	Priority,
 	ToolResult,
 } from "./types";
@@ -381,7 +382,7 @@ export default function (pi: ExtensionAPI) {
 	async function runChainMode(
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
-		onUpdate: AgentToolUpdateCallback<SubagentResult | undefined> | undefined,
+		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
 	): Promise<ToolResult<SubagentResult | ChainDetails | undefined>> {
 		const chainSteps = params.chain as SubTaskParams[];
@@ -768,7 +769,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: JSON.stringify(chainDetails, null, 2) },
 				],
-				details: chainDetails as unknown as SubagentResult,
+				details: chainDetails,
 			};
 		} catch (err) {
 			// F7 (issue #65): err.message may embed absolute paths — sanitize
@@ -789,7 +790,7 @@ export default function (pi: ExtensionAPI) {
 	async function runParallelMode(
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
-		onUpdate: AgentToolUpdateCallback<SubagentResult | undefined> | undefined,
+		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
 	): Promise<ToolResult<SubagentResult | ParallelDetails | undefined>> {
 		const taskList = params.tasks as SubTaskParams[];
@@ -1322,7 +1323,7 @@ export default function (pi: ExtensionAPI) {
 			content: [
 				{ type: "text" as const, text: JSON.stringify(parallelDetails, null, 2) },
 			],
-			details: parallelDetails as unknown as SubagentResult,
+			details: parallelDetails,
 		};
 	}
 
@@ -1333,7 +1334,7 @@ export default function (pi: ExtensionAPI) {
 	async function runGraphMode(
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
-		onUpdate: AgentToolUpdateCallback<SubagentResult | undefined> | undefined,
+		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
 	): Promise<ToolResult<SubagentResult | GraphDetails | undefined>> {
 		const graphTasks = params.graph as GraphTask[];
@@ -1746,7 +1747,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{ type: "text" as const, text: JSON.stringify(graphDetails, null, 2) },
 				],
-				details: graphDetails as unknown as SubagentResult,
+				details: graphDetails,
 			};
 		} catch (err) {
 			// F7 (issue #65): err.message may embed absolute paths — sanitize
@@ -2161,7 +2162,7 @@ export default function (pi: ExtensionAPI) {
 				}>;
 			},
 			signal: AbortSignal | undefined,
-			onUpdate: AgentToolUpdateCallback<SubagentResult | undefined> | undefined,
+			onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 			ctx: ExtensionContext,
 		) {
 			// Issue #99: warn on unknown params — typebox allows additional properties
@@ -2731,6 +2732,7 @@ export default function (pi: ExtensionAPI) {
 								`Use get_subagent_result({ agent_id: "${agent.id}" }) to check status and retrieve results.` +
 								bgAutoRouteNote,
 						}],
+						details: undefined,
 					};
 				} catch (err) {
 					const message = sanitizeErrorMessage(
@@ -3382,7 +3384,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderResult(
-			result: AgentToolResult<SubagentResult | undefined>,
+			result: AgentToolResult<DelegateTaskDetails>,
 			options: ToolRenderResultOptions,
 			theme: Theme,
 			_context: unknown,
