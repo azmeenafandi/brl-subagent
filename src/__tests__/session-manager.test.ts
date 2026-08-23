@@ -824,6 +824,9 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		expect(after?.status).toBe("completed");
 		expect(after?.result?.gitBranch).toBe("brl-subagent-abc12345");
 		expect(after?.result?.gitDiff).toContain("diff --git");
+		// Issue #122 nit: the usage merge must preserve the branch's real
+		// exitCode (0 on the completed path — not clobbered by the seed).
+		expect(after?.result?.exitCode).toBe(0);
 	});
 
 	it("captures any partial diff and discards the branch on failure", async () => {
@@ -964,6 +967,10 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 		expect(after?.status).toBe("stopped");
 		expect(after?.result?.gitBranch).toBe("brl-subagent-abc12345");
 		expect(after?.result?.gitDiff).toContain("diff --git");
+		// Issue #122 nit: the usage merge must NOT clobber the branch's real
+		// exitCode — the aborted path sets exitCode 1 and the seed must stay
+		// absent-preserving (a blunt seed after the spread would reset it to 0).
+		expect(after?.result?.exitCode).toBe(1);
 	});
 
 	it("C2: a second concurrent branch-mode spawn waits for the first's lock", async () => {
@@ -1567,6 +1574,13 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 			turns: 2,
 			contextTokens: 750,
 		});
+		// Issue #122 nit: the merge seeds the FULL required SubagentResult shape
+		// (messages/exitCode/stderr are required fields) when the record doesn't
+		// already provide it — a non-gitMode run must not persist a partial
+		// record with undefined required fields.
+		expect(after?.result?.messages).toEqual([]);
+		expect(typeof after?.result?.exitCode).toBe("number");
+		expect(after?.result?.stderr).toBe("");
 	});
 
 	it("carries the summed session usage on the finalized entry when the run is aborted", async () => {

@@ -585,6 +585,17 @@ export async function spawnBackgroundSession(
         }
       }
       agent.result = {
+        // Issue #122: seed the FULL required SubagentResult shape (messages /
+        // exitCode / stderr) BEFORE the existing record is spread — the seed
+        // only fills fields the record doesn't already have, so real values
+        // from the git-diff branches (exitCode 1 on aborted/failed, 0 on
+        // completed, plus messages/stderr) always win. A seed AFTER the spread
+        // would clobber a real exitCode: 1 back to 0. usage is folded below
+        // and merged last so the REAL session usage replaces the branches'
+        // EMPTY_USAGE placeholder.
+        messages: [],
+        exitCode: 0,
+        stderr: '',
         ...(agent.result ?? {}),
         usage,
       } as SubagentResult;
