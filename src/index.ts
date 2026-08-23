@@ -381,9 +381,7 @@ export default function (pi: ExtensionAPI) {
 	async function runChainMode(
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
-		onUpdate:
-			| ((partial: AgentToolResult<SubagentResult | MultiSubagentDetails | undefined>) => void)
-			| undefined,
+		onUpdate: AgentToolUpdateCallback<SubagentResult | undefined> | undefined,
 		ctx: ExtensionContext,
 	): Promise<ToolResult<SubagentResult | ChainDetails | undefined>> {
 		const chainSteps = params.chain as SubTaskParams[];
@@ -791,9 +789,7 @@ export default function (pi: ExtensionAPI) {
 	async function runParallelMode(
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
-		onUpdate:
-			| ((partial: AgentToolResult<SubagentResult | MultiSubagentDetails | undefined>) => void)
-			| undefined,
+		onUpdate: AgentToolUpdateCallback<SubagentResult | undefined> | undefined,
 		ctx: ExtensionContext,
 	): Promise<ToolResult<SubagentResult | ParallelDetails | undefined>> {
 		const taskList = params.tasks as SubTaskParams[];
@@ -1337,9 +1333,7 @@ export default function (pi: ExtensionAPI) {
 	async function runGraphMode(
 		params: Record<string, unknown>,
 		signal: AbortSignal | undefined,
-		onUpdate:
-			| ((partial: AgentToolResult<SubagentResult | MultiSubagentDetails | undefined>) => void)
-			| undefined,
+		onUpdate: AgentToolUpdateCallback<SubagentResult | undefined> | undefined,
 		ctx: ExtensionContext,
 	): Promise<ToolResult<SubagentResult | GraphDetails | undefined>> {
 		const graphTasks = params.graph as GraphTask[];
