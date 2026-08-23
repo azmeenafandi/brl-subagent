@@ -3481,6 +3481,7 @@ export default function (pi: ExtensionAPI) {
 			
 			return {
 				content: [{ type: "text" as const, text: resultText }],
+				details: undefined,
 			};
 		},
 	});
@@ -3525,6 +3526,7 @@ export default function (pi: ExtensionAPI) {
 						type: "text" as const,
 						text: `Steered agent ${params.agent_id}: "${params.message.slice(0, 50)}${params.message.length > 50 ? '...' : ''}"`,
 					}],
+					details: undefined,
 				};
 			} catch (err) {
 				// F7 (issue #65): sanitize BEFORE the message reaches the main
@@ -3573,6 +3575,7 @@ export default function (pi: ExtensionAPI) {
 						type: "text" as const,
 						text: `Stopped agent ${params.agent_id} (${agent.description}).`,
 					}],
+					details: undefined,
 				};
 			} catch (err) {
 				// F7 (issue #65): sanitize BEFORE the message reaches the main
