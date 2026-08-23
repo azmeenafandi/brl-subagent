@@ -548,7 +548,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Resolve priority (issue #114: no config knob — the call-level default)
 		const chainPriority: Priority = (
-			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+			params.priority && ["critical", "high", "normal", "low"].includes(params.priority as string)
 				? (params.priority as Priority)
 				: DEFAULT_PRIORITY
 		);
@@ -1236,7 +1236,7 @@ export default function (pi: ExtensionAPI) {
 		// Resolve priority — the FALLBACK for per-unit priority (issue #114): a
 		// task-level priority on tasks[] items wins per slot; this is the floor.
 		const parallelPriority: Priority = (
-			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+			params.priority && ["critical", "high", "normal", "low"].includes(params.priority as string)
 				? (params.priority as Priority)
 				: DEFAULT_PRIORITY
 		);
@@ -1522,7 +1522,7 @@ export default function (pi: ExtensionAPI) {
 		// Resolve priority — the FALLBACK for per-unit priority (issue #114): a
 		// task-level priority on graph[] items wins per slot; this is the floor.
 		const graphPriority: Priority = (
-			params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+			params.priority && ["critical", "high", "normal", "low"].includes(params.priority as string)
 				? (params.priority as Priority)
 				: DEFAULT_PRIORITY
 		);
@@ -1792,7 +1792,7 @@ export default function (pi: ExtensionAPI) {
 				historyentries: () => showHistoryEntriesInput(ctx, state, applyConfig),
 				monitor: () => showMonitor(ctx, state),
 				dashboard: () => showDashboard(ctx, state),
-				preset: () => showPresetManager(ctx, state, () => state.persistState(pi)),
+				preset: () => showPresetManager(ctx, state),
 				templates: () => showTemplateManager(ctx, state),
 				retry: () => showRetryMenu(ctx, state),
 			"update-check": () => showUpdateCheckToggle(ctx, state, applyConfig),
