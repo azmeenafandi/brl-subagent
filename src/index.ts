@@ -2326,22 +2326,10 @@ export default function (pi: ExtensionAPI) {
 				return runGraphMode(params, signal, onUpdate, ctx);
 			}
 
-			// Single mode fall-through: modeCount === 1 with none of chain/parallel/graph
-			// set guarantees isSingle, i.e. params.task is a non-empty string. TS cannot
-			// infer this through the computed modeCount, so narrow explicitly (unreachable
-			// at runtime — task-less calls are rejected by the modeCount check above).
-			if (params.task === undefined) {
-				return {
-					content: [{ type: "text" as const, text: "Single mode requires a task." }],
-					details: undefined,
-					isError: true,
-				};
-			}
-			// Type-honest narrowing: the guard above proves params.task is a non-empty
-			// string, but TS property narrowing does not widen the whole object shape.
-			// Extract the narrowed value once — resolveSubagentParams declares
-			// `task: string` required and is only reachable in single mode.
-			const singleTask: string = params.task;
+			// Single mode: isSingle is true (modeCount===1, none of chain/parallel/graph),
+			// so params.task is a non-empty string. TS can't infer this through the
+			// boolean-array filter — assert, mirroring params.chain!/params.tasks! above.
+			const singleTask = params.task!; // non-empty (sanitizer guarantees; isSingle confirms)
 
 			// Phase 6.5: Background execution — spawn session and return ID immediately.
 			// Resolve the preset and its model BEFORE the background branch so the
@@ -2441,7 +2429,7 @@ export default function (pi: ExtensionAPI) {
 					// C: H1 validation for background mode — reject outputFile-vs-write
 					// conflicts before spawning (loud failure, same as single mode).
 					const bgValidation = validatePreTask({
-						task: params.task,
+						task: singleTask,
 						toolOptions: bgResolved.toolOptions,
 						thinkingLevel: bgResolved.thinkingLevel,
 						gitMode: bgResolved.resolvedGitMode,
@@ -2472,7 +2460,7 @@ export default function (pi: ExtensionAPI) {
 					);
 
 					const agent = await spawnBackgroundSession(pi, ctx, {
-						task: params.task,
+						task: singleTask,
 						type: params.preset || 'general-purpose',
 						description: params.label,
 						model: bgModel,
