@@ -2337,11 +2337,16 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
+			// Type-honest narrowing: the guard above proves params.task is a non-empty
+			// string, but TS property narrowing does not widen the whole object shape.
+			// Extract the narrowed value once — resolveSubagentParams declares
+			// `task: string` required and is only reachable in single mode.
+			const singleTask: string = params.task;
 
 			// Phase 6.5: Background execution — spawn session and return ID immediately.
 			// Resolve the preset and its model BEFORE the background branch so the
 			// preset's model (and system prompt) are honored in background mode.
-			const bgResolved = resolveSubagentParams(params, state, ctx, log);
+			const bgResolved = resolveSubagentParams({ ...params, task: singleTask }, state, ctx, log);
 			const { resolvedPreset: bgResolvedPreset, autoRoutedPreset: bgAutoRoutedPreset } = bgResolved;
 			const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset, params.model);
 			const bgModel = bgModelResult.ok
@@ -2814,7 +2819,7 @@ export default function (pi: ExtensionAPI) {
 				resolvedApprovalMode,
 				resolvedPreset,
 				autoRoutedPreset,
-			} = resolveSubagentParams(params, state, ctx, log);
+			} = resolveSubagentParams({ ...params, task: singleTask }, state, ctx, log);
 
 			// F1: Validate CWD
 			const cwdResult = validateCwd(effectiveCwd, ctx.cwd);

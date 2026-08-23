@@ -121,7 +121,10 @@ export function finalizeRunRecord(
  */
 export function resolveRetryParams(
 	params: {
-		task: string;
+		// task is optional here by design: the retry path is reachable in
+		// chain/parallel/graph modes where the top-level task is legitimately
+		// absent — it falls back to the original run's task below.
+		task?: string;
 		label?: string;
 		model?: string;
 		preset?: string;
