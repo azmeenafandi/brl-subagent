@@ -531,7 +531,22 @@ export async function spawnBackgroundSession(
   const finalizeRunEntry = (status: "done" | "failed", error?: string): void => {
     if (runFinalized) return;
     runFinalized = true;
-    const entry = { ...run, status, errorMessage: error, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedAtMs };
+    const usage = agent.result?.usage ?? EMPTY_USAGE;
+    const finalOutput = agent.finalOutput ?? "";
+    const entry: SubagentRun = {
+      ...run,
+      status,
+      errorMessage: error,
+      finishedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedAtMs,
+      // Issue #122: audit fields — usage and final output are already
+      // captured on the agent record before the terminal finalize runs.
+      cost: usage.cost,
+      tokensIn: usage.input,
+      tokensOut: usage.output,
+      outputSummary: finalOutput.slice(0, 200),
+      fullOutput: finalOutput || undefined,
+    };
     pi.appendEntry(CUSTOM_ENTRY_TYPES.run, entry);
   };
 

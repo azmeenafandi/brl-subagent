@@ -85,9 +85,9 @@ vi.mock("../event-bus", () => ({
 	createEvent: eventBusMock.createEvent,
 }));
 
-import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, __setStorageDir } from "../session-manager";
+import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, setAgentResult, __setStorageDir } from "../session-manager";
 import { getTranscriptPath as transcriptGetTranscriptPath, __setOutputDir } from "../transcript";
-import { CUSTOM_ENTRY_TYPES } from "../types";
+import { CUSTOM_ENTRY_TYPES, EMPTY_USAGE } from "../types";
 
 // Issue #98: spawnBackgroundSession persists session run entries via
 // pi.appendEntry (same store the foreground path writes to).
@@ -1506,5 +1506,73 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		expect(finalRun.status).toBe("failed");
 		expect(finalRun.errorMessage).toBe("sync preflight failure");
 		expect(finalRun.finishedAt).toBeDefined();
+	});
+});
+
+// Issue #122: the finalized background run entry carries the audit fields
+// (cost/tokensIn/tokensOut/outputSummary/fullOutput) the same way the
+// foreground and parallel paths do — consumers (drill-in, retry, metrics)
+// must behave identically for background runs.
+// =========================================================================
+describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
+	it("carries cost + output fields on the finalized entry when the agent completed", async () => {
+		// Defer the prompt resolution: the completion settle handler finalizes
+		// on a microtask, so the agent result (real usage) must be planted on
+		// the record BEFORE the prompt settles — same ordering the production
+		// flow gets when a result is recorded ahead of the terminal finalize.
+		let resolvePrompt!: () => void;
+		mocks.session.prompt.mockReturnValue(new Promise((res) => { resolvePrompt = res; }));
+		// A long final message verifies outputSummary is the CAPPED slice while
+		// fullOutput keeps the entire output.
+		const fullOutput = "completed audit output " + "x".repeat(250);
+		mocks.session.messages = [
+			{ role: "user", content: "audit task" },
+			{ role: "assistant", content: [{ type: "text", text: fullOutput }], stopReason: "stop" },
+		];
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "audit fields",
+		});
+		// finalOutput comes from the session capture at settlement; the usage
+		// comes from the agent's result record, set here before the settle.
+		setAgentResult(agent.id, {
+			exitCode: 0,
+			messages: [],
+			stderr: "",
+			usage: { ...EMPTY_USAGE, input: 1234, output: 567, cost: 0.42 },
+		} as never);
+		resolvePrompt(undefined);
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.status).toBe("done");
+		expect(run.cost).toBe(0.42);
+		expect(run.tokensIn).toBe(1234);
+		expect(run.tokensOut).toBe(567);
+		expect(run.outputSummary).toBe(fullOutput.slice(0, 200));
+		expect(run.outputSummary).toHaveLength(200);
+		expect(run.fullOutput).toBe(fullOutput);
+	});
+
+	it("finalizes with zeroed/empty audit fields on an early failure (no result, no output)", async () => {
+		// Synchronous prompt() throw: no result and no captured output exist
+		// when the finalize runs — it must still succeed with the empty-usage
+		// fallback (zeros) and no missing fields.
+		mocks.session.prompt.mockImplementation(() => {
+			throw new Error("sync preflight failure");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync-throws-audit" })
+		).rejects.toThrow("sync preflight failure");
+
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		const finalRun = fakePi.appendEntry.mock.calls[1][1];
+		expect(finalRun.status).toBe("failed");
+		expect(finalRun.cost).toBe(0);
+		expect(finalRun.tokensIn).toBe(0);
+		expect(finalRun.tokensOut).toBe(0);
+		expect(finalRun.outputSummary).toBe("");
+		expect(finalRun.fullOutput).toBeUndefined();
 	});
 });
