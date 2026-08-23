@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.2.1 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.3.0 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -253,6 +253,13 @@ Set `background: true` to spawn the subagent as an independent session that retu
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
 
 ## Changelog
+
+### v2.3.0
+
+- **Parallel subtasks get run entries (issue #119):** the monitor's per-run drill-in now shows parallel subtasks like any other run — each subtask persists a `SubagentRun` at spawn (with its **per-unit priority** from issue #114) and finalizes at completion with status, model, duration, cost, tokens, and sanitized output. The prior known limitation (parallel priority was arbitration-only, invisible in the monitor) is closed. Crash-path finalize mirrors single mode (a spawn throw can no longer leave a stuck `running` entry).
+- **Background run entries carry real cost + output (issue #122):** the finalized background run entry now populates `cost`/`tokensIn`/`tokensOut`/`outputSummary`/`fullOutput` — usage is extracted from the session's assistant messages (`accumulateUsage`, the same fold foreground uses) on every terminal path (completed, aborted, failed, catch-all). Timed-out runs no longer report zero tokens. The record's shape is fully honest (no undefined required fields).
+- **Typecheck gate + 85 pre-existing type errors fixed (issue #117):** CI now runs `tsc --noEmit` (strict) between install and tests; a `typecheck` script and repo `tsconfig.json` (strict, bundler resolution, tests excluded) land with it. The 85 errors the gate surfaced — schema-vs-annotation drift, handler signatures mismatched to the SDK contract, a UI file written against a different SDK surface — are fixed at the root (17 remaining sites in the TUI are SDK-surface drift deliberately deferred to issue #124, marker-bridged with `@ts-expect-error` + issue refs). The pre-flight (`check-repo.sh`) runs the same gate locally, so drift is caught before a worktree builds on it.
+- **Process:** PR #125 was reviewed in tiers (runtime-relevant adversarial tier → second opinion → checkpoint classification → config/markers), with the tiered protocol catching a dead-guard lie and three flaws in the proposed fix before merge. 892 tests across 40 files.
 
 ### v2.2.1
 
