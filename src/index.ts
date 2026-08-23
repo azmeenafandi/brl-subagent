@@ -2110,6 +2110,7 @@ export default function (pi: ExtensionAPI) {
 				params?: Record<string, string>;
 				retryRunId?: string;
 				retryOnTimeout?: boolean;
+				background?: boolean;
 				gitMode?: string;
 				priority?: string;
 				chain?: Array<{
