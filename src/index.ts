@@ -1700,6 +1700,7 @@ export default function (pi: ExtensionAPI) {
 
 				// Emit progress update
 				onUpdate?.({
+					details: undefined,
 					content: [
 						{
 							type: "text" as const,
@@ -2093,7 +2094,9 @@ export default function (pi: ExtensionAPI) {
 		async execute(
 			_toolCallId: string,
 			params: {
-				task: string;
+				// Schema registers task as Type.Optional — required for single mode only,
+				// omitted by chain/tasks/graph calls. Aligned with Static<TParams>.
+				task?: string;
 				label?: string;
 				model?: string;
 				preset?: string;
@@ -2190,7 +2193,10 @@ export default function (pi: ExtensionAPI) {
 			const hasParallel = params.tasks && params.tasks.length > 0;
 			const hasGraph = params.graph && params.graph.length > 0;
 			if (!hasChain && !hasParallel && !hasGraph) {
-				const taskResult = sanitizeTask(params.task);
+				// task is optional per the schema; single mode requires it. When absent,
+				// feed "" to the sanitizer — same rejection path ("Task must not be
+				// empty.") as when task was a required field.
+				const taskResult = sanitizeTask(params.task ?? "");
 				if (!taskResult.ok) {
 					log.warn("Task rejected by sanitizer", { error: taskResult.error });
 					return {
@@ -2322,6 +2328,18 @@ export default function (pi: ExtensionAPI) {
 
 			if (isGraph) {
 				return runGraphMode(params, signal, onUpdate, ctx);
+			}
+
+			// Single mode fall-through: modeCount === 1 with none of chain/parallel/graph
+			// set guarantees isSingle, i.e. params.task is a non-empty string. TS cannot
+			// infer this through the computed modeCount, so narrow explicitly (unreachable
+			// at runtime — task-less calls are rejected by the modeCount check above).
+			if (params.task === undefined) {
+				return {
+					content: [{ type: "text" as const, text: "Single mode requires a task." }],
+					details: undefined,
+					isError: true,
+				};
 			}
 
 			// Phase 6.5: Background execution — spawn session and return ID immediately.
