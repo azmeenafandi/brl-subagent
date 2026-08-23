@@ -2549,11 +2549,15 @@ export default function (pi: ExtensionAPI) {
 							
 							// While running, update the live monitor.
 							// Once completedAt is set, skip straight to finalize below.
+							// Issue #31: past the guard above, the only nulled-ref path left is a
+							// TERMINAL agent (settlement releases the ref), so a live agent always
+							// has its session — the guard already returned on the live-nulled-ref
+							// crash path. The compiler can't correlate the two checks, so assert it.
 							if (!agent.completedAt) {
-								const finalOutput = extractFinalOutput(session);
+								const finalOutput = extractFinalOutput(session!);
 								
 								try {
-									const stats = session.getSessionStats();
+									const stats = session!.getSessionStats();
 									state.updateLiveSubagent(agent.id, finalOutput, stats.tokens.input, stats.tokens.output);
 								} catch {
 									state.updateLiveSubagent(agent.id, finalOutput, 0, 0);
