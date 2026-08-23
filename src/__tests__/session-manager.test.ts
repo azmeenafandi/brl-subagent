@@ -85,9 +85,9 @@ vi.mock("../event-bus", () => ({
 	createEvent: eventBusMock.createEvent,
 }));
 
-import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, setAgentResult, __setStorageDir } from "../session-manager";
+import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, __setStorageDir } from "../session-manager";
 import { getTranscriptPath as transcriptGetTranscriptPath, __setOutputDir } from "../transcript";
-import { CUSTOM_ENTRY_TYPES, EMPTY_USAGE } from "../types";
+import { CUSTOM_ENTRY_TYPES } from "../types";
 
 // Issue #98: spawnBackgroundSession persists session run entries via
 // pi.appendEntry (same store the foreground path writes to).
@@ -1515,43 +1515,133 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 // must behave identically for background runs.
 // =========================================================================
 describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
-	it("carries cost + output fields on the finalized entry when the agent completed", async () => {
-		// Defer the prompt resolution: the completion settle handler finalizes
-		// on a microtask, so the agent result (real usage) must be planted on
-		// the record BEFORE the prompt settles — same ordering the production
-		// flow gets when a result is recorded ahead of the terminal finalize.
-		let resolvePrompt!: () => void;
-		mocks.session.prompt.mockReturnValue(new Promise((res) => { resolvePrompt = res; }));
+	it("carries the REAL summed session usage on the finalized entry when the agent completed", async () => {
+		// Real data flow (no setAgentResult planting): the assistant messages
+		// in the session carry per-turn usage; the terminal path folds them
+		// with accumulateUsage and merges the sum onto the run entry.
+		mocks.session.prompt.mockResolvedValue(undefined);
 		// A long final message verifies outputSummary is the CAPPED slice while
 		// fullOutput keeps the entire output.
 		const fullOutput = "completed audit output " + "x".repeat(250);
 		mocks.session.messages = [
 			{ role: "user", content: "audit task" },
-			{ role: "assistant", content: [{ type: "text", text: fullOutput }], stopReason: "stop" },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "planning turn" }],
+				usage: { input: 1000, output: 200, cacheRead: 300, cacheWrite: 50, cost: { total: 0.5 }, totalTokens: 1500 },
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: fullOutput }],
+				stopReason: "stop",
+				usage: { input: 500, output: 250, cost: { total: 0.25 }, totalTokens: 750 },
+			},
 		];
 		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
 			task: "audit fields",
 		});
-		// finalOutput comes from the session capture at settlement; the usage
-		// comes from the agent's result record, set here before the settle.
-		setAgentResult(agent.id, {
-			exitCode: 0,
-			messages: [],
-			stderr: "",
-			usage: { ...EMPTY_USAGE, input: 1234, output: 567, cost: 0.42 },
-		} as never);
-		resolvePrompt(undefined);
+		// Let the completion settle handler run.
 		await new Promise((r) => setTimeout(r, 0));
 
 		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
 		const run = fakePi.appendEntry.mock.calls[1][1];
 		expect(run.status).toBe("done");
-		expect(run.cost).toBe(0.42);
-		expect(run.tokensIn).toBe(1234);
-		expect(run.tokensOut).toBe(567);
+		// Folded from BOTH assistant turns: input 1000+500, output 200+250,
+		// cacheRead 300, cacheWrite 50, cost 0.5+0.25, turns 2, contextTokens
+		// = last turn's totalTokens (accumulateUsage semantics).
+		expect(run.cost).toBeCloseTo(0.75, 10);
+		expect(run.tokensIn).toBe(1500);
+		expect(run.tokensOut).toBe(450);
 		expect(run.outputSummary).toBe(fullOutput.slice(0, 200));
 		expect(run.outputSummary).toHaveLength(200);
 		expect(run.fullOutput).toBe(fullOutput);
+		// The agent record itself carries the merged usage — extracted from the
+		// session, never planted via setAgentResult.
+		const after = getAgent(agent.id);
+		expect(after?.result?.usage).toMatchObject({
+			input: 1500,
+			output: 450,
+			cacheRead: 300,
+			cacheWrite: 50,
+			cost: 0.75,
+			turns: 2,
+			contextTokens: 750,
+		});
+	});
+
+	it("carries the summed session usage on the finalized entry when the run is aborted", async () => {
+		// Probe contract: abort makes prompt() RESOLVE with stopReason
+		// "aborted" on the last assistant message. A timed-out/aborted run
+		// burned tokens — the 'failed' entry must carry the REAL summed usage.
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "audit task" },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "partial work" }],
+				stopReason: "stop",
+				usage: { input: 800, output: 120, cacheRead: 40, cacheWrite: 10, cost: { total: 0.4 }, totalTokens: 960 },
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "interrupted" }],
+				stopReason: "aborted",
+				errorMessage: "Aborted",
+				usage: { input: 60, output: 30, cost: { total: 0.05 }, totalTokens: 90 },
+			},
+		];
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "audit fields abort",
+		});
+		// Let the aborted settle handler run.
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.status).toBe("failed");
+		expect(run.errorMessage).toBe("Aborted or timed out");
+		// Summed across both assistant turns: input 800+60, output 120+30,
+		// cacheRead 40, cacheWrite 10, cost 0.4+0.05, turns 2.
+		expect(run.cost).toBeCloseTo(0.45, 10);
+		expect(run.tokensIn).toBe(860);
+		expect(run.tokensOut).toBe(150);
+		// The agent record is 'stopped' and carries the merged usage.
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("stopped");
+		expect(after?.result?.usage).toMatchObject({
+			input: 860,
+			output: 150,
+			cacheRead: 40,
+			cacheWrite: 10,
+			turns: 2,
+			contextTokens: 90,
+		});
+	});
+
+	it("finalizes with zeroed audit fields on a rejected preflight (no assistant messages)", async () => {
+		// Genuine failure branch (.catch): a preflight auth/model rejection
+		// usually has NO assistant messages — the usage fold yields zeros
+		// (honest: no model call happened) and must not crash.
+		mocks.session.prompt.mockRejectedValue(new Error("no api key for provider"));
+		mocks.session.messages = [{ role: "user", content: "audit task" }];
+
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "audit fields reject",
+		});
+		// Let the .catch settle handler run.
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.status).toBe("failed");
+		expect(run.cost).toBe(0);
+		expect(run.tokensIn).toBe(0);
+		expect(run.tokensOut).toBe(0);
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("failed");
+		expect(after?.result?.usage).toMatchObject({ input: 0, output: 0, turns: 0 });
 	});
 
 	it("finalizes with zeroed/empty audit fields on an early failure (no result, no output)", async () => {
