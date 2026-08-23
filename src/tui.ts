@@ -2563,6 +2563,7 @@ export async function showApprovalDialog(
 					currentView = "diff";
 					tui.requestRender();
 				} else {
+					// @ts-expect-error — SDK surface drift, issue #124 (string vs apply/discard/null union); deliberate fix with UI verification
 					done(item.value);
 				}
 			};
@@ -2766,6 +2767,7 @@ function withDiffKeybinding(
 				showFullDiff = true;
 				return;
 			}
+			// @ts-expect-error — SDK surface drift, issue #124 (Container.handleInput missing from SDK type); deliberate fix with UI verification
 			container.handleInput?.(data);
 		},
 		invalidate() {
