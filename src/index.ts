@@ -983,6 +983,62 @@ export default function (pi: ExtensionAPI) {
 			const subagentId = merged.label ?? `parallel-${index}`;
 			intercom.register(subagentId);
 
+			// Issue #119: per-subtask run entry — created at spawn so the
+			// monitor drill-in shows per-unit priority and a post-hoc audit
+			// trail exists per subtask (mirrors single-mode run persistence).
+			const runId = crypto.randomUUID();
+			const run: SubagentRun = {
+				id: runId,
+				task: merged.task,
+				label: merged.label,
+				// Issue #98 symmetry: the background entry carries the caller
+				// label as `description` — kept separate from `label`.
+				description: merged.label,
+				status: "running",
+				model: `${stepModel.provider}/${stepModel.id}`,
+				thinkingLevel: merged.thinkingLevel,
+				// Issue #114: per-unit priority wins; the call-level
+				// parallelPriority fallback is the floor.
+				priority: merged.priority ?? parallelPriority,
+				startedAt: new Date().toISOString(),
+				originalParams: snapshotOriginalParams({
+					systemPrompt: merged.customSP,
+					inheritSystemPrompt: merged.inheritSP,
+					model: merged.model,
+					thinkingLevel: merged.thinkingLevel,
+					priority: merged.priority,
+					outputFile: merged.outputFile,
+					timeout: merged.timeout,
+					cwd: merged.effectiveCwd,
+					tools: merged.toolOptions?.tools,
+					excludeTools: merged.toolOptions?.excludeTools,
+					noBuiltinTools: merged.toolOptions?.noBuiltinTools,
+					preset: globalParams.resolvedPreset?.name,
+				}),
+			};
+			state.persistRun(pi, run);
+
+			// R2: Prune old run entries if history exceeds limit
+			if (state.config.maxHistoryEntries > 0) {
+				const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
+				if (p > 0) log.debug("Run history pruned", { pruned: p });
+			}
+
+			// Register for live monitor — parallel subtasks now appear in the
+			// drill-in with their per-unit priority (issue #119).
+			state.registerLiveSubagent(runId, {
+				id: runId,
+				label: merged.label,
+				task: merged.task,
+				model: run.model,
+				thinkingLevel: run.thinkingLevel,
+				priority: run.priority,
+				startedAt: Date.now(),
+				ctx,
+			});
+
+			log.debug("Parallel subtask run registered", { runId, index });
+
 			// Emit initial progress
 			const modeInfo = describePromptMode(
 				merged.inheritSP,
@@ -1042,6 +1098,21 @@ export default function (pi: ExtensionAPI) {
 
 			results[index] = subTaskResult;
 			completedCount++;
+
+			// Issue #119: finalize the per-subtask run entry — status, duration,
+			// cost, tokens and sanitized output land on the entry (mirrors
+			// single-mode finalization; result carries the SubagentResult shape
+			// finalizeRunRecord expects, errorCategory included).
+			const subFinalOutput = capOutput(stripAnsi(getFinalOutput(result.messages)));
+			finalizeRunRecord(run, result, subFinalOutput, new Date(run.startedAt).getTime());
+			run.originalParams = {
+				...run.originalParams,
+				errorCategory: result.errorCategory,
+			};
+			state.persistRun(pi, run);
+			state.finalizeLiveSubagent(runId);
+
+			log.debug("Parallel subtask run finalized", { runId, index, status: run.status });
 
 			// Emit progress update
 			const completed = results.filter(Boolean).length;

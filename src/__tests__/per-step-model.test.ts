@@ -55,7 +55,8 @@ vi.mock("@earendil-works/pi-tui", () => {
 
 import initExtension from "../index";
 import { KNOWN_DELEGATE_KEYS } from "../params";
-import type { SubagentResult } from "../types";
+import { CUSTOM_ENTRY_TYPES } from "../types";
+import type { SubagentResult, SubagentRun } from "../types";
 // Issue #52: the setters redirect the real execute handler's transcript (and
 // agent-record) writes away from the repo .pi/ — they reach the SAME module
 // instance index.ts's dynamic import('./transcript') resolves to (vitest
@@ -108,6 +109,11 @@ interface ToolEntry {
 let tool: ToolEntry;
 let sessionStartHandler: ((_event: unknown, ctx: Record<string, unknown>) => Promise<void>) | undefined;
 
+// Issue #119: capture entries persisted through the REAL execute handler
+// (state.persistRun → pi.appendEntry) so tests can assert the per-subtask run
+// records that parallel mode creates and finalizes. Reset per test.
+let recordedEntries: Array<{ type: string; data: unknown }> = [];
+
 function setupExtension(): ToolEntry {
 	const registeredTools = new Map<string, ToolEntry>();
 	const mockPi = {
@@ -117,7 +123,12 @@ function setupExtension(): ToolEntry {
 		on: (event: string, handler: (_event: unknown, ctx: Record<string, unknown>) => Promise<void>) => {
 			if (event === "session_start") sessionStartHandler = handler;
 		},
-		appendEntry: () => {},
+		appendEntry: (type: string, data: unknown) => {
+			// Snapshot at write time: state.persistRun hands pi the SAME SubagentRun
+			// object that finalizeRunRecord mutates in place afterwards — storing the
+			// reference would show the final (done) state on every recorded write.
+			recordedEntries.push({ type, data: { ...(data as Record<string, unknown>) } });
+		},
 		sendMessage: () => {},
 		ctx: {
 			getState: () => undefined,
@@ -181,6 +192,9 @@ function makeResult(modelStr: string): SubagentResult {
 		stderr: "",
 		model: modelStr,
 		stopReason: "end_turn",
+		// Mirrors the real runner contract (runSubagent always sets this before
+		// returning) — the issue #119 finalize path reads result.errorCategory.
+		errorCategory: "unknown",
 	};
 }
 
@@ -193,6 +207,7 @@ let tempOutputDir = "";
 let tempStorageDir = "";
 
 beforeEach(() => {
+	recordedEntries = [];
 	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
 	// testCwd leaks too (template/preset seed dirs under it); rm the previous
 	// one before creating the next, mirroring tempPiBase.
@@ -1118,5 +1133,96 @@ describe("crash-path error sanitization (issue #65)", () => {
 		const tempFiles = fs.readdirSync(tempOutputDir);
 		expect(tempFiles).toHaveLength(1);
 		expect(tempFiles[0]).toMatch(/^agent-[0-9a-f-]+\.jsonl$/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #119: per-subtask run entries in parallel mode
+//
+// Parallel mode previously persisted ZERO run entries — SubTaskResults were
+// never SubagentRuns, so per-subtask priority stayed invisible in the monitor
+// drill-in and no post-hoc audit trail (status/model/duration/output) existed
+// per subtask. These tests drive the REAL execute handler (runner mocked) and
+// assert the run records pi.appendEntry receives: one entry created at spawn
+// and one finalized at completion per spawned subtask, carrying the per-unit
+// priority (issue #114), model, thinkingLevel, description/label and the audit
+// fields (status/duration/cost/tokens/output/errorCategory).
+// ---------------------------------------------------------------------------
+
+describe("parallel subtask run entries (issue #119)", () => {
+	const runEntries = () =>
+		recordedEntries
+			.filter((e) => e.type === CUSTOM_ENTRY_TYPES.run)
+			.map((e) => e.data as SubagentRun);
+
+	it("creates and finalizes one run entry per spawned subtask with per-unit priority", async () => {
+		const result = await tool.execute("call-r1", {
+			tasks: [
+				{ task: "task A", label: "alpha", priority: "critical" },
+				{ task: "task B", priority: "low" },
+				{ task: "task C" }, // no per-unit priority → call-level fallback
+			],
+			priority: "normal",
+		}, undefined, undefined, makeCtx());
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(3);
+		expect(result.details?.results?.length).toBe(3);
+
+		const entries = runEntries();
+		// Each spawned subtask persists twice: at spawn (running) + at finalize (done).
+		expect(entries).toHaveLength(6);
+
+		// Group per subtask id; the last write per id is the finalized record.
+		const byId = new Map<string, SubagentRun[]>();
+		for (const e of entries) {
+			const list = byId.get(e.id) ?? [];
+			list.push(e);
+			byId.set(e.id, list);
+		}
+		expect(byId.size).toBe(3);
+
+		const finalized = [...byId.values()].map((list) => {
+			expect(list[0].status).toBe("running");
+			expect(list[1].status).toBe("done");
+			return list[1];
+		});
+
+		const byTask = new Map(finalized.map((r) => [r.task, r]));
+
+		const alpha = byTask.get("task A")!;
+		expect(alpha.label).toBe("alpha");
+		expect(alpha.description).toBe("alpha"); // issue #98 symmetry field
+		expect(alpha.priority).toBe("critical"); // per-unit priority wins (issue #114)
+		expect(alpha.model).toBe(`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`);
+		expect(alpha.thinkingLevel).toBe("off"); // default state maxThinkingLevel
+		expect(alpha.durationMs).toBeGreaterThanOrEqual(0);
+		expect(alpha.cost).toBe(0.001);
+		expect(alpha.tokensIn).toBe(10);
+		expect(alpha.tokensOut).toBe(5);
+		expect(alpha.outputSummary).toBe("done");
+		expect(alpha.fullOutput).toBe("done");
+		expect(alpha.originalParams?.priority).toBe("critical");
+		expect(alpha.originalParams?.errorCategory).toBe("unknown");
+
+		const beta = byTask.get("task B")!;
+		expect(beta.priority).toBe("low");
+		expect(beta.label).toBeUndefined();
+		expect(beta.description).toBeUndefined();
+
+		const gamma = byTask.get("task C")!;
+		// No per-unit priority → the call-level fallback is the floor (issue #114).
+		expect(gamma.priority).toBe("normal");
+	});
+
+	it("records step model overrides on the per-subtask run entry", async () => {
+		await tool.execute("call-r2", {
+			tasks: [{ task: "task with model", model: STEP_MODEL }],
+		}, undefined, undefined, makeCtx());
+
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		const entries = runEntries();
+		expect(entries).toHaveLength(2);
+		expect(entries[1].model).toBe(STEP_MODEL);
+		expect(entries[1].originalParams?.model).toBe(STEP_MODEL);
 	});
 });
