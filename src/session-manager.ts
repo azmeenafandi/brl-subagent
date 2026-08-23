@@ -1,8 +1,9 @@
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
-import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions } from './types';
+import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats } from './types';
 import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES } from './types';
+import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
 import { createEvent } from './event-bus';
@@ -531,7 +532,22 @@ export async function spawnBackgroundSession(
   const finalizeRunEntry = (status: "done" | "failed", error?: string): void => {
     if (runFinalized) return;
     runFinalized = true;
-    const entry = { ...run, status, errorMessage: error, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedAtMs };
+    const usage = agent.result?.usage ?? EMPTY_USAGE;
+    const finalOutput = agent.finalOutput ?? "";
+    const entry: SubagentRun = {
+      ...run,
+      status,
+      errorMessage: error,
+      finishedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedAtMs,
+      // Issue #122: audit fields — usage and final output are already
+      // captured on the agent record before the terminal finalize runs.
+      cost: usage.cost,
+      tokensIn: usage.input,
+      tokensOut: usage.output,
+      outputSummary: finalOutput.slice(0, 200),
+      fullOutput: finalOutput || undefined,
+    };
     pi.appendEntry(CUSTOM_ENTRY_TYPES.run, entry);
   };
 
@@ -548,6 +564,45 @@ export async function spawnBackgroundSession(
   const captureAndReleaseSession = (): void => {
     setAgentFinalOutput(id, extractFinalOutput(session));
     agent._sessionRef = undefined;
+  };
+
+  // Issue #122: the session's REAL usage lives on the assistant messages in
+  // session.messages — each turn carries the same usage shape accumulateUsage
+  // folds (the runner's single source of truth for usage semantics: turns++,
+  // sum input/output/cache, cost.total, contextTokens from totalTokens). Fold
+  // the session's assistant turns into a fresh stats object and MERGE it onto
+  // the agent's result record — never replace: the git-diff branches may have
+  // already set exitCode/messages/stderr/gitBranch/gitDiff, and the aborted/
+  // failed branches previously OVERWROTE usage with the empty fallback. Runs
+  // on every terminal path right before the finalize; must never throw
+  // (best-effort, same discipline as markTerminalBestEffort).
+  const recordSessionUsage = (): void => {
+    try {
+      const usage: UsageStats = { ...EMPTY_USAGE };
+      for (const msg of session.messages ?? []) {
+        if (msg.role === 'assistant') {
+          accumulateUsage(usage, msg.usage as Parameters<typeof accumulateUsage>[1]);
+        }
+      }
+      agent.result = {
+        // Issue #122: seed the FULL required SubagentResult shape (messages /
+        // exitCode / stderr) BEFORE the existing record is spread — the seed
+        // only fills fields the record doesn't already have, so real values
+        // from the git-diff branches (exitCode 1 on aborted/failed, 0 on
+        // completed, plus messages/stderr) always win. A seed AFTER the spread
+        // would clobber a real exitCode: 1 back to 0. usage is folded below
+        // and merged last so the REAL session usage replaces the branches'
+        // EMPTY_USAGE placeholder.
+        messages: [],
+        exitCode: 0,
+        stderr: '',
+        ...(agent.result ?? {}),
+        usage,
+      } as SubagentResult;
+    } catch {
+      // Usage extraction is best-effort — it must never block the terminal
+      // flip, the finalize, or the ref release.
+    }
   };
 
   // W4 (issue #28): git isolation — create a work branch BEFORE the prompt so
@@ -725,6 +780,10 @@ export async function spawnBackgroundSession(
         agent.status = fallback;
       }
       if (!agent.completedAt) agent.completedAt = Date.now();
+      // Issue #122: merge the session's real usage even on the catch-all — it
+      // fires when a settle handler threw BEFORE the branch's own extraction,
+      // so this is the last chance to record the tokens the run burned.
+      recordSessionUsage();
       agents.set(id, agent);
       persistAgent(agent);
       // Issue #98 (review F2): derive the run-entry status from the agent
@@ -835,6 +894,9 @@ export async function spawnBackgroundSession(
         }
         // Issue #98: aborts/timeouts are retryable failures (retry schema:
         // timeout/abort counts as failure) — finalize the run entry.
+        // Issue #122: a timed-out run burned tokens — record the real usage
+        // (the git-diff block above must not leave the empty fallback).
+        recordSessionUsage();
         finalizeRunEntry('failed', agent.error ?? 'Aborted or timed out');
         // Issue #31: capture the final output while the session is still
         // live, then release the ref on the terminal path (memory retention;
@@ -863,6 +925,9 @@ export async function spawnBackgroundSession(
       // then release the ref before the branch's persist — the persisted
       // record is consistent and the live session graph is freed.
       captureAndReleaseSession();
+      // Issue #122: merge the session's summed usage onto the result record
+      // before the persist + finalize — the entry's cost/tokens are real.
+      recordSessionUsage();
       agents.set(id, agent);
       persistAgent(agent);
       // Issue #98: mirror the agent-record flip in the session run entry.
@@ -904,6 +969,9 @@ export async function spawnBackgroundSession(
         }
         // Issue #98: the stopped path is a retryable failure too — finalize
         // the run entry alongside the agent record flip.
+        // Issue #122: a stopped/timed-out run burned tokens too — record the
+        // real usage (same aborted path semantics as the .then branch).
+        recordSessionUsage();
         finalizeRunEntry('failed', agent.error ?? 'Aborted or timed out');
         // Issue #31: the stopped path is terminal too — capture + release.
         captureAndReleaseSession();
@@ -933,6 +1001,9 @@ export async function spawnBackgroundSession(
       // then release the ref before the branch's persist — the persisted
       // record is consistent and the live session graph is freed.
       captureAndReleaseSession();
+      // Issue #122: fold any assistant turns the preflight/run did produce —
+      // usually none (auth/model rejection) → honest zeros, never a crash.
+      recordSessionUsage();
       agents.set(id, agent);
       persistAgent(agent);
       // Issue #98: mirror the agent-record flip in the session run entry.
