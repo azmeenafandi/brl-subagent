@@ -6,7 +6,12 @@
  * delegate_task result rendering.
  */
 
-import type { ExtensionContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionContext,
+	ExtensionAPI,
+	Theme,
+	ToolRenderResultOptions,
+} from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Spacer, Text, Markdown } from "@earendil-works/pi-tui";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -2079,7 +2084,7 @@ export async function showRetryMenu(ctx: ExtensionContext, state: SessionState):
 
 function buildDelegateLabel(
 	args: { inheritSystemPrompt?: boolean; systemPrompt?: string },
-	theme: { fg: (c: string, t: string) => string; bold: (t: string) => string },
+	theme: Theme,
 ): string {
 	const inherit = args.inheritSystemPrompt !== false;
 	const hasCustom = Boolean(args.systemPrompt);
@@ -2097,7 +2102,7 @@ function buildDelegateLabel(
 
 function buildScopeLabel(
 	args: { tools?: string[]; excludeTools?: string[]; noBuiltinTools?: boolean },
-	theme: { fg: (c: string, t: string) => string },
+	theme: Theme,
 ): string {
 	if (args.noBuiltinTools) return theme.fg("muted", " [no-builtins]");
 	if (args.tools?.length) return theme.fg("muted", ` [tools:${args.tools.join(",")}]`);
@@ -2110,7 +2115,7 @@ function renderExpandedResult(
 	isError: boolean,
 	icon: string,
 	finalOutput: string,
-	theme: { fg: (c: string, t: string) => string; bold: (t: string) => string },
+	theme: Theme,
 	mdTheme: ReturnType<typeof getMarkdownTheme>,
 ): Container {
 	const container = new Container();
@@ -2151,7 +2156,7 @@ function renderCollapsedText(
 	isError: boolean,
 	icon: string,
 	finalOutput: string,
-	theme: { fg: (c: string, t: string) => string; bold: (t: string) => string },
+	theme: Theme,
 ): string {
 	let text =
 		`${icon} ${theme.fg("toolTitle", theme.bold("subagent"))}` +
@@ -2209,10 +2214,7 @@ function renderSubTaskSummary(
 
 function renderCollapsedChain(
 	details: ChainDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 ): string {
 	const allSucceeded = details.results.every(
 		(r) =>
@@ -2255,10 +2257,7 @@ function renderCollapsedChain(
 
 function renderCollapsedParallel(
 	details: ParallelDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 ): string {
 	const icon =
 		details.failed === 0
@@ -2297,10 +2296,7 @@ function renderCollapsedParallel(
 
 function renderExpandedChain(
 	details: ChainDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 	mdTheme: ReturnType<typeof getMarkdownTheme>,
 ): Container {
 	const container = new Container();
@@ -2386,10 +2382,7 @@ function renderExpandedChain(
 
 function renderExpandedParallel(
 	details: ParallelDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 	mdTheme: ReturnType<typeof getMarkdownTheme>,
 ): Container {
 	const container = new Container();
@@ -2635,9 +2628,7 @@ export async function showApprovalDialog(
  */
 function renderCollapsedDiffSummary(
 	gitDiff: string | undefined,
-	theme: {
-		fg: (color: string, text: string) => string;
-	},
+	theme: Theme,
 ): string {
 	if (!gitDiff?.trim()) return "";
 	const files = parseDiff(gitDiff);
@@ -2666,9 +2657,7 @@ function renderCollapsedDiffSummary(
 function addExpandedDiffSection(
 	container: Container,
 	gitDiff: string | undefined,
-	theme: {
-		fg: (color: string, text: string) => string;
-	},
+	theme: Theme,
 ): boolean {
 	if (!gitDiff?.trim()) return false;
 	const files = parseDiff(gitDiff);
@@ -2731,10 +2720,7 @@ function addExpandedDiffSection(
 function withDiffKeybinding(
 	container: Container,
 	gitDiff: string | undefined,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 ): Container | { render(w: number): string[]; handleInput(d: string): void; invalidate(): void } {
 	if (!gitDiff?.trim()) return container;
 
@@ -2782,10 +2768,7 @@ function withDiffKeybinding(
  */
 function renderCollapsedGraph(
 	details: GraphDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 ): string {
 	const totalTasks = details.waves.reduce((s, w) => s + w.tasks.length, 0);
 	const allSucceeded = details.waves.every((w) =>
@@ -2843,10 +2826,7 @@ ${theme.fg("muted", "(Ctrl+O to expand)")}`;
  */
 function renderExpandedGraph(
 	details: GraphDetails,
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 	mdTheme: ReturnType<typeof getMarkdownTheme>,
 ): Container {
 	const container = new Container();
@@ -2966,10 +2946,7 @@ export function renderDelegateCall(
 		tasks?: SubTaskParams[];
 		graph?: GraphTask[];
 	},
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	theme: Theme,
 ): Text {
 	// Graph mode
 	if (args.graph && args.graph.length > 0) {
@@ -3035,15 +3012,9 @@ ${theme.fg("dim", `+${n - 3} more`)}`;
 }
 
 export function renderDelegateResult(
-	result: {
-		content: Array<{ type: string; text: string }>;
-		details?: SubagentResult | MultiSubagentDetails;
-	},
-	options: { expanded: boolean },
-	theme: {
-		fg: (color: string, text: string) => string;
-		bold: (text: string) => string;
-	},
+	result: AgentToolResult<SubagentResult | MultiSubagentDetails | undefined>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
 ): Container | Text | ReturnType<typeof withDiffKeybinding> {
 	const details = result.details;
 

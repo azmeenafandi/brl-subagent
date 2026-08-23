@@ -3362,25 +3362,16 @@ export default function (pi: ExtensionAPI) {
 				excludeTools?: string[];
 				noBuiltinTools?: boolean;
 			},
-			theme: {
-				fg: (color: string, text: string) => string;
-				bold: (text: string) => string;
-			},
+			theme: Theme,
 			_context: unknown,
 		) {
 			return renderDelegateCall(args, theme);
 		},
 
 		renderResult(
-			result: {
-				content: Array<{ type: string; text: string }>;
-				details?: SubagentResult;
-			},
-			options: { expanded: boolean },
-			theme: {
-				fg: (color: string, text: string) => string;
-				bold: (text: string) => string;
-			},
+			result: AgentToolResult<SubagentResult | undefined>,
+			options: ToolRenderResultOptions,
+			theme: Theme,
 			_context: unknown,
 		) {
 			return renderDelegateResult(result, options, theme);
