@@ -72,7 +72,7 @@ import {
 // SelectList helper
 // ---------------------------------------------------------------------------
 
-function makeSelectListTheme(theme: { fg: (c: string, t: string) => string }) {
+function makeSelectListTheme(theme: Theme) {
 	return {
 		selectedPrefix: (t: string) => theme.fg("accent", t),
 		selectedText: (t: string) => theme.fg("accent", t),
@@ -96,7 +96,6 @@ export async function showSelectList(
 		const selectList = new SelectList(
 			items,
 			Math.min(items.length, maxItems),
-			// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 			makeSelectListTheme(theme),
 		);
 		selectList.onSelect = (item) => done(item.value);
@@ -183,11 +182,7 @@ export async function showConcurrencyInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
-	const result = await ctx.ui.input({
-		prompt: "Max parallel subagents (0 = unlimited):",
-		default: formatMaxParallel(state.config.maxParallel),
-	});
+	const result = await ctx.ui.input(`Max parallel subagents (0 = unlimited, current ${formatMaxParallel(state.config.maxParallel)}):`);
 	if (result == null) return;
 	const num = parseInt(result, 10);
 	if (isNaN(num) || num < 0) {
@@ -207,11 +202,7 @@ export async function showDepthInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
-	const result = await ctx.ui.input({
-		prompt: "Max subagent recursion depth (0 = subagents cannot delegate, 1 = one level, etc.):",
-		default: String(state.config.maxSubagentDepth),
-	});
+	const result = await ctx.ui.input(`Max subagent recursion depth (0 = cannot delegate, 1 = one level, current ${state.config.maxSubagentDepth}):`);
 	if (result == null) return;
 	const num = parseInt(result, 10);
 	if (isNaN(num) || num < 0) {
@@ -238,11 +229,7 @@ export async function showHistoryEntriesInput(
 		state.config.maxHistoryEntries === 0
 			? "unlimited"
 			: String(state.config.maxHistoryEntries);
-	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
-	const result = await ctx.ui.input({
-		prompt: "Max run history entries (0 = unlimited, default 500):",
-		default: current,
-	});
+	const result = await ctx.ui.input(`Max run history entries (0 = unlimited, default 500, current ${current}):`);
 	if (result == null) return;
 	const num = parseInt(result, 10);
 	if (isNaN(num) || num < 0) {
@@ -271,11 +258,7 @@ export async function showCostLimitInput(
 		state.config.sessionCostLimit === 0
 			? "0 (unlimited)"
 			: String(state.config.sessionCostLimit);
-	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
-	const result = await ctx.ui.input({
-		prompt: "Session cost limit in USD (0 = unlimited, e.g. 1.00 for $1):",
-		default: current,
-	});
+	const result = await ctx.ui.input(`Session cost limit in USD (0 = unlimited, e.g. 1.00 for $1, current ${current}):`);
 	if (result == null) return;
 	const num = parseFloat(result);
 	if (isNaN(num) || num < 0) {
@@ -373,11 +356,7 @@ export async function showSLAConfig(
 	}
 
 	// Step 2: Window size input
-	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
-	const sizeResult = await ctx.ui.input({
-		prompt: `Window size (10-500, default ${state.config.slaWindowSize}):`,
-		default: String(state.config.slaWindowSize),
-	});
+	const sizeResult = await ctx.ui.input(`Window size (10-500, current ${state.config.slaWindowSize}):`);
 	if (sizeResult == null) return;
 	const size = parseInt(sizeResult, 10);
 	if (isNaN(size) || size < 10 || size > 500) {
@@ -657,8 +636,7 @@ export async function showAddPreset(
 	state: SessionState,
 ): Promise<void> {
 	// 1. Prompt for name
-	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
-	const name = await ctx.ui.input({ prompt: "Preset name (e.g., read-only-audit):" });
+	const name = await ctx.ui.input("Preset name (e.g., read-only-audit):");
 	if (!name?.trim()) return;
 	const trimmedName = name.trim();
 
@@ -677,8 +655,7 @@ export async function showAddPreset(
 	}
 
 	// 3. Description
-	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
-	const description = await ctx.ui.input({ prompt: "Description (optional):" });
+	const description = await ctx.ui.input("Description (optional):");
 
 	// 4. Thinking level
 	const thinkingItems: SelectItem[] = [
@@ -703,8 +680,7 @@ export async function showAddPreset(
 		tools = ["read", "grep", "find", "ls"];
 		excludeTools = ["write", "edit", "bash"];
 	} else if (scopeResult === "custom") {
-		// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
-		const toolsStr = await ctx.ui.input({ prompt: "Tools (comma-separated):" });
+		const toolsStr = await ctx.ui.input("Tools (comma-separated):");
 		if (toolsStr?.trim()) tools = toolsStr.split(",").map((t) => t.trim()).filter(Boolean);
 	}
 
@@ -716,8 +692,7 @@ export async function showAddPreset(
 	const inheritResult = await showSelectList(ctx, "System Prompt Inheritance", inheritItems, 3);
 
 	// 7. System prompt body
-	// @ts-expect-error — SDK surface drift, issue #124 (ctx.ui.input signature: object vs string); deliberate fix with UI verification
-	const systemPrompt = await ctx.ui.input({ prompt: "System prompt (optional, multi-line not supported yet):" });
+	const systemPrompt = await ctx.ui.input("System prompt (optional, multi-line not supported yet):");
 
 	// 8. Build preset object
 	const preset: SubagentPreset = {
@@ -1248,7 +1223,6 @@ export async function showConfigMenu(
 			const selectList = new SelectList(
 				items,
 				Math.min(items.length, 10),
-				// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 				makeSelectListTheme(theme),
 			);
 			selectList.onSelect = (item) => done(item.value);
@@ -1566,7 +1540,7 @@ export async function showMonitor(
 
 /** Map a planned transcript line style to a theme color name. */
 function styleToColor(
-	theme: { fg: (c: string, t: string) => string },
+	theme: Theme,
 	style: TranscriptLineStyle,
 	text: string,
 ): string {
@@ -1690,7 +1664,6 @@ export async function showAgentDetail(
 							});
 							for (const line of planned) {
 								container.addChild(
-									// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 									new Text(styleToColor(theme, line.style, line.text), 1, 0),
 								);
 							}
@@ -1715,7 +1688,6 @@ export async function showAgentDetail(
 						});
 						for (const line of planned) {
 							container.addChild(
-								// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 								new Text(styleToColor(theme, line.style, line.text), 1, 0),
 							);
 						}
@@ -1780,7 +1752,6 @@ export async function showAgentDetail(
 					);
 				} else {
 					for (const line of planned) {
-						// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 						container.addChild(new Text(styleToColor(theme, line.style, line.text), 1, 0));
 					}
 				}
@@ -2556,14 +2527,12 @@ export async function showApprovalDialog(
 				);
 			}
 
-			// @ts-expect-error — SDK surface drift, issue #124 (Theme shape: hand-rolled {fg} vs SDK Theme class); deliberate fix with UI verification
 			selectList = new SelectList(items, 3, makeSelectListTheme(theme));
 			selectList.onSelect = (item) => {
 				if (item.value === "viewdiff") {
 					currentView = "diff";
 					tui.requestRender();
-				} else {
-					// @ts-expect-error — SDK surface drift, issue #124 (string vs apply/discard/null union); deliberate fix with UI verification
+				} else if (item.value === "apply" || item.value === "discard") {
 					done(item.value);
 				}
 			};
@@ -2767,7 +2736,11 @@ function withDiffKeybinding(
 				showFullDiff = true;
 				return;
 			}
-			// @ts-expect-error — SDK surface drift, issue #124 (Container.handleInput missing from SDK type); deliberate fix with UI verification
+			// @ts-expect-error — Genuine SDK gap (issue #124): the SDK's Container class (pi-tui) has no
+			// handleInput — only addChild/removeChild/clear/invalidate/render (verified in the installed
+			// 0.84.2 type + runtime). The expanded-result container holds interactive children that could
+			// consume keys; the SDK exposes no forwarding API, so this optional call is a runtime no-op.
+			// Kept (not cast) so key-forwarding activates if the SDK ever grows Container.handleInput.
 			container.handleInput?.(data);
 		},
 		invalidate() {
