@@ -32,7 +32,7 @@ export function detectCycle(tasks: GraphTask[]): string[] | null {
 
 		const task = byId.get(nodeId);
 		if (task) {
-			for (const dep of task.dependsOn) {
+			for (const dep of task.dependsOn ?? []) {
 				const depColor = color.get(dep);
 				if (depColor === undefined) continue; // reference to non-existent id (validated elsewhere)
 				if (depColor === 1) {
@@ -93,7 +93,7 @@ export function topologicalSort(tasks: GraphTask[]):
 		inDegree.set(t.id, 0);
 	}
 	for (const t of tasks) {
-		for (const dep of t.dependsOn) {
+		for (const dep of t.dependsOn ?? []) {
 			if (byId.has(dep)) {
 				inDegree.set(t.id, (inDegree.get(t.id) ?? 0) + 1);
 			}
@@ -103,7 +103,7 @@ export function topologicalSort(tasks: GraphTask[]):
 	// Build adjacency: dep → dependent tasks
 	const dependents = new Map<string, string[]>();
 	for (const t of tasks) {
-		for (const dep of t.dependsOn) {
+		for (const dep of t.dependsOn ?? []) {
 			if (byId.has(dep)) {
 				if (!dependents.has(dep)) dependents.set(dep, []);
 				dependents.get(dep)!.push(t.id);
@@ -174,7 +174,7 @@ export function validateGraph(tasks: GraphTask[]): string[] {
 	}
 
 	for (const t of tasks) {
-		for (const dep of t.dependsOn) {
+		for (const dep of t.dependsOn ?? []) {
 			if (!ids.has(dep)) {
 				errors.push(
 					`Task "${t.id}" depends on non-existent task "${dep}"`,

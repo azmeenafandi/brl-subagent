@@ -26,6 +26,13 @@ function makeTask(
 	};
 }
 
+// Issue #127: build a ROOT node with NO dependsOn field at all.
+// The runtime schema (Type.Optional) permits omitting it; the scheduler
+// must tolerate that (dependsOn may be undefined at runtime).
+function rootTask(id: string, task?: string): GraphTask {
+	return { id, task: task || `Task ${id}` } as unknown as GraphTask;
+}
+
 // =========================================================================
 // topologicalSort — Kahn's algorithm → execution waves
 // =========================================================================
@@ -123,6 +130,29 @@ describe("topologicalSort", () => {
 				[String.fromCharCode(65 + i)], // A, B, C, D
 			);
 		}
+	});
+
+	// 7. ROOT node with NO dependsOn field + dependent node (issue #127)
+	it("root node without dependsOn field + dependent produces 2 waves", () => {
+		const tasks = [rootTask("A"), makeTask("B", ["A"])];
+		const result = topologicalSort(tasks);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		expect(result.waves).toHaveLength(2);
+		expect(result.waves[0].map((t) => t.id)).toEqual(["A"]);
+		expect(result.waves[1].map((t) => t.id)).toEqual(["B"]);
+	});
+
+	// 8. Two ROOT nodes, both without dependsOn field (issue #127)
+	it("two root nodes without dependsOn field both land in wave 1", () => {
+		const tasks = [rootTask("B"), rootTask("A")];
+		const result = topologicalSort(tasks);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		expect(result.waves).toHaveLength(1);
+		expect(result.waves[0].map((t) => t.id).sort()).toEqual(["A", "B"]);
 	});
 });
 
