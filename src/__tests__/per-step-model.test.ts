@@ -100,7 +100,7 @@ interface ToolEntry {
 		content: Array<{ type: string; text: string }>;
 		details?: {
 			results?: Array<{ model?: string }>;
-			waves?: Array<{ tasks: Array<{ model?: string }> }>;
+			waves?: Array<{ tasks: Array<{ model?: string; task?: string; exitCode?: number }> }>;
 		};
 		isError?: boolean;
 	}>;
@@ -1331,5 +1331,146 @@ describe("parallel subtask run entries (issue #119)", () => {
 		const finalized = [...byId.values()].map((list) => list[1]);
 		expect(finalized.every((r) => r.status === "done")).toBe(true);
 		expect(finalized.map((r) => r.label)).toEqual(["dup-label", "dup-label"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #130: graph and chain runs register with the live monitor.
+//
+// The SessionState lifecycle those paths call (registerLiveSubagent →
+// updateLiveSubagent → finalizeLiveSubagent) is pinned at the state level in
+// live-subagent.test.ts. Here we pin the crash semantics the per-node / per-
+// step registration adds: a throwing node/step must NOT escape execute (the
+// graph wave relies on Promise.allSettled; chain completes via the mode's
+// buildCrashResult), the live entry is finalized on the crash path (idempotent
+// — no ghost in the drill-in), and the onUpdate wrapper wired into
+// runSubagent forwards the partial to the caller unchanged.
+// ---------------------------------------------------------------------------
+
+describe("graph mode crash semantics with live registration (issue #130)", () => {
+	it("a rejecting node settles via allSettled: execute resolves, siblings unaffected, no unhandled rejection", async () => {
+		// Node "boom" throws post-spawn (e.g. runner writeToTempFile); node
+		// "fine" succeeds. Discriminate by the task argument (runSubagent arg 5)
+		// so the failure is deterministic regardless of wave scheduling.
+		runnerMocks.runSubagent.mockImplementation(
+			async (
+				_cwd: string,
+				_prompt: string,
+				model: { provider: string; id: string },
+				_thinkingLevel: unknown,
+				task: string,
+			) => {
+				if (task.includes("boom")) {
+					throw new Error(`spawn failed: ${testCwd}/bin/pi`);
+				}
+				return makeResult(`${model.provider}/${model.id}`);
+			},
+		);
+
+		let settled = true;
+		let result: Awaited<ReturnType<ToolEntry["execute"]>> | undefined;
+		try {
+			result = await tool.execute("call-g130-1", {
+				graph: [
+					{ id: "boom", task: "boom the build", dependsOn: [] },
+					{ id: "fine", task: "fine task", dependsOn: [] },
+				],
+			}, undefined, undefined, makeCtx());
+		} catch {
+			settled = false;
+		}
+
+		// Promise.allSettled semantics: execute must NOT throw and must NOT
+		// report an error — the wave absorbed the rejected node.
+		expect(settled).toBe(true);
+		expect(result?.isError).toBeFalsy();
+
+		// Both siblings were spawned — the rejection did not cancel the wave.
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(2);
+
+		// The wave carries only the fulfilled node's result.
+		const waveTasks = result?.details?.waves?.[0]?.tasks ?? [];
+		expect(waveTasks).toHaveLength(1);
+		expect(waveTasks[0]?.task).toBe("fine task");
+		expect(waveTasks[0]?.exitCode).toBe(0);
+	});
+});
+
+describe("chain mode crash semantics with live registration (issue #130)", () => {
+	it("a throwing step completes via buildCrashResult: execute resolves with isError, no escape", async () => {
+		runnerMocks.runSubagent.mockRejectedValue(
+			new Error(`spawn failed: ${testCwd}/bin/pi`),
+		);
+
+		let settled = true;
+		let result: Awaited<ReturnType<ToolEntry["execute"]>> | undefined;
+		try {
+			result = await tool.execute("call-c130-1", {
+				chain: [{ task: "step one" }],
+			}, undefined, undefined, makeCtx());
+		} catch {
+			settled = false;
+		}
+
+		expect(settled).toBe(true);
+		expect(result?.isError).toBe(true);
+
+		// F7: the mode's outer buildCrashResult sanitizes the absolute path.
+		const content = JSON.stringify(result?.content ?? []);
+		expect(content).toContain("<cwd>/bin/pi");
+		expect(content).not.toContain(testCwd);
+
+		// Sequential: exactly one step was spawned before the crash.
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("live registration — onUpdate wrapper wired into runSubagent (issue #130)", () => {
+	it("graph nodes pass the live-update wrapper as runSubagent's onUpdate and forward the partial", async () => {
+		const onUpdate = vi.fn();
+		await tool.execute("call-g130-2", {
+			graph: [{ id: "a", task: "task a", dependsOn: [] }],
+		}, undefined, onUpdate, makeCtx());
+
+		// runSubagent arg 7 (index 6) is the stepOnUpdate wrapper.
+		const wrapped = runnerMocks.runSubagent.mock.calls[0][6];
+		expect(wrapped).toBeDefined();
+
+		const partial = {
+			content: [{ type: "text" as const, text: "progress" }],
+			details: {
+				messages: makeResult("provider/model").messages,
+				usage: { input: 3, output: 2 },
+				exitCode: -1,
+				stderr: "",
+			},
+		};
+		(wrapped as (p: typeof partial) => void)(partial);
+
+		// The wrapper forwards the partial unchanged to the caller's onUpdate.
+		expect(onUpdate).toHaveBeenCalledWith(partial);
+	});
+
+	it("chain steps pass the live-update wrapper as runSubagent's onUpdate and forward the partial", async () => {
+		const onUpdate = vi.fn();
+		await tool.execute("call-c130-2", {
+			chain: [{ task: "step one" }],
+		}, undefined, onUpdate, makeCtx());
+
+		const wrapped = runnerMocks.runSubagent.mock.calls[0][6];
+		expect(wrapped).toBeDefined();
+
+		const partial = {
+			content: [{ type: "text" as const, text: "progress" }],
+			details: {
+				messages: makeResult("provider/model").messages,
+				usage: { input: 3, output: 2 },
+				exitCode: -1,
+				stderr: "",
+			},
+		};
+		(wrapped as (p: typeof partial) => void)(partial);
+
+		expect(onUpdate).toHaveBeenCalledWith(partial);
 	});
 });

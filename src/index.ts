@@ -633,28 +633,72 @@ export default function (pi: ExtensionAPI) {
 					},
 				});
 
-				// Wrap onUpdate so live monitor (if any) sees per-step progress
+				// Register for live monitor — chain steps now appear in the drill-in
+				// (issue #130). A FRESH uuid per step: subagentSessions is
+				// host-global, so reused ids would collide across concurrent runs.
+				const liveId = crypto.randomUUID();
+				state.registerLiveSubagent(liveId, {
+					id: liveId,
+					label: merged.label ?? `Step ${i + 1}`,
+					task: merged.task,
+					model: `${stepModel.provider}/${stepModel.id}`,
+					thinkingLevel: merged.thinkingLevel,
+					priority: merged.priority ?? chainPriority,
+					startedAt: Date.now(),
+					ctx,
+				});
+
+				// Wrap onUpdate so the live monitor sees per-step progress
+				// (mirrors parallel mode's taskOnUpdate).
 				const stepOnUpdate = onUpdate
 					? (partial: AgentToolResult<SubagentResult>) => {
 							onUpdate(partial);
+							if (partial.details) {
+								state.updateLiveSubagent(
+									liveId,
+									getFinalOutput(partial.details.messages),
+									partial.details.usage.input,
+									partial.details.usage.output,
+									partial.details.liveTranscript,
+								);
+							}
 						}
 					: undefined;
 
-				// Run the subagent for this step
-				const result = await runSubagent(
-					resolvedCwd,
-					subagentPrompt,
-					stepModel,
-					merged.thinkingLevel,
-					merged.task,
-					signal,
-					stepOnUpdate,
-					merged.toolOptions,
-					merged.timeout,
-					getFinalOutput,
-					log,
-					currentDepth + 1,
-				);
+				// Run the subagent for this step — crash-protected (issue #130):
+				// a throw must release the live entry or the drill-in loops on a
+				// ghost. finalizeLiveSubagent is idempotent; the rethrow is
+				// handled by the mode's existing outer catch (chain is sequential
+				// — no sibling wave to cancel).
+				let result: SubagentResult;
+				try {
+					result = await runSubagent(
+						resolvedCwd,
+						subagentPrompt,
+						stepModel,
+						merged.thinkingLevel,
+						merged.task,
+						signal,
+						stepOnUpdate,
+						merged.toolOptions,
+						merged.timeout,
+						getFinalOutput,
+						log,
+						currentDepth + 1,
+					);
+				} catch (err) {
+					const crash = buildCrashResult("Chain step", err, resolvedCwd);
+					state.finalizeLiveSubagent(liveId);
+					log.error("Chain step crashed", {
+						step: i + 1,
+						error: crash.details.errorMessage,
+					});
+					throw err;
+				}
+
+				// Issue #130: release the live entry on the success path (mirrors
+				// parallel mode's completion finalize).
+				state.finalizeLiveSubagent(liveId);
 
 				// Fill SubTaskResult
 				subTaskResult.exitCode = result.exitCode;
@@ -1632,11 +1676,44 @@ export default function (pi: ExtensionAPI) {
 
 					const subagentId = graphTask.id;
 					intercom.register(subagentId);
+
+					// Register for live monitor — graph nodes now appear in the
+					// drill-in with their per-unit priority (issue #130). A FRESH
+					// uuid per node: subagentSessions is host-global, so raw
+					// graph-task ids would collide across concurrent graph runs
+					// (the intercom namespace is per-run and stays untouched).
+					const liveId = crypto.randomUUID();
+					state.registerLiveSubagent(liveId, {
+						id: liveId,
+						label: merged.label,
+						task: merged.task,
+						model: `${stepModel.provider}/${stepModel.id}`,
+						thinkingLevel: merged.thinkingLevel,
+						// Issue #114: per-unit priority wins; the call-level
+						// graphPriority is the floor.
+						priority: merged.priority ?? graphPriority,
+						startedAt: Date.now(),
+						ctx,
+					});
+
 					try {
+						// Wrap onUpdate for per-node progress — also feed the live
+						// monitor so the drill-in streams output instead of showing
+						// "waiting for first output…" (mirrors parallel mode's
+						// taskOnUpdate).
 						const stepOnUpdate = onUpdate
 							? (partial: AgentToolResult<SubagentResult>) => {
 								onUpdate(partial);
+								if (partial.details) {
+									state.updateLiveSubagent(
+										liveId,
+										getFinalOutput(partial.details.messages),
+										partial.details.usage.input,
+										partial.details.usage.output,
+										partial.details.liveTranscript,
+									);
 								}
+							}
 							: undefined;
 
 						const result = await runSubagent(
@@ -1671,7 +1748,24 @@ export default function (pi: ExtensionAPI) {
 							gitDiff: result.gitDiff,
 						};
 
+						// Issue #130: release the live entry on the success path
+						// (mirrors parallel mode's completion finalize).
+						state.finalizeLiveSubagent(liveId);
+
 						return { id: graphTask.id, result: subTaskResult };
+					} catch (err) {
+						// Issue #130 (mirrors the #119 R1/C1 lesson): crash-protected
+						// — a post-spawn throw must release the live entry or the
+						// drill-in loops on a ghost. finalizeLiveSubagent is
+						// idempotent; the rethrow keeps Promise.allSettled semantics
+						// (a failing node must NOT cancel sibling nodes in the wave).
+						const crash = buildCrashResult("Graph task", err, resolvedCwd);
+						state.finalizeLiveSubagent(liveId);
+						log.error("Graph task crashed", {
+							id: graphTask.id,
+							error: crash.details.errorMessage,
+						});
+						throw err;
 					} finally {
 						releaseSlot(state, false, ctx);
 					}
