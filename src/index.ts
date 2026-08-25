@@ -624,6 +624,12 @@ export default function (pi: ExtensionAPI) {
 					step: i + 1,
 					totalSteps: chainSteps.length,
 				};
+				// Issue #133: render the breakdown — the chain holds ONE mode-level
+				// slot (acquired at mode start, released in the finally), so no
+				// per-step acquire/release calls updateProgressStatus while the
+				// mode context is set. Call it directly here (mirrors how the
+				// graph path's per-node slot operations trigger the render).
+				updateProgressStatus(state, ctx);
 
 				// Emit initial progress for this step
 				const modeInfo = describePromptMode(
@@ -913,7 +919,9 @@ export default function (pi: ExtensionAPI) {
 				id: crypto.randomUUID(),
 				task: `Chain dispatch: ${chainSteps.length} steps`,
 				label: globalParams.label ?? "chain",
-				status: "done",
+				// Issue #133: persist the ACTUAL outcome — "failed" when any step
+				// failed (chainSuccess === false), "done" otherwise.
+				status: chainSuccess ? "done" : "failed",
 				model: `${subagentModel.provider}/${subagentModel.id}`,
 				thinkingLevel: globalParams.thinkingLevel,
 				priority: chainPriority,
@@ -1717,6 +1725,11 @@ export default function (pi: ExtensionAPI) {
 		// E10: Intercom for subagent-to-subagent messaging
 		const intercom = new Intercom();
 
+		// Issue #133: global node counter — node positions are reported against
+		// the WHOLE dispatch (dispatch-wide ordinal), not the current wave; a
+		// later wave's first node is its true global position (e.g. node 3/5),
+		// not "node 1/5". Incremented once per node as each wave's nodes run.
+		let globalNodeCounter = 0;
 		let chainSuccess = false;
 		try {
 			for (let w = 0; w < waves.length; w++) {
@@ -1752,6 +1765,10 @@ export default function (pi: ExtensionAPI) {
 
 				// Run all tasks in this wave concurrently
 				const wavePromises = wave.map(async (graphTask, nodeIndex) => {
+					// Issue #133: capture this node's dispatch-wide ordinal before any
+					// sibling node advances the counter (same-wave siblings run
+					// concurrently, so the value must be pinned here).
+					const globalNode = ++globalNodeCounter;
 					const subTaskParams: SubTaskParams = {
 						task: graphTask.task,
 						label: graphTask.label,
@@ -1812,13 +1829,14 @@ export default function (pi: ExtensionAPI) {
 					const subagentId = graphTask.id;
 					intercom.register(subagentId);
 
-					// Issue #133: status-bar breakdown — the node's position within
-					// the wave (wave-level context set the totalNodes frame).
+					// Issue #133: status-bar breakdown — the node's dispatch-wide
+					// position (globalNode, not the wave-local nodeIndex) so a later
+					// wave reports its true global ordinal.
 					state.modeContext = {
 						kind: "graph",
 						wave: waveIndex,
 						totalWaves: waves.length,
-						node: nodeIndex + 1,
+						node: globalNode,
 						totalNodes: graphTasks.length,
 					};
 
@@ -2075,7 +2093,9 @@ export default function (pi: ExtensionAPI) {
 				id: crypto.randomUUID(),
 				task: `Graph dispatch: ${graphTasks.length} tasks in ${allWaves.length} waves`,
 				label: globalParams.label ?? "graph",
-				status: "done",
+				// Issue #133: persist the ACTUAL outcome — "failed" when any node
+				// failed (chainSuccess === false), "done" otherwise.
+				status: chainSuccess ? "done" : "failed",
 				model: `${subagentModel.provider}/${subagentModel.id}`,
 				thinkingLevel: globalParams.thinkingLevel,
 				priority: graphPriority,
