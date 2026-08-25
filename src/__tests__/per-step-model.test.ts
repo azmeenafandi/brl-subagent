@@ -56,7 +56,8 @@ vi.mock("@earendil-works/pi-tui", () => {
 import initExtension from "../index";
 import { KNOWN_DELEGATE_KEYS } from "../params";
 import { CUSTOM_ENTRY_TYPES } from "../types";
-import type { SubagentResult, SubagentRun } from "../types";
+import type { SubagentResult, SubagentRun, LiveSubagent } from "../types";
+import { createSessionState, sweepStaleLiveSubagents } from "../state";
 // Issue #52: the setters redirect the real execute handler's transcript (and
 // agent-record) writes away from the repo .pi/ — they reach the SAME module
 // instance index.ts's dynamic import('./transcript') resolves to (vitest
@@ -1472,5 +1473,227 @@ describe("live registration — onUpdate wrapper wired into runSubagent (issue #
 		(wrapped as (p: typeof partial) => void)(partial);
 
 		expect(onUpdate).toHaveBeenCalledWith(partial);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #133: graph/chain nodes get the SAME run-record lifecycle as parallel
+// mode — and the sweep's invariant is restored.
+//
+// Issue #130 registered graph nodes / chain steps with the live monitor but
+// with a bare uuid and NO run record; sweepStaleLiveSubagents therefore found
+// no 'running' entry and finalized every graph/chain live entry on the FIRST
+// monitor render — the monitor showed nothing during graph/chain runs. The
+// fix: each node/step persists a SubagentRun at spawn (status 'running'),
+// finalizes it on success/crash, and the live id IS the runId. This suite
+// drives the real execute handler (runner mocked): while runSubagent is
+// pending, the run entries exist with status 'running' and a sweep call does
+// NOT remove them; after completion, per-node history entries exist, the
+// aggregate dispatch entry exists, and the per-node entries are finalized.
+// ---------------------------------------------------------------------------
+
+describe("graph/chain run records + sweep survival (issue #133)", () => {
+	const runEntries = () =>
+		recordedEntries
+			.filter((e) => e.type === CUSTOM_ENTRY_TYPES.run)
+			.map((e) => e.data as SubagentRun);
+
+	/** ctx whose sessionManager serves the given run entries (the sweep's lookup). */
+	function sweepCtxFromRuns(runs: SubagentRun[]): ExtensionContext {
+		return {
+			sessionManager: {
+				getEntries: () =>
+					runs.map((r) => ({
+						type: "custom",
+						customType: CUSTOM_ENTRY_TYPES.run,
+						data: r,
+					})),
+			},
+		} as unknown as ExtensionContext;
+	}
+
+	/** Minimal live entry for a replay sweep (state-level oracle check). */
+	function makeLiveEntryFor(id: string, ctx: ExtensionContext): LiveSubagent {
+		return {
+			id,
+			task: `task ${id}`,
+			model: `${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`,
+			thinkingLevel: "off",
+			startedAt: Date.now(),
+			liveOutput: "",
+			usage: { input: 0, output: 0 },
+			ctx,
+		};
+	}
+
+	it("graph: per-node entries stay 'running' (survive a sweep) while pending; finalize + aggregate after completion", async () => {
+		// Hold runSubagent open so the spawn-time persist (the #133 fix:
+		// runId + 'running' record at spawn) is observable BEFORE completion —
+		// the exact window where the monitor renders.
+		const releaseQueue: Array<() => void> = [];
+		runnerMocks.runSubagent.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					releaseQueue.push(() => resolve(makeResult("provider/model")));
+				}),
+		);
+
+		const execPromise = tool.execute("call-133-g", {
+			graph: [
+				{ id: "a", task: "task a", dependsOn: [] },
+				{ id: "b", task: "task b", dependsOn: [] },
+			],
+		}, undefined, undefined, makeCtx());
+
+		// Wave 1 runs both nodes concurrently → both spawn records exist now.
+		await vi.waitFor(() => expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(2));
+
+		const pending = runEntries();
+		expect(pending).toHaveLength(2);
+		for (const e of pending) {
+			expect(e.status).toBe("running");
+			expect(e.id).toBeTruthy();
+			expect(e.priority).toBe("normal"); // call-level graphPriority fallback
+		}
+
+		// Regression guard (the #130 bug): a sweep must NOT remove live entries
+		// backed by a 'running' record — replay the execute handler's persisted
+		// entries through the sweep's oracle (foreground path: no agent record).
+		const sweepState = createSessionState();
+		const sweepCtx = sweepCtxFromRuns(pending);
+		for (const e of pending) {
+			sweepState.registerLiveSubagent(e.id, makeLiveEntryFor(e.id, sweepCtx));
+		}
+		expect(sweepStaleLiveSubagents(sweepState, () => null)).toBe(0);
+		expect(sweepState.subagentSessions.size).toBe(2);
+
+		// Release the pending nodes → completion persists the finalized records.
+		releaseQueue.forEach((r) => r());
+		await execPromise;
+
+		const all = runEntries();
+		// 2 nodes × (spawn 'running' + finalize) + 1 aggregate = 5 writes.
+		expect(all).toHaveLength(5);
+
+		const byId = new Map<string, SubagentRun[]>();
+		for (const e of all) {
+			const list = byId.get(e.id) ?? [];
+			list.push(e);
+			byId.set(e.id, list);
+		}
+		expect(byId.size).toBe(3); // node a + node b + aggregate
+
+		// Per-node lifecycle: spawn write ('running') then finalize write
+		// ('done') with the audited fields — the harness-observable counterpart
+		// of the live-entry finalize (the live map itself is extension-internal).
+		const nodeLists = [...byId.values()].filter((l) => l.length === 2);
+		expect(nodeLists).toHaveLength(2);
+		for (const list of nodeLists) {
+			expect(list[0].status).toBe("running");
+			expect(list[1].status).toBe("done");
+			expect(list[1].cost).toBe(0.001);
+			expect(list[1].tokensIn).toBe(10);
+			expect(list[1].tokensOut).toBe(5);
+			expect(list[1].outputSummary).toBe("done");
+		}
+
+		// Aggregate entry: one per dispatch, persisted once as done, no live entry.
+		const aggregate = all.filter((e) =>
+			String(e.task).startsWith("Graph dispatch"),
+		);
+		expect(aggregate).toHaveLength(1);
+		expect(aggregate[0].status).toBe("done");
+		expect(aggregate[0].label).toBe("graph");
+		expect(aggregate[0].task).toBe("Graph dispatch: 2 tasks in 1 waves");
+		expect(aggregate[0].model).toBe(`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`);
+		expect(aggregate[0].thinkingLevel).toBe("off");
+		expect(aggregate[0].priority).toBe("normal");
+		expect(aggregate[0].tokensIn).toBe(20);
+		expect(aggregate[0].tokensOut).toBe(10);
+		expect(aggregate[0].cost).toBe(0.002);
+		expect(aggregate[0].startedAt).toBeDefined();
+		expect(aggregate[0].finishedAt).toBeDefined();
+		expect(aggregate[0].durationMs).toBeGreaterThanOrEqual(0);
+		expect(aggregate[0].outputSummary).toContain('"mode": "graph"');
+	});
+
+	it("chain: per-step entries stay 'running' (survive a sweep) while pending; finalize + aggregate after completion", async () => {
+		const releaseQueue: Array<() => void> = [];
+		runnerMocks.runSubagent.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					releaseQueue.push(() => resolve(makeResult("provider/model")));
+				}),
+		);
+
+		const execPromise = tool.execute("call-133-c", {
+			chain: [
+				{ task: "step one" },
+				{ task: "step two" },
+			],
+		}, undefined, undefined, makeCtx());
+
+		// Sequential: exactly one step spawned while the first is pending.
+		await vi.waitFor(() => expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1));
+
+		const pending = runEntries();
+		expect(pending).toHaveLength(1);
+		expect(pending[0].status).toBe("running");
+		expect(pending[0].priority).toBe("normal"); // call-level chainPriority fallback
+
+		const sweepState = createSessionState();
+		const sweepCtx = sweepCtxFromRuns(pending);
+		sweepState.registerLiveSubagent(
+			pending[0].id,
+			makeLiveEntryFor(pending[0].id, sweepCtx),
+		);
+		expect(sweepStaleLiveSubagents(sweepState, () => null)).toBe(0);
+		expect(sweepState.subagentSessions.size).toBe(1);
+
+		// Release step one → step two spawns (its record is still 'running').
+		releaseQueue.shift()!();
+		await vi.waitFor(() => expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(2));
+		const mid = runEntries();
+		expect(mid).toHaveLength(3); // s1 spawn + s1 finalize + s2 spawn
+		expect(mid[2].status).toBe("running");
+
+		// Release step two → completion.
+		releaseQueue.shift()!();
+		await execPromise;
+
+		const all = runEntries();
+		// 2 steps × (spawn 'running' + finalize) + 1 aggregate = 5 writes.
+		expect(all).toHaveLength(5);
+
+		const byId = new Map<string, SubagentRun[]>();
+		for (const e of all) {
+			const list = byId.get(e.id) ?? [];
+			list.push(e);
+			byId.set(e.id, list);
+		}
+		expect(byId.size).toBe(3); // step one + step two + aggregate
+
+		const stepLists = [...byId.values()].filter((l) => l.length === 2);
+		expect(stepLists).toHaveLength(2);
+		for (const list of stepLists) {
+			expect(list[0].status).toBe("running");
+			expect(list[1].status).toBe("done");
+		}
+
+		const aggregate = all.filter((e) =>
+			String(e.task).startsWith("Chain dispatch"),
+		);
+		expect(aggregate).toHaveLength(1);
+		expect(aggregate[0].status).toBe("done");
+		expect(aggregate[0].label).toBe("chain");
+		expect(aggregate[0].task).toBe("Chain dispatch: 2 steps");
+		expect(aggregate[0].model).toBe(`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`);
+		expect(aggregate[0].priority).toBe("normal");
+		expect(aggregate[0].tokensIn).toBe(20);
+		expect(aggregate[0].tokensOut).toBe(10);
+		expect(aggregate[0].cost).toBe(0.002);
+		expect(aggregate[0].finishedAt).toBeDefined();
+		expect(aggregate[0].durationMs).toBeGreaterThanOrEqual(0);
+		expect(aggregate[0].outputSummary).toContain('"mode": "chain"');
 	});
 });
