@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createSessionState, sweepStaleLiveSubagents, STALE_FINALIZE_GRACE_MS, FINALIZE_RESET_WINDOW_MS } from "../state";
+import { updateProgressStatus } from "../concurrency";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { LiveSubagent, SubagentRun } from "../types";
 import { CUSTOM_ENTRY_TYPES } from "../types";
@@ -179,6 +180,70 @@ describe("sweepStaleLiveSubagents — no agent record (foreground runs / removed
 	});
 });
 
+describe("sweepStaleLiveSubagents — record-backed foreground entries (issue #133)", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	// Issue #133 regression: graph/chain nodes registered live entries with a
+	// bare uuid and NO run record, so the sweep found no 'running' entry and
+	// finalized them on the FIRST monitor render (the monitor showed nothing
+	// during graph/chain runs). The fix gives every live foreground entry a
+	// run record — this exact shape (record says 'running') must survive.
+	it("keeps a live entry whose run entry is 'running' (the #130 sweep-invariant gap)", () => {
+		const ctx = createMockContext([makeRun("fg-133", "running")]);
+		const state = createSessionState();
+		state.registerLiveSubagent("fg-133", makeLiveEntry("fg-133", ctx));
+		const getAgent = fakeGetAgent(new Map());
+
+		const finalized = sweepStaleLiveSubagents(state, getAgent);
+
+		expect(finalized).toBe(0);
+		expect(state.subagentSessions.has("fg-133")).toBe(true);
+	});
+
+	it("finalizes a live entry whose run entry is 'done' (terminal record)", () => {
+		const ctx = createMockContext([makeRun("fg-133", "done")]);
+		const state = createSessionState();
+		state.registerLiveSubagent("fg-133", makeLiveEntry("fg-133", ctx));
+		const getAgent = fakeGetAgent(new Map());
+
+		const finalized = sweepStaleLiveSubagents(state, getAgent);
+
+		expect(finalized).toBe(1);
+		expect(state.subagentSessions.has("fg-133")).toBe(false);
+	});
+
+	it("finalizes a live entry whose run entry is 'failed' (terminal record)", () => {
+		const ctx = createMockContext([makeRun("fg-133", "failed")]);
+		const state = createSessionState();
+		state.registerLiveSubagent("fg-133", makeLiveEntry("fg-133", ctx));
+		const getAgent = fakeGetAgent(new Map());
+
+		const finalized = sweepStaleLiveSubagents(state, getAgent);
+
+		expect(finalized).toBe(1);
+		expect(state.subagentSessions.has("fg-133")).toBe(false);
+	});
+
+	it("mixed records: a 'running' entry survives while a 'done' entry is finalized", () => {
+		const ctx = createMockContext([
+			makeRun("fg-live", "running"),
+			makeRun("fg-done", "done"),
+		]);
+		const state = createSessionState();
+		state.registerLiveSubagent("fg-live", makeLiveEntry("fg-live", ctx));
+		state.registerLiveSubagent("fg-done", makeLiveEntry("fg-done", ctx));
+		const getAgent = fakeGetAgent(new Map());
+
+		const finalized = sweepStaleLiveSubagents(state, getAgent);
+
+		expect(finalized).toBe(1);
+		expect(state.subagentSessions.has("fg-live")).toBe(true);
+		expect(state.subagentSessions.has("fg-done")).toBe(false);
+	});
+});
+
 describe("sweepStaleLiveSubagents — idempotency and poller racing", () => {
 	afterEach(() => {
 		vi.useRealTimers();
@@ -282,5 +347,66 @@ describe("sweepStaleLiveSubagents — idempotency and poller racing", () => {
 		// The re-claimed entry still gets the deferred cleanup.
 		vi.advanceTimersByTime(FINALIZE_RESET_WINDOW_MS + 1);
 		expect(state.subagentSessions.has("bg-1")).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #133: status-bar mode breakdown (modeContext → updateProgressStatus)
+//
+// runGraphMode / runChainMode set state.modeContext while a dispatch is in
+// flight; updateProgressStatus prepends the breakdown to the `brl: ...`
+// status parts, and the mode's finally clears it so the plain shape returns.
+// ---------------------------------------------------------------------------
+
+describe("updateProgressStatus modeContext composition (issue #133)", () => {
+	function mockStatusCtx() {
+		return {
+			ui: {
+				setStatus: vi.fn(),
+				theme: { fg: (_c: string, t: string) => t },
+			},
+		};
+	}
+
+	it("prepends the graph wave/node breakdown when modeContext is set", () => {
+		const state = createSessionState();
+		state.activeSubagents = 2;
+		state.modeContext = { kind: "graph", wave: 1, totalWaves: 2, node: 2, totalNodes: 3 };
+		const ctx = mockStatusCtx();
+
+		updateProgressStatus(state, ctx);
+
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+			"brl-subagent",
+			"brl: graph wave 1/2 · node 2/3, 2 running",
+		);
+	});
+
+	it("prepends the chain step breakdown when modeContext is set", () => {
+		const state = createSessionState();
+		state.activeSubagents = 1;
+		state.modeContext = { kind: "chain", step: 2, totalSteps: 3 };
+		const ctx = mockStatusCtx();
+
+		updateProgressStatus(state, ctx);
+
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+			"brl-subagent",
+			"brl: chain step 2/3, 1 running",
+		);
+	});
+
+	it("cleared modeContext composes nothing (plain brl: ... shape)", () => {
+		const state = createSessionState();
+		state.activeSubagents = 2;
+		state.modeContext = undefined;
+		const ctx = mockStatusCtx();
+
+		updateProgressStatus(state, ctx);
+
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+			"brl-subagent",
+			"brl: 2 running",
+		);
 	});
 });

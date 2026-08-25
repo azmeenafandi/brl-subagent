@@ -126,6 +126,18 @@ export function updateProgressStatus(state: SessionState, ctx: ExtensionContext)
 	}
 
 	const parts: string[] = [];
+	// Issue #133: prepend the multi-unit mode breakdown when a graph/chain
+	// dispatch is in flight — e.g. "brl: graph wave 1/2 · node 2/3, 2 running".
+	// The mode's finally clears modeContext, so the plain shape returns once
+	// no mode is active.
+	if (state.modeContext) {
+		const mc = state.modeContext;
+		parts.push(
+			mc.kind === "graph"
+				? `graph wave ${mc.wave}/${mc.totalWaves} · node ${mc.node}/${mc.totalNodes}`
+				: `chain step ${mc.step}/${mc.totalSteps}`,
+		);
+	}
 	if (state.activeSubagents > 0) parts.push(`${state.activeSubagents} running`);
 	if (state.completedSubagents > 0) {
 		if (state.unseenSubagents > 0) {

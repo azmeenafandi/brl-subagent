@@ -85,6 +85,17 @@ export class SessionState {
 	subagentSessions = new Map<string, LiveSubagent>();
 
 	/**
+	 * Issue #133: multi-unit mode breakdown for the status bar — set by
+	 * runGraphMode / runChainMode (src/index.ts) while a dispatch is in
+	 * flight, composed into the status text by updateProgressStatus
+	 * (src/concurrency.ts), cleared in the mode's finally. Undefined when no
+	 * graph/chain dispatch is active.
+	 */
+	modeContext?:
+		| { kind: "graph"; wave: number; totalWaves: number; node: number; totalNodes: number }
+		| { kind: "chain"; step: number; totalSteps: number };
+
+	/**
 	 * Ids whose live entry has been finalized (deferred delete pending).
 	 * Makes finalizeLiveSubagent idempotent so the stale sweep and the poller
 	 * can race the same id without double-finalizing (issue #52).

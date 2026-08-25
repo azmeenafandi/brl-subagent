@@ -387,6 +387,10 @@ export default function (pi: ExtensionAPI) {
 	): Promise<ToolResult<SubagentResult | ChainDetails | undefined>> {
 		const chainSteps = params.chain as SubTaskParams[];
 
+		// Issue #133: dispatch-start timestamp — the aggregate run entry's
+		// startedAt (captured once, at mode entry, not at completion).
+		const chainModeStartedAt = new Date().toISOString();
+
 		// R5: Check session cost limit before spawning
 		const perTaskEstimate =
 			state.config.perTaskCostEstimate > 0
@@ -613,6 +617,20 @@ export default function (pi: ExtensionAPI) {
 					usage: { ...EMPTY_USAGE },
 				};
 
+				// Issue #133: status-bar breakdown — the mode context shows the
+				// current step while the dispatch is in flight.
+				state.modeContext = {
+					kind: "chain",
+					step: i + 1,
+					totalSteps: chainSteps.length,
+				};
+				// Issue #133: render the breakdown — the chain holds ONE mode-level
+				// slot (acquired at mode start, released in the finally), so no
+				// per-step acquire/release calls updateProgressStatus while the
+				// mode context is set. Call it directly here (mirrors how the
+				// graph path's per-node slot operations trigger the render).
+				updateProgressStatus(state, ctx);
+
 				// Emit initial progress for this step
 				const modeInfo = describePromptMode(
 					merged.inheritSP,
@@ -633,17 +651,60 @@ export default function (pi: ExtensionAPI) {
 					},
 				});
 
-				// Register for live monitor — chain steps now appear in the drill-in
-				// (issue #130). A FRESH uuid per step: subagentSessions is
-				// host-global, so reused ids would collide across concurrent runs.
-				const liveId = crypto.randomUUID();
-				state.registerLiveSubagent(liveId, {
-					id: liveId,
-					label: merged.label ?? `Step ${i + 1}`,
+				// Issue #133: per-step run entry — mirrors runParallelMode's
+				// per-unit block (issue #119): the runId doubles as the live id,
+				// so sweepStaleLiveSubagents finds a 'running' record for every
+				// foreground live entry (the #130 invariant gap that swept
+				// graph/chain entries immediately).
+				const runId = crypto.randomUUID();
+				const run: SubagentRun = {
+					id: runId,
 					task: merged.task,
+					label: merged.label,
+					// Issue #98 symmetry: the background entry carries the caller
+					// label as `description` — kept separate from `label`.
+					description: merged.label,
+					status: "running",
 					model: `${stepModel.provider}/${stepModel.id}`,
 					thinkingLevel: merged.thinkingLevel,
+					// Issue #114: a chain holds ONE slot for its whole duration —
+					// array order IS the priority, so the call-level chainPriority
+					// is the floor (chain steps declare no per-unit priority).
 					priority: merged.priority ?? chainPriority,
+					startedAt: new Date().toISOString(),
+					originalParams: snapshotOriginalParams({
+						systemPrompt: merged.customSP,
+						inheritSystemPrompt: merged.inheritSP,
+						model: merged.model,
+						thinkingLevel: merged.thinkingLevel,
+						priority: merged.priority ?? chainPriority,
+						outputFile: merged.outputFile,
+						timeout: merged.timeout,
+						cwd: merged.effectiveCwd,
+						tools: merged.toolOptions?.tools,
+						excludeTools: merged.toolOptions?.excludeTools,
+						noBuiltinTools: merged.toolOptions?.noBuiltinTools,
+						preset: globalParams.resolvedPreset?.name,
+					}),
+				};
+				state.persistRun(pi, run);
+
+				// R2: Prune old run entries if history exceeds limit
+				if (state.config.maxHistoryEntries > 0) {
+					const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
+					if (p > 0) log.debug("Run history pruned", { pruned: p });
+				}
+
+				// Register for live monitor — chain steps now appear in the
+				// drill-in under the runId (issue #133 single identity, mirrors
+				// parallel mode's issue #119 registration).
+				state.registerLiveSubagent(runId, {
+					id: runId,
+					label: merged.label ?? `Step ${i + 1}`,
+					task: merged.task,
+					model: run.model,
+					thinkingLevel: run.thinkingLevel,
+					priority: run.priority,
 					startedAt: Date.now(),
 					ctx,
 				});
@@ -655,7 +716,7 @@ export default function (pi: ExtensionAPI) {
 							onUpdate(partial);
 							if (partial.details) {
 								state.updateLiveSubagent(
-									liveId,
+									runId,
 									getFinalOutput(partial.details.messages),
 									partial.details.usage.input,
 									partial.details.usage.output,
@@ -665,11 +726,12 @@ export default function (pi: ExtensionAPI) {
 						}
 					: undefined;
 
-				// Run the subagent for this step — crash-protected (issue #130):
-				// a throw must release the live entry or the drill-in loops on a
-				// ghost. finalizeLiveSubagent is idempotent; the rethrow is
-				// handled by the mode's existing outer catch (chain is sequential
-				// — no sibling wave to cancel).
+				// Run the subagent for this step — crash-protected (issue #130,
+				// #133 R1/C1 discipline): a throw must finalize the run entry as
+				// failed AND release the live entry, or the persisted record stays
+				// 'running' forever. finalizeLiveSubagent is idempotent; the
+				// rethrow is handled by the mode's existing outer catch (chain is
+				// sequential — no sibling wave to cancel).
 				let result: SubagentResult;
 				try {
 					result = await runSubagent(
@@ -687,18 +749,57 @@ export default function (pi: ExtensionAPI) {
 						currentDepth + 1,
 					);
 				} catch (err) {
+					// Issue #133 (mirrors the #119 R1/C1 discipline): finalize the
+					// run entry as failed — crashOutput comes from the live entry's
+					// last streamed output (the crash result itself has no
+					// messages), and errorCategory is classified onto originalParams.
 					const crash = buildCrashResult("Chain step", err, resolvedCwd);
-					state.finalizeLiveSubagent(liveId);
+					state.finalizeLiveSubagent(runId);
+					const crashOutput = state.subagentSessions.get(runId)?.liveOutput ?? "";
+					finalizeRunRecord(
+						run,
+						crash.details,
+						crashOutput,
+						new Date(run.startedAt).getTime(),
+					);
+					// buildCrashResult.details carries no errorCategory — classify it
+					// so the entry follows the completion path's errorCategory
+					// convention (issue #114 retry-snapshot visibility).
+					run.originalParams = {
+						...run.originalParams,
+						errorCategory: classifyError(crash.details),
+					};
+					state.persistRun(pi, run);
 					log.error("Chain step crashed", {
 						step: i + 1,
+						runId,
 						error: crash.details.errorMessage,
 					});
 					throw err;
 				}
 
-				// Issue #130: release the live entry on the success path (mirrors
+				// Issue #133: finalize the per-step run entry — status, duration,
+				// cost, tokens and sanitized output land on the entry (mirrors
+				// parallel's issue #119 finalize; result carries the SubagentResult
+				// shape finalizeRunRecord expects, errorCategory included).
+				const stepFinalOutput = capOutput(stripAnsi(getFinalOutput(result.messages)));
+				finalizeRunRecord(run, result, stepFinalOutput, new Date(run.startedAt).getTime());
+				run.originalParams = {
+					...run.originalParams,
+					errorCategory: result.errorCategory,
+				};
+				state.persistRun(pi, run);
+
+				// R2: Prune old run entries after the finalize persist — mirrors
+				// single mode's finalize-time prune (issue #119 R2).
+				if (state.config.maxHistoryEntries > 0) {
+					const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
+					if (p > 0) log.debug("Run history pruned", { pruned: p });
+				}
+
+				// Issue #133: release the live entry on the success path (mirrors
 				// parallel mode's completion finalize).
-				state.finalizeLiveSubagent(liveId);
+				state.finalizeLiveSubagent(runId);
 
 				// Fill SubTaskResult
 				subTaskResult.exitCode = result.exitCode;
@@ -809,6 +910,31 @@ export default function (pi: ExtensionAPI) {
 				totalCost,
 			});
 
+			// Issue #133: one aggregate run entry per chain dispatch — fresh id,
+			// persisted ONCE as done (no live entry: the drill-in shows the
+			// per-step entries while running; the aggregate is a post-hoc audit
+			// summary). Fields come from the dispatch-level resolved values and
+			// the aggregate totals; startedAt is the mode-entry timestamp.
+			const chainAggregateRun: SubagentRun = {
+				id: crypto.randomUUID(),
+				task: `Chain dispatch: ${chainSteps.length} steps`,
+				label: globalParams.label ?? "chain",
+				// Issue #133: persist the ACTUAL outcome — "failed" when any step
+				// failed (chainSuccess === false), "done" otherwise.
+				status: chainSuccess ? "done" : "failed",
+				model: `${subagentModel.provider}/${subagentModel.id}`,
+				thinkingLevel: globalParams.thinkingLevel,
+				priority: chainPriority,
+				startedAt: chainModeStartedAt,
+				finishedAt: new Date().toISOString(),
+				durationMs: Date.now() - new Date(chainModeStartedAt).getTime(),
+				cost: totalCost,
+				tokensIn: totalInput,
+				tokensOut: totalOutput,
+				outputSummary: capOutput(JSON.stringify(chainDetails, null, 2)),
+			};
+			state.persistRun(pi, chainAggregateRun);
+
 			return {
 				content: [
 					{ type: "text" as const, text: JSON.stringify(chainDetails, null, 2) },
@@ -823,6 +949,9 @@ export default function (pi: ExtensionAPI) {
 			log.error("Chain mode crashed", { error: result.details.errorMessage });
 			return result;
 		} finally {
+			// Issue #133: clear the status-bar mode breakdown — the dispatch is
+			// over (success or outer-catch crash).
+			state.modeContext = undefined;
 			releaseSlot(state, chainSuccess, ctx);
 		}
 	}
@@ -1383,6 +1512,10 @@ export default function (pi: ExtensionAPI) {
 	): Promise<ToolResult<SubagentResult | GraphDetails | undefined>> {
 		const graphTasks = params.graph as GraphTask[];
 
+		// Issue #133: dispatch-start timestamp — the aggregate run entry's
+		// startedAt (captured once, at mode entry, not at completion).
+		const graphModeStartedAt = new Date().toISOString();
+
 		// Validate graph
 		const errors = validateGraph(graphTasks);
 		if (errors.length > 0) {
@@ -1592,12 +1725,27 @@ export default function (pi: ExtensionAPI) {
 		// E10: Intercom for subagent-to-subagent messaging
 		const intercom = new Intercom();
 
+		// Issue #133: global node counter — node positions are reported against
+		// the WHOLE dispatch (dispatch-wide ordinal), not the current wave; a
+		// later wave's first node is its true global position (e.g. node 3/5),
+		// not "node 1/5". Incremented once per node as each wave's nodes run.
+		let globalNodeCounter = 0;
 		let chainSuccess = false;
 		try {
 			for (let w = 0; w < waves.length; w++) {
 				const wave = waves[w];
 				const waveIndex = w + 1;
 				const isParallel = wave.length > 1;
+
+				// Issue #133: status-bar breakdown — wave-level context set at
+				// each wave start (nodes within the wave refine it as they start).
+				state.modeContext = {
+					kind: "graph",
+					wave: waveIndex,
+					totalWaves: waves.length,
+					node: 0,
+					totalNodes: graphTasks.length,
+				};
 
 				// Emit initial progress
 				onUpdate?.({
@@ -1616,7 +1764,11 @@ export default function (pi: ExtensionAPI) {
 				});
 
 				// Run all tasks in this wave concurrently
-				const wavePromises = wave.map(async (graphTask) => {
+				const wavePromises = wave.map(async (graphTask, nodeIndex) => {
+					// Issue #133: capture this node's dispatch-wide ordinal before any
+					// sibling node advances the counter (same-wave siblings run
+					// concurrently, so the value must be pinned here).
+					const globalNode = ++globalNodeCounter;
 					const subTaskParams: SubTaskParams = {
 						task: graphTask.task,
 						label: graphTask.label,
@@ -1677,21 +1829,78 @@ export default function (pi: ExtensionAPI) {
 					const subagentId = graphTask.id;
 					intercom.register(subagentId);
 
-					// Register for live monitor — graph nodes now appear in the
-					// drill-in with their per-unit priority (issue #130). A FRESH
-					// uuid per node: subagentSessions is host-global, so raw
-					// graph-task ids would collide across concurrent graph runs
-					// (the intercom namespace is per-run and stays untouched).
-					const liveId = crypto.randomUUID();
-					state.registerLiveSubagent(liveId, {
-						id: liveId,
-						label: merged.label,
+					// Issue #133: status-bar breakdown — the node's dispatch-wide
+					// position (globalNode, not the wave-local nodeIndex) so a later
+					// wave reports its true global ordinal.
+					state.modeContext = {
+						kind: "graph",
+						wave: waveIndex,
+						totalWaves: waves.length,
+						node: globalNode,
+						totalNodes: graphTasks.length,
+					};
+
+					// Issue #133: per-node run entry — mirrors runParallelMode's
+					// per-unit block (issue #119): the runId doubles as the live id,
+					// so sweepStaleLiveSubagents finds a 'running' record for every
+					// foreground live entry (the #130 invariant gap that swept
+					// graph/chain entries immediately).
+					const runId = crypto.randomUUID();
+					const run: SubagentRun = {
+						id: runId,
 						task: merged.task,
+						label: merged.label,
+						// Issue #98 symmetry: the background entry carries the caller
+						// label as `description` — kept separate from `label`.
+						description: merged.label,
+						status: "running",
 						model: `${stepModel.provider}/${stepModel.id}`,
 						thinkingLevel: merged.thinkingLevel,
 						// Issue #114: per-unit priority wins; the call-level
 						// graphPriority is the floor.
 						priority: merged.priority ?? graphPriority,
+						startedAt: new Date().toISOString(),
+						originalParams: snapshotOriginalParams({
+							systemPrompt: merged.customSP,
+							inheritSystemPrompt: merged.inheritSP,
+							model: merged.model,
+							thinkingLevel: merged.thinkingLevel,
+							// Issue #119 R3: snapshot the RESOLVED priority (per-unit
+							// wins, the call-level graphPriority is the floor) so a
+							// retry of a fallback-priority node restores the same
+							// priority the run entry itself carried.
+							priority: merged.priority ?? graphPriority,
+							outputFile: merged.outputFile,
+							timeout: merged.timeout,
+							cwd: merged.effectiveCwd,
+							tools: merged.toolOptions?.tools,
+							excludeTools: merged.toolOptions?.excludeTools,
+							noBuiltinTools: merged.toolOptions?.noBuiltinTools,
+							preset: globalParams.resolvedPreset?.name,
+						}),
+					};
+					state.persistRun(pi, run);
+
+					// R2: Prune old run entries if history exceeds limit
+					if (state.config.maxHistoryEntries > 0) {
+						const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
+						if (p > 0) log.debug("Run history pruned", { pruned: p });
+					}
+
+					// Register for live monitor — graph nodes now appear in the
+					// drill-in under the runId with their per-unit priority
+					// (issue #133 single identity, mirrors parallel mode's issue
+					// #119 registration). A FRESH runId per node: subagentSessions
+					// is host-global, so raw graph-task ids would collide across
+					// concurrent graph runs (the intercom namespace is per-run and
+					// stays untouched).
+					state.registerLiveSubagent(runId, {
+						id: runId,
+						label: merged.label,
+						task: merged.task,
+						model: run.model,
+						thinkingLevel: run.thinkingLevel,
+						priority: run.priority,
 						startedAt: Date.now(),
 						ctx,
 					});
@@ -1706,7 +1915,7 @@ export default function (pi: ExtensionAPI) {
 								onUpdate(partial);
 								if (partial.details) {
 									state.updateLiveSubagent(
-										liveId,
+										runId,
 										getFinalOutput(partial.details.messages),
 										partial.details.usage.input,
 										partial.details.usage.output,
@@ -1748,21 +1957,59 @@ export default function (pi: ExtensionAPI) {
 							gitDiff: result.gitDiff,
 						};
 
-						// Issue #130: release the live entry on the success path
+						// Issue #133: finalize the per-node run entry — status, duration,
+						// cost, tokens and sanitized output land on the entry (mirrors
+						// parallel's issue #119 finalize; result carries the
+						// SubagentResult shape finalizeRunRecord expects, errorCategory
+						// included).
+						const nodeFinalOutput = capOutput(stripAnsi(getFinalOutput(result.messages)));
+						finalizeRunRecord(run, result, nodeFinalOutput, new Date(run.startedAt).getTime());
+						run.originalParams = {
+							...run.originalParams,
+							errorCategory: result.errorCategory,
+						};
+						state.persistRun(pi, run);
+
+						// R2: Prune old run entries after the finalize persist —
+						// mirrors single mode's finalize-time prune (issue #119 R2).
+						if (state.config.maxHistoryEntries > 0) {
+							const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
+							if (p > 0) log.debug("Run history pruned", { pruned: p });
+						}
+
+						// Issue #133: release the live entry on the success path
 						// (mirrors parallel mode's completion finalize).
-						state.finalizeLiveSubagent(liveId);
+						state.finalizeLiveSubagent(runId);
 
 						return { id: graphTask.id, result: subTaskResult };
 					} catch (err) {
-						// Issue #130 (mirrors the #119 R1/C1 lesson): crash-protected
-						// — a post-spawn throw must release the live entry or the
-						// drill-in loops on a ghost. finalizeLiveSubagent is
-						// idempotent; the rethrow keeps Promise.allSettled semantics
-						// (a failing node must NOT cancel sibling nodes in the wave).
-						const crash = buildCrashResult("Graph task", err, resolvedCwd);
-						state.finalizeLiveSubagent(liveId);
-						log.error("Graph task crashed", {
+						// Issue #133 (mirrors the #119 R1/C1 discipline): crash-protected
+						// — a post-spawn throw must finalize the run entry as failed AND
+						// release the live entry, or the persisted record stays
+						// 'running' forever and the sweep treats the ghost as live.
+						// finalizeLiveSubagent is idempotent; the rethrow keeps
+						// Promise.allSettled semantics (a failing node must NOT cancel
+						// sibling nodes in the wave).
+						const crash = buildCrashResult("Graph node", err, resolvedCwd);
+						state.finalizeLiveSubagent(runId);
+						const crashOutput = state.subagentSessions.get(runId)?.liveOutput ?? "";
+						finalizeRunRecord(
+							run,
+							crash.details,
+							crashOutput,
+							new Date(run.startedAt).getTime(),
+						);
+						// buildCrashResult.details carries no errorCategory — classify it
+						// so the entry follows the completion path's errorCategory
+						// convention (issue #114 retry-snapshot visibility).
+						run.originalParams = {
+							...run.originalParams,
+							errorCategory: classifyError(crash.details),
+						};
+						state.persistRun(pi, run);
+						log.error("Graph node crashed", {
 							id: graphTask.id,
+							runId,
 							error: crash.details.errorMessage,
 						});
 						throw err;
@@ -1837,6 +2084,31 @@ export default function (pi: ExtensionAPI) {
 				totalCost,
 			});
 
+			// Issue #133: one aggregate run entry per graph dispatch — fresh id,
+			// persisted ONCE as done (no live entry: the drill-in shows the
+			// per-node entries while running; the aggregate is a post-hoc audit
+			// summary). Fields come from the dispatch-level resolved values and
+			// the aggregate totals; startedAt is the mode-entry timestamp.
+			const graphAggregateRun: SubagentRun = {
+				id: crypto.randomUUID(),
+				task: `Graph dispatch: ${graphTasks.length} tasks in ${allWaves.length} waves`,
+				label: globalParams.label ?? "graph",
+				// Issue #133: persist the ACTUAL outcome — "failed" when any node
+				// failed (chainSuccess === false), "done" otherwise.
+				status: chainSuccess ? "done" : "failed",
+				model: `${subagentModel.provider}/${subagentModel.id}`,
+				thinkingLevel: globalParams.thinkingLevel,
+				priority: graphPriority,
+				startedAt: graphModeStartedAt,
+				finishedAt: new Date().toISOString(),
+				durationMs: Date.now() - new Date(graphModeStartedAt).getTime(),
+				cost: totalCost,
+				tokensIn: totalInput,
+				tokensOut: totalOutput,
+				outputSummary: capOutput(JSON.stringify(graphDetails, null, 2)),
+			};
+			state.persistRun(pi, graphAggregateRun);
+
 			return {
 				content: [
 					{ type: "text" as const, text: JSON.stringify(graphDetails, null, 2) },
@@ -1851,6 +2123,9 @@ export default function (pi: ExtensionAPI) {
 			log.error("Graph mode crashed", { error: result.details.errorMessage });
 			return result;
 		} finally {
+			// Issue #133: clear the status-bar mode breakdown — the dispatch is
+			// over (success or outer-catch crash).
+			state.modeContext = undefined;
 			releaseSlot(state, chainSuccess, ctx);
 		}
 	}
