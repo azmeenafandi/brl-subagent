@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.3.0 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.3.1 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -253,6 +253,12 @@ Set `background: true` to spawn the subagent as an independent session that retu
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
 
 ## Changelog
+
+### v2.3.1
+
+- **Graph and chain runs visible in the live monitor (issue #130):** nodes and steps register with `/brl-subagent monitor` for the first time — each row shows label, model, and per-unit priority (the call-level floor now applies in chain mode too), and the drill-in streams the node's current work exactly like parallel subtasks. Registration follows issue #119's crash-protected pattern — a spawn throw finalizes the entry, so no stuck `running` ghosts.
+- **Run records + status-bar breakdown for graph/chain (issue #133):** the reason #130's entries were invisible: the monitor's staleness sweep treats a foreground live entry without a persisted run entry as stale and finalizes it on the first render. Graph/chain now get the full run-record lifecycle (persist `running` at spawn → finalize with status/cost/tokens/output at completion → crash-protected), restoring the sweep's invariant with zero changes to the sweep. New surfaces: **aggregate dispatch entries** in run history ("Graph dispatch: N tasks in M waves") and a live **mode breakdown in the status bar** — `graph wave x/y · node x/y` and `chain step x/y` — composed with the background counters.
+- **Process:** PR #134 was reviewed (adversarial, approve-with-nits → 3 findings fixed pre-merge), reviewed by the user before merge, and verified end-to-end at point of use — the monitor/status-bar/history ritual that failed three times during #130's verification now passes for both graph and chain probes. 912 tests across 41 files.
 
 ### v2.3.0
 
