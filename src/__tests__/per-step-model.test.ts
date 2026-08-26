@@ -12,7 +12,7 @@
  * advertised on the tool parameters.
  */
 
-import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -54,6 +54,7 @@ vi.mock("@earendil-works/pi-tui", () => {
 });
 
 import initExtension from "../index";
+import * as concurrencyModule from "../concurrency";
 import { KNOWN_DELEGATE_KEYS } from "../params";
 import { CUSTOM_ENTRY_TYPES } from "../types";
 import type { SubagentResult, SubagentRun, LiveSubagent } from "../types";
@@ -1695,5 +1696,171 @@ describe("graph/chain run records + sweep survival (issue #133)", () => {
 		expect(aggregate[0].finishedAt).toBeDefined();
 		expect(aggregate[0].durationMs).toBeGreaterThanOrEqual(0);
 		expect(aggregate[0].outputSummary).toContain('"mode": "chain"');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #137: per-unit releaseSlot passes the unit's REAL success.
+//
+// The status bar counted every completed parallel task / graph node as FAILED
+// because the per-unit finally always released with success=false — only the
+// mode-level release passed the real flag. These tests drive the REAL execute
+// handler (runner mocked) and spy on releaseSlot (the single counter-mutation
+// point in src/concurrency.ts) to pin two things nothing else in the suite
+// does: (1) the success flag EACH per-unit release passes, and (2) the
+// resulting SessionState counters (completedSubagents / failedSubagents).
+// releaseSlot's first argument is the SAME state object index.ts mutates, so
+// the counters are asserted directly from the captured calls — no status-text
+// parsing, no state accessor needed.
+//
+// For graph mode the state is the SUM of (per-node releases + the mode-level
+// release in the graph finally) — a 2-node all-success graph yields 2 nodes + 1
+// mode-level = 3 done. Parallel mode has NO mode-level release (its finally is
+// per-task only), so 2 successful tasks = 2 done.
+// ---------------------------------------------------------------------------
+
+describe("per-unit releaseSlot success flags (issue #137)", () => {
+	let releaseSpy: ReturnType<typeof vi.spyOn<typeof concurrencyModule, "releaseSlot">>;
+
+	beforeEach(() => {
+		releaseSpy = vi.spyOn(concurrencyModule, "releaseSlot");
+	});
+
+	afterEach(() => {
+		releaseSpy.mockRestore();
+	});
+
+	/** The SessionState the execute handler mutates (same object across every release). */
+	function lastState() {
+		const calls = releaseSpy.mock.calls;
+		expect(calls.length).toBeGreaterThan(0);
+		const state = calls[calls.length - 1][0] as {
+			completedSubagents: number;
+			failedSubagents: number;
+			unseenSubagents: number;
+		};
+		return state;
+	}
+
+	/** runSubagent that resolves with exit 0 / stopReason "stop" (a done-class outcome). */
+	function resolveOk() {
+		runnerMocks.runSubagent.mockImplementation(
+			async (_cwd: string, _prompt: string, model: { provider: string; id: string }) => ({
+				...makeResult(`${model.provider}/${model.id}`),
+				stopReason: "stop",
+			}),
+		);
+	}
+
+	it("graph: every node + the mode-level release count as done when all nodes succeed", async () => {
+		resolveOk();
+
+		await tool.execute("call-137-g-ok", {
+			graph: [
+				{ id: "a", task: "task a", dependsOn: [] },
+				{ id: "b", task: "task b", dependsOn: [] },
+			],
+		}, undefined, undefined, makeCtx());
+
+		const calls = releaseSpy.mock.calls;
+		expect(calls).toHaveLength(3); // node a + node b + mode-level release
+		for (const [, success] of calls) {
+			expect(success).toBe(true); // no per-unit release may count a success as failed
+		}
+
+		const state = lastState();
+		expect(state.completedSubagents).toBe(3); // 2 nodes + 1 mode-level
+		expect(state.failedSubagents).toBe(0);
+	});
+
+	it("graph: a rejecting node increments failed; the sibling + mode-level still count as done", async () => {
+		runnerMocks.runSubagent.mockImplementation(
+			async (
+				_cwd: string,
+				_prompt: string,
+				model: { provider: string; id: string },
+				_thinkingLevel: unknown,
+				task: string,
+			) => {
+				if (task.includes("boom")) throw new Error(`spawn failed: ${testCwd}/bin/pi`);
+				return { ...makeResult(`${model.provider}/${model.id}`), stopReason: "stop" };
+			},
+		);
+
+		let settled = true;
+		try {
+			await tool.execute("call-137-g-fail", {
+				graph: [
+					{ id: "boom", task: "boom the build", dependsOn: [] },
+					{ id: "fine", task: "fine task", dependsOn: [] },
+				],
+			}, undefined, undefined, makeCtx());
+		} catch {
+			settled = false;
+		}
+		expect(settled).toBe(true);
+
+		const calls = releaseSpy.mock.calls;
+		expect(calls).toHaveLength(3);
+		const successFlags = calls.map((c) => c[1] as boolean);
+		expect(successFlags.filter(Boolean)).toHaveLength(2); // fine node + mode-level
+		expect(successFlags.filter((s) => !s)).toHaveLength(1); // boom node
+
+		const state = lastState();
+		expect(state.completedSubagents).toBe(2);
+		expect(state.failedSubagents).toBe(1);
+	});
+
+	it("parallel: successful tasks count as done, zero failed (no mode-level release adds no phantom fail)", async () => {
+		resolveOk();
+
+		await tool.execute("call-137-p-ok", {
+			tasks: [{ task: "task a" }, { task: "task b" }],
+		}, undefined, undefined, makeCtx());
+
+		const calls = releaseSpy.mock.calls;
+		expect(calls).toHaveLength(2); // per-task only — parallel has no mode-level release
+		for (const [, success] of calls) {
+			expect(success).toBe(true);
+		}
+
+		const state = lastState();
+		expect(state.completedSubagents).toBe(2);
+		expect(state.failedSubagents).toBe(0);
+	});
+
+	it("parallel: a rejecting task increments failed; the sibling still counts as done", async () => {
+		runnerMocks.runSubagent.mockImplementation(
+			async (
+				_cwd: string,
+				_prompt: string,
+				model: { provider: string; id: string },
+				_thinkingLevel: unknown,
+				task: string,
+			) => {
+				if (task.includes("boom")) throw new Error(`spawn failed: ${testCwd}/bin/pi`);
+				return { ...makeResult(`${model.provider}/${model.id}`), stopReason: "stop" };
+			},
+		);
+
+		let settled = true;
+		try {
+			await tool.execute("call-137-p-fail", {
+				tasks: [{ task: "boom the build" }, { task: "fine task" }],
+			}, undefined, undefined, makeCtx());
+		} catch {
+			settled = false;
+		}
+		expect(settled).toBe(true);
+
+		const calls = releaseSpy.mock.calls;
+		expect(calls).toHaveLength(2); // per-task only
+		const successFlags = calls.map((c) => c[1] as boolean);
+		expect(successFlags.filter(Boolean)).toHaveLength(1); // fine task
+		expect(successFlags.filter((s) => !s)).toHaveLength(1); // boom task
+
+		const state = lastState();
+		expect(state.completedSubagents).toBe(1);
+		expect(state.failedSubagents).toBe(1);
 	});
 });
