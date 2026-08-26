@@ -1085,7 +1085,7 @@ export default function (pi: ExtensionAPI) {
 		const runTask = async (
 			index: number,
 			merged: ReturnType<typeof mergeSubTaskParams>,
-		): Promise<void> => {
+		): Promise<boolean> => {
 
 			// C3: Resolve this step's model override (step.model > global resolved model)
 			const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
@@ -1280,6 +1280,11 @@ export default function (pi: ExtensionAPI) {
 				],
 				details: partialDetails,
 			});
+
+			// Issue #137: return the unit's real success so the caller's slot
+			// release is honest — the status bar's "N failed" count reflects the
+			// true outcome (same check as the aggregate chainSuccess).
+			return !isSubagentError(subTaskResult);
 		};
 
 		// Resolve priority — the FALLBACK for per-unit priority (issue #114): a
@@ -1310,11 +1315,13 @@ export default function (pi: ExtensionAPI) {
 				completedCount++;
 				return;
 			}
+			let taskSuccess = false;
 			try {
-				await runTask(index, merged);
+				taskSuccess = await runTask(index, merged);
 			} finally {
-				// Release slot — always mark success=false since we track success per-task
-				releaseSlot(state, false, ctx);
+				// Issue #137: release with the unit's real success — the status
+				// bar's "N failed" count reflects the true outcome.
+				releaseSlot(state, taskSuccess, ctx);
 			}
 		});
 
@@ -1748,6 +1755,7 @@ export default function (pi: ExtensionAPI) {
 						ctx,
 					});
 
+					let nodeSuccess = false;
 					try {
 						// Wrap onUpdate for per-node progress — also feed the live
 						// monitor so the drill-in streams output instead of showing
@@ -1793,6 +1801,10 @@ export default function (pi: ExtensionAPI) {
 						// SubagentResult shape finalizeRunRecord expects, errorCategory
 						// included).
 						finalizeUnitRun(state, pi, ctx, run, result, log);
+						// Issue #137: the node's real success — the status bar's
+						// "N failed" count reflects the true outcome (same check as
+						// the aggregate chainSuccess).
+						nodeSuccess = !isSubagentError(result);
 
 						return { id: graphTask.id, result: subTaskResult };
 					} catch (err) {
@@ -1827,7 +1839,7 @@ export default function (pi: ExtensionAPI) {
 						});
 						throw err;
 					} finally {
-						releaseSlot(state, false, ctx);
+						releaseSlot(state, nodeSuccess, ctx);
 					}
 				});
 
