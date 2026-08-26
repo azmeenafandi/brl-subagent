@@ -87,6 +87,7 @@ import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams, snapshotOriginalParams } from "./params";
 import { createSessionState } from "./state";
+import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
@@ -656,37 +657,7 @@ export default function (pi: ExtensionAPI) {
 				// so sweepStaleLiveSubagents finds a 'running' record for every
 				// foreground live entry (the #130 invariant gap that swept
 				// graph/chain entries immediately).
-				const runId = crypto.randomUUID();
-				const run: SubagentRun = {
-					id: runId,
-					task: merged.task,
-					label: merged.label,
-					// Issue #98 symmetry: the background entry carries the caller
-					// label as `description` — kept separate from `label`.
-					description: merged.label,
-					status: "running",
-					model: `${stepModel.provider}/${stepModel.id}`,
-					thinkingLevel: merged.thinkingLevel,
-					// Issue #114: a chain holds ONE slot for its whole duration —
-					// array order IS the priority, so the call-level chainPriority
-					// is the floor (chain steps declare no per-unit priority).
-					priority: merged.priority ?? chainPriority,
-					startedAt: new Date().toISOString(),
-					originalParams: snapshotOriginalParams({
-						systemPrompt: merged.customSP,
-						inheritSystemPrompt: merged.inheritSP,
-						model: merged.model,
-						thinkingLevel: merged.thinkingLevel,
-						priority: merged.priority ?? chainPriority,
-						outputFile: merged.outputFile,
-						timeout: merged.timeout,
-						cwd: merged.effectiveCwd,
-						tools: merged.toolOptions?.tools,
-						excludeTools: merged.toolOptions?.excludeTools,
-						noBuiltinTools: merged.toolOptions?.noBuiltinTools,
-						preset: globalParams.resolvedPreset?.name,
-					}),
-				};
+				const { runId, run } = createUnitRun(merged, stepModel, chainPriority, globalParams.resolvedPreset?.name);
 				state.persistRun(pi, run);
 
 				// R2: Prune old run entries if history exceeds limit
@@ -711,20 +682,7 @@ export default function (pi: ExtensionAPI) {
 
 				// Wrap onUpdate so the live monitor sees per-step progress
 				// (mirrors parallel mode's taskOnUpdate).
-				const stepOnUpdate = onUpdate
-					? (partial: AgentToolResult<SubagentResult>) => {
-							onUpdate(partial);
-							if (partial.details) {
-								state.updateLiveSubagent(
-									runId,
-									getFinalOutput(partial.details.messages),
-									partial.details.usage.input,
-									partial.details.usage.output,
-									partial.details.liveTranscript,
-								);
-							}
-						}
-					: undefined;
+				const stepOnUpdate = makeLiveOnUpdate(state, runId, onUpdate);
 
 				// Run the subagent for this step — crash-protected (issue #130,
 				// #133 R1/C1 discipline): a throw must finalize the run entry as
@@ -782,24 +740,7 @@ export default function (pi: ExtensionAPI) {
 				// cost, tokens and sanitized output land on the entry (mirrors
 				// parallel's issue #119 finalize; result carries the SubagentResult
 				// shape finalizeRunRecord expects, errorCategory included).
-				const stepFinalOutput = capOutput(stripAnsi(getFinalOutput(result.messages)));
-				finalizeRunRecord(run, result, stepFinalOutput, new Date(run.startedAt).getTime());
-				run.originalParams = {
-					...run.originalParams,
-					errorCategory: result.errorCategory,
-				};
-				state.persistRun(pi, run);
-
-				// R2: Prune old run entries after the finalize persist — mirrors
-				// single mode's finalize-time prune (issue #119 R2).
-				if (state.config.maxHistoryEntries > 0) {
-					const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
-					if (p > 0) log.debug("Run history pruned", { pruned: p });
-				}
-
-				// Issue #133: release the live entry on the success path (mirrors
-				// parallel mode's completion finalize).
-				state.finalizeLiveSubagent(runId);
+				finalizeUnitRun(state, pi, ctx, run, result, log);
 
 				// Fill SubTaskResult
 				subTaskResult.exitCode = result.exitCode;
@@ -1176,40 +1117,7 @@ export default function (pi: ExtensionAPI) {
 			// Issue #119: per-subtask run entry — created at spawn so the
 			// monitor drill-in shows per-unit priority and a post-hoc audit
 			// trail exists per subtask (mirrors single-mode run persistence).
-			const runId = crypto.randomUUID();
-			const run: SubagentRun = {
-				id: runId,
-				task: merged.task,
-				label: merged.label,
-				// Issue #98 symmetry: the background entry carries the caller
-				// label as `description` — kept separate from `label`.
-				description: merged.label,
-				status: "running",
-				model: `${stepModel.provider}/${stepModel.id}`,
-				thinkingLevel: merged.thinkingLevel,
-				// Issue #114: per-unit priority wins; the call-level
-				// parallelPriority fallback is the floor.
-				priority: merged.priority ?? parallelPriority,
-				startedAt: new Date().toISOString(),
-				originalParams: snapshotOriginalParams({
-					systemPrompt: merged.customSP,
-					inheritSystemPrompt: merged.inheritSP,
-					model: merged.model,
-					thinkingLevel: merged.thinkingLevel,
-					// Issue #119 R3: snapshot the RESOLVED priority (per-unit wins, the
-					// call-level parallelPriority is the floor) so a retry of a
-					// fallback-priority subtask restores the same priority the run
-					// entry itself carried (issue #114 intent).
-					priority: merged.priority ?? parallelPriority,
-					outputFile: merged.outputFile,
-					timeout: merged.timeout,
-					cwd: merged.effectiveCwd,
-					tools: merged.toolOptions?.tools,
-					excludeTools: merged.toolOptions?.excludeTools,
-					noBuiltinTools: merged.toolOptions?.noBuiltinTools,
-					preset: globalParams.resolvedPreset?.name,
-				}),
-			};
+			const { runId, run } = createUnitRun(merged, stepModel, parallelPriority, globalParams.resolvedPreset?.name);
 			state.persistRun(pi, run);
 
 			// R2: Prune old run entries if history exceeds limit
@@ -1256,20 +1164,7 @@ export default function (pi: ExtensionAPI) {
 			// Wrap onUpdate for per-task progress — also feed the live monitor so
 			// the drill-in streams output instead of showing "waiting for first
 			// output…" for the whole run (mirrors single mode's liveOnUpdate).
-			const taskOnUpdate = onUpdate
-				? (partial: AgentToolResult<SubagentResult>) => {
-						onUpdate(partial);
-						if (partial.details) {
-							state.updateLiveSubagent(
-								runId,
-								getFinalOutput(partial.details.messages),
-								partial.details.usage.input,
-								partial.details.usage.output,
-								partial.details.liveTranscript,
-							);
-						}
-					}
-				: undefined;
+			const taskOnUpdate = makeLiveOnUpdate(state, runId, onUpdate);
 
 			// Run subagent — the post-spawn body is crash-protected (issue #119
 			// R1, C1 fix): a throw here (e.g. runner writeToTempFile) must
@@ -1313,26 +1208,7 @@ export default function (pi: ExtensionAPI) {
 				// cost, tokens and sanitized output land on the entry (mirrors
 				// single-mode finalization; result carries the SubagentResult shape
 				// finalizeRunRecord expects, errorCategory included).
-				const subFinalOutput = capOutput(stripAnsi(getFinalOutput(result.messages)));
-				finalizeRunRecord(run, result, subFinalOutput, new Date(run.startedAt).getTime());
-				run.originalParams = {
-					...run.originalParams,
-					errorCategory: result.errorCategory,
-				};
-				state.persistRun(pi, run);
-
-				// R2: Prune old run entries after the finalize persist — mirrors
-				// single mode's finalize-time prune (issue #119 R2). Spawn-time
-				// pruning alone could leave N finalized entries past
-				// maxHistoryEntries when many subtasks complete together.
-				if (state.config.maxHistoryEntries > 0) {
-					const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
-					if (p > 0) log.debug("Run history pruned", { pruned: p });
-				}
-
-				state.finalizeLiveSubagent(runId);
-
-				log.debug("Parallel subtask run finalized", { runId, index, status: run.status });
+				finalizeUnitRun(state, pi, ctx, run, result, log);
 			} catch (err) {
 				// Issue #119 R1 (C1 fix): mirror the single-mode crash catch — a
 				// post-spawn throw must finalize the entry as failed and release
@@ -1845,40 +1721,7 @@ export default function (pi: ExtensionAPI) {
 					// so sweepStaleLiveSubagents finds a 'running' record for every
 					// foreground live entry (the #130 invariant gap that swept
 					// graph/chain entries immediately).
-					const runId = crypto.randomUUID();
-					const run: SubagentRun = {
-						id: runId,
-						task: merged.task,
-						label: merged.label,
-						// Issue #98 symmetry: the background entry carries the caller
-						// label as `description` — kept separate from `label`.
-						description: merged.label,
-						status: "running",
-						model: `${stepModel.provider}/${stepModel.id}`,
-						thinkingLevel: merged.thinkingLevel,
-						// Issue #114: per-unit priority wins; the call-level
-						// graphPriority is the floor.
-						priority: merged.priority ?? graphPriority,
-						startedAt: new Date().toISOString(),
-						originalParams: snapshotOriginalParams({
-							systemPrompt: merged.customSP,
-							inheritSystemPrompt: merged.inheritSP,
-							model: merged.model,
-							thinkingLevel: merged.thinkingLevel,
-							// Issue #119 R3: snapshot the RESOLVED priority (per-unit
-							// wins, the call-level graphPriority is the floor) so a
-							// retry of a fallback-priority node restores the same
-							// priority the run entry itself carried.
-							priority: merged.priority ?? graphPriority,
-							outputFile: merged.outputFile,
-							timeout: merged.timeout,
-							cwd: merged.effectiveCwd,
-							tools: merged.toolOptions?.tools,
-							excludeTools: merged.toolOptions?.excludeTools,
-							noBuiltinTools: merged.toolOptions?.noBuiltinTools,
-							preset: globalParams.resolvedPreset?.name,
-						}),
-					};
+					const { runId, run } = createUnitRun(merged, stepModel, graphPriority, globalParams.resolvedPreset?.name);
 					state.persistRun(pi, run);
 
 					// R2: Prune old run entries if history exceeds limit
@@ -1910,20 +1753,7 @@ export default function (pi: ExtensionAPI) {
 						// monitor so the drill-in streams output instead of showing
 						// "waiting for first output…" (mirrors parallel mode's
 						// taskOnUpdate).
-						const stepOnUpdate = onUpdate
-							? (partial: AgentToolResult<SubagentResult>) => {
-								onUpdate(partial);
-								if (partial.details) {
-									state.updateLiveSubagent(
-										runId,
-										getFinalOutput(partial.details.messages),
-										partial.details.usage.input,
-										partial.details.usage.output,
-										partial.details.liveTranscript,
-									);
-								}
-							}
-							: undefined;
+						const stepOnUpdate = makeLiveOnUpdate(state, runId, onUpdate);
 
 						const result = await runSubagent(
 							resolvedCwd,
@@ -1962,24 +1792,7 @@ export default function (pi: ExtensionAPI) {
 						// parallel's issue #119 finalize; result carries the
 						// SubagentResult shape finalizeRunRecord expects, errorCategory
 						// included).
-						const nodeFinalOutput = capOutput(stripAnsi(getFinalOutput(result.messages)));
-						finalizeRunRecord(run, result, nodeFinalOutput, new Date(run.startedAt).getTime());
-						run.originalParams = {
-							...run.originalParams,
-							errorCategory: result.errorCategory,
-						};
-						state.persistRun(pi, run);
-
-						// R2: Prune old run entries after the finalize persist —
-						// mirrors single mode's finalize-time prune (issue #119 R2).
-						if (state.config.maxHistoryEntries > 0) {
-							const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
-							if (p > 0) log.debug("Run history pruned", { pruned: p });
-						}
-
-						// Issue #133: release the live entry on the success path
-						// (mirrors parallel mode's completion finalize).
-						state.finalizeLiveSubagent(runId);
+						finalizeUnitRun(state, pi, ctx, run, result, log);
 
 						return { id: graphTask.id, result: subTaskResult };
 					} catch (err) {
@@ -3424,22 +3237,7 @@ export default function (pi: ExtensionAPI) {
 				});
 
 				// Wrap onUpdate to feed live monitor
-				const liveOnUpdate = onUpdate
-					? (partial: AgentToolResult<SubagentResult>) => {
-							onUpdate(partial);
-							if (partial.details) {
-								// Issue #105: thread the streaming transcript into the live
-								// monitor — the drill-in renders it for foreground runs.
-								state.updateLiveSubagent(
-									runId,
-									getFinalOutput(partial.details.messages),
-									partial.details.usage.input,
-									partial.details.usage.output,
-									partial.details.liveTranscript,
-								);
-							}
-						}
-					: undefined;
+				const liveOnUpdate = makeLiveOnUpdate(state, runId, onUpdate);
 
 				const childDepth = currentDepth + 1;
 
