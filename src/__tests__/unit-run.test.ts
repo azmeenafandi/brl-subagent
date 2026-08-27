@@ -18,7 +18,7 @@ import { createSessionState } from "../state";
 import type { Logger } from "../logging";
 import type { SubagentResult, SubagentRun, Priority, TranscriptMessage } from "../types";
 import { CUSTOM_ENTRY_TYPES, EMPTY_USAGE, getFinalOutput } from "../types";
-import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, type UnitRunSource } from "../unit-run";
+import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun, type UnitRunSource } from "../unit-run";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -333,5 +333,180 @@ describe("finalizeUnitRun", () => {
 			"Run history pruned",
 			expect.anything(),
 		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// finalizeUnitRunCrash
+// ---------------------------------------------------------------------------
+
+describe("finalizeUnitRunCrash", () => {
+	const runId = "unit-crash-1";
+
+	it("builds a failed record, persists it, finalizes the live entry, and rethrows the original error", () => {
+		const state = createSessionState();
+		registerLive(state, runId);
+		const recorded: Array<{ type: string; data: unknown }> = [];
+		const pi = makeFakePi(recorded);
+		const ctx = createMockContext([], recorded);
+		const run = makeRun(runId, "running");
+		const log = makeLog();
+		const err = new Error("boom: timed out");
+
+		let thrown: unknown;
+		try {
+			finalizeUnitRunCrash(state, pi, run, err, "Chain step", "/tmp/work", log, {
+				step: 1,
+			});
+		} catch (e) {
+			thrown = e;
+		}
+
+		// rethrows the ORIGINAL error object (identity, not just message)
+		expect(thrown).toBe(err);
+		// failed record, classified errorCategory, cost/errorMessage set
+		expect(run.status).toBe("failed");
+		expect(run.errorMessage).toContain("timed out");
+		expect(run.cost).toBeDefined();
+		expect(run.originalParams?.errorCategory).toBe("timeout");
+		// persisted via persistRun (appendEntry) and visible through getRunEntries
+		expect(pi.appendEntry).toHaveBeenCalledWith(CUSTOM_ENTRY_TYPES.run, run);
+		expect(state.getRunEntries(ctx).map((r) => r.id)).toContain(runId);
+		// live entry finalized
+		expect(state.isLiveEntryFinalized(runId)).toBe(true);
+		// mode-specific log emitted (label + context + runId spread)
+		expect(log.error).toHaveBeenCalledWith(
+			"Chain step crashed",
+			expect.objectContaining({ step: 1, runId, error: expect.any(String) }),
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// pruneHistoryIfNeeded
+// ---------------------------------------------------------------------------
+
+describe("pruneHistoryIfNeeded", () => {
+	it("prunes history when over maxHistoryEntries", () => {
+		const state = createSessionState();
+		state.config.maxHistoryEntries = 2;
+		const planted = ["a", "b", "c", "d", "e"].map((id) => makeRun(id, "done"));
+		const ctx = createMockContext(planted);
+		const log = makeLog();
+
+		pruneHistoryIfNeeded(state, ctx, log);
+
+		expect(log.debug).toHaveBeenCalledWith(
+			"Run history pruned",
+			expect.objectContaining({ pruned: expect.any(Number) }),
+		);
+	});
+
+	it("no-ops when under the limit", () => {
+		const state = createSessionState();
+		state.config.maxHistoryEntries = 100;
+		const planted = ["a", "b"].map((id) => makeRun(id, "done"));
+		const ctx = createMockContext(planted);
+		const log = makeLog();
+
+		pruneHistoryIfNeeded(state, ctx, log);
+
+		expect(log.debug).not.toHaveBeenCalledWith(
+			"Run history pruned",
+			expect.anything(),
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// registerLiveRun
+// ---------------------------------------------------------------------------
+
+describe("registerLiveRun", () => {
+	it("registers the run in the live map with the run's fields", () => {
+		const state = createSessionState();
+		const ctx = {} as ExtensionContext;
+		const run: SubagentRun = {
+			id: "live-reg-1",
+			task: "do the thing",
+			label: "unit-a",
+			status: "running",
+			model: "anthropic/claude-opus-4-6",
+			thinkingLevel: "high",
+			priority: "critical",
+			startedAt: "2024-01-01T00:00:00.000Z",
+			originalParams: {},
+		};
+
+		registerLiveRun(state, run, ctx);
+
+		const live = state.subagentSessions.get(run.id)!;
+		expect(live).toBeDefined();
+		expect(live.id).toBe(run.id);
+		expect(live.label).toBe("unit-a");
+		expect(live.task).toBe("do the thing");
+		expect(live.model).toBe("anthropic/claude-opus-4-6");
+		expect(live.thinkingLevel).toBe("high");
+		expect(live.priority).toBe("critical");
+		expect(live.startedAt).toBe(new Date(run.startedAt).getTime());
+		expect(live.ctx).toBe(ctx);
+	});
+
+	it("uses run.startedAt (not Date.now()) for the live timestamp", () => {
+		const state = createSessionState();
+		const ctx = {} as ExtensionContext;
+		const run: SubagentRun = {
+			id: "live-reg-2",
+			task: "t",
+			status: "running",
+			model: "provider/model",
+			thinkingLevel: "low",
+			startedAt: "2023-06-15T10:20:30.000Z",
+			originalParams: {},
+		};
+
+		registerLiveRun(state, run, ctx);
+
+		const live = state.subagentSessions.get(run.id)!;
+		expect(live.startedAt).toBe(new Date(run.startedAt).getTime());
+	});
+
+	it("uses the labelOverride (not run.label) when supplied", () => {
+		const state = createSessionState();
+		const ctx = {} as ExtensionContext;
+		const run: SubagentRun = {
+			id: "live-reg-3",
+			task: "t",
+			status: "running",
+			model: "provider/model",
+			thinkingLevel: "low",
+			startedAt: "2023-06-15T10:20:30.000Z",
+			originalParams: {},
+		};
+
+		registerLiveRun(state, run, ctx, "Step 1");
+
+		const live = state.subagentSessions.get(run.id)!;
+		expect(live.label).toBe("Step 1");
+	});
+
+	it("falls back to run.label when the labelOverride is absent", () => {
+		const state = createSessionState();
+		const ctx = {} as ExtensionContext;
+		const run: SubagentRun = {
+			id: "live-reg-4",
+			task: "t",
+			label: "unit-b",
+			status: "running",
+			model: "provider/model",
+			thinkingLevel: "low",
+			startedAt: "2023-06-15T10:20:30.000Z",
+			originalParams: {},
+		};
+
+		registerLiveRun(state, run, ctx);
+
+		const live = state.subagentSessions.get(run.id)!;
+		expect(live.label).toBe("unit-b");
 	});
 });

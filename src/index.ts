@@ -87,7 +87,7 @@ import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams, snapshotOriginalParams } from "./params";
 import { createSessionState } from "./state";
-import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun } from "./unit-run";
+import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
@@ -95,7 +95,6 @@ import {
 	finalizeRunRecord,
 	resolveRetryParams,
 	createEmptyResult,
-	pruneSessionRuns,
 } from "./history";
 import { computeSLAMetrics, computeDegradation } from "./metrics";
 import {
@@ -661,24 +660,14 @@ export default function (pi: ExtensionAPI) {
 				state.persistRun(pi, run);
 
 				// R2: Prune old run entries if history exceeds limit
-				if (state.config.maxHistoryEntries > 0) {
-					const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
-					if (p > 0) log.debug("Run history pruned", { pruned: p });
-				}
+				pruneHistoryIfNeeded(state, ctx, log);
 
 				// Register for live monitor — chain steps now appear in the
 				// drill-in under the runId (issue #133 single identity, mirrors
-				// parallel mode's issue #119 registration).
-				state.registerLiveSubagent(runId, {
-					id: runId,
-					label: merged.label ?? `Step ${i + 1}`,
-					task: merged.task,
-					model: run.model,
-					thinkingLevel: run.thinkingLevel,
-					priority: run.priority,
-					startedAt: Date.now(),
-					ctx,
-				});
+				// parallel mode's issue #119 registration). Fall back to
+				// "Step N" when the step carries no label (liveRowName would
+				// otherwise show the truncated task).
+				registerLiveRun(state, run, ctx, merged.label ?? `Step ${i + 1}`);
 
 				// Wrap onUpdate so the live monitor sees per-step progress
 				// (mirrors parallel mode's taskOnUpdate).
@@ -711,29 +700,9 @@ export default function (pi: ExtensionAPI) {
 					// run entry as failed — crashOutput comes from the live entry's
 					// last streamed output (the crash result itself has no
 					// messages), and errorCategory is classified onto originalParams.
-					const crash = buildCrashResult("Chain step", err, resolvedCwd);
-					state.finalizeLiveSubagent(runId);
-					const crashOutput = state.subagentSessions.get(runId)?.liveOutput ?? "";
-					finalizeRunRecord(
-						run,
-						crash.details,
-						crashOutput,
-						new Date(run.startedAt).getTime(),
-					);
-					// buildCrashResult.details carries no errorCategory — classify it
-					// so the entry follows the completion path's errorCategory
-					// convention (issue #114 retry-snapshot visibility).
-					run.originalParams = {
-						...run.originalParams,
-						errorCategory: classifyError(crash.details),
-					};
-					state.persistRun(pi, run);
-					log.error("Chain step crashed", {
+					finalizeUnitRunCrash(state, pi, run, err, "Chain step", resolvedCwd, log, {
 						step: i + 1,
-						runId,
-						error: crash.details.errorMessage,
 					});
-					throw err;
 				}
 
 				// Issue #133: finalize the per-step run entry — status, duration,
@@ -1121,23 +1090,11 @@ export default function (pi: ExtensionAPI) {
 			state.persistRun(pi, run);
 
 			// R2: Prune old run entries if history exceeds limit
-			if (state.config.maxHistoryEntries > 0) {
-				const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
-				if (p > 0) log.debug("Run history pruned", { pruned: p });
-			}
+			pruneHistoryIfNeeded(state, ctx, log);
 
 			// Register for live monitor — parallel subtasks now appear in the
 			// drill-in with their per-unit priority (issue #119).
-			state.registerLiveSubagent(runId, {
-				id: runId,
-				label: merged.label,
-				task: merged.task,
-				model: run.model,
-				thinkingLevel: run.thinkingLevel,
-				priority: run.priority,
-				startedAt: Date.now(),
-				ctx,
-			});
+			registerLiveRun(state, run, ctx);
 
 			log.debug("Parallel subtask run registered", { runId, index });
 
@@ -1216,29 +1173,9 @@ export default function (pi: ExtensionAPI) {
 				// the live drill-in loops forever. finalizeLiveSubagent is
 				// idempotent; the rethrow keeps Promise.allSettled semantics (the
 				// caller's finally still releases the concurrency slot).
-				const result = buildCrashResult("Parallel subtask", err, resolvedCwd);
-				state.finalizeLiveSubagent(runId);
-				const crashOutput = state.subagentSessions.get(runId)?.liveOutput ?? "";
-				finalizeRunRecord(
-					run,
-					result.details,
-					crashOutput,
-					new Date(run.startedAt).getTime(),
-				);
-				// buildCrashResult.details carries no errorCategory — classify it
-				// so the entry follows the completion path's errorCategory
-				// convention (issue #114 retry-snapshot visibility).
-				run.originalParams = {
-					...run.originalParams,
-					errorCategory: classifyError(result.details),
-				};
-				state.persistRun(pi, run);
-				log.error("Parallel subtask crashed", {
-					runId,
+				finalizeUnitRunCrash(state, pi, run, err, "Parallel subtask", resolvedCwd, log, {
 					index,
-					error: result.details.errorMessage,
 				});
-				throw err;
 			}
 
 			// Emit progress update
@@ -1732,10 +1669,7 @@ export default function (pi: ExtensionAPI) {
 					state.persistRun(pi, run);
 
 					// R2: Prune old run entries if history exceeds limit
-					if (state.config.maxHistoryEntries > 0) {
-						const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
-						if (p > 0) log.debug("Run history pruned", { pruned: p });
-					}
+					pruneHistoryIfNeeded(state, ctx, log);
 
 					// Register for live monitor — graph nodes now appear in the
 					// drill-in under the runId with their per-unit priority
@@ -1744,16 +1678,7 @@ export default function (pi: ExtensionAPI) {
 					// is host-global, so raw graph-task ids would collide across
 					// concurrent graph runs (the intercom namespace is per-run and
 					// stays untouched).
-					state.registerLiveSubagent(runId, {
-						id: runId,
-						label: merged.label,
-						task: merged.task,
-						model: run.model,
-						thinkingLevel: run.thinkingLevel,
-						priority: run.priority,
-						startedAt: Date.now(),
-						ctx,
-					});
+					registerLiveRun(state, run, ctx);
 
 					let nodeSuccess = false;
 					try {
@@ -1815,29 +1740,9 @@ export default function (pi: ExtensionAPI) {
 						// finalizeLiveSubagent is idempotent; the rethrow keeps
 						// Promise.allSettled semantics (a failing node must NOT cancel
 						// sibling nodes in the wave).
-						const crash = buildCrashResult("Graph node", err, resolvedCwd);
-						state.finalizeLiveSubagent(runId);
-						const crashOutput = state.subagentSessions.get(runId)?.liveOutput ?? "";
-						finalizeRunRecord(
-							run,
-							crash.details,
-							crashOutput,
-							new Date(run.startedAt).getTime(),
-						);
-						// buildCrashResult.details carries no errorCategory — classify it
-						// so the entry follows the completion path's errorCategory
-						// convention (issue #114 retry-snapshot visibility).
-						run.originalParams = {
-							...run.originalParams,
-							errorCategory: classifyError(crash.details),
-						};
-						state.persistRun(pi, run);
-						log.error("Graph node crashed", {
+						finalizeUnitRunCrash(state, pi, run, err, "Graph node", resolvedCwd, log, {
 							id: graphTask.id,
-							runId,
-							error: crash.details.errorMessage,
 						});
-						throw err;
 					} finally {
 						releaseSlot(state, nodeSuccess, ctx);
 					}
@@ -3110,22 +3015,10 @@ export default function (pi: ExtensionAPI) {
 			state.persistRun(pi, run);
 
 			// R2: Prune old run entries if history exceeds limit
-			if (state.config.maxHistoryEntries > 0) {
-				const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
-				if (p > 0) log.debug("Run history pruned", { pruned: p });
-			}
+			pruneHistoryIfNeeded(state, ctx, log);
 
 			// Register for live monitor
-			state.registerLiveSubagent(runId, {
-				id: runId,
-				label,
-				task,
-				model: run.model,
-				thinkingLevel,
-				priority: params.priority,
-				startedAt: Date.now(),
-				ctx,
-			});
+			registerLiveRun(state, run, ctx);
 
 			// P3: Git integration — set up work branch if gitMode is "branch"
 			let originalBranch: string | undefined;
@@ -3408,10 +3301,7 @@ export default function (pi: ExtensionAPI) {
 				state.persistRun(pi, run);
 
 				// R2: Prune old run entries
-				if (state.config.maxHistoryEntries > 0) {
-					const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
-					if (p > 0) log.debug("Run history pruned", { pruned: p });
-				}
+				pruneHistoryIfNeeded(state, ctx, log);
 
 				// Finalize live monitor
 				state.finalizeLiveSubagent(runId);

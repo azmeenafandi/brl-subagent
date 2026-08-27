@@ -9,8 +9,10 @@
  * single generic log inside finalizeUnitRun).
  *
  * The crash paths (buildCrashResult + finalizeLiveSubagent + finalizeRunRecord
- * + classify + persistRun + rethrow) and single mode's record block are NOT
- * extracted here — their labels and rethrow semantics differ.
+ * + classify + persistRun + rethrow) are extracted as finalizeUnitRunCrash;
+ * the per-unit live registration and the history prune are extracted as
+ * registerLiveRun and pruneHistoryIfNeeded. Single mode's record creation
+ * block and the background/retry registration paths remain in index.ts.
  */
 
 import type {
@@ -25,9 +27,9 @@ import type {
 	SubagentToolOptions,
 	Priority,
 } from "./types";
-import { getFinalOutput } from "./types";
+import { getFinalOutput, classifyError } from "./types";
 import { snapshotOriginalParams } from "./params";
-import { capOutput, stripAnsi } from "./sanitize";
+import { capOutput, stripAnsi, buildCrashResult } from "./sanitize";
 import { finalizeRunRecord, pruneSessionRuns } from "./history";
 import type { Logger } from "./logging";
 import { SessionState } from "./state";
@@ -161,10 +163,107 @@ export function finalizeUnitRun(
 	finalizeRunRecord(run, result, finalOutput, new Date(run.startedAt).getTime());
 	run.originalParams = { ...run.originalParams, errorCategory: result.errorCategory };
 	state.persistRun(pi, run);
+	pruneHistoryIfNeeded(state, ctx, log);
+	state.finalizeLiveSubagent(run.id);
+	log.debug("Unit run finalized", { runId: run.id, status: run.status });
+}
+
+// ---------------------------------------------------------------------------
+// finalizeUnitRunCrash
+// ---------------------------------------------------------------------------
+
+/**
+ * Finalize a per-unit run entry on the crash path and rethrow the original
+ * error (returns `never`). Single-source for the near-identical crash blocks
+ * that chain/parallel/graph modes each duplicated: build the crash result,
+ * release the live entry, land the failure + classified errorCategory on the
+ * record, persist it, log the mode-specific failure, and rethrow so the
+ * caller's outer catch/`finally` semantics are preserved.
+ *
+ * `modeLabel` is the human label ("Chain step", "Parallel subtask", "Graph
+ * node"); `logContext` carries the mode-specific context fields (chain passes
+ * the step index, parallel passes the task index, graph passes the node id)
+ * spread into the log call alongside runId/error.
+ */
+export function finalizeUnitRunCrash(
+	state: SessionState,
+	pi: ExtensionAPI,
+	run: SubagentRun,
+	err: unknown,
+	modeLabel: string,
+	resolvedCwd: string,
+	log: Logger,
+	logContext?: Record<string, unknown>,
+): never {
+	const crash = buildCrashResult(modeLabel, err, resolvedCwd);
+	state.finalizeLiveSubagent(run.id);
+	const crashOutput = state.subagentSessions.get(run.id)?.liveOutput ?? "";
+	finalizeRunRecord(run, crash.details, crashOutput, new Date(run.startedAt).getTime());
+	// buildCrashResult.details carries no errorCategory — classify it
+	// so the entry follows the completion path's errorCategory
+	// convention (issue #114 retry-snapshot visibility).
+	run.originalParams = {
+		...run.originalParams,
+		errorCategory: classifyError(crash.details),
+	};
+	state.persistRun(pi, run);
+	log.error(`${modeLabel} crashed`, {
+		...logContext,
+		runId: run.id,
+		error: crash.details.errorMessage,
+	});
+	throw err;
+}
+
+// ---------------------------------------------------------------------------
+// pruneHistoryIfNeeded
+// ---------------------------------------------------------------------------
+
+/**
+ * Prune persisted run history when `maxHistoryEntries` is configured, logging
+ * the count when any entries are removed. Single-source for the identical
+ * prune block that chain/parallel/graph/single modes each repeated.
+ */
+export function pruneHistoryIfNeeded(
+	state: SessionState,
+	ctx: ExtensionContext,
+	log: Logger,
+): void {
 	if (state.config.maxHistoryEntries > 0) {
 		const p = pruneSessionRuns(ctx, state.config.maxHistoryEntries);
 		if (p > 0) log.debug("Run history pruned", { pruned: p });
 	}
-	state.finalizeLiveSubagent(run.id);
-	log.debug("Unit run finalized", { runId: run.id, status: run.status });
+}
+
+// ---------------------------------------------------------------------------
+// registerLiveRun
+// ---------------------------------------------------------------------------
+
+/**
+ * Register a per-unit run in the live monitor from its `SubagentRun` entry.
+ * label/task/model/thinkingLevel/priority and startedAt (converted to epoch ms
+ * for the LiveSubagent shape) all derive from the record, so the registration
+ * is single-source. `run.startedAt` is used as the live timestamp (more
+ * correct than `Date.now()` at registration; display-identical).
+ *
+ * `labelOverride` supplies the live entry's label when the caller wants one
+ * that differs from `run.label` (e.g. chain's unlabeled-step fallback).
+ * When omitted the live label defaults to `run.label`.
+ */
+export function registerLiveRun(
+	state: SessionState,
+	run: SubagentRun,
+	ctx: ExtensionContext,
+	labelOverride?: string,
+): void {
+	state.registerLiveSubagent(run.id, {
+		id: run.id,
+		label: labelOverride ?? run.label,
+		task: run.task,
+		model: run.model,
+		thinkingLevel: run.thinkingLevel,
+		priority: run.priority,
+		startedAt: new Date(run.startedAt).getTime(),
+		ctx,
+	});
 }
