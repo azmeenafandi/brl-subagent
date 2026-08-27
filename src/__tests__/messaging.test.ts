@@ -8,7 +8,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
 	Intercom,
 	extractMessages,
-	stripMessageLines,
 	formatPendingMessages,
 	TO_PATTERN,
 	type Message,
@@ -281,56 +280,6 @@ describe("extractMessages", () => {
 		expect(msgs).toHaveLength(1);
 		expect(msgs[0].target).toBe("agent-3");
 		expect(msgs[0].content).toBe("spaced message");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// stripMessageLines tests
-// ---------------------------------------------------------------------------
-
-describe("stripMessageLines", () => {
-	it("removes [TO:...] lines from output", () => {
-		const output = [
-			"## Summary",
-			"[TO:agent-2]:Found a bug",
-			"Normal text here.",
-			"[TO:*]:Broadcast",
-			"More text.",
-		].join("\n");
-		const result = stripMessageLines(output);
-		expect(result).not.toContain("[TO:");
-		expect(result).toContain("## Summary");
-		expect(result).toContain("Normal text here.");
-		expect(result).toContain("More text.");
-	});
-
-	it("preserves output without TO patterns", () => {
-		const output = "No messages.\nJust text.";
-		const result = stripMessageLines(output);
-		expect(result).toBe(output);
-	});
-
-	it("handles empty output", () => {
-		const result = stripMessageLines("");
-		expect(result).toBe("");
-	});
-
-	it("strips a standalone message line but KEEPS prose that merely mentions the format mid-sentence", () => {
-		const output = [
-			"Prose that says: [TO:agent-2]:this is not a message line.",
-			"[TO:agent-2]:this IS a message line",
-			"Normal text.",
-		].join("\n");
-		const result = stripMessageLines(output);
-		expect(result).toContain("[TO:agent-2]:this is not a message line.");
-		expect(result).not.toContain("[TO:agent-2]:this IS a message line");
-		expect(result).toContain("Normal text.");
-	});
-
-	it("strips multiple consecutive standalone message lines (no lastIndex leak)", () => {
-		const output = "[TO:agent-2]:short\n[TO:agent-3]:a much longer message here";
-		const result = stripMessageLines(output);
-		expect(result).toBe("");
 	});
 });
 

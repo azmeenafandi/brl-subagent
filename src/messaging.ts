@@ -30,9 +30,8 @@ export interface Message {
  * with "[TO:" are matched — a mid-sentence mention (e.g. "append
  * [TO:target]:msg ...") is NOT treated as a message.
  *
- * Not global: extractMessages builds its own stateful /g instance, and
- * stripMessageLines relies on the stateless .test() to avoid lastIndex
- * leaks between lines.
+ * Not global: extractMessages builds its own stateful /g instance to
+ * avoid lastIndex leaks between calls.
  *
  * Group 1 = target id or "*"
  * Group 2 = message content (rest of line after colon, trimmed by caller)
@@ -152,17 +151,6 @@ export function extractMessages(
 		});
 	}
 	return results;
-}
-
-/**
- * Remove [TO:...] lines from the output so they don't appear in the
- * conductor's view of the result.
- */
-export function stripMessageLines(output: string): string {
-	return output
-		.split("\n")
-		.filter((line) => !TO_PATTERN.test(line.trim()))
-		.join("\n");
 }
 
 /**
