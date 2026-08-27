@@ -27,7 +27,7 @@ export const SUBAGENT_INSTRUCTIONS =
 	"\n\n" +
 	"If your task is complex and can be broken into independent sub-tasks, you may use delegate_task to spawn sub-subagents. Follow these rules: delegate only truly independent work, set labels for each sub-subagent, use appropriate thinking levels for simplicity, and collect all results before reporting. Do NOT create chains of more than 2 levels deep without explicit user approval. If you delegate, mention it in your summary." +
 	"\n\n" +
-	"If you are running alongside other subagents and need to share findings, you can send messages using the format: [TO:subagent-id]:your message. Use [TO:*]:message to broadcast to all subagents. Messages are delivered after you complete and before the recipient starts. Use subagent labels (from the task description) as IDs. Keep messages concise and actionable." +
+	"If you are running alongside other subagents and need to share findings, you can send messages using the format: [TO:subagent-id]:your message. Use [TO:*]:message to broadcast to all subagents. Messages are delivered after you complete and before the recipient starts. Use subagent labels (from the task description) as IDs. Keep messages concise and actionable. The [TO:...]: line must be a STANDALONE line (its own line, not quoted mid-sentence) — a [TO:...]: quote embedded in a sentence is NOT sent." +
 	"\n\n" +
 	"## Configuration Detection\n\n" +
 	"If you detect that your tools or thinking level are insufficient for the task:\n" +
