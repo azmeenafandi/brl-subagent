@@ -470,4 +470,43 @@ describe("registerLiveRun", () => {
 		const live = state.subagentSessions.get(run.id)!;
 		expect(live.startedAt).toBe(new Date(run.startedAt).getTime());
 	});
+
+	it("uses the labelOverride (not run.label) when supplied", () => {
+		const state = createSessionState();
+		const ctx = {} as ExtensionContext;
+		const run: SubagentRun = {
+			id: "live-reg-3",
+			task: "t",
+			status: "running",
+			model: "provider/model",
+			thinkingLevel: "low",
+			startedAt: "2023-06-15T10:20:30.000Z",
+			originalParams: {},
+		};
+
+		registerLiveRun(state, run, ctx, "Step 1");
+
+		const live = state.subagentSessions.get(run.id)!;
+		expect(live.label).toBe("Step 1");
+	});
+
+	it("falls back to run.label when the labelOverride is absent", () => {
+		const state = createSessionState();
+		const ctx = {} as ExtensionContext;
+		const run: SubagentRun = {
+			id: "live-reg-4",
+			task: "t",
+			label: "unit-b",
+			status: "running",
+			model: "provider/model",
+			thinkingLevel: "low",
+			startedAt: "2023-06-15T10:20:30.000Z",
+			originalParams: {},
+		};
+
+		registerLiveRun(state, run, ctx);
+
+		const live = state.subagentSessions.get(run.id)!;
+		expect(live.label).toBe("unit-b");
+	});
 });

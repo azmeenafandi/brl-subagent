@@ -664,8 +664,10 @@ export default function (pi: ExtensionAPI) {
 
 				// Register for live monitor — chain steps now appear in the
 				// drill-in under the runId (issue #133 single identity, mirrors
-				// parallel mode's issue #119 registration).
-				registerLiveRun(state, run, ctx);
+				// parallel mode's issue #119 registration). Fall back to
+				// "Step N" when the step carries no label (liveRowName would
+				// otherwise show the truncated task).
+				registerLiveRun(state, run, ctx, merged.label ?? `Step ${i + 1}`);
 
 				// Wrap onUpdate so the live monitor sees per-step progress
 				// (mirrors parallel mode's taskOnUpdate).

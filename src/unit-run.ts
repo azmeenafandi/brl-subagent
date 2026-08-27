@@ -245,15 +245,20 @@ export function pruneHistoryIfNeeded(
  * for the LiveSubagent shape) all derive from the record, so the registration
  * is single-source. `run.startedAt` is used as the live timestamp (more
  * correct than `Date.now()` at registration; display-identical).
+ *
+ * `labelOverride` supplies the live entry's label when the caller wants one
+ * that differs from `run.label` (e.g. chain's unlabeled-step fallback).
+ * When omitted the live label defaults to `run.label`.
  */
 export function registerLiveRun(
 	state: SessionState,
 	run: SubagentRun,
 	ctx: ExtensionContext,
+	labelOverride?: string,
 ): void {
 	state.registerLiveSubagent(run.id, {
 		id: run.id,
-		label: run.label,
+		label: labelOverride ?? run.label,
 		task: run.task,
 		model: run.model,
 		thinkingLevel: run.thinkingLevel,
