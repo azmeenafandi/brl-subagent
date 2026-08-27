@@ -352,10 +352,12 @@ describe("classifyError", () => {
 	});
 
 	it("still returns 'timeout' for a message that mentions aborted but is a timeout (issue #120 Track 1)", () => {
-		// The deadline message 'Timed out after Xms' is the background timeout
-		// stamp — it must stay 'timeout' (timeout is checked before aborted).
+		// The message MUST contain BOTH the timeout stamp and the "aborted by"
+		// substring to exercise the ordering: 'timed out' is checked before the
+		// aborted check in classifyError, so a message that mentions both must
+		// still classify as 'timeout' — this is what proves the ordering.
 		expect(
-			classifyError(makeResult({ errorMessage: "Timed out after 5000ms" })),
+			classifyError(makeResult({ errorMessage: "Timed out after 5000ms — aborted by user" })),
 		).toBe("timeout");
 	});
 

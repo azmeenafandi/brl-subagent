@@ -28,6 +28,7 @@ import {
 	TEMP_FILE_MODE,
 	MAX_TEMP_DIR_AGE_MS,
 	classifyError,
+	SUBAGENT_ABORTED_MESSAGE,
 } from "./types";
 import { getSafeEnv, DEPTH_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
@@ -215,7 +216,7 @@ function attachAbortHandler(
 		// stamped message + category survive the classifyError re-run at the tail
 		// of runSubagent (the "aborted" pattern) — before this, the abort was a
 		// blind kill with no result access at all.
-		result.errorMessage = "Subagent aborted by user";
+		result.errorMessage = SUBAGENT_ABORTED_MESSAGE;
 		result.errorCategory = "aborted";
 		proc.kill("SIGTERM");
 		setTimeout(() => {

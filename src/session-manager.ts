@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats } from './types';
-import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError } from './types';
+import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -811,7 +811,16 @@ export async function spawnBackgroundSession(
       // record's terminal state — the catch-all fires on ANY settle-handler
       // throw, so hardcoding 'failed' would mislabel a run whose completion
       // branch already flipped the agent to 'completed'.
-      finalizeRunEntry(agent.status === 'completed' ? 'done' : 'failed', agent.error);
+      // Issue #120 (Review round): the catch-all fires when a settle handler
+      // threw — possibly BEFORE the branch's own stamp. A user-cancel whose
+      // abort branch never reached its stamped finalize would otherwise record
+      // an EMPTY errorMessage and NO errorCategory. Mirror the stamped paths
+      // with the honest user-abort fallback so no path is left without a
+      // category.
+      finalizeRunEntry(
+        agent.status === 'completed' ? 'done' : 'failed',
+        agent.error ?? SUBAGENT_ABORTED_MESSAGE,
+      );
       // Issue #31: the live session ref must not survive terminal paths —
       // including this catch-all, which fires when a settle handler throws.
       agent._sessionRef = undefined;
@@ -922,7 +931,7 @@ export async function spawnBackgroundSession(
         // (stop_subagent) sets no error, so fall back to the honest user-abort
         // stamp (→ 'aborted') instead of the old ambiguous 'Aborted or timed out'.
         recordSessionUsage();
-        finalizeRunEntry('failed', agent.error ?? 'Subagent aborted by user');
+        finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE);
         // Issue #31: capture the final output while the session is still
         // live, then release the ref on the terminal path (memory retention;
         // the poller treats a nulled ref on a terminal agent as expected).
@@ -1000,7 +1009,7 @@ export async function spawnBackgroundSession(
         // agent.error ('Timed out...' → 'timeout'); a user cancel has no error
         // and stamps 'Subagent aborted by user' (→ 'aborted').
         recordSessionUsage();
-        finalizeRunEntry('failed', agent.error ?? 'Subagent aborted by user');
+        finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE);
         // Issue #31: the stopped path is terminal too — capture + release.
         captureAndReleaseSession();
         transcript.completeTranscript(id, 'stopped');
