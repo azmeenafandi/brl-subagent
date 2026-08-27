@@ -33,7 +33,7 @@ import {
 import { getSafeEnv, DEPTH_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
-import { extractMessages, stripMessageLines, formatPendingMessages } from "./messaging";
+import { extractMessages, formatPendingMessages } from "./messaging";
 import type {
 	TranscriptMessage,
 	TranscriptContentBlock,
