@@ -21,14 +21,23 @@ export interface Message {
 // ---------------------------------------------------------------------------
 
 /**
- * Matches lines like:
+ * Matches standalone lines like:
  *   [TO:agent-id]:some message text
  *   [TO:*]:broadcast message text
  *
+ * Anchored to the line start (with optional leading whitespace) using the
+ * multiline flag, so ONLY standalone lines whose trimmed content begins
+ * with "[TO:" are matched — a mid-sentence mention (e.g. "append
+ * [TO:target]:msg ...") is NOT treated as a message.
+ *
+ * Not global: extractMessages builds its own stateful /g instance, and
+ * stripMessageLines relies on the stateless .test() to avoid lastIndex
+ * leaks between lines.
+ *
  * Group 1 = target id or "*"
- * Group 2 = message content (rest of line after colon)
+ * Group 2 = message content (rest of line after colon, trimmed by caller)
  */
-export const TO_PATTERN = /\[TO:([^*\]]+|\*)\]:([^\n]+)/g;
+export const TO_PATTERN = /^\s*\[TO:([^*\]]+|\*)\]:([^\n]+)/m;
 
 // ---------------------------------------------------------------------------
 // Intercom class
@@ -134,7 +143,7 @@ export function extractMessages(
 	output: string,
 ): Array<{ target: string; content: string }> {
 	const results: Array<{ target: string; content: string }> = [];
-	const regex = new RegExp(TO_PATTERN.source, "g");
+	const regex = new RegExp(TO_PATTERN.source, `${TO_PATTERN.flags}g`);
 	let match: RegExpExecArray | null;
 	while ((match = regex.exec(output)) !== null) {
 		results.push({

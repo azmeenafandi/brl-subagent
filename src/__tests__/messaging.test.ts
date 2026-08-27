@@ -246,6 +246,42 @@ describe("extractMessages", () => {
 		const msgs = extractMessages("");
 		expect(msgs).toHaveLength(0);
 	});
+
+	it("does NOT extract a mid-sentence [TO:...] mention", () => {
+		const output = "Please append [TO:agent-2]:Found a bug to your reply.";
+		const msgs = extractMessages(output);
+		expect(msgs).toHaveLength(0);
+	});
+
+	it("does NOT extract a quoted instruction with [TO:...] mid-sentence (issue #129 repro)", () => {
+		// A subagent quoting its own instructions: [TO:] appears mid-sentence,
+		// not as a standalone line — must NOT be extracted.
+		const output = "append [TO:inv-logs]: the one-line verdict as the final line.";
+		const msgs = extractMessages(output);
+		expect(msgs).toHaveLength(0);
+	});
+
+	it("extracts standalone message lines even when surrounded by prose and blank lines", () => {
+		const output = [
+			"Here is my summary.",
+			"",
+			"[TO:agent-2]:This is the real message",
+			"",
+			"Closing note.",
+		].join("\n");
+		const msgs = extractMessages(output);
+		expect(msgs).toHaveLength(1);
+		expect(msgs[0].target).toBe("agent-2");
+		expect(msgs[0].content).toBe("This is the real message");
+	});
+
+	it("extracts indented standalone lines and trims the content", () => {
+		const output = "  [TO:agent-3]:  spaced message  ";
+		const msgs = extractMessages(output);
+		expect(msgs).toHaveLength(1);
+		expect(msgs[0].target).toBe("agent-3");
+		expect(msgs[0].content).toBe("spaced message");
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -276,6 +312,24 @@ describe("stripMessageLines", () => {
 
 	it("handles empty output", () => {
 		const result = stripMessageLines("");
+		expect(result).toBe("");
+	});
+
+	it("strips a standalone message line but KEEPS prose that merely mentions the format mid-sentence", () => {
+		const output = [
+			"Prose that says: [TO:agent-2]:this is not a message line.",
+			"[TO:agent-2]:this IS a message line",
+			"Normal text.",
+		].join("\n");
+		const result = stripMessageLines(output);
+		expect(result).toContain("[TO:agent-2]:this is not a message line.");
+		expect(result).not.toContain("[TO:agent-2]:this IS a message line");
+		expect(result).toContain("Normal text.");
+	});
+
+	it("strips multiple consecutive standalone message lines (no lastIndex leak)", () => {
+		const output = "[TO:agent-2]:short\n[TO:agent-3]:a much longer message here";
+		const result = stripMessageLines(output);
 		expect(result).toBe("");
 	});
 });
@@ -328,5 +382,15 @@ describe("TO_PATTERN regex", () => {
 	it("does not match without bracket format", () => {
 		const match = "TO:agent-2:Hello".match(TO_PATTERN);
 		expect(match).toBeNull();
+	});
+
+	it("does not match a mid-sentence mention (anchored to the line start)", () => {
+		const match = "Please append [TO:agent-2]:Hello to your reply".match(TO_PATTERN);
+		expect(match).toBeNull();
+	});
+
+	it("matches a standalone line with leading whitespace", () => {
+		const match = "  [TO:agent-2]:Hello".match(TO_PATTERN);
+		expect(match).not.toBeNull();
 	});
 });
