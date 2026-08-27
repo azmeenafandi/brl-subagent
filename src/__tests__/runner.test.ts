@@ -17,7 +17,7 @@ vi.mock("node:child_process", () => ({
 	spawn: mocks.spawn,
 }));
 
-import { runSubagent, getPiInvocation, parseSubagentLine, toTranscriptMessage, LIVE_TRANSCRIPT_MAX_MESSAGES, LIVE_TRANSCRIPT_MAX_BYTES } from "../runner";
+import { runSubagent, getPiInvocation, parseSubagentLine, toTranscriptMessage, enrichFailureDiagnostics, LIVE_TRANSCRIPT_MAX_MESSAGES, LIVE_TRANSCRIPT_MAX_BYTES } from "../runner";
 import { wrapTask } from "../prompt";
 import type { SubagentResult } from "../types";
 
@@ -466,5 +466,169 @@ describe("parseSubagentLine message_update capture (issue #105)", () => {
 		expect(toTranscriptMessage({ role: "user", content: "plain" })).toEqual({
 			role: "user",
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #120 (Track 1): abort-source stamping on the SIGTERM kill path
+// ---------------------------------------------------------------------------
+// The foreground abort handler previously killed blind (no result access); a
+// user-cancel/stop_subagent run recorded an empty errorMessage and classified
+// as 'unknown' — indistinguishable from a provider failure. The handler now
+// stamps errorMessage + errorCategory BEFORE the kill.
+
+describe("runSubagent abort-source stamping (issue #120 Track 1)", () => {
+	it("stamps errorMessage+errorCategory on the result before the SIGTERM kill", async () => {
+		const controller = new AbortController();
+		controller.abort(); // already aborted -> attachAbortHandler kills immediately
+		const killSpy = vi.fn();
+		const proc = {
+			stdout: { on: vi.fn() },
+			stderr: { on: vi.fn() },
+			on: vi.fn((event: string, cb: (code?: number) => void) => {
+				// Aborted process exits non-zero (real SIGTERM -> 143); the honest
+				// category must survive the classifyError re-run at the tail.
+				if (event === "close") cb(1);
+				return proc;
+			}),
+			kill: killSpy,
+		};
+		mocks.spawn.mockReturnValue(proc as never);
+
+		const result = await runSubagent(
+			"/tmp/cwd",
+			"sp",
+			{ provider: "test", id: "m" },
+			"medium",
+			"task",
+			controller.signal,
+			undefined,
+			undefined,
+			undefined,
+			() => "",
+		);
+
+		// The kill happened and the stamp landed BEFORE it (classifyError at the
+		// tail re-runs AFTER the kill/close and keeps the stamped 'aborted' — a
+		// non-zero exitCode would otherwise clobber it back to exit_error).
+		expect(killSpy).toHaveBeenCalledWith("SIGTERM");
+		expect(result.errorMessage).toBe("Subagent aborted by user");
+		expect(result.errorCategory).toBe("aborted");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #120 (Track 2): provider-status diagnostics fallback
+// ---------------------------------------------------------------------------
+// RECON: the raw HTTP status behind "Connection error." is NOT a separate field
+// on the message_end payload (pi folds status+body into errorMessage, and a
+// pure connection error carries no status at all). So capture the available
+// self-diagnostic datums: the model-error turn count (the "N strikes" signal)
+// appended to the failure record's errorMessage.
+
+describe("enrichFailureDiagnostics (issue #120 Track 2)", () => {
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+
+	it("appends the model-error turn count when error turns are present", () => {
+		const result: SubagentResult = {
+			messages: [
+				{ role: "user", content: "task" },
+				{ role: "assistant", stopReason: "error", errorMessage: "Connection error." },
+				{ role: "assistant", stopReason: "error", errorMessage: "Connection error." },
+			],
+			usage,
+			exitCode: 1,
+			stderr: "",
+			errorMessage: "Connection error.",
+		};
+		enrichFailureDiagnostics(result, "/tmp/cwd");
+		expect(result.errorMessage).toBe("Connection error. (after 2 provider error turns)");
+	});
+
+	it("pluralizes the turn count", () => {
+		const result: SubagentResult = {
+			messages: [
+				{ role: "assistant", stopReason: "error", errorMessage: "HTTP 429" },
+			],
+			usage,
+			exitCode: 1,
+			stderr: "",
+			errorMessage: "HTTP 429",
+		};
+		enrichFailureDiagnostics(result);
+		expect(result.errorMessage).toBe("HTTP 429 (after 1 provider error turn)");
+	});
+
+	it("leaves a non-provider error untouched (no error turns)", () => {
+		const result: SubagentResult = {
+			messages: [{ role: "user", content: "task" }],
+			usage,
+			exitCode: 1,
+			stderr: "",
+			errorMessage: "spawn pi ENOENT",
+		};
+		enrichFailureDiagnostics(result);
+		expect(result.errorMessage).toBe("spawn pi ENOENT");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #120 (Track 2): the fallback flows end-to-end through parseSubagentLine
+// ---------------------------------------------------------------------------
+
+describe("parseSubagentLine provider-error fallback (issue #120 Track 2)", () => {
+	it("captures the turn-count context summary on the run record via runSubagent", async () => {
+		let dataCb: ((d: Buffer) => void) | undefined;
+		let closeCb: ((code?: number) => void) | undefined;
+		const proc = {
+			stdout: {
+				on: vi.fn((event: string, cb: (d: Buffer) => void) => {
+					if (event === "data") dataCb = cb;
+					return proc;
+				}),
+			},
+			stderr: { on: vi.fn() },
+			on: vi.fn((event: string, cb: (code?: number) => void) => {
+				if (event === "close") closeCb = cb;
+				return proc;
+			}),
+			kill: vi.fn(),
+		};
+		mocks.spawn.mockReturnValue(proc as never);
+
+		const me = (text: string, errorMessage: string): string =>
+			JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text }],
+					stopReason: "error",
+					errorMessage,
+				},
+			});
+		const promise = runSubagent(
+			"/tmp/cwd",
+			"",
+			{ provider: "test", id: "m" },
+			"medium",
+			"task",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			() => "",
+		);
+
+		// Three provider-error "strikes" (message_end) — the classic Class 1
+		// signal that a run failed provider-side, not by our own kill.
+		dataCb?.(Buffer.from(me("strike 1", "Connection error.") + "\n"));
+		dataCb?.(Buffer.from(me("strike 2", "Connection error.") + "\n"));
+		dataCb?.(Buffer.from(me("strike 3", "Connection error.") + "\n"));
+		closeCb?.(1);
+
+		const result = await promise;
+		expect(result.errorMessage).toBe("Connection error. (after 3 provider error turns)");
+		// The diagnostic survives onto the reclassified record.
+		expect(result.errorCategory).toBe("exit_error");
 	});
 });

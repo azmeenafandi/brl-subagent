@@ -335,9 +335,29 @@ describe("classifyError", () => {
 		expect(classifyError(makeResult({ stopReason: "aborted" }))).toBe("aborted");
 	});
 
+	it("returns 'aborted' for the aborted-by-user error message (issue #120 Track 1)", () => {
+		// The abort handler stamps this message BEFORE the SIGTERM; the tail of
+		// runSubagent re-runs classifyError, which must keep the stamped category
+		// instead of clobbering it with exitError/unknown (the dead-process signal).
+		// Non-zero exitCode must NOT override the honest abort category.
+		expect(
+			classifyError(makeResult({ errorMessage: "Subagent aborted by user", exitCode: 1 })),
+		).toBe("aborted");
+	});
+
 	it("returns 'timeout' for timed out error message", () => {
 		expect(
 			classifyError(makeResult({ errorMessage: "Subagent timed out after 30000ms" })),
+		).toBe("timeout");
+	});
+
+	it("still returns 'timeout' for a message that mentions aborted but is a timeout (issue #120 Track 1)", () => {
+		// The message MUST contain BOTH the timeout stamp and the "aborted by"
+		// substring to exercise the ordering: 'timed out' is checked before the
+		// aborted check in classifyError, so a message that mentions both must
+		// still classify as 'timeout' — this is what proves the ordering.
+		expect(
+			classifyError(makeResult({ errorMessage: "Timed out after 5000ms — aborted by user" })),
 		).toBe("timeout");
 	});
 

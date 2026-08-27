@@ -40,6 +40,13 @@ export type ErrorCategory =
 	| "crash"
 	| "unknown";
 
+// Issue #120 (Review round): single source of truth for the user-abort stamp.
+// Used by the abort handler (runner.ts), the stopped/aborted settlement paths
+// and the settle-handler catch-all (session-manager.ts), and matched (via its
+// distinctive "aborted by user" substring) by classifyError below. Keep the
+// literal in sync with classifyError — do NOT reword one without the other.
+export const SUBAGENT_ABORTED_MESSAGE = "Subagent aborted by user";
+
 /**
  * Classify a subagent result into an error category based on its errorMessage,
  * stopReason, exitCode, and stderr content. Inspects patterns in priority order.
@@ -51,6 +58,17 @@ export function classifyError(result: SubagentResult): ErrorCategory {
 	const err = (result.stderr ?? "").toLowerCase();
 
 	if (msg.includes("timed out")) return "timeout";
+
+	// Issue #120 (Track 1): an abort stamp written BEFORE a kill (the abort
+	// handler) carries the honest source in errorMessage (SUBAGENT_ABORTED_MESSAGE,
+	// "Subagent aborted by user"). classifyError can't infer an abort from a dead
+	// process — the exitCode is just non-zero — so the stamped message must
+	// survive reclassification. Matched on the EXACT stamped substring here so a
+	// provider-side "stream aborted" is not misclassified as our user-abort (and
+	// skips Track-2 enrichment); keep this substring in sync with
+	// SUBAGENT_ABORTED_MESSAGE. The stamped category is preserved so it is not
+	// clobbered by the exitError/unknown fallbacks below.
+	if (msg.includes("aborted by user")) return "aborted";
 
 	if (msg.includes("model not found") || msg.includes("model unavailable"))
 		return "model_unavailable";
