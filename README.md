@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.3.1 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
+**Version:** 2.3.2 · **Author:** Azmeen Afandi / Beeroo Labs · **License:** MIT
 
 ---
 
@@ -253,6 +253,14 @@ Set `background: true` to spawn the subagent as an independent session that retu
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
 
 ## Changelog
+
+### v2.3.2
+
+- **Honest termination records (issue #120):** user-cancelled and timed-out subagent runs no longer record an empty, indistinguishable failure — the kill paths stamp the abort source (`Subagent aborted by user` / `Timed out after Xms`) with honest error categories (`aborted` / `timeout`), foreground and background alike (including the catch-all path). Failure diagnostics also enrich the record with the model-error turn count. The status bar and SLA breakdown now tell the truth about how runs ended. (The dominant provider-side connection-error class is external — diagnosed and mitigated, not fixable here.)
+- **Intercom [TO:] extraction only matches standalone lines (issue #129):** subagents that quoted the message format mid-sentence no longer have their instruction-quotes extracted as real messages — the anchored pattern + sender guidance keep the E10 channel clean, verified live with the exact adversarial shape (deepseek-v4-flash emitted both quote and real line; only the real line arrived).
+- **Per-unit run-entry family complete (issue #136):** `finalizeUnitRunCrash`, `pruneHistoryIfNeeded`, and `registerLiveRun` single-source the remaining per-unit duplication — the #132 family's finish. The focused review caught and fixed a real label-fallback delta (unlabeled chain steps keep their `Step N` live label) before merge.
+- **Dead code removed (issue #141):** the unused `stripMessageLines` function, its export, and its tests.
+- **Process:** Rule 18 codified (termination triage + retry taxonomy + no time limits on implementers); every fix verified at point of use; all subagent dispatches background-by-default. 944 tests across 42 files.
 
 ### v2.3.1
 
