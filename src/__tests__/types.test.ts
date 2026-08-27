@@ -335,9 +335,27 @@ describe("classifyError", () => {
 		expect(classifyError(makeResult({ stopReason: "aborted" }))).toBe("aborted");
 	});
 
+	it("returns 'aborted' for the aborted-by-user error message (issue #120 Track 1)", () => {
+		// The abort handler stamps this message BEFORE the SIGTERM; the tail of
+		// runSubagent re-runs classifyError, which must keep the stamped category
+		// instead of clobbering it with exitError/unknown (the dead-process signal).
+		// Non-zero exitCode must NOT override the honest abort category.
+		expect(
+			classifyError(makeResult({ errorMessage: "Subagent aborted by user", exitCode: 1 })),
+		).toBe("aborted");
+	});
+
 	it("returns 'timeout' for timed out error message", () => {
 		expect(
 			classifyError(makeResult({ errorMessage: "Subagent timed out after 30000ms" })),
+		).toBe("timeout");
+	});
+
+	it("still returns 'timeout' for a message that mentions aborted but is a timeout (issue #120 Track 1)", () => {
+		// The deadline message 'Timed out after Xms' is the background timeout
+		// stamp — it must stay 'timeout' (timeout is checked before aborted).
+		expect(
+			classifyError(makeResult({ errorMessage: "Timed out after 5000ms" })),
 		).toBe("timeout");
 	});
 

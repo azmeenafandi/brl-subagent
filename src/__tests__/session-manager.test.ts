@@ -1490,7 +1490,40 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		const run = fakePi.appendEntry.mock.calls[1][1];
 		expect(run.id).toBe(agent.id);
 		expect(run.status).toBe("failed");
-		expect(run.errorMessage).toBe("Aborted or timed out");
+		// Issue #120 (Track 1): a user cancel now stamps the honest source instead
+		// of the old masked 'Aborted or timed out' fallback, and the run record
+		// carries the honest errorCategory (previously absent on background runs).
+		expect(run.errorMessage).toBe("Subagent aborted by user");
+		expect(run.originalParams?.errorCategory).toBe("aborted");
+	});
+
+	it("finalizes the deadline-timeout run record with errorMessage + category 'timeout' (issue #120 Track 1)", async () => {
+		// A deadline abort pre-sets agent.error with the timeout reason BEFORE the
+		// run settles (spawnBackgroundSession timeout handler). Mirror that flow:
+		// hold the prompt open, set the stopped+reason via updateAgentStatus, THEN
+		// let it settle (the real timer calls abort() which resolves the prompt).
+		let resolvePrompt!: () => void;
+		mocks.session.prompt.mockReturnValue(
+			new Promise<void>((res) => { resolvePrompt = res; }),
+		);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [], stopReason: "aborted", errorMessage: "Aborted" },
+		];
+		const { spawnBackgroundSession, updateAgentStatus } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "deadline timeout",
+		});
+		// Pre-set the deadline-timeout reason the way the timer does, BEFORE settle.
+		updateAgentStatus(agent.id, "stopped", "Timed out after 5000ms");
+		resolvePrompt();
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.status).toBe("failed");
+		expect(run.errorMessage).toBe("Timed out after 5000ms");
+		expect(run.originalParams?.errorCategory).toBe("timeout");
 	});
 
 	it("finalizes the run entry to failed when prompt() throws synchronously (review F1)", async () => {
@@ -1614,7 +1647,9 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
 		const run = fakePi.appendEntry.mock.calls[1][1];
 		expect(run.status).toBe("failed");
-		expect(run.errorMessage).toBe("Aborted or timed out");
+		// Issue #120 (Track 1): honest user-abort stamp + category (see above).
+		expect(run.errorMessage).toBe("Subagent aborted by user");
+		expect(run.originalParams?.errorCategory).toBe("aborted");
 		// Summed across both assistant turns: input 800+60, output 120+30,
 		// cacheRead 40, cacheWrite 10, cost 0.4+0.05, turns 2.
 		expect(run.cost).toBeCloseTo(0.45, 10);

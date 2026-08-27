@@ -205,8 +205,18 @@ export function accumulateUsage(
 function attachAbortHandler(
 	proc: ChildProcess,
 	signal: AbortSignal,
+	result: SubagentResult,
 ): void {
 	const killProc = () => {
+		// Issue #120 (Track 1): stamp the abort source HONESTLY before the kill so
+		// a user/cancel/stop_subagent run records an 'aborted' category instead of
+		// the masked empty-errorMessage/'unknown' that previously made our own
+		// SIGTERM indistinguishable from a provider-side failure (Class 2). The
+		// stamped message + category survive the classifyError re-run at the tail
+		// of runSubagent (the "aborted" pattern) — before this, the abort was a
+		// blind kill with no result access at all.
+		result.errorMessage = "Subagent aborted by user";
+		result.errorCategory = "aborted";
 		proc.kill("SIGTERM");
 		setTimeout(() => {
 			if (!proc.killed) proc.kill("SIGKILL");
@@ -643,6 +653,64 @@ export function parseSubagentLine(
 }
 
 // ---------------------------------------------------------------------------
+// Provider-status diagnostics (issue #120, Track 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Count the assistant turns a session produced with stopReason "error" — pi's
+ * "N strikes" signal. When a subagent burns multiple model-error turns before
+ * giving up, the failure is almost certainly provider-side (Class 1: connection
+ * / HTTP / missing-model errors) and NOT one of our kill paths (Class 2).
+ */
+function countModelErrorTurns(messages: Array<Record<string, unknown>>): number {
+	let count = 0;
+	for (const msg of messages) {
+		if (msg.role === "assistant" && msg.stopReason === "error") count++;
+	}
+	return count;
+}
+
+/**
+ * Issue #120 (Track 2): capture provider-status diagnostics at the subagent
+ * output boundary with an honest fallback.
+ *
+ * RECON (deciding fact for the fallback): the raw HTTP status behind a
+ * provider-side failure ("Connection error.") is NOT reachable as a separately
+ * queried field on the `message_end` payload. pi's OpenAI-compat stream builds
+ * the assistant `output` object as { role, content, api, provider, model,
+ * usage, stopReason, timestamp, errorMessage } — there is no `status` field. The
+ * status+body pi DOES extract is folded into the composed `errorMessage` string
+ * by `formatOpenAIResponsesError` → `formatProviderError` (e.g. "OpenAI API
+ * error (429): ..."), and a pure connection error (no extractable HTTP status)
+ * produces a bare "Connection error." with no status at all. `buildSubagentArgs`
+ * runs `--mode json` — there is no verbose/error-detail flag that would surface
+ * a richer raw error object at the boundary.
+ *
+ * So we capture the AVAILABLE self-diagnostic datums instead, appended to the
+ * failure record's errorMessage (which persists to the run record via
+ * finalizeRunRecord): the model-error turn count plus a concise failure-turn
+ * context summary. Sanitized (F7) so any URL/path the provider embedded in its
+ * error text never leaks into the main agent's context or the persisted record.
+ */
+export function enrichFailureDiagnostics(result: SubagentResult, cwd?: string): void {
+	if (!result.errorMessage) return;
+	// Track 1 already stamped an honest source (user abort / timeout) — that is
+	// authoritative and must not be overlaid with the provider-error fallback.
+	const msg = result.errorMessage.toLowerCase();
+	if (msg.includes("aborted") || msg.includes("timed out")) return;
+	const errorTurns = countModelErrorTurns(result.messages);
+	if (errorTurns === 0) return;
+
+	const suffix = ` (after ${errorTurns} provider error turn${errorTurns > 1 ? "s" : ""})`;
+	// Do not double-append if the enrichment already ran (idempotent for
+	// reclassification / retry paths that reuse the result object).
+	if (result.errorMessage.endsWith(suffix)) return;
+
+	const combined = sanitizeErrorMessage(`${result.errorMessage}${suffix}`, cwd);
+	result.errorMessage = combined;
+}
+
+// ---------------------------------------------------------------------------
 // Process runner
 // ---------------------------------------------------------------------------
 
@@ -758,7 +826,7 @@ ${msgBlock}`;
 				});
 
 				if (signal) {
-					attachAbortHandler(proc, signal);
+					attachAbortHandler(proc, signal, result);
 				}
 
 				if (timeout && timeout > 0) {
@@ -775,6 +843,12 @@ ${msgBlock}`;
 			});
 
 			result.exitCode = exitCode;
+			// Issue #120 (Track 2): capture whatever provider-status diagnostics are
+			// reachable at the subagent-output boundary (recon: the raw HTTP status is
+			// not a separate field — see enrichFailureDiagnostics) — with an honest
+			// fallback so the next occurrence still self-diagnoses. Runs BEFORE
+			// classifyError so the appended context is included in the category.
+			enrichFailureDiagnostics(result, cwd);
 			result.errorCategory = classifyError(result);
 		} finally {
 			if (tmpDir && tmpFilePath) {

@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats } from './types';
-import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES } from './types';
+import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -536,6 +536,21 @@ export async function spawnBackgroundSession(
     runFinalized = true;
     const usage = agent.result?.usage ?? EMPTY_USAGE;
     const finalOutput = agent.finalOutput ?? "";
+    // Issue #120 (Track 1): stamp the honest errorCategory on the background run
+    // record the same way the foreground path does (index.ts sets
+    // run.originalParams.errorCategory = classifyError(result)). Previously the
+    // background entry never carried a category, so background failures were
+    // invisible to the SLA errorCategoryBreakdown and to failure diagnostics.
+    const errorCategory =
+      status === "failed" && error
+        ? classifyError({
+            messages: [],
+            usage: { ...EMPTY_USAGE },
+            exitCode: 1,
+            stderr: "",
+            errorMessage: error,
+          })
+        : undefined;
     const entry: SubagentRun = {
       ...run,
       status,
@@ -549,6 +564,10 @@ export async function spawnBackgroundSession(
       tokensOut: usage.output,
       outputSummary: finalOutput.slice(0, 200),
       fullOutput: finalOutput || undefined,
+      originalParams:
+        errorCategory
+          ? { ...(run.originalParams ?? {}), errorCategory }
+          : run.originalParams,
     };
     pi.appendEntry(CUSTOM_ENTRY_TYPES.run, entry);
   };
@@ -898,8 +917,12 @@ export async function spawnBackgroundSession(
         // timeout/abort counts as failure) — finalize the run entry.
         // Issue #122: a timed-out run burned tokens — record the real usage
         // (the git-diff block above must not leave the empty fallback).
+        // Issue #120 (Track 1): agent.error carries the reason when the stop was
+        // a deadline timeout ('Timed out after Xms' → 'timeout'); a user cancel
+        // (stop_subagent) sets no error, so fall back to the honest user-abort
+        // stamp (→ 'aborted') instead of the old ambiguous 'Aborted or timed out'.
         recordSessionUsage();
-        finalizeRunEntry('failed', agent.error ?? 'Aborted or timed out');
+        finalizeRunEntry('failed', agent.error ?? 'Subagent aborted by user');
         // Issue #31: capture the final output while the session is still
         // live, then release the ref on the terminal path (memory retention;
         // the poller treats a nulled ref on a terminal agent as expected).
@@ -973,8 +996,11 @@ export async function spawnBackgroundSession(
         // the run entry alongside the agent record flip.
         // Issue #122: a stopped/timed-out run burned tokens too — record the
         // real usage (same aborted path semantics as the .then branch).
+        // Issue #120 (Track 1): same honest fallback — a deadline timeout keeps
+        // agent.error ('Timed out...' → 'timeout'); a user cancel has no error
+        // and stamps 'Subagent aborted by user' (→ 'aborted').
         recordSessionUsage();
-        finalizeRunEntry('failed', agent.error ?? 'Aborted or timed out');
+        finalizeRunEntry('failed', agent.error ?? 'Subagent aborted by user');
         // Issue #31: the stopped path is terminal too — capture + release.
         captureAndReleaseSession();
         transcript.completeTranscript(id, 'stopped');

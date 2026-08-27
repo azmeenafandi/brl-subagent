@@ -52,6 +52,14 @@ export function classifyError(result: SubagentResult): ErrorCategory {
 
 	if (msg.includes("timed out")) return "timeout";
 
+	// Issue #120 (Track 1): an abort stamp written BEFORE a kill (the abort
+	// handler) carries the honest source in errorMessage ("Subagent aborted by
+	// user"). classifyError can't infer an abort from a dead process — the
+	// exitCode is just non-zero — so the stamped message must survive
+	// reclassification. Matched here so the stamped category is not clobbered
+	// by the exitError/unknown fallbacks below.
+	if (msg.includes("aborted")) return "aborted";
+
 	if (msg.includes("model not found") || msg.includes("model unavailable"))
 		return "model_unavailable";
 
