@@ -14,6 +14,10 @@ import type { TranscriptMessage } from "./transcript-tail";
 
 export type ApprovalMode = "auto" | "writes" | "always";
 
+export type CompletionNotifyMode = "all" | "failed" | "off";
+
+export const DEFAULT_COMPLETION_NOTIFY: CompletionNotifyMode = "all";
+
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -188,6 +192,12 @@ export interface SubagentState {
 	maxSubagentDepth: number; // 0 = no recursion allowed, 1 = one level, etc.
 	gitMode: GitMode; // P3: branch-based git workflow
 	approvalMode: ApprovalMode; // P4: change approval workflow
+	// Issue #147: completion-push wake knob — when a background run reaches a
+	// terminal state the conductor is woken (delivery is always-on, minimum
+	// nextTurn; wake is the configurable part). "all" wakes on every terminal
+	// state, "failed" wakes only on failed/stopped, "off" never wakes (still
+	// delivers passively at the next user prompt).
+	completionNotify: CompletionNotifyMode;
 	maxHistoryEntries: number; // 0 = unlimited
 	sessionCostLimit: number; // 0 = unlimited
 	perTaskCostEstimate: number; // 0 = no estimate, use default
@@ -578,7 +588,7 @@ export const RESERVED_NAME_PATTERN = /^__.*__$/;
 export const RESERVED_COMMAND_NAMES = new Set([
 	"model", "thinking", "concurrency", "depth", "history", "monitor",
 	"preset", "retry", "reset", "priority", "templates", "dashboard", "approval",
- "costlimit", "historyentries", "sla", "update-check",
+ "costlimit", "historyentries", "sla", "update-check", "completionnotify",
 	"graph", "sla-stats",
 ]);
 
@@ -709,6 +719,11 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 	// approvalMode must be "auto", "writes", or "always" if present
 	if (v.approvalMode !== undefined) {
 		if (v.approvalMode !== "auto" && v.approvalMode !== "writes" && v.approvalMode !== "always") return false;
+	}
+
+	// completionNotify must be "all", "failed", or "off" if present
+	if (v.completionNotify !== undefined) {
+		if (v.completionNotify !== "all" && v.completionNotify !== "failed" && v.completionNotify !== "off") return false;
 	}
 
 	// maxHistoryEntries must be a non-negative number if present

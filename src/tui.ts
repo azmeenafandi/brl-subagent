@@ -32,6 +32,7 @@ import type {
 	ThinkingLevel,
 	UsageStats,
 	FileDiff,
+	CompletionNotifyMode,
 } from "./types";
 import {
 	THINKING_LEVELS,
@@ -306,6 +307,40 @@ export async function showApprovalModeSelector(
 
 	state.config.approvalMode = result as "auto" | "writes" | "always";
 	onConfigChanged(ctx, `Change approval mode set to ${result}`);
+}
+
+// ---------------------------------------------------------------------------
+// Completion notify mode selector (issue #147)
+// ---------------------------------------------------------------------------
+
+export async function showCompletionNotifySelector(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	const items: SelectItem[] = [
+		{
+			value: "all",
+			label: "all",
+			description: "Wake on every terminal state (completed, failed, stopped) - default",
+		},
+		{
+			value: "failed",
+			label: "failed",
+			description: "Wake only on failed / stopped runs",
+		},
+		{
+			value: "off",
+			label: "off",
+			description: "Never wake (still delivered passively at the next user prompt)",
+		},
+	];
+
+	const result = await showSelectList(ctx, "Completion Notify Mode", items, 5);
+	if (!result) return;
+
+	state.config.completionNotify = result as CompletionNotifyMode;
+	onConfigChanged(ctx, `Completion notify mode set to ${result}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,6 +1136,15 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 				: state.config.approvalMode === "writes"
 					? "Ask when files changed"
 					: "Ask every time",
+		},
+		{
+			value: "completionnotify",
+			label: "Set Completion Notify Mode",
+			description: state.config.completionNotify === "all"
+				? "Wake on every terminal state"
+				: state.config.completionNotify === "failed"
+					? "Wake only on failed/stopped"
+					: "Never wake (passive delivery)",
 		},
 
 		{

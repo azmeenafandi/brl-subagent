@@ -52,6 +52,7 @@ import type {
 	DelegateTaskDetails,
 	Priority,
 	ToolResult,
+	SubagentEvent,
 } from "./types";
 import {
 	resolveThinkingLevel,
@@ -107,6 +108,7 @@ import {
 	showCostLimitInput,
 	showApprovalModeSelector,
 	showApprovalDialog,
+	showCompletionNotifySelector,
 	showPresetManager,
 	showTemplateManager,
 	showUpdateCheckToggle,
@@ -124,6 +126,14 @@ import { createLogger, type Logger } from "./logging";
 import { Intercom } from "./messaging";
 import { checkForUpdates } from "./update";
 import { UPDATE_CHECK_INTERVAL_MS } from "./types";
+import * as eventBus from "./event-bus";
+import {
+	buildCompletionMessage,
+	resolveDelivery,
+	sendCompletionNotification,
+	markTerminalSeen,
+	normalizeCompletionStatus,
+} from "./notify-completion";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -177,6 +187,11 @@ export default function (pi: ExtensionAPI) {
 
 	// F7: Session-bound state — initialized per session
 	let state = createSessionState(log);
+
+	// Issue #147: the completion-push subscriber needs the session context to
+	// resolve the run entry (state.getRunEntries(ctx)). The event-bus listener
+	// receives no ctx, so capture it in session_start where it is available.
+	let sessionCtx: ExtensionContext | undefined;
 
 	// -------------------------------------------------------------------
 	// Config change callback
@@ -1868,7 +1883,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"history", "historyentries", "monitor", "dashboard", "preset", "templates", "retry",
+				"history", "historyentries", "monitor", "dashboard", "preset", "templates", "retry", "completionnotify",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
@@ -1884,6 +1899,7 @@ export default function (pi: ExtensionAPI) {
 				concurrency: () => showConcurrencyInput(ctx, state, applyConfig),
 				depth: () => showDepthInput(ctx, state, applyConfig),
 				approval: () => showApprovalModeSelector(ctx, state, applyConfig),
+				completionnotify: () => showCompletionNotifySelector(ctx, state, applyConfig),
 				costlimit: () => showCostLimitInput(ctx, state, applyConfig),
 				reset: () => resetState(ctx),
 				history: () => showRunHistory(ctx, state, () => state.persistState(pi)),
@@ -3669,6 +3685,8 @@ export default function (pi: ExtensionAPI) {
 	// -------------------------------------------------------------------
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Issue #147: capture the session context for the completion-push subscriber.
+		sessionCtx = ctx;
 		// Load built-in presets
 		const presetsDir = path.join(__dirname, "..", "presets");
 		state.builtinPresets = loadBuiltinPresets(presetsDir, log);
@@ -3753,4 +3771,43 @@ export default function (pi: ExtensionAPI) {
 		// Clear pending queue
 		state.pendingQueue.length = 0;
 	});
+
+	// -------------------------------------------------------------------
+	// Issue #147: completion-push wake — subscribe to terminal event-bus events
+	// -------------------------------------------------------------------
+	// The event-bus is the complete terminal chokepoint (subagent:completed /
+	// subagent:failed / subagent:stopped), so the conductor is woken via
+	// pi.sendMessage + triggerTurn when a background run reaches a terminal state.
+	// Delivery is always-on (minimum nextTurn); the completionNotify knob controls
+	// the WAKE (D1+D2 — see notify-completion.ts). The dedupe set defends the
+	// pathological double-emit path (first terminal event per id wins); it is
+	// capped simply (cleared when it exceeds 200 entries).
+	const terminalSeen = new Set<string>();
+	const terminalTypes = ["subagent:completed", "subagent:failed", "subagent:stopped"] as const;
+	for (const type of terminalTypes) {
+		eventBus.on(type, (event) => {
+			void deliverCompletionAlert(event);
+		});
+	}
+
+	async function deliverCompletionAlert(event: SubagentEvent): Promise<void> {
+		const id = event.agentId;
+		if (!markTerminalSeen(terminalSeen, id)) return;
+		const ctx = sessionCtx;
+		if (!ctx) return;
+		try {
+			const { getAgent } = await import("./session-manager");
+			const agent = getAgent(id);
+			if (!agent) return; // pruned or foreign id — nothing to notify
+			const knob = state.config.completionNotify ?? "all";
+			const run = state.getRunEntries(ctx).find((r) => r.id === id);
+			const message = buildCompletionMessage(agent, run);
+			const delivery = resolveDelivery(normalizeCompletionStatus(agent.status), knob);
+			sendCompletionNotification(pi, message, delivery);
+		} catch (err) {
+			log.warn(`completion-push handler failed for ${id}`, {
+				error: (err as Error).message,
+			});
+		}
+	}
 }
