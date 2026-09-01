@@ -15,6 +15,7 @@ import type {
 	LiveSubagent,
 	ThinkingLevel,
 	ApprovalMode,
+	CompletionNotifyMode,
 	CircuitBreakerState,
 	Priority,
 } from "./types";
@@ -27,6 +28,7 @@ import {
 	DEFAULT_MAX_SUBAGENT_DEPTH,
 	DEFAULT_SESSION_COST_LIMIT,
 	DEFAULT_COMPLETION_NOTIFY,
+	COMPLETION_NOTIFY_MODES,
 	MAX_CONSECUTIVE_FAILURES,
 	CIRCUIT_BREAKER_RESET_MS,
 	CIRCUIT_DEGRADED_THINKING,
@@ -218,7 +220,7 @@ export class SessionState {
 				? data.approvalMode
 				: "writes";
 		this.config.completionNotify =
-			data.completionNotify === "all" || data.completionNotify === "failed" || data.completionNotify === "off"
+			COMPLETION_NOTIFY_MODES.includes(data.completionNotify as CompletionNotifyMode)
 				? data.completionNotify
 				: DEFAULT_COMPLETION_NOTIFY;
 		if (data.maxHistoryEntries !== undefined) this.config.maxHistoryEntries = data.maxHistoryEntries;

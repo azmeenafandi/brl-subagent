@@ -77,6 +77,27 @@ export function normalizeCompletionStatus(status: AgentStatus): CompletionStatus
 }
 
 /**
+ * Resolve the finalized entry for a run id among the raw getRunEntries list.
+ *
+ * Each background run writes TWO custom entries sharing the same id and
+ * startedAt: a spawn entry (status "running") and a final entry (status
+ * "done"/"failed", stamped by finalizeRunRecord). The raw list preserves
+ * append order — the spawn entry comes FIRST (verified empirically) — so a
+ * plain `.find(r => r.id === id)` matches the spawn entry and never sees the
+ * stamped errorCategory/cost/duration/tokens. Prefer the terminal entry
+ * (status !== "running"); when none is terminal yet, fall back to the
+ * matching spawn entry (the pre-finalize stopped-run shape).
+ */
+export function resolveRunEntry(
+	entries: SubagentRun[],
+	id: string,
+): SubagentRun | undefined {
+	const matching = entries.filter((r) => r.id === id);
+	if (matching.length === 0) return undefined;
+	return matching.find((r) => r.status !== "running") ?? matching[0];
+}
+
+/**
  * Build the one-line summary: `Background agent "<label>" (<id>) — <status> in
  * <duration> · $<cost> · category: <category>` (D3).
  */

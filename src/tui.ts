@@ -37,6 +37,7 @@ import type {
 import {
 	THINKING_LEVELS,
 	NAV_FOOTER,
+	COMPLETION_NOTIFY_MODES,
 	TASK_PREVIEW_MAX_LENGTH,
 	COLLAPSED_OUTPUT_LINES,
 	COLLAPSED_DIFF_FILES_PREVIEW,
@@ -318,23 +319,16 @@ export async function showCompletionNotifySelector(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const items: SelectItem[] = [
-		{
-			value: "all",
-			label: "all",
-			description: "Wake on every terminal state (completed, failed, stopped) - default",
-		},
-		{
-			value: "failed",
-			label: "failed",
-			description: "Wake only on failed / stopped runs",
-		},
-		{
-			value: "off",
-			label: "off",
-			description: "Never wake (still delivered passively at the next user prompt)",
-		},
-	];
+	const modeDescriptions: Record<CompletionNotifyMode, string> = {
+		all: "Wake on every terminal state (completed, failed, stopped) - default",
+		failed: "Wake only on failed / stopped runs",
+		off: "Never wake (still delivered passively at the next user prompt)",
+	};
+	const items: SelectItem[] = COMPLETION_NOTIFY_MODES.map((mode) => ({
+		value: mode,
+		label: mode,
+		description: modeDescriptions[mode],
+	}));
 
 	const result = await showSelectList(ctx, "Completion Notify Mode", items, 5);
 	if (!result) return;

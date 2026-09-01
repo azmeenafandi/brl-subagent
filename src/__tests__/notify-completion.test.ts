@@ -24,6 +24,7 @@ import {
 	resolveDelivery,
 	markTerminalSeen,
 	normalizeCompletionStatus,
+	resolveRunEntry,
 } from "../notify-completion";
 
 // ---------------------------------------------------------------------------
@@ -73,6 +74,47 @@ function makeRun(overrides: Partial<SubagentRun> = {}): SubagentRun {
 		cost: 0.02,
 		tokensIn: 1_000,
 		tokensOut: 500,
+		...overrides,
+	};
+}
+
+/**
+ * The SPAWN-shaped production entry: created by createUnitRun / the background
+ * spawn path (index.ts) BEFORE finalization. status "running", no
+ * cost/tokens/duration, no originalParams.errorCategory yet.
+ */
+function makeSpawnRun(overrides: Partial<SubagentRun> = {}): SubagentRun {
+	return {
+		id: "run-123",
+		task: "review the docs",
+		description: "review-the-docs",
+		status: "running",
+		model: "provider/model",
+		thinkingLevel: "medium",
+		startedAt: "2026-01-01T00:00:00.000Z",
+		...overrides,
+	};
+}
+
+/**
+ * The FINALIZED-shaped production entry: stamped by finalizeRunRecord — status
+ * done/failed, durationMs/cost/tokens filled, errorCategory on originalParams.
+ * Shares id + startedAt with the spawn entry (the two-entry per-run shape).
+ */
+function makeFinalRun(status: "done" | "failed", overrides: Partial<SubagentRun> = {}): SubagentRun {
+	return {
+		id: "run-123",
+		task: "review the docs",
+		description: "review-the-docs",
+		status,
+		model: "provider/model",
+		thinkingLevel: "medium",
+		startedAt: "2026-01-01T00:00:00.000Z",
+		durationMs: 42_000,
+		cost: 0.02,
+		tokensIn: 1_000,
+		tokensOut: 500,
+		errorMessage: "boom",
 		...overrides,
 	};
 }
@@ -156,6 +198,88 @@ describe("buildCompletionMessage", () => {
 		expect(msg.content).toContain('Background agent "review-the-docs" (run-123) — completed');
 		expect(msg.content).not.toContain("$0.02");
 		expect(msg.content).not.toContain(" in 42");
+	});
+
+	// Honest stopped-run shape (review #1, #2): the run entry passed in is the
+	// PRE-finalize spawn entry — status "running", no cost/tokens/duration, no
+	// errorCategory. The agent status is still terminal (failed) because the
+	// subscriber only fires on terminal events; the builder must omit every
+	// unstamped field and never throw.
+	it("degrades gracefully on the real spawn shape (status running, no cost/tokens/duration/category)", () => {
+		const agent = makeAgent({ status: "failed" });
+		const run = makeSpawnRun(); // status "running" — the honest stopped-run shape
+		const msg = buildCompletionMessage(agent, run);
+
+		expect(msg.customType).toBe("subagent-completion");
+		expect(msg.details.status).toBe("failed");
+		expect(msg.details.errorCategory).toBe("unknown");
+		expect(msg.details.costUsd).toBeUndefined();
+		expect(msg.details.tokensIn).toBeUndefined();
+		expect(msg.details.tokensOut).toBeUndefined();
+		expect(msg.details.durationMs).toBeUndefined();
+		// Summary omits the cost/duration segments.
+		expect(msg.content).toContain('Background agent "review-the-docs" (run-123) — failed');
+		expect(msg.content).not.toContain("$0.02");
+		expect(msg.content).not.toContain(" in 42");
+	});
+
+	it("reads cost/tokens/duration/errorCategory from the finalized-shape run entry", () => {
+		const agent = makeAgent({ status: "failed" });
+		const run = makeFinalRun("failed", { originalParams: { errorCategory: "timeout" } });
+		const msg = buildCompletionMessage(agent, run);
+
+		expect(msg.details.status).toBe("failed");
+		expect(msg.details.errorCategory).toBe("timeout");
+		expect(msg.details.costUsd).toBe(0.02);
+		expect(msg.details.tokensIn).toBe(1_000);
+		expect(msg.details.tokensOut).toBe(500);
+		expect(msg.details.durationMs).toBe(42_000);
+		expect(msg.content).toContain("$0.02");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// resolveRunEntry — terminal-entry preference against the REAL entry order
+// ---------------------------------------------------------------------------
+
+describe("resolveRunEntry", () => {
+	it("prefers the terminal entry when spawn+final share id+startedAt with spawn FIRST", () => {
+		const spawn = makeSpawnRun();
+		const final = makeFinalRun("failed", { originalParams: { errorCategory: "timeout" } });
+		// The raw getEntries order (verified empirically): spawn appended first.
+		const entries = [spawn, final];
+
+		const resolved = resolveRunEntry(entries, "run-123");
+
+		expect(resolved).toBe(final);
+		expect(resolved?.status).toBe("failed");
+		expect(resolved?.durationMs).toBe(42_000);
+		expect(resolved?.originalParams?.errorCategory).toBe("timeout");
+	});
+
+	it("falls back to the lone spawn entry (pre-finalize stopped-run shape)", () => {
+		const spawn = makeSpawnRun();
+		const resolved = resolveRunEntry([spawn], "run-123");
+
+		expect(resolved).toBe(spawn);
+		expect(resolved?.status).toBe("running");
+		expect(resolved?.cost).toBeUndefined();
+	});
+
+	it("returns undefined when no entry matches the id", () => {
+		expect(resolveRunEntry([makeSpawnRun()], "missing")).toBeUndefined();
+		expect(resolveRunEntry([], "missing")).toBeUndefined();
+	});
+
+	it("resolves only the right id among interleaved runs", () => {
+		const aSpawn = makeSpawnRun({ id: "run-a" });
+		const bSpawn = makeSpawnRun({ id: "run-b" });
+		const bFinal = makeFinalRun("done", { id: "run-b" });
+		const aFinal = makeFinalRun("failed", { id: "run-a", originalParams: { errorCategory: "timeout" } });
+		const entries = [aSpawn, bSpawn, bFinal, aFinal];
+
+		expect(resolveRunEntry(entries, "run-a")).toBe(aFinal);
+		expect(resolveRunEntry(entries, "run-b")).toBe(bFinal);
 	});
 });
 

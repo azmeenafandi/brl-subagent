@@ -14,7 +14,8 @@ import type { TranscriptMessage } from "./transcript-tail";
 
 export type ApprovalMode = "auto" | "writes" | "always";
 
-export type CompletionNotifyMode = "all" | "failed" | "off";
+export const COMPLETION_NOTIFY_MODES = ["all", "failed", "off"] as const;
+export type CompletionNotifyMode = (typeof COMPLETION_NOTIFY_MODES)[number];
 
 export const DEFAULT_COMPLETION_NOTIFY: CompletionNotifyMode = "all";
 
@@ -721,9 +722,9 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 		if (v.approvalMode !== "auto" && v.approvalMode !== "writes" && v.approvalMode !== "always") return false;
 	}
 
-	// completionNotify must be "all", "failed", or "off" if present
+	// completionNotify must be one of COMPLETION_NOTIFY_MODES if present
 	if (v.completionNotify !== undefined) {
-		if (v.completionNotify !== "all" && v.completionNotify !== "failed" && v.completionNotify !== "off") return false;
+		if (!COMPLETION_NOTIFY_MODES.includes(v.completionNotify as CompletionNotifyMode)) return false;
 	}
 
 	// maxHistoryEntries must be a non-negative number if present

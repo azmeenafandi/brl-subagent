@@ -133,6 +133,7 @@ import {
 	sendCompletionNotification,
 	markTerminalSeen,
 	normalizeCompletionStatus,
+	resolveRunEntry,
 } from "./notify-completion";
 
 // ---------------------------------------------------------------------------
@@ -3782,6 +3783,14 @@ export default function (pi: ExtensionAPI) {
 	// the WAKE (D1+D2 — see notify-completion.ts). The dedupe set defends the
 	// pathological double-emit path (first terminal event per id wins); it is
 	// capped simply (cleared when it exceeds 200 entries).
+	//
+	// Stopped-run degradation — ACCEPTED BY DESIGN (review #2, adjudicated
+	// 2026-09-01): subagent:stopped fires at stop time (updateAgentStatus) BEFORE
+	// finalizeRunEntry stamps cost/duration/errorCategory and before finalOutput
+	// is captured. So the stopped shape may lack those fields and the run entry
+	// resolveRunEntry returns may be the pre-finalize spawn entry. The wake is
+	// the point; details are best-effort — the notification must never throw or
+	// block on their absence.
 	const terminalSeen = new Set<string>();
 	const terminalTypes = ["subagent:completed", "subagent:failed", "subagent:stopped"] as const;
 	for (const type of terminalTypes) {
@@ -3800,7 +3809,7 @@ export default function (pi: ExtensionAPI) {
 			const agent = getAgent(id);
 			if (!agent) return; // pruned or foreign id — nothing to notify
 			const knob = state.config.completionNotify ?? "all";
-			const run = state.getRunEntries(ctx).find((r) => r.id === id);
+			const run = resolveRunEntry(state.getRunEntries(ctx), id);
 			const message = buildCompletionMessage(agent, run);
 			const delivery = resolveDelivery(normalizeCompletionStatus(agent.status), knob);
 			sendCompletionNotification(pi, message, delivery);
