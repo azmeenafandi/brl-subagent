@@ -32,10 +32,12 @@ import type {
 	ThinkingLevel,
 	UsageStats,
 	FileDiff,
+	CompletionNotifyMode,
 } from "./types";
 import {
 	THINKING_LEVELS,
 	NAV_FOOTER,
+	COMPLETION_NOTIFY_MODES,
 	TASK_PREVIEW_MAX_LENGTH,
 	COLLAPSED_OUTPUT_LINES,
 	COLLAPSED_DIFF_FILES_PREVIEW,
@@ -306,6 +308,33 @@ export async function showApprovalModeSelector(
 
 	state.config.approvalMode = result as "auto" | "writes" | "always";
 	onConfigChanged(ctx, `Change approval mode set to ${result}`);
+}
+
+// ---------------------------------------------------------------------------
+// Completion notify mode selector (issue #147)
+// ---------------------------------------------------------------------------
+
+export async function showCompletionNotifySelector(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	const modeDescriptions: Record<CompletionNotifyMode, string> = {
+		all: "Wake on every terminal state (completed, failed, stopped) - default",
+		failed: "Wake only on failed / stopped runs",
+		off: "Never wake (still delivered passively at the next user prompt)",
+	};
+	const items: SelectItem[] = COMPLETION_NOTIFY_MODES.map((mode) => ({
+		value: mode,
+		label: mode,
+		description: modeDescriptions[mode],
+	}));
+
+	const result = await showSelectList(ctx, "Completion Notify Mode", items, 5);
+	if (!result) return;
+
+	state.config.completionNotify = result as CompletionNotifyMode;
+	onConfigChanged(ctx, `Completion notify mode set to ${result}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,6 +1130,15 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 				: state.config.approvalMode === "writes"
 					? "Ask when files changed"
 					: "Ask every time",
+		},
+		{
+			value: "completionnotify",
+			label: "Set Completion Notify Mode",
+			description: state.config.completionNotify === "all"
+				? "Wake on every terminal state"
+				: state.config.completionNotify === "failed"
+					? "Wake only on failed/stopped"
+					: "Never wake (passive delivery)",
 		},
 
 		{

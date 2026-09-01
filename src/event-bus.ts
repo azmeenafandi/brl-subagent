@@ -7,6 +7,34 @@ const listeners = new Map<SubagentEventType, Set<SubagentEventListener>>();
 const globalListeners = new Set<SubagentEventListener>();
 
 /**
+ * Subscribe a listener to a specific event type.
+ *
+ * @param type - The event type to subscribe to
+ * @param listener - The listener invoked for each event of this type
+ */
+export function on(type: SubagentEventType, listener: SubagentEventListener): void {
+	let typeListeners = listeners.get(type);
+	if (!typeListeners) {
+		typeListeners = new Set();
+		listeners.set(type, typeListeners);
+	}
+	typeListeners.add(listener);
+}
+
+/**
+ * Unsubscribe a listener from a specific event type.
+ *
+ * @param type - The event type to unsubscribe from
+ * @param listener - The listener to remove
+ */
+export function off(type: SubagentEventType, listener: SubagentEventListener): void {
+	const typeListeners = listeners.get(type);
+	if (!typeListeners) return;
+	typeListeners.delete(listener);
+	if (typeListeners.size === 0) listeners.delete(type);
+}
+
+/**
  * Emit an event
  * 
  * @param event - The event to emit
