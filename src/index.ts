@@ -2705,24 +2705,10 @@ export default function (pi: ExtensionAPI) {
 									// (timeout/hard cap) — not a failure. Include the reason
 									// when the stop carried one.
 									updateProgressStatus(state, ctx);
-									pi.sendMessage({
-										customType: "subagent-notification",
-										content: agent.error
-											? `Background agent "${agent.description}" stopped (${agent.error}).`
-											: `Background agent "${agent.description}" stopped.`,
-										display: true,
-										details: { agentId: agent.id }
-									}, { deliverAs: "followUp" });
 								} else {
 									state.completedSubagents++;
 									state.unseenSubagents++;
 									updateProgressStatus(state, ctx);
-									pi.sendMessage({
-										customType: "subagent-notification",
-										content: `Background agent "${agent.description}" completed.\n\n${sanitizePreview(finalOutput)}`,
-										display: true,
-										details: { agentId: agent.id }
-									}, { deliverAs: "followUp" });
 								}
 							}
 						} catch (err) {
@@ -2784,12 +2770,6 @@ export default function (pi: ExtensionAPI) {
 								// m6: deadline abort is a stop, not a completion — mirror the
 								// W3/poller stopped path (no completedSubagents increment).
 								updateProgressStatus(state, ctx);
-								pi.sendMessage({
-									customType: "subagent-notification",
-									content: `Background agent "${agent.description}" timed out (${hardCapMs}ms hard cap).\n\n${sanitizePreview(hardCapFinalOutput)}`,
-									display: true,
-									details: { agentId: agent.id }
-								}, { deliverAs: "followUp" });
 							} catch (err) {
 								// Defensive: never let the hard-cap timer throw uncaught — that would
 								// skip finalizeLiveSubagent, the counter decrement, and the notification.
@@ -2816,12 +2796,6 @@ export default function (pi: ExtensionAPI) {
 								}
 								state.failedSubagents++;
 								updateProgressStatus(state, ctx);
-								pi.sendMessage({
-									customType: "subagent-notification",
-									content: `Background agent "${agent.description}" timed out (error).`,
-									display: true,
-									details: { agentId: agent.id }
-								}, { deliverAs: "followUp" });
 							}
 						}
 					}, hardCapMs);
