@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.3.2 · **Author:** Azmeen Afandi / [Beeroo Labs](https://beeroolabs.com) · **License:** MIT
+**Version:** 2.3.3 · **Author:** Azmeen Afandi / [Beeroo Labs](https://beeroolabs.com) · **License:** MIT
 
 ---
 
@@ -254,6 +254,12 @@ Set `background: true` to spawn the subagent as an independent session that retu
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
 
 ## Changelog
+
+### v2.3.3
+
+- **Completion-push wake (issue #147):** the extension now pushes a structured completion message into the conductor's session when a background run reaches a terminal state — `pi.sendMessage` with `triggerTurn: true` wakes an idle conductor, so the user no longer relays "subagent has completed its work". The message carries id · duration · cost · error category + output tail + a soft directive; delivery mode follows the urgency split (failed/stopped → steer, completed → followUp); the `completionNotify` knob (`all` / `failed` / `off`) controls the wake while delivery stays always-on. Verified live end-to-end (completed, stopped, and mid-turn delivery) — the first milestone of the conductor-autonomy arc.
+- **One notification per run (issue #149):** the poller's pre-existing short completion echoes (`Background agent "X" completed.`) are removed — they duplicated the #147 wake with strictly less information and bypassed the knob. Crash notices (the poller-unique edges) stay. Reviewed and merged after the double-notification was discovered live during the #147 probes.
+- **Development:** toolchain aligned with pi itself — TypeScript 5.9.3 (pi's published compiler line) and the pi-sdk group at 0.84.4 (the running harness). The proposed TypeScript 7.0.2 major was declined: we follow the published SDK's line, not the dev-branch experiment. 971 tests across 43 files.
 
 ### v2.3.2
 
