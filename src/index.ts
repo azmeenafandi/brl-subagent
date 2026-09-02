@@ -2702,8 +2702,7 @@ export default function (pi: ExtensionAPI) {
 									}, { deliverAs: "followUp" });
 								} else if (agent.status === 'stopped') {
 									// User-initiated stop (stop_subagent) or deadline abort
-									// (timeout/hard cap) — not a failure. Include the reason
-									// when the stop carried one.
+									// (timeout/hard cap) — not a failure.
 									updateProgressStatus(state, ctx);
 								} else {
 									state.completedSubagents++;
