@@ -70,7 +70,7 @@ import {
 	type BackgroundAgent,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
-import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates, validateTemplatePresetRefs } from "./templates";
+import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates, validateTemplatePresetRefs, extractParamNames } from "./templates";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage, buildCrashResult } from "./sanitize";
 import {
@@ -1942,6 +1942,27 @@ export default function (pi: ExtensionAPI) {
 		})
 		.join(", ");
 
+	// B1b: Load built-in templates once at registration to expose the built-in
+	// inventory (name + purpose + ${param} slots) to the conductor before any
+	// delegate_task call. Custom/user templates can't be enumerated statically,
+	// so the summary covers built-ins only and points at /brl-subagent templates.
+	const registrationTemplates = loadBuiltinTemplates(path.join(__dirname, "..", "templates"));
+	const templateSummary = registrationTemplates
+		.map((t) => {
+			const slots = [...new Set([
+				...extractParamNames(t.task),
+				...(t.outputFile ? extractParamNames(t.outputFile) : []),
+			])];
+			const slotNote = slots.length > 0
+				? `; slots ${slots.map((s) => `\${${s}}`).join(", ")}`
+				: "";
+			const desc = t.description
+				? `${t.description.charAt(0).toLowerCase()}${t.description.slice(1)}`
+				: "";
+			return `${t.name}${desc ? ` (${desc}${slotNote})` : slotNote}`;
+		})
+		.join(", ");
+
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Delegate Task",
@@ -1957,6 +1978,7 @@ export default function (pi: ExtensionAPI) {
 			"Delegate tasks to a subagent for isolated, parallel or background work",
 		promptGuidelines: [
 			"Use delegate_task when the user asks you to hand off work to a subagent, or when a task would benefit from an isolated context window (e.g., deep investigation, parallel research, long-running analysis).",
+			"The authoritative capability reference for delegation is the extension's AGENT.md — consult it when planning delegation-heavy work.",
 			"The subagent inherits your system prompt and runs with its own model (configurable via /brl-subagent). It reports what it did when done.",
 			"You can customize per-call via inheritSystemPrompt and systemPrompt: set inheritSystemPrompt: false to save context, provide a systemPrompt for custom instructions, or use both to add instructions on top of inheritance.",
 			"Set thinkingLevel per call to match task complexity. The level is capped at the user's configured maximum. Map tasks to levels using this heuristic: off = file listing, grep, simple read. minimal = file diff, syntax check, find-and-replace. low = refactoring, test generation, documentation. medium = default — code review, debugging, moderate analysis. high = security audit, architecture review, complex debugging. xhigh = multi-step causal reasoning, research, novel problem solving. Default to 'off' or 'minimal' for trivial tasks — do not waste the user's budget.",
@@ -1965,9 +1987,10 @@ export default function (pi: ExtensionAPI) {
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
 			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
 			"Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.",
+			"Templates are file-backed task starters with ${param} slots. Built-in templates: ${templateSummary}. Custom templates are NOT listed here — inspect them via /brl-subagent templates before choosing one.",
 			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Parallel-origin entries retry as a single-subtask run carrying that subtask's task, label, and priority. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
-			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. Use get_subagent_result to check status and retrieve results later.",
+			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate.",
 			"",
 			"## Conductor Guardrails",
 			"",
@@ -1982,6 +2005,7 @@ export default function (pi: ExtensionAPI) {
 			"",
 			"Before delegating, evaluate existing presets to find the best match for the task: tech-writer (documentation), code-reviewer (code review), security-auditor (security analysis), test-engineer (test writing), debugger (debugging), refactorer (refactoring), data-analyst (data analysis), rapid-prototyper (quick prototypes). Use the preset parameter to apply the best match. If no preset fits, use dev-agent for general development tasks.",
 			"The autoRoutePreset() function can automatically select the best preset based on task keywords. Consider using it for preset selection.",
+			"Prefer a preset when the delegation matches a standard shape — review/audit/test/docs; override per-call deliberately.",
 		],
 		parameters: Type.Object({
 			task: Type.Optional(Type.String({
@@ -2120,7 +2144,7 @@ export default function (pi: ExtensionAPI) {
 					description:
 						"Run the subagent in the background without blocking the conductor. " +
 						"When true, the tool returns immediately with an agent ID. " +
-						"Use get_subagent_result to check status and retrieve results. " +
+						"The conductor is woken with a completion message; use get_subagent_result for post-wake retrieval and stall checks. " +
 						"Default: false (blocking mode).",
 				}),
 			),
@@ -2815,7 +2839,7 @@ export default function (pi: ExtensionAPI) {
 								`Description: ${agent.description}\n` +
 								`Task: ${agent.task}\n` +
 								`Status: ${agent.status}\n\n` +
-								`Use get_subagent_result({ agent_id: "${agent.id}" }) to check status and retrieve results.` +
+								`You'll be woken with a completion message when it finishes; use get_subagent_result({ agent_id: "${agent.id}" }) for retrieval and stall checks.` +
 								bgAutoRouteNote,
 						}],
 						details: undefined,
@@ -3450,7 +3474,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// -------------------------------------------------------------------
-	// get_subagent_result tool — poll background agent status
+	// get_subagent_result tool — retrieve terminal status/result on demand
 	// -------------------------------------------------------------------
 
 	pi.registerTool({
@@ -3458,7 +3482,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Get Subagent Result",
 		description: [
 			"Check the status of a background agent and retrieve its result.",
-			"Use this tool to poll background agents spawned with delegate_task's background parameter.",
+			"The conductor is woken with a completion message when the agent finishes; use this for post-wake retrieval, stall checks, and detail access — not for polling.",
 			"Returns the agent's status, result (if completed), and transcript path.",
 		].join(" "),
 		parameters: Type.Object({
