@@ -51,6 +51,7 @@ import type {
 	GraphWave,
 	DelegateTaskDetails,
 	Priority,
+	TaskTemplate,
 	ToolResult,
 	SubagentEvent,
 } from "./types";
@@ -167,6 +168,46 @@ function sanitizePreview(text: string, maxLen = 500): string {
   const lastChar = safe[safe.length - 1];
   const stripped = lastChar && /[\uD800-\uDBFF]/.test(lastChar) ? safe.slice(0, -1) : safe;
   return stripped.trimEnd();
+}
+
+/**
+ * DRY helper (issue #154 review): shape an inventory of items into a single
+ * comma-delimited summary line for the LLM-facing delegation guidance. Both
+ * the B1 preset-restriction summary and the B1b template summary load an
+ * inventory at registration, map each item to a formatted string, then join.
+ */
+export function buildInventorySummary<T>(items: T[], formatItem: (item: T) => string): string {
+	return items.map(formatItem).join(", ");
+}
+
+/**
+ * Format one built-in template into a compact summary entry for the conductor:
+ * `name` (+ ` (lowercased description; slots ${a}, ${b})`) — the slot note is
+ * omitted when the template declares no params, and the description is omitted
+ * when it is empty. Mirrors the B1b summary shape (issue #154 review).
+ */
+export function formatTemplateSummaryItem(t: TaskTemplate): string {
+	const slots = [...new Set([
+		...extractParamNames(t.task),
+		...(t.outputFile ? extractParamNames(t.outputFile) : []),
+	])];
+	const slotNote = slots.length > 0
+		? `; slots ${slots.map((s) => `\${${s}}`).join(", ")}`
+		: "";
+	const desc = t.description
+		? `${t.description.charAt(0).toLowerCase()}${t.description.slice(1)}`
+		: "";
+	return `${t.name}${desc ? ` (${desc}${slotNote})` : slotNote}`;
+}
+
+/**
+ * Render the template guideline line with the built-in inventory summary
+ * interpolated. Exported so the guidance test can assert the RENDERED text
+ * rather than the literal `${templateSummary}` placeholder that a double-quoted
+ * string would leave in the conductor-facing guidance (issue #154 review).
+ */
+export function buildTemplateGuideline(templateSummary: string): string {
+	return `Templates are file-backed task starters with \${param} slots. Built-in templates: ${templateSummary}. Custom templates are NOT listed here — inspect them via /brl-subagent templates before choosing one.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1934,34 +1975,18 @@ export default function (pi: ExtensionAPI) {
 	// B1: Load built-in presets once at registration to expose their tool
 	// restrictions to the conductor before any delegate_task call happens.
 	const registrationPresets = loadBuiltinPresets(path.join(__dirname, "..", "presets"));
-	const presetRestrictionSummary = registrationPresets
-		.map((p) => {
-			const restricted = p.excludeTools?.length || p.tools?.length;
-			if (!restricted) return p.name;
-			return `${p.name} (${formatPresetRestriction(p)})`;
-		})
-		.join(", ");
+	const presetRestrictionSummary = buildInventorySummary(registrationPresets, (p) => {
+		const restricted = p.excludeTools?.length || p.tools?.length;
+		if (!restricted) return p.name;
+		return `${p.name} (${formatPresetRestriction(p)})`;
+	});
 
 	// B1b: Load built-in templates once at registration to expose the built-in
 	// inventory (name + purpose + ${param} slots) to the conductor before any
 	// delegate_task call. Custom/user templates can't be enumerated statically,
 	// so the summary covers built-ins only and points at /brl-subagent templates.
 	const registrationTemplates = loadBuiltinTemplates(path.join(__dirname, "..", "templates"));
-	const templateSummary = registrationTemplates
-		.map((t) => {
-			const slots = [...new Set([
-				...extractParamNames(t.task),
-				...(t.outputFile ? extractParamNames(t.outputFile) : []),
-			])];
-			const slotNote = slots.length > 0
-				? `; slots ${slots.map((s) => `\${${s}}`).join(", ")}`
-				: "";
-			const desc = t.description
-				? `${t.description.charAt(0).toLowerCase()}${t.description.slice(1)}`
-				: "";
-			return `${t.name}${desc ? ` (${desc}${slotNote})` : slotNote}`;
-		})
-		.join(", ");
+	const templateSummary = buildInventorySummary(registrationTemplates, formatTemplateSummaryItem);
 
 	pi.registerTool({
 		name: "delegate_task",
@@ -1978,7 +2003,7 @@ export default function (pi: ExtensionAPI) {
 			"Delegate tasks to a subagent for isolated, parallel or background work",
 		promptGuidelines: [
 			"Use delegate_task when the user asks you to hand off work to a subagent, or when a task would benefit from an isolated context window (e.g., deep investigation, parallel research, long-running analysis).",
-			"The authoritative capability reference for delegation is the extension's AGENT.md — consult it when planning delegation-heavy work.",
+			"The authoritative capability reference for delegation is the extension's AGENT.md — read it at ~/.pi/agent/extensions/brl-subagent/AGENT.md, or ./AGENT.md in the project root when present, when planning delegation-heavy work.",
 			"The subagent inherits your system prompt and runs with its own model (configurable via /brl-subagent). It reports what it did when done.",
 			"You can customize per-call via inheritSystemPrompt and systemPrompt: set inheritSystemPrompt: false to save context, provide a systemPrompt for custom instructions, or use both to add instructions on top of inheritance.",
 			"Set thinkingLevel per call to match task complexity. The level is capped at the user's configured maximum. Map tasks to levels using this heuristic: off = file listing, grep, simple read. minimal = file diff, syntax check, find-and-replace. low = refactoring, test generation, documentation. medium = default — code review, debugging, moderate analysis. high = security audit, architecture review, complex debugging. xhigh = multi-step causal reasoning, research, novel problem solving. Default to 'off' or 'minimal' for trivial tasks — do not waste the user's budget.",
@@ -1986,8 +2011,8 @@ export default function (pi: ExtensionAPI) {
 			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck.",
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
 			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
-			"Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.",
-			"Templates are file-backed task starters with ${param} slots. Built-in templates: ${templateSummary}. Custom templates are NOT listed here — inspect them via /brl-subagent templates before choosing one.",
+			`Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.`,
+			buildTemplateGuideline(templateSummary),
 			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Parallel-origin entries retry as a single-subtask run carrying that subtask's task, label, and priority. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
 			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate.",
