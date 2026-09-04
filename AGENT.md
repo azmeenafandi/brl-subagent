@@ -1,4 +1,4 @@
-# AGENT.md — brl-subagent capability reference (v2.3.3+)
+# AGENT.md — brl-subagent capability reference (v2.3.4+)
 
 > The `delegate_task` prompt guidelines are a derived summary of this file; if they disagree, this file wins.
 

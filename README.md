@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi-coding-agent) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.3.3 · **Author:** Azmeen Afandi / [Beeroo Labs](https://beeroolabs.com) · **License:** MIT
+**Version:** 2.3.4 · **Author:** Azmeen Afandi / [Beeroo Labs](https://beeroolabs.com) · **License:** MIT
 
 ---
 
@@ -254,6 +254,11 @@ Set `background: true` to spawn the subagent as an independent session that retu
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
 
 ## Changelog
+
+### v2.3.4
+
+- **The conductor knowledge gap closed (issue #154):** the LLM's only standing knowledge channel — the tool schema — was current for mechanics but stale at the behavioral layer, and two places actively taught the polling anti-pattern (pre-#147 text). The fix package: a new **AGENT.md** at the repo root (the authoritative agent-facing reference — execution models, the completion contract, delegation judgment, canonical shapes); **schema rewrites** replacing the poll-teaching text with the wake contract + the `completionNotify` knob dependency; a **generated template summary** in the guidance (mirroring the preset summary); a **pinning test** so behavioral features can't ship without their LLM-facing text. An adversarial review caught a critical interpolation bug (a `${…}` placeholder in a double-quoted string — dead code that shipped a literal placeholder, pre-existing in the preset line too) and a knob-inaccurate AGENT.md claim; both fixed, with the pinning test break-verified to genuinely catch regressions. The acceptance behavior — a conductor waiting for the wake instead of polling — was demonstrated live.
+- **Development:** pi-sdk group aligned to ^0.85.0 (harness parity). The bump gate caught an upstream packaging gap — pi-coding-agent@0.85.0's main entry statically imports the undeclared `@earendil-works/pi-server`; a direct devDependency bridges it until pi declares the dep (filed upstream). 976 tests across 44 files.
 
 ### v2.3.3
 
