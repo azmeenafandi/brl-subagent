@@ -1,27 +1,7 @@
 /**
- * brl-subagent Extension (v1.4.0)
- *
- * Enterprise-grade subagent extension for pi coding agent.
- * Delegates tasks to isolated pi processes with configurable models,
- * thinking levels, tool scoping, and personality presets.
- *
- * Architecture:
- *   types.ts       — Type definitions and constants
- *   sanitize.ts    — Input/output/env sanitization (F1-F3)
- *   presets.ts     — Preset loading, parsing, validation
- *   state.ts       — Session-bound state management (F5, F7, F9)
- *   prompt.ts      — System prompt construction
- *   runner.ts      — Process spawning and stdout parsing
- *   concurrency.ts — Concurrency queue and progress tracking (F8)
- *   history.ts     — Run record management and retry logic
- *   tui.ts         — All TUI rendering and UI interactions
- *   logging.ts     — Structured logging (F10)
- *
- * Usage:
- *   /brl-subagent        - Open configuration menu
- *   /brl-subagent model  - Open model selector directly
- *   /brl-subagent thinking - Open thinking level selector directly
- *   /brl-subagent reset  - Reset to defaults
+ * brl-subagent — multi-agent orchestration for pi.
+ * Entry point: tool registrations, command surface, and the multi-mode runners.
+ * See AGENT.md for the conductor-facing capability reference.
  */
 
 import * as fs from "node:fs";
