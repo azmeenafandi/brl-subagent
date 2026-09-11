@@ -27,6 +27,7 @@ import type { TaskTemplate, ThinkingLevel, SubagentPreset } from "./types";
 import { TEMPLATE_PARAM_RE, THINKING_LEVELS } from "./types";
 import type { Logger } from "./logging";
 import { parseFrontmatter, sanitizeFileName } from "./presets";
+import { pkgPath } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Param extraction
@@ -373,7 +374,7 @@ export function getAllTemplates(
  * the extension's presets/ dir.
  */
 export function loadAllTemplates(cwd: string, log?: Logger, templatesDir?: string): TaskTemplate[] {
-	const builtinDir = templatesDir ?? path.join(__dirname, "..", "templates");
+	const builtinDir = templatesDir ?? pkgPath("templates");
 	return getAllTemplates(loadBuiltinTemplates(builtinDir, log), loadCustomTemplates(cwd, log));
 }
 

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { pkgPath } from "../paths";
 
 // ---------------------------------------------------------------------------
 // Issue #158: pin the published-package packaging contract for AGENT.md.
@@ -31,5 +32,14 @@ describe("package manifest ships AGENT.md (issue #158)", () => {
 
 	it("AGENT.md exists at the package root", () => {
 		expect(existsSync(join(repoRoot, "AGENT.md")), "AGENT.md must exist at the package root").toBe(true);
+	});
+
+	it("pkgPath resolves bundled root assets from the extension's own module dir", () => {
+		// Exercise the SAME helper index.ts uses. A wrong path depth would make
+		// these resolve inside src/ and fail, instead of passing the suite.
+		expect(existsSync(pkgPath("AGENT.md")), "pkgPath(\"AGENT.md\") must resolve the shipped AGENT.md").toBe(true);
+		expect(existsSync(pkgPath("package.json")), "pkgPath(\"package.json\") must resolve the package manifest").toBe(
+			true,
+		);
 	});
 });
