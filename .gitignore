@@ -2,6 +2,5 @@
 graphify-out/
 node_modules
 .pi/
-sync-extension.sh
 .tmp/
 REVIEW_*.md
