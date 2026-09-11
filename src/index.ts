@@ -52,6 +52,7 @@ import {
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
 import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates, validateTemplatePresetRefs, extractParamNames } from "./templates";
+import { pkgPath } from "./paths";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage, buildCrashResult } from "./sanitize";
 import {
@@ -200,7 +201,7 @@ export default function (pi: ExtensionAPI) {
 	// Read current version from package.json
 	const currentVersion = (() => {
 		try {
-			const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
+			const pkg = JSON.parse(fs.readFileSync(pkgPath("package.json"), "utf-8"));
 			return pkg.version || "0.0.0";
 		} catch {
 			return "0.0.0";
@@ -1954,7 +1955,7 @@ export default function (pi: ExtensionAPI) {
 
 	// B1: Load built-in presets once at registration to expose their tool
 	// restrictions to the conductor before any delegate_task call happens.
-	const registrationPresets = loadBuiltinPresets(path.join(__dirname, "..", "presets"));
+	const registrationPresets = loadBuiltinPresets(pkgPath("presets"));
 	const presetRestrictionSummary = buildInventorySummary(registrationPresets, (p) => {
 		const restricted = p.excludeTools?.length || p.tools?.length;
 		if (!restricted) return p.name;
@@ -1965,13 +1966,13 @@ export default function (pi: ExtensionAPI) {
 	// inventory (name + purpose + ${param} slots) to the conductor before any
 	// delegate_task call. Custom/user templates can't be enumerated statically,
 	// so the summary covers built-ins only and points at /brl-subagent templates.
-	const registrationTemplates = loadBuiltinTemplates(path.join(__dirname, "..", "templates"));
+	const registrationTemplates = loadBuiltinTemplates(pkgPath("templates"));
 	const templateSummary = buildInventorySummary(registrationTemplates, formatTemplateSummaryItem);
 
 	// Issue #158: resolve the shipped AGENT.md from the extension's own directory
 	// rather than a hardcoded sync-copy destination, so npm-installed packages
 	// (installed via `pi install npm:brl-subagent`) can find it.
-	const agentMdPath = path.join(__dirname, "..", "AGENT.md");
+	const agentMdPath = pkgPath("AGENT.md");
 
 	pi.registerTool({
 		name: "delegate_task",
@@ -3696,11 +3697,11 @@ export default function (pi: ExtensionAPI) {
 		// Issue #147: capture the session context for the completion-push subscriber.
 		sessionCtx = ctx;
 		// Load built-in presets
-		const presetsDir = path.join(__dirname, "..", "presets");
+		const presetsDir = pkgPath("presets");
 		state.builtinPresets = loadBuiltinPresets(presetsDir, log);
 		state.customPresets = loadCustomPresets(ctx.cwd, log);
 		// Builtin templates + merged full stack (custom overrides builtin)
-		const templatesDir = path.join(__dirname, "..", "templates");
+		const templatesDir = pkgPath("templates");
 		state.builtinTemplates = loadBuiltinTemplates(templatesDir, log);
 		state.config.templates = loadAllTemplates(ctx.cwd, log, templatesDir);
 
