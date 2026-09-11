@@ -22,13 +22,28 @@
 
 ```bash
 # Global (all projects)
-cd ~/.pi/agent/extensions && git clone https://github.com/azmeenafandi/brl-subagent.git
+pi install npm:brl-subagent
 
-# Project-local
-cd your-project/.pi/extensions && git clone https://github.com/azmeenafandi/brl-subagent.git
+# Project-local (commit .pi/settings.json to share with your team)
+pi install -l npm:brl-subagent
 ```
 
-Pi auto-discovers extensions in these directories. To update: `git pull` inside the cloned directory.
+Pi installs the package and loads the extension automatically. Updates and removal:
+
+```bash
+pi update --extensions        # update installed packages
+pi remove npm:brl-subagent    # uninstall
+```
+
+<details>
+<summary>Alternative: install from git</summary>
+
+```bash
+pi install git:github.com/azmeenafandi/brl-subagent@v2.3.4
+```
+
+Git installs are **pinned** to the ref you specify. `pi update --extensions` reconciles to that ref but never advances it — upgrading means re-running `pi install` with a newer `@ref`.
+</details>
 
 ---
 
