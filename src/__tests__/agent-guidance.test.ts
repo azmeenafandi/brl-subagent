@@ -38,7 +38,20 @@ describe("delegate_task prompt guidelines vs. the wake contract (issue #154)", (
 	});
 
 	it("points the conductor at the authoritative AGENT.md capability reference", () => {
+		// Issue #162: a bare toContain("AGENT.md") is trivially satisfied by any
+		// mention of the filename, so it stayed green even when the guideline
+		// reverted to a hardcoded path (#158 regression class). Pin the CONTRACT
+		// instead: the guideline must interpolate the computed helper result, and
+		// the retired hardcoded path must be unable to return.
 		expect(indexSource).toContain("AGENT.md");
+		// The helper is actually used to resolve the shipped reference.
+		expect(indexSource).toContain('pkgPath("AGENT.md")');
+		// The guideline interpolates the COMPUTED variable. Written as a plain
+		// quoted string so it matches the literal source characters — a template
+		// literal here would interpolate ${agentMdPath} away instead of matching.
+		expect(indexSource).toContain("${agentMdPath}");
+		// The pre-#158 hardcoded sync-copy destination cannot return.
+		expect(indexSource).not.toContain("extensions/brl-subagent/AGENT.md");
 	});
 
 	it("renders the templateSummary into the built guideline (no literal placeholder, real names)", () => {
