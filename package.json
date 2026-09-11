@@ -16,6 +16,7 @@
     "templates/",
     "README.md",
     "LICENSE",
+    "AGENT.md",
     "!src/__tests__/"
   ],
   "pi": {
