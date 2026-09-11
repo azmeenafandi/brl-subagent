@@ -1968,6 +1968,11 @@ export default function (pi: ExtensionAPI) {
 	const registrationTemplates = loadBuiltinTemplates(path.join(__dirname, "..", "templates"));
 	const templateSummary = buildInventorySummary(registrationTemplates, formatTemplateSummaryItem);
 
+	// Issue #158: resolve the shipped AGENT.md from the extension's own directory
+	// rather than a hardcoded sync-copy destination, so npm-installed packages
+	// (installed via `pi install npm:brl-subagent`) can find it.
+	const agentMdPath = path.join(__dirname, "..", "AGENT.md");
+
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Delegate Task",
@@ -1983,7 +1988,7 @@ export default function (pi: ExtensionAPI) {
 			"Delegate tasks to a subagent for isolated, parallel or background work",
 		promptGuidelines: [
 			"Use delegate_task when the user asks you to hand off work to a subagent, or when a task would benefit from an isolated context window (e.g., deep investigation, parallel research, long-running analysis).",
-			"The authoritative capability reference for delegation is the extension's AGENT.md — read it at ~/.pi/agent/extensions/brl-subagent/AGENT.md, or ./AGENT.md in the project root when present, when planning delegation-heavy work.",
+			`The authoritative capability reference for delegation is the extension's AGENT.md — read it at ${agentMdPath}, or ./AGENT.md in the project root when present, when planning delegation-heavy work.`,
 			"The subagent inherits your system prompt and runs with its own model (configurable via /brl-subagent). It reports what it did when done.",
 			"You can customize per-call via inheritSystemPrompt and systemPrompt: set inheritSystemPrompt: false to save context, provide a systemPrompt for custom instructions, or use both to add instructions on top of inheritance.",
 			"Set thinkingLevel per call to match task complexity. The level is capped at the user's configured maximum. Map tasks to levels using this heuristic: off = file listing, grep, simple read. minimal = file diff, syntax check, find-and-replace. low = refactoring, test generation, documentation. medium = default — code review, debugging, moderate analysis. high = security audit, architecture review, complex debugging. xhigh = multi-step causal reasoning, research, novel problem solving. Default to 'off' or 'minimal' for trivial tasks — do not waste the user's budget.",
