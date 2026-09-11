@@ -1,0 +1,46 @@
+name: Publish
+
+# Release-driven. Publishing a GitHub release STAGES the version on npm; a
+# maintainer then reviews and approves it with 2FA at
+# https://www.npmjs.com/package/brl-subagent (Staged Packages tab).
+#
+# Staging is deliberate: the npm trusted publisher is configured WITHOUT
+# "Allow npm publish", so this workflow can only stage — a compromised or
+# maliciously-modified workflow cannot push a version live without a human
+# approving it with 2FA.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# OIDC token exchange for npm trusted publishing. There is no long-lived
+# npm token anywhere in this repo or its secrets.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    # Mirrors ci.yml: a hung vitest run must not burn GitHub's 6-hour ceiling.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+          # Dependency caching is intentionally omitted on release builds: a
+          # poisoned cache must not be able to influence a release.
+
+      # Node 24 bundles npm 11.11, which predates staged publishing
+      # (requires >= 11.15). Stay in the npm 11 major we build and test against.
+      - run: npm install -g npm@^11.15.0
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run
+
+      # Stage only — never a direct publish. Provenance is generated from the
+      # OIDC identity (id-token: write above) and attested to this workflow run.
+      - run: npm stage publish --provenance
