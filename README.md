@@ -70,7 +70,6 @@ Git installs are **pinned** to the ref you specify. `pi update --extensions` rec
 | `/brl-subagent monitor` | Live monitor running subagents |
 | `/brl-subagent dashboard` | Live observability dashboard |
 | `/brl-subagent retry` | Browse failed runs to retry |
-| `/brl-subagent update-check` | Toggle update check on startup |
 | `/brl-subagent reset` | Reset all configuration |
 
 All settings persist across sessions.

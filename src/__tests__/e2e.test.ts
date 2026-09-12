@@ -33,7 +33,6 @@ const ISOLATED_FILES = [
   "scheduler",
   "state",
   "templates",
-  "update",
   "validate",
 ];
 

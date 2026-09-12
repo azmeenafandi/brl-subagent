@@ -93,7 +93,6 @@ import {
 	showCompletionNotifySelector,
 	showPresetManager,
 	showTemplateManager,
-	showUpdateCheckToggle,
 	showSLAConfig,
 	showSLAStats,
 	showConfigMenu,
@@ -106,8 +105,6 @@ import {
 } from "./tui";
 import { createLogger, type Logger } from "./logging";
 import { Intercom } from "./messaging";
-import { checkForUpdates } from "./update";
-import { UPDATE_CHECK_INTERVAL_MS } from "./types";
 import * as eventBus from "./event-bus";
 import {
 	buildCompletionMessage,
@@ -1932,7 +1929,6 @@ export default function (pi: ExtensionAPI) {
 				preset: () => showPresetManager(ctx, state),
 				templates: () => showTemplateManager(ctx, state),
 				retry: () => showRetryMenu(ctx, state),
-			"update-check": () => showUpdateCheckToggle(ctx, state, applyConfig),
 			sla: () => showSLAConfig(ctx, state, applyConfig),
 			"sla-stats": () => showSLAStats(ctx, state),
 			};
@@ -3739,23 +3735,6 @@ export default function (pi: ExtensionAPI) {
 
 		// F5/F9: Safe state restoration with type guards
 		state.restoreFromSession(ctx);
-
-		// Check for updates (non-blocking, once per 24h)
-		if (state.config.updateCheckEnabled) {
-			const now = Date.now();
-			if (now - state.config.lastUpdateCheck > UPDATE_CHECK_INTERVAL_MS) {
-				state.config.lastUpdateCheck = now;
-				checkForUpdates(currentVersion, log).then((result) => {
-					if (result?.available) {
-						ctx.ui.notify(
-							"brl-subagent " + result.version + " available (current: " + currentVersion + "). Visit " + result.url + " to update. /brl-subagent update-check to disable.",
-							"info"
-						);
-						log.info("Update available", { current: currentVersion, latest: result.version });
-					}
-				}).catch(() => {}); // silently ignore errors
-			}
-		}
 
 		updateStatus(state, ctx);
 	});
