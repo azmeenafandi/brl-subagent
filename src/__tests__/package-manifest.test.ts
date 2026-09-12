@@ -50,9 +50,12 @@ describe("package manifest ships AGENT.md (issue #158)", () => {
 //
 // The v2.3.5 release shipped three stale version strings because nothing
 // pinned them. These assertions make the release ritual's version-inventory
-// step mechanical: the README's version line and git-install example tag must
-// track package.json, and AGENT.md's H1 must stay version-free so it cannot
-// drift again.
+// step mechanical: the README's version line must track package.json, and
+// AGENT.md's H1 must stay version-free so it cannot drift again.
+//
+// (A third claim used to be pinned here — the README git-install example tag —
+// until issue #171 removed that section in favour of npm as the sole
+// user-facing install/update path.)
 // ---------------------------------------------------------------------------
 
 const readme = readFileSync(join(repoRoot, "README.md"), "utf8");
@@ -63,12 +66,6 @@ describe("shipped docs track the manifest version (issue #166)", () => {
 		const versionLine = readme.split("\n").find((line) => line.startsWith("**Version:**"));
 		expect(versionLine, "README must contain a `**Version:**` line").toBeDefined();
 		expect(versionLine).toContain(`**Version:** ${packageJson.version}`);
-	});
-
-	it("README git-install example tag equals `v` + package.json's version", () => {
-		const match = readme.match(/pi install git:github\.com\/azmeenafandi\/brl-subagent@(v\d+\.\d+\.\d+)/);
-		expect(match, "README must contain the pinned git-install example").not.toBeNull();
-		expect(match?.[1]).toBe(`v${packageJson.version}`);
 	});
 
 	it("AGENT.md H1 carries no version stamp", () => {

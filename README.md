@@ -35,16 +35,6 @@ pi update --extensions        # update installed packages
 pi remove npm:brl-subagent    # uninstall
 ```
 
-<details>
-<summary>Alternative: install from git</summary>
-
-```bash
-pi install git:github.com/azmeenafandi/brl-subagent@v2.3.5
-```
-
-Git installs are **pinned** to the ref you specify. `pi update --extensions` reconciles to that ref but never advances it — upgrading means re-running `pi install` with a newer `@ref`.
-</details>
-
 ---
 
 ## Quick reference
