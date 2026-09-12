@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.3.4 · **Author:** Azmeen Afandi / [Beeroo Labs](https://beeroolabs.com) · **License:** MIT
+**Version:** 2.3.5 · **Author:** Azmeen Afandi / [Beeroo Labs](https://beeroolabs.com) · **License:** MIT
 
 ---
 
@@ -39,7 +39,7 @@ pi remove npm:brl-subagent    # uninstall
 <summary>Alternative: install from git</summary>
 
 ```bash
-pi install git:github.com/azmeenafandi/brl-subagent@v2.3.4
+pi install git:github.com/azmeenafandi/brl-subagent@v2.3.5
 ```
 
 Git installs are **pinned** to the ref you specify. `pi update --extensions` reconciles to that ref but never advances it — upgrading means re-running `pi install` with a newer `@ref`.
