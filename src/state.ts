@@ -142,8 +142,6 @@ export class SessionState {
 			circuitBreaker: this.defaultCircuitBreaker(),
 			slaTrackingEnabled: false,
 			slaWindowSize: 50,
-			updateCheckEnabled: true,
-			lastUpdateCheck: 0,
 		};
 	}
 
@@ -168,8 +166,6 @@ export class SessionState {
 		slaTrackingEnabled: this.config.slaTrackingEnabled,
 		slaWindowSize: this.config.slaWindowSize,
 		lastSLAMetrics: this.config.lastSLAMetrics,
-		updateCheckEnabled: this.config.updateCheckEnabled,
-		lastUpdateCheck: this.config.lastUpdateCheck,
 		});
 	}
 
@@ -257,10 +253,6 @@ export class SessionState {
 		if (data.lastSLAMetrics && typeof data.lastSLAMetrics === "object") {
 			this.config.lastSLAMetrics = data.lastSLAMetrics as import("./types").SLAMetrics;
 		}
-
-		// Restore update check fields
-		if (typeof data.updateCheckEnabled === "boolean") this.config.updateCheckEnabled = data.updateCheckEnabled;
-		if (typeof data.lastUpdateCheck === "number" && data.lastUpdateCheck >= 0) this.config.lastUpdateCheck = data.lastUpdateCheck;
 
 		this.log?.info("State restored from session", {
 			model: data.model ? `${data.model.provider}/${data.model.id}` : "none",
@@ -508,8 +500,6 @@ export class SessionState {
 		this.config.slaTrackingEnabled = false;
 		this.config.slaWindowSize = 50;
 		this.config.lastSLAMetrics = undefined;
-		this.config.updateCheckEnabled = true;
-		this.config.lastUpdateCheck = 0;
 	}
 }
 

@@ -11,6 +11,7 @@ import { RESERVED_COMMAND_NAMES } from "../types";
 //   - `/brl-subagent backend`  — removed in v2.1.0, stale README row for months
 //   - `/brl-subagent gitmode`  — removed in #78, stale README row
 //   - `/brl-subagent update-check` — present in dispatch, README row was missing
+// NOTE: /brl-subagent update-check was removed after v2.3.5 (see #164) — kept as the historical origin of this two-directional pinning test.
 //
 // The handler map (`const handlers = { ... }` in src/index.ts) is the source
 // of truth. RESERVED_COMMAND_NAMES is NOT the source of truth: it contains

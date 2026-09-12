@@ -314,6 +314,21 @@ describe("isSubagentStateShape", () => {
 			}),
 		).toBe(true);
 	});
+
+	it("accepts pre-#164 state with legacy updateCheck keys (forward-compat)", () => {
+		// Issue #164 removed the update notifier; sessions persisted before the
+		// upgrade may still carry updateCheckEnabled / lastUpdateCheck. Unknown
+		// keys are tolerated, so resuming old sessions must keep working —
+		// ratchet this tolerance against future validator tightening.
+		expect(
+			isSubagentStateShape({
+				maxThinkingLevel: "off",
+				maxParallel: 0,
+				updateCheckEnabled: true,
+				lastUpdateCheck: 1726000000000,
+			}),
+		).toBe(true);
+	});
 });
 
 // ---------------------------------------------------------------------------
