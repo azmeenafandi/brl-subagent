@@ -4,7 +4,6 @@
  * See AGENT.md for the conductor-facing capability reference.
  */
 
-import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
 	AgentToolResult,
@@ -194,16 +193,6 @@ export function buildTemplateGuideline(templateSummary: string): string {
 
 export default function (pi: ExtensionAPI) {
 	const log = createLogger("brl-subagent");
-
-	// Read current version from package.json
-	const currentVersion = (() => {
-		try {
-			const pkg = JSON.parse(fs.readFileSync(pkgPath("package.json"), "utf-8"));
-			return pkg.version || "0.0.0";
-		} catch {
-			return "0.0.0";
-		}
-	})();
 
 	// F7: Session-bound state — initialized per session
 	let state = createSessionState(log);
