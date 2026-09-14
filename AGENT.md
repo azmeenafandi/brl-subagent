@@ -2,6 +2,12 @@
 
 > The `delegate_task` prompt guidelines are a derived summary of this file; if they disagree, this file wins.
 
+> **Naming:** deliberately `AGENT.md`, **not** `AGENTS.md`. This is *not* a pi
+> context file — it is read on demand via the extension's `delegate_task`
+> guidance, not auto-loaded into the system prompt. Renaming it would change
+> nothing for users (a package directory is not in pi's context-file lookup
+> chain) while adding its full contents to every session run inside this repo.
+
 This file is the authoritative reference for how the brl-subagent extension behaves
 and how you (the conductor) should judge a delegation. Read it when planning
 delegation-heavy work.
