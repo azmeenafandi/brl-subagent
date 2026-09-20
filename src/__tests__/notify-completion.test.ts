@@ -150,6 +150,29 @@ describe("buildCompletionMessage", () => {
 		expect(msg.content).not.toContain("line01");
 	});
 
+	it("keeps a failure headline that was prepended to the stored output (issue #179)", () => {
+		// The stored output carries the failure headline PREPENDED, followed by 20
+		// lines of earlier-turn prose. `truncateTail` keeps the LAST 15 lines, so a
+		// headline that were still part of the truncated body would be dropped —
+		// which is exactly how a died run reported plausible-looking progress.
+		const headline = 'Run ended with a provider error (stopReason "error")';
+		const prose = Array.from(
+			{ length: 20 },
+			(_, i) => `line${String(i + 1).padStart(2, "0")}`,
+		).join("\n");
+
+		const agent = makeAgent({
+			status: "failed",
+			finalOutput: `${headline}\n${prose}`,
+			error: headline,
+		});
+		const msg = buildCompletionMessage(agent, makeRun({ status: "failed", errorMessage: headline }));
+
+		expect(msg.content).toContain(headline); // the reason survived
+		expect(msg.content).toContain("line20"); // the tail kept the end
+		expect(msg.content).not.toContain("line01"); // and still truncated the start
+	});
+
 	it("maps cost/tokens/duration/errorCategory from the run entry into details", () => {
 		const agent = makeAgent({ status: "failed" });
 		const run = makeRun({
