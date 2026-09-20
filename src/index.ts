@@ -2320,48 +2320,10 @@ export default function (pi: ExtensionAPI) {
 				}, { deliverAs: "followUp" });
 			}
 
-			// F1: Sanitize task input — skip for chain/parallel modes
-			const hasChain = params.chain && params.chain.length > 0;
-			const hasParallel = params.tasks && params.tasks.length > 0;
-			const hasGraph = params.graph && params.graph.length > 0;
-			if (!hasChain && !hasParallel && !hasGraph) {
-				// task is optional per the schema; single mode requires it. When absent,
-				// feed "" to the sanitizer — same rejection path ("Task must not be
-				// empty.") as when task was a required field.
-				const taskResult = sanitizeTask(params.task ?? "");
-				if (!taskResult.ok) {
-					log.warn("Task rejected by sanitizer", { error: taskResult.error });
-					return {
-						content: [{ type: "text" as const, text: `Invalid task: ${taskResult.error}` }],
-						details: undefined,
-						isError: true,
-					};
-				}
-				params.task = taskResult.value;
-			}
-
-			// Handle retryRunId
-			if (params.retryRunId) {
-				const runEntry = state.findRunById(ctx, params.retryRunId);
-				if (runEntry) {
-					params = resolveRetryParams(params, runEntry);
-				} else {
-					// Issue #98: a silent no-op here made retries of background runs
-					// (which previously never wrote run entries) start as FRESH runs
-					// with no signal to the caller. Fail loudly instead.
-					log.warn("Retry run ID not found", { retryRunId: params.retryRunId });
-					return {
-						content: [{
-							type: "text" as const,
-							text: `Retry run ID not found: ${params.retryRunId}. The run may have been pruned, or it was a background run created before the run-entry fix (issue #98). Pass the run's agent ID — for background runs the agent ID and run ID are now the same.`,
-						}],
-						details: undefined,
-						isError: true,
-					};
-				}
-			}
-
-			// Handle template resolution
+			// Handle template resolution — MUST run before the single-mode sanitize
+			// block below: a template ASSIGNS params.task, so resolving first lets the
+			// sanitizer validate the real resolved body (a template-only call has no
+			// task yet) and lets mode detection see a non-empty task (issue #175).
 			if (params.template) {
 				const templateEntry = state.config.templates.find((t) => t.name === params.template);
 				if (!templateEntry) {
@@ -2403,6 +2365,47 @@ export default function (pi: ExtensionAPI) {
 				if (tv.excludeTools && !params.excludeTools) params.excludeTools = tv.excludeTools;
 				if (tv.noBuiltinTools !== undefined && params.noBuiltinTools === undefined) params.noBuiltinTools = tv.noBuiltinTools;
 				if (tv.inheritSystemPrompt !== undefined && params.inheritSystemPrompt === undefined) params.inheritSystemPrompt = tv.inheritSystemPrompt;
+			}
+
+			// F1: Sanitize task input — skip for chain/parallel modes
+			const hasChain = params.chain && params.chain.length > 0;
+			const hasParallel = params.tasks && params.tasks.length > 0;
+			const hasGraph = params.graph && params.graph.length > 0;
+			if (!hasChain && !hasParallel && !hasGraph) {
+				// task is optional per the schema; single mode requires it. When absent,
+				// feed "" to the sanitizer — same rejection path ("Task must not be
+				// empty.") as when task was a required field.
+				const taskResult = sanitizeTask(params.task ?? "");
+				if (!taskResult.ok) {
+					log.warn("Task rejected by sanitizer", { error: taskResult.error });
+					return {
+						content: [{ type: "text" as const, text: `Invalid task: ${taskResult.error}` }],
+						details: undefined,
+						isError: true,
+					};
+				}
+				params.task = taskResult.value;
+			}
+
+			// Handle retryRunId
+			if (params.retryRunId) {
+				const runEntry = state.findRunById(ctx, params.retryRunId);
+				if (runEntry) {
+					params = resolveRetryParams(params, runEntry);
+				} else {
+					// Issue #98: a silent no-op here made retries of background runs
+					// (which previously never wrote run entries) start as FRESH runs
+					// with no signal to the caller. Fail loudly instead.
+					log.warn("Retry run ID not found", { retryRunId: params.retryRunId });
+					return {
+						content: [{
+							type: "text" as const,
+							text: `Retry run ID not found: ${params.retryRunId}. The run may have been pruned, or it was a background run created before the run-entry fix (issue #98). Pass the run's agent ID — for background runs the agent ID and run ID are now the same.`,
+						}],
+						details: undefined,
+						isError: true,
+					};
+				}
 			}
 
 			// P1+P2+P10: Mode detection — graph > chain > parallel > single

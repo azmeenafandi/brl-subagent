@@ -892,7 +892,7 @@ describe("auto-route respects explicit tool intent (issue #57)", () => {
 		}
 
 		const result = await tool.execute("call-57e", {
-			task: "placeholder", // sanitizer runs before template resolution; template task replaces it
+			task: "placeholder", // template resolution runs first and assigns the template task; sanitizer then validates it
 			template: "review-notes",
 			params: {},
 		}, undefined, undefined, ctx);
@@ -922,7 +922,7 @@ describe("auto-route respects explicit tool intent (issue #57)", () => {
 		}
 
 		const result = await tool.execute("call-57f", {
-			task: "placeholder", // sanitizer runs before template resolution; template task replaces it
+			task: "placeholder", // template resolution runs first and assigns the template task; sanitizer then validates it
 			template: "read-only-review",
 			params: {},
 		}, undefined, undefined, ctx);
@@ -938,6 +938,69 @@ describe("auto-route respects explicit tool intent (issue #57)", () => {
 			noBuiltinTools: undefined,
 		});
 		expect(result.content[0].text).not.toContain("[auto-routed to preset");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #175: template-only delegate_task calls (no `task`)
+//
+// Template resolution used to run AFTER the single-mode sanitize block, so a
+// call supplying only `template` (+ `params`) was rejected with "Invalid task:
+// Task must not be empty." before the template could supply the body. The
+// sanitize block now runs after resolution, so it validates the REAL body —
+// templates remain sanitized, and a template-only call dispatches the
+// resolved body.
+// ---------------------------------------------------------------------------
+
+describe("template-only delegate_task calls dispatch (issue #175)", () => {
+	const TEMPLATE_TASK = "Review the changed files and report findings verbatim.";
+
+	/** Seed a file-backed template and reload templates via the session-start handler. */
+	async function seedTemplate(ctx: ReturnType<typeof makeCtx>, name: string, body: string): Promise<void> {
+		const templatesDir = path.join(ctx.cwd, ".pi", "brl-subagent", "templates");
+		fs.mkdirSync(templatesDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(templatesDir, `${name}.md`),
+			["---", `name: ${name}`, "---", body].join("\n"),
+			"utf-8",
+		);
+		if (sessionStartHandler) {
+			await sessionStartHandler({}, ctx as never);
+		}
+	}
+
+	it("does not reject a template-only call and dispatches the resolved body", async () => {
+		const ctx = makeCtx();
+		await seedTemplate(ctx, "focused-review", TEMPLATE_TASK);
+
+		// No `task`: the template body IS the task. Before the ordering fix this
+		// died in the sanitize block with "Invalid task: Task must not be empty."
+		const result = await tool.execute("call-175", {
+			template: "focused-review",
+			params: {},
+		}, undefined, undefined, ctx);
+
+		expect(result.content[0].text).not.toContain("Invalid task: Task must not be empty.");
+		expect(result.isError).toBeFalsy();
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		// The resolved template body (not an empty/placeholder task) reaches dispatch.
+		expect(runnerMocks.runSubagent.mock.calls[0][4]).toBe(TEMPLATE_TASK);
+	});
+
+	it("still sanitizes the RESOLVED body (over-length template is rejected)", async () => {
+		const ctx = makeCtx();
+		// 50KB is the sanitizeTask cap; a body over it must be rejected AFTER
+		// template resolution, proving the sanitizer sees the real body.
+		await seedTemplate(ctx, "too-long", "x".repeat(50_001));
+
+		const result = await tool.execute("call-175b", {
+			template: "too-long",
+			params: {},
+		}, undefined, undefined, ctx);
+
+		expect(result.content[0].text).toContain("Invalid task: Task too long");
+		expect(result.isError).toBe(true);
+		expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
 	});
 });
 
