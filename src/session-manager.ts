@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
-import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isSubagentError, SUBAGENT_ABORTED_MESSAGE } from './types';
+import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isSubagentError, isProviderError, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -272,6 +272,23 @@ function defaultTerminalMessage(stopReason: string | undefined): string {
     default:
       return 'Run ended without completing';
   }
+}
+
+/**
+ * Issue #179 (C1 fix): a failed run entry/result must carry a terminal reason
+ * that AGREES with its status — never undefined, never "stop". Any reason the
+ * classifier already treats as a failure (error / length / toolUse / deferred
+ * / pending / aborted) is coherent and kept; a missing or success reason is
+ * coerced to the honest failure reason derived from the classified category.
+ */
+function coherentFailureReason(
+  stopReason: string | undefined,
+  errorCategory: ErrorCategory | undefined,
+): string {
+  if (stopReason && classifyTerminalOutcome(stopReason).status !== 'completed') {
+    return stopReason;
+  }
+  return errorCategory === 'aborted' ? 'aborted' : 'error';
 }
 
 /**
@@ -593,7 +610,13 @@ export async function spawnBackgroundSession(
               })
             : undefined)
         : undefined;
-    const stopReason = terminal?.stopReason ?? agent.result?.stopReason;
+    const stopReason =
+      status === "failed"
+        ? coherentFailureReason(
+            terminal?.stopReason ?? agent.result?.stopReason,
+            errorCategory,
+          )
+        : terminal?.stopReason ?? agent.result?.stopReason;
     const entry: SubagentRun = {
       ...run,
       status,
@@ -605,7 +628,7 @@ export async function spawnBackgroundSession(
       // are already in the usage data; recording them here makes "did nothing"
       // (turns 0) explicit versus "did work then died" (turns > 0, error).
       turns: usage.turns,
-      finalTurnError: stopReason === "error",
+      finalTurnError: isProviderError(stopReason),
       errorMessage: error,
       finishedAt: new Date().toISOString(),
       durationMs: Date.now() - startedAtMs,
@@ -1004,7 +1027,10 @@ export async function spawnBackgroundSession(
         // stamp (→ 'aborted') instead of the old ambiguous 'Aborted or timed out'.
         recordSessionUsage();
         finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE, {
-          stopReason: terminalStopReason ?? 'aborted',
+          stopReason:
+            terminalStopReason && terminalStopReason !== 'stop'
+              ? terminalStopReason
+              : 'aborted',
         });
         // Issue #31: capture the final output while the session is still
         // live, then release the ref on the terminal path (memory retention;
@@ -1159,6 +1185,10 @@ export async function spawnBackgroundSession(
         messages: agent.result?.messages ?? [],
         stderr: agent.result?.stderr ?? '',
         usage: agent.result?.usage ?? EMPTY_USAGE,
+        // Issue #179 (C1 fix): a genuine preflight/run failure always carries
+        // the failure reason — never leave the result with an undefined
+        // stopReason that downstream display/aggregate paths read as success.
+        stopReason: 'error',
         errorMessage: sanitizedError,
         ...(gitInfo.gitBranch
           ? { gitBranch: gitInfo.gitBranch, gitDiff: gitInfo.gitDiff }
@@ -1176,7 +1206,7 @@ export async function spawnBackgroundSession(
       agents.set(id, agent);
       persistAgent(agent);
       // Issue #98: mirror the agent-record flip in the session run entry.
-      finalizeRunEntry('failed', sanitizedError);
+      finalizeRunEntry('failed', sanitizedError, { stopReason: 'error' });
       transcript.completeTranscript(id, 'failed');
       eventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizedError }));
     } catch (err) {

@@ -716,6 +716,44 @@ export function isSubagentError(result: SubagentResult): boolean {
 		|| result.stopReason === "pending";
 }
 
+/**
+ * Issue #179 (review ratchet): the NARROWER question — was the terminal turn a
+ * provider/model error specifically?
+ *
+ * This is distinct from `isSubagentError` (did the run fail at all): a `length`,
+ * `toolUse`, `deferred` or `pending` ending is a FAILED RUN but NOT a provider
+ * error, and callers asking this narrower question want only `"error"`.
+ *
+ * Named so the literal has exactly one home — a consistency ratchet test fails if
+ * any other module compares `stopReason` against a failure reason directly, which
+ * is how the private copies of the wider predicate silently desynced.
+ */
+export function isProviderError(stopReason: string | undefined): boolean {
+	return stopReason === "error";
+}
+
+/**
+ * Issue #179 (C1 fix): tally subtask outcomes by the SHARED failure predicate.
+ * Deriving success from `exitCode === 0` alone mislabels a truncated or
+ * mid-turn run (a resolved prompt with stopReason length/toolUse/deferred/
+ * pending, exitCode 0) as a success — the exact "failure displayed as a
+ * success" defect. Every aggregate (parallel succeeded/failed, chain/graph
+ * success, the TUI verdicts) must route through isSubagentError so a future
+ * widening of the predicate cannot silently desync a private copy.
+ */
+export function countSubagentOutcomes(
+	results: ReadonlyArray<SubagentResult | undefined>,
+): { succeeded: number; failed: number } {
+	let succeeded = 0;
+	let failed = 0;
+	for (const r of results) {
+		if (!r) continue;
+		if (isSubagentError(r)) failed++;
+		else succeeded++;
+	}
+	return { succeeded, failed };
+}
+
 // ---------------------------------------------------------------------------
 // Issue #179: terminal outcome classification
 // ---------------------------------------------------------------------------

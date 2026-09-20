@@ -161,8 +161,20 @@ export function buildCompletionMessage(
 	const errorMessage = status === "completed" ? undefined : agent.error ?? run?.errorMessage;
 
 	const summary = buildSummaryLine(label, agent.id, status, durationMs, costUsd, errorCategory);
-	const tail = truncateTail(agent.finalOutput ?? run?.fullOutput ?? "", 15);
+	// Issue #179 (C1 fix): truncateTail keeps the LAST 15 lines, but the failure
+	// headline is PREPENDED to the stored output — long earlier-turn prose would
+	// otherwise push the failure reason out of the notified body. Peel it off
+	// before tailing and re-add it as its own part so the reason is never
+	// truncated away.
+	const stored = agent.finalOutput ?? run?.fullOutput ?? "";
+	const headline = status === "completed" ? undefined : errorMessage;
+	const body =
+		headline && stored.startsWith(headline)
+			? stored.slice(headline.length).replace(/^\n+/, "")
+			: stored;
+	const tail = truncateTail(body, 15);
 	const parts = [summary];
+	if (headline) parts.push(headline);
 	if (tail) parts.push(tail);
 	parts.push(COMPLETION_DIRECTIVE);
 	const content = parts.join("\n\n");

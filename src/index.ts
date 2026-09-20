@@ -39,6 +39,7 @@ import {
 	EMPTY_USAGE,
 	getFinalOutput,
 	isSubagentError,
+	countSubagentOutcomes,
 	classifyError,
 	MAX_CHAIN_STEPS,
 	MAX_PARALLEL_TASKS,
@@ -795,7 +796,7 @@ export default function (pi: ExtensionAPI) {
 				previousOutput = getFinalOutput(result.messages);
 			}
 
-			chainSuccess = chainResults.every((r) => r.exitCode === 0);
+			chainSuccess = countSubagentOutcomes(chainResults).failed === 0;
 
 			// Compute aggregated totals
 			const totalInput = chainResults.reduce(
@@ -1202,11 +1203,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Emit progress update
-			const completed = results.filter(Boolean).length;
-			const succeeded = results.filter(
-				(r) => r && r.exitCode === 0,
-			).length;
-			const failed = completed - succeeded;
+			const { succeeded, failed } = countSubagentOutcomes(results);
+			const completed = succeeded + failed;
 
 			const partialDetails: ParallelDetails = {
 				mode: "parallel",
@@ -1305,8 +1303,7 @@ export default function (pi: ExtensionAPI) {
 			(s, r) => s + r.usage.turns,
 			0,
 		);
-		const succeeded = finalResults.filter((r) => r.exitCode === 0).length;
-		const failed = finalResults.length - succeeded;
+		const { succeeded, failed } = countSubagentOutcomes(finalResults);
 
 		const parallelDetails: ParallelDetails = {
 			mode: "parallel",
@@ -1809,9 +1806,7 @@ export default function (pi: ExtensionAPI) {
 			const totalCost = allResults.reduce((s, r) => s + r.usage.cost, 0);
 			const totalTurns = allResults.reduce((s, r) => s + r.usage.turns, 0);
 
-			chainSuccess = allResults.every(
-				(r) => r.exitCode === 0 && r.stopReason !== "error" && r.stopReason !== "aborted",
-			);
+			chainSuccess = countSubagentOutcomes(allResults).failed === 0;
 
 			const graphDetails: GraphDetails = {
 				mode: "graph",
