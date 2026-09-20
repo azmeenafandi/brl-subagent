@@ -2320,48 +2320,10 @@ export default function (pi: ExtensionAPI) {
 				}, { deliverAs: "followUp" });
 			}
 
-			// F1: Sanitize task input — skip for chain/parallel modes
-			const hasChain = params.chain && params.chain.length > 0;
-			const hasParallel = params.tasks && params.tasks.length > 0;
-			const hasGraph = params.graph && params.graph.length > 0;
-			if (!hasChain && !hasParallel && !hasGraph) {
-				// task is optional per the schema; single mode requires it. When absent,
-				// feed "" to the sanitizer — same rejection path ("Task must not be
-				// empty.") as when task was a required field.
-				const taskResult = sanitizeTask(params.task ?? "");
-				if (!taskResult.ok) {
-					log.warn("Task rejected by sanitizer", { error: taskResult.error });
-					return {
-						content: [{ type: "text" as const, text: `Invalid task: ${taskResult.error}` }],
-						details: undefined,
-						isError: true,
-					};
-				}
-				params.task = taskResult.value;
-			}
-
-			// Handle retryRunId
-			if (params.retryRunId) {
-				const runEntry = state.findRunById(ctx, params.retryRunId);
-				if (runEntry) {
-					params = resolveRetryParams(params, runEntry);
-				} else {
-					// Issue #98: a silent no-op here made retries of background runs
-					// (which previously never wrote run entries) start as FRESH runs
-					// with no signal to the caller. Fail loudly instead.
-					log.warn("Retry run ID not found", { retryRunId: params.retryRunId });
-					return {
-						content: [{
-							type: "text" as const,
-							text: `Retry run ID not found: ${params.retryRunId}. The run may have been pruned, or it was a background run created before the run-entry fix (issue #98). Pass the run's agent ID — for background runs the agent ID and run ID are now the same.`,
-						}],
-						details: undefined,
-						isError: true,
-					};
-				}
-			}
-
-			// Handle template resolution
+			// Handle template resolution — MUST run before the single-mode sanitize
+			// block below: a template ASSIGNS params.task, so resolving first lets the
+			// sanitizer validate the real resolved body (a template-only call has no
+			// task yet) and lets mode detection see a non-empty task (issue #175).
 			if (params.template) {
 				const templateEntry = state.config.templates.find((t) => t.name === params.template);
 				if (!templateEntry) {
@@ -2393,7 +2355,34 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				const tv = resolved.value;
-				// Use resolved template fields as defaults, explicitly provided params override
+				// Issue #175 review (fix 4): template-wins silently replaces a
+				// supplied `task`. If that task would itself have failed sanitization
+				// (e.g. over-length), the caller gets no signal — pre-#175 `dev`
+				// rejected it. Warn (never reject — #99/#110 precedent, same
+				// pi.sendMessage channel as the unknown-param warning) so both the LLM
+				// and the human see the ignored task. Emitted ONLY when the supplied
+				// task actually fails sanitization: a valid task alongside a template
+				// is the intended template-wins override (issue #57), not noise.
+				if (params.task !== undefined) {
+					const suppliedTask = sanitizeTask(params.task);
+					if (!suppliedTask.ok) {
+						log.warn("delegate_task: supplied task ignored because a template was given", {
+							template: params.template,
+							error: suppliedTask.error,
+						});
+						pi.sendMessage({
+							customType: "delegate-notification",
+							content: `delegate_task: the supplied 'task' was ignored because a template ('${params.template}') was given. The task would otherwise have been rejected: ${suppliedTask.error}`,
+							display: true,
+							details: { template: params.template, rejectedTask: suppliedTask.error },
+						}, { deliverAs: "followUp" });
+					}
+				}
+				// Issue #175 review (fix direction item 4): this assignment is
+				// UNCONDITIONAL — the resolved template task replaces any supplied
+				// `task` (template-wins, issue #57); it is NOT a default the caller can
+				// override. The fields below, by contrast, ARE defaults: an explicitly
+				// provided param wins over the template's value.
 				params.task = tv.task;
 				if (tv.preset && !params.preset) params.preset = tv.preset;
 				if (tv.thinkingLevel && !params.thinkingLevel) params.thinkingLevel = tv.thinkingLevel;
@@ -2403,6 +2392,53 @@ export default function (pi: ExtensionAPI) {
 				if (tv.excludeTools && !params.excludeTools) params.excludeTools = tv.excludeTools;
 				if (tv.noBuiltinTools !== undefined && params.noBuiltinTools === undefined) params.noBuiltinTools = tv.noBuiltinTools;
 				if (tv.inheritSystemPrompt !== undefined && params.inheritSystemPrompt === undefined) params.inheritSystemPrompt = tv.inheritSystemPrompt;
+			}
+
+			// Handle retryRunId — MUST run after template resolution and before the
+			// single-mode sanitize block. resolveRetryParams assigns params.task from
+			// the recorded run, so the sanitizer must see the retried body (a
+			// retry-only call has no task yet). It MUST run AFTER template resolution:
+			// resolveRetryParams returns a fresh object that DROPS `template`, so
+			// resolving templates first keeps a combined template + retryRunId call
+			// from silently disabling template resolution (issue #175 review).
+			if (params.retryRunId) {
+				const runEntry = state.findRunById(ctx, params.retryRunId);
+				if (runEntry) {
+					params = resolveRetryParams(params, runEntry);
+				} else {
+					// Issue #98: a silent no-op here made retries of background runs
+					// (which previously never wrote run entries) start as FRESH runs
+					// with no signal to the caller. Fail loudly instead.
+					log.warn("Retry run ID not found", { retryRunId: params.retryRunId });
+					return {
+						content: [{
+							type: "text" as const,
+							text: `Retry run ID not found: ${params.retryRunId}. The run may have been pruned, or it was a background run created before the run-entry fix (issue #98). Pass the run's agent ID — for background runs the agent ID and run ID are now the same.`,
+						}],
+						details: undefined,
+						isError: true,
+					};
+				}
+			}
+
+			// F1: Sanitize task input — skip for chain/parallel/graph modes
+			const hasChain = params.chain && params.chain.length > 0;
+			const hasParallel = params.tasks && params.tasks.length > 0;
+			const hasGraph = params.graph && params.graph.length > 0;
+			if (!hasChain && !hasParallel && !hasGraph) {
+				// task is optional per the schema; single mode requires it. When absent,
+				// feed "" to the sanitizer — same rejection path ("Task must not be
+				// empty.") as when task was a required field.
+				const taskResult = sanitizeTask(params.task ?? "");
+				if (!taskResult.ok) {
+					log.warn("Task rejected by sanitizer", { error: taskResult.error });
+					return {
+						content: [{ type: "text" as const, text: `Invalid task: ${taskResult.error}` }],
+						details: undefined,
+						isError: true,
+					};
+				}
+				params.task = taskResult.value;
 			}
 
 			// P1+P2+P10: Mode detection — graph > chain > parallel > single
