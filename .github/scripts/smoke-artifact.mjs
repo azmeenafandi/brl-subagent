@@ -32,7 +32,7 @@ import {
 } from "node:fs";
 import { builtinModules } from "node:module";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createJiti } from "jiti";
 import ts from "typescript";
@@ -185,9 +185,52 @@ function isTypeOnlyExport(node) {
 }
 
 /**
+ * The specifier of a statically resolvable CommonJS `require("spec")` call, or
+ * undefined for any other node. The callee must be the bare `require`
+ * identifier and the first argument a string literal — a computed argument
+ * (`require(name)`) cannot be classified. A dynamic `import()` is a different
+ * callee (`ImportKeyword`) and is handled separately, so the two never double
+ * count.
+ *
+ * @param {ts.Node} node
+ * @returns {string | undefined}
+ */
+function requireSpecifier(node) {
+	if (
+		ts.isCallExpression(node) &&
+		ts.isIdentifier(node.expression) &&
+		node.expression.text === "require" &&
+		node.arguments.length > 0 &&
+		ts.isStringLiteral(node.arguments[0])
+	) {
+		return node.arguments[0].text;
+	}
+	return undefined;
+}
+
+/**
+ * The specifier of a runtime `import x = require("spec")` declaration, or
+ * undefined for any other node. `import type x = require("spec")` is erased at
+ * compile time and imposes no runtime dependency, so it is excluded like the
+ * other type-only forms.
+ *
+ * @param {ts.Node} node
+ * @returns {string | undefined}
+ */
+function importEqualsSpecifier(node) {
+	if (!ts.isImportEqualsDeclaration(node) || node.isTypeOnly) return undefined;
+	const ref = node.moduleReference;
+	if (ts.isExternalModuleReference(ref) && ref.expression && ts.isStringLiteral(ref.expression)) {
+		return ref.expression.text;
+	}
+	return undefined;
+}
+
+/**
  * Collect every runtime import specifier in a source file — static `import`
- * / `export … from` statements and dynamic `import()` expressions. Type-only
- * imports and `import("x").T` type references are ignored.
+ * / `export … from` statements, dynamic `import()` expressions, and CommonJS
+ * `require()` calls (both `require("x")` and `import x = require("x")`).
+ * Type-only imports/exports and `import("x").T` type references are ignored.
  *
  * @param {string} filePath
  * @param {string} source
@@ -200,27 +243,53 @@ function collectRuntimeSpecifiers(filePath, source) {
 
 	/** @param {ts.Node} node */
 	const visit = (node) => {
+		/** @type {string | undefined} */
+		let specifier;
 		if (
 			ts.isImportDeclaration(node) &&
 			ts.isStringLiteral(node.moduleSpecifier) &&
 			isRuntimeImportClause(node.importClause)
 		) {
-			specifiers.push(node.moduleSpecifier.text);
+			specifier = node.moduleSpecifier.text;
 		} else if (
 			ts.isExportDeclaration(node) &&
 			node.moduleSpecifier &&
 			ts.isStringLiteral(node.moduleSpecifier) &&
 			!isTypeOnlyExport(node)
 		) {
-			specifiers.push(node.moduleSpecifier.text);
+			specifier = node.moduleSpecifier.text;
 		} else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
 			const [arg] = node.arguments;
-			if (arg && ts.isStringLiteral(arg)) specifiers.push(arg.text);
+			if (arg && ts.isStringLiteral(arg)) specifier = arg.text;
+		} else {
+			specifier = requireSpecifier(node) ?? importEqualsSpecifier(node);
 		}
+		if (specifier !== undefined) specifiers.push(specifier);
 		ts.forEachChild(node, visit);
 	};
 	visit(sourceFile);
 	return specifiers;
+}
+
+/**
+ * Runtime dependency specifiers in a source file, paired with the package name
+ * each belongs to. Relative (`./`, `../`, `/`), builtin (`node:fs`, `fs`), and
+ * package subpath (`#internal`) specifiers resolve inside the package or in
+ * Node, so they impose no external dependency and are dropped. This is the
+ * exact classification the declaration check applies.
+ *
+ * @param {string} filePath
+ * @param {string} source
+ * @returns {{ specifier: string, packageName: string }[]}
+ */
+function classifyRuntimeSpecifiers(filePath, source) {
+	/** @type {{ specifier: string, packageName: string }[]} */
+	const out = [];
+	for (const specifier of collectRuntimeSpecifiers(filePath, source)) {
+		if (isRelativeSpecifier(specifier) || isBuiltinSpecifier(specifier) || specifier.startsWith("#")) continue;
+		out.push({ specifier, packageName: packageNameOf(specifier) });
+	}
+	return out;
 }
 
 /** @param {string} spec */
@@ -242,6 +311,8 @@ function packageNameOf(spec) {
 	}
 	return spec.split("/")[0];
 }
+
+export { collectRuntimeSpecifiers, classifyRuntimeSpecifiers };
 
 // ---------------------------------------------------------------------------
 // Main
@@ -329,13 +400,11 @@ function runArtifactChecks(packageRoot) {
 		const used = new Set();
 		for (const file of srcFiles) {
 			const source = readFileSync(file, "utf8");
-			for (const specifier of collectRuntimeSpecifiers(file, source)) {
-				if (isRelativeSpecifier(specifier) || isBuiltinSpecifier(specifier) || specifier.startsWith("#")) continue;
-				const pkg = packageNameOf(specifier);
-				used.add(pkg);
-				if (!declared.has(pkg)) {
+			for (const { specifier, packageName } of classifyRuntimeSpecifiers(file, source)) {
+				used.add(packageName);
+				if (!declared.has(packageName)) {
 					missing.push(
-						`${relative(packageRoot, file)} imports "${specifier}" but "${pkg}" is not declared in dependencies/peerDependencies/optionalDependencies`,
+						`${relative(packageRoot, file)} imports "${specifier}" but "${packageName}" is not declared in dependencies/peerDependencies/optionalDependencies`,
 					);
 				}
 			}
@@ -391,6 +460,18 @@ function report() {
 		process.exitCode = 1;
 		return;
 	}
+	if ((process.exitCode ?? 0) !== 0) {
+		// A non-zero code with no recorded failure means the run threw before it
+		// could finish. On a release gate that must never render as "OK".
+		console.error("");
+		console.error(
+			`smoke-artifact: ABNORMAL EXIT (code ${process.exitCode}) — no check recorded a failure, but the run did not complete cleanly`,
+		);
+		console.error("");
+		for (const c of passed) console.error(`  ✓ ${c.name}${c.detail ? ` — ${c.detail}` : ""}`);
+		console.error("");
+		return;
+	}
 	console.log("");
 	console.log(`smoke-artifact: OK — ${passed.length} check(s) passed`);
 	console.log("");
@@ -430,12 +511,20 @@ function main() {
 	}
 }
 
-try {
-	main();
-} catch (err) {
-	console.error("smoke-artifact: unexpected error");
-	console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
-	process.exitCode = 1;
-} finally {
-	report();
+// Only run the smoke test when this file is the entry point (`node
+// .github/scripts/smoke-artifact.mjs`). Importing it from the scanner unit test
+// must not pack, extract, or exit the worker.
+const isDirectRun =
+	process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+
+if (isDirectRun) {
+	try {
+		main();
+	} catch (err) {
+		console.error("smoke-artifact: unexpected error");
+		console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
+		process.exitCode = 1;
+	} finally {
+		report();
+	}
 }
