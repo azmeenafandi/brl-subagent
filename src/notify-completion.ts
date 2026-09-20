@@ -59,12 +59,12 @@ const DEDUPE_CAP = 200;
 
 /**
  * Soft directive appended to the content (D3): the conductor should process
- * the completion silently unless action is needed; on failure apply the retry
- * taxonomy (re-dispatch ≠ retry; Rule 18 governs terminations — ask the user
- * before terminating anything).
+ * the completion silently unless action is needed. If the run failed, it
+ * should investigate the cause before re-dispatching rather than re-issuing an
+ * identical task — any re-issue is confirmed with the user first.
  */
 const COMPLETION_DIRECTIVE =
-	"Process this completion silently unless action is needed. If the run failed, apply the retry taxonomy: a re-dispatch is not a retry, and Rule 18 governs terminations — ask the user before terminating anything.";
+	"Process this completion silently unless action is needed. If the run failed, investigate before re-dispatching — do not re-issue an identical task without confirming the cause with the user.";
 
 /**
  * Normalize a BackgroundAgent status to a terminal status word. The subscriber
