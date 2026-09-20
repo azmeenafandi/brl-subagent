@@ -138,8 +138,8 @@ describe("buildCompletionMessage", () => {
 
 	it("appends the soft directive paragraph", () => {
 		const msg = buildCompletionMessage(makeAgent({ status: "failed" }), makeRun());
-		expect(msg.content).toContain("Process this completion silently unless action is needed.");
-		expect(msg.content).toContain("Rule 18 governs terminations");
+		expect(msg.content).toContain("Process this completion silently");
+		expect(msg.content).toContain("confirming the cause with the user");
 	});
 
 	it("truncates the output tail via truncateTail with the marker", () => {

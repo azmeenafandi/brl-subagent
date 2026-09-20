@@ -2413,7 +2413,7 @@ export default function (pi: ExtensionAPI) {
 					return {
 						content: [{
 							type: "text" as const,
-							text: `Retry run ID not found: ${params.retryRunId}. The run may have been pruned, or it was a background run created before the run-entry fix (issue #98). Pass the run's agent ID — for background runs the agent ID and run ID are now the same.`,
+							text: `Retry run ID not found: ${params.retryRunId}. The run may have been pruned, or it was a background run created before the run-entry fix. Pass the run's agent ID — for background runs the agent ID and run ID are now the same.`,
 						}],
 						details: undefined,
 						isError: true,
