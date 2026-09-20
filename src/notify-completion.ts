@@ -25,6 +25,7 @@ import type {
 } from "./types";
 import { truncateTail } from "./transcript-tail";
 import { formatRunDuration } from "./history";
+import { classifyTerminalOutcome } from "./types";
 
 /** Terminal statuses the completion message can carry. */
 export type CompletionStatus = "completed" | "failed" | "stopped";
@@ -35,6 +36,8 @@ export interface CompletionMessageDetails {
 	status: CompletionStatus;
 	errorCategory: string;
 	errorMessage?: string;
+	/** Issue #179 (D2): the terminal stopReason behind the classified status. */
+	stopReason?: string;
 	costUsd?: number;
 	tokensIn?: number;
 	tokensOut?: number;
@@ -59,12 +62,12 @@ const DEDUPE_CAP = 200;
 
 /**
  * Soft directive appended to the content (D3): the conductor should process
- * the completion silently unless action is needed; on failure apply the retry
- * taxonomy (re-dispatch ≠ retry; Rule 18 governs terminations — ask the user
- * before terminating anything).
+ * the completion silently unless action is needed. If the run failed, it
+ * should investigate the cause before re-dispatching rather than re-issuing an
+ * identical task — any re-issue is confirmed with the user first.
  */
 const COMPLETION_DIRECTIVE =
-	"Process this completion silently unless action is needed. If the run failed, apply the retry taxonomy: a re-dispatch is not a retry, and Rule 18 governs terminations — ask the user before terminating anything.";
+	"Process this completion silently unless action is needed. If the run failed, investigate before re-dispatching — do not re-issue an identical task without confirming the cause with the user.";
 
 /**
  * Normalize a BackgroundAgent status to a terminal status word. The subscriber
@@ -128,23 +131,50 @@ export function buildCompletionMessage(
 	agent: BackgroundAgent,
 	run: SubagentRun | undefined,
 ): CompletionMessagePayload {
-	const status = normalizeCompletionStatus(agent.status);
+	let status = normalizeCompletionStatus(agent.status);
+	// Issue #179 (D2): the notification category must NEVER default to success
+	// merely because `agent.status === "completed"`. The SDK resolves a mid-run
+	// provider death, so the run entry is the authoritative classified reason —
+	// downgrade a stale "completed" when the run says otherwise.
+	if (status === "completed" && run) {
+		const outcome = classifyTerminalOutcome(run.stopReason, run.errorMessage);
+		if (outcome.status !== "completed") {
+			status = outcome.status;
+		} else if (run.status === "failed") {
+			status = "failed";
+		}
+	}
 	// BackgroundAgent has no `label` field — the caller's label is `description`
 	// (set from params.description at spawn). Fall back to the id.
 	const label = agent.description || agent.id;
 	// completed → "success"; failed/stopped → classified category from the run
 	// record (finalizeRunEntry stamps it), falling back to "unknown".
 	const errorCategory =
-		status === "completed" ? "success" : (run?.originalParams?.errorCategory ?? "unknown");
+		status === "completed"
+			? "success"
+			: (run?.errorCategory ?? run?.originalParams?.errorCategory ?? "unknown");
 	const durationMs = run?.durationMs;
 	const costUsd = run?.cost;
 	const tokensIn = run?.tokensIn;
 	const tokensOut = run?.tokensOut;
+	const stopReason = run?.stopReason;
 	const errorMessage = status === "completed" ? undefined : agent.error ?? run?.errorMessage;
 
 	const summary = buildSummaryLine(label, agent.id, status, durationMs, costUsd, errorCategory);
-	const tail = truncateTail(agent.finalOutput ?? run?.fullOutput ?? "", 15);
+	// Issue #179 (C1 fix): truncateTail keeps the LAST 15 lines, but the failure
+	// headline is PREPENDED to the stored output — long earlier-turn prose would
+	// otherwise push the failure reason out of the notified body. Peel it off
+	// before tailing and re-add it as its own part so the reason is never
+	// truncated away.
+	const stored = agent.finalOutput ?? run?.fullOutput ?? "";
+	const headline = status === "completed" ? undefined : errorMessage;
+	const body =
+		headline && stored.startsWith(headline)
+			? stored.slice(headline.length).replace(/^\n+/, "")
+			: stored;
+	const tail = truncateTail(body, 15);
 	const parts = [summary];
+	if (headline) parts.push(headline);
 	if (tail) parts.push(tail);
 	parts.push(COMPLETION_DIRECTIVE);
 	const content = parts.join("\n\n");
@@ -154,6 +184,7 @@ export function buildCompletionMessage(
 		status,
 		errorCategory,
 		...(errorMessage ? { errorMessage } : {}),
+		...(stopReason ? { stopReason } : {}),
 		...(costUsd !== undefined ? { costUsd } : {}),
 		...(tokensIn !== undefined ? { tokensIn } : {}),
 		...(tokensOut !== undefined ? { tokensOut } : {}),

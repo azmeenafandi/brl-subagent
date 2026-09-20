@@ -116,6 +116,16 @@ let sessionStartHandler: ((_event: unknown, ctx: Record<string, unknown>) => Pro
 // records that parallel mode creates and finalizes. Reset per test.
 let recordedEntries: Array<{ type: string; data: unknown }> = [];
 
+// Issue #175 review (fix 4): the template-wins warn is routed through
+// pi.sendMessage (the #110 unknown-param channel). Capture it so tests can
+// assert BOTH the content and the display/followUp delivery. Reset per test.
+let sentMessages: Array<{
+	customType?: string;
+	content: string;
+	display?: boolean;
+	details?: unknown;
+}> = [];
+
 function setupExtension(): ToolEntry {
 	const registeredTools = new Map<string, ToolEntry>();
 	const mockPi = {
@@ -131,7 +141,9 @@ function setupExtension(): ToolEntry {
 			// reference would show the final (done) state on every recorded write.
 			recordedEntries.push({ type, data: { ...(data as Record<string, unknown>) } });
 		},
-		sendMessage: () => {},
+		sendMessage: (msg: { customType?: string; content: string; display?: boolean; details?: unknown }) => {
+			sentMessages.push(msg);
+		},
 		ctx: {
 			getState: () => undefined,
 			setState: () => {},
@@ -211,6 +223,7 @@ let tempStorageDir = "";
 beforeEach(() => {
 	recordedEntries = [];
 	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
+	sentMessages = [];
 	// testCwd leaks too (template/preset seed dirs under it); rm the previous
 	// one before creating the next, mirroring tempPiBase.
 	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
@@ -892,7 +905,7 @@ describe("auto-route respects explicit tool intent (issue #57)", () => {
 		}
 
 		const result = await tool.execute("call-57e", {
-			task: "placeholder", // sanitizer runs before template resolution; template task replaces it
+			task: "placeholder", // template resolution runs first and assigns the template task; sanitizer then validates it
 			template: "review-notes",
 			params: {},
 		}, undefined, undefined, ctx);
@@ -922,7 +935,7 @@ describe("auto-route respects explicit tool intent (issue #57)", () => {
 		}
 
 		const result = await tool.execute("call-57f", {
-			task: "placeholder", // sanitizer runs before template resolution; template task replaces it
+			task: "placeholder", // template resolution runs first and assigns the template task; sanitizer then validates it
 			template: "read-only-review",
 			params: {},
 		}, undefined, undefined, ctx);
@@ -938,6 +951,254 @@ describe("auto-route respects explicit tool intent (issue #57)", () => {
 			noBuiltinTools: undefined,
 		});
 		expect(result.content[0].text).not.toContain("[auto-routed to preset");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #175: template-only delegate_task calls (no `task`)
+//
+// Template resolution used to run AFTER the single-mode sanitize block, so a
+// call supplying only `template` (+ `params`) was rejected with "Invalid task:
+// Task must not be empty." before the template could supply the body. The
+// sanitize block now runs after resolution, so it validates the REAL body —
+// templates remain sanitized, and a template-only call dispatches the
+// resolved body.
+// ---------------------------------------------------------------------------
+
+describe("template-only delegate_task calls dispatch (issue #175)", () => {
+	const TEMPLATE_TASK = "Review the changed files and report findings verbatim.";
+
+	/** Seed a file-backed template and reload templates via the session-start handler. */
+	async function seedTemplate(ctx: ReturnType<typeof makeCtx>, name: string, body: string): Promise<void> {
+		const templatesDir = path.join(ctx.cwd, ".pi", "brl-subagent", "templates");
+		fs.mkdirSync(templatesDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(templatesDir, `${name}.md`),
+			["---", `name: ${name}`, "---", body].join("\n"),
+			"utf-8",
+		);
+		if (sessionStartHandler) {
+			await sessionStartHandler({}, ctx as never);
+		}
+	}
+
+	it("does not reject a template-only call and dispatches the resolved body", async () => {
+		const ctx = makeCtx();
+		await seedTemplate(ctx, "focused-review", TEMPLATE_TASK);
+
+		// No `task`: the template body IS the task. Before the ordering fix this
+		// died in the sanitize block with "Invalid task: Task must not be empty."
+		const result = await tool.execute("call-175", {
+			template: "focused-review",
+			params: {},
+		}, undefined, undefined, ctx);
+
+		expect(result.content[0].text).not.toContain("Invalid task: Task must not be empty.");
+		expect(result.isError).toBeFalsy();
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		// The resolved template body (not an empty/placeholder task) reaches dispatch.
+		expect(runnerMocks.runSubagent.mock.calls[0][4]).toBe(TEMPLATE_TASK);
+	});
+
+	it("still sanitizes the RESOLVED body (over-length template is rejected)", async () => {
+		const ctx = makeCtx();
+		// 50KB is the sanitizeTask cap; a body over it must be rejected AFTER
+		// template resolution, proving the sanitizer sees the real body.
+		await seedTemplate(ctx, "too-long", "x".repeat(50_001));
+
+		const result = await tool.execute("call-175b", {
+			template: "too-long",
+			params: {},
+		}, undefined, undefined, ctx);
+
+		expect(result.content[0].text).toContain("Invalid task: Task too long");
+		expect(result.isError).toBe(true);
+		expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #175 review: retry-only delegate_task calls dispatch
+//
+// The #175 ordering fix resolved templates before the single-mode sanitize
+// block, but left the retryRunId block AFTER it. A call supplying only
+// `retryRunId` (no `task`) therefore still died in the sanitize block with
+// "Invalid task: Task must not be empty." — because resolveRetryParams, the
+// block that assigns params.task from the recorded run, had not run yet.
+// Moving the retry block between template resolution and the sanitize block
+// fixes it. The order MUST stay template -> retry -> sanitize: resolveRetryParams
+// returns a fresh object that drops `template`, so retry-first would silently
+// disable template resolution for a combined template + retryRunId call.
+// ---------------------------------------------------------------------------
+
+describe("retry-only delegate_task calls dispatch (issue #175 review)", () => {
+	/** Point ctx's sessionManager at one run entry so findRunById resolves it. */
+	function seedRunEntry(ctx: ReturnType<typeof makeCtx>, run: SubagentRun): void {
+		const entries = [{ type: "custom", customType: CUSTOM_ENTRY_TYPES.run, data: run }];
+		(ctx.sessionManager as { getEntries: () => unknown[] }).getEntries = () => entries;
+	}
+
+	/** Seed a file-backed template and reload templates via the session-start handler. */
+	async function seedTemplate(ctx: ReturnType<typeof makeCtx>, name: string, body: string): Promise<void> {
+		const templatesDir = path.join(ctx.cwd, ".pi", "brl-subagent", "templates");
+		fs.mkdirSync(templatesDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(templatesDir, `${name}.md`),
+			["---", `name: ${name}`, "---", body].join("\n"),
+			"utf-8",
+		);
+		if (sessionStartHandler) {
+			await sessionStartHandler({}, ctx as never);
+		}
+	}
+
+	it("dispatches the recorded task when only retryRunId is supplied", async () => {
+		const ctx = makeCtx();
+		const originalTask = "Recorded task from the failed run that must be retried.";
+		seedRunEntry(ctx, {
+			id: "retry-only-1",
+			task: originalTask,
+			status: "failed",
+			model: "test/test-model",
+			thinkingLevel: "medium",
+			startedAt: new Date().toISOString(),
+		});
+
+		// No `task`: resolveRetryParams supplies it from the run entry. With the
+		// retry block AFTER the sanitize block (the pre-fix ordering) this died
+		// with "Invalid task: Task must not be empty." before the retry ran.
+		const result = await tool.execute("call-retry-only", {
+			retryRunId: "retry-only-1",
+		}, undefined, undefined, ctx);
+
+		expect(result.content[0].text).not.toContain("Invalid task: Task must not be empty.");
+		expect(result.isError).toBeFalsy();
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		// The recorded task (not an empty one) reaches dispatch.
+		expect(runnerMocks.runSubagent.mock.calls[0][4]).toBe(originalTask);
+	});
+
+	it("resolves the template before retry (a combined template + retryRunId call keeps the template body)", async () => {
+		const ctx = makeCtx();
+		const templateTask = "Template body wins over the recorded retry task.";
+		await seedTemplate(ctx, "retry-template", templateTask);
+		seedRunEntry(ctx, {
+			id: "retry-combined-1",
+			task: "Recorded task that the template must override.",
+			status: "failed",
+			model: "test/test-model",
+			thinkingLevel: "medium",
+			startedAt: new Date().toISOString(),
+		});
+
+		// resolveRetryParams drops `template`; if the retry block ran first the
+		// template would never resolve and the recorded task would win instead.
+		const result = await tool.execute("call-retry-template", {
+			template: "retry-template",
+			params: {},
+			retryRunId: "retry-combined-1",
+		}, undefined, undefined, ctx);
+
+		expect(result.isError).toBeFalsy();
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		expect(runnerMocks.runSubagent.mock.calls[0][4]).toBe(templateTask);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #175 review (fix 4): warn — not reject — when a supplied `task` is
+// ignored because a template was given AND that task would fail sanitization.
+//
+// Template wins over an explicit task (issue #57, intended + tested). But an
+// explicit task that would itself have failed sanitization (e.g. over-length)
+// was rejected on dev and is now silently dropped, so warn via the #110
+// pi.sendMessage channel (LLM + human). A VALID task alongside a template is
+// the intended override and must NOT warn.
+// ---------------------------------------------------------------------------
+
+describe("template-wins warns only when the ignored task would fail sanitization (issue #175 review)", () => {
+	async function seedTemplate(ctx: ReturnType<typeof makeCtx>, name: string, body: string): Promise<void> {
+		const templatesDir = path.join(ctx.cwd, ".pi", "brl-subagent", "templates");
+		fs.mkdirSync(templatesDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(templatesDir, `${name}.md`),
+			["---", `name: ${name}`, "---", body].join("\n"),
+			"utf-8",
+		);
+		if (sessionStartHandler) {
+			await sessionStartHandler({}, ctx as never);
+		}
+	}
+
+	it("warns (does not reject) when the ignored task is over-length, and still dispatches the template body", async () => {
+		const ctx = makeCtx();
+		const templateTask = "Template body that wins.";
+		await seedTemplate(ctx, "warn-override", templateTask);
+
+		const result = await tool.execute("call-warn-task", {
+			task: "x".repeat(50_001), // over the 50KB sanitizeTask cap
+			template: "warn-override",
+			params: {},
+		}, undefined, undefined, ctx);
+
+		// Template wins and the call still dispatches (warn-not-reject).
+		expect(result.isError).toBeFalsy();
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		expect(runnerMocks.runSubagent.mock.calls[0][4]).toBe(templateTask);
+
+		// Warning is delivered through pi.sendMessage so the LLM (followUp) and the
+		// human (session transcript) both see it; content names the ignored task's
+		// reason and that a template caused the ignore.
+		const warning = sentMessages.find((m) => m.customType === "delegate-notification");
+		expect(warning).toBeDefined();
+		expect(warning!.content).toContain("ignored");
+		expect(warning!.content).toContain("template");
+		expect(warning!.content).toContain("Task too long");
+		expect(warning!.display).toBe(true);
+	});
+
+	it("does not warn when the supplied task is valid (template-wins override is intended, not noise)", async () => {
+		const ctx = makeCtx();
+		const templateTask = "Template body that wins.";
+		await seedTemplate(ctx, "no-warn-override", templateTask);
+
+		const result = await tool.execute("call-no-warn", {
+			task: "A perfectly valid explicit task.",
+			template: "no-warn-override",
+			params: {},
+		}, undefined, undefined, ctx);
+
+		expect(result.isError).toBeFalsy();
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+		expect(runnerMocks.runSubagent.mock.calls[0][4]).toBe(templateTask);
+		expect(sentMessages).toHaveLength(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #175 review: no-template parity. Calls without a template reach the
+// sanitizer exactly as before — same rejections, same messages, no dispatch.
+// ---------------------------------------------------------------------------
+
+describe("no-template parity (issue #175 review)", () => {
+	it("rejects an over-length task without a template (no silent ignore)", async () => {
+		const ctx = makeCtx();
+		const result = await tool.execute("call-parity-long", {
+			task: "x".repeat(50_001),
+		}, undefined, undefined, ctx);
+
+		expect(result.content[0].text).toContain("Invalid task: Task too long");
+		expect(result.isError).toBe(true);
+		expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
+	});
+
+	it("rejects an absent task without a template (unchanged empty-task rejection)", async () => {
+		const ctx = makeCtx();
+		const result = await tool.execute("call-parity-empty", {}, undefined, undefined, ctx);
+
+		expect(result.content[0].text).toContain("Invalid task: Task must not be empty.");
+		expect(result.isError).toBe(true);
+		expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
 	});
 });
 

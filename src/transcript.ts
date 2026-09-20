@@ -19,8 +19,9 @@ export function __setOutputDir(dir: string): void {
  * Ensure output directory exists
  */
 function ensureOutputDir(): void {
-  // F6 (issue #29): transcripts contain the full subagent conversation — the
-  // dir must be owner-only (0o700) so other local users cannot list the files.
+  // F6 (issue #29): transcripts may hold task/steering text — the dir must be
+  // owner-only (0o700) so other local users cannot list the files. NOTE: the
+  // transcript is NOT the full conversation (see appendEntry below).
   mkdirSync(OUTPUT_DIR, { recursive: true, mode: 0o700 });
 }
 
@@ -52,8 +53,9 @@ export function startTranscript(agentId: string, task: string): string {
     metadata: { task },
   };
   
-  // F6 (issue #29): transcripts hold the full conversation — append
-  // owner-only (0o600) on file CREATE (mode is not retroactive).
+  // F6 (issue #29): append owner-only (0o600) on file CREATE (mode is not
+  // retroactive). The file holds the system start entry plus any steering
+  // entries appended below — NOT the full conversation.
   appendFileSync(path, JSON.stringify(entry) + '\n', { encoding: 'utf-8', mode: 0o600 });
   return path;
 }
@@ -79,8 +81,11 @@ export function appendEntry(
     metadata,
   };
   
-  // F6 (issue #29): transcripts hold the full conversation — append
-  // owner-only (0o600) on file CREATE (mode is not retroactive).
+  // F6 (issue #29): append owner-only (0o600) on file CREATE (mode is not
+  // retroactive). NOTE (D5 / issue #179): this is NOT a conversation recorder —
+  // the only caller is steering (steerAgent), so the transcript holds the
+  // system start entry and steering lines. Do NOT describe it as the full
+  // conversation without actually recording one.
   appendFileSync(path, JSON.stringify(entry) + '\n', { encoding: 'utf-8', mode: 0o600 });
 }
 

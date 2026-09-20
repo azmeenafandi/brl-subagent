@@ -407,7 +407,7 @@ export function validateTemplatePresetRefs(
 			dangling++;
 			log?.warn(
 				`Template "${template.name}" references preset "${template.preset}" which does not exist ` +
-				"— delegation will run preset-less with auto-route suppressed (issue #81)",
+				"— delegation will run preset-less with auto-route suppressed",
 				{ template: template.name, preset: template.preset },
 			);
 		}

@@ -138,8 +138,8 @@ describe("buildCompletionMessage", () => {
 
 	it("appends the soft directive paragraph", () => {
 		const msg = buildCompletionMessage(makeAgent({ status: "failed" }), makeRun());
-		expect(msg.content).toContain("Process this completion silently unless action is needed.");
-		expect(msg.content).toContain("Rule 18 governs terminations");
+		expect(msg.content).toContain("Process this completion silently");
+		expect(msg.content).toContain("confirming the cause with the user");
 	});
 
 	it("truncates the output tail via truncateTail with the marker", () => {
@@ -148,6 +148,29 @@ describe("buildCompletionMessage", () => {
 		expect(msg.content).toContain("… (truncated)");
 		expect(msg.content).toContain("line17");
 		expect(msg.content).not.toContain("line01");
+	});
+
+	it("keeps a failure headline that was prepended to the stored output (issue #179)", () => {
+		// The stored output carries the failure headline PREPENDED, followed by 20
+		// lines of earlier-turn prose. `truncateTail` keeps the LAST 15 lines, so a
+		// headline that were still part of the truncated body would be dropped —
+		// which is exactly how a died run reported plausible-looking progress.
+		const headline = 'Run ended with a provider error (stopReason "error")';
+		const prose = Array.from(
+			{ length: 20 },
+			(_, i) => `line${String(i + 1).padStart(2, "0")}`,
+		).join("\n");
+
+		const agent = makeAgent({
+			status: "failed",
+			finalOutput: `${headline}\n${prose}`,
+			error: headline,
+		});
+		const msg = buildCompletionMessage(agent, makeRun({ status: "failed", errorMessage: headline }));
+
+		expect(msg.content).toContain(headline); // the reason survived
+		expect(msg.content).toContain("line20"); // the tail kept the end
+		expect(msg.content).not.toContain("line01"); // and still truncated the start
 	});
 
 	it("maps cost/tokens/duration/errorCategory from the run entry into details", () => {
@@ -183,6 +206,45 @@ describe("buildCompletionMessage", () => {
 		);
 		expect(msg.details.errorCategory).toBe("success");
 		expect(msg.details.errorMessage).toBeUndefined();
+	});
+
+	// Issue #179 (D2): the notification must NEVER default to success merely
+	// because the agent record says "completed" — the finalized run entry is the
+	// authoritative classified reason.
+	it("does NOT default to success when the run entry records a mid-run failure", () => {
+		const agent = makeAgent({ status: "completed" });
+		const run = makeRun({
+			status: "failed",
+			stopReason: "error",
+			errorCategory: "exit_error",
+			errorMessage: "provider died",
+		});
+		const msg = buildCompletionMessage(agent, run);
+
+		expect(msg.details.status).toBe("failed");
+		expect(msg.details.errorCategory).toBe("exit_error");
+		expect(msg.details.stopReason).toBe("error");
+		expect(msg.content).toContain("\u2014 failed");
+		expect(msg.content).not.toContain("category: success");
+	});
+
+	it("downgrades a completed agent whose run entry is failed even with no stopReason", () => {
+		const agent = makeAgent({ status: "completed" });
+		const run = makeRun({ status: "failed", originalParams: { errorCategory: "timeout" } });
+		const msg = buildCompletionMessage(agent, run);
+
+		expect(msg.details.status).toBe("failed");
+		expect(msg.details.errorCategory).toBe("timeout");
+	});
+
+	it("carries stopReason and the additive categories from the finalized run entry", () => {
+		const agent = makeAgent({ status: "failed" });
+		const run = makeRun({ status: "failed", stopReason: "length", errorCategory: "truncated" });
+		const msg = buildCompletionMessage(agent, run);
+
+		expect(msg.details.status).toBe("failed");
+		expect(msg.details.errorCategory).toBe("truncated");
+		expect(msg.details.stopReason).toBe("length");
 	});
 
 	it("degrades gracefully when the run entry is absent (cost fields omitted, never throws)", () => {

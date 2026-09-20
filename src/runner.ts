@@ -27,6 +27,7 @@ import {
 	SIGKILL_GRACE_MS,
 	TEMP_FILE_MODE,
 	MAX_TEMP_DIR_AGE_MS,
+	isProviderError,
 	classifyError,
 	SUBAGENT_ABORTED_MESSAGE,
 } from "./types";
@@ -666,7 +667,7 @@ export function parseSubagentLine(
 function countModelErrorTurns(messages: Array<Record<string, unknown>>): number {
 	let count = 0;
 	for (const msg of messages) {
-		if (msg.role === "assistant" && msg.stopReason === "error") count++;
+		if (msg.role === "assistant" && isProviderError(msg.stopReason as string | undefined)) count++;
 	}
 	return count;
 }
