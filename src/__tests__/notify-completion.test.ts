@@ -185,6 +185,45 @@ describe("buildCompletionMessage", () => {
 		expect(msg.details.errorMessage).toBeUndefined();
 	});
 
+	// Issue #179 (D2): the notification must NEVER default to success merely
+	// because the agent record says "completed" — the finalized run entry is the
+	// authoritative classified reason.
+	it("does NOT default to success when the run entry records a mid-run failure", () => {
+		const agent = makeAgent({ status: "completed" });
+		const run = makeRun({
+			status: "failed",
+			stopReason: "error",
+			errorCategory: "exit_error",
+			errorMessage: "provider died",
+		});
+		const msg = buildCompletionMessage(agent, run);
+
+		expect(msg.details.status).toBe("failed");
+		expect(msg.details.errorCategory).toBe("exit_error");
+		expect(msg.details.stopReason).toBe("error");
+		expect(msg.content).toContain("\u2014 failed");
+		expect(msg.content).not.toContain("category: success");
+	});
+
+	it("downgrades a completed agent whose run entry is failed even with no stopReason", () => {
+		const agent = makeAgent({ status: "completed" });
+		const run = makeRun({ status: "failed", originalParams: { errorCategory: "timeout" } });
+		const msg = buildCompletionMessage(agent, run);
+
+		expect(msg.details.status).toBe("failed");
+		expect(msg.details.errorCategory).toBe("timeout");
+	});
+
+	it("carries stopReason and the additive categories from the finalized run entry", () => {
+		const agent = makeAgent({ status: "failed" });
+		const run = makeRun({ status: "failed", stopReason: "length", errorCategory: "truncated" });
+		const msg = buildCompletionMessage(agent, run);
+
+		expect(msg.details.status).toBe("failed");
+		expect(msg.details.errorCategory).toBe("truncated");
+		expect(msg.details.stopReason).toBe("length");
+	});
+
 	it("degrades gracefully when the run entry is absent (cost fields omitted, never throws)", () => {
 		const agent = makeAgent({ status: "completed", finalOutput: "done" });
 		const msg = buildCompletionMessage(agent, undefined);
