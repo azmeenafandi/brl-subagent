@@ -2190,10 +2190,7 @@ function renderSubTaskSummary(
 	},
 	maxLines: number,
 ): string {
-	const isError =
-		result.exitCode !== 0 ||
-		result.stopReason === "error" ||
-		result.stopReason === "aborted";
+	const isError = isSubagentError(result);
 	const icon = isError
 		? theme.fg("error", "\u2717")
 		: theme.fg("success", "\u2713");
@@ -2213,12 +2210,7 @@ function renderCollapsedChain(
 	details: ChainDetails,
 	theme: Theme,
 ): string {
-	const allSucceeded = details.results.every(
-		(r) =>
-			r.exitCode === 0 &&
-			r.stopReason !== "error" &&
-			r.stopReason !== "aborted",
-	);
+	const allSucceeded = details.results.every((r) => !isSubagentError(r));
 	const icon = allSucceeded
 		? theme.fg("success", "\u2713")
 		: theme.fg("error", "\u2717");
@@ -2226,10 +2218,7 @@ function renderCollapsedChain(
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold("chain"))} ${theme.fg("muted", `${details.completedSteps}/${details.totalSteps} steps${stoppedEarly}`)}`;
 
 	for (const r of details.results) {
-		const isErr =
-			r.exitCode !== 0 ||
-			r.stopReason === "error" ||
-			r.stopReason === "aborted";
+		const isErr = isSubagentError(r);
 		const statusIcon = isErr
 			? theme.fg("error", "\u2717")
 			: theme.fg("success", "\u2713");
@@ -2263,10 +2252,7 @@ function renderCollapsedParallel(
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel"))} ${theme.fg("muted", `${details.succeeded}/${details.failed}/${details.results.length} total`)}`;
 
 	for (const r of details.results) {
-		const isErr =
-			r.exitCode !== 0 ||
-			r.stopReason === "error" ||
-			r.stopReason === "aborted";
+		const isErr = isSubagentError(r);
 		const statusIcon = isErr
 			? theme.fg("error", "\u2717")
 			: theme.fg("success", "\u2713");
@@ -2312,10 +2298,7 @@ function renderExpandedChain(
 	container.addChild(new Spacer(1));
 
 	for (const r of details.results) {
-		const isErr =
-			r.exitCode !== 0 ||
-			r.stopReason === "error" ||
-			r.stopReason === "aborted";
+		const isErr = isSubagentError(r);
 		const statusIcon = isErr
 			? theme.fg("error", "\u2717")
 			: theme.fg("success", "\u2713");
@@ -2397,10 +2380,7 @@ function renderExpandedParallel(
 	container.addChild(new Spacer(1));
 
 	for (const r of details.results) {
-		const isErr =
-			r.exitCode !== 0 ||
-			r.stopReason === "error" ||
-			r.stopReason === "aborted";
+		const isErr = isSubagentError(r);
 		const statusIcon = isErr
 			? theme.fg("error", "\u2717")
 			: theme.fg("success", "\u2713");
@@ -2774,12 +2754,7 @@ function renderCollapsedGraph(
 ): string {
 	const totalTasks = details.waves.reduce((s, w) => s + w.tasks.length, 0);
 	const allSucceeded = details.waves.every((w) =>
-		w.tasks.every(
-			(r) =>
-				r.exitCode === 0 &&
-				r.stopReason !== "error" &&
-				r.stopReason !== "aborted",
-		),
+		w.tasks.every((r) => !isSubagentError(r)),
 	);
 	const icon = allSucceeded
 		? theme.fg("success", "\u2713")
@@ -2790,22 +2765,16 @@ function renderCollapsedGraph(
 	const wavesToRender = details.waves.slice(0, maxWavesToShow);
 
 	for (const wave of wavesToRender) {
-		const waveOk = wave.tasks.every(
-			(r) =>
-				r.exitCode === 0 &&
-				r.stopReason !== "error" &&
-				r.stopReason !== "aborted",
-		);
+		const waveOk = wave.tasks.every((r) => !isSubagentError(r));
 		const waveIcon = waveOk
 			? theme.fg("success", "\u2713")
 			: theme.fg("error", "\u2717");
 		const modeLabel = wave.parallel ? "parallel" : "serial";
 		const taskLabels = wave.tasks.map((r) => {
 			const label = r.label || r.task.slice(0, 30);
-			const taskIcon =
-				r.exitCode === 0 && r.stopReason !== "error" && r.stopReason !== "aborted"
-					? theme.fg("success", "\u2713")
-					: theme.fg("error", "\u2717");
+			const taskIcon = !isSubagentError(r)
+				? theme.fg("success", "\u2713")
+				: theme.fg("error", "\u2717");
 			return `${taskIcon} ${theme.fg("dim", label)}`;
 		});
 		text += `
@@ -2843,12 +2812,7 @@ function renderExpandedGraph(
 	container.addChild(new Spacer(1));
 
 	for (const wave of details.waves) {
-		const waveOk = wave.tasks.every(
-			(r) =>
-				r.exitCode === 0 &&
-				r.stopReason !== "error" &&
-				r.stopReason !== "aborted",
-		);
+		const waveOk = wave.tasks.every((r) => !isSubagentError(r));
 		const waveIcon = waveOk
 			? theme.fg("success", "\u2713")
 			: theme.fg("error", "\u2717");
@@ -2862,10 +2826,7 @@ function renderExpandedGraph(
 		);
 
 		for (const r of wave.tasks) {
-			const isErr =
-				r.exitCode !== 0 ||
-				r.stopReason === "error" ||
-				r.stopReason === "aborted";
+			const isErr = isSubagentError(r);
 			const statusIcon = isErr
 				? theme.fg("error", "\u2717")
 				: theme.fg("success", "\u2713");

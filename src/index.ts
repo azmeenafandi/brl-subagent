@@ -39,6 +39,7 @@ import {
 	EMPTY_USAGE,
 	getFinalOutput,
 	isSubagentError,
+	countSubagentOutcomes,
 	classifyError,
 	MAX_CHAIN_STEPS,
 	MAX_PARALLEL_TASKS,
@@ -102,7 +103,7 @@ import {
 	renderDelegateCall,
 	renderDelegateResult,
 } from "./tui";
-import { createLogger, type Logger } from "./logging";
+import { createLogger, setLogCwd, type Logger } from "./logging";
 import { Intercom } from "./messaging";
 import * as eventBus from "./event-bus";
 import {
@@ -110,7 +111,6 @@ import {
 	resolveDelivery,
 	sendCompletionNotification,
 	markTerminalSeen,
-	normalizeCompletionStatus,
 	resolveRunEntry,
 } from "./notify-completion";
 
@@ -796,7 +796,7 @@ export default function (pi: ExtensionAPI) {
 				previousOutput = getFinalOutput(result.messages);
 			}
 
-			chainSuccess = chainResults.every((r) => r.exitCode === 0);
+			chainSuccess = countSubagentOutcomes(chainResults).failed === 0;
 
 			// Compute aggregated totals
 			const totalInput = chainResults.reduce(
@@ -1203,11 +1203,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Emit progress update
-			const completed = results.filter(Boolean).length;
-			const succeeded = results.filter(
-				(r) => r && r.exitCode === 0,
-			).length;
-			const failed = completed - succeeded;
+			const { succeeded, failed } = countSubagentOutcomes(results);
+			const completed = succeeded + failed;
 
 			const partialDetails: ParallelDetails = {
 				mode: "parallel",
@@ -1306,8 +1303,7 @@ export default function (pi: ExtensionAPI) {
 			(s, r) => s + r.usage.turns,
 			0,
 		);
-		const succeeded = finalResults.filter((r) => r.exitCode === 0).length;
-		const failed = finalResults.length - succeeded;
+		const { succeeded, failed } = countSubagentOutcomes(finalResults);
 
 		const parallelDetails: ParallelDetails = {
 			mode: "parallel",
@@ -1810,9 +1806,7 @@ export default function (pi: ExtensionAPI) {
 			const totalCost = allResults.reduce((s, r) => s + r.usage.cost, 0);
 			const totalTurns = allResults.reduce((s, r) => s + r.usage.turns, 0);
 
-			chainSuccess = allResults.every(
-				(r) => r.exitCode === 0 && r.stopReason !== "error" && r.stopReason !== "aborted",
-			);
+			chainSuccess = countSubagentOutcomes(allResults).failed === 0;
 
 			const graphDetails: GraphDetails = {
 				mode: "graph",
@@ -3717,6 +3711,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		// Issue #147: capture the session context for the completion-push subscriber.
 		sessionCtx = ctx;
+		// Issue #179 (D6): createLogger ran at module load with no cwd — point
+		// the shared file sink at this session's cwd now that it exists.
+		setLogCwd(ctx.cwd);
 		// Load built-in presets
 		const presetsDir = pkgPath("presets");
 		state.builtinPresets = loadBuiltinPresets(presetsDir, log);
@@ -3823,7 +3820,10 @@ export default function (pi: ExtensionAPI) {
 			const knob = state.config.completionNotify ?? "all";
 			const run = resolveRunEntry(state.getRunEntries(ctx), id);
 			const message = buildCompletionMessage(agent, run);
-			const delivery = resolveDelivery(normalizeCompletionStatus(agent.status), knob);
+			// Issue #179 (D2): resolve delivery from the CLASSIFIED notification
+			// status, not the raw agent status — otherwise a run whose completion
+			// the builder downgraded to failed would still be delivered as a success.
+			const delivery = resolveDelivery(message.details.status, knob);
 			sendCompletionNotification(pi, message, delivery);
 		} catch (err) {
 			log.warn(`completion-push handler failed for ${id}`, {

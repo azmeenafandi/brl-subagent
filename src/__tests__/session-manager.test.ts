@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, statSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1713,5 +1713,176 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 		expect(finalRun.tokensOut).toBe(0);
 		expect(finalRun.outputSummary).toBe("");
 		expect(finalRun.fullOutput).toBeUndefined();
+	});
+});
+
+// =========================================================================
+// Issue #179: honest terminal status — a background delegation that DIED
+// MID-WORK must not be recorded/reported as a completed success.
+//
+// Root cause: the SDK's runWithLifecycle CATCHES a mid-run provider failure,
+// stamps the last assistant message with stopReason "error", and RESOLVES
+// prompt(). The settle path only handled "aborted" and otherwise derived
+// status from exitCode alone, so the death landed in the completion branch
+// (status completed, exitCode 0, errorMessage null).
+// =========================================================================
+describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
+	interface Case {
+		stopReason: string;
+		status: "completed" | "failed" | "stopped";
+		runStatus: "done" | "failed";
+		category?: string;
+	}
+	// The complete classification table. "stop" is the only genuine success.
+	const cases: Case[] = [
+		{ stopReason: "stop", status: "completed", runStatus: "done" },
+		{ stopReason: "aborted", status: "stopped", runStatus: "failed", category: "aborted" },
+		{ stopReason: "error", status: "failed", runStatus: "failed", category: "exit_error" },
+		{ stopReason: "length", status: "failed", runStatus: "failed", category: "truncated" },
+		{ stopReason: "toolUse", status: "failed", runStatus: "failed", category: "incomplete" },
+		{ stopReason: "deferred", status: "failed", runStatus: "failed", category: "incomplete" },
+		{ stopReason: "pending", status: "failed", runStatus: "failed", category: "incomplete" },
+	];
+
+	it.each(cases)(
+		"settles stopReason '$stopReason' as $status with category $category",
+		async ({ stopReason, status, runStatus, category }) => {
+			mocks.session.prompt.mockResolvedValue(undefined);
+			mocks.session.messages = [
+				{ role: "user", content: "probe task" },
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "earlier turn prose" }],
+					stopReason,
+					errorMessage: stopReason === "error" ? "provider exploded" : undefined,
+					usage: { input: 100, output: 20, cost: { total: 0.01 }, totalTokens: 120 },
+				},
+			];
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: `settle ${stopReason}`,
+			});
+			// Let the .then/.catch settle handler run.
+			await new Promise((r) => setTimeout(r, 0));
+
+			const after = getAgent(agent.id);
+			expect(after?.status).toBe(status);
+
+			// D2: the finalized run entry carries the CLASSIFIED reason.
+			const run = fakePi.appendEntry.mock.calls[1][1];
+			expect(run.status).toBe(runStatus);
+			expect(run.stopReason).toBe(stopReason);
+			if (category) expect(run.errorCategory).toBe(category);
+			else expect(run.errorCategory).toBeUndefined();
+			// D3: work volume is explicit — the run did work (one assistant turn)
+			// and a provider error marks the final turn.
+			expect(run.turns).toBe(1);
+			expect(run.tokensOut).toBe(20);
+			expect(run.finalTurnError).toBe(stopReason === "error");
+		},
+	);
+
+	it("D4: surfaces the failure reason as the output HEADLINE, not an earlier turn's prose", async () => {
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "planned the work, all good so far" }],
+				stopReason: "toolUse",
+			},
+			// The failing turn carries no text — extractFinalOutput would otherwise
+			// fall back to the earlier turn and present it as the run's output.
+			{ role: "assistant", content: [], stopReason: "error", errorMessage: "provider died" },
+		];
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "died mid work",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		const after = getAgent(agent.id);
+		expect(after?.status).toBe("failed");
+		// The reason leads; the earlier prose is still available below it.
+		expect(after?.finalOutput?.startsWith("provider died")).toBe(true);
+		expect(after?.finalOutput).toContain("planned the work");
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.outputSummary).toContain("provider died");
+	});
+
+	it("D3: a 'did nothing' provider death is recorded with turns 0 and a synthesized reason", async () => {
+		mocks.session.prompt.mockResolvedValue(undefined);
+		// A failing turn with no text and NO errorMessage — the run entry must
+		// still carry an explicit reason (not an empty string).
+		mocks.session.messages = [
+			{ role: "assistant", content: [], stopReason: "error" },
+		];
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "died immediately",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.status).toBe("failed");
+		expect(run.turns).toBe(0);
+		expect(run.finalTurnError).toBe(true);
+		expect(run.errorMessage).toContain('stopReason "error"');
+	});
+
+	it("D2/retry: a mid-run death is a failed run entry that retryRunId can resolve", async () => {
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "assistant", content: [], stopReason: "error", errorMessage: "provider died" },
+		];
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "retryable mid-run death",
+			description: "retry-me",
+			originalParams: { model: "anthropic/claude-sonnet-4-5", thinkingLevel: "high" },
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		// Before the fix this entry said "done" — invisible to the retry menu.
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.status).toBe("failed");
+		expect(run.stopReason).toBe("error");
+		const { resolveRetryParams } = await import("../history");
+		const retried = resolveRetryParams({ retryRunId: agent.id }, run);
+		expect(retried.task).toBe("retryable mid-run death");
+		expect(retried.model).toBe("anthropic/claude-sonnet-4-5");
+		expect(retried.thinkingLevel).toBe("high");
+	});
+
+	it("D6: writes the shared cwd log with the classified settle line", async () => {
+		const { setLogCwd } = await import("../logging");
+		setLogCwd(tempPiBase);
+		try {
+			mocks.session.prompt.mockResolvedValue(undefined);
+			mocks.session.messages = [
+				{ role: "assistant", content: [], stopReason: "error", errorMessage: "provider exploded" },
+			];
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "log a failing settle",
+			});
+			await new Promise((r) => setTimeout(r, 0));
+
+			const logPath = join(tempPiBase, ".pi", "subagent-logs", "brl-subagent.log");
+			expect(existsSync(logPath)).toBe(true);
+			// mode is applied on CREATE and is not retroactive.
+			expect(statSync(logPath).mode & 0o777).toBe(0o600);
+
+			const entries = readFileSync(logPath, "utf-8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l));
+			const settle = entries.find((e) => e.message === "Background run settled");
+			expect(settle).toBeDefined();
+			expect(settle.prefix).toBe("brl-subagent");
+			expect(settle.data.status).toBe("failed");
+			expect(settle.data.stopReason).toBe("error");
+			expect(settle.data.turns).toBe(0);
+			expect(settle.data.tokensOut).toBe(0);
+			expect(settle.data.errorCategory).toBe("exit_error");
+			expect(settle.data.error).toBe("provider exploded");
+		} finally {
+			setLogCwd(undefined);
+		}
 	});
 });
