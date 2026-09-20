@@ -25,6 +25,7 @@ import type {
 } from "./types";
 import { truncateTail } from "./transcript-tail";
 import { formatRunDuration } from "./history";
+import { classifyTerminalOutcome } from "./types";
 
 /** Terminal statuses the completion message can carry. */
 export type CompletionStatus = "completed" | "failed" | "stopped";
@@ -35,6 +36,8 @@ export interface CompletionMessageDetails {
 	status: CompletionStatus;
 	errorCategory: string;
 	errorMessage?: string;
+	/** Issue #179 (D2): the terminal stopReason behind the classified status. */
+	stopReason?: string;
 	costUsd?: number;
 	tokensIn?: number;
 	tokensOut?: number;
@@ -128,18 +131,33 @@ export function buildCompletionMessage(
 	agent: BackgroundAgent,
 	run: SubagentRun | undefined,
 ): CompletionMessagePayload {
-	const status = normalizeCompletionStatus(agent.status);
+	let status = normalizeCompletionStatus(agent.status);
+	// Issue #179 (D2): the notification category must NEVER default to success
+	// merely because `agent.status === "completed"`. The SDK resolves a mid-run
+	// provider death, so the run entry is the authoritative classified reason —
+	// downgrade a stale "completed" when the run says otherwise.
+	if (status === "completed" && run) {
+		const outcome = classifyTerminalOutcome(run.stopReason, run.errorMessage);
+		if (outcome.status !== "completed") {
+			status = outcome.status;
+		} else if (run.status === "failed") {
+			status = "failed";
+		}
+	}
 	// BackgroundAgent has no `label` field — the caller's label is `description`
 	// (set from params.description at spawn). Fall back to the id.
 	const label = agent.description || agent.id;
 	// completed → "success"; failed/stopped → classified category from the run
 	// record (finalizeRunEntry stamps it), falling back to "unknown".
 	const errorCategory =
-		status === "completed" ? "success" : (run?.originalParams?.errorCategory ?? "unknown");
+		status === "completed"
+			? "success"
+			: (run?.errorCategory ?? run?.originalParams?.errorCategory ?? "unknown");
 	const durationMs = run?.durationMs;
 	const costUsd = run?.cost;
 	const tokensIn = run?.tokensIn;
 	const tokensOut = run?.tokensOut;
+	const stopReason = run?.stopReason;
 	const errorMessage = status === "completed" ? undefined : agent.error ?? run?.errorMessage;
 
 	const summary = buildSummaryLine(label, agent.id, status, durationMs, costUsd, errorCategory);
@@ -154,6 +172,7 @@ export function buildCompletionMessage(
 		status,
 		errorCategory,
 		...(errorMessage ? { errorMessage } : {}),
+		...(stopReason ? { stopReason } : {}),
 		...(costUsd !== undefined ? { costUsd } : {}),
 		...(tokensIn !== undefined ? { tokensIn } : {}),
 		...(tokensOut !== undefined ? { tokensOut } : {}),

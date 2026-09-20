@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
-import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats } from './types';
-import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, SUBAGENT_ABORTED_MESSAGE } from './types';
+import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
+import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isSubagentError, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -230,12 +230,48 @@ export function setAgentResult(id: string, result: SubagentResult): BackgroundAg
   if (!agent) return null;
   
   agent.result = result;
-  agent.status = result.exitCode === 0 ? 'completed' : 'failed';
+  // Issue #179 (D1): honor the full terminal reason (stopReason error/aborted/
+  // length/incomplete), not exitCode alone — a mid-run provider death resolves
+  // with exitCode 0 and was previously recorded as 'completed'.
+  agent.status = isSubagentError(result) ? 'failed' : 'completed';
   agent.completedAt = Date.now();
   
   agents.set(id, agent);
   persistAgent(agent);
   return agent;
+}
+
+/**
+ * Issue #179 (D4): when a run ends in a failure, the prose extracted by
+ * extractFinalOutput may come from an EARLIER turn — the failing turn carries
+ * no text of its own. Prefixing the failure reason makes the output honest
+ * instead of a plausible-looking success narrative.
+ */
+export function buildFailureHeadline(reason: string, output: string): string {
+  const trimmed = output.trim();
+  return trimmed ? `${reason}\n\n${trimmed}` : reason;
+}
+
+/**
+ * Issue #179 (D3/D4): a run that ended without a terminal answer must still
+ * record WHY. When the provider supplied no message, synthesize one from the
+ * stopReason so the run entry never claims a failure with an empty reason.
+ */
+function defaultTerminalMessage(stopReason: string | undefined): string {
+  switch (stopReason) {
+    case 'error':
+      return 'Run ended with a provider error (stopReason "error")';
+    case 'length':
+      return 'Run ended early: output length limit reached (stopReason "length")';
+    case 'toolUse':
+      return 'Run ended mid-turn without a final answer (stopReason "toolUse")';
+    case 'deferred':
+      return 'Run ended deferred without a final answer (stopReason "deferred")';
+    case 'pending':
+      return 'Run ended while still pending (stopReason "pending")';
+    default:
+      return 'Run ended without completing';
+  }
 }
 
 /**
@@ -531,29 +567,45 @@ export async function spawnBackgroundSession(
   // ("done"/"failed"). The guard keeps the entry single-finalized even when a
   // settle handler throws after finalizing (markTerminalBestEffort catch-all).
   let runFinalized = false;
-  const finalizeRunEntry = (status: "done" | "failed", error?: string): void => {
+  const finalizeRunEntry = (
+    status: "done" | "failed",
+    error?: string,
+    terminal?: { stopReason?: string; errorCategory?: ErrorCategory },
+  ): void => {
     if (runFinalized) return;
     runFinalized = true;
     const usage = agent.result?.usage ?? EMPTY_USAGE;
     const finalOutput = agent.finalOutput ?? "";
-    // Issue #120 (Track 1): stamp the honest errorCategory on the background run
-    // record the same way the foreground path does (index.ts sets
-    // run.originalParams.errorCategory = classifyError(result)). Previously the
-    // background entry never carried a category, so background failures were
-    // invisible to the SLA errorCategoryBreakdown and to failure diagnostics.
+    // Issue #179 (D1/D2): the classifier's explicit category wins (it knows the
+    // terminal stopReason); otherwise fall back to the legacy message-based
+    // classification (refused spawns, sync throws, preflight rejections, the
+    // catch-all) so no failure is ever left uncategorized.
     const errorCategory =
-      status === "failed" && error
-        ? classifyError({
-            messages: [],
-            usage: { ...EMPTY_USAGE },
-            exitCode: 1,
-            stderr: "",
-            errorMessage: error,
-          })
+      status === "failed"
+        ? terminal?.errorCategory ??
+          (error
+            ? classifyError({
+                messages: [],
+                usage: { ...EMPTY_USAGE },
+                exitCode: 1,
+                stderr: "",
+                errorMessage: error,
+              })
+            : undefined)
         : undefined;
+    const stopReason = terminal?.stopReason ?? agent.result?.stopReason;
     const entry: SubagentRun = {
       ...run,
       status,
+      // Issue #179 (D2): the run entry carries the CLASSIFIED reason, not just
+      // an opaque error string.
+      stopReason,
+      errorCategory,
+      // Issue #179 (D3): work volume + terminal-error signal. `turns`/`tokensOut`
+      // are already in the usage data; recording them here makes "did nothing"
+      // (turns 0) explicit versus "did work then died" (turns > 0, error).
+      turns: usage.turns,
+      finalTurnError: stopReason === "error",
       errorMessage: error,
       finishedAt: new Date().toISOString(),
       durationMs: Date.now() - startedAtMs,
@@ -570,6 +622,17 @@ export async function spawnBackgroundSession(
           : run.originalParams,
     };
     pi.appendEntry(CUSTOM_ENTRY_TYPES.run, entry);
+    // Issue #179 (D6): the explicit settle line — the log's job is to record the
+    // CLASSIFIED OUTCOME, which cwd alone can never convey.
+    log.info("Background run settled", {
+      agentId: id,
+      status,
+      stopReason,
+      turns: usage.turns,
+      tokensOut: usage.output,
+      errorCategory,
+      error: error ?? null,
+    });
   };
 
   // Start transcript for this agent
@@ -582,8 +645,16 @@ export async function spawnBackgroundSession(
   // final output while the session is still live, THEN release the ref — the
   // capture must always precede the release or the output dies with the
   // session graph. Single helper for all four settlement paths.
-  const captureAndReleaseSession = (): void => {
-    setAgentFinalOutput(id, extractFinalOutput(session));
+  //
+  // Issue #179 (D4): an optional failureHeadline is prepended when the run did
+  // NOT complete — the extracted prose may come from an earlier turn, so it
+  // must not be presented as the run's output unqualified.
+  const captureAndReleaseSession = (failureHeadline?: string): void => {
+    const output = extractFinalOutput(session);
+    setAgentFinalOutput(
+      id,
+      failureHeadline ? buildFailureHeadline(failureHeadline, output) : output,
+    );
     agent._sessionRef = undefined;
   };
 
@@ -895,7 +966,8 @@ export async function spawnBackgroundSession(
       //   1. stopAgent pre-set status to 'stopped' before calling abort();
       //   2. the last assistant message carries stopReason "aborted".
       const lastAssistant = [...(session.messages ?? [])].reverse().find(m => m.role === 'assistant');
-      const aborted = agent.status === 'stopped' || lastAssistant?.stopReason === 'aborted';
+      const terminalStopReason = lastAssistant?.stopReason;
+      const aborted = agent.status === 'stopped' || terminalStopReason === 'aborted';
       if (aborted) {
         // Session was aborted — mark stopped. If stopAgent already flipped the
         // status (pre-set 'stopped' + completedAt + event + transcript), only
@@ -931,13 +1003,67 @@ export async function spawnBackgroundSession(
         // (stop_subagent) sets no error, so fall back to the honest user-abort
         // stamp (→ 'aborted') instead of the old ambiguous 'Aborted or timed out'.
         recordSessionUsage();
-        finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE);
+        finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE, {
+          stopReason: terminalStopReason ?? 'aborted',
+        });
         // Issue #31: capture the final output while the session is still
         // live, then release the ref on the terminal path (memory retention;
         // the poller treats a nulled ref on a terminal agent as expected).
         captureAndReleaseSession();
         return;
       }
+      // Issue #179 (D1/D2): prompt() RESOLVED — but a resolved prompt is NOT
+      // proof of success. The SDK's runWithLifecycle catches a mid-run provider
+      // death internally and resolves with an assistant message carrying
+      // stopReason "error"; the completion branch below would record it as a
+      // false success (exitCode 0, no category). Classify the terminal outcome
+      // from the last assistant message + the session error, reusing
+      // classifyError for the provider-error case.
+      const providerErrorMessage =
+        lastAssistant?.errorMessage ?? session.state?.errorMessage;
+      const outcome = classifyTerminalOutcome(terminalStopReason, providerErrorMessage);
+
+      if (outcome.status === 'failed') {
+        // Mid-run provider death / truncation / incomplete turn.
+        agent.status = 'failed';
+        agent.completedAt = Date.now();
+        const sanitizedError = sanitizeErrorMessage(
+          providerErrorMessage ?? defaultTerminalMessage(terminalStopReason),
+          effectiveCwd,
+        );
+        agent.error = sanitizedError;
+        const gitInfo = cleanupWorkBranch();
+        agent.result = {
+          ...(agent.result ?? {}),
+          exitCode: 1,
+          messages: agent.result?.messages ?? [],
+          stderr: agent.result?.stderr ?? '',
+          usage: agent.result?.usage ?? EMPTY_USAGE,
+          stopReason: terminalStopReason,
+          errorMessage: sanitizedError,
+          errorCategory: outcome.errorCategory,
+          ...(gitInfo.gitBranch
+            ? { gitBranch: gitInfo.gitBranch, gitDiff: gitInfo.gitDiff }
+            : {}),
+        } as SubagentResult;
+        // Issue #31: capture the final output while the session is still live.
+        // Issue #179 (D4): surface the failure as the HEADLINE — the extracted
+        // prose may come from an earlier turn, so it must not be presented as an
+        // unqualified success narrative.
+        captureAndReleaseSession(sanitizedError);
+        // Issue #122: fold the real usage (turns/tokens) the run burned.
+        recordSessionUsage();
+        agents.set(id, agent);
+        persistAgent(agent);
+        finalizeRunEntry('failed', sanitizedError, {
+          stopReason: terminalStopReason,
+          errorCategory: outcome.errorCategory,
+        });
+        transcript.completeTranscript(id, 'failed');
+        eventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizedError }));
+        return;
+      }
+
       // Session completed
       agent.status = 'completed';
       agent.completedAt = Date.now();
@@ -951,6 +1077,7 @@ export async function spawnBackgroundSession(
           messages: [],
           stderr: '',
           usage: agent.result?.usage ?? EMPTY_USAGE,
+          stopReason: terminalStopReason ?? 'stop',
           gitBranch: gitInfo.gitBranch,
           gitDiff: gitInfo.gitDiff,
         } as SubagentResult;
@@ -965,7 +1092,7 @@ export async function spawnBackgroundSession(
       agents.set(id, agent);
       persistAgent(agent);
       // Issue #98: mirror the agent-record flip in the session run entry.
-      finalizeRunEntry('done');
+      finalizeRunEntry('done', undefined, { stopReason: terminalStopReason ?? 'stop' });
       transcript.completeTranscript(id, 'completed');
       eventBus.emit(eventBus.createEvent('subagent:completed', id, {}));
     } catch (err) {
@@ -1009,7 +1136,9 @@ export async function spawnBackgroundSession(
         // agent.error ('Timed out...' → 'timeout'); a user cancel has no error
         // and stamps 'Subagent aborted by user' (→ 'aborted').
         recordSessionUsage();
-        finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE);
+        finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE, {
+          stopReason: 'aborted',
+        });
         // Issue #31: the stopped path is terminal too — capture + release.
         captureAndReleaseSession();
         transcript.completeTranscript(id, 'stopped');
@@ -1022,22 +1151,25 @@ export async function spawnBackgroundSession(
       // result errorMessage, and the subagent:failed event (DRY, PR #63 review).
       const sanitizedError = sanitizeErrorMessage(err.message, effectiveCwd);
       agent.error = sanitizedError;
-      if (gitInfo.gitBranch) {
-        agent.result = {
-          ...(agent.result ?? {}),
-          exitCode: 1,
-          messages: [],
-          stderr: '',
-          usage: agent.result?.usage ?? EMPTY_USAGE,
-          errorMessage: sanitizedError,
-          gitBranch: gitInfo.gitBranch,
-          gitDiff: gitInfo.gitDiff,
-        } as SubagentResult;
-      }
+      // Issue #179: record the failure on the result UNCONDITIONALLY (not only
+      // on the git-diff path) so a failed run never persists exitCode 0.
+      agent.result = {
+        ...(agent.result ?? {}),
+        exitCode: 1,
+        messages: agent.result?.messages ?? [],
+        stderr: agent.result?.stderr ?? '',
+        usage: agent.result?.usage ?? EMPTY_USAGE,
+        errorMessage: sanitizedError,
+        ...(gitInfo.gitBranch
+          ? { gitBranch: gitInfo.gitBranch, gitDiff: gitInfo.gitDiff }
+          : {}),
+      } as SubagentResult;
       // Issue #31: capture the final output while the session is still live,
       // then release the ref before the branch's persist — the persisted
       // record is consistent and the live session graph is freed.
-      captureAndReleaseSession();
+      // Issue #179 (D4): lead with the failure reason (the prose may be from an
+      // earlier turn).
+      captureAndReleaseSession(sanitizedError);
       // Issue #122: fold any assistant turns the preflight/run did produce —
       // usually none (auth/model rejection) → honest zeros, never a crash.
       recordSessionUsage();

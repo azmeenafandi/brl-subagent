@@ -102,7 +102,7 @@ import {
 	renderDelegateCall,
 	renderDelegateResult,
 } from "./tui";
-import { createLogger, type Logger } from "./logging";
+import { createLogger, setLogCwd, type Logger } from "./logging";
 import { Intercom } from "./messaging";
 import * as eventBus from "./event-bus";
 import {
@@ -110,7 +110,6 @@ import {
 	resolveDelivery,
 	sendCompletionNotification,
 	markTerminalSeen,
-	normalizeCompletionStatus,
 	resolveRunEntry,
 } from "./notify-completion";
 
@@ -3717,6 +3716,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		// Issue #147: capture the session context for the completion-push subscriber.
 		sessionCtx = ctx;
+		// Issue #179 (D6): createLogger ran at module load with no cwd — point
+		// the shared file sink at this session's cwd now that it exists.
+		setLogCwd(ctx.cwd);
 		// Load built-in presets
 		const presetsDir = pkgPath("presets");
 		state.builtinPresets = loadBuiltinPresets(presetsDir, log);
@@ -3823,7 +3825,10 @@ export default function (pi: ExtensionAPI) {
 			const knob = state.config.completionNotify ?? "all";
 			const run = resolveRunEntry(state.getRunEntries(ctx), id);
 			const message = buildCompletionMessage(agent, run);
-			const delivery = resolveDelivery(normalizeCompletionStatus(agent.status), knob);
+			// Issue #179 (D2): resolve delivery from the CLASSIFIED notification
+			// status, not the raw agent status — otherwise a run whose completion
+			// the builder downgraded to failed would still be delivered as a success.
+			const delivery = resolveDelivery(message.details.status, knob);
 			sendCompletionNotification(pi, message, delivery);
 		} catch (err) {
 			log.warn(`completion-push handler failed for ${id}`, {

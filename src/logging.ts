@@ -8,6 +8,9 @@
  *   const log = createLogger("runner", cwd);
  *   log.info("Subagent started", { model, thinkingLevel });
  *   log.error("Subagent failed", { error: err.message });
+ *
+ * Module-load callers pass no cwd; they call setLogCwd(ctx.cwd) once the
+ * session starts and all loggers share <cwd>/.pi/subagent-logs/brl-subagent.log.
  */
 
 import * as fs from "node:fs";
@@ -23,6 +26,12 @@ const MAX_LOG_SIZE = 5 * 1024 * 1024;
 
 /** Maximum number of rotated log files to keep */
 const MAX_LOG_FILES = 5;
+
+/**
+ * The single log file every logger writes to (issue #179). The JSON entry body
+ * already carries its `prefix`, so one shared file stays readable.
+ */
+const LOG_FILE_NAME = "brl-subagent.log";
 
 /** Log levels in order of verbosity */
 const LOG_LEVELS: Record<LogLevel, number> = {
@@ -50,23 +59,33 @@ export function setLogLevel(level: LogLevel): void {
 	minLevel = level;
 }
 
+// Issue #179 (D6): createLogger() runs at MODULE LOAD (index.ts,
+// session-manager.ts) where the session cwd does not exist yet. The cwd is set
+// later from the session_start hook (ctx.cwd). All logger instances share this
+// module-level value so every entry lands in ONE
+// `<cwd>/.pi/subagent-logs/brl-subagent.log`.
+let logCwd: string | undefined;
+
+/**
+ * Point file logging at a session cwd (or clear it with undefined). Called from
+ * the session-start hook so module-load loggers can write once a cwd exists.
+ */
+export function setLogCwd(cwd: string | undefined): void {
+	logCwd = cwd;
+}
+
+function resolveLogDir(): string | undefined {
+	return logCwd ? path.join(logCwd, ".pi", "subagent-logs") : undefined;
+}
+
 /**
  * Create a logger for a specific module.
- * Logs are written to `.pi/subagent-logs/<prefix>.log` relative to `cwd`.
+ * Logs are written to `<cwd>/.pi/subagent-logs/brl-subagent.log` relative to the
+ * session cwd (set via setLogCwd or the optional `cwd` arg).
  */
 export function createLogger(prefix: string, cwd?: string): Logger {
-	const logDir = cwd ? path.join(cwd, ".pi", "subagent-logs") : undefined;
-
-	// Ensure log directory exists — owner-only (0o700) so other local users
-	// cannot list log files (F6 / issue #29). File writes below already use
-	// 0o600.
-	if (logDir) {
-		try {
-			fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
-		} catch {
-			// Can't create log dir — fall back to console-only logging
-		}
-	}
+	// Compat: an explicit cwd argument still sets the shared location eagerly.
+	if (cwd) logCwd = cwd;
 
 	function log(level: LogLevel, message: string, data?: Record<string, unknown>): void {
 		if (LOG_LEVELS[level] < LOG_LEVELS[minLevel]) return;
@@ -86,10 +105,15 @@ export function createLogger(prefix: string, cwd?: string): Logger {
 		const consoleMethod = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
 		consoleMethod(`[${prefix}] ${level.toUpperCase()}: ${message}`);
 
-		// File output
+		// File output — resolved on each call because the cwd may be set after
+		// createLogger ran (module load) but before the first entry.
+		const logDir = resolveLogDir();
 		if (logDir) {
 			try {
-				const logFile = path.join(logDir, `${prefix}.log`);
+				// Owner-only (0o700) so other local users cannot list log files
+				// (F6 / issue #29); the file writes below already use 0o600.
+				fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
+				const logFile = path.join(logDir, LOG_FILE_NAME);
 				rotateIfNeeded(logFile);
 				fs.appendFileSync(logFile, line + "\n", { encoding: "utf-8", mode: 0o600 });
 			} catch {

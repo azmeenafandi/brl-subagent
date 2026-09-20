@@ -43,7 +43,14 @@ export type ErrorCategory =
 	| "aborted"
 	| "exit_error"
 	| "crash"
-	| "unknown";
+	| "unknown"
+	// Issue #179: additive terminal-reason categories. "truncated" = the model
+	// hit its output/context limit (stopReason "length"); "incomplete" = the
+	// agent stopped mid-turn without a terminal answer (stopReason
+	// "toolUse"/"deferred"/"pending"). Existing consumers treat categories as
+	// string keys (metrics/SLA breakdown), so both are additive.
+	| "truncated"
+	| "incomplete";
 
 // Issue #120 (Review round): single source of truth for the user-abort stamp.
 // Used by the abort handler (runner.ts), the stopped/aborted settlement paths
@@ -58,6 +65,17 @@ export const SUBAGENT_ABORTED_MESSAGE = "Subagent aborted by user";
  */
 export function classifyError(result: SubagentResult): ErrorCategory {
 	if (result.stopReason === "aborted") return "aborted";
+	// Issue #179: a terminal stopReason with no terminal answer is a failure in
+	// its own right — classify it before the message/exitCode fallbacks so the
+	// honest category wins (length → "truncated"; mid-turn → "incomplete").
+	if (result.stopReason === "length") return "truncated";
+	if (
+		result.stopReason === "toolUse" ||
+		result.stopReason === "deferred" ||
+		result.stopReason === "pending"
+	) {
+		return "incomplete";
+	}
 
 	const msg = (result.errorMessage ?? "").toLowerCase();
 	const err = (result.stderr ?? "").toLowerCase();
@@ -226,6 +244,27 @@ export interface SubagentRun {
 	id: string;
 	task: string;
 	label?: string;
+	/**
+	 * Issue #179 (D1/D2): terminal stopReason of the final assistant turn
+	 * ("stop" | "error" | "aborted" | "length" | "toolUse" | "deferred" |
+	 * "pending"). Recorded on the finalized entry so consumers can tell a real
+	 * success from a resolved-but-failed run.
+	 */
+	stopReason?: string;
+	/**
+	 * Issue #179 (D1/D2): classified error category at the TOP level. The legacy
+	 * `originalParams.errorCategory` is kept populated for back-compat (metrics,
+	 * retry snapshot), but new consumers should prefer this field.
+	 */
+	errorCategory?: ErrorCategory;
+	/**
+	 * Issue #179 (D3): assistant turns folded from the session usage. 0 means the
+	 * run burned nothing ("did nothing"); > 0 with `finalTurnError` means it did
+	 * work and then died.
+	 */
+	turns?: number;
+	/** Issue #179 (D3): whether the final assistant turn was a provider error. */
+	finalTurnError?: boolean;
 	// Issue #98: background run entries carry the agent description (the label
 	// the caller passed at spawn) — kept separate from `label` for symmetry
 	// with the background agent record.
@@ -665,9 +704,70 @@ export function getFinalOutput(messages: Array<Record<string, unknown>>): string
 }
 
 export function isSubagentError(result: SubagentResult): boolean {
-	return result.exitCode !== 0
-		|| result.stopReason === "error"
-		|| result.stopReason === "aborted";
+	if (result.exitCode !== 0) return true;
+	// Issue #179: a resolved-but-failed terminal reason is still an error. This
+	// is the foreground terminal-status derivation (finalizeRunRecord) — the
+	// background path classifies via classifyTerminalOutcome below.
+	return result.stopReason === "error"
+		|| result.stopReason === "aborted"
+		|| result.stopReason === "length"
+		|| result.stopReason === "toolUse"
+		|| result.stopReason === "deferred"
+		|| result.stopReason === "pending";
+}
+
+// ---------------------------------------------------------------------------
+// Issue #179: terminal outcome classification
+// ---------------------------------------------------------------------------
+
+/** Terminal status a settled run can take. */
+export type TerminalStatus = "completed" | "failed" | "stopped";
+
+export interface TerminalOutcome {
+	status: TerminalStatus;
+	errorCategory?: ErrorCategory;
+}
+
+/**
+ * Issue #179 (D1): classify a run's terminal outcome from its final assistant
+ * stopReason. This is the settle-time counterpart to classifyError/isSubagentError
+ * and REUSES classifyError for every failure reason (single taxonomy).
+ *
+ * | stopReason               | status    | errorCategory              |
+ * |--------------------------|-----------|----------------------------|
+ * | stop / undefined         | completed | —                          |
+ * | aborted                  | stopped   | aborted                    |
+ * | error                    | failed    | from classifyError         |
+ * | length                   | failed    | truncated                  |
+ * | toolUse/deferred/pending | failed    | incomplete                 |
+ */
+export function classifyTerminalOutcome(
+	stopReason: string | undefined,
+	errorMessage?: string,
+	extra?: { stderr?: string; exitCode?: number },
+): TerminalOutcome {
+	switch (stopReason) {
+		case "aborted":
+			return { status: "stopped", errorCategory: "aborted" };
+		case "error":
+		case "length":
+		case "toolUse":
+		case "deferred":
+		case "pending":
+			return {
+				status: "failed",
+				errorCategory: classifyError({
+					messages: [],
+					usage: { ...EMPTY_USAGE },
+					exitCode: extra?.exitCode ?? 0,
+					stderr: extra?.stderr ?? "",
+					errorMessage,
+					stopReason,
+				}),
+			};
+		default:
+			return { status: "completed" };
+	}
 }
 
 export function formatModel(m: { provider: string; id: string } | undefined): string {
