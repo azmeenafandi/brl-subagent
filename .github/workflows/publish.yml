@@ -41,6 +41,13 @@ jobs:
       - run: npx tsc --noEmit
       - run: npx vitest run
 
+      # Issue #176: tsc and vitest both run against the dev checkout, so they
+      # are blind to what `files` actually ships in the tarball — the class of
+      # bug that let AGENT.md go missing for a full release (#158). Pack the
+      # artifact, extract it, and assert the runtime contract on exactly what
+      # npm would stage. Model-free; no provider or registry needed at release.
+      - run: node .github/scripts/smoke-artifact.mjs
+
       # Stage only — never a direct publish. Provenance is generated from the
       # OIDC identity (id-token: write above) and attested to this workflow run.
       - run: npm stage publish --provenance
