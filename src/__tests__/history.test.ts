@@ -3,8 +3,8 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { createEmptyResult, cleanupRuns } from "../history";
-import type { SubagentRun } from "../types";
+import { createEmptyResult, cleanupRuns, finalizeRunRecord } from "../history";
+import type { SubagentRun, SubagentResult } from "../types";
 
 // ---------------------------------------------------------------------------
 // cleanupRuns
@@ -93,5 +93,53 @@ describe("cleanupRuns", () => {
 		];
 		const result = cleanupRuns(runs, 2);
 		expect(result).toHaveLength(2);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// finalizeRunRecord — Issue #187: foreground failed runs record a terminal
+// stopReason that AGREES with their status, via the SAME coherentFailureReason
+// helper the background path uses.
+// ---------------------------------------------------------------------------
+
+describe("finalizeRunRecord stopReason coherence (issue #187)", () => {
+	function makeResult(overrides: Partial<SubagentResult>): SubagentResult {
+		return { ...createEmptyResult(), ...overrides };
+	}
+
+	it("records a coherent non-undefined stopReason for a failed result with no stopReason", () => {
+		const run = makeRun("failed-timeout", "2024-01-01T00:00:00Z");
+		const result = makeResult({
+			exitCode: 1,
+			errorMessage: "Subagent timed out after 5000ms",
+		});
+
+		finalizeRunRecord(run, result, "", Date.now());
+
+		expect(run.status).toBe("failed");
+		expect(run.stopReason).toBe("error");
+	});
+
+	it("records 'aborted' for a failed result classified as the aborted category", () => {
+		const run = makeRun("failed-aborted", "2024-01-01T00:00:00Z");
+		const result = makeResult({
+			exitCode: 1,
+			errorMessage: "Subagent aborted by user",
+		});
+
+		finalizeRunRecord(run, result, "", Date.now());
+
+		expect(run.status).toBe("failed");
+		expect(run.stopReason).toBe("aborted");
+	});
+
+	it("keeps the success stopReason and records status done for a completed result", () => {
+		const run = makeRun("done-success", "2024-01-01T00:00:00Z");
+		const result = makeResult({ exitCode: 0, stopReason: "stop" });
+
+		finalizeRunRecord(run, result, "done output", Date.now());
+
+		expect(run.status).toBe("done");
+		expect(run.stopReason).toBe("stop");
 	});
 });
