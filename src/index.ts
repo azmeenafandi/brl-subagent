@@ -2135,6 +2135,7 @@ export default function (pi: ExtensionAPI) {
 						"Run the subagent in the background without blocking the conductor. " +
 						"When true, the tool returns immediately with an agent ID. " +
 						"The conductor is woken with a completion message; use get_subagent_result for post-wake retrieval and stall checks. " +
+						"Single-task only — combining background with chain, tasks, or graph is not supported and is rejected. " +
 						"Default: false (blocking mode).",
 				}),
 			),
@@ -2449,6 +2450,24 @@ export default function (pi: ExtensionAPI) {
 							type: "text" as const,
 							text:
 								"Provide exactly one of: task (single), chain (sequential), tasks (parallel), or graph (dependency graph).",
+						},
+					],
+					details: undefined,
+					isError: true,
+				};
+			}
+
+			// background: true with a batch mode was silently ignored — the batch ran
+			// foreground (blocking until every unit finished) while the caller believed
+			// it was background. Reject loudly at dispatch validation; a future
+			// fan-out feature will replace this rejection.
+			if (params.background && (isChain || isParallel || isGraph)) {
+				const batchMode = isChain ? "chain" : isParallel ? "tasks" : "graph";
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `background: true is not supported with ${batchMode} — batch modes run foreground and would block until every unit finishes. Remove background to run it foreground, or dispatch each unit as a separate single-task background call.`,
 						},
 					],
 					details: undefined,
