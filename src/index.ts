@@ -2456,6 +2456,24 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			// background: true with a batch mode was silently ignored — the batch ran
+			// foreground (blocking until every unit finished) while the caller believed
+			// it was background. Reject loudly at dispatch validation; a future
+			// fan-out feature will replace this rejection.
+			if (params.background && (isChain || isParallel || isGraph)) {
+				const batchMode = isChain ? "chain" : isParallel ? "tasks" : "graph";
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `background: true is not supported with ${batchMode} — batch modes run foreground and would block until every unit finishes. Remove background to run it foreground, or dispatch each unit as a separate single-task background call.`,
+						},
+					],
+					details: undefined,
+					isError: true,
+				};
+			}
+
 			if (isChain) {
 				if (params.chain!.length > MAX_CHAIN_STEPS) {
 					return {
