@@ -14,7 +14,8 @@
  * makeCtx() + tool.execute(...), with ../runner mocked so no foreground
  * subprocesses spawn. session-manager's spawnBackgroundSession is additionally
  * stubbed (vi.mock intercepts the extension's DYNAMIC import of the module)
- * while every other export stays real, so state/session helpers behave.
+ * while every other export stays real (the session helpers this path would
+ * touch only run in the poller, which fake timers suppress).
  *
  * Timer hygiene: the extracted path arms a 2s progress poller and a hard-cap
  * timeout — fake timers keep them from firing and are cleared afterwards so
