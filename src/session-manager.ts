@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
-import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isSubagentError, isProviderError, SUBAGENT_ABORTED_MESSAGE } from './types';
+import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isSubagentError, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -275,23 +275,6 @@ function defaultTerminalMessage(stopReason: string | undefined): string {
 }
 
 /**
- * Issue #179 (C1 fix): a failed run entry/result must carry a terminal reason
- * that AGREES with its status — never undefined, never "stop". Any reason the
- * classifier already treats as a failure (error / length / toolUse / deferred
- * / pending / aborted) is coherent and kept; a missing or success reason is
- * coerced to the honest failure reason derived from the classified category.
- */
-function coherentFailureReason(
-  stopReason: string | undefined,
-  errorCategory: ErrorCategory | undefined,
-): string {
-  if (stopReason && classifyTerminalOutcome(stopReason).status !== 'completed') {
-    return stopReason;
-  }
-  return errorCategory === 'aborted' ? 'aborted' : 'error';
-}
-
-/**
  * Extract the final assistant text from a session's messages.
  * Falls back to the LAST assistant message with non-empty text content — the
  * final message is often a tool-call-only turn (agent stopped mid-turn, failed,
@@ -558,7 +541,7 @@ export async function spawnBackgroundSession(
   
   // Issue #98: background runs must be retry-able — persist a session run
   // entry at spawn (id == agent id, so retryRunId: <agent-id> resolves via
-  // state.findRunById → getRunEntries). The entry lives in the same session
+  // state.findSpawnRunById → getRunEntries). The entry lives in the same session
   // custom-entry store the foreground path writes to (state.persistRun); the
   // background path previously never wrote there, so retries silently no-oped.
   const startedAtMs = agent.startedAt; // reuse the agent record's start clock
@@ -610,13 +593,15 @@ export async function spawnBackgroundSession(
               })
             : undefined)
         : undefined;
+    // Issue #187: capture the RAW terminal reason BEFORE coercion. `finalTurnError`
+    // means "the final turn was a PROVIDER error" (isProviderError); deriving it
+    // from the COERCED reason would turn a missing/success reason into 'error' and
+    // mislabel a non-provider failure (hard-cap timeout, spawn throw) as one.
+    const rawStopReason = terminal?.stopReason ?? agent.result?.stopReason;
     const stopReason =
       status === "failed"
-        ? coherentFailureReason(
-            terminal?.stopReason ?? agent.result?.stopReason,
-            errorCategory,
-          )
-        : terminal?.stopReason ?? agent.result?.stopReason;
+        ? coherentFailureReason(rawStopReason, errorCategory)
+        : rawStopReason;
     const entry: SubagentRun = {
       ...run,
       status,
@@ -628,7 +613,7 @@ export async function spawnBackgroundSession(
       // are already in the usage data; recording them here makes "did nothing"
       // (turns 0) explicit versus "did work then died" (turns > 0, error).
       turns: usage.turns,
-      finalTurnError: isProviderError(stopReason),
+      finalTurnError: isProviderError(rawStopReason),
       errorMessage: error,
       finishedAt: new Date().toISOString(),
       durationMs: Date.now() - startedAtMs,
@@ -944,7 +929,7 @@ export async function spawnBackgroundSession(
     cleanupWorkBranch();
     // Issue #98 (review F1): a synchronous prompt() throw never reaches the
     // settle handlers — finalize the run entry so no zombie 'running' entry
-    // survives (findRunById would otherwise resolve and retry a run that
+    // survives (findSpawnRunById would otherwise resolve and retry a run that
     // never started).
     finalizeRunEntry('failed', sanitizeErrorMessage((err as Error).message, effectiveCwd));
     throw err;

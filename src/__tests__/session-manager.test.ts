@@ -1382,7 +1382,7 @@ describe("issue #31 — terminal paths release agent._sessionRef", () => {
 // =========================================================================
 // Issue #98: background run entries — spawn persist + settle finalization.
 // Background runs must be retry-able: the spawn entry (id == agent id) is
-// what state.findRunById resolves, and the finalize entry keeps its status
+// what state.findSpawnRunById resolves, and the finalize entry keeps its status
 // in lockstep with the agent record.
 // =========================================================================
 describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
@@ -1524,12 +1524,15 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		expect(run.status).toBe("failed");
 		expect(run.errorMessage).toBe("Timed out after 5000ms");
 		expect(run.originalParams?.errorCategory).toBe("timeout");
+		// Issue #187: a deadline-timeout is NOT a provider error — finalTurnError
+		// must derive from the RAW terminal reason, not the coerced one.
+		expect(run.finalTurnError).toBe(false);
 	});
 
 	it("finalizes the run entry to failed when prompt() throws synchronously (review F1)", async () => {
 		// A synchronous prompt() throw means the .then/.catch settle handlers
 		// never attach — without the F1 catch path a zombie 'running' entry
-		// would survive and findRunById would retry a run that never started.
+		// would survive and findSpawnRunById would retry a run that never started.
 		mocks.session.prompt.mockImplementation(() => {
 			throw new Error("sync preflight failure");
 		});
@@ -1546,6 +1549,12 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		expect(finalRun.status).toBe("failed");
 		expect(finalRun.errorMessage).toBe("sync preflight failure");
 		expect(finalRun.finishedAt).toBeDefined();
+		// Issue #187: a synchronous preflight throw is NOT a provider error. The
+		// RAW terminal reason is absent, so finalTurnError must be false — before
+		// the fix the coerced reason ('error') leaked into this narrower signal.
+		expect(finalRun.finalTurnError).toBe(false);
+		// The recorded stopReason is still the coerced, status-coherent value.
+		expect(finalRun.stopReason).toBe("error");
 	});
 });
 

@@ -6,7 +6,7 @@
  */
 
 import type { SubagentRun, SubagentResult } from "./types";
-import { isSubagentError, getFinalOutput, isSubagentRunShape, CUSTOM_ENTRY_TYPES, MAX_RUN_HISTORY_ENTRIES } from "./types";
+import { isSubagentError, getFinalOutput, isSubagentRunShape, classifyError, coherentFailureReason, CUSTOM_ENTRY_TYPES, MAX_RUN_HISTORY_ENTRIES } from "./types";
 import type { ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -107,6 +107,13 @@ export function finalizeRunRecord(
 	run.tokensIn = result.usage.input;
 	run.tokensOut = result.usage.output;
 	run.errorMessage = result.errorMessage;
+	// Issue #187: mirror the background finalize rule — a FAILED run always
+	// records a terminal reason that AGREES with its status (coherentFailureReason
+	// through the shared helper), while a non-failed run records whatever reason
+	// the result carried (may be undefined, e.g. a success with no stopReason).
+	run.stopReason = error
+		? coherentFailureReason(result.stopReason, classifyError(result))
+		: result.stopReason;
 	run.outputSummary = finalOutput.slice(0, 200);
 	run.fullOutput = finalOutput || undefined;
 }

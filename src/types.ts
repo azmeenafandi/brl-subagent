@@ -808,6 +808,27 @@ export function classifyTerminalOutcome(
 	}
 }
 
+/**
+ * Issue #179 (C1 fix): a failed run entry/result must carry a terminal reason
+ * that AGREES with its status — never undefined, never "stop". Any reason the
+ * classifier already treats as a failure (error / length / toolUse / deferred
+ * / pending / aborted) is coherent and kept; a missing or success reason is
+ * coerced to the honest failure reason derived from the classified category.
+ *
+ * Issue #187: lives here (not session-manager) so BOTH the background
+ * finalize (session-manager.ts) and the foreground finalize (history.ts) apply
+ * the SAME rule through one implementation instead of two copies.
+ */
+export function coherentFailureReason(
+	stopReason: string | undefined,
+	errorCategory: ErrorCategory | undefined,
+): string {
+	if (stopReason && classifyTerminalOutcome(stopReason).status !== "completed") {
+		return stopReason;
+	}
+	return errorCategory === "aborted" ? "aborted" : "error";
+}
+
 export function formatModel(m: { provider: string; id: string } | undefined): string {
 	return m ? `${m.provider}/${m.id}` : "Not set (will use main agent\u2019s model)";
 }

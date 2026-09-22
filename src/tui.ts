@@ -1710,7 +1710,7 @@ export async function showAgentDetail(
 						// path persists it), mirroring the background path's
 						// `agent?.finalOutput` fallback.
 						const runOutput =
-							cachedTail || state.findRunById(ctx, agentId)?.fullOutput || "";
+							cachedTail || state.findTerminalRunById(ctx, agentId)?.fullOutput || "";
 						const tailLines = runOutput.split("\n").filter(Boolean).slice(-10);
 						if (tailLines.length > 0) {
 							container.addChild(new Spacer(1));

@@ -53,12 +53,16 @@ function makeLiveEntry(id: string, ctx: ExtensionContext): LiveSubagent {
 	};
 }
 
-function makeRun(id: string, status: SubagentRun["status"]): SubagentRun {
+function makeRun(
+	id: string,
+	status: SubagentRun["status"],
+	startedAt = new Date().toISOString(),
+): SubagentRun {
 	return {
 		id,
 		task: `task ${id}`,
 		status,
-		startedAt: new Date().toISOString(),
+		startedAt,
 	} as SubagentRun;
 }
 
@@ -177,6 +181,46 @@ describe("sweepStaleLiveSubagents — no agent record (foreground runs / removed
 
 		expect(finalized).toBe(0);
 		expect(state.subagentSessions.has("fg-1")).toBe(true);
+	});
+
+	// Issue #185 (with teeth): a run writes TWO entries sharing its id, in
+	// append order — a spawn entry (status "running") FIRST, then the final
+	// entry (status "done"/"failed"). Both share startedAt in production
+	// (finalizeRunEntry spreads the spawn record), so getRunEntries' stable
+	// startedAt sort preserves spawn-first. The sweep must judge staleness from
+	// the TERMINAL entry; reading the first match sees "running" and never
+	// reclaims a genuinely finished (poller-dead) foreground run.
+	const SHARED_START = "2026-01-01T00:00:00.000Z";
+
+	it("finalizes a stale foreground entry whose entries are [spawn 'running', final 'done'] (#185)", () => {
+		const ctx = createMockContext([
+			makeRun("fg-185", "running", SHARED_START), // spawn entry, appended first
+			makeRun("fg-185", "done", SHARED_START), // terminal entry, appended at settle
+		]);
+		const state = createSessionState();
+		state.registerLiveSubagent("fg-185", makeLiveEntry("fg-185", ctx));
+		const getAgent = fakeGetAgent(new Map());
+
+		const finalized = sweepStaleLiveSubagents(state, getAgent);
+
+		expect(finalized).toBe(1);
+		expect(state.subagentSessions.has("fg-185")).toBe(false);
+		expect(state.activeSubagents).toBe(0);
+	});
+
+	it("finalizes a stale foreground entry whose entries are [spawn 'running', final 'failed'] (#185)", () => {
+		const ctx = createMockContext([
+			makeRun("fg-185", "running", SHARED_START),
+			makeRun("fg-185", "failed", SHARED_START),
+		]);
+		const state = createSessionState();
+		state.registerLiveSubagent("fg-185", makeLiveEntry("fg-185", ctx));
+		const getAgent = fakeGetAgent(new Map());
+
+		const finalized = sweepStaleLiveSubagents(state, getAgent);
+
+		expect(finalized).toBe(1);
+		expect(state.subagentSessions.has("fg-185")).toBe(false);
 	});
 });
 
@@ -408,5 +452,58 @@ describe("updateProgressStatus modeContext composition (issue #133)", () => {
 			"brl-subagent",
 			"brl: 2 running",
 		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #185: explicit run-entry lookup contracts (terminal vs spawn)
+// ---------------------------------------------------------------------------
+
+describe("SessionState run-entry lookups (issue #185)", () => {
+	const START = "2026-01-01T00:00:00.000Z";
+
+	/** Two entries sharing id + startedAt, spawn appended first (production shape). */
+	function twoEntryContext(): ExtensionContext {
+		const spawn = {
+			...makeRun("run-185", "running", START),
+			originalParams: { model: "provider/original", thinkingLevel: "high" },
+		} as SubagentRun;
+		const final = {
+			...makeRun("run-185", "done", START),
+			fullOutput: "the final output",
+			cost: 0.02,
+			durationMs: 42_000,
+		} as SubagentRun;
+		return createMockContext([spawn, final]);
+	}
+
+	it("findTerminalRunById returns the final entry (terminal status + fullOutput)", () => {
+		const state = createSessionState();
+
+		const resolved = state.findTerminalRunById(twoEntryContext(), "run-185");
+
+		expect(resolved?.status).toBe("done");
+		expect(resolved?.fullOutput).toBe("the final output");
+		expect(resolved?.cost).toBe(0.02);
+	});
+
+	it("findSpawnRunById returns the spawn entry (originalParams intact)", () => {
+		const state = createSessionState();
+
+		const resolved = state.findSpawnRunById(twoEntryContext(), "run-185");
+
+		expect(resolved?.status).toBe("running");
+		expect(resolved?.originalParams).toEqual({
+			model: "provider/original",
+			thinkingLevel: "high",
+		});
+	});
+
+	it("both lookups return undefined for an unknown id", () => {
+		const state = createSessionState();
+		const ctx = twoEntryContext();
+
+		expect(state.findSpawnRunById(ctx, "missing")).toBeUndefined();
+		expect(state.findTerminalRunById(ctx, "missing")).toBeUndefined();
 	});
 });
