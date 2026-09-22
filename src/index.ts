@@ -2135,6 +2135,7 @@ export default function (pi: ExtensionAPI) {
 						"Run the subagent in the background without blocking the conductor. " +
 						"When true, the tool returns immediately with an agent ID. " +
 						"The conductor is woken with a completion message; use get_subagent_result for post-wake retrieval and stall checks. " +
+						"Single-task only — combining background with chain, tasks, or graph is not supported and is rejected. " +
 						"Default: false (blocking mode).",
 				}),
 			),
