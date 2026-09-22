@@ -12,7 +12,29 @@
  *   5. gitMode 'branch' is rejected up front (0 spawns);
  *   6. a mid-loop spawn failure names the failed task + started ids;
  *   7. abort before/ mid-fan-out: 0 or 1 spawns, reported detached/cancelled;
- *   8. the session cost limit gates the N-task estimate (0 spawns).
+ *   8. the session cost limit gates the N-task estimate (0 spawns);
+ *   9. a bad per-task outputFile rejects the WHOLE batch before any spawn;
+ *  10. a per-task H1 outputFile-vs-write hard conflict rejects before any spawn;
+ *  11. the ids handed back by one batch are always distinct.
+ *
+ * COVERAGE BOUNDARIES — what this suite covers and what is intentionally
+ * proven elsewhere. This suite covers the fan-out CONTRACT at the handler
+ * level with a stubbed spawn: batch validation (cwd/outputFile/H1/approval/
+ * gitMode/cost) rejecting before any spawn, task naming + error families,
+ * spawn ordering, id uniqueness, partial-failure/abort reporting. The
+ * N-agent LIFECYCLE/addressability and the one-wake-per-completion
+ * behaviours are intentionally proven elsewhere, not here:
+ *   (a) the live two-agent fan-out point-of-use acceptance — a real 2-task
+ *       fan-out returned both ids and delivered two per-agent completion
+ *       wakes (recorded in .development/TASKS.md / HANDOFF.md);
+ *   (b) notify-completion.test.ts — markTerminalSeen's per-id dedupe and
+ *       resolveDelivery's completionNotify knob matrix;
+ *   (c) session-manager.test.ts's per-agent get/steer/stop tests;
+ *   (d) the shared startBackgroundAgent tail used by BOTH single background
+ *       and fan-out (the spawn machinery runs exactly once, exercised by
+ *       both paths).
+ * This note documents that coverage argument — it is NOT a substitute for
+ * a test.
  *
  * Harness modeled on background-run-extraction.test.ts: partial
  * session-manager mock (stub spawnBackgroundSession, keep other exports
@@ -493,5 +515,64 @@ describe("background fan-out for tasks mode (#198 phase 2)", () => {
 		);
 		expect(fits.isError).toBeFalsy();
 		expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects the whole batch on an invalid per-task outputFile, before any spawn", async () => {
+		const result = await runFanOut({
+			background: true,
+			tasks: [
+				{ task: "unit one", label: "one" },
+				// Path traversal: validateOutputFile resolves this against the
+				// task cwd (testCwd) and rejects any result whose relative form
+				// starts with ".." (escapes the project root).
+				{ task: "unit two", label: "two", outputFile: "../../etc/passwd" },
+				{ task: "unit three", label: "three" },
+			],
+		});
+
+		expect(result.isError).toBe(true);
+		expect(result.details).toBeUndefined();
+		const text = result.content[0].text;
+		expect(text).toContain(`Task 2 ("two"): Invalid outputFile:`);
+		expect(text).toContain("escapes the project root");
+		// Whole batch rejected pre-spawn — tasks 1 and 3 never started either.
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+	});
+
+	it("rejects the whole batch on the per-task H1 outputFile-vs-write hard conflict, before any spawn", async () => {
+		const result = await runFanOut({
+			background: true,
+			tasks: [
+				{ task: "unit one", label: "one" },
+				// VALID outputFile (resolves inside testCwd, not a directory) but
+				// tools: ["read"] makes 'write' unavailable — validatePreTask
+				// treats outputFile-without-write as a HARD error, not a warning.
+				{ task: "unit two", label: "two", outputFile: "report.md", tools: ["read"] },
+				{ task: "unit three", label: "three" },
+			],
+		});
+
+		expect(result.isError).toBe(true);
+		expect(result.details).toBeUndefined();
+		const text = result.content[0].text;
+		expect(text).toContain(
+			`Task 2 ("two"): outputFile is set but the 'write' tool is not available`,
+		);
+		expect(text).toContain("tools=read");
+		// Whole batch rejected pre-spawn — tasks 1 and 3 never started either.
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+	});
+
+	it("returns three distinct agent ids — a batch never hands back a duplicate address", async () => {
+		const result = await runFanOut({
+			background: true,
+			tasks: THREE_TASKS,
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(3);
+		const ids = result.content[0].text.match(/bg-fanout-\d+/g) ?? [];
+		expect(ids).toHaveLength(3);
+		expect(new Set(ids).size).toBe(3);
 	});
 });
