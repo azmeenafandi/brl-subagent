@@ -163,12 +163,20 @@ const COMPARISON_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set<ts.SyntaxKind>(
 	...RELATIONAL_OPERATORS,
 ]);
 
-/** `node`'s text as a failure reason — string literal (either quote) or a no-substitution template. */
-function failureLiteralText(node: ts.Node): string | undefined {
-	if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-		return FAILURE_REASON_SET.has(node.text) ? node.text : undefined;
-	}
+/**
+ * Static text of a string literal in either quote style (single, double, or a
+ * no-substitution backtick). A template EXPRESSION with substitutions
+ * (`` `error${x}` ``) is runtime-computed and returns undefined.
+ */
+function stringLiteralText(node: ts.Node): string | undefined {
+	if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
 	return undefined;
+}
+
+/** `node`'s text as a failure reason — a recognized stop-reason literal, else undefined. */
+function failureLiteralText(node: ts.Node): string | undefined {
+	const text = stringLiteralText(node);
+	return text !== undefined && FAILURE_REASON_SET.has(text) ? text : undefined;
 }
 
 /** Numeric literal text, including the `-1` prefix form used for the unset sentinel. */
@@ -290,14 +298,12 @@ export function scanReimplementations(source: string, file: string): Reimplement
 		if (ts.isArrayLiteralExpression(node) && !coveredLists.has(node)) {
 			const literals = failureLiteralsIn(node);
 			// Both quoting styles count for parity: a backtick list ``[`error`]`` is
-			// the same re-hard-coding as `["error"]`. A template EXPRESSION with
-			// substitutions (`` `error${x}` ``) is runtime-computed, not statically a
-			// stop reason, so it is deliberately excluded.
+			// the same re-hard-coding as `["error"]`. Template expressions with
+			// substitutions are runtime-computed, not statically a stop reason, so
+			// `stringLiteralText` deliberately excludes them.
 			const allStopVocabulary = node.elements.every((element) => {
-				if (!ts.isStringLiteral(element) && !ts.isNoSubstitutionTemplateLiteral(element)) {
-					return false;
-				}
-				return STOP_REASON_SET.has(element.text);
+				const text = stringLiteralText(element);
+				return text !== undefined && STOP_REASON_SET.has(text);
 			});
 			if (literals.length > 0 && (literals.length >= 2 || allStopVocabulary)) {
 				record(node, "failure-list", literals.join(", "));
