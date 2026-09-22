@@ -265,7 +265,7 @@ Set `background: true` to spawn the subagent as an independent session that retu
 
 Fan-out validates the entire batch before spawning anything. Any invalid task — `cwd`, `outputFile`, or a pre-task check — rejects the whole batch before a single spawn starts, and the error names the task (`Task N ("label")`). Per-task overrides are honoured: `model`, `thinkingLevel`, `tools` / `excludeTools` / `noBuiltinTools`, `systemPrompt` / `inheritSystemPrompt`, `outputFile`, `timeout`, `cwd`, `priority`, `label`.
 
-Three checks reject the fan-out up front, before any spawn: `approvalMode: 'always'`; `gitMode: 'branch'` for the batch (the per-repository git lock is awaited inside the first spawn and held until that agent settles, so fan-out would block the call); and the session cost limit, checked as per-task estimate × N.
+Three checks reject the fan-out up front, before any spawn: `approvalMode: 'always'`; `gitMode: 'branch'` for the batch (the git lock is awaited inside the first spawn and held until that agent settles, so same-cwd branch-mode spawns would serialize and block the call — the rule is blanket because the lock is keyed by the cwd path, not the repository root); and the session cost limit, checked as per-task estimate × N.
 
 If a spawn fails mid-loop, fan-out stops and reports the failed task plus the IDs already started; an abort mid-loop stops further spawns. Either way, the agents already started stay detached and still wake the conductor. Everything else is unchanged: single background, foreground parallel, the `MAX_PARALLEL_TASKS` cap (8), a live-monitor row per agent, `get_subagent_result` / `steer_subagent` / `stop_subagent` by agent ID, per-agent timeouts, and a single `'writes'` approval warning for the batch.
 

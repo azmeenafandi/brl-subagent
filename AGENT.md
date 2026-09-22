@@ -27,8 +27,8 @@ delegation-heavy work.
 - Background single returns immediately with an agent id; a completion message wakes you (see below).
 - Chain, parallel, and graph are batch — one call, many subtasks. Chain and graph are foreground; `tasks` + `background: true` fans out: every task starts as its own background agent, the call returns with one id per task in task order, and you are woken once per agent as each finishes.
 - Fan-out validates the whole batch before spawning anything: any invalid task (cwd, `outputFile`, or a pre-task check) rejects the entire batch before a single spawn starts, and the error names the task (`Task N ("label")`).
-- Fan-out rejects `gitMode: "branch"` for the batch — the per-repository git lock is awaited inside the first spawn and held until that agent settles, so fan-out would block the call. It also rejects `approvalMode: "always"` up front, and the session cost limit is checked as per-task estimate × N.
-- Spawn failure or abort mid-loop stops further spawns and reports the failed task plus the ids already started; those agents are detached and still wake you.
+- Fan-out rejects `gitMode: "branch"` for the batch — the git lock is awaited inside the first spawn and held until that agent settles, so same-cwd branch-mode spawns would serialize and block the call (the rule is blanket because the lock is keyed by the cwd path, not the repository root). It also rejects `approvalMode: "always"` up front, and the session cost limit is checked as per-task estimate × N.
+- Spawn failure mid-loop stops further spawns and reports the failed task plus the ids already started; abort mid-loop stops further spawns and reports the ids already started. Either way those agents are detached and still wake you.
 - Chain stops at the first failure; max 10 steps.
 - Parallel runs every task regardless of the others — no short-circuit.
 - Graph runs in waves, ordered by `dependsOn` edges.
