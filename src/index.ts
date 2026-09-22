@@ -2396,7 +2396,7 @@ export default function (pi: ExtensionAPI) {
 			// resolving templates first keeps a combined template + retryRunId call
 			// from silently disabling template resolution (issue #175 review).
 			if (params.retryRunId) {
-				const runEntry = state.findRunById(ctx, params.retryRunId);
+				const runEntry = state.findSpawnRunById(ctx, params.retryRunId);
 				if (runEntry) {
 					params = resolveRetryParams(params, runEntry);
 				} else {

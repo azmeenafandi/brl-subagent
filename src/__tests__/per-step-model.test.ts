@@ -1032,7 +1032,7 @@ describe("template-only delegate_task calls dispatch (issue #175)", () => {
 // ---------------------------------------------------------------------------
 
 describe("retry-only delegate_task calls dispatch (issue #175 review)", () => {
-	/** Point ctx's sessionManager at one run entry so findRunById resolves it. */
+	/** Point ctx's sessionManager at one run entry so findSpawnRunById resolves it. */
 	function seedRunEntry(ctx: ReturnType<typeof makeCtx>, run: SubagentRun): void {
 		const entries = [{ type: "custom", customType: CUSTOM_ENTRY_TYPES.run, data: run }];
 		(ctx.sessionManager as { getEntries: () => unknown[] }).getEntries = () => entries;
