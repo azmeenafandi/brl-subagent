@@ -1968,18 +1968,30 @@ export default function (pi: ExtensionAPI) {
 				isError: true,
 			};
 		}
+		// W5 parity with the single-background path: 'writes' silently
+		// auto-approves in background — warn once so the caller knows none of
+		// the N agents' diffs will be gated on approval.
+		if (globalParams.resolvedApprovalMode === 'writes') {
+			log.warn("Background fan-out spawned with approvalMode 'writes' — auto-approving (no dialog in background)", {
+				tasks: taskList.length,
+			});
+		}
 
-		// gitMode 'branch' cannot fan out: the per-repository git lock is awaited
-		// inside the first spawn and held until that agent settles, so a second
-		// same-repository branch-mode spawn would block this call for the whole
-		// serialized chain.
+		// gitMode 'branch' is rejected for the whole batch: the per-repository
+		// git lock is awaited inside the first spawn and held until that agent
+		// settles, so same-repository branch-mode spawns would serialize and
+		// block this call for the whole chain. The rule is blanket (not
+		// same-cwd-only) because the lock is keyed by the cwd string, not the
+		// repository root — different subdirectories of one repo share a working
+		// tree without sharing a lock.
 		if (globalParams.resolvedGitMode === 'branch') {
 			return {
 				content: [{ type: "text" as const, text:
 					`Cannot start ${taskList.length} background agents with gitMode 'branch': the per-repository git lock ` +
-					`is awaited by the first spawn and held until that agent settles, so a second same-repository ` +
-					`branch-mode spawn would block this call for the whole serialized chain. ` +
-					`Use gitMode 'none' for background fan-out, or dispatch each unit as a separate single-task background call.`
+					`is awaited by the first spawn and held until that agent settles, so same-repository branch-mode ` +
+					`spawns would serialize and block this call for the whole chain. Background fan-out therefore ` +
+					`rejects gitMode 'branch' for all tasks in this version. Use gitMode 'none' for the batch, or ` +
+					`dispatch each unit as a separate single-task background call.`
 				}],
 				details: undefined,
 				isError: true,
@@ -2113,7 +2125,7 @@ export default function (pi: ExtensionAPI) {
 						tools: merged.toolOptions?.tools,
 						excludeTools: merged.toolOptions?.excludeTools,
 						noBuiltinTools: merged.toolOptions?.noBuiltinTools,
-						preset: params.preset as string | undefined,
+						preset: globalParams.resolvedPreset?.name,
 					}),
 					sanitizeCwd: merged.effectiveCwd,
 				});
@@ -3189,7 +3201,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text" as const,
-							text: `background: true is not supported with ${batchMode} — batch modes run foreground and would block until every unit finishes. Remove background to run it foreground, or dispatch each unit as a separate single-task background call.`,
+							text: `background: true is not supported with ${batchMode} — batch modes run foreground and would block until every unit finishes. Remove background to run it foreground, or start each unit as its own single-task background call and sequence the dependencies yourself.`,
 						},
 					],
 					details: undefined,
