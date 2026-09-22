@@ -84,12 +84,14 @@ All settings persist across sessions.
 | `outputFile` | string | — | Path for the subagent to write full findings. Returns only a summary. |
 | `timeout` | number | — | Max milliseconds. Exceeded → SIGTERM (5s grace) → SIGKILL. |
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
-| `background` | boolean | `false` | Spawn as an independent background session; returns an ID immediately. See [Background execution](#background-execution). |
+| `background` | boolean | `false` | Spawn as an independent background session; returns an ID immediately. With `tasks` it fans out (one background agent per task, one ID per task), and the conductor is woken once per agent as each finishes. See [Background execution](#background-execution). |
 | `priority` | string | — | Concurrency priority: `critical` / `high` / `normal` / `low`. Defaults to `normal`; higher-priority delegations queue ahead. `tasks[]` / `graph[]` steps can set `priority` per unit (see below). |
 
 ## Multi-step modes (chain, tasks, graph)
 
 Beyond a single `task`, `delegate_task` accepts three multi-step shapes: `chain` (sequential steps, `{previous}` references the prior step's output), `tasks` (parallel, independent), and `graph` (dependency-ordered, `{otherId}` references another task's output).
+
+`background: true` fans out the `tasks` shape into one background agent per task (one ID per task, one completion wake per agent); `chain` and `graph` reject it.
 
 Every execution knob can be set per step: `model`, `thinkingLevel`, `tools`, `excludeTools`, `noBuiltinTools`, `systemPrompt`, `inheritSystemPrompt`, `outputFile`, `timeout`, `cwd`. Unset fields inherit from the global parameters (and their preset defaults).
 
@@ -253,9 +255,20 @@ Set `background: true` to spawn the subagent as an independent session that retu
 **Background safety controls (issue #28):** background agents honor the same safety controls as foreground runs — no more unattended sessions that bypass approval, git isolation, deadlines, or cost:
 
 - **Per-agent timeout** — the deadline is armed before the prompt starts (preflight time counts toward it). On expiry the session is aborted and the agent ends with status `stopped` and the timeout reason. Timeout values are normalized (`0`/negative/`NaN`/`Infinity`/`≥ 2^31` → no timeout) and a double-fire guard prevents the timer from acting on an already-settled agent.
-- **Session cost limit (R5)** — the cost check runs before the background spawn, so a session at its limit cannot bypass it by delegating to background.
-- **Approval mode** — `approvalMode: 'always'` is rejected for background agents (there is no interactive dialog to approve a diff while running unattended); `'writes'` silently auto-approves with a warning logged.
-- **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch.
+- **Session cost limit (R5)** — the cost check runs before the background spawn, so a session at its limit cannot bypass it by delegating to background. For a background fan-out the whole batch is checked up front as per-task estimate × N.
+- **Approval mode** — `approvalMode: 'always'` is rejected for background agents (there is no interactive dialog to approve a diff while running unattended); `'writes'` silently auto-approves with a warning logged. For a fan-out, `'always'` rejects the whole batch before any spawn and `'writes'` warns once for the batch.
+- **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch. `gitMode: 'branch'` is rejected for background fan-out — see [Background fan-out](#background-fan-out).
+
+### Background fan-out
+
+`background: true` with `tasks: [...]` fans out: every task starts as its own background agent, the call returns immediately with **one ID per task** in task order, and the conductor is woken with **one completion message per agent** as each finishes — no coalescing, no batch wake. `chain` and `graph` cannot be combined with `background: true` (rejected loudly): sequential dependencies and dependency waves do not survive fan-out.
+
+Fan-out validates the entire batch before spawning anything. Any invalid task — `cwd`, `outputFile`, or a pre-task check — rejects the whole batch before a single spawn starts, and the error names the task (`Task N ("label")`). Per-task overrides are honoured: `model`, `thinkingLevel`, `tools` / `excludeTools` / `noBuiltinTools`, `systemPrompt` / `inheritSystemPrompt`, `outputFile`, `timeout`, `cwd`, `priority`, `label`.
+
+Three checks reject the fan-out up front, before any spawn: `approvalMode: 'always'`; `gitMode: 'branch'` for the batch (the per-repository git lock is awaited inside the first spawn and held until that agent settles, so fan-out would block the call); and the session cost limit, checked as per-task estimate × N.
+
+If a spawn fails mid-loop, fan-out stops and reports the failed task plus the IDs already started; an abort mid-loop stops further spawns. Either way, the agents already started stay detached and still wake the conductor. Everything else is unchanged: single background, foreground parallel, the `MAX_PARALLEL_TASKS` cap (8), a live-monitor row per agent, `get_subagent_result` / `steer_subagent` / `stop_subagent` by agent ID, per-agent timeouts, and a single `'writes'` approval warning for the batch.
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for the release history.
