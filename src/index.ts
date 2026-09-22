@@ -1879,6 +1879,544 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// -------------------------------------------------------------------
+	// runBackgroundFanOut — background fan-out for tasks mode.
+	// Resolves + validates the WHOLE batch up front (no spawn on any
+	// failure), then spawns the tasks sequentially, in task order, through the
+	// shared startBackgroundAgent tail, and returns immediately with their ids.
+	// Foreground-only gates (preflight, circuit breaker, recursion depth) are
+	// deliberately skipped — the single-background path skips them too.
+	// -------------------------------------------------------------------
+
+	async function runBackgroundFanOut(
+		pi: ExtensionAPI,
+		ctx: ExtensionContext,
+		params: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+	): Promise<ToolResult<SubagentResult | undefined>> {
+		const taskList = params.tasks as SubTaskParams[];
+
+		// Session cost limit gates the WHOLE batch before any spawn — same
+		// estimate/limit logic as runParallelMode, scaled by task count.
+		const perTaskEstimate =
+			state.config.perTaskCostEstimate > 0
+				? state.config.perTaskCostEstimate
+				: 0.05;
+		if (state.checkCostLimit(perTaskEstimate * taskList.length, ctx)) {
+			const currentTotal = state.getSessionTotalCost(ctx);
+			const limit = state.config.sessionCostLimit;
+			log.warn("Background fan-out rejected: session cost limit reached", {
+				currentTotal,
+				estimatedCost: perTaskEstimate * taskList.length,
+				limit,
+			});
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text:
+							`Cannot delegate: session cost limit reached ` +
+							`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
+							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
+					},
+				],
+				details: undefined,
+				isError: true,
+			};
+		}
+
+		// Resolve global params once — same call shape as runParallelMode.
+		const globalParams = resolveSubagentParams(
+			params as {
+				task: string;
+				label?: string;
+				preset?: string;
+				systemPrompt?: string;
+				inheritSystemPrompt?: boolean;
+				thinkingLevel?: string;
+				outputFile?: string;
+				timeout?: number;
+				cwd?: string;
+				tools?: string[];
+				excludeTools?: string[];
+				noBuiltinTools?: boolean;
+				gitMode?: string;
+			},
+			state,
+			ctx,
+			log,
+		);
+
+		// Resolve the global model once (per-call model beats preset/config).
+		const globalModelResult = resolveSubagentModel(
+			ctx,
+			globalParams.resolvedPreset,
+			params.model as string | undefined,
+		);
+		if (!globalModelResult.ok) return globalModelResult.error;
+		const globalModel = globalModelResult.model;
+
+		// Same rejection as the single-background path: approvalMode 'always'
+		// cannot work in background — there is no interactive dialog to approve
+		// the diff, for any of the N agents.
+		if (globalParams.resolvedApprovalMode === 'always') {
+			return {
+				content: [{ type: "text" as const, text:
+					`Cannot spawn background agent with approvalMode 'always': background agents run unattended ` +
+					`and cannot present the approval dialog. Use approvalMode 'auto' (default) or 'writes'.`
+				}],
+				details: undefined,
+				isError: true,
+			};
+		}
+
+		// gitMode 'branch' cannot fan out: the per-repository git lock is awaited
+		// inside the first spawn and held until that agent settles, so a second
+		// same-repository branch-mode spawn would block this call for the whole
+		// serialized chain.
+		if (globalParams.resolvedGitMode === 'branch') {
+			return {
+				content: [{ type: "text" as const, text:
+					`Cannot start ${taskList.length} background agents with gitMode 'branch': the per-repository git lock ` +
+					`is awaited by the first spawn and held until that agent settles, so a second same-repository ` +
+					`branch-mode spawn would block this call for the whole serialized chain. ` +
+					`Use gitMode 'none' for background fan-out, or dispatch each unit as a separate single-task background call.`
+				}],
+				details: undefined,
+				isError: true,
+			};
+		}
+
+		// Per-task pre-pass: resolve + validate EVERYTHING before any spawn, so a
+		// single bad task rejects the whole batch with nothing started.
+		type FanOutTask = {
+			merged: ReturnType<typeof mergeSubTaskParams>;
+			model: { provider: string; id: string };
+			cwd: string;
+			outputFile: string | undefined;
+		};
+		const displayTaskName = (merged: ReturnType<typeof mergeSubTaskParams>): string =>
+			merged.label ??
+			(merged.task.length > 60 ? `${merged.task.slice(0, 57)}...` : merged.task);
+
+		const fanOutTasks: FanOutTask[] = [];
+		for (let i = 0; i < taskList.length; i++) {
+			const merged = mergeSubTaskParams(globalParams, taskList[i]);
+			const name = displayTaskName(merged);
+			const taskPrefix = `Task ${i + 1} ("${name}")`;
+			// Per-task model override wins; the global model is the fallback.
+			const stepModel = resolveStepModel(ctx, merged.model, globalModel);
+
+			const cwdResult = validateCwd(merged.effectiveCwd, ctx.cwd);
+			if (!cwdResult.ok) {
+				return {
+					content: [{ type: "text" as const, text: `${taskPrefix}: Invalid cwd: ${cwdResult.error}` }],
+					details: undefined,
+					isError: true,
+				};
+			}
+			let resolvedOutputFile: string | undefined;
+			if (merged.outputFile) {
+				const ofResult = validateOutputFile(merged.outputFile, cwdResult.value);
+				if (!ofResult.ok) {
+					return {
+						content: [{ type: "text" as const, text: `${taskPrefix}: Invalid outputFile: ${ofResult.error}` }],
+						details: undefined,
+						isError: true,
+					};
+				}
+				resolvedOutputFile = ofResult.value;
+			}
+
+			const validation = validatePreTask({
+				task: merged.task,
+				toolOptions: merged.toolOptions,
+				thinkingLevel: merged.thinkingLevel,
+				gitMode: globalParams.resolvedGitMode,
+				outputFile: merged.outputFile,
+			});
+			if (validation.warnings.length > 0) {
+				log.warn("Background fan-out pre-task validation warnings", { task: i + 1, warnings: validation.warnings });
+			}
+			if (!validation.valid) {
+				const errText = validation.errors.join("; ");
+				log.warn("Background fan-out pre-task validation failed", { task: i + 1, errors: validation.errors });
+				return {
+					content: [{ type: "text" as const, text: `${taskPrefix}: ${errText}` }],
+					details: undefined,
+					isError: true,
+				};
+			}
+
+			fanOutTasks.push({ merged, model: stepModel, cwd: cwdResult.value, outputFile: resolvedOutputFile });
+		}
+
+		// Spawn pass — sequential, in task order, through the shared tail.
+		const started: Array<{ id: string; label?: string }> = [];
+		const startedIdsText = (): string => started.map((s) => s.id).join(", ");
+
+		for (let i = 0; i < fanOutTasks.length; i++) {
+			if (signal?.aborted) {
+				if (started.length === 0) {
+					return {
+						content: [{ type: "text" as const, text: `Background fan-out cancelled before any agent started.` }],
+						details: undefined,
+						isError: true,
+					};
+				}
+				return {
+					content: [{ type: "text" as const, text:
+						`Background fan-out cancelled after starting ${started.length} of ${fanOutTasks.length} agents ` +
+						`(${startedIdsText()}) — they are detached and will still wake you.`
+					}],
+					details: undefined,
+					isError: true,
+				};
+			}
+
+			const { merged, model, cwd, outputFile } = fanOutTasks[i];
+			const name = displayTaskName(merged);
+			const subagentPrompt = buildSubagentPrompt(
+				ctx.getSystemPrompt(),
+				merged.inheritSP,
+				merged.customSP,
+				outputFile,
+				merged.toolOptions?.tools,
+				globalParams.resolvedPreset?.promptGuideline,
+			);
+			const unitPriority = merged.priority ?? (params.priority as string | undefined);
+
+			let agent: BackgroundAgent;
+			try {
+				agent = await startBackgroundAgent(pi, ctx, {
+					task: merged.task,
+					type: (params.preset as string | undefined) || 'general-purpose',
+					description: merged.label,
+					model: `${model.provider}/${model.id}`,
+					thinkingLevel: merged.thinkingLevel,
+					priority: unitPriority,
+					systemPrompt: subagentPrompt,
+					cwd,
+					toolOptions: merged.toolOptions,
+					timeout: merged.timeout,
+					gitMode: globalParams.resolvedGitMode,
+					// Retry parity with createUnitRun: snapshot this unit's resolved
+					// values so a retry restores them.
+					originalParams: snapshotOriginalParams({
+						systemPrompt: merged.customSP,
+						inheritSystemPrompt: merged.inheritSP,
+						model: merged.model,
+						thinkingLevel: merged.thinkingLevel,
+						priority: unitPriority,
+						outputFile: merged.outputFile,
+						timeout: merged.timeout,
+						cwd: merged.effectiveCwd,
+						tools: merged.toolOptions?.tools,
+						excludeTools: merged.toolOptions?.excludeTools,
+						noBuiltinTools: merged.toolOptions?.noBuiltinTools,
+						preset: params.preset as string | undefined,
+					}),
+					sanitizeCwd: merged.effectiveCwd,
+				});
+			} catch (err) {
+				const message = sanitizeErrorMessage(
+					err instanceof Error ? err.message : String(err),
+					merged.effectiveCwd,
+				);
+				log.error("Background fan-out spawn failed", { task: i + 1, error: message });
+				const alreadyStarted = started.length > 0
+					? `\n\nAlready started: ${startedIdsText()} — they are detached and will still wake you.`
+					: "";
+				return {
+					content: [{ type: "text" as const, text:
+						`Failed to spawn background agent for Task ${i + 1} ("${name}"): ${message}` + alreadyStarted
+					}],
+					details: undefined,
+					isError: true,
+				};
+			}
+			started.push({ id: agent.id, label: merged.label });
+		}
+
+		// Text-only result: ids in task order + the wake hint.
+		const lines = started
+			.map((s, i) => `${i + 1}. ${s.label ? `"${s.label}" ` : ""}— ${s.id}`)
+			.join("\n");
+		return {
+			content: [{ type: "text" as const, text:
+				`Background agents started: ${started.length}\n\n` +
+				`${lines}\n\n` +
+				`You'll be woken with a completion message as each finishes; use get_subagent_result({ agent_id }) for retrieval and stall checks.`
+			}],
+			details: undefined,
+		};
+	}
+
+	// -------------------------------------------------------------------
+	// startBackgroundAgent — the shared background-spawn tail.
+	// Used by BOTH spawnBackgroundRun (single task) and runBackgroundFanOut
+	// (tasks fan-out): the session-manager import, the spawn call, live-monitor
+	// registration, footer counters, the 2s progress poller and the hard-cap
+	// timer live here exactly once. Callers keep their own prelude, checks,
+	// validations and result formatting. THROWS on spawn failure — callers
+	// translate the error into their own result shape.
+	// -------------------------------------------------------------------
+
+	async function startBackgroundAgent(
+		pi: ExtensionAPI,
+		ctx: ExtensionContext,
+		spawn: {
+			task: string;
+			type?: string;
+			description?: string;
+			model?: string;
+			thinkingLevel: ThinkingLevel;
+			priority?: string;
+			systemPrompt: string;
+			cwd: string;
+			toolOptions?: SubagentToolOptions;
+			timeout?: number;
+			gitMode: GitMode;
+			originalParams?: SubagentRun["originalParams"];
+			/** cwd used to redact paths from crash notifications. */
+			sanitizeCwd: string;
+		},
+	): Promise<BackgroundAgent> {
+		const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
+		// Issue #31 (PR #76 review, DRY): extract final output from a
+		// possibly-released ref — the poller may observe a terminal agent
+		// whose ref was already nulled by the settlement path.
+		const extractAgentFinalOutput = (a: BackgroundAgent): string =>
+			extractFinalOutput(a._sessionRef ?? { messages: [] });
+
+		const agent = await spawnBackgroundSession(pi, ctx, {
+			task: spawn.task,
+			type: spawn.type,
+			description: spawn.description,
+			model: spawn.model,
+			thinkingLevel: spawn.thinkingLevel,
+			// Issue #114: per-unit priority rides the spawn so the background
+			// run entry + drill-in header carry it like foreground runs.
+			priority: spawn.priority,
+			systemPrompt: spawn.systemPrompt,
+			cwd: spawn.cwd,
+			toolOptions: spawn.toolOptions,
+			timeout: spawn.timeout,
+			gitMode: spawn.gitMode,
+			// Issue #98/#108: snapshotOriginalParams is the single source of truth
+			// for the caller params a later retry restores.
+			originalParams: spawn.originalParams,
+		});
+		
+		// Register for live monitor
+		state.registerLiveSubagent(agent.id, {
+			id: agent.id,
+			label: agent.description,
+			task: agent.task,
+			model: agent.model,
+			thinkingLevel: agent.thinkingLevel,
+			priority: agent.priority,
+			startedAt: agent.startedAt,
+			ctx,
+		});
+		
+		// Update footer counters
+		state.activeSubagents++;
+		updateProgressStatus(state, ctx);
+
+		let completed = false;
+		
+		// Poll for live progress
+		const pollInterval = setInterval(() => {
+			try {
+				if (completed) return;
+				
+				const session = agent._sessionRef;
+				// Issue #31: a nulled ref on a TERMINAL agent is expected (the
+				// settlement path releases the ref) — fall through to finalize
+				// below instead of treating it as a crash. A nulled ref on a
+				// live agent is still a crash.
+				if (!session && !agent.completedAt) {
+					// Session ref not available — session may have crashed.
+					// Defensive: the ref is assigned synchronously before the poller starts
+					// and is never nulled, so this is mostly unreachable — but keep the
+					// bookkeeping safe regardless.
+					completed = true;
+					clearInterval(pollInterval);
+					clearTimeout(hardCapHandle);
+					// Capture whatever output exists (may be empty — fine).
+					setAgentFinalOutput(agent.id, state.subagentSessions.get(agent.id)?.liveOutput ?? '');
+					// Gate the counter on the finalize claim: if the
+					// stale sweep already finalized this entry, the
+					// decrement happened there (PR #71 review).
+					if (state.finalizeLiveSubagent(agent.id)) {
+						state.activeSubagents--;
+						if (state.activeSubagents < 0) state.activeSubagents = 0;
+					}
+					state.failedSubagents++;
+					updateProgressStatus(state, ctx);
+					pi.sendMessage({
+						customType: "subagent-notification",
+						content: `Background agent "${agent.description}" crashed.`,
+						display: true,
+						details: { agentId: agent.id }
+					}, { deliverAs: "followUp" });
+					return;
+				}
+				
+				// While running, update the live monitor.
+				// Once completedAt is set, skip straight to finalize below.
+				// Issue #31: past the guard above, the only nulled-ref path left is a
+				// TERMINAL agent (settlement releases the ref), so a live agent always
+				// has its session — the guard already returned on the live-nulled-ref
+				// crash path. The compiler can't correlate the two checks, so assert it.
+				if (!agent.completedAt) {
+					const finalOutput = extractFinalOutput(session!);
+					
+					try {
+						const stats = session!.getSessionStats();
+						state.updateLiveSubagent(agent.id, finalOutput, stats.tokens.input, stats.tokens.output);
+					} catch {
+						state.updateLiveSubagent(agent.id, finalOutput, 0, 0);
+					}
+				}
+				
+				// Authoritative completion: the prompt promise settled — status and
+				// completedAt are set by .then()/.catch() in spawnBackgroundSession.
+				// Do NOT rely on !session.isStreaming: it is false during prompt()
+				// preflight (auth check, model resolution) and for failed starts.
+				if (agent.completedAt) {
+					completed = true;
+					clearInterval(pollInterval);
+					clearTimeout(hardCapHandle);
+					
+					// Issue #31: prefer the output already captured at settlement;
+					// the ref may already be nulled on terminal agents, so never
+					// overwrite with empty and stay null-safe.
+					const finalOutput = agent.finalOutput ?? extractAgentFinalOutput(agent);
+					setAgentFinalOutput(agent.id, finalOutput);
+					
+					// Gate the counter on the finalize claim: if the
+					// stale sweep already finalized this entry, the
+					// decrement happened there (PR #71 review).
+					if (state.finalizeLiveSubagent(agent.id)) {
+						state.activeSubagents--;
+						if (state.activeSubagents < 0) state.activeSubagents = 0;
+					}
+					
+					if (agent.status === 'failed') {
+						state.failedSubagents++;
+						updateProgressStatus(state, ctx);
+						pi.sendMessage({
+							customType: "subagent-notification",
+							content: `Background agent "${agent.description}" failed.`,
+							display: true,
+							details: { agentId: agent.id }
+						}, { deliverAs: "followUp" });
+					} else if (agent.status === 'stopped') {
+						// User-initiated stop (stop_subagent) or deadline abort
+						// (timeout/hard cap) — not a failure.
+						updateProgressStatus(state, ctx);
+					} else {
+						state.completedSubagents++;
+						state.unseenSubagents++;
+						updateProgressStatus(state, ctx);
+					}
+				}
+			} catch (err) {
+				if (!completed) {
+					completed = true;
+					clearInterval(pollInterval);
+					clearTimeout(hardCapHandle);
+					try {
+						setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
+					} catch { /* ignore */ }
+					// Gate the counter on the finalize claim: if the
+					// stale sweep already finalized this entry, the
+					// decrement happened there (PR #71 review).
+					if (state.finalizeLiveSubagent(agent.id)) {
+						state.activeSubagents--;
+						if (state.activeSubagents < 0) state.activeSubagents = 0;
+					}
+					state.failedSubagents++;
+					updateProgressStatus(state, ctx);
+					pi.sendMessage({
+						customType: "subagent-notification",
+						content: `Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`,
+						display: true,
+						details: { agentId: agent.id }
+					}, { deliverAs: "followUp" });
+				}
+			}
+		}, 2000);
+		
+		// Hard cap: stop polling AND abort the session after the deadline.
+		// W2 (issue #28): previously this only stopped the poller — the pi
+		// session kept running forever (orphaned). Now it pre-sets
+		// 'stopped' (so the .then keeps it, per W1) and aborts the
+		// session. The cap honors a shorter per-agent timeout.
+		const hardCapMs = Math.min(spawn.timeout ?? 30 * 60 * 1000, 30 * 60 * 1000);
+		const hardCapHandle = setTimeout(() => {
+			if (!completed && !agent.completedAt) {
+				try {
+					completed = true;
+					clearInterval(pollInterval);
+					// Pre-set stopped BEFORE aborting so the .then in
+					// spawnBackgroundSession keeps the stopped state.
+					updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
+					agent._sessionRef?.abort().catch(() => {
+						// Abort may reject if the session is mid-dispose;
+						// the status flip above is already recorded.
+					});
+					// Capture whatever final output exists in the session
+					const hardCapSession = agent._sessionRef;
+					const hardCapFinalOutput = hardCapSession ? extractFinalOutput(hardCapSession) : '';
+					setAgentFinalOutput(agent.id, hardCapFinalOutput);
+					// Gate the counter on the finalize claim: if the
+					// stale sweep already finalized this entry, the
+					// decrement happened there (PR #71 review).
+					if (state.finalizeLiveSubagent(agent.id)) {
+						state.activeSubagents--;
+						if (state.activeSubagents < 0) state.activeSubagents = 0;
+					}
+					// m6: deadline abort is a stop, not a completion — mirror the
+					// W3/poller stopped path (no completedSubagents increment).
+					updateProgressStatus(state, ctx);
+				} catch (err) {
+					// Defensive: never let the hard-cap timer throw uncaught — that would
+					// skip finalizeLiveSubagent, the counter decrement, and the notification.
+					// Do all fallible work first (output capture), then mutate counters,
+					// then notify — a throw mid-path can't double-fire mutations.
+					completed = true;
+					clearInterval(pollInterval);
+					// m3: the try may have thrown BEFORE updateAgentStatus ran (e.g.
+					// persistAgent fs failure) — leave the record terminal so
+					// get_subagent_result doesn't report 'running' and the W3 timer
+					// guard (!agent.completedAt) can't re-fire later.
+					try {
+						updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
+					} catch { /* ignore */ }
+					try {
+						setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
+					} catch { /* ignore */ }
+					// Gate the counter on the finalize claim: if the
+					// stale sweep already finalized this entry, the
+					// decrement happened there (PR #71 review).
+					if (state.finalizeLiveSubagent(agent.id)) {
+						state.activeSubagents--;
+						if (state.activeSubagents < 0) state.activeSubagents = 0;
+					}
+					state.failedSubagents++;
+					updateProgressStatus(state, ctx);
+				}
+			}
+		}, hardCapMs);
+		
+		log.info("Background agent spawned", { agentId: agent.id, task: spawn.task, model: agent.model });
+
+		return agent;
+	}
+
+	// -------------------------------------------------------------------
 	// spawnBackgroundRun — Phase 6.5 background spawn, extracted verbatim
 	// from execute() (#198 phase 1) so a later phase can fan out N runs.
 	// -------------------------------------------------------------------
@@ -1903,13 +2441,6 @@ export default function (pi: ExtensionAPI) {
 			? `${bgModelResult.model.provider}/${bgModelResult.model.id}`
 			: undefined;
 
-		const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
-		// Issue #31 (PR #76 review, DRY): extract final output from a
-		// possibly-released ref — the poller may observe a terminal agent
-		// whose ref was already nulled by the settlement path.
-		const extractAgentFinalOutput = (a: BackgroundAgent): string =>
-			extractFinalOutput(a._sessionRef ?? { messages: [] });
-		
 		try {
 			// W5 (issue #28): approvalMode 'always' cannot work in background —
 			// there is no interactive dialog to approve the diff. Reject loudly
@@ -2020,231 +2551,21 @@ export default function (pi: ExtensionAPI) {
 				bgResolvedPreset?.promptGuideline,
 			);
 
-			const agent = await spawnBackgroundSession(pi, ctx, {
+			const agent = await startBackgroundAgent(pi, ctx, {
 				task: singleTask,
 				type: params.preset || 'general-purpose',
 				description: params.label,
 				model: bgModel,
 				thinkingLevel: bgResolved.thinkingLevel,
-				// Issue #114: per-unit priority rides the spawn so the background
-				// run entry + drill-in header carry it like foreground runs.
 				priority: params.priority,
 				systemPrompt: bgPrompt,
 				cwd: bgCwdResult.value,
 				toolOptions: bgResolved.toolOptions,
 				timeout: bgResolved.timeout,
 				gitMode: bgResolved.resolvedGitMode,
-				// Issue #98: snapshot the caller's raw params on the run entry so a
-				// retry of this background run restores them — single source of truth
-				// snapshotOriginalParams (issue #108: no more duplicated 11-field literal).
 				originalParams: snapshotOriginalParams(params),
+				sanitizeCwd: bgResolved.effectiveCwd,
 			});
-			
-			// Register for live monitor
-			state.registerLiveSubagent(agent.id, {
-				id: agent.id,
-				label: agent.description,
-				task: agent.task,
-				model: agent.model,
-				thinkingLevel: agent.thinkingLevel,
-				priority: agent.priority,
-				startedAt: agent.startedAt,
-				ctx,
-			});
-			
-			// Update footer counters
-			state.activeSubagents++;
-			updateProgressStatus(state, ctx);
-
-		let completed = false;
-			
-			// Poll for live progress
-			const pollInterval = setInterval(() => {
-				try {
-					if (completed) return;
-					
-					const session = agent._sessionRef;
-					// Issue #31: a nulled ref on a TERMINAL agent is expected (the
-					// settlement path releases the ref) — fall through to finalize
-					// below instead of treating it as a crash. A nulled ref on a
-					// live agent is still a crash.
-					if (!session && !agent.completedAt) {
-						// Session ref not available — session may have crashed.
-						// Defensive: the ref is assigned synchronously before the poller starts
-						// and is never nulled, so this is mostly unreachable — but keep the
-						// bookkeeping safe regardless.
-						completed = true;
-						clearInterval(pollInterval);
-						clearTimeout(hardCapHandle);
-						// Capture whatever output exists (may be empty — fine).
-						setAgentFinalOutput(agent.id, state.subagentSessions.get(agent.id)?.liveOutput ?? '');
-						// Gate the counter on the finalize claim: if the
-						// stale sweep already finalized this entry, the
-						// decrement happened there (PR #71 review).
-						if (state.finalizeLiveSubagent(agent.id)) {
-							state.activeSubagents--;
-							if (state.activeSubagents < 0) state.activeSubagents = 0;
-						}
-						state.failedSubagents++;
-						updateProgressStatus(state, ctx);
-						pi.sendMessage({
-							customType: "subagent-notification",
-							content: `Background agent "${agent.description}" crashed.`,
-							display: true,
-							details: { agentId: agent.id }
-						}, { deliverAs: "followUp" });
-						return;
-					}
-					
-					// While running, update the live monitor.
-					// Once completedAt is set, skip straight to finalize below.
-					// Issue #31: past the guard above, the only nulled-ref path left is a
-					// TERMINAL agent (settlement releases the ref), so a live agent always
-					// has its session — the guard already returned on the live-nulled-ref
-					// crash path. The compiler can't correlate the two checks, so assert it.
-					if (!agent.completedAt) {
-						const finalOutput = extractFinalOutput(session!);
-						
-						try {
-							const stats = session!.getSessionStats();
-							state.updateLiveSubagent(agent.id, finalOutput, stats.tokens.input, stats.tokens.output);
-						} catch {
-							state.updateLiveSubagent(agent.id, finalOutput, 0, 0);
-						}
-					}
-					
-					// Authoritative completion: the prompt promise settled — status and
-					// completedAt are set by .then()/.catch() in spawnBackgroundSession.
-					// Do NOT rely on !session.isStreaming: it is false during prompt()
-					// preflight (auth check, model resolution) and for failed starts.
-					if (agent.completedAt) {
-						completed = true;
-						clearInterval(pollInterval);
-						clearTimeout(hardCapHandle);
-						
-						// Issue #31: prefer the output already captured at settlement;
-						// the ref may already be nulled on terminal agents, so never
-						// overwrite with empty and stay null-safe.
-						const finalOutput = agent.finalOutput ?? extractAgentFinalOutput(agent);
-						setAgentFinalOutput(agent.id, finalOutput);
-						
-						// Gate the counter on the finalize claim: if the
-						// stale sweep already finalized this entry, the
-						// decrement happened there (PR #71 review).
-						if (state.finalizeLiveSubagent(agent.id)) {
-							state.activeSubagents--;
-							if (state.activeSubagents < 0) state.activeSubagents = 0;
-						}
-						
-						if (agent.status === 'failed') {
-							state.failedSubagents++;
-							updateProgressStatus(state, ctx);
-							pi.sendMessage({
-								customType: "subagent-notification",
-								content: `Background agent "${agent.description}" failed.`,
-								display: true,
-								details: { agentId: agent.id }
-							}, { deliverAs: "followUp" });
-						} else if (agent.status === 'stopped') {
-							// User-initiated stop (stop_subagent) or deadline abort
-							// (timeout/hard cap) — not a failure.
-							updateProgressStatus(state, ctx);
-						} else {
-							state.completedSubagents++;
-							state.unseenSubagents++;
-							updateProgressStatus(state, ctx);
-						}
-					}
-				} catch (err) {
-					if (!completed) {
-						completed = true;
-						clearInterval(pollInterval);
-						clearTimeout(hardCapHandle);
-						try {
-							setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
-						} catch { /* ignore */ }
-						// Gate the counter on the finalize claim: if the
-						// stale sweep already finalized this entry, the
-						// decrement happened there (PR #71 review).
-						if (state.finalizeLiveSubagent(agent.id)) {
-							state.activeSubagents--;
-							if (state.activeSubagents < 0) state.activeSubagents = 0;
-						}
-						state.failedSubagents++;
-						updateProgressStatus(state, ctx);
-						pi.sendMessage({
-							customType: "subagent-notification",
-							content: `Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, bgResolved.effectiveCwd)}`,
-							display: true,
-							details: { agentId: agent.id }
-						}, { deliverAs: "followUp" });
-					}
-				}
-			}, 2000);
-			
-			// Hard cap: stop polling AND abort the session after the deadline.
-			// W2 (issue #28): previously this only stopped the poller — the pi
-			// session kept running forever (orphaned). Now it pre-sets
-			// 'stopped' (so the .then keeps it, per W1) and aborts the
-			// session. The cap honors a shorter per-agent timeout.
-			const hardCapMs = Math.min(bgResolved.timeout ?? 30 * 60 * 1000, 30 * 60 * 1000);
-			const hardCapHandle = setTimeout(() => {
-				if (!completed && !agent.completedAt) {
-					try {
-						completed = true;
-						clearInterval(pollInterval);
-						// Pre-set stopped BEFORE aborting so the .then in
-						// spawnBackgroundSession keeps the stopped state.
-						updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
-						agent._sessionRef?.abort().catch(() => {
-							// Abort may reject if the session is mid-dispose;
-							// the status flip above is already recorded.
-						});
-						// Capture whatever final output exists in the session
-						const hardCapSession = agent._sessionRef;
-						const hardCapFinalOutput = hardCapSession ? extractFinalOutput(hardCapSession) : '';
-						setAgentFinalOutput(agent.id, hardCapFinalOutput);
-						// Gate the counter on the finalize claim: if the
-						// stale sweep already finalized this entry, the
-						// decrement happened there (PR #71 review).
-						if (state.finalizeLiveSubagent(agent.id)) {
-							state.activeSubagents--;
-							if (state.activeSubagents < 0) state.activeSubagents = 0;
-						}
-						// m6: deadline abort is a stop, not a completion — mirror the
-						// W3/poller stopped path (no completedSubagents increment).
-						updateProgressStatus(state, ctx);
-					} catch (err) {
-						// Defensive: never let the hard-cap timer throw uncaught — that would
-						// skip finalizeLiveSubagent, the counter decrement, and the notification.
-						// Do all fallible work first (output capture), then mutate counters,
-						// then notify — a throw mid-path can't double-fire mutations.
-						completed = true;
-						clearInterval(pollInterval);
-						// m3: the try may have thrown BEFORE updateAgentStatus ran (e.g.
-						// persistAgent fs failure) — leave the record terminal so
-						// get_subagent_result doesn't report 'running' and the W3 timer
-						// guard (!agent.completedAt) can't re-fire later.
-						try {
-							updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
-						} catch { /* ignore */ }
-						try {
-							setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
-						} catch { /* ignore */ }
-						// Gate the counter on the finalize claim: if the
-						// stale sweep already finalized this entry, the
-						// decrement happened there (PR #71 review).
-						if (state.finalizeLiveSubagent(agent.id)) {
-							state.activeSubagents--;
-							if (state.activeSubagents < 0) state.activeSubagents = 0;
-						}
-						state.failedSubagents++;
-						updateProgressStatus(state, ctx);
-					}
-				}
-			}, hardCapMs);
-			
-			log.info("Background agent spawned", { agentId: agent.id, task: params.task, model: agent.model });
 
 			// B2: Surface auto-route decisions in background spawn result too.
 			// Derive the restriction from the RESOLVED toolOptions (which reflects
@@ -2536,7 +2857,7 @@ export default function (pi: ExtensionAPI) {
 						"Run the subagent in the background without blocking the conductor. " +
 						"When true, the tool returns immediately with an agent ID. " +
 						"The conductor is woken with a completion message; use get_subagent_result for post-wake retrieval and stall checks. " +
-						"Single-task only — combining background with chain, tasks, or graph is not supported and is rejected. " +
+						"Supports a single task or the tasks array (a fan-out that starts one background agent per task); combining background with chain or graph is rejected. " +
 						"Default: false (blocking mode).",
 				}),
 			),
@@ -2858,12 +3179,12 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			// background: true with a batch mode was silently ignored — the batch ran
+			// background: true with chain/graph was silently ignored — the batch ran
 			// foreground (blocking until every unit finished) while the caller believed
-			// it was background. Reject loudly at dispatch validation; a future
-			// fan-out feature will replace this rejection.
-			if (params.background && (isChain || isParallel || isGraph)) {
-				const batchMode = isChain ? "chain" : isParallel ? "tasks" : "graph";
+			// it was background. Both remain rejected loudly at dispatch validation;
+			// tasks (parallel) fans out into independent background agents instead.
+			if (params.background && (isChain || isGraph)) {
+				const batchMode = isChain ? "chain" : "graph";
 				return {
 					content: [
 						{
@@ -2905,6 +3226,7 @@ export default function (pi: ExtensionAPI) {
 						isError: true,
 					};
 				}
+				if (params.background) return runBackgroundFanOut(pi, ctx, params, signal);
 				return runParallelMode(params, signal, onUpdate, ctx);
 			}
 

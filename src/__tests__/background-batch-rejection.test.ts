@@ -1,19 +1,24 @@
 /**
- * Reject `background: true` together with the batch modes — chain, tasks,
- * graph.
+ * Reject `background: true` together with the batch modes that cannot fan
+ * out — chain and graph.
  *
- * Defect: delegate_task accepted `background: true` alongside `chain`,
+ * History: delegate_task accepted `background: true` alongside `chain`,
  * `tasks`, or `graph`, silently ignored it, and ran the batch
  * foreground/blocking while the caller believed it was background. Dispatch
- * validation now rejects the combination loudly, naming the offending mode
- * and the remedy (drop `background`, or dispatch each unit as its own
- * single-task background call).
+ * validation rejected the combination loudly, naming the offending mode and
+ * the remedy (drop `background`, or dispatch each unit as its own
+ * single-task background call). Since the fan-out landed, `tasks` is the
+ * SUPPORTED background batch mode (each task starts as its own background
+ * agent — covered end to end by background-fan-out.test.ts), so only
+ * `chain` and `graph` remain rejected here; the `tasks` case below pins that
+ * the batch rejection message is no longer produced for it.
  *
  * These tests drive the REAL delegate_task execute handler (../runner mocked
  * so no real pi subprocesses spawn) and assert the standard
  * validation-failure shape: `isError: true`, `details: undefined`, and text
- * naming the offending mode. No case here dispatches a single background
- * session — that path starts a real session and is covered elsewhere.
+ * naming the offending mode. No case here dispatches a background session —
+ * the fan-out case is steered to a pre-spawn rejection so nothing spawns,
+ * and the single-background path is covered elsewhere.
  *
  * Harness modeled on per-step-model.test.ts (setupExtension + mockPi +
  * makeCtx + tool.execute invocations); that file is intentionally untouched.
@@ -179,17 +184,20 @@ afterAll(() => {
 // The rejection: background + batch mode → validation failure
 // ---------------------------------------------------------------------------
 
-describe("background: true is rejected with batch modes", () => {
-	it("rejects tasks (parallel) + background, naming \"tasks\"", async () => {
+describe("background: true is rejected with the non-fannable batch modes", () => {
+	it("does not produce the batch rejection message for tasks + background", async () => {
+		// tasks + background now fans out (covered by background-fan-out.test.ts).
+		// approvalMode 'always' steers the call to fan-out's pre-spawn rejection,
+		// keeping this file free of session spawns — the only assertion that
+		// matters here is that dispatch no longer emits the batch rejection.
 		const result = await tool.execute("call-bg-tasks", {
 			tasks: [{ task: "unit one" }],
 			background: true,
+			approvalMode: "always",
 		}, undefined, undefined, makeCtx());
 
-		expect(result.isError).toBe(true);
-		expect(result.details).toBeUndefined();
-		expect(result.content[0].text).toContain("tasks");
-		// Rejected at validation — nothing dispatched.
+		expect(result.content[0].text).not.toContain("background: true is not supported with tasks");
+		// Never dispatches the foreground runner either.
 		expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
 	});
 
