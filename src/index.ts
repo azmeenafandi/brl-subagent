@@ -2714,7 +2714,7 @@ export default function (pi: ExtensionAPI) {
 			buildTemplateGuideline(templateSummary),
 			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Parallel-origin entries retry as a single-subtask run carrying that subtask's task, label, and priority. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
-			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate.",
+			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. With tasks, background fans out: every task starts as its own background agent, the call returns one ID per task in task order, and the conductor is woken once per agent as each finishes; chain and graph cannot be combined with background (rejected). Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate.",
 			"",
 			"## Conductor Guardrails",
 			"",
@@ -2869,7 +2869,7 @@ export default function (pi: ExtensionAPI) {
 						"Run the subagent in the background without blocking the conductor. " +
 						"When true, the tool returns immediately with an agent ID. " +
 						"The conductor is woken with a completion message; use get_subagent_result for post-wake retrieval and stall checks. " +
-						"Supports a single task or the tasks array (a fan-out that starts one background agent per task); combining background with chain or graph is rejected. " +
+						"Supports a single task or the tasks array (a fan-out that starts one background agent per task; with tasks the call returns one ID per task and the conductor is woken once per agent as each finishes); combining background with chain or graph is rejected. " +
 						"Default: false (blocking mode).",
 				}),
 			),
