@@ -21,7 +21,9 @@
  * single quotes, an aliased/destructured identifier, array/`Set` membership, and a helper
  * that re-hard-codes the list in another module. It also did not guard `exitCode === 0`-as-
  * success at all. The guard is now an AST walk (TypeScript compiler API) over every non-test
- * `src/*.ts` top-level module. Each genuine exemption is an explicit `STRUCTURAL_ALLOWLIST`
+ * `.ts` module under `src/`, recursively (`__tests__` directories excluded), and it also
+ * catches a `switch` that re-hard-codes the stop vocabulary as `case` labels. Each genuine
+ * exemption is an explicit `STRUCTURAL_ALLOWLIST`
  * entry with a RECORDED reason — in the spirit of `KNOWN_DELEGATE_KEYS` (src/params.ts) — so
  * an exception is a decision someone made, never a silently-tolerated omission.
  *
@@ -118,7 +120,12 @@ const FAILURE_REASON_SET: ReadonlySet<string> = new Set<string>(FAILURE_REASONS)
 const STOP_REASON_SET: ReadonlySet<string> = new Set<string>([...FAILURE_REASONS, "stop"]);
 
 /** What made a node a reimplementation — carried into the failure message. */
-type ReimplementationKind = "comparison" | "membership" | "failure-list" | "exit-code";
+type ReimplementationKind =
+	| "comparison"
+	| "membership"
+	| "failure-list"
+	| "exit-code"
+	| "switch-case";
 
 export interface ReimplementationHit {
 	/** Repo-relative path with `/` separators. */
@@ -137,6 +144,23 @@ const EQUALITY_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set<ts.SyntaxKind>([
 	ts.SyntaxKind.EqualsEqualsEqualsToken,
 	ts.SyntaxKind.ExclamationEqualsToken,
 	ts.SyntaxKind.ExclamationEqualsEqualsToken,
+]);
+
+/**
+ * Ordering operators, valid only for the numeric `exitCode` arm. `exitCode > 0`
+ * is the same verdict as `exitCode !== 0`, so it must not slip past the guard.
+ */
+const RELATIONAL_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set<ts.SyntaxKind>([
+	ts.SyntaxKind.GreaterThanToken,
+	ts.SyntaxKind.LessThanToken,
+	ts.SyntaxKind.GreaterThanEqualsToken,
+	ts.SyntaxKind.LessThanEqualsToken,
+]);
+
+/** Every operator the `exitCode` rule recognises: equality plus ordering. */
+const COMPARISON_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set<ts.SyntaxKind>([
+	...EQUALITY_OPERATORS,
+	...RELATIONAL_OPERATORS,
 ]);
 
 /** `node`'s text as a failure reason — string literal (either quote) or a no-substitution template. */
@@ -219,21 +243,27 @@ export function scanReimplementations(source: string, file: string): Reimplement
 	};
 
 	const visit = (node: ts.Node): void => {
-		// Rules 1 & 4: equality comparisons against a failure reason / exitCode.
-		// The failure-reason arm deliberately ignores the OTHER operand's name —
-		// that is what catches a renamed/aliased identifier.
-		if (ts.isBinaryExpression(node) && EQUALITY_OPERATORS.has(node.operatorToken.kind)) {
+		// Rules 1 & 4: comparisons against a failure reason / exitCode. The
+		// failure-reason arm deliberately ignores the OTHER operand's name — that
+		// is what catches a renamed/aliased identifier. Only equality is legal for
+		// reasons; exitCode also accepts the ordering operators (rule 4).
+		if (ts.isBinaryExpression(node)) {
 			const { left, right } = node;
-			const leftReason = failureLiteralText(left);
-			const rightReason = failureLiteralText(right);
-			if (leftReason !== undefined || rightReason !== undefined) {
-				record(node, "comparison", leftReason ?? (rightReason as string));
+			const operator = node.operatorToken.kind;
+			if (EQUALITY_OPERATORS.has(operator)) {
+				const leftReason = failureLiteralText(left);
+				const rightReason = failureLiteralText(right);
+				if (leftReason !== undefined || rightReason !== undefined) {
+					record(node, "comparison", leftReason ?? (rightReason as string));
+				}
 			}
-			const leftIsExit = isExitCodeExpression(left);
-			const rightIsExit = isExitCodeExpression(right);
-			if (leftIsExit || rightIsExit) {
-				const numeric = numericLiteralText(leftIsExit ? right : left);
-				if (numeric !== undefined) record(node, "exit-code", numeric);
+			if (COMPARISON_OPERATORS.has(operator)) {
+				const leftIsExit = isExitCodeExpression(left);
+				const rightIsExit = isExitCodeExpression(right);
+				if (leftIsExit || rightIsExit) {
+					const numeric = numericLiteralText(leftIsExit ? right : left);
+					if (numeric !== undefined) record(node, "exit-code", numeric);
+				}
 			}
 		}
 
@@ -259,12 +289,33 @@ export function scanReimplementations(source: string, file: string): Reimplement
 		// the word "error" is neither.
 		if (ts.isArrayLiteralExpression(node) && !coveredLists.has(node)) {
 			const literals = failureLiteralsIn(node);
-			const allStopVocabulary = node.elements.every(
-				(element) => ts.isStringLiteral(element) && STOP_REASON_SET.has(element.text),
-			);
+			// Both quoting styles count for parity: a backtick list ``[`error`]`` is
+			// the same re-hard-coding as `["error"]`. A template EXPRESSION with
+			// substitutions (`` `error${x}` ``) is runtime-computed, not statically a
+			// stop reason, so it is deliberately excluded.
+			const allStopVocabulary = node.elements.every((element) => {
+				if (!ts.isStringLiteral(element) && !ts.isNoSubstitutionTemplateLiteral(element)) {
+					return false;
+				}
+				return STOP_REASON_SET.has(element.text);
+			});
 			if (literals.length > 0 && (literals.length >= 2 || allStopVocabulary)) {
 				record(node, "failure-list", literals.join(", "));
 			}
+		}
+
+		// Rule 5: a `switch` that re-hard-codes the stop vocabulary as `case`
+		// labels. This is a private copy of the enum just as much as an array or
+		// `===` chain is — the only difference is the syntax carrying the list.
+		if (ts.isSwitchStatement(node)) {
+			const reasons: string[] = [];
+			for (const clause of node.caseBlock.clauses) {
+				if (ts.isCaseClause(clause)) {
+					const text = failureLiteralText(clause.expression);
+					if (text !== undefined) reasons.push(text);
+				}
+			}
+			if (reasons.length > 0) record(node, "switch-case", reasons.join(", "));
 		}
 
 		ts.forEachChild(node, visit);
@@ -281,16 +332,29 @@ export function scanReimplementations(source: string, file: string): Reimplement
 const REPO_ROOT = join(__dirname, "..", "..");
 const SRC_DIR = join(REPO_ROOT, "src");
 
+/** The one legitimate home of the predicate (`isSubagentError`, `classifyError`, `classifyTerminalOutcome`). */
+const TYPES_FILE = join(SRC_DIR, "types.ts");
+
 /**
- * Every non-test top-level `src/*.ts` module EXCEPT `types.ts` — the one
- * legitimate home of the predicate (`isSubagentError`, `classifyError`,
- * `classifyTerminalOutcome`).
+ * Every non-test `.ts` module under `src/`, recursively, EXCEPT `src/types.ts`. The
+ * walk is recursive so a module parked in a subdirectory cannot escape the
+ * sweep; any `__tests__` directory is skipped (test-only data is not shipped).
  */
 function scannedSourceFiles(): string[] {
-	return readdirSync(SRC_DIR, { withFileTypes: true })
-		.filter((entry) => entry.isFile() && entry.name.endsWith(".ts") && entry.name !== "types.ts")
-		.map((entry) => join(SRC_DIR, entry.name))
-		.sort();
+	const files: string[] = [];
+	const walk = (dir: string): void => {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			const absolute = join(dir, entry.name);
+			if (entry.isDirectory()) {
+				if (entry.name === "__tests__") continue;
+				walk(absolute);
+			} else if (entry.isFile() && entry.name.endsWith(".ts") && absolute !== TYPES_FILE) {
+				files.push(absolute);
+			}
+		}
+	};
+	walk(SRC_DIR);
+	return files.sort();
 }
 
 const toRepoPath = (absolute: string): string => relative(REPO_ROOT, absolute).split(sep).join("/");
@@ -344,6 +408,15 @@ const STRUCTURAL_ALLOWLIST: readonly StructuralException[] = [
 		reason:
 			"Sentinel probe for a run that has not settled yet (exitCode is unset = -1), used to " +
 			"render the running header. It reads no stopReason and decides no verdict.",
+	},
+	{
+		file: "src/session-manager.ts",
+		snippet: "switch (stopReason)",
+		reason:
+			"defaultTerminalMessage is a message map over stop reasons, not a pass/fail verdict: " +
+			"the success/failure decision was already made by classifyTerminalOutcome and this only " +
+			"picks human-readable prose. Unknown and aborted reasons fall through to the default " +
+			"message, so the copy cannot desync from isSubagentError().",
 	},
 ];
 
@@ -461,6 +534,46 @@ describe("scanner coverage — spellings the original regex missed (#186)", () =
 		expect(kindsOf(`if (d.exitCode === -1) return "running";`)).toContain("exit-code");
 	});
 
+	it("catches relational exitCode comparisons (issue #186 review)", () => {
+		// `exitCode > 0` is the same verdict as `exitCode !== 0`; the ordering
+		// operators must not become a bypass.
+		for (const op of [">", "<", ">=", "<="]) {
+			expect(kindsOf(`if (r.exitCode ${op} 0) {}`), op).toContain("exit-code");
+			expect(kindsOf(`if (0 ${op} r.exitCode) {}`), `0 ${op} r.exitCode`).toContain("exit-code");
+		}
+		expect(scanFixture(`if (r.exitCode > -1) {}`)[0]).toMatchObject({
+			kind: "exit-code",
+			literal: "-1",
+			code: "r.exitCode > -1",
+		});
+	});
+
+	it("catches a backtick single-element all-failure list", () => {
+		expect(kindsOf("const ONLY = [`error`];")).toContain("failure-list");
+	});
+
+	it("catches a backtick reason list mixing a failure and the success reason", () => {
+		expect(kindsOf("const REASONS = [`error`, `stop`];")).toContain("failure-list");
+	});
+
+	it("catches a switch that re-hard-codes the stop vocabulary as case labels", () => {
+		const source = `switch (r.stopReason) {\n  case "error":\n    return "bad";\n}`;
+		expect(kindsOf(source)).toContain("switch-case");
+	});
+
+	it("reports a switch once, naming the file, line, kind and reasons", () => {
+		const source = `const x = 1;\nswitch (r.stopReason) {\n  case "error":\n  case "aborted":\n    return false;\n}`;
+		expect(scanFixture(source)).toEqual([
+			{
+				file: "fixture.ts",
+				line: 2,
+				kind: "switch-case",
+				literal: "error, aborted",
+				code: 'switch (r.stopReason) { case "error": case "aborted": return false; }',
+			},
+		]);
+	});
+
 	it("reports the offending file and line", () => {
 		expect(scanFixture(`const ok = true;\nif (r.exitCode === 0) {}\n`)).toEqual([
 			{
@@ -495,6 +608,20 @@ describe("scanner coverage — legitimate code is not flagged (#186)", () => {
 		expect(scanFixture(`if (r.exitCode === expected) {}`)).toEqual([]);
 	});
 
+	it("ignores a relational exitCode comparison against a non-literal", () => {
+		expect(scanFixture(`if (r.exitCode > threshold) {}`)).toEqual([]);
+	});
+
+	it("ignores a switch over a value that is not stop vocabulary", () => {
+		expect(kindsOf(`switch (style) { case "user": return 1; case "note": return 2; }`)).toEqual([]);
+	});
+
+	it("ignores a template expression inside a list (runtime-computed)", () => {
+		// `` `error${x}` `` is not statically a stop reason; only the literal
+		// no-substitution forms are vocabulary.
+		expect(scanFixture("const R = [`error${x}`];")).toEqual([]);
+	});
+
 	it("ignores a keyword list that merely contains the word 'error'", () => {
 		// router.ts's auto-route keywords: the failure reason does not dominate.
 		expect(scanFixture(`const keywords = ["debug", "bug", "fix", "crash", "error", "trace"];`)).toEqual([]);
@@ -507,5 +634,13 @@ describe("scanner coverage — legitimate code is not flagged (#186)", () => {
 		// And the recorded exceptions do suppress their own hits.
 		const loggingHit = scanReimplementations(`const m = level === "error" ? 1 : 0;`, "src/logging.ts")[0];
 		expect(isAllowed(loggingHit)).toBe(true);
+		// The live switch in session-manager.ts is suppressed only by its recorded
+		// entry, and only for the exact expression it names.
+		const switchHit = scanReimplementations(
+			`switch (stopReason) {\n  case 'error': return 'x';\n  default: return 'y';\n}`,
+			"src/session-manager.ts",
+		)[0];
+		expect(switchHit.kind).toBe("switch-case");
+		expect(isAllowed(switchHit)).toBe(true);
 	});
 });
