@@ -26,6 +26,7 @@ import type {
 import { truncateTail } from "./transcript-tail";
 import { formatRunDuration } from "./history";
 import { classifyTerminalOutcome } from "./types";
+import { resolveTerminalRunEntry } from "./state";
 
 /** Terminal statuses the completion message can carry. */
 export type CompletionStatus = "completed" | "failed" | "stopped";
@@ -80,24 +81,17 @@ export function normalizeCompletionStatus(status: AgentStatus): CompletionStatus
 }
 
 /**
- * Resolve the finalized entry for a run id among the raw getRunEntries list.
- *
- * Each background run writes TWO custom entries sharing the same id and
- * startedAt: a spawn entry (status "running") and a final entry (status
- * "done"/"failed", stamped by finalizeRunRecord). The raw list preserves
- * append order — the spawn entry comes FIRST (verified empirically) — so a
- * plain `.find(r => r.id === id)` matches the spawn entry and never sees the
- * stamped errorCategory/cost/duration/tokens. Prefer the terminal entry
- * (status !== "running"); when none is terminal yet, fall back to the
- * matching spawn entry (the pre-finalize stopped-run shape).
+ * Resolve the finalized (terminal-preferring) entry for a run id among the raw
+ * getRunEntries list. Thin delegate to the shared `resolveTerminalRunEntry`
+ * rule in src/state.ts (the core module owns the preference rule; see there
+ * for the two-entry spawn/final append order). Kept under this name for the
+ * completion wake path and its existing tests.
  */
 export function resolveRunEntry(
 	entries: SubagentRun[],
 	id: string,
 ): SubagentRun | undefined {
-	const matching = entries.filter((r) => r.id === id);
-	if (matching.length === 0) return undefined;
-	return matching.find((r) => r.status !== "running") ?? matching[0];
+	return resolveTerminalRunEntry(entries, id);
 }
 
 /**

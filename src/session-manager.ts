@@ -558,7 +558,7 @@ export async function spawnBackgroundSession(
   
   // Issue #98: background runs must be retry-able — persist a session run
   // entry at spawn (id == agent id, so retryRunId: <agent-id> resolves via
-  // state.findRunById → getRunEntries). The entry lives in the same session
+  // state.findSpawnRunById → getRunEntries). The entry lives in the same session
   // custom-entry store the foreground path writes to (state.persistRun); the
   // background path previously never wrote there, so retries silently no-oped.
   const startedAtMs = agent.startedAt; // reuse the agent record's start clock
@@ -944,7 +944,7 @@ export async function spawnBackgroundSession(
     cleanupWorkBranch();
     // Issue #98 (review F1): a synchronous prompt() throw never reaches the
     // settle handlers — finalize the run entry so no zombie 'running' entry
-    // survives (findRunById would otherwise resolve and retry a run that
+    // survives (findSpawnRunById would otherwise resolve and retry a run that
     // never started).
     finalizeRunEntry('failed', sanitizeErrorMessage((err as Error).message, effectiveCwd));
     throw err;

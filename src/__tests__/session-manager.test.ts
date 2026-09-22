@@ -1382,7 +1382,7 @@ describe("issue #31 — terminal paths release agent._sessionRef", () => {
 // =========================================================================
 // Issue #98: background run entries — spawn persist + settle finalization.
 // Background runs must be retry-able: the spawn entry (id == agent id) is
-// what state.findRunById resolves, and the finalize entry keeps its status
+// what state.findSpawnRunById resolves, and the finalize entry keeps its status
 // in lockstep with the agent record.
 // =========================================================================
 describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
@@ -1529,7 +1529,7 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 	it("finalizes the run entry to failed when prompt() throws synchronously (review F1)", async () => {
 		// A synchronous prompt() throw means the .then/.catch settle handlers
 		// never attach — without the F1 catch path a zombie 'running' entry
-		// would survive and findRunById would retry a run that never started.
+		// would survive and findSpawnRunById would retry a run that never started.
 		mocks.session.prompt.mockImplementation(() => {
 			throw new Error("sync preflight failure");
 		});

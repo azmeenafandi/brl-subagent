@@ -63,6 +63,30 @@ const POLLER_TICK_MS = 2000;
 export const STALE_FINALIZE_GRACE_MS = POLLER_TICK_MS + 1000;
 
 // ---------------------------------------------------------------------------
+// Run-entry lookup contract (issue #185)
+// ---------------------------------------------------------------------------
+
+/**
+ * Terminal-preferring run-entry lookup — the ONE implementation of the
+ * preference rule.
+ *
+ * Each run writes TWO custom entries sharing its id, in append order: a spawn
+ * entry (status "running", carrying `originalParams`) FIRST, then the final
+ * entry (status "done"/"failed", stamped with fullOutput/cost/duration) at
+ * settle. Prefer the terminal entry; when none is terminal yet, fall back to
+ * the first match (the pre-finalize spawn shape). Returns undefined when no
+ * entry matches.
+ */
+export function resolveTerminalRunEntry(
+	entries: SubagentRun[],
+	id: string,
+): SubagentRun | undefined {
+	const matching = entries.filter((r) => r.id === id);
+	if (matching.length === 0) return undefined;
+	return matching.find((r) => r.status !== "running") ?? matching[0];
+}
+
+// ---------------------------------------------------------------------------
 // SessionState — session-bound mutable state
 // ---------------------------------------------------------------------------
 
@@ -282,8 +306,24 @@ export class SessionState {
 		return cleanupRuns(runs, this.config.maxHistoryEntries);
 	}
 
-	findRunById(ctx: ExtensionContext, id: string): SubagentRun | undefined {
+	/**
+	 * Spawn-oriented lookup: the FIRST entry matching `id`. Runs append the
+	 * spawn entry (status "running", carrying `originalParams`) before the
+	 * final entry, so retry resolution — which reads `originalParams` via
+	 * resolveRetryParams — must use THIS lookup, not the terminal-preferring
+	 * one.
+	 */
+	findSpawnRunById(ctx: ExtensionContext, id: string): SubagentRun | undefined {
 		return this.getRunEntries(ctx).find((r) => r.id === id);
+	}
+
+	/**
+	 * Terminal-preferring lookup: the finalized entry (status !== "running") when
+	 * present, else the first match. Use for fields stamped at settle — `status`,
+	 * `fullOutput`, `cost`, `durationMs`, `errorCategory`.
+	 */
+	findTerminalRunById(ctx: ExtensionContext, id: string): SubagentRun | undefined {
+		return resolveTerminalRunEntry(this.getRunEntries(ctx), id);
 	}
 
 	// -------------------------------------------------------------------
@@ -569,7 +609,7 @@ export function sweepStaleLiveSubagents(
 		} else {
 			// No agent record — foreground run or a removed record. A foreground
 			// run is live only while its run entry says 'running'.
-			const runStatus = state.getRunEntries(session.ctx).find((r) => r.id === id)?.status;
+			const runStatus = state.findTerminalRunById(session.ctx, id)?.status;
 			if (runStatus !== "running" && state.finalizeStaleLiveSubagent(id)) {
 				finalized++;
 			}
