@@ -400,6 +400,14 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
+	// Per-unit display name for validation prefixes: the label when present,
+	// else the task truncated to 60 chars. Shared by the foreground parallel
+	// pre-pass and the background fan-out pre-pass (issue #220) so a unit
+	// renders identically in either shape.
+	const displayTaskName = (merged: ReturnType<typeof mergeSubTaskParams>): string =>
+		merged.label ??
+		(merged.task.length > 60 ? `${merged.task.slice(0, 57)}...` : merged.task);
+
 	// -------------------------------------------------------------------
 	// P1: runChainMode
 	// -------------------------------------------------------------------
@@ -980,6 +988,35 @@ export default function (pi: ExtensionAPI) {
 		});
 		if (preTask.error) return preTask.error;
 
+		// Per-task pre-pass (issue #220): validate EVERY task before any spawn,
+		// so a single capability-blocked task rejects the batch with nothing
+		// started (`force` degrades capability errors to warnings) — the same
+		// semantics runBackgroundFanOut applies. Per-task warnings are prefixed
+		// with their unit and collected here to ride the final result. The
+		// mode-entry validation above stays for the mode-level outputFile
+		// (issue #34).
+		const taskWarnings: string[] = [];
+		for (let i = 0; i < taskList.length; i++) {
+			const merged = mergeSubTaskParams(globalParams, taskList[i]);
+			const taskPrefix = `Task ${i + 1} ("${displayTaskName(merged)}")`;
+			const unitValidation = runPreTaskValidation({
+				log,
+				label: "Parallel",
+				prefix: taskPrefix,
+				logContext: { task: i + 1 },
+				preTask: {
+					task: merged.task,
+					toolOptions: merged.toolOptions,
+					thinkingLevel: merged.thinkingLevel,
+					gitMode: globalParams.resolvedGitMode,
+					outputFile: merged.outputFile,
+					force: params.force as boolean | undefined,
+				},
+			});
+			if (unitValidation.error) return unitValidation.error;
+			for (const w of unitValidation.warnings) taskWarnings.push(`${taskPrefix}: ${w}`);
+		}
+
 		// Resolve model once (per-call top-level model override beats preset)
 		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
 		if (!modelResult.ok) return modelResult.error;
@@ -1282,9 +1319,15 @@ export default function (pi: ExtensionAPI) {
 			totalCost,
 		});
 
+		// C: per-task validation warnings ride the result, prefixed with their
+		// task (issue #220), after the JSON payload — empty renders nothing so
+		// warning-free results stay byte-identical.
 		return {
 			content: [
-				{ type: "text" as const, text: JSON.stringify(parallelDetails, null, 2) },
+				{
+					type: "text" as const,
+					text: JSON.stringify(parallelDetails, null, 2) + formatValidationWarnings(taskWarnings),
+				},
 			],
 			details: parallelDetails,
 		};
@@ -1912,9 +1955,6 @@ export default function (pi: ExtensionAPI) {
 			cwd: string;
 			outputFile: string | undefined;
 		};
-		const displayTaskName = (merged: ReturnType<typeof mergeSubTaskParams>): string =>
-			merged.label ??
-			(merged.task.length > 60 ? `${merged.task.slice(0, 57)}...` : merged.task);
 
 		const fanOutTasks: FanOutTask[] = [];
 		// C: per-task warnings collect here to ride the immediate spawn result.
