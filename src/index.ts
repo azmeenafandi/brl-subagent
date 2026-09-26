@@ -65,7 +65,7 @@ import {
 	mergeWorkBranch,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets } from "./prelude";
+import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets, formatValidationWarnings } from "./prelude";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure } from "./validate";
@@ -967,7 +967,7 @@ export default function (pi: ExtensionAPI) {
 		// outputFile-vs-write conflict applies (issue #34). The mode-level
 		// outputFile on globalParams is the one validated; per-step outputFiles
 		// are future work (issue #3).
-		const preTaskError = runPreTaskValidation({
+		const preTask = runPreTaskValidation({
 			log,
 			label: "Parallel",
 			preTask: {
@@ -978,7 +978,7 @@ export default function (pi: ExtensionAPI) {
 				outputFile: globalParams.outputFile,
 			},
 		});
-		if (preTaskError) return preTaskError;
+		if (preTask.error) return preTask.error;
 
 		// Resolve model once (per-call top-level model override beats preset)
 		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
@@ -1917,6 +1917,8 @@ export default function (pi: ExtensionAPI) {
 			(merged.task.length > 60 ? `${merged.task.slice(0, 57)}...` : merged.task);
 
 		const fanOutTasks: FanOutTask[] = [];
+		// C: per-task warnings collect here to ride the immediate spawn result.
+		const taskWarnings: string[] = [];
 		for (let i = 0; i < taskList.length; i++) {
 			const merged = mergeSubTaskParams(globalParams, taskList[i]);
 			const name = displayTaskName(merged);
@@ -1932,7 +1934,7 @@ export default function (pi: ExtensionAPI) {
 			});
 			if (!targets.ok) return targets.error;
 
-			const preTaskError = runPreTaskValidation({
+			const preTask = runPreTaskValidation({
 				log,
 				label: "Background fan-out",
 				prefix: taskPrefix,
@@ -1943,9 +1945,11 @@ export default function (pi: ExtensionAPI) {
 					thinkingLevel: merged.thinkingLevel,
 					gitMode: globalParams.resolvedGitMode,
 					outputFile: merged.outputFile,
+					force: params.force as boolean | undefined,
 				},
 			});
-			if (preTaskError) return preTaskError;
+			if (preTask.error) return preTask.error;
+			for (const w of preTask.warnings) taskWarnings.push(`${taskPrefix}: ${w}`);
 
 			fanOutTasks.push({ merged, model: stepModel, cwd: targets.cwd, outputFile: targets.outputFile });
 		}
@@ -2037,7 +2041,9 @@ export default function (pi: ExtensionAPI) {
 			started.push({ id: agent.id, label: merged.label });
 		}
 
-		// Text-only result: ids in task order + the wake hint.
+		// Text-only result: ids in task order + the wake hint. C: per-task
+		// validation warnings ride the immediate SPAWN result (prefixed with
+		// their task) so the conductor can stop/re-dispatch in the same turn.
 		const lines = started
 			.map((s, i) => `${i + 1}. ${s.label ? `"${s.label}" ` : ""}— ${s.id}`)
 			.join("\n");
@@ -2045,7 +2051,8 @@ export default function (pi: ExtensionAPI) {
 			content: [{ type: "text" as const, text:
 				`Background agents started: ${started.length}\n\n` +
 				`${lines}\n\n` +
-				`You'll be woken with a completion message as each finishes; use get_subagent_result({ agent_id }) for retrieval and stall checks.`
+				`You'll be woken with a completion message as each finishes; use get_subagent_result({ agent_id }) for retrieval and stall checks.` +
+				formatValidationWarnings(taskWarnings)
 			}],
 			details: undefined,
 		};
@@ -2335,7 +2342,11 @@ export default function (pi: ExtensionAPI) {
 		// Resolve the preset and its model BEFORE the background branch so the
 		// preset's model (and system prompt) are honored in background mode.
 		const bgResolved = resolveSubagentParams({ ...params, task: singleTask }, state, ctx, log);
-		const { resolvedPreset: bgResolvedPreset, autoRoutedPreset: bgAutoRoutedPreset } = bgResolved;
+		const {
+			resolvedPreset: bgResolvedPreset,
+			autoRoutedPreset: bgAutoRoutedPreset,
+			autoRouteKeyword: bgAutoRouteKeyword,
+		} = bgResolved;
 		const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset, params.model);
 		const bgModel = bgModelResult.ok
 			? `${bgModelResult.model.provider}/${bgModelResult.model.id}`
@@ -2378,9 +2389,10 @@ export default function (pi: ExtensionAPI) {
 			if (!targets.ok) return targets.error;
 			const bgResolvedOutputFile = targets.outputFile;
 
-			// C: H1 validation for background mode — reject outputFile-vs-write
-			// conflicts before spawning (loud failure, same as single mode).
-			const preTaskError = runPreTaskValidation({
+			// C: H1 validation for background mode — reject capability blocks and
+			// outputFile-vs-write conflicts before spawning (same as single mode;
+			// `force` honors the same override foreground does).
+			const bgPreTask = runPreTaskValidation({
 				log,
 				label: "Background",
 				preTask: {
@@ -2389,9 +2401,10 @@ export default function (pi: ExtensionAPI) {
 					thinkingLevel: bgResolved.thinkingLevel,
 					gitMode: bgResolved.resolvedGitMode,
 					outputFile: bgResolvedOutputFile,
+					force: params.force,
 				},
 			});
-			if (preTaskError) return preTaskError;
+			if (bgPreTask.error) return bgPreTask.error;
 
 			// Build the full prompt the same way foreground single mode does:
 			// base prompt (optionally inherited) + custom prompt + preset guidance.
@@ -2420,11 +2433,11 @@ export default function (pi: ExtensionAPI) {
 				sanitizeCwd: bgResolved.effectiveCwd,
 			});
 
-			// B2: Surface auto-route decisions in background spawn result too.
-			// Derive the restriction from the RESOLVED toolOptions (which reflects
-			// per-call overrides) rather than the preset's declared values.
+			// B2: Surface auto-route decisions in background spawn result too —
+			// preset name + matched-keyword evidence + restriction, derived from
+			// the RESOLVED toolOptions (reflects per-call overrides).
 			const bgAutoRouteNote = bgAutoRoutedPreset
-				? `\n\n[auto-routed to preset '${bgAutoRoutedPreset.name}' — ${bgResolved.toolOptions ? formatToolRestriction(bgResolved.toolOptions) : formatPresetRestriction(bgAutoRoutedPreset)}]`
+				? `\n\n[auto-routed to preset '${bgAutoRoutedPreset.name}'${bgAutoRouteKeyword ? ` (matched keyword '${bgAutoRouteKeyword}')` : ""} — ${bgResolved.toolOptions ? formatToolRestriction(bgResolved.toolOptions) : formatPresetRestriction(bgAutoRoutedPreset)}]`
 				: "";
 
 			return {
@@ -2435,7 +2448,10 @@ export default function (pi: ExtensionAPI) {
 						`Task: ${agent.task}\n` +
 						`Status: ${agent.status}\n\n` +
 						`You'll be woken with a completion message when it finishes; use get_subagent_result({ agent_id: "${agent.id}" }) for retrieval and stall checks.` +
-						bgAutoRouteNote,
+						bgAutoRouteNote +
+						// C: warnings ride the immediate SPAWN result so the conductor
+						// can stop/re-dispatch in the same turn.
+						formatValidationWarnings(bgPreTask.warnings),
 				}],
 				details: undefined,
 			};
@@ -2566,7 +2582,7 @@ export default function (pi: ExtensionAPI) {
 			"4. **Tools**: Verify the subagent has the tools it needs. If the task writes files, ensure write and edit are not excluded. If the task runs commands, ensure bash is not excluded.",
 			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s.",
 			"",
-			"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1): tool warnings are informational, but outputFile with the write tool excluded is a HARD error and the delegation is rejected. Getting it right the first time is faster and more efficient.",
+			"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1): tool warnings are surfaced in the returned result, but two mismatches are HARD errors that reject the delegation — outputFile with the write tool excluded, and a capability-critical task/toolset mismatch (a run/execute/test/compile/benchmark task without bash, or an exploration task with none of find/ls/grep/bash; pass force: true to override the capability class). Getting it right the first time is faster and more efficient.",
 			"",
 			"Before delegating, evaluate existing presets to find the best match for the task: tech-writer (documentation), code-reviewer (code review), security-auditor (security analysis), test-engineer (test writing), debugger (debugging), refactorer (refactoring), data-analyst (data analysis), rapid-prototyper (quick prototypes). Use the preset parameter to apply the best match. If no preset fits, use dev-agent for general development tasks.",
 			"The autoRoutePreset() function can automatically select the best preset based on task keywords. Consider using it for preset selection.",
@@ -2704,6 +2720,15 @@ export default function (pi: ExtensionAPI) {
 						"always (ask every time). Default is user config (/brl-subagent approval).",
 				}),
 			),
+			force: Type.Optional(
+				Type.Boolean({
+					description:
+						"Override for capability pre-flight errors (default false). A dispatch is blocked when the task clearly needs a capability the resolved toolset lacks — " +
+						"a run/execute/test/compile/benchmark task with no bash, or an exploration task (search/grep/find/list/locate/glob) with none of find/ls/grep/bash. " +
+						"Set force: true to dispatch anyway: the mismatch is then delivered as a warning in the result instead of rejecting the call. " +
+						"Warnings are surfaced either way. force never suppresses outputFile-without-write conflicts.",
+				}),
+			),
 			background: Type.Optional(
 				Type.Boolean({
 					description:
@@ -2818,6 +2843,7 @@ export default function (pi: ExtensionAPI) {
 				retryRunId?: string;
 				retryOnTimeout?: boolean;
 				background?: boolean;
+				force?: boolean;
 				gitMode?: string;
 				priority?: string;
 				chain?: Array<{
@@ -3145,6 +3171,7 @@ export default function (pi: ExtensionAPI) {
 				resolvedApprovalMode,
 				resolvedPreset,
 				autoRoutedPreset,
+				autoRouteKeyword,
 			} = resolveSubagentParams({ ...params, task: singleTask }, state, ctx, log);
 
 			// F1: Validate CWD
@@ -3186,12 +3213,14 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// H1: Pre-task validation — deterministic check that tools/thinking match task
+			// (`force` degrades capability errors to warnings — B2's override).
 			const validation = validatePreTask({
 				task,
 				toolOptions,
 				thinkingLevel,
 				gitMode: resolvedGitMode,
 				outputFile: resolvedOutputFile,
+				force: params.force,
 			});
 			if (validation.warnings.length > 0) {
 				log.warn("Pre-task validation warnings", { warnings: validation.warnings });
@@ -3208,6 +3237,9 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
+			// C: surface warnings in the returned result (not just the log) —
+			// shared renderer so foreground/background wording stays identical.
+			const warningsNote = formatValidationWarnings(validation.warnings);
 
 			// Resolve model (per-call top-level model override beats preset)
 			const modelResult = resolveSubagentModel(ctx, resolvedPreset, params.model);
@@ -3595,6 +3627,9 @@ export default function (pi: ExtensionAPI) {
 					if (suggestions.length > 0) {
 						finalMsg += "\n\nSuggestions:\n" + suggestions.map((s) => `- ${s}`).join("\n");
 					}
+					// C: warnings ride the returned result too — a failed run is
+					// exactly when the conductor most needs the mismatch signal.
+					finalMsg += warningsNote;
 
 				completeTranscript(runId, 'failed');
 
@@ -3621,16 +3656,17 @@ export default function (pi: ExtensionAPI) {
 				state.recordSuccess();
 
 				// B2: Surface auto-route decisions in the tool result so the conductor
-				// sees which preset was applied and what it restricts. Derive the
-				// restriction from the RESOLVED toolOptions (reflects per-call
-				// overrides) rather than the preset's declared values.
+				// sees WHICH preset was auto-selected, the KEYWORD evidence for it,
+				// and what it restricts. Derive the restriction from the RESOLVED
+				// toolOptions (reflects per-call overrides) rather than the preset's
+				// declared values.
 				const autoRouteNote = autoRoutedPreset
-					? `\n\n[auto-routed to preset '${autoRoutedPreset.name}' — ${toolOptions ? formatToolRestriction(toolOptions) : formatPresetRestriction(autoRoutedPreset)}]`
+					? `\n\n[auto-routed to preset '${autoRoutedPreset.name}'${autoRouteKeyword ? ` (matched keyword '${autoRouteKeyword}')` : ""} — ${toolOptions ? formatToolRestriction(toolOptions) : formatPresetRestriction(autoRoutedPreset)}]`
 					: "";
 
 				return {
 					content: [
-						{ type: "text" as const, text: (finalOutput || "(no output)") + autoRouteNote },
+						{ type: "text" as const, text: (finalOutput || "(no output)") + autoRouteNote + warningsNote },
 					],
 					details: result,
 				};

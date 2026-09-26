@@ -18,6 +18,13 @@
  *     const err = gateSessionCost({ … });
  *     if (err) return err;
  *
+ * Exception: runPreTaskValidation returns a { error?, warnings } outcome —
+ * `error` follows the same `if (outcome.error) return outcome.error` shape,
+ * and `warnings` must be surfaced in the returned tool result:
+ *
+ *     const pre = runPreTaskValidation({ … });
+ *     if (pre.error) return pre.error;
+ *
  * Messages are byte-identical to the pre-extraction copies (the suites pin
  * them); the parameters absorb only the real differences between sites — the
  * cost-gate log label and unit count, and the H1 log label / unit prefix /
@@ -144,13 +151,34 @@ export function validateDelegationTargets(input: {
 
 // ── Gate 3b: H1 pre-task validation ─────────────────────────────────────
 
+/** Outcome of one pre-task validation: the rejection (hard failure) and/or
+ * the warnings the caller must surface in the tool result. */
+export interface PreTaskValidationOutcome {
+	/** Rejection result when validation failed (hard errors); undefined when it passed. */
+	error?: ToolResult<undefined>;
+	/** Validation warnings — surfaced in the returned tool result, not just logged. */
+	warnings: string[];
+}
+
+/**
+ * Render validation warnings for a tool result: one labelled, bulleted
+ * block. Empty input renders the empty string so results stay
+ * byte-identical when there is nothing to say.
+ */
+export function formatValidationWarnings(warnings: string[]): string {
+	if (warnings.length === 0) return "";
+	return `\n\n[pre-task validation warnings]\n` + warnings.map((w) => `- ${w}`).join("\n");
+}
+
 /**
  * Run validatePreTask (H1) with the site's exact input, warn on warnings,
- * and return the rejection result (joined errors) on hard failure.
+ * and return the rejection outcome (joined errors) on hard failure.
  * `label` names the site in the warn logs ("Parallel pre-task validation
  * warnings" / "Background fan-out …" / "Background …"); `prefix` is
  * prepended as `${prefix}: ` to the hard-failure message; `logContext` adds
  * site fields to both warn entries (the fan-out adds the task index).
+ * The returned warnings are for RESULT surfacing — the log.warn calls stay
+ * regardless (a warning must reach both the log and the conductor).
  */
 export function runPreTaskValidation(input: {
 	log: Logger;
@@ -160,7 +188,7 @@ export function runPreTaskValidation(input: {
 	prefix?: string;
 	/** Extra structured fields merged into the warn entries. */
 	logContext?: Record<string, unknown>;
-}): ToolResult<undefined> | undefined {
+}): PreTaskValidationOutcome {
 	const { log, preTask, label, prefix, logContext } = input;
 	const validation = validatePreTask(preTask);
 	if (validation.warnings.length > 0) {
@@ -169,7 +197,10 @@ export function runPreTaskValidation(input: {
 	if (!validation.valid) {
 		const errText = validation.errors.join("; ");
 		log.warn(`${label} pre-task validation failed`, { ...logContext, errors: validation.errors });
-		return rejection(prefix ? `${prefix}: ${errText}` : errText);
+		return {
+			error: rejection(prefix ? `${prefix}: ${errText}` : errText),
+			warnings: validation.warnings,
+		};
 	}
-	return undefined;
+	return { warnings: validation.warnings };
 }
