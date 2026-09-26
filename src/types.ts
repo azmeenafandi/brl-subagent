@@ -504,6 +504,9 @@ export interface ResolvedParams {
 	toolOptions: SubagentToolOptions | undefined;
 	/** Set only when autoRoutePreset chose the preset (not explicitly requested). */
 	autoRoutedPreset: SubagentPreset | undefined;
+	/** Set only when auto-route chose the preset: the keyword that matched —
+	 * surfaced in the dispatch result as the auto-route evidence. */
+	autoRouteKeyword?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -29,12 +29,27 @@ describe("validatePreTask", () => {
     expect(result.warnings.some(w => /write|edit/.test(w))).toBe(true);
   });
 
-  it("warns when bash is excluded for run task", () => {
+  it("blocks a run task when bash is absent (capability error, not a warning)", () => {
     const result = validatePreTask({
       task: "Run the test suite with vitest",
       toolOptions: { tools: ["read", "write", "edit"], excludeTools: ["bash"] },
     });
+    expect(result.valid).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toMatch(/'bash'/);
+    // The message names the resolved toolset and the exact fix, override included.
+    expect(result.errors[0]).toMatch(/tools=read,write,edit/);
+    expect(result.errors[0]).toMatch(/force: true/);
+  });
+
+  it("force: true degrades the run-task capability error to warning class", () => {
+    const result = validatePreTask({
+      task: "Run the test suite with vitest",
+      toolOptions: { tools: ["read", "write", "edit"], excludeTools: ["bash"] },
+      force: true,
+    });
     expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
     expect(result.warnings.length).toBeGreaterThan(0);
     expect(result.warnings.some(w => /bash/.test(w))).toBe(true);
   });
@@ -62,6 +77,95 @@ describe("validatePreTask", () => {
       task: "Create and write to a new file",
     });
     expect(result.valid).toBe(true);
+  });
+
+  // ── Exploration vocabulary + blocking classification ───────────────
+
+  describe("exploration capability (search|grep|find|list|locate|glob)", () => {
+    const EXPLORE_TASK = "search for the config files that mention the flag";
+
+    // ONE capability, ANY-of: each satisfier alone must clear the requirement.
+    for (const satisfier of ["find", "ls", "grep", "bash"]) {
+      it(`is satisfied by '${satisfier}' alone`, () => {
+        const result = validatePreTask({
+          task: EXPLORE_TASK,
+          toolOptions: { tools: ["read", "write", satisfier] },
+        });
+        expect(result.valid).toBe(true);
+        expect(result.warnings).toHaveLength(0);
+        expect(result.errors).toHaveLength(0);
+      });
+    }
+
+    it("blocks when none of find/ls/grep/bash is available (capability error)", () => {
+      const result = validatePreTask({
+        task: "locate the drafts to base the post on",
+        toolOptions: { tools: ["read", "write", "edit"] },
+      });
+      expect(result.valid).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toMatch(/directory exploration/);
+      expect(result.errors[0]).toMatch(/'find', 'ls', 'grep' or 'bash'/);
+      expect(result.errors[0]).toMatch(/tools=read,write,edit/);
+      expect(result.errors[0]).toMatch(/force: true/);
+    });
+
+    it("force: true degrades the exploration error to warning class", () => {
+      const result = validatePreTask({
+        task: "locate the drafts to base the post on",
+        toolOptions: { tools: ["read", "write", "edit"] },
+        force: true,
+      });
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+      expect(result.warnings.some(w => /directory exploration/.test(w))).toBe(true);
+    });
+  });
+
+  describe("blocking vs warning classification", () => {
+    it("blocks on the high-confidence run verbs (run|execute|test|compile|benchmark)", () => {
+      for (const task of ["run the suite", "execute the migration", "test the parser", "compile the workspace", "benchmark the query"]) {
+        const result = validatePreTask({
+          task,
+          toolOptions: { tools: ["read", "write", "edit"] },
+        });
+        expect(result.valid, task).toBe(false);
+        expect(result.errors[0], task).toMatch(/'bash'/);
+      }
+    });
+
+    it("keeps install/deploy/npm/yarn/pnpm/cargo/pip warning-class (docs can mention them)", () => {
+      for (const task of ["document the install steps", "deploy the app", "explain npm workspaces", "describe the pnpm pipeline"]) {
+        const result = validatePreTask({
+          task,
+          toolOptions: { tools: ["read", "write", "edit"] },
+        });
+        expect(result.valid, task).toBe(true);
+        expect(result.warnings.some(w => /bash/.test(w)), task).toBe(true);
+        expect(result.errors, task).toHaveLength(0);
+      }
+    });
+
+    it("keeps write/edit mismatches warning-class (not promoted)", () => {
+      const result = validatePreTask({
+        task: "refactor the parser",
+        toolOptions: { tools: ["read", "bash"] },
+      });
+      expect(result.valid).toBe(true);
+      expect(result.warnings.length).toBeGreaterThan(0);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    it("force does not suppress the outputFile hard conflict", () => {
+      const result = validatePreTask({
+        task: "Audit the codebase security",
+        toolOptions: { excludeTools: ["write", "edit"] },
+        outputFile: "reports/audit.md",
+        force: true,
+      });
+      expect(result.valid).toBe(false);
+      expect(result.errors[0]).toMatch(/outputFile/);
+    });
   });
 
   it("passes when tools are in the allowlist", () => {

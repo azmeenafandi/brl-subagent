@@ -17,6 +17,15 @@ export interface ValidateConfig {
   thinkingLevel?: ThinkingLevel;
   gitMode?: string;
   outputFile?: string;
+  /**
+   * delegate_task's `force` param (default false). When true, capability
+   * ERRORS (the high-confidence capability-critical mismatches below)
+   * degrade to warning-class: they still surface in `warnings`, but
+   * `valid` stays true and dispatch proceeds. The outputFile hard
+   * conflict is NOT suppressible — a report the subagent cannot write
+   * can never succeed, so force does not apply to it.
+   */
+  force?: boolean;
 }
 
 export interface ValidateResult {
@@ -29,9 +38,50 @@ export interface ValidateResult {
 
 interface ToolRequirement {
   patterns: RegExp[];
+  /** ALL-of: every listed tool must be available (default semantics). */
   requiredTools: string[];
+  /**
+   * ANY-of: when set, ONE available tool satisfies the requirement and
+   * `requiredTools` is ignored — directory exploration is a single
+   * capability (the browse built-ins find/ls/grep and bash are
+   * interchangeable ways to do it), not a conjunction of all of them.
+   */
+  anyOfTools?: string[];
   description: string;
+  /**
+   * High-confidence, capability-critical subset of `patterns`: a task
+   * matching any of these with the capability ABSENT is promoted from
+   * warning to ERROR — dispatch does not spawn — unless `force` is set,
+   * which degrades the mismatch back to warning class. Only the two
+   * capability-critical shapes carry this: a run/execute/test/compile/
+   * benchmark task with no bash, and an exploration task with none of
+   * find/ls/grep/bash. Entry-less requirements never block (warnings only).
+   */
+  blockingPatterns?: RegExp[];
+  /**
+   * Builds the block message: names the missing capability, the resolved
+   * toolset, and the exact fix — including the force override. Receives
+   * the rendered `tools=…, excludeTools=…` toolset string.
+   */
+  blockMessage?: (toolset: string) => string;
 }
+
+/*
+ * COVERAGE BOUNDARY — which wording evades this table (every guard states
+ * its coverage). These are word-boundary keyword matches against the raw
+ * task text, nothing more. EVADED by: paraphrases that use none of the
+ * listed keywords ("hunt for drafts", "browse the repository", "see which
+ * files mention X"), inflected forms the patterns do not list ("running",
+ * "tests", "searching", "listing" — \btest\b does not match "tests"), and
+ * domain phrasing that never names the verb ("kick off CI", "smoke the
+ * pipeline"). The opposite failure is equally real: documentation/writing
+ * tasks that merely MENTION a keyword ("document how to run the tests")
+ * match too — which is why only the two high-confidence capability blocks
+ * (blockingPatterns below) escalate to errors, while install/deploy/npm/
+ * yarn/pnpm/cargo/pip stay warning-class (docs can name them without
+ * needing them). Widening the table is deliberate work: add the keyword
+ * here AND update this note.
+ */
 
 const TOOL_REQUIREMENTS: ToolRequirement[] = [
   {
@@ -48,6 +98,28 @@ const TOOL_REQUIREMENTS: ToolRequirement[] = [
     patterns: [/\b(run|execute|test|benchmark|compile|install|deploy|npm|yarn|pnpm|cargo|pip|vitest)\b/i],
     requiredTools: ['bash'],
     description: 'task involves running commands',
+    // Blocking subset: only the verbs that unambiguously DEMAND a shell.
+    // install/deploy/npm/yarn/pnpm/cargo/pip deliberately stay warning-class
+    // — documentation tasks can mention them without executing them.
+    blockingPatterns: [/\b(run|execute|test|compile|benchmark)\b/i],
+    blockMessage: (toolset) =>
+      `Cannot delegate: the task requires the 'bash' tool (running commands) but it is not available ` +
+      `in the resolved toolset (${toolset}). Fix: add 'bash' to this dispatch's tools (or remove it ` +
+      `from excludeTools) and re-dispatch, or pass force: true to dispatch anyway.`,
+  },
+  {
+    // Directory exploration is ONE capability, satisfied by ANY of the
+    // browse built-ins or bash — anyOfTools, not a conjunction.
+    patterns: [/\b(search|grep|find|list|locate|glob)\b/i],
+    requiredTools: [],
+    anyOfTools: ['find', 'ls', 'grep', 'bash'],
+    description: 'task involves directory exploration',
+    blockingPatterns: [/\b(search|grep|find|list|locate|glob)\b/i],
+    blockMessage: (toolset) =>
+      `Cannot delegate: the task requires directory exploration, satisfied by any of 'find', 'ls', ` +
+      `'grep' or 'bash', but none is available in the resolved toolset (${toolset}). Fix: add any of ` +
+      `'find', 'ls', 'grep' or 'bash' to this dispatch's tools (or remove it from excludeTools) and ` +
+      `re-dispatch, or pass force: true to dispatch anyway.`,
   },
   {
     patterns: [/\b(delete|remove|clean|prune|uninstall|rm)\b/i],
@@ -225,15 +297,38 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
     return { valid: true, warnings: [], errors: [] };
   }
 
-  // Check tool requirements (warnings, not errors — conductor can override)
+  // Check tool requirements. A missing capability is warning-class by
+  // default (conductor can judge); the high-confidence capability-critical
+  // cases (blockingPatterns) are promoted to ERRORS unless `force` is set.
+  const toolset = `tools=${config.toolOptions?.tools?.join(',') ?? 'all'}, excludeTools=${config.toolOptions?.excludeTools?.join(',') ?? 'none'}`;
   for (const req of TOOL_REQUIREMENTS) {
     const matches = req.patterns.some(p => p.test(taskText));
     if (!matches) continue;
 
-    for (const tool of req.requiredTools) {
-      if (!isToolAvailable(tool, config.toolOptions)) {
+    const missing = req.anyOfTools
+      ? (req.anyOfTools.some(t => isToolAvailable(t, config.toolOptions)) ? [] : [...req.anyOfTools])
+      : req.requiredTools.filter(t => !isToolAvailable(t, config.toolOptions));
+    if (missing.length === 0) continue;
+
+    // Capability-critical block: high-confidence pattern matched AND the
+    // capability is absent. `force` degrades it to warning class below.
+    const capabilityBlock =
+      !config.force &&
+      req.blockMessage !== undefined &&
+      (req.blockingPatterns ?? []).some(p => p.test(taskText));
+    if (capabilityBlock) {
+      errors.push(req.blockMessage!(toolset));
+      continue;
+    }
+
+    if (req.anyOfTools) {
+      warnings.push(
+        `Task ${req.description} but none of ${req.anyOfTools.map(t => `'${t}'`).join(', ')} is available (${toolset})`,
+      );
+    } else {
+      for (const tool of missing) {
         warnings.push(
-          `Task ${req.description} but '${tool}' is not available (tools=${config.toolOptions?.tools?.join(',') ?? 'all'}, excludeTools=${config.toolOptions?.excludeTools?.join(',') ?? 'none'})`,
+          `Task ${req.description} but '${tool}' is not available (${toolset})`,
         );
       }
     }
