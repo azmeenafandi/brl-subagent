@@ -65,6 +65,7 @@ import {
 	mergeWorkBranch,
 } from "./git";
 import { preflightCheck } from "./preflight";
+import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets } from "./prelude";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure } from "./validate";
@@ -416,32 +417,14 @@ export default function (pi: ExtensionAPI) {
 		const chainModeStartedAt = new Date().toISOString();
 
 		// R5: Check session cost limit before spawning
-		const perTaskEstimate =
-			state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-		if (state.checkCostLimit(perTaskEstimate * chainSteps.length, ctx)) {
-			const currentTotal = state.getSessionTotalCost(ctx);
-			const limit = state.config.sessionCostLimit;
-			log.warn("Chain delegation rejected: session cost limit reached", {
-				currentTotal,
-				estimatedCost: perTaskEstimate * chainSteps.length,
-				limit,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate: session cost limit reached ` +
-							`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
-							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		const costError = gateSessionCost({
+			state,
+			ctx,
+			log,
+			units: chainSteps.length,
+			label: "Chain delegation",
+		});
+		if (costError) return costError;
 
 		// Reject delegation if recursion depth exceeds configured max
 		const currentDepth = getCurrentDepth();
@@ -903,32 +886,14 @@ export default function (pi: ExtensionAPI) {
 		const taskList = params.tasks as SubTaskParams[];
 
 		// R5: Check session cost limit before spawning
-		const perTaskEstimate =
-			state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-		if (state.checkCostLimit(perTaskEstimate * taskList.length, ctx)) {
-			const currentTotal = state.getSessionTotalCost(ctx);
-			const limit = state.config.sessionCostLimit;
-			log.warn("Parallel delegation rejected: session cost limit reached", {
-				currentTotal,
-				estimatedCost: perTaskEstimate * taskList.length,
-				limit,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate: session cost limit reached ` +
-							`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
-							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		const costError = gateSessionCost({
+			state,
+			ctx,
+			log,
+			units: taskList.length,
+			label: "Parallel delegation",
+		});
+		if (costError) return costError;
 
 		// Reject delegation if recursion depth exceeds configured max
 		const currentDepth = getCurrentDepth();
@@ -975,17 +940,9 @@ export default function (pi: ExtensionAPI) {
 		);
 
 		// Validate CWD once
-		const cwdResult = validateCwd(globalParams.effectiveCwd, ctx.cwd);
-		if (!cwdResult.ok) {
-			return {
-				content: [
-					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-		const resolvedCwd = cwdResult.value;
+		const targets = validateDelegationTargets({ ctx, effectiveCwd: globalParams.effectiveCwd });
+		if (!targets.ok) return targets.error;
+		const resolvedCwd = targets.cwd;
 
 		// Pre-flight checks — fail fast before consuming resources
 		const pfResult = preflightCheck(resolvedCwd);
@@ -1010,25 +967,18 @@ export default function (pi: ExtensionAPI) {
 		// outputFile-vs-write conflict applies (issue #34). The mode-level
 		// outputFile on globalParams is the one validated; per-step outputFiles
 		// are future work (issue #3).
-		const validation = validatePreTask({
-			task: globalParams.task,
-			toolOptions: globalParams.toolOptions,
-			thinkingLevel: globalParams.thinkingLevel,
-			gitMode: globalParams.resolvedGitMode,
-			outputFile: globalParams.outputFile,
+		const preTaskError = runPreTaskValidation({
+			log,
+			label: "Parallel",
+			preTask: {
+				task: globalParams.task,
+				toolOptions: globalParams.toolOptions,
+				thinkingLevel: globalParams.thinkingLevel,
+				gitMode: globalParams.resolvedGitMode,
+				outputFile: globalParams.outputFile,
+			},
 		});
-		if (validation.warnings.length > 0) {
-			log.warn("Parallel pre-task validation warnings", { warnings: validation.warnings });
-		}
-		if (!validation.valid) {
-			const errText = validation.errors.join("; ");
-			log.warn("Parallel pre-task validation failed", { errors: validation.errors });
-			return {
-				content: [{ type: "text" as const, text: errText }],
-				details: undefined,
-				isError: true,
-			};
-		}
+		if (preTaskError) return preTaskError;
 
 		// Resolve model once (per-call top-level model override beats preset)
 		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
@@ -1372,32 +1322,14 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// R5: Check session cost limit before spawning
-		const perTaskEstimate =
-			state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-		if (state.checkCostLimit(perTaskEstimate * graphTasks.length, ctx)) {
-			const currentTotal = state.getSessionTotalCost(ctx);
-			const limit = state.config.sessionCostLimit;
-			log.warn("Graph delegation rejected: session cost limit reached", {
-				currentTotal,
-				estimatedCost: perTaskEstimate * graphTasks.length,
-				limit,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate: session cost limit reached ` +
-							`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
-							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		const costError = gateSessionCost({
+			state,
+			ctx,
+			log,
+			units: graphTasks.length,
+			label: "Graph delegation",
+		});
+		if (costError) return costError;
 
 		// Reject delegation if recursion depth exceeds configured max
 		const currentDepth = getCurrentDepth();
@@ -1897,32 +1829,14 @@ export default function (pi: ExtensionAPI) {
 
 		// Session cost limit gates the WHOLE batch before any spawn — same
 		// estimate/limit logic as runParallelMode, scaled by task count.
-		const perTaskEstimate =
-			state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-		if (state.checkCostLimit(perTaskEstimate * taskList.length, ctx)) {
-			const currentTotal = state.getSessionTotalCost(ctx);
-			const limit = state.config.sessionCostLimit;
-			log.warn("Background fan-out rejected: session cost limit reached", {
-				currentTotal,
-				estimatedCost: perTaskEstimate * taskList.length,
-				limit,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate: session cost limit reached ` +
-							`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
-							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		const costError = gateSessionCost({
+			state,
+			ctx,
+			log,
+			units: taskList.length,
+			label: "Background fan-out",
+		});
+		if (costError) return costError;
 
 		// Resolve global params once — same call shape as runParallelMode.
 		const globalParams = resolveSubagentParams(
@@ -1958,16 +1872,8 @@ export default function (pi: ExtensionAPI) {
 		// Same rejection as the single-background path: approvalMode 'always'
 		// cannot work in background — there is no interactive dialog to approve
 		// the diff, for any of the N agents.
-		if (globalParams.resolvedApprovalMode === 'always') {
-			return {
-				content: [{ type: "text" as const, text:
-					`Cannot spawn background agent with approvalMode 'always': background agents run unattended ` +
-					`and cannot present the approval dialog. Use approvalMode 'auto' (default) or 'writes'.`
-				}],
-				details: undefined,
-				isError: true,
-			};
-		}
+		const approvalError = rejectApprovalAlwaysInBackground(globalParams.resolvedApprovalMode);
+		if (approvalError) return approvalError;
 		// W5 parity with the single-background path: 'writes' silently
 		// auto-approves in background — warn once so the caller knows none of
 		// the N agents' diffs will be gated on approval.
@@ -2018,48 +1924,30 @@ export default function (pi: ExtensionAPI) {
 			// Per-task model override wins; the global model is the fallback.
 			const stepModel = resolveStepModel(ctx, merged.model, globalModel);
 
-			const cwdResult = validateCwd(merged.effectiveCwd, ctx.cwd);
-			if (!cwdResult.ok) {
-				return {
-					content: [{ type: "text" as const, text: `${taskPrefix}: Invalid cwd: ${cwdResult.error}` }],
-					details: undefined,
-					isError: true,
-				};
-			}
-			let resolvedOutputFile: string | undefined;
-			if (merged.outputFile) {
-				const ofResult = validateOutputFile(merged.outputFile, cwdResult.value);
-				if (!ofResult.ok) {
-					return {
-						content: [{ type: "text" as const, text: `${taskPrefix}: Invalid outputFile: ${ofResult.error}` }],
-						details: undefined,
-						isError: true,
-					};
-				}
-				resolvedOutputFile = ofResult.value;
-			}
-
-			const validation = validatePreTask({
-				task: merged.task,
-				toolOptions: merged.toolOptions,
-				thinkingLevel: merged.thinkingLevel,
-				gitMode: globalParams.resolvedGitMode,
+			const targets = validateDelegationTargets({
+				ctx,
+				effectiveCwd: merged.effectiveCwd,
 				outputFile: merged.outputFile,
+				prefix: taskPrefix,
 			});
-			if (validation.warnings.length > 0) {
-				log.warn("Background fan-out pre-task validation warnings", { task: i + 1, warnings: validation.warnings });
-			}
-			if (!validation.valid) {
-				const errText = validation.errors.join("; ");
-				log.warn("Background fan-out pre-task validation failed", { task: i + 1, errors: validation.errors });
-				return {
-					content: [{ type: "text" as const, text: `${taskPrefix}: ${errText}` }],
-					details: undefined,
-					isError: true,
-				};
-			}
+			if (!targets.ok) return targets.error;
 
-			fanOutTasks.push({ merged, model: stepModel, cwd: cwdResult.value, outputFile: resolvedOutputFile });
+			const preTaskError = runPreTaskValidation({
+				log,
+				label: "Background fan-out",
+				prefix: taskPrefix,
+				logContext: { task: i + 1 },
+				preTask: {
+					task: merged.task,
+					toolOptions: merged.toolOptions,
+					thinkingLevel: merged.thinkingLevel,
+					gitMode: globalParams.resolvedGitMode,
+					outputFile: merged.outputFile,
+				},
+			});
+			if (preTaskError) return preTaskError;
+
+			fanOutTasks.push({ merged, model: stepModel, cwd: targets.cwd, outputFile: targets.outputFile });
 		}
 
 		// Spawn pass — sequential, in task order, through the shared tail.
@@ -2457,16 +2345,8 @@ export default function (pi: ExtensionAPI) {
 			// W5 (issue #28): approvalMode 'always' cannot work in background —
 			// there is no interactive dialog to approve the diff. Reject loudly
 			// instead of silently running unattended with write access.
-			if (bgResolved.resolvedApprovalMode === 'always') {
-				return {
-					content: [{ type: "text" as const, text:
-						`Cannot spawn background agent with approvalMode 'always': background agents run unattended ` +
-						`and cannot present the approval dialog. Use approvalMode 'auto' (default) or 'writes'.`
-					}],
-					details: undefined,
-					isError: true,
-				};
-			}
+			const approvalError = rejectApprovalAlwaysInBackground(bgResolved.resolvedApprovalMode);
+			if (approvalError) return approvalError;
 			// W5: 'writes' in background silently auto-approves — warn once so the
 			// caller knows the diff will NOT be gated on approval.
 			if (bgResolved.resolvedApprovalMode === 'writes') {
@@ -2478,79 +2358,40 @@ export default function (pi: ExtensionAPI) {
 			// W6 (issue #28): session cost limit must gate background spawns too —
 			// the R5 check after the background branch never runs for them.
 			// Same estimate/limit logic as single mode.
-			const bgPerTaskEstimate = state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-			if (state.checkCostLimit(bgPerTaskEstimate, ctx)) {
-				const bgLimit = state.config.sessionCostLimit;
-				const bgCurrentTotal = state.getSessionTotalCost(ctx);
-				log.warn("Background delegation rejected: session cost limit reached", {
-					currentTotal: bgCurrentTotal,
-					estimatedCost: bgPerTaskEstimate,
-					limit: bgLimit,
-				});
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text:
-								`Cannot delegate: session cost limit reached ` +
-								`($${bgCurrentTotal.toFixed(4)} spent of $${bgLimit.toFixed(2)} limit). ` +
-								`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-						},
-					],
-					details: undefined,
-					isError: true,
-				};
-			}
+			const costError = gateSessionCost({
+				state,
+				ctx,
+				log,
+				units: 1,
+				label: "Background delegation",
+			});
+			if (costError) return costError;
 
 			// F1: Validate cwd + outputFile the same way foreground single mode does —
 			// an unvalidated outputFile would reach the prompt and could steer the
 			// background agent's write tool outside the project root.
-			const bgCwdResult = validateCwd(bgResolved.effectiveCwd, ctx.cwd);
-			if (!bgCwdResult.ok) {
-				return {
-					content: [{ type: "text" as const, text: `Invalid cwd: ${bgCwdResult.error}` }],
-					details: undefined,
-					isError: true,
-				};
-			}
-			let bgResolvedOutputFile: string | undefined;
-			if (bgResolved.outputFile) {
-				const ofResult = validateOutputFile(bgResolved.outputFile, bgCwdResult.value);
-				if (!ofResult.ok) {
-					return {
-						content: [
-							{ type: "text" as const, text: `Invalid outputFile: ${ofResult.error}` },
-						],
-						details: undefined,
-						isError: true,
-					};
-				}
-				bgResolvedOutputFile = ofResult.value;
-			}
+			const targets = validateDelegationTargets({
+				ctx,
+				effectiveCwd: bgResolved.effectiveCwd,
+				outputFile: bgResolved.outputFile,
+			});
+			if (!targets.ok) return targets.error;
+			const bgResolvedOutputFile = targets.outputFile;
 
 			// C: H1 validation for background mode — reject outputFile-vs-write
 			// conflicts before spawning (loud failure, same as single mode).
-			const bgValidation = validatePreTask({
-				task: singleTask,
-				toolOptions: bgResolved.toolOptions,
-				thinkingLevel: bgResolved.thinkingLevel,
-				gitMode: bgResolved.resolvedGitMode,
-				outputFile: bgResolvedOutputFile,
+			const preTaskError = runPreTaskValidation({
+				log,
+				label: "Background",
+				preTask: {
+					task: singleTask,
+					toolOptions: bgResolved.toolOptions,
+					thinkingLevel: bgResolved.thinkingLevel,
+					gitMode: bgResolved.resolvedGitMode,
+					outputFile: bgResolvedOutputFile,
+				},
 			});
-			if (bgValidation.warnings.length > 0) {
-				log.warn("Background pre-task validation warnings", { warnings: bgValidation.warnings });
-			}
-			if (!bgValidation.valid) {
-				const errText = bgValidation.errors.join("; ");
-				log.warn("Background pre-task validation failed", { errors: bgValidation.errors });
-				return {
-					content: [{ type: "text" as const, text: errText }],
-					details: undefined,
-					isError: true,
-				};
-			}
+			if (preTaskError) return preTaskError;
 
 			// Build the full prompt the same way foreground single mode does:
 			// base prompt (optionally inherited) + custom prompt + preset guidance.
@@ -2571,7 +2412,7 @@ export default function (pi: ExtensionAPI) {
 				thinkingLevel: bgResolved.thinkingLevel,
 				priority: params.priority,
 				systemPrompt: bgPrompt,
-				cwd: bgCwdResult.value,
+				cwd: targets.cwd,
 				toolOptions: bgResolved.toolOptions,
 				timeout: bgResolved.timeout,
 				gitMode: bgResolved.resolvedGitMode,
@@ -3257,31 +3098,14 @@ export default function (pi: ExtensionAPI) {
 
 			// R5: Check session cost limit before spawning
 			// Use a default per-task estimate of $0.05 if no perTaskCostEstimate is set
-			const perTaskEstimate = state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-			const currentTotal = state.getSessionTotalCost(ctx);
-			if (state.checkCostLimit(perTaskEstimate, ctx)) {
-				const limit = state.config.sessionCostLimit;
-				log.warn("Subagent delegation rejected: session cost limit reached", {
-					currentTotal,
-					estimatedCost: perTaskEstimate,
-					limit,
-				});
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text:
-								`Cannot delegate: session cost limit reached ` +
-								`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
-								`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-						},
-					],
-					details: undefined,
-					isError: true,
-				};
-			}
+			const costError = gateSessionCost({
+				state,
+				ctx,
+				log,
+				units: 1,
+				label: "Subagent delegation",
+			});
+			if (costError) return costError;
 
 			// Reject delegation if recursion depth exceeds configured max.
 			// This prevents subagents from spawning infinite sub-subagents while
