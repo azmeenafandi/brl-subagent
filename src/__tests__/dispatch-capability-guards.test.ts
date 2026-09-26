@@ -8,10 +8,12 @@
  *       exploration task with none of find/ls/grep/bash) rejects the
  *       dispatch BEFORE any spawn, the message names the capability, the
  *       resolved toolset, and the fix including the `force` override, and
- *       `force: true` proceeds (spawn happens). Foreground and background
- *       honor block + override identically.
+ *       `force: true` proceeds (spawn happens). Foreground (single AND the
+ *       `tasks` parallel shape, issue #220), background and fan-out honor
+ *       block + override identically.
  *   C — pre-task validation warnings ride the RETURNED result (foreground
- *       result, background spawn result, fan-out spawn result), labelled,
+ *       result, foreground parallel result with a per-task prefix (issue
+ *       #220), background spawn result, fan-out spawn result), labelled,
  *       in addition to the existing log.warn calls.
  *   D — auto-route transparency: the result states WHICH preset was
  *       auto-selected and the matched-keyword evidence; a read-only
@@ -338,6 +340,39 @@ describe("pre-run capability block (dispatch does not spawn)", () => {
 		expect(result.content[0].text).toContain("force: true");
 		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
 	});
+
+	it("foreground parallel: run task without bash is rejected before any spawn (issue #220)", async () => {
+		const result = await execute({
+			tasks: [{ task: "run the test suite", label: "run", tools: ["read", "write", "edit"] }],
+		});
+
+		expect(result.isError).toBe(true);
+		const text = result.content[0].text;
+		// The per-task block carries the unit prefix, the capability…
+		expect(text).toContain(`Task 1 ("run")`);
+		expect(text).toContain("'bash' tool (running commands)");
+		expect(text).toContain("tools=read,write,edit");
+		// …and the same fix incl. the force override.
+		expect(text).toContain("Fix: add 'bash' to this dispatch's tools");
+		expect(text).toContain("force: true");
+		// Blocked BEFORE any spawn — the batch rejects with nothing started.
+		expect(h.runSubagent).not.toHaveBeenCalled();
+	});
+
+	it("foreground parallel: force: true proceeds past the capability block (spawn happens)", async () => {
+		const result = await execute({
+			tasks: [{ task: "run the test suite", label: "run", tools: ["read", "write", "edit"] }],
+			force: true,
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		// Warning-class behaviour still applies: the mismatch rides the result,
+		// prefixed with its unit.
+		const text = result.content[0].text;
+		expect(text).toContain("[pre-task validation warnings]");
+		expect(text).toContain(`Task 1 ("run"): Task involves running commands but 'bash' is not available`);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -365,8 +400,48 @@ describe("pre-task validation warnings are surfaced in the result", () => {
 		expect(h.runSubagent).toHaveBeenCalledTimes(1);
 		const text = result.content[0].text;
 		expect(text).toContain("[pre-task validation warnings]");
-		expect(text).toContain("task involves editing files");
+		expect(text).toContain("Task involves editing files");
 		expect(text).toContain("'write'");
+	});
+
+	it("foreground parallel result carries per-task warnings, prefixed with the task (issue #220)", async () => {
+		// "deploy" is warning-class — the dispatch proceeds, and the conductor
+		// sees the mismatch in the result with its unit prefix.
+		const result = await execute({
+			tasks: [{ task: "deploy the app", label: "deploy", tools: ["read", "write", "edit"] }],
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		const text = result.content[0].text;
+		expect(text).toContain("[pre-task validation warnings]");
+		expect(text).toContain(
+			`Task 1 ("deploy"): Task involves running commands but 'bash' is not available (tools=read,write,edit, excludeTools=none)`,
+		);
+	});
+
+	it("normalized 'Task involves …' rendering — standalone and unit-prefixed, no doubled 'Task'", async () => {
+		// Standalone: the single-task foreground result renders the warning
+		// lead once (description strings start with the verb, issue #220).
+		const single = await execute({ task: "update the docs", tools: ["read", "bash"] });
+
+		expect(single.isError).toBeFalsy();
+		expect(single.content[0].text).toContain(
+			"Task involves editing files but 'write' is not available (tools=read,bash, excludeTools=none)",
+		);
+
+		// Prefixed: unit prefix + warning lead reads naturally — never
+		// "Task 1 (…): Task task involves …".
+		const parallel = await execute({
+			tasks: [{ task: "deploy the app", label: "deploy", tools: ["read", "write", "edit"] }],
+		});
+
+		expect(parallel.isError).toBeFalsy();
+		const text = parallel.content[0].text;
+		expect(text).toContain(
+			`Task 1 ("deploy"): Task involves running commands but 'bash' is not available (tools=read,write,edit, excludeTools=none)`,
+		);
+		expect(text).not.toContain("Task task");
 	});
 
 	it("fan-out spawn result carries per-task warnings, labelled with the task", async () => {
@@ -380,7 +455,10 @@ describe("pre-task validation warnings are surfaced in the result", () => {
 		const text = result.content[0].text;
 		expect(text).toContain("Background agents started: 1");
 		expect(text).toContain("[pre-task validation warnings]");
-		expect(text).toContain(`Task 1 ("deploy"): Task task involves running commands but 'bash' is not available`);
+		expect(text).toContain(`Task 1 ("deploy"): Task involves running commands but 'bash' is not available`);
+		// Issue #220: the unit prefix and the warning lead normalize to ONE
+		// leading "Task" — the doubled "Task task involves …" never renders.
+		expect(text).not.toContain("Task task");
 	});
 });
 

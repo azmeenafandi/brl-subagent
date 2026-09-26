@@ -47,6 +47,12 @@ interface ToolRequirement {
    * interchangeable ways to do it), not a conjunction of all of them.
    */
   anyOfTools?: string[];
+  /**
+   * Warning lead, rendered as `Task ${description} but …` (and, under a
+   * unit prefix, `Task 1 ("deploy"): Task ${description} …`). Starts with
+   * the verb ("involves …") so the fixed `Task ` template reads naturally
+   * standalone AND prefixed — do not add a leading "task" (issue #220).
+   */
   description: string;
   /**
    * High-confidence, capability-critical subset of `patterns`: a task
@@ -87,17 +93,17 @@ const TOOL_REQUIREMENTS: ToolRequirement[] = [
   {
     patterns: [/\b(write|create|generate|build|implement|add|insert|append)\b/i],
     requiredTools: ['write', 'edit'],
-    description: 'task involves writing/creating files',
+    description: 'involves writing/creating files',
   },
   {
     patterns: [/\b(edit|modify|update|change|fix|patch|refactor|rename)\b/i],
     requiredTools: ['write', 'edit'],
-    description: 'task involves editing files',
+    description: 'involves editing files',
   },
   {
     patterns: [/\b(run|execute|test|benchmark|compile|install|deploy|npm|yarn|pnpm|cargo|pip|vitest)\b/i],
     requiredTools: ['bash'],
-    description: 'task involves running commands',
+    description: 'involves running commands',
     // Blocking subset: only the verbs that unambiguously DEMAND a shell.
     // install/deploy/npm/yarn/pnpm/cargo/pip deliberately stay warning-class
     // — documentation tasks can mention them without executing them.
@@ -113,7 +119,7 @@ const TOOL_REQUIREMENTS: ToolRequirement[] = [
     patterns: [/\b(search|grep|find|list|locate|glob)\b/i],
     requiredTools: [],
     anyOfTools: ['find', 'ls', 'grep', 'bash'],
-    description: 'task involves directory exploration',
+    description: 'involves directory exploration',
     blockingPatterns: [/\b(search|grep|find|list|locate|glob)\b/i],
     blockMessage: (toolset) =>
       `Cannot delegate: the task requires directory exploration, satisfied by any of 'find', 'ls', ` +
@@ -124,17 +130,17 @@ const TOOL_REQUIREMENTS: ToolRequirement[] = [
   {
     patterns: [/\b(delete|remove|clean|prune|uninstall|rm)\b/i],
     requiredTools: ['write', 'bash'],
-    description: 'task involves deleting files',
+    description: 'involves deleting files',
   },
   {
     patterns: [/\b(commit|push|pull|merge|rebase|checkout|branch)\b/i],
     requiredTools: ['bash'],
-    description: 'task involves git operations',
+    description: 'involves git operations',
   },
   {
     patterns: [/\b(audit|review|analyze|examine|check|inspect|scan|read)\b/i],
     requiredTools: ['read'],
-    description: 'task involves reading/analyzing files',
+    description: 'involves reading/analyzing files',
   },
 ];
 
