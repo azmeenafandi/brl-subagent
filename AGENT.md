@@ -51,6 +51,13 @@ delegation-heavy work.
 - When to delegate: when the task needs an isolated context, a deep investigation, parallel research, or a long-running analysis.
 - Approval: `approvalMode: "always"` is rejected in background — there is no dialog. Use `auto` (default) or `writes`; `writes` auto-approves in background.
 
+### Claim verification
+
+- Ground claims about run state, liveness, or elapsed time in observed results — the run-status surface, the user-visible monitor, or a command's output.
+- Do not infer liveness from artifacts written at settle: an agent's output record is written when the run completes, so a frozen record says nothing about a running agent.
+- Measure elapsed time rather than estimating it; state the measured value.
+- When a claim is unverified, say so.
+
 ## Canonical shapes
 
 - Batch chain with `{previous}`: `chain: [{ task: "…" }, { task: "Use {previous} …" }]` — each step gets the prior step's output.
