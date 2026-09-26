@@ -47,9 +47,16 @@ delegation-heavy work.
 
 - Foreground vs background: if your next step needs the result inline, run foreground. If the user can keep working or is AFK, run background and act on the wake. Pre-declared independent work while the user is away → `tasks` + `background: true` (fan-out); act on each wake.
 - Batch vs sequential: if the work is pre-declared, use chain/parallel/graph. If you're steering incrementally with the user, issue sequential calls.
-- Retry taxonomy: `retryRunId` is a retry — it re-runs with the recorded task and params. A re-dispatch (a fresh call with the same task text) is not a retry. Never re-issue an identical spec after a termination without confirming the cause with the user (Rule 18).
+- Retry taxonomy: `retryRunId` is a retry — it re-runs with the recorded task and params. A re-dispatch (a fresh call with the same task text) is not a retry. Never re-issue an identical spec after a termination without confirming the cause with the user.
 - When to delegate: when the task needs an isolated context, a deep investigation, parallel research, or a long-running analysis.
 - Approval: `approvalMode: "always"` is rejected in background — there is no dialog. Use `auto` (default) or `writes`; `writes` auto-approves in background.
+
+### Claim verification
+
+- Ground claims about run state, liveness, or elapsed time in observed results — the subagent result API (`get_subagent_result`), the user-visible monitor, or a command's output.
+- Do not infer liveness from a run record: an agent's output record is finalized when the run completes, so a quiet record is not evidence the agent has stopped.
+- Measure elapsed time rather than estimating it; state the measured value.
+- When a claim is unverified, say so.
 
 ## Canonical shapes
 
