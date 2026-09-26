@@ -245,7 +245,13 @@ function emitSubagentUpdate(
 				text: getFinalOutputFn(result.messages) || "(running...)",
 			},
 		],
-		details: { ...result },
+		// Issue #206: this is a STREAMING partial, not a verdict —
+		// isSubagentError is a settled-result predicate (a mid-run stopReason
+		// such as "toolUse" is not an error until the run actually ends), so
+		// stamping the unsettled sentinel (exitCode: -1) keeps the renderer on
+		// its running branch until the real result lands. The accumulator
+		// (`result` itself) is untouched — its exitCode stays the real code.
+		details: { ...result, exitCode: -1 },
 	});
 }
 
