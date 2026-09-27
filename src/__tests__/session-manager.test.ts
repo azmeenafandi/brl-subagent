@@ -403,6 +403,41 @@ describe("agent id validation (F24)", () => {
 		expect(getAgent("../../etc/passwd")).toBeNull();
 	});
 
+	it("getAgent returns null for a traversal id that RESOLVES to a real parseable record one level above the storage dir", () => {
+		// The sibling test ("../../etc/passwd") passes for the WRONG reason —
+		// no such file exists, so the guard is never load-bearing. Plant a REAL,
+		// parseable record that join(STORAGE_DIR, '../planted-escape.json')
+		// actually resolves to (tempStorageDir is <tempPiBase>/subagents, so
+		// one level up is <tempPiBase>), making the id guard the ONLY thing
+		// between the traversal id and that record.
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path");
+		fs.mkdirSync(tempStorageDir, { recursive: true });
+		const planted = path.join(tempPiBase, "planted-escape.json");
+		fs.writeFileSync(
+			planted,
+			JSON.stringify({
+				id: "../planted-escape",
+				status: "running",
+				task: "planted escape record",
+				startedAt: Date.now(),
+			}),
+			"utf-8",
+		);
+		try {
+			// Precondition: the escape target really is reachable from the
+			// storage dir — a regression would load and return it.
+			expect(fs.existsSync(path.join(tempStorageDir, "..", "planted-escape.json"))).toBe(true);
+
+			const result = getAgent("../planted-escape");
+
+			expect(result).toBeNull();
+			expect(result?.id).not.toBe("../planted-escape");
+		} finally {
+			try { fs.unlinkSync(planted); } catch { /* ok */ }
+		}
+	});
+
 	it("getAgent returns null for an absolute-path id", () => {
 		expect(getAgent("/tmp/foo")).toBeNull();
 	});
@@ -542,6 +577,23 @@ describe("stopAgent — real abort (issue #28 W1)", () => {
 
 		expect(result?.status).toBe("completed");
 		expect(abort).not.toHaveBeenCalled();
+	});
+
+	it("leaves an already-FAILED agent alone — a second stop never rewrites it to 'stopped'", async () => {
+		// stopAgent is idempotent by contract: a terminal record is returned
+		// as-is. Stopping an agent that already FAILED must not overwrite the
+		// honest terminal status (and its error) with 'stopped'.
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const { stopAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test stop idempotency",
+		});
+		updateAgentStatus(agent.id, "failed", "x");
+
+		const result = await stopAgent(agent.id);
+
+		expect(result?.status).toBe("failed");
+		expect(result?.error).toBe("x");
 	});
 
 	it("returns null for an unknown id", async () => {
@@ -1024,6 +1076,71 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 		expect(mocks.git.getCurrentBranch).toHaveBeenCalled();
 		await secondPromise;
 		expect(secondSettled).toBe(true);
+	});
+
+	// The lock chain must be a QUEUE, not a flat mutex: with three spawns
+	// waiting on the same repo, releasing the head must hand the lock to the
+	// NEXT waiter only — the third must keep waiting behind the new head.
+	// (releaseGitLock deletes the map entry ONLY when it is still the head of
+	// the chain; a queued spawn behind us replaced the entry with its own.)
+	it("C2: a third queued branch-mode spawn keeps waiting behind the SECOND (lock is a chain, not a flat mutex)", async () => {
+		resetGitMocks();
+		// One repository for all three → one shared lock key.
+		mocks.git.getRepoRoot.mockReturnValue("/repo-chain");
+		// Every spawn's setup reads a clean tree on 'main'; the teardown guard
+		// still sees our work branch.
+		mocks.git.getCurrentBranch.mockReset();
+		mocks.git.getCurrentBranch.mockReturnValue("main");
+		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-chain" });
+		mocks.git.hasUncommittedChanges.mockReset();
+		mocks.git.hasUncommittedChanges.mockReturnValue(false);
+		// One deferred gate PER prompt() call, pushed in spawn order A, B, C.
+		const gates: Array<() => void> = [];
+		mocks.session.prompt.mockImplementation(
+			() => new Promise<void>((r) => { gates.push(r); }),
+		);
+
+		const { spawnBackgroundSession } = await import("../session-manager");
+		// A: acquires the lock and reaches its prompt.
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "chain A",
+			gitMode: "branch",
+		});
+		expect(gates).toHaveLength(1);
+		// B and C queue behind A — they must not have touched git at all.
+		let bSettled = false;
+		let cSettled = false;
+		const bPromise = spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "chain B",
+			gitMode: "branch",
+		}).then(() => { bSettled = true; });
+		const cPromise = spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "chain C",
+			gitMode: "branch",
+		}).then(() => { cSettled = true; });
+		await new Promise((r) => setTimeout(r, 50));
+		expect(bSettled).toBe(false);
+		expect(cSettled).toBe(false);
+		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(1); // A only
+
+		// Release A → the lock passes to B (the new head), NOT to C as well.
+		gates[0]();
+		await new Promise((r) => setTimeout(r, 50));
+		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(2);
+		expect(bSettled).toBe(true);
+		expect(cSettled).toBe(false);
+
+		// Release B → only now does C proceed.
+		gates[1]();
+		await new Promise((r) => setTimeout(r, 50));
+		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(3);
+		expect(cSettled).toBe(true);
+
+		// C is the chain head now — release it so nothing dangles.
+		gates[2]();
+		await bPromise;
+		await cPromise;
+		await new Promise((r) => setTimeout(r, 20));
 	});
 
 	// Issue #224: the lock map used to be keyed by the raw cwd path, so two
@@ -1622,6 +1739,41 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		expect(run.finalTurnError).toBe(false);
 	});
 
+	it("appends exactly ONE terminal run entry when the completion-path emit throws (single-finalize guard)", async () => {
+		// The completion branch finalizes the run entry BEFORE its
+		// subagent:completed emit. When that emit throws, control jumps to
+		// markTerminalBestEffort, which calls finalizeRunEntry a SECOND time —
+		// the `runFinalized` guard is what keeps the session's run log free of a
+		// duplicate terminal entry (history/retry/metrics all read it).
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		// The real event-bus never throws; force it so the settle handler's
+		// catch-all actually runs after the branch already finalized.
+		eventBusMock.emit.mockImplementation((event: { type: string }) => {
+			if (event.type === "subagent:completed") throw new Error("emit exploded");
+		});
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "completes but the emit throws",
+		});
+		await new Promise((r) => setTimeout(r, 10));
+
+		const runEntries = fakePi.appendEntry.mock.calls
+			.filter(([t]) => t === CUSTOM_ENTRY_TYPES.run)
+			.map(([, run]) => run);
+		// Exactly two: the spawn entry + ONE terminal entry.
+		expect(runEntries).toHaveLength(2);
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		expect(runEntries[0].status).toBe("running");
+		expect(runEntries[1].status).toBe("done");
+		expect(runEntries[1].id).toBe(agent.id);
+		// The record still settled as completed (the catch-all keeps the status).
+		expect(getAgent(agent.id)?.status).toBe("completed");
+	});
+
 	it("finalizes the run entry to failed when prompt() throws synchronously (review F1)", async () => {
 		// A synchronous prompt() throw means the .then/.catch settle handlers
 		// never attach — without the F1 catch path a zombie 'running' entry
@@ -1986,5 +2138,47 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 		} finally {
 			setLogCwd(undefined);
 		}
+	});
+});
+
+// =========================================================================
+// Mutation-audit gap closure: the two public mutators (updateAgentStatus /
+// steerAgent) whose terminal-state contract and event emission no other test
+// observed. Both are reachable from LLM tool params (get_agent_status,
+// steer_subagent), so a silent regression would mis-report a run's state.
+// =========================================================================
+describe("updateAgentStatus / steerAgent terminal-state contract", () => {
+	it("steerAgent refuses a non-running agent with a 'Cannot steer agent' error", async () => {
+		// steerAgent must reject any status other than 'running' — steering a
+		// settled agent would resurrect a dead run and inject a user message
+		// into a released session graph.
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "steer a completed agent",
+		});
+		updateAgentStatus(agent.id, "completed");
+
+		expect(() => steerAgent(agent.id, "x")).toThrow(/Cannot steer agent/);
+	});
+
+	it("emits subagent:failed carrying the error when updateAgentStatus flips an agent to failed", async () => {
+		// The other subagent:failed assertions in this file all come from the
+		// spawn settle path. This one observes updateAgentStatus DIRECTLY — the
+		// status flippers a tool caller triggers (timeout handler, poller) rely
+		// on the event to reach the UI.
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "flip to failed",
+		});
+		eventBusMock.emit.mockClear();
+
+		updateAgentStatus(agent.id, "failed", "boom");
+
+		const failed = eventBusMock.emit.mock.calls
+			.map(([e]) => e as { type: string; agentId: string; data?: { error?: string } })
+			.filter((e) => e.type === "subagent:failed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0].agentId).toBe(agent.id);
+		expect(failed[0].data?.error).toBe("boom");
 	});
 });
