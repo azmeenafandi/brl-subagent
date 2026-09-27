@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 		switchToBranch: vi.fn(),
 		deleteBranch: vi.fn(),
 		hasUncommittedChanges: vi.fn(),
+		getRepoRoot: vi.fn(),
 		commitAll: vi.fn(),
 		captureWorkingDiff: vi.fn(),
 	},
@@ -60,6 +61,7 @@ vi.mock("../git", () => ({
 	switchToBranch: mocks.git.switchToBranch,
 	deleteBranch: mocks.git.deleteBranch,
 	hasUncommittedChanges: mocks.git.hasUncommittedChanges,
+	getRepoRoot: mocks.git.getRepoRoot,
 	commitAll: mocks.git.commitAll,
 	captureWorkingDiff: mocks.git.captureWorkingDiff,
 }));
@@ -613,6 +615,9 @@ function resetGitMocks() {
 	mocks.git.hasUncommittedChanges.mockReset();
 	mocks.git.commitAll.mockReset();
 	mocks.git.captureWorkingDiff.mockReset();
+	// Default: not inside a repository, so the lock falls back to the cwd key.
+	mocks.git.getRepoRoot.mockReset();
+	mocks.git.getRepoRoot.mockReturnValue(undefined);
 	// Setup reads the base branch; the cleanup concurrency guard reads the
 	// current branch and expects it to still be the work branch.
 	mocks.git.getCurrentBranch
@@ -1019,6 +1024,94 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 		expect(mocks.git.getCurrentBranch).toHaveBeenCalled();
 		await secondPromise;
 		expect(secondSettled).toBe(true);
+	});
+
+	// Issue #224: the lock map used to be keyed by the raw cwd path, so two
+	// concurrent branch-mode spawns whose cwds are different directories of the
+	// SAME repository took different locks — exactly the hazard the lock's own
+	// comment describes (one reading the other's work branch as its base, and
+	// teardowns fighting over the shared working tree). The key is now the
+	// resolved repository root.
+	it("C2: a second branch-mode spawn in a DIFFERENT cwd of the SAME repo waits for the first's lock", async () => {
+		resetGitMocks();
+		// Both cwds live inside one repository.
+		mocks.git.getRepoRoot.mockReturnValue("/repo");
+		let resolveFirstPrompt!: () => void;
+		mocks.session.prompt.mockReturnValue(new Promise<void>((r) => { resolveFirstPrompt = r; }));
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "first" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "first lock holder",
+			gitMode: "branch",
+			cwd: "/repo/a",
+		});
+		expect(mocks.git.getCurrentBranch).toHaveBeenCalledTimes(1);
+
+		// Second spawn, a DIFFERENT directory of the same repository, must
+		// block on the same lock.
+		mocks.git.getCurrentBranch.mockReset();
+		mocks.git.createWorkBranch.mockReset();
+		mocks.git.hasUncommittedChanges.mockReset();
+		mocks.git.getCurrentBranch.mockReturnValue("main");
+		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-second" });
+		mocks.git.hasUncommittedChanges.mockReturnValue(false);
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+
+		let secondSettled = false;
+		const secondPromise = spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "second waiting",
+			gitMode: "branch",
+			cwd: "/repo/b",
+		}).then(() => { secondSettled = true; });
+
+		await new Promise((r) => setTimeout(r, 50));
+		expect(secondSettled).toBe(false);
+		expect(mocks.git.getCurrentBranch).not.toHaveBeenCalled();
+
+		resolveFirstPrompt();
+		await new Promise((r) => setTimeout(r, 20));
+		expect(mocks.git.getCurrentBranch).toHaveBeenCalled();
+		await secondPromise;
+		expect(secondSettled).toBe(true);
+	});
+
+	// Issue #224 (fallback path): when the cwd is not inside a repository the
+	// key degrades to the cwd path, so two different non-repo directories must
+	// NOT serialize.
+	it("C2: two branch-mode spawns in DIFFERENT non-repo cwds do not serialize", async () => {
+		resetGitMocks();
+		mocks.git.getRepoRoot.mockReturnValue(undefined);
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "first" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession } = await import("../session-manager");
+		const first = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "first non-repo",
+			gitMode: "branch",
+			cwd: "/not-a-repo-a",
+		});
+		expect(first.status).not.toBe("failed");
+
+		const secondPromise = spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "second non-repo",
+			gitMode: "branch",
+			cwd: "/not-a-repo-b",
+		});
+		// The first spawn's setup consumed the queued clean-tree read; the second
+		// spawn's own setup must also see a clean tree so the only thing under
+		// test is the lock.
+		mocks.git.hasUncommittedChanges.mockReturnValue(false);
+		// No shared lock → the second spawn reaches setup without waiting for
+		// the first to settle.
+		await expect(Promise.race([
+			secondPromise,
+			new Promise((_, reject) => setTimeout(() => reject(new Error("second spawn blocked")), 100)),
+		])).resolves.toBeDefined();
 	});
 });
 

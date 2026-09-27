@@ -2077,9 +2077,10 @@ export default function (pi: ExtensionAPI) {
 		// git lock is awaited inside the first spawn and held until that agent
 		// settles, so same-repository branch-mode spawns would serialize and
 		// block this call for the whole chain. The rule is blanket (not
-		// same-cwd-only) because the lock is keyed by the cwd string, not the
-		// repository root — different subdirectories of one repo share a working
-		// tree without sharing a lock.
+		// per-repository-checked) because the lock is keyed by the resolved
+		// repository root: units in different directories of one repo share the
+		// working tree and contend for the same lock, and the cheap up-front
+		// check cannot prove otherwise.
 		if (globalParams.resolvedGitMode === 'branch') {
 			return {
 				content: [{ type: "text" as const, text:
