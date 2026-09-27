@@ -122,6 +122,10 @@ export function createUnitRun(
 		// same priority the run entry itself carried.
 		priority: source.priority ?? priorityFloor,
 		startedAt: new Date().toISOString(),
+		// The execution-shape fields (background/gitMode/approvalMode/force) are
+		// deliberately omitted: a fan-out unit retries as a SINGLE run, so it must
+		// not inherit the fan-out's background-ness. A retry that wants background
+		// passes background: true explicitly.
 		originalParams: snapshotOriginalParams({
 			systemPrompt: source.customSP,
 			inheritSystemPrompt: source.inheritSP,

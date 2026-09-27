@@ -2191,7 +2191,11 @@ export default function (pi: ExtensionAPI) {
 					timeout: merged.timeout,
 					gitMode: globalParams.resolvedGitMode,
 					// Retry parity with createUnitRun: snapshot this unit's resolved
-					// values so a retry restores them.
+					// values so a retry restores them. The execution-shape fields
+					// (background/gitMode/approvalMode/force) are deliberately NOT
+					// passed here — a fan-out unit is spec'd to retry as a single
+					// run, so it must not inherit this spawn's background-ness.
+					// Same omission in unit-run.ts's createUnitRun.
 					originalParams: snapshotOriginalParams({
 						systemPrompt: merged.customSP,
 						inheritSystemPrompt: merged.inheritSP,
@@ -2756,7 +2760,7 @@ export default function (pi: ExtensionAPI) {
 			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
 			`Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.`,
 			buildTemplateGuideline(templateSummary),
-			"To retry a failed subagent, pass its run ID as retryRunId. The retried run is rebuilt from a fixed field set - the original's task, label, model, preset, systemPrompt, inheritSystemPrompt, thinkingLevel, priority, outputFile, timeout, cwd, tools, excludeTools, noBuiltinTools (plus an explicit retryOnTimeout) - with explicit values on this call winning. It is NOT the original's full parameter set: background, gitMode, approvalMode, force, chain/tasks/graph, params, and the original template are dropped and cannot be re-supplied, so a retry is always a single foreground run; re-issue a fresh call for those. Parallel-origin entries retry as a single-subtask run carrying that subtask's task, label, and priority. See the retryRunId parameter description for the full field list. Use /brl-subagent retry to browse failed runs and get their IDs.",
+			"To retry a failed subagent, pass its run ID as retryRunId. The retry restores the recorded params - including background, gitMode, approvalMode, force - with explicit values on this call winning. Multi-step runs degrade to a single task. See the retryRunId description for the full field list.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
 			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. With tasks, background fans out: every task starts as its own background agent, the call returns one ID per task in task order, and the conductor is woken once per agent as each finishes; chain and graph cannot be combined with background (rejected). Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate.",
 			"",
@@ -2881,17 +2885,20 @@ export default function (pi: ExtensionAPI) {
 				Type.String({
 					description:
 						"ID of a previously failed subagent run to retry. " +
-						"The retry rebuilds the parameter object from exactly these 15 fields, falling back to the " +
+						"The retry rebuilds the parameter object from a fixed field set, falling back to the " +
 						"original run's recorded values, with explicit values on this call winning: task, label, " +
 						"model, preset, systemPrompt, inheritSystemPrompt, thinkingLevel, priority, outputFile, " +
-						"timeout, cwd, tools, excludeTools, noBuiltinTools, retryOnTimeout. " +
-						"NOT restored and NOT suppliable: background, gitMode, approvalMode, force - they are " +
-						"dropped entirely, so a retried run is always a single foreground run with no work branch, " +
-						"default approval gating, and no capability-block override; re-issue a fresh call instead. " +
-						"Also dropped: chain/tasks/graph and params, so a retried multi-step run silently degrades to a " +
+						"timeout, cwd, tools, excludeTools, noBuiltinTools, background, gitMode, approvalMode, force. " +
+						"The execution-shape fields ARE restored: a retried background run stays background (with its " +
+						"completion wake), and a retried branch-mode run keeps its work branch, its approvalMode " +
+						"gating and its force override. Qualify that by the effective gitMode - when neither the record " +
+						"nor this call carries one, the configured default applies, which may still be 'branch'. " +
+						"Not restored: chain/tasks/graph and params, so a retried multi-step run silently degrades to a " +
 						"single task - re-issue it fresh. retryOnTimeout is explicit-only: never restored, honoured when passed. " +
 						"template is asymmetric: the original's template is NOT restored, but a template passed on the " +
 						"retry call DOES take effect (it is resolved before the retry merge). " +
+						"Fan-out units (parallel/chain/graph origin) record no background, so retrying one is a single " +
+						"foreground run - pass background: true for a background retry. " +
 						"Only works with runs that ended in failure (exitCode != 0, timeout, error, or abort).",
 				}),
 			),

@@ -125,6 +125,15 @@ export function finalizeRunRecord(
 /**
  * Merge retry parameters: explicit params override original,
  * but task falls back to the original task if not provided.
+ *
+ * The execution-shape keys (background, gitMode, approvalMode, force) follow
+ * the same explicit-wins rule as everything else: an explicitly passed value
+ * is honoured, otherwise the recorded value is restored. Fan-out unit records
+ * (src/index.ts and unit-run.ts) snapshot their resolved unit params and do
+ * NOT set these, so a retried unit stays a single foreground run.
+ * `retryOnTimeout` is deliberately explicit-only: it arms a deadline for THIS
+ * call, so it is never inherited. `template`, `chain`, `tasks`, `graph` and
+ * `params` are not carried — a retried multi-step run degrades to a single task.
  */
 export function resolveRetryParams(
 	params: {
@@ -147,6 +156,10 @@ export function resolveRetryParams(
 		noBuiltinTools?: boolean;
 		retryRunId?: string;
 		retryOnTimeout?: boolean;
+		background?: boolean;
+		gitMode?: string;
+		approvalMode?: string;
+		force?: boolean;
 	},
 	run: SubagentRun,
 ): typeof params {
@@ -167,6 +180,10 @@ export function resolveRetryParams(
 		excludeTools: params.excludeTools ?? orig?.excludeTools,
 		noBuiltinTools: params.noBuiltinTools ?? orig?.noBuiltinTools,
 		retryOnTimeout: params.retryOnTimeout,
+		background: params.background ?? orig?.background,
+		gitMode: params.gitMode ?? orig?.gitMode,
+		approvalMode: params.approvalMode ?? orig?.approvalMode,
+		force: params.force ?? orig?.force,
 	};
 }
 
