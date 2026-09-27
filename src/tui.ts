@@ -17,7 +17,6 @@ import { Container, type SelectItem, SelectList, Spacer, Text, Markdown } from "
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type {
-	SubagentPreset,
 	TaskTemplate,
 	SubagentResult,
 	SubagentRun,
@@ -28,7 +27,6 @@ import type {
 	GraphDetails,
 	DelegateTaskDetails,
 	GraphTask,
-	SubTaskResult,
 	ThinkingLevel,
 	UsageStats,
 	FileDiff,
@@ -42,8 +40,6 @@ import {
 	COLLAPSED_OUTPUT_LINES,
 	COLLAPSED_DIFF_FILES_PREVIEW,
 	EXPANDED_HUNKS_PER_FILE,
-	RESERVED_NAME_PATTERN,
-	RESERVED_COMMAND_NAMES,
 	formatTokens,
 	formatUsageStats,
 	formatModel,
@@ -54,9 +50,9 @@ import {
 	isGraphDetails,
 } from "./types";
 import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
-import { extractParamNames, loadAllTemplates, validateTemplatePresetRefs } from "./templates";
+import { extractParamNames } from "./templates";
 import { parseDiff } from "./diff";
-import { formatPresetSummary, getPreset, getAllPresets, writePresetFile, loadCustomPresets, parseFrontmatter } from "./presets";
+import { formatPresetSummary, getPreset, loadCustomPresets } from "./presets";
 import { formatRunDuration } from "./history";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -637,185 +633,6 @@ export async function showComplianceMenu(
 }
 
 // Preset management UI
-
-export async function showAddPreset(
-	ctx: ExtensionContext,
-	state: SessionState,
-): Promise<void> {
-	// 1. Prompt for name
-	const name = await ctx.ui.input("Preset name (e.g., read-only-audit):");
-	if (!name?.trim()) return;
-	const trimmedName = name.trim();
-
-	// 2. Validate name (reserved patterns, existing presets)
-	if (RESERVED_NAME_PATTERN.test(trimmedName)) {
-		ctx.ui.notify("Names starting and ending with '__' are reserved.", "error");
-		return;
-	}
-	if (RESERVED_COMMAND_NAMES.has(trimmedName)) {
-		ctx.ui.notify("Name '" + trimmedName + "' is reserved for a command.", "error");
-		return;
-	}
-	if (getPreset(trimmedName, state.builtinPresets, state.customPresets)) {
-		ctx.ui.notify(`Preset "${trimmedName}" already exists.`, "error");
-		return;
-	}
-
-	// 3. Description
-	const description = await ctx.ui.input("Description (optional):");
-
-	// 4. Thinking level
-	const thinkingItems: SelectItem[] = [
-		{ value: "", label: "(not set — use conductor's choice)" },
-		...THINKING_LEVELS.map((level) => ({ value: level, label: level })),
-	];
-	const thinkingResult = await showSelectList(ctx, "Default Thinking Level", thinkingItems, 8);
-
-	// 5. Tool scope
-	const scopeItems: SelectItem[] = [
-		{ value: "all", label: "All tools (default)" },
-		{ value: "readonly", label: "Read-only (read, grep, find, ls)" },
-		{ value: "custom", label: "Custom tool list..." },
-	];
-	const scopeResult = await showSelectList(ctx, "Tool Scope", scopeItems, 5);
-
-	let tools: string[] | undefined;
-	let excludeTools: string[] | undefined;
-	let noBuiltinTools: boolean | undefined;
-
-	if (scopeResult === "readonly") {
-		tools = ["read", "grep", "find", "ls"];
-		excludeTools = ["write", "edit", "bash"];
-	} else if (scopeResult === "custom") {
-		const toolsStr = await ctx.ui.input("Tools (comma-separated):");
-		if (toolsStr?.trim()) tools = toolsStr.split(",").map((t) => t.trim()).filter(Boolean);
-	}
-
-	// 6. Inheritance
-	const inheritItems: SelectItem[] = [
-		{ value: "true", label: "Inherit system prompt (default)" },
-		{ value: "false", label: "No inheritance (standalone)" },
-	];
-	const inheritResult = await showSelectList(ctx, "System Prompt Inheritance", inheritItems, 3);
-
-	// 7. System prompt body
-	const systemPrompt = await ctx.ui.input("System prompt (optional, multi-line not supported yet):");
-
-	// 8. Build preset object
-	const preset: SubagentPreset = {
-		name: trimmedName,
-		description: description?.trim() || undefined,
-		thinkingLevel: thinkingResult || undefined,
-		inheritSystemPrompt: inheritResult === "false" ? false : undefined,
-		tools,
-		excludeTools,
-		noBuiltinTools,
-		systemPrompt: systemPrompt?.trim() || undefined,
-	};
-
-	// 9. Ask where to save
-	const locationItems: SelectItem[] = [
-		{ value: "project", label: "Project (.pi/brl-subagent/presets/)" },
-		{ value: "global", label: "Global (~/.pi/agent/brl-subagent/presets/)" },
-	];
-	const location = await showSelectList(ctx, "Save Location", locationItems, 3);
-	if (!location) return;
-
-	const homedir = process.env.HOME || process.env.USERPROFILE || "";
-	const targetDir = location === "project"
-		? path.join(ctx.cwd, ".pi", "brl-subagent", "presets")
-		: path.join(homedir, ".pi", "agent", "brl-subagent", "presets");
-
-	// 10. Write file
-	try {
-		writePresetFile(preset, targetDir);
-		// 11. Refresh custom presets
-		state.customPresets = loadCustomPresets(ctx.cwd, state.log);
-		// Reload templates alongside presets — both are file-derived, and a
-		// preset add/remove may fix (or break) a template's `preset:` reference.
-		// Full stack: custom (project+global) merged over builtins.
-		state.config.templates = loadAllTemplates(ctx.cwd, state.log);
-		// Issue #81: re-check template `preset:` refs after the mutation — warn
-		// (never skip) for dangling references instead of preset-less runs.
-		validateTemplatePresetRefs(
-			state.config.templates,
-			getAllPresets(state.builtinPresets, state.customPresets),
-			state.log,
-		);
-		ctx.ui.notify(`Preset "${trimmedName}" saved to ${location === "project" ? "project" : "global"} directory`, "info");
-	} catch (err) {
-		ctx.ui.notify(`Failed to save preset: ${(err as Error).message}`, "error");
-	}
-}
-
-export async function showRemovePreset(
-	ctx: ExtensionContext,
-	state: SessionState,
-): Promise<void> {
-	const homedir = process.env.HOME || process.env.USERPROFILE || "";
-	const projectDir = path.join(ctx.cwd, ".pi", "brl-subagent", "presets");
-	const globalDir = path.join(homedir, ".pi", "agent", "brl-subagent", "presets");
-
-	// Scan both directories for .md files
-	const entries: Array<{ name: string; source: "project" | "global"; filePath: string }> = [];
-
-	for (const dir of [projectDir, globalDir]) {
-		const source = dir === projectDir ? "project" : "global";
-		try {
-			const files = fs.readdirSync(dir);
-			for (const file of files) {
-				if (!file.endsWith(".md")) continue;
-				const filePath = path.join(dir, file);
-				try {
-					const content = fs.readFileSync(filePath, "utf-8");
-					const { meta } = parseFrontmatter(content);
-					if (meta.name && typeof meta.name === "string") {
-						entries.push({ name: meta.name as string, source, filePath });
-					}
-				} catch {
-					// Skip unparseable files
-				}
-			}
-		} catch {
-			// Directory doesn't exist — fine
-		}
-	}
-
-	if (entries.length === 0) {
-		ctx.ui.notify("No custom presets to remove.", "info");
-		return;
-	}
-
-	// Show list with source indicators
-	const items: SelectItem[] = entries.map((e) => ({
-		value: e.filePath,
-		label: `[${e.source === "project" ? "P" : "G"}] ${e.name}`,
-		description: e.source === "project" ? "Project-local" : "Global",
-	}));
-
-	const result = await showSelectList(ctx, "Remove Preset", items, 10);
-	if (!result) return;
-
-	// Delete the file
-	try {
-		fs.unlinkSync(result);
-		state.customPresets = loadCustomPresets(ctx.cwd, state.log);
-		// Reload templates too — a removed preset may orphan a template's
-		// `preset:` reference, so both file-derived collections refresh together.
-		// Full stack: custom (project+global) merged over builtins.
-		state.config.templates = loadAllTemplates(ctx.cwd, state.log);
-		// Issue #81: re-check template `preset:` refs after the mutation — warn
-		// (never skip) for dangling references instead of preset-less runs.
-		validateTemplatePresetRefs(
-			state.config.templates,
-			getAllPresets(state.builtinPresets, state.customPresets),
-			state.log,
-		);
-		ctx.ui.notify("Preset removed", "info");
-	} catch (err) {
-		ctx.ui.notify(`Failed to remove preset: ${(err as Error).message}`, "error");
-	}
-}
 
 export async function showPresetManager(
 	ctx: ExtensionContext,
@@ -2177,29 +1994,6 @@ function renderCollapsedText(
 	const usageStr = formatUsageStats(details.usage, details.model);
 	if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
 	return text;
-}
-
-// ---------------------------------------------------------------------------
-// Chain / parallel helper: one-line subtask summary
-// ---------------------------------------------------------------------------
-
-function renderSubTaskSummary(
-	result: SubTaskResult,
-	theme: {
-		fg: (color: string, text: string) => string;
-	},
-	maxLines: number,
-): string {
-	const isError = isSubagentError(result);
-	const icon = isError
-		? theme.fg("error", "\u2717")
-		: theme.fg("success", "\u2713");
-	const label = result.label
-		? theme.fg("accent", `${result.label}: `)
-		: "";
-	const output = getFinalOutput(result.messages);
-	const preview = output.split("\n").slice(0, maxLines).join("\n");
-	return `${icon} ${label}${theme.fg("toolOutput", preview)}`;
 }
 
 // ---------------------------------------------------------------------------

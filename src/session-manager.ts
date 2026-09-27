@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { join } from 'path';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
 import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
@@ -118,49 +118,6 @@ function loadAgent(id: string): BackgroundAgent | null {
 }
 
 /**
- * Create a new background agent session
- * 
- * NOTE: In v2.0.3, this creates a record but does NOT actually spawn a pi session.
- * The actual session spawning will be implemented when pi's ExtensionAPI supports it.
- * For now, this is a placeholder that creates the agent record.
- */
-export function createSession(params: {
-  task: string;
-  type?: string;
-  description?: string;
-  model?: string;
-  thinkingLevel?: ThinkingLevel;
-  systemPrompt?: string;
-}): BackgroundAgent {
-  const id = generateUUID();
-  const agent: BackgroundAgent = {
-    id,
-    sessionId: `session-${id}`,
-    type: params.type || 'general-purpose',
-    description: params.description || params.task.slice(0, 50),
-    status: 'pending',
-    startedAt: Date.now(),
-    task: params.task,
-    model: params.model || 'unknown',
-    thinkingLevel: params.thinkingLevel || 'medium',
-  };
-  
-  agents.set(id, agent);
-  persistAgent(agent);
-
-  // Start transcript for this agent
-  transcript.startTranscript(agent.id, params.task);
-
-  eventBus.emit(eventBus.createEvent('subagent:created', agent.id, {
-    type: agent.type,
-    description: agent.description,
-    task: agent.task,
-  }));
-
-  return agent;
-}
-
-/**
  * Get agent record by ID
  */
 export function getAgent(id: string): BackgroundAgent | null {
@@ -175,23 +132,6 @@ export function getAgent(id: string): BackgroundAgent | null {
     return null;
   }
   return agents.get(id) || loadAgent(id);
-}
-
-/**
- * List all background agents
- */
-export function listAgents(): BackgroundAgent[] {
-  ensureStorageDir();
-  const files = readdirSync(STORAGE_DIR).filter(f => f.endsWith('.json'));
-  const result: BackgroundAgent[] = [];
-  
-  for (const file of files) {
-    const id = file.replace('.json', '');
-    const agent = agents.get(id) || loadAgent(id);
-    if (agent) result.push(agent);
-  }
-  
-  return result.sort((a, b) => b.startedAt - a.startedAt);
 }
 
 /**

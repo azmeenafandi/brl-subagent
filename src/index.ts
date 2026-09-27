@@ -120,35 +120,6 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Sanitize a text preview for markdown-rendered notifications: strip code
- * fences (``` and ~~~) and backticks, keep whole non-empty lines with
- * mid-line truncation for over-long lines, and never split surrogate pairs
- * at the boundary.
- */
-function sanitizePreview(text: string, maxLen = 500): string {
-  // Strip markdown fences and backticks
-  const cleaned = text.replace(/```/g, '').replace(/~~~+/g, '').replace(/`/g, '');
-  const lines = cleaned.split('\n').filter(l => l.trim());
-  let out = '';
-  for (const line of lines) {
-    if (out.length + line.length + 1 > maxLen) {
-      // Mid-line truncation: keep as much of this line as fits
-      const remaining = maxLen - out.length - 1;
-      if (remaining > 10) {
-        out += line.slice(0, remaining - 3) + '...\n';
-      }
-      break;
-    }
-    out += line + '\n';
-  }
-  // Avoid splitting surrogate pairs at the boundary (reachable now via slice above)
-  const safe = out.slice(0, maxLen);
-  const lastChar = safe[safe.length - 1];
-  const stripped = lastChar && /[\uD800-\uDBFF]/.test(lastChar) ? safe.slice(0, -1) : safe;
-  return stripped.trimEnd();
-}
-
-/**
  * DRY helper (issue #154 review): shape an inventory of items into a single
  * comma-delimited summary line for the LLM-facing delegation guidance. Both
  * the B1 preset-restriction summary and the B1b template summary load an
