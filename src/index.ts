@@ -2880,9 +2880,14 @@ export default function (pi: ExtensionAPI) {
 				Type.String({
 					description:
 						"ID of a previously failed subagent run to retry. " +
-						"The retried run uses the same task and parameters as the original. " +
-						"Only works with runs that ended in failure (exitCode != 0, timeout, error, or abort). " +
-						"Explicit parameters on this call override the original's.",
+						"The retry restores the original run's recorded params: task, label, model, preset, " +
+						"systemPrompt, inheritSystemPrompt, thinkingLevel, priority, outputFile, timeout, cwd, " +
+						"tools, excludeTools, noBuiltinTools. Explicit values given on this call override those. " +
+						"NOT carried over: background, gitMode, approvalMode, force, and template - " +
+						"pass them again explicitly when a retry needs them " +
+						"(in particular a retried background run runs in the foreground unless you set background: true, " +
+						"and a retry that must clear a capability block needs force: true). " +
+						"Only works with runs that ended in failure (exitCode != 0, timeout, error, or abort).",
 				}),
 			),
 			gitMode: Type.Optional(
@@ -2981,7 +2986,7 @@ export default function (pi: ExtensionAPI) {
 			})),
 			graph: Type.Optional(Type.Array(Type.Object({
 				id: Type.String({ description: "Unique identifier for this task node" }),
-				task: Type.String({ description: "Task description. Use {otherId} to reference output from another task." }),
+				task: Type.String({ description: "Task description. Use {<nodeId>} to reference output from another task (the referenced node's own id)." }),
 				label: Type.Optional(Type.String({})),
 				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
 				dependsOn: Type.Optional(Type.Array(Type.String({}), { description: "IDs of tasks that must complete before this one starts" })),
@@ -3933,11 +3938,6 @@ export default function (pi: ExtensionAPI) {
 			agent_id: Type.String({
 				description: "The agent ID returned by delegate_task when background=true",
 			}),
-			wait: Type.Optional(
-				Type.Boolean({
-					description: "If true, wait for the agent to complete before returning. Default: false.",
-				}),
-			),
 			verbose: Type.Optional(
 				Type.Boolean({
 					description: "If true, include the full conversation log. Default: false.",
