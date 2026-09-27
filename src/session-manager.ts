@@ -10,7 +10,7 @@ import { createEvent } from './event-bus';
 import { assertSafeAgentId, sanitizeErrorMessage } from './sanitize';
 import { wrapTask } from './prompt';
 import { createLogger } from './logging';
-import { getCurrentBranch, createWorkBranch, captureDiff, switchToBranch, deleteBranch, hasUncommittedChanges, commitAll, captureWorkingDiff } from './git';
+import { getCurrentBranch, createWorkBranch, captureDiff, switchToBranch, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -20,7 +20,10 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 var spawnQueue: Promise<void> = Promise.resolve();
 
 // C2: per-repo locks serializing the FULL gitMode=branch lifecycle (setup →
-// settle → teardown). Keyed by cwd because different repos don't conflict.
+// settle → teardown). Keyed by the resolved repository root, falling back to
+// the cwd path for directories that are not inside a repository — different
+// repos don't conflict, but different directories of one repo DO share a
+// working tree and must serialize (issue #224).
 const gitBranchLocks = new Map<string, Promise<void>>();
 
 /**
@@ -724,16 +727,18 @@ export async function spawnBackgroundSession(
     // would read the first's work branch as its base and both teardowns would
     // fight over the shared working tree (stranding the repo on an orphan
     // branch). The lock is released in cleanupWorkBranch (or on setup throw).
-    const prev = gitBranchLocks.get(gitCwd) ?? Promise.resolve();
+    // Key: resolved repository root, cwd fallback for non-repo paths (#224).
+    const lockKey = getRepoRoot(gitCwd) ?? gitCwd;
+    const prev = gitBranchLocks.get(lockKey) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>(r => { release = r; });
     const entry = prev.then(() => gate);
-    gitBranchLocks.set(gitCwd, entry);
+    gitBranchLocks.set(lockKey, entry);
     await prev;
     releaseGitLock = () => {
       // Delete the map entry ONLY if we are still the head of the chain — a
       // queued spawn behind us replaced the entry with its own.
-      if (gitBranchLocks.get(gitCwd) === entry) gitBranchLocks.delete(gitCwd);
+      if (gitBranchLocks.get(lockKey) === entry) gitBranchLocks.delete(lockKey);
       release();
     };
 

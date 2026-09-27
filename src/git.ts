@@ -33,6 +33,21 @@ export function getCurrentBranch(cwd: string): string {
 }
 
 /**
+ * Resolve the repository root that contains the given directory.
+ * Returns undefined when the directory is not inside a repository, or when
+ * git is unavailable — callers fall back to the directory path itself.
+ */
+export function getRepoRoot(cwd: string): string | undefined {
+	try {
+		const output = execFileSync("git", ["rev-parse", "--show-toplevel"], gitOpts(cwd));
+		const root = output.trim();
+		return root.length > 0 ? root : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * Check if there are uncommitted changes in the working tree.
  */
 export function hasUncommittedChanges(cwd: string): boolean {
