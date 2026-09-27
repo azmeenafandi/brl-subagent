@@ -35,12 +35,12 @@ delegation-heavy work.
 
 ## The completion contract
 
-- A background run wakes you with a structured `subagent-completion` message when it reaches a terminal state (`completed`, `failed`, or `stopped`). The `details` carry `id`, `status`, `errorCategory` (with `errorMessage` when present), cost/tokens/duration, and `label`; the content carries a tail of output.
-- The wake triggers a turn even when you are idle. Do not poll for it.
+- A background run wakes you with a structured `subagent-completion` message when it reaches a terminal state (`completed`, `failed`, or `stopped`). The `details` carry `id`, `status`, `errorCategory` (`"unknown"` when unclassified) and `label`; `errorMessage`, `stopReason`, cost/tokens/duration ride along only when the run entry has been finalized — a `stopped` run is notified at stop time, **before** finalize, so those fields are usually absent there. The content carries a tail of output when one has been captured.
+- The wake triggers a turn even when you are idle — whenever the knob's wake condition covers that terminal status (see the matrix below). Do not poll for it.
 - Delivery mode by status holds at knob `"all"`: `failed`/`stopped` → steering you to act; `completed` → follow-up. The `completionNotify` knob changes both the delivery mode and the wake: under `"failed"` a `completed` run is delivered as a passive `nextTurn` (no wake) while `failed`/`stopped` still steer; under `"off"` everything is a passive `nextTurn` and nothing wakes you. (The knob controls whether an idle conductor is triggered — see below.)
-- Knob dependency: polling is correct only when wakes are disabled (`completionNotify: "off"`). The wake is per-terminal-status and knob-scoped: under `"all"` a terminal run always wakes you; under `"failed"` only a `failed` or `stopped` run wakes you — a `completed` run stays a passive `nextTurn` (no wake); under `"off"` nothing wakes you. So polling is wrong unless wakes are disabled. One status check as a stall check is legitimate; repeated polling is not.
+- Knob dependency: polling is correct only when wakes are disabled (`completionNotify: "off"`). The wake is per-terminal-status and knob-scoped: under `"all"` a terminal run always wakes you; under `"failed"` only a `failed` or `stopped` run wakes you — a `completed` run stays a passive `nextTurn` (no wake); under `"off"` nothing wakes you. So repeated polling is wrong; a single status check as a stall check is legitimate, and a status check is needed only when the knob will not wake you for that outcome (`"off"`, or a `completed` run under `"failed"`).
 - One message per run — the extension deduplicates on the first terminal event for a run id, so don't expect multiple messages for a single run. A fan-out wakes you once per agent — still one message per run (each agent is its own run), never coalesced.
-- Honest records: trust the message's `category`/abort source over your own guess. The provider/abort origin is authoritative on why the run stopped.
+- Honest records: trust the message's `errorCategory`/abort source over your own guess. The provider/abort origin is authoritative on why the run stopped.
 - Steering is not an abort. Being steered to act on a terminal run is not terminating it. A real `stop` is an abort — and a stopped run still wakes you.
 
 ## Delegation judgment
