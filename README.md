@@ -102,11 +102,17 @@ All settings persist across sessions.
 
 **Capability pre-flight:** before spawning, the extension checks that the resolved toolset can actually do the task — a run/execute/test/compile/benchmark task with no `bash`, or an exploration task (search/grep/find/list/locate/glob) with none of `find`/`ls`/`grep`/`bash`. Such a dispatch is **rejected** by default; `force: true` downgrades the rejection to a **warning**. `force` never suppresses an `outputFile`-without-write conflict — that stays a hard error. Warnings are surfaced in the returned result in every mode.
 
-**Retries (`retryRunId`):** a retry restores the recorded `task`, `label`, `model`, `preset`, `systemPrompt`, `inheritSystemPrompt`, `thinkingLevel`, `priority`, `outputFile`, `timeout`, `cwd`, `tools`, `excludeTools`, and `noBuiltinTools`; explicit values on the retry call win. `background`, `gitMode`, `approvalMode`, `force`, and `template` are **not** carried — pass them again explicitly when a retry needs them (a retried background run runs in the foreground unless you say `background: true`).
+**Retries (`retryRunId`):** a retry rebuilds the parameter object from a fixed set of 15 fields — `task`, `label`, `model`, `preset`, `systemPrompt`, `inheritSystemPrompt`, `thinkingLevel`, `priority`, `outputFile`, `timeout`, `cwd`, `tools`, `excludeTools`, `noBuiltinTools`, `retryOnTimeout` — falling back to the original run's recorded values; explicit values on the retry call win.
+
+**Not restored, and not suppliable either:** `background`, `gitMode`, `approvalMode`, and `force` are **dropped entirely** by the retry merge — a value passed explicitly on the retry call is discarded just like an unrecorded one. A retried run is therefore always a **single foreground run**, with no work branch, default approval gating, and no capability-block override. Re-issue a fresh `delegate_task` call if any of those are needed.
+
+**Also dropped:** `chain` / `tasks` / `graph` and `params` are discarded, so retrying a multi-step run silently degrades to a single task — re-issue it fresh for those shapes. `retryOnTimeout` is **explicit-only**: it is never restored from the recorded run and takes effect only when you pass it on the retry call.
+
+**`template` is the one exception, and it is asymmetric:** the original run's template is **not** restored, but a `template` you supply explicitly on the retry call **does** take effect (it is resolved before the retry merge, issue #175) — its body wins over the recorded `task`.
 
 ## Multi-step modes (chain, tasks, graph)
 
-Beyond a single `task`, `delegate_task` accepts three multi-step shapes: `chain` (sequential steps, `{previous}` references the prior step's output), `tasks` (parallel, independent), and `graph` (dependency-ordered, `{<nodeId>}` references another node's output — the referenced node's own `id`).
+Beyond a single `task`, `delegate_task` accepts three multi-step shapes: `chain` (sequential steps, `{previous}` references the prior step's output), `tasks` (parallel, independent), and `graph` (dependency-ordered, `{<nodeId>}` references another node's output — the referenced node's own `id`, which must be a word-character id: letters, digits, and underscore. `{step-1}` and `{node.a}` are not matched and are left as literal text).
 
 `background: true` fans out the `tasks` shape into one background agent per task (one ID per task, one completion wake per agent); `chain` and `graph` reject it.
 

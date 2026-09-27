@@ -52,7 +52,7 @@ export const SUBAGENT_INSTRUCTIONS =
  * - runner.ts (foreground subprocess: `-p` argument)
  * - session-manager.ts (background session: `session.prompt`)
  *
- * Deliberately applied AFTER {previous}/{otherId} substitution so substituted
+ * Deliberately applied AFTER {previous}/{<nodeId>} substitution so substituted
  * output (which may itself contain untrusted text) lands inside the fence.
  *
  * FIDELITY TRADEOFF (accepted, documented per PR #46 review M2): embedded

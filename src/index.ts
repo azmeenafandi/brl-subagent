@@ -2751,12 +2751,12 @@ export default function (pi: ExtensionAPI) {
 			"You can customize per-call via inheritSystemPrompt and systemPrompt: set inheritSystemPrompt: false to save context, provide a systemPrompt for custom instructions, or use both to add instructions on top of inheritance.",
 			"Set thinkingLevel per call to match task complexity. The level is capped at the user's configured maximum. Map tasks to levels using this heuristic: off = file listing, grep, simple read. minimal = file diff, syntax check, find-and-replace. low = refactoring, test generation, documentation. medium = default — code review, debugging, moderate analysis. high = security audit, architecture review, complex debugging. xhigh = multi-step causal reasoning, research, novel problem solving. Default to 'off' or 'minimal' for trivial tasks — do not waste the user's budget.",
 			"Use outputFile to have the subagent write full findings to disk and return only a structured summary — saves context tokens for large investigations.",
-			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck.",
+			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck. Background runs are additionally hard-capped at 30 minutes, so a larger value is silently shortened.",
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
 			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
 			`Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.`,
 			buildTemplateGuideline(templateSummary),
-			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Parallel-origin entries retry as a single-subtask run carrying that subtask's task, label, and priority. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
+			"To retry a failed subagent, pass its run ID as retryRunId. The retried run is rebuilt from a fixed field set - the original's task, label, model, preset, systemPrompt, inheritSystemPrompt, thinkingLevel, priority, outputFile, timeout, cwd, tools, excludeTools, noBuiltinTools (plus an explicit retryOnTimeout) - with explicit values on this call winning. It is NOT the original's full parameter set: background, gitMode, approvalMode, force, chain/tasks/graph, params, and the original template are dropped and cannot be re-supplied, so a retry is always a single foreground run; re-issue a fresh call for those. Parallel-origin entries retry as a single-subtask run carrying that subtask's task, label, and priority. See the retryRunId parameter description for the full field list. Use /brl-subagent retry to browse failed runs and get their IDs.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
 			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. With tasks, background fans out: every task starts as its own background agent, the call returns one ID per task in task order, and the conductor is woken once per agent as each finishes; chain and graph cannot be combined with background (rejected). Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate.",
 			"",
@@ -2767,7 +2767,7 @@ export default function (pi: ExtensionAPI) {
 			"2. **Thinking level**: Match thinking level to task complexity: off/minimal for trivial tasks (file listing, grep), low for refactoring/docs, medium for code review/debugging, high for security audits/complex debugging, xhigh for multi-step reasoning/novel problems.",
 			"3. **Git mode**: Use gitMode='branch' for tasks that create commits or PRs. Use gitMode='none' for read-only tasks.",
 			"4. **Tools**: Verify the subagent has the tools it needs. If the task writes files, ensure write and edit are not excluded. If the task runs commands, ensure bash is not excluded.",
-			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s.",
+			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s. Background runs are hard-capped at 30 minutes regardless of the value set.",
 			"",
 			"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1): tool warnings are surfaced in the returned result, but two mismatches are HARD errors that reject the delegation — outputFile with the write tool excluded, and a capability-critical task/toolset mismatch (a run/execute/test/compile/benchmark task without bash, or an exploration task with none of find/ls/grep/bash; pass force: true to override the capability class). Getting it right the first time is faster and more efficient.",
 			"",
@@ -2824,7 +2824,8 @@ export default function (pi: ExtensionAPI) {
 				Type.Number({
 					description:
 						"Maximum time in milliseconds the subagent is allowed to run. " +
-						"If exceeded, the subagent is killed and an error is returned.",
+						"If exceeded, the subagent is killed and an error is returned. " +
+						"Background runs are additionally hard-capped at 30 minutes, so a larger value is silently shortened there.",
 				}),
 			),
 			cwd: Type.Optional(
@@ -2880,13 +2881,17 @@ export default function (pi: ExtensionAPI) {
 				Type.String({
 					description:
 						"ID of a previously failed subagent run to retry. " +
-						"The retry restores the original run's recorded params: task, label, model, preset, " +
-						"systemPrompt, inheritSystemPrompt, thinkingLevel, priority, outputFile, timeout, cwd, " +
-						"tools, excludeTools, noBuiltinTools. Explicit values given on this call override those. " +
-						"NOT carried over: background, gitMode, approvalMode, force, and template - " +
-						"pass them again explicitly when a retry needs them " +
-						"(in particular a retried background run runs in the foreground unless you set background: true, " +
-						"and a retry that must clear a capability block needs force: true). " +
+						"The retry rebuilds the parameter object from exactly these 15 fields, falling back to the " +
+						"original run's recorded values, with explicit values on this call winning: task, label, " +
+						"model, preset, systemPrompt, inheritSystemPrompt, thinkingLevel, priority, outputFile, " +
+						"timeout, cwd, tools, excludeTools, noBuiltinTools, retryOnTimeout. " +
+						"NOT restored and NOT suppliable: background, gitMode, approvalMode, force - they are " +
+						"dropped entirely, so a retried run is always a single foreground run with no work branch, " +
+						"default approval gating, and no capability-block override; re-issue a fresh call instead. " +
+						"Also dropped: chain/tasks/graph and params, so a retried multi-step run silently degrades to a " +
+						"single task - re-issue it fresh. retryOnTimeout is explicit-only: never restored, honoured when passed. " +
+						"template is asymmetric: the original's template is NOT restored, but a template passed on the " +
+						"retry call DOES take effect (it is resolved before the retry merge). " +
 						"Only works with runs that ended in failure (exitCode != 0, timeout, error, or abort).",
 				}),
 			),
@@ -2986,7 +2991,7 @@ export default function (pi: ExtensionAPI) {
 			})),
 			graph: Type.Optional(Type.Array(Type.Object({
 				id: Type.String({ description: "Unique identifier for this task node" }),
-				task: Type.String({ description: "Task description. Use {<nodeId>} to reference output from another task (the referenced node's own id)." }),
+				task: Type.String({ description: "Task description. Use {<nodeId>} to reference output from another task (the referenced node's own id, which must be a word-character id - letters, digits, underscore; ids like 'step-1' or 'node.a' are not matched and the braces are left as literal text)." }),
 				label: Type.Optional(Type.String({})),
 				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
 				dependsOn: Type.Optional(Type.Array(Type.String({}), { description: "IDs of tasks that must complete before this one starts" })),
