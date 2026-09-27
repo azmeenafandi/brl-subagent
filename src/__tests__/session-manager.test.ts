@@ -1810,7 +1810,7 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 // =========================================================================
 describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 	it("carries the REAL summed session usage on the finalized entry when the agent completed", async () => {
-		// Real data flow (no setAgentResult planting): the assistant messages
+		// Real data flow (the result is never planted directly): the assistant messages
 		// in the session carry per-turn usage; the terminal path folds them
 		// with accumulateUsage and merges the sum onto the run entry.
 		mocks.session.prompt.mockResolvedValue(undefined);
@@ -1850,7 +1850,7 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 		expect(run.outputSummary).toHaveLength(200);
 		expect(run.fullOutput).toBe(fullOutput);
 		// The agent record itself carries the merged usage — extracted from the
-		// session, never planted via setAgentResult.
+		// session, never planted directly.
 		const after = getAgent(agent.id);
 		expect(after?.result?.usage).toMatchObject({
 			input: 1500,
