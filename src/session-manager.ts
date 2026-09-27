@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
-import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isSubagentError, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
+import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -222,25 +222,6 @@ export function updateAgentStatus(id: string, status: AgentStatus, error?: strin
     eventBus.emit(eventBus.createEvent('subagent:steered', id, {}));
   }
 
-  return agent;
-}
-
-/**
- * Set agent result
- */
-export function setAgentResult(id: string, result: SubagentResult): BackgroundAgent | null {
-  const agent = getAgent(id);
-  if (!agent) return null;
-  
-  agent.result = result;
-  // Issue #179 (D1): honor the full terminal reason (stopReason error/aborted/
-  // length/incomplete), not exitCode alone — a mid-run provider death resolves
-  // with exitCode 0 and was previously recorded as 'completed'.
-  agent.status = isSubagentError(result) ? 'failed' : 'completed';
-  agent.completedAt = Date.now();
-  
-  agents.set(id, agent);
-  persistAgent(agent);
   return agent;
 }
 
