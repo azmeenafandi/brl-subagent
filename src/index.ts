@@ -100,6 +100,7 @@ import {
 	showRunHistory,
 	showMonitor,
 	showDashboard,
+	showComplianceMenu,
 	showRetryMenu,
 	renderDelegateCall,
 	renderDelegateResult,
@@ -2667,6 +2668,11 @@ export default function (pi: ExtensionAPI) {
 				retry: () => showRetryMenu(ctx, state),
 			sla: () => showSLAConfig(ctx, state, applyConfig),
 			"sla-stats": () => showSLAStats(ctx, state),
+			// E5: the compliance report menu (file access / secrets exposure /
+			// full summary) shipped in tui.ts but had no handler key, so
+			// `/brl-subagent compliance` fell through to the config menu and the
+			// feature was unreachable (broken wiring, not dead code).
+			compliance: () => showComplianceMenu(ctx, state),
 			};
 
 			if (trimmed && trimmed in handlers) {
