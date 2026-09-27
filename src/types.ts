@@ -299,6 +299,14 @@ export interface SubagentRun {
 		excludeTools?: string[];
 		noBuiltinTools?: boolean;
 		preset?: string;
+		// Issue #227: the execution-shape fields survive retries, so a retried
+		// background run stays background and a retried branch-mode run keeps its
+		// work branch, its approvalMode gating and its force override. Additive:
+		// records written before this change simply lack the keys.
+		background?: boolean;
+		gitMode?: string;
+		approvalMode?: string;
+		force?: boolean;
 		errorCategory?: ErrorCategory;
 	};
 }

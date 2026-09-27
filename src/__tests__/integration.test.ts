@@ -969,6 +969,127 @@ describe("resolveRetryParams", () => {
 		expect(params.excludeTools).toEqual(["write"]);
 		expect(params.noBuiltinTools).toBe(true);
 	});
+
+	// ---- issue #227: the execution-shape fields ----
+
+	it("restores background: true so a retried background run stays background", () => {
+		// A single background run snapshots snapshotOriginalParams(params) with
+		// params.background === true. Retrying it must stay background (and keep
+		// its per-agent completion wake) instead of silently running foreground.
+		const run: SubagentRun = {
+			...makeRun("bg-retry-shape"),
+			task: "Background task",
+			originalParams: {
+				task: "Background task",
+				thinkingLevel: "medium",
+				background: true,
+			},
+		};
+
+		const params = resolveRetryParams(
+			{ task: "", retryRunId: "bg-retry-shape" },
+			run,
+		);
+
+		expect(params.background).toBe(true);
+	});
+
+	it("restores gitMode, approvalMode and force from the record", () => {
+		const run: SubagentRun = {
+			...makeRun("retry-shape-2"),
+			task: "Original",
+			originalParams: {
+				gitMode: "branch",
+				approvalMode: "writes",
+				force: true,
+			},
+		};
+
+		const params = resolveRetryParams({ task: "", retryRunId: "retry-shape-2" }, run);
+
+		expect(params.gitMode).toBe("branch");
+		expect(params.approvalMode).toBe("writes");
+		expect(params.force).toBe(true);
+	});
+
+	it("explicit execution-shape values override the restored ones", () => {
+		const run: SubagentRun = {
+			...makeRun("retry-shape-3"),
+			task: "Original",
+			originalParams: {
+				background: true,
+				gitMode: "branch",
+				approvalMode: "writes",
+				force: true,
+			},
+		};
+
+		const params = resolveRetryParams(
+			{
+				task: "",
+				retryRunId: "retry-shape-3",
+				background: false,
+				gitMode: "none",
+				approvalMode: "always",
+				force: false,
+			},
+			run,
+		);
+
+		expect(params.background).toBe(false);
+		expect(params.gitMode).toBe("none");
+		expect(params.approvalMode).toBe("always");
+		expect(params.force).toBe(false);
+	});
+
+	it("an explicit background: true on a unit record is honoured (foreground -> background)", () => {
+		// Fan-out unit records deliberately snapshot NO background, so a plain
+		// retry is a single foreground run; an explicit background still wins.
+		const run: SubagentRun = {
+			...makeRun("retry-shape-4"),
+			task: "Unit subtask",
+			originalParams: { thinkingLevel: "low" },
+		};
+
+		expect(resolveRetryParams({ task: "", retryRunId: "retry-shape-4" }, run).background)
+			.toBeUndefined();
+		expect(
+			resolveRetryParams(
+				{ task: "", retryRunId: "retry-shape-4", background: true },
+				run,
+			).background,
+		).toBe(true);
+	});
+
+	it("a legacy record without the four retries as a single foreground run", () => {
+		// Additive/undefined-safe: records written before the fix simply lack the
+		// keys, so nothing is restored and the retry falls back to foreground
+		// (background is undefined) and to the configured defaults.
+		const run: SubagentRun = {
+			...makeRun("retry-shape-5"),
+			task: "Legacy",
+			originalParams: { thinkingLevel: "high", timeout: 1000 },
+		};
+
+		const params = resolveRetryParams({ task: "", retryRunId: "retry-shape-5" }, run);
+
+		expect(params.background).toBeUndefined();
+		expect(params.gitMode).toBeUndefined();
+		expect(params.approvalMode).toBeUndefined();
+		expect(params.force).toBeUndefined();
+		expect(params.thinkingLevel).toBe("high");
+	});
+
+	it("retryOnTimeout is still explicit-only (never inherited from the record)", () => {
+		const run: SubagentRun = {
+			...makeRun("retry-shape-6"),
+			task: "Original",
+			originalParams: { retryOnTimeout: true } as Record<string, unknown>,
+		};
+
+		const params = resolveRetryParams({ task: "", retryRunId: "retry-shape-6" }, run);
+		expect(params.retryOnTimeout).toBeUndefined();
+	});
 });
 
 // =========================================================================

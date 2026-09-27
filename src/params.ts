@@ -76,6 +76,11 @@ export function findUnknownParams(
  * degrade retries of that path.
  * NOTE: the schema's `params` (template slots) key is intentionally NOT
  * snapshotted — it is a template-resolution input, not a retry override.
+ * The execution-shape keys (background, gitMode, approvalMode, force) ARE
+ * snapshotted: omitting them is the known failure mode of this design, since
+ * resolveRetryParams rebuilds a fresh literal and a key missing here is both
+ * unrestored AND discarded when passed explicitly on a retry call. Records
+ * written before this change simply lack the keys (additive, undefined-safe).
  */
 export function snapshotOriginalParams(params: {
 	systemPrompt?: string;
@@ -90,6 +95,10 @@ export function snapshotOriginalParams(params: {
 	excludeTools?: string[];
 	noBuiltinTools?: boolean;
 	preset?: string;
+	background?: boolean;
+	gitMode?: string;
+	approvalMode?: string;
+	force?: boolean;
 }): Record<string, unknown> {
 	return {
 		systemPrompt: params.systemPrompt,
@@ -104,6 +113,10 @@ export function snapshotOriginalParams(params: {
 		excludeTools: params.excludeTools,
 		noBuiltinTools: params.noBuiltinTools,
 		preset: params.preset,
+		background: params.background,
+		gitMode: params.gitMode,
+		approvalMode: params.approvalMode,
+		force: params.force,
 	};
 }
 
