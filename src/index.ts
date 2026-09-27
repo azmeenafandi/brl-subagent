@@ -1608,10 +1608,13 @@ export default function (pi: ExtensionAPI) {
 		// against that cwd) and the resolved value is what that node spawns in.
 		// The pre-pass runs on the DECLARED task text, before {id} substitution
 		// (the substituted text is only known mid-dispatch, once a dependency's
-		// output exists) — the capability/keyword rules do not read the
-		// placeholder body, and refusing to validate up front would mean a bad
-		// node in the LAST wave is discovered after every earlier wave already
-		// spent its budget.
+		// output exists) — the declared text is validated with the placeholder
+		// TOKENS stripped (a dependency whose id happens to be a blocking
+		// keyword must not make `{<id>}` itself trip the keyword rules), while
+		// the SUBSTITUTED content stays unvalidated by design. The host's own
+		// wording is still validated, and refusing to validate up front would
+		// mean a bad node in the LAST wave is discovered after every earlier
+		// wave already spent its budget.
 		const nodeCwds = new Map<string, string>();
 		const nodeWarnings: string[] = [];
 		for (const graphTask of graphTasks) {
@@ -1647,7 +1650,12 @@ export default function (pi: ExtensionAPI) {
 				prefix: nodePrefix,
 				logContext: { id: graphTask.id },
 				preTask: {
-					task: merged.task,
+					// Placeholder TOKENS stripped (issue #222 review): the rules
+					// read the declared string, so a `{<id>}` whose dependency id
+					// is a blocking keyword would block on a token, not on text
+					// the host wrote. The declared wording around it is unchanged
+					// and still validated.
+					task: merged.task.replace(GRAPH_OUTPUT_PLACEHOLDER_RE, " "),
 					toolOptions: merged.toolOptions,
 					thinkingLevel: merged.thinkingLevel,
 					gitMode: globalParams.resolvedGitMode,

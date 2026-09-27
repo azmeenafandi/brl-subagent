@@ -428,6 +428,36 @@ describe("per-step capability validation covers chain and graph (issue #222)", (
 		expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
 	});
 
+	it("graph: a {id} placeholder whose dependency id is a keyword does not block", async () => {
+		// The declared text is validated with the placeholder TOKENS stripped, so
+		// a dependency named "find" must not make `{find}` trip the exploration
+		// rule the node's own text never asks for.
+		const result = await execute({
+			graph: [
+				{ id: "find", task: "inspect the notes", tools: ["read"] },
+				{ id: "n2", task: "Summarize {find}", tools: ["read"] },
+			],
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(2);
+		expect(firstText(result)).not.toContain("directory exploration");
+	});
+
+	it("graph: blocking wording in the DECLARED text still rejects alongside a placeholder", async () => {
+		const result = await execute({
+			graph: [
+				{ id: "find", task: "inspect the notes", tools: ["read"] },
+				{ id: "n2", task: "Summarize {find} then run the test suite", tools: ["read", "write", "edit"] },
+			],
+		});
+
+		expect(result.isError).toBe(true);
+		expect(firstText(result)).toContain(`Node "n2"`);
+		expect(firstText(result)).toContain("requires the 'bash' tool");
+		expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
+	});
+
 	it("graph: force: true proceeds past the capability block and spawns", async () => {
 		const result = await execute({
 			graph: [{ id: "n1", ...BLOCKED_STEP }],
