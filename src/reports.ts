@@ -128,6 +128,11 @@ function extractFilesFromOutputSummary(outputSummary: string): string[] {
 
 /**
  * Check if a file path matches any sensitive file pattern.
+ *
+ * This is the PATH-based detector for the secrets exposure report: it answers
+ * "did this run touch a sensitive FILE?" rather than "did the output text
+ * happen to mention one?". It was previously unreachable dead code; keep it in
+ * sync with SENSITIVE_FILE_PATTERNS / FILE_SEVERITY_MAP above.
  */
 function isSensitiveFile(filePath: string): { match: boolean; pattern?: string; severity?: "high" | "medium" | "low" } {
 	const normalizedPath = filePath.toLowerCase();
@@ -221,20 +226,40 @@ export function buildFileAccessReport(runs: SubagentRun[]): FileAccessReport {
  */
 export function buildSecretsExposureReport(runs: SubagentRun[]): SecretsExposureReport {
 	const exposures: SecretsExposureEntry[] = [];
+	// Dedupe key set: one exposure per (file, runId) regardless of whether the
+	// finding came from the text scan or the path scan.
+	const seen = new Set<string>();
 
 	for (const run of runs) {
 		// Check task description for sensitive keywords
 		const taskCheck = hasSensitiveTaskKeywords(run.task);
 		if (taskCheck.match && taskCheck.keyword) {
-			exposures.push({
-				file: `task:${taskCheck.keyword}`,
-				runId: run.id,
-				runLabel: run.label,
-				severity: "medium",
-			});
+			const file = `task:${taskCheck.keyword}`;
+			const key = `${file}\x00${run.id}`;
+			if (!seen.has(key)) {
+				seen.add(key);
+				exposures.push({
+					file,
+					runId: run.id,
+					runLabel: run.label,
+					severity: "medium",
+				});
+			}
 		}
 
-		// Check output for sensitive file access
+		// Files this run touched (mirrors buildFileAccessReport). Computed BEFORE
+		// the text scan so a text hit that is only a FRAGMENT of a touched path
+		// (e.g. ".env" inside "config/prod/.env") is not double-reported — the
+		// path scan below reports the real, full path instead.
+		const touched: string[] = [];
+		if (run.fullOutput && run.fullOutput.includes("diff --git")) {
+			touched.push(...extractFilesFromGitDiff(run.fullOutput));
+		}
+		if (touched.length === 0 && run.outputSummary) {
+			touched.push(...extractFilesFromOutputSummary(run.outputSummary));
+		}
+
+		// Check output text for sensitive file mentions.
 		const outputToCheck = [
 			run.outputSummary,
 			run.fullOutput,
@@ -254,14 +279,44 @@ export function buildSecretsExposureReport(runs: SubagentRun[]): SecretsExposure
 						}
 					}
 
+					// Report the text that actually matched, not the regex
+					// literal — the `file` field is what a reader acts on.
+					const matched = outputToCheck.match(pattern)?.[0] ?? patternStr;
+					// Fragment of a touched file? The path scan below reports the full
+					// path — skip this fragment so one file yields ONE entry.
+					if (touched.some((p) => p.toLowerCase().includes(matched.toLowerCase()))) continue;
+					const dedupeKey = `${matched}\x00${run.id}`;
+					if (seen.has(dedupeKey)) continue;
+					seen.add(dedupeKey);
+
 					exposures.push({
-						file: patternStr,
+						file: matched,
 						runId: run.id,
 						runLabel: run.label,
 						severity,
 					});
 				}
 			}
+		}
+
+		// Path-based detection: flag the sensitive FILES this run actually
+		// touched — the full path, even when the output text never names it (and
+		// even when it names it in a different case: the path is normalized
+		// before matching).
+		for (const file of touched) {
+			const check = isSensitiveFile(file);
+			if (!check.match) continue;
+
+			const dedupeKey = `${file}\x00${run.id}`;
+			if (seen.has(dedupeKey)) continue;
+			seen.add(dedupeKey);
+
+			exposures.push({
+				file,
+				runId: run.id,
+				runLabel: run.label,
+				severity: check.severity ?? "high",
+			});
 		}
 	}
 

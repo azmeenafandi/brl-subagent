@@ -59,10 +59,17 @@ pi remove npm:brl-subagent    # uninstall
 | `/brl-subagent history` | Browse past subagent runs |
 | `/brl-subagent monitor` | Live monitor running subagents |
 | `/brl-subagent dashboard` | Live observability dashboard |
+| `/brl-subagent compliance` | Compliance reports (file access, secrets exposure, full summary) |
 | `/brl-subagent retry` | Browse failed runs to retry |
 | `/brl-subagent reset` | Reset all configuration |
 
 All settings persist across sessions.
+
+### Environment variables
+
+- `BRL_LOG_LEVEL` — minimum level written to the log file. One of `debug`,
+  `info` (default), `warn`, `error`. Read once at module load; unrecognised
+  values fall back to `info`. Runtime changes go through `setLogLevel()`.
 
 ---
 

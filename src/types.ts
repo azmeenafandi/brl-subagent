@@ -636,7 +636,7 @@ export const RESERVED_COMMAND_NAMES = new Set([
 	"model", "thinking", "concurrency", "depth", "history", "monitor",
 	"preset", "retry", "reset", "priority", "templates", "dashboard", "approval",
  "costlimit", "historyentries", "sla", "completionnotify",
-	"graph", "sla-stats",
+	"graph", "sla-stats", "compliance",
 ]);
 
 // ---------------------------------------------------------------------------
