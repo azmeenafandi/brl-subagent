@@ -65,6 +65,7 @@ import {
 	mergeWorkBranch,
 } from "./git";
 import { preflightCheck } from "./preflight";
+import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets, formatValidationWarnings } from "./prelude";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure } from "./validate";
@@ -399,6 +400,14 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
+	// Per-unit display name for validation prefixes: the label when present,
+	// else the task truncated to 60 chars. Shared by the foreground parallel
+	// pre-pass and the background fan-out pre-pass (issue #220) so a unit
+	// renders identically in either shape.
+	const displayTaskName = (merged: ReturnType<typeof mergeSubTaskParams>): string =>
+		merged.label ??
+		(merged.task.length > 60 ? `${merged.task.slice(0, 57)}...` : merged.task);
+
 	// -------------------------------------------------------------------
 	// P1: runChainMode
 	// -------------------------------------------------------------------
@@ -416,32 +425,14 @@ export default function (pi: ExtensionAPI) {
 		const chainModeStartedAt = new Date().toISOString();
 
 		// R5: Check session cost limit before spawning
-		const perTaskEstimate =
-			state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-		if (state.checkCostLimit(perTaskEstimate * chainSteps.length, ctx)) {
-			const currentTotal = state.getSessionTotalCost(ctx);
-			const limit = state.config.sessionCostLimit;
-			log.warn("Chain delegation rejected: session cost limit reached", {
-				currentTotal,
-				estimatedCost: perTaskEstimate * chainSteps.length,
-				limit,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate: session cost limit reached ` +
-							`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
-							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		const costError = gateSessionCost({
+			state,
+			ctx,
+			log,
+			units: chainSteps.length,
+			label: "Chain delegation",
+		});
+		if (costError) return costError;
 
 		// Reject delegation if recursion depth exceeds configured max
 		const currentDepth = getCurrentDepth();
@@ -521,7 +512,8 @@ export default function (pi: ExtensionAPI) {
 		// #32). Chain top-level tasks are empty (modeCount forbids task+chain), so
 		// keyword warnings skip on empty text and only the hard outputFile-vs-write
 		// conflict applies (issue #34). The mode-level outputFile on globalParams is
-		// the one validated; per-step outputFiles are future work (issue #3).
+		// the one validated here; every step's own cwd/outputFile/tools are
+		// validated by the per-step pre-pass below (issue #222).
 		const validation = validatePreTask({
 			task: globalParams.task,
 			toolOptions: globalParams.toolOptions,
@@ -540,6 +532,47 @@ export default function (pi: ExtensionAPI) {
 				details: undefined,
 				isError: true,
 			};
+		}
+
+		// Per-step pre-pass (issue #222): resolve + validate EVERY step before
+		// any spawn, so a single bad step rejects the chain with nothing
+		// started — the same all-before-any-spawn semantics the background
+		// fan-out and the parallel `tasks` shape use. Chain steps are fully
+		// known up front and a step's cwd/outputFile never depend on a previous
+		// step's output (only its TASK text consumes {previous}), so the pass
+		// can run up front — and must, because discovering step 5's bad cwd
+		// after four steps already ran would waste their whole budget.
+		const stepCwds: string[] = [];
+		const stepWarnings: string[] = [];
+		for (let i = 0; i < chainSteps.length; i++) {
+			const merged = mergeSubTaskParams(globalParams, chainSteps[i]);
+			const stepPrefix = `Step ${i + 1} ("${displayTaskName(merged)}")`;
+
+			const stepTargets = validateDelegationTargets({
+				ctx,
+				effectiveCwd: merged.effectiveCwd,
+				outputFile: merged.outputFile,
+				prefix: stepPrefix,
+			});
+			if (!stepTargets.ok) return stepTargets.error;
+			stepCwds.push(stepTargets.cwd);
+
+			const stepValidation = runPreTaskValidation({
+				log,
+				label: "Chain",
+				prefix: stepPrefix,
+				logContext: { step: i + 1 },
+				preTask: {
+					task: merged.task,
+					toolOptions: merged.toolOptions,
+					thinkingLevel: merged.thinkingLevel,
+					gitMode: globalParams.resolvedGitMode,
+					outputFile: merged.outputFile,
+					force: params.force as boolean | undefined,
+				},
+			});
+			if (stepValidation.error) return stepValidation.error;
+			for (const w of stepValidation.warnings) stepWarnings.push(`${stepPrefix}: ${w}`);
 		}
 
 		// Resolve model once (per-call top-level model override beats preset)
@@ -706,7 +739,10 @@ export default function (pi: ExtensionAPI) {
 				let result: SubagentResult;
 				try {
 					result = await runSubagent(
-						resolvedCwd,
+						// Issue #222: this step's OWN validated cwd (the pre-pass
+						// resolved it against ctx.cwd) — the mode-level
+						// resolvedCwd is the fallback for steps that declare none.
+						stepCwds[i],
 						subagentPrompt,
 						stepModel,
 						merged.thinkingLevel,
@@ -724,7 +760,7 @@ export default function (pi: ExtensionAPI) {
 					// run entry as failed — crashOutput comes from the live entry's
 					// last streamed output (the crash result itself has no
 					// messages), and errorCategory is classified onto originalParams.
-					finalizeUnitRunCrash(state, pi, run, err, "Chain step", resolvedCwd, log, {
+					finalizeUnitRunCrash(state, pi, run, err, "Chain step", stepCwds[i], log, {
 						step: i + 1,
 					});
 				}
@@ -869,9 +905,15 @@ export default function (pi: ExtensionAPI) {
 			};
 			state.persistRun(pi, chainAggregateRun);
 
+			// Per-step validation warnings ride the result, prefixed with their
+			// step (issue #222), after the JSON payload — empty renders nothing so
+			// warning-free results stay byte-identical.
 			return {
 				content: [
-					{ type: "text" as const, text: JSON.stringify(chainDetails, null, 2) },
+					{
+						type: "text" as const,
+						text: JSON.stringify(chainDetails, null, 2) + formatValidationWarnings(stepWarnings),
+					},
 				],
 				details: chainDetails,
 			};
@@ -903,32 +945,14 @@ export default function (pi: ExtensionAPI) {
 		const taskList = params.tasks as SubTaskParams[];
 
 		// R5: Check session cost limit before spawning
-		const perTaskEstimate =
-			state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-		if (state.checkCostLimit(perTaskEstimate * taskList.length, ctx)) {
-			const currentTotal = state.getSessionTotalCost(ctx);
-			const limit = state.config.sessionCostLimit;
-			log.warn("Parallel delegation rejected: session cost limit reached", {
-				currentTotal,
-				estimatedCost: perTaskEstimate * taskList.length,
-				limit,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate: session cost limit reached ` +
-							`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
-							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		const costError = gateSessionCost({
+			state,
+			ctx,
+			log,
+			units: taskList.length,
+			label: "Parallel delegation",
+		});
+		if (costError) return costError;
 
 		// Reject delegation if recursion depth exceeds configured max
 		const currentDepth = getCurrentDepth();
@@ -975,17 +999,9 @@ export default function (pi: ExtensionAPI) {
 		);
 
 		// Validate CWD once
-		const cwdResult = validateCwd(globalParams.effectiveCwd, ctx.cwd);
-		if (!cwdResult.ok) {
-			return {
-				content: [
-					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-		const resolvedCwd = cwdResult.value;
+		const targets = validateDelegationTargets({ ctx, effectiveCwd: globalParams.effectiveCwd });
+		if (!targets.ok) return targets.error;
+		const resolvedCwd = targets.cwd;
 
 		// Pre-flight checks — fail fast before consuming resources
 		const pfResult = preflightCheck(resolvedCwd);
@@ -1008,26 +1024,64 @@ export default function (pi: ExtensionAPI) {
 		// #32). Parallel top-level tasks are empty (modeCount forbids task+tasks),
 		// so keyword warnings skip on empty text and only the hard
 		// outputFile-vs-write conflict applies (issue #34). The mode-level
-		// outputFile on globalParams is the one validated; per-step outputFiles
-		// are future work (issue #3).
-		const validation = validatePreTask({
-			task: globalParams.task,
-			toolOptions: globalParams.toolOptions,
-			thinkingLevel: globalParams.thinkingLevel,
-			gitMode: globalParams.resolvedGitMode,
-			outputFile: globalParams.outputFile,
+		// outputFile on globalParams is the one validated here; every task's own
+		// cwd/outputFile/tools are validated by the per-task pre-pass below
+		// (issue #222).
+		const preTask = runPreTaskValidation({
+			log,
+			label: "Parallel",
+			preTask: {
+				task: globalParams.task,
+				toolOptions: globalParams.toolOptions,
+				thinkingLevel: globalParams.thinkingLevel,
+				gitMode: globalParams.resolvedGitMode,
+				outputFile: globalParams.outputFile,
+			},
 		});
-		if (validation.warnings.length > 0) {
-			log.warn("Parallel pre-task validation warnings", { warnings: validation.warnings });
-		}
-		if (!validation.valid) {
-			const errText = validation.errors.join("; ");
-			log.warn("Parallel pre-task validation failed", { errors: validation.errors });
-			return {
-				content: [{ type: "text" as const, text: errText }],
-				details: undefined,
-				isError: true,
-			};
+		if (preTask.error) return preTask.error;
+
+		// Per-task pre-pass (issue #220, extended by #222): validate EVERY task
+		// before any spawn, so a single bad task rejects the batch with nothing
+		// started (`force` degrades capability errors to warnings) — the same
+		// semantics runBackgroundFanOut applies. Each task's OWN cwd is resolved
+		// and validated here (with its outputFile, resolved against that cwd) and
+		// the resolved value is what that task spawns in — issue #222 closed the
+		// gap where a per-task `cwd` was merged but the spawn still used the
+		// mode-level cwd. Per-task warnings are prefixed with their unit and
+		// collected here to ride the final result. The mode-entry validation
+		// above stays for the mode-level outputFile (issue #34).
+		const taskWarnings: string[] = [];
+		// Parallel index → the task's own validated cwd (issue #222).
+		const taskCwds: string[] = [];
+		for (let i = 0; i < taskList.length; i++) {
+			const merged = mergeSubTaskParams(globalParams, taskList[i]);
+			const taskPrefix = `Task ${i + 1} ("${displayTaskName(merged)}")`;
+
+			const taskTargets = validateDelegationTargets({
+				ctx,
+				effectiveCwd: merged.effectiveCwd,
+				outputFile: merged.outputFile,
+				prefix: taskPrefix,
+			});
+			if (!taskTargets.ok) return taskTargets.error;
+			taskCwds.push(taskTargets.cwd);
+
+			const unitValidation = runPreTaskValidation({
+				log,
+				label: "Parallel",
+				prefix: taskPrefix,
+				logContext: { task: i + 1 },
+				preTask: {
+					task: merged.task,
+					toolOptions: merged.toolOptions,
+					thinkingLevel: merged.thinkingLevel,
+					gitMode: globalParams.resolvedGitMode,
+					outputFile: merged.outputFile,
+					force: params.force as boolean | undefined,
+				},
+			});
+			if (unitValidation.error) return unitValidation.error;
+			for (const w of unitValidation.warnings) taskWarnings.push(`${taskPrefix}: ${w}`);
 		}
 
 		// Resolve model once (per-call top-level model override beats preset)
@@ -1078,6 +1132,7 @@ export default function (pi: ExtensionAPI) {
 		const runTask = async (
 			index: number,
 			merged: ReturnType<typeof mergeSubTaskParams>,
+			unitCwd: string,
 		): Promise<boolean> => {
 
 			// C3: Resolve this step's model override (step.model > global resolved model)
@@ -1154,7 +1209,8 @@ export default function (pi: ExtensionAPI) {
 			// the live ghost (grace logic treats a 'running' record as live).
 			try {
 				const result = await runSubagent(
-					resolvedCwd,
+					// Issue #222: this task's OWN validated cwd.
+					unitCwd,
 					subagentPrompt,
 					stepModel,
 					merged.thinkingLevel,
@@ -1197,7 +1253,7 @@ export default function (pi: ExtensionAPI) {
 				// the live drill-in loops forever. finalizeLiveSubagent is
 				// idempotent; the rethrow keeps Promise.allSettled semantics (the
 				// caller's finally still releases the concurrency slot).
-				finalizeUnitRunCrash(state, pi, run, err, "Parallel subtask", resolvedCwd, log, {
+				finalizeUnitRunCrash(state, pi, run, err, "Parallel subtask", unitCwd, log, {
 					index,
 				});
 			}
@@ -1275,7 +1331,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			let taskSuccess = false;
 			try {
-				taskSuccess = await runTask(index, merged);
+				taskSuccess = await runTask(index, merged, taskCwds[index]);
 			} finally {
 				// Issue #137: release with the unit's real success — the status
 				// bar's "N failed" count reflects the true outcome.
@@ -1332,9 +1388,15 @@ export default function (pi: ExtensionAPI) {
 			totalCost,
 		});
 
+		// C: per-task validation warnings ride the result, prefixed with their
+		// task (issue #220), after the JSON payload — empty renders nothing so
+		// warning-free results stay byte-identical.
 		return {
 			content: [
-				{ type: "text" as const, text: JSON.stringify(parallelDetails, null, 2) },
+				{
+					type: "text" as const,
+					text: JSON.stringify(parallelDetails, null, 2) + formatValidationWarnings(taskWarnings),
+				},
 			],
 			details: parallelDetails,
 		};
@@ -1372,32 +1434,14 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// R5: Check session cost limit before spawning
-		const perTaskEstimate =
-			state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-		if (state.checkCostLimit(perTaskEstimate * graphTasks.length, ctx)) {
-			const currentTotal = state.getSessionTotalCost(ctx);
-			const limit = state.config.sessionCostLimit;
-			log.warn("Graph delegation rejected: session cost limit reached", {
-				currentTotal,
-				estimatedCost: perTaskEstimate * graphTasks.length,
-				limit,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate: session cost limit reached ` +
-							`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
-							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		const costError = gateSessionCost({
+			state,
+			ctx,
+			log,
+			units: graphTasks.length,
+			label: "Graph delegation",
+		});
+		if (costError) return costError;
 
 		// Reject delegation if recursion depth exceeds configured max
 		const currentDepth = getCurrentDepth();
@@ -1478,8 +1522,9 @@ export default function (pi: ExtensionAPI) {
 		// #32). Graph top-level tasks are empty (modeCount forbids task+graph),
 		// so keyword warnings skip on empty text and only the hard
 		// outputFile-vs-write conflict applies (issue #34). The mode-level
-		// outputFile on globalParams is the one validated; per-step outputFiles
-		// are future work (issue #3).
+		// outputFile on globalParams is the one validated here; every node's own
+		// cwd/outputFile/tools are validated by the per-node pre-pass below
+		// (issue #222).
 		const validation = validatePreTask({
 			task: globalParams.task,
 			toolOptions: globalParams.toolOptions,
@@ -1555,6 +1600,73 @@ export default function (pi: ExtensionAPI) {
 		}
 		const waves = sortResult.waves;
 
+		// Per-node pre-pass (issue #222): resolve + validate EVERY node before
+		// any spawn, so a single bad node rejects the whole graph with nothing
+		// started — the same all-before-any-spawn semantics the background
+		// fan-out, the parallel `tasks` shape and the chain use. Each node's OWN
+		// cwd is resolved and validated here (with its outputFile, resolved
+		// against that cwd) and the resolved value is what that node spawns in.
+		// The pre-pass runs on the DECLARED task text, before {id} substitution
+		// (the substituted text is only known mid-dispatch, once a dependency's
+		// output exists) — the declared text is validated with the placeholder
+		// TOKENS stripped (a dependency whose id happens to be a blocking
+		// keyword must not make `{<id>}` itself trip the keyword rules), while
+		// the SUBSTITUTED content stays unvalidated by design. The host's own
+		// wording is still validated, and refusing to validate up front would
+		// mean a bad node in the LAST wave is discovered after every earlier
+		// wave already spent its budget.
+		const nodeCwds = new Map<string, string>();
+		const nodeWarnings: string[] = [];
+		for (const graphTask of graphTasks) {
+			const merged = mergeSubTaskParams(globalParams, {
+				task: graphTask.task,
+				label: graphTask.label,
+				model: graphTask.model,
+				thinkingLevel: graphTask.thinkingLevel,
+				priority: graphTask.priority,
+				cwd: graphTask.cwd,
+				timeout: graphTask.timeout,
+				outputFile: graphTask.outputFile,
+				tools: graphTask.tools,
+				excludeTools: graphTask.excludeTools,
+				noBuiltinTools: graphTask.noBuiltinTools,
+				systemPrompt: graphTask.systemPrompt,
+				inheritSystemPrompt: graphTask.inheritSystemPrompt,
+			});
+			const nodePrefix = `Node "${graphTask.id}"`;
+
+			const nodeTargets = validateDelegationTargets({
+				ctx,
+				effectiveCwd: merged.effectiveCwd,
+				outputFile: merged.outputFile,
+				prefix: nodePrefix,
+			});
+			if (!nodeTargets.ok) return nodeTargets.error;
+			nodeCwds.set(graphTask.id, nodeTargets.cwd);
+
+			const nodeValidation = runPreTaskValidation({
+				log,
+				label: "Graph",
+				prefix: nodePrefix,
+				logContext: { id: graphTask.id },
+				preTask: {
+					// Placeholder TOKENS stripped (issue #222 review): the rules
+					// read the declared string, so a `{<id>}` whose dependency id
+					// is a blocking keyword would block on a token, not on text
+					// the host wrote. The declared wording around it is unchanged
+					// and still validated.
+					task: merged.task.replace(GRAPH_OUTPUT_PLACEHOLDER_RE, " "),
+					toolOptions: merged.toolOptions,
+					thinkingLevel: merged.thinkingLevel,
+					gitMode: globalParams.resolvedGitMode,
+					outputFile: merged.outputFile,
+					force: params.force as boolean | undefined,
+				},
+			});
+			if (nodeValidation.error) return nodeValidation.error;
+			for (const w of nodeValidation.warnings) nodeWarnings.push(`${nodePrefix}: ${w}`);
+		}
+
 		// Build base prompt once
 		const basePrompt = ctx.getSystemPrompt();
 
@@ -1626,6 +1738,10 @@ export default function (pi: ExtensionAPI) {
 					};
 
 					const merged = mergeSubTaskParams(globalParams, subTaskParams);
+					// Issue #222: the node's OWN validated cwd (pre-pass);
+					// resolvedCwd (the mode-level cwd) is the guaranteed
+					// fallback, so a node that declares none still resolves.
+					const nodeCwd = nodeCwds.get(graphTask.id) ?? resolvedCwd;
 
 					// C3: Resolve this step's model override (step.model > global resolved model)
 					const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
@@ -1709,7 +1825,7 @@ export default function (pi: ExtensionAPI) {
 						const stepOnUpdate = makeLiveOnUpdate(state, runId, onUpdate);
 
 						const result = await runSubagent(
-							resolvedCwd,
+							nodeCwd,
 							subagentPrompt,
 							stepModel,
 							merged.thinkingLevel,
@@ -1760,7 +1876,7 @@ export default function (pi: ExtensionAPI) {
 						// finalizeLiveSubagent is idempotent; the rethrow keeps
 						// Promise.allSettled semantics (a failing node must NOT cancel
 						// sibling nodes in the wave).
-						finalizeUnitRunCrash(state, pi, run, err, "Graph node", resolvedCwd, log, {
+						finalizeUnitRunCrash(state, pi, run, err, "Graph node", nodeCwd, log, {
 							id: graphTask.id,
 						});
 					} finally {
@@ -1857,9 +1973,15 @@ export default function (pi: ExtensionAPI) {
 			};
 			state.persistRun(pi, graphAggregateRun);
 
+			// Per-node validation warnings ride the result, prefixed with their
+			// node id (issue #222), after the JSON payload — empty renders
+			// nothing so warning-free results stay byte-identical.
 			return {
 				content: [
-					{ type: "text" as const, text: JSON.stringify(graphDetails, null, 2) },
+					{
+						type: "text" as const,
+						text: JSON.stringify(graphDetails, null, 2) + formatValidationWarnings(nodeWarnings),
+					},
 				],
 				details: graphDetails,
 			};
@@ -1897,32 +2019,14 @@ export default function (pi: ExtensionAPI) {
 
 		// Session cost limit gates the WHOLE batch before any spawn — same
 		// estimate/limit logic as runParallelMode, scaled by task count.
-		const perTaskEstimate =
-			state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-		if (state.checkCostLimit(perTaskEstimate * taskList.length, ctx)) {
-			const currentTotal = state.getSessionTotalCost(ctx);
-			const limit = state.config.sessionCostLimit;
-			log.warn("Background fan-out rejected: session cost limit reached", {
-				currentTotal,
-				estimatedCost: perTaskEstimate * taskList.length,
-				limit,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate: session cost limit reached ` +
-							`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
-							`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		const costError = gateSessionCost({
+			state,
+			ctx,
+			log,
+			units: taskList.length,
+			label: "Background fan-out",
+		});
+		if (costError) return costError;
 
 		// Resolve global params once — same call shape as runParallelMode.
 		const globalParams = resolveSubagentParams(
@@ -1958,16 +2062,8 @@ export default function (pi: ExtensionAPI) {
 		// Same rejection as the single-background path: approvalMode 'always'
 		// cannot work in background — there is no interactive dialog to approve
 		// the diff, for any of the N agents.
-		if (globalParams.resolvedApprovalMode === 'always') {
-			return {
-				content: [{ type: "text" as const, text:
-					`Cannot spawn background agent with approvalMode 'always': background agents run unattended ` +
-					`and cannot present the approval dialog. Use approvalMode 'auto' (default) or 'writes'.`
-				}],
-				details: undefined,
-				isError: true,
-			};
-		}
+		const approvalError = rejectApprovalAlwaysInBackground(globalParams.resolvedApprovalMode);
+		if (approvalError) return approvalError;
 		// W5 parity with the single-background path: 'writes' silently
 		// auto-approves in background — warn once so the caller knows none of
 		// the N agents' diffs will be gated on approval.
@@ -1981,9 +2077,9 @@ export default function (pi: ExtensionAPI) {
 		// git lock is awaited inside the first spawn and held until that agent
 		// settles, so same-repository branch-mode spawns would serialize and
 		// block this call for the whole chain. The rule is blanket (not
-		// same-cwd-only) because the lock is keyed by the cwd string, not the
-		// repository root — different subdirectories of one repo share a working
-		// tree without sharing a lock.
+		// per-repository-checked) because the lock is keyed by the resolved
+		// repository root: units in different directories of one repo share the
+		// working tree and contend for the same lock.
 		if (globalParams.resolvedGitMode === 'branch') {
 			return {
 				content: [{ type: "text" as const, text:
@@ -2006,11 +2102,10 @@ export default function (pi: ExtensionAPI) {
 			cwd: string;
 			outputFile: string | undefined;
 		};
-		const displayTaskName = (merged: ReturnType<typeof mergeSubTaskParams>): string =>
-			merged.label ??
-			(merged.task.length > 60 ? `${merged.task.slice(0, 57)}...` : merged.task);
 
 		const fanOutTasks: FanOutTask[] = [];
+		// C: per-task warnings collect here to ride the immediate spawn result.
+		const taskWarnings: string[] = [];
 		for (let i = 0; i < taskList.length; i++) {
 			const merged = mergeSubTaskParams(globalParams, taskList[i]);
 			const name = displayTaskName(merged);
@@ -2018,48 +2113,32 @@ export default function (pi: ExtensionAPI) {
 			// Per-task model override wins; the global model is the fallback.
 			const stepModel = resolveStepModel(ctx, merged.model, globalModel);
 
-			const cwdResult = validateCwd(merged.effectiveCwd, ctx.cwd);
-			if (!cwdResult.ok) {
-				return {
-					content: [{ type: "text" as const, text: `${taskPrefix}: Invalid cwd: ${cwdResult.error}` }],
-					details: undefined,
-					isError: true,
-				};
-			}
-			let resolvedOutputFile: string | undefined;
-			if (merged.outputFile) {
-				const ofResult = validateOutputFile(merged.outputFile, cwdResult.value);
-				if (!ofResult.ok) {
-					return {
-						content: [{ type: "text" as const, text: `${taskPrefix}: Invalid outputFile: ${ofResult.error}` }],
-						details: undefined,
-						isError: true,
-					};
-				}
-				resolvedOutputFile = ofResult.value;
-			}
-
-			const validation = validatePreTask({
-				task: merged.task,
-				toolOptions: merged.toolOptions,
-				thinkingLevel: merged.thinkingLevel,
-				gitMode: globalParams.resolvedGitMode,
+			const targets = validateDelegationTargets({
+				ctx,
+				effectiveCwd: merged.effectiveCwd,
 				outputFile: merged.outputFile,
+				prefix: taskPrefix,
 			});
-			if (validation.warnings.length > 0) {
-				log.warn("Background fan-out pre-task validation warnings", { task: i + 1, warnings: validation.warnings });
-			}
-			if (!validation.valid) {
-				const errText = validation.errors.join("; ");
-				log.warn("Background fan-out pre-task validation failed", { task: i + 1, errors: validation.errors });
-				return {
-					content: [{ type: "text" as const, text: `${taskPrefix}: ${errText}` }],
-					details: undefined,
-					isError: true,
-				};
-			}
+			if (!targets.ok) return targets.error;
 
-			fanOutTasks.push({ merged, model: stepModel, cwd: cwdResult.value, outputFile: resolvedOutputFile });
+			const preTask = runPreTaskValidation({
+				log,
+				label: "Background fan-out",
+				prefix: taskPrefix,
+				logContext: { task: i + 1 },
+				preTask: {
+					task: merged.task,
+					toolOptions: merged.toolOptions,
+					thinkingLevel: merged.thinkingLevel,
+					gitMode: globalParams.resolvedGitMode,
+					outputFile: merged.outputFile,
+					force: params.force as boolean | undefined,
+				},
+			});
+			if (preTask.error) return preTask.error;
+			for (const w of preTask.warnings) taskWarnings.push(`${taskPrefix}: ${w}`);
+
+			fanOutTasks.push({ merged, model: stepModel, cwd: targets.cwd, outputFile: targets.outputFile });
 		}
 
 		// Spawn pass — sequential, in task order, through the shared tail.
@@ -2112,7 +2191,11 @@ export default function (pi: ExtensionAPI) {
 					timeout: merged.timeout,
 					gitMode: globalParams.resolvedGitMode,
 					// Retry parity with createUnitRun: snapshot this unit's resolved
-					// values so a retry restores them.
+					// values so a retry restores them. The execution-shape fields
+					// (background/gitMode/approvalMode/force) are deliberately NOT
+					// passed here — a fan-out unit is spec'd to retry as a single
+					// run, so it must not inherit this spawn's background-ness.
+					// Same omission in unit-run.ts's createUnitRun.
 					originalParams: snapshotOriginalParams({
 						systemPrompt: merged.customSP,
 						inheritSystemPrompt: merged.inheritSP,
@@ -2149,7 +2232,9 @@ export default function (pi: ExtensionAPI) {
 			started.push({ id: agent.id, label: merged.label });
 		}
 
-		// Text-only result: ids in task order + the wake hint.
+		// Text-only result: ids in task order + the wake hint. C: per-task
+		// validation warnings ride the immediate SPAWN result (prefixed with
+		// their task) so the conductor can stop/re-dispatch in the same turn.
 		const lines = started
 			.map((s, i) => `${i + 1}. ${s.label ? `"${s.label}" ` : ""}— ${s.id}`)
 			.join("\n");
@@ -2157,7 +2242,8 @@ export default function (pi: ExtensionAPI) {
 			content: [{ type: "text" as const, text:
 				`Background agents started: ${started.length}\n\n` +
 				`${lines}\n\n` +
-				`You'll be woken with a completion message as each finishes; use get_subagent_result({ agent_id }) for retrieval and stall checks.`
+				`You'll be woken with a completion message as each finishes; use get_subagent_result({ agent_id }) for retrieval and stall checks.` +
+				formatValidationWarnings(taskWarnings)
 			}],
 			details: undefined,
 		};
@@ -2447,7 +2533,11 @@ export default function (pi: ExtensionAPI) {
 		// Resolve the preset and its model BEFORE the background branch so the
 		// preset's model (and system prompt) are honored in background mode.
 		const bgResolved = resolveSubagentParams({ ...params, task: singleTask }, state, ctx, log);
-		const { resolvedPreset: bgResolvedPreset, autoRoutedPreset: bgAutoRoutedPreset } = bgResolved;
+		const {
+			resolvedPreset: bgResolvedPreset,
+			autoRoutedPreset: bgAutoRoutedPreset,
+			autoRouteKeyword: bgAutoRouteKeyword,
+		} = bgResolved;
 		const bgModelResult = resolveSubagentModel(ctx, bgResolvedPreset, params.model);
 		const bgModel = bgModelResult.ok
 			? `${bgModelResult.model.provider}/${bgModelResult.model.id}`
@@ -2457,16 +2547,8 @@ export default function (pi: ExtensionAPI) {
 			// W5 (issue #28): approvalMode 'always' cannot work in background —
 			// there is no interactive dialog to approve the diff. Reject loudly
 			// instead of silently running unattended with write access.
-			if (bgResolved.resolvedApprovalMode === 'always') {
-				return {
-					content: [{ type: "text" as const, text:
-						`Cannot spawn background agent with approvalMode 'always': background agents run unattended ` +
-						`and cannot present the approval dialog. Use approvalMode 'auto' (default) or 'writes'.`
-					}],
-					details: undefined,
-					isError: true,
-				};
-			}
+			const approvalError = rejectApprovalAlwaysInBackground(bgResolved.resolvedApprovalMode);
+			if (approvalError) return approvalError;
 			// W5: 'writes' in background silently auto-approves — warn once so the
 			// caller knows the diff will NOT be gated on approval.
 			if (bgResolved.resolvedApprovalMode === 'writes') {
@@ -2478,79 +2560,42 @@ export default function (pi: ExtensionAPI) {
 			// W6 (issue #28): session cost limit must gate background spawns too —
 			// the R5 check after the background branch never runs for them.
 			// Same estimate/limit logic as single mode.
-			const bgPerTaskEstimate = state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-			if (state.checkCostLimit(bgPerTaskEstimate, ctx)) {
-				const bgLimit = state.config.sessionCostLimit;
-				const bgCurrentTotal = state.getSessionTotalCost(ctx);
-				log.warn("Background delegation rejected: session cost limit reached", {
-					currentTotal: bgCurrentTotal,
-					estimatedCost: bgPerTaskEstimate,
-					limit: bgLimit,
-				});
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text:
-								`Cannot delegate: session cost limit reached ` +
-								`($${bgCurrentTotal.toFixed(4)} spent of $${bgLimit.toFixed(2)} limit). ` +
-								`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-						},
-					],
-					details: undefined,
-					isError: true,
-				};
-			}
+			const costError = gateSessionCost({
+				state,
+				ctx,
+				log,
+				units: 1,
+				label: "Background delegation",
+			});
+			if (costError) return costError;
 
 			// F1: Validate cwd + outputFile the same way foreground single mode does —
 			// an unvalidated outputFile would reach the prompt and could steer the
 			// background agent's write tool outside the project root.
-			const bgCwdResult = validateCwd(bgResolved.effectiveCwd, ctx.cwd);
-			if (!bgCwdResult.ok) {
-				return {
-					content: [{ type: "text" as const, text: `Invalid cwd: ${bgCwdResult.error}` }],
-					details: undefined,
-					isError: true,
-				};
-			}
-			let bgResolvedOutputFile: string | undefined;
-			if (bgResolved.outputFile) {
-				const ofResult = validateOutputFile(bgResolved.outputFile, bgCwdResult.value);
-				if (!ofResult.ok) {
-					return {
-						content: [
-							{ type: "text" as const, text: `Invalid outputFile: ${ofResult.error}` },
-						],
-						details: undefined,
-						isError: true,
-					};
-				}
-				bgResolvedOutputFile = ofResult.value;
-			}
-
-			// C: H1 validation for background mode — reject outputFile-vs-write
-			// conflicts before spawning (loud failure, same as single mode).
-			const bgValidation = validatePreTask({
-				task: singleTask,
-				toolOptions: bgResolved.toolOptions,
-				thinkingLevel: bgResolved.thinkingLevel,
-				gitMode: bgResolved.resolvedGitMode,
-				outputFile: bgResolvedOutputFile,
+			const targets = validateDelegationTargets({
+				ctx,
+				effectiveCwd: bgResolved.effectiveCwd,
+				outputFile: bgResolved.outputFile,
 			});
-			if (bgValidation.warnings.length > 0) {
-				log.warn("Background pre-task validation warnings", { warnings: bgValidation.warnings });
-			}
-			if (!bgValidation.valid) {
-				const errText = bgValidation.errors.join("; ");
-				log.warn("Background pre-task validation failed", { errors: bgValidation.errors });
-				return {
-					content: [{ type: "text" as const, text: errText }],
-					details: undefined,
-					isError: true,
-				};
-			}
+			if (!targets.ok) return targets.error;
+			const bgResolvedOutputFile = targets.outputFile;
+
+			// C: H1 validation for background mode — reject capability blocks and
+			// outputFile-vs-write conflicts before spawning (same as single mode;
+			// `force` honors the same override foreground does).
+			const bgPreTask = runPreTaskValidation({
+				log,
+				label: "Background",
+				preTask: {
+					task: singleTask,
+					toolOptions: bgResolved.toolOptions,
+					thinkingLevel: bgResolved.thinkingLevel,
+					gitMode: bgResolved.resolvedGitMode,
+					outputFile: bgResolvedOutputFile,
+					force: params.force,
+				},
+			});
+			if (bgPreTask.error) return bgPreTask.error;
 
 			// Build the full prompt the same way foreground single mode does:
 			// base prompt (optionally inherited) + custom prompt + preset guidance.
@@ -2571,7 +2616,7 @@ export default function (pi: ExtensionAPI) {
 				thinkingLevel: bgResolved.thinkingLevel,
 				priority: params.priority,
 				systemPrompt: bgPrompt,
-				cwd: bgCwdResult.value,
+				cwd: targets.cwd,
 				toolOptions: bgResolved.toolOptions,
 				timeout: bgResolved.timeout,
 				gitMode: bgResolved.resolvedGitMode,
@@ -2579,11 +2624,11 @@ export default function (pi: ExtensionAPI) {
 				sanitizeCwd: bgResolved.effectiveCwd,
 			});
 
-			// B2: Surface auto-route decisions in background spawn result too.
-			// Derive the restriction from the RESOLVED toolOptions (which reflects
-			// per-call overrides) rather than the preset's declared values.
+			// B2: Surface auto-route decisions in background spawn result too —
+			// preset name + matched-keyword evidence + restriction, derived from
+			// the RESOLVED toolOptions (reflects per-call overrides).
 			const bgAutoRouteNote = bgAutoRoutedPreset
-				? `\n\n[auto-routed to preset '${bgAutoRoutedPreset.name}' — ${bgResolved.toolOptions ? formatToolRestriction(bgResolved.toolOptions) : formatPresetRestriction(bgAutoRoutedPreset)}]`
+				? `\n\n[auto-routed to preset '${bgAutoRoutedPreset.name}'${bgAutoRouteKeyword ? ` (matched keyword '${bgAutoRouteKeyword}')` : ""} — ${bgResolved.toolOptions ? formatToolRestriction(bgResolved.toolOptions) : formatPresetRestriction(bgAutoRoutedPreset)}]`
 				: "";
 
 			return {
@@ -2594,7 +2639,10 @@ export default function (pi: ExtensionAPI) {
 						`Task: ${agent.task}\n` +
 						`Status: ${agent.status}\n\n` +
 						`You'll be woken with a completion message when it finishes; use get_subagent_result({ agent_id: "${agent.id}" }) for retrieval and stall checks.` +
-						bgAutoRouteNote,
+						bgAutoRouteNote +
+						// C: warnings ride the immediate SPAWN result so the conductor
+						// can stop/re-dispatch in the same turn.
+						formatValidationWarnings(bgPreTask.warnings),
 				}],
 				details: undefined,
 			};
@@ -2707,12 +2755,12 @@ export default function (pi: ExtensionAPI) {
 			"You can customize per-call via inheritSystemPrompt and systemPrompt: set inheritSystemPrompt: false to save context, provide a systemPrompt for custom instructions, or use both to add instructions on top of inheritance.",
 			"Set thinkingLevel per call to match task complexity. The level is capped at the user's configured maximum. Map tasks to levels using this heuristic: off = file listing, grep, simple read. minimal = file diff, syntax check, find-and-replace. low = refactoring, test generation, documentation. medium = default — code review, debugging, moderate analysis. high = security audit, architecture review, complex debugging. xhigh = multi-step causal reasoning, research, novel problem solving. Default to 'off' or 'minimal' for trivial tasks — do not waste the user's budget.",
 			"Use outputFile to have the subagent write full findings to disk and return only a structured summary — saves context tokens for large investigations.",
-			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck.",
+			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck. Background runs are additionally hard-capped at 30 minutes, so a larger value is silently shortened.",
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
 			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
 			`Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.`,
 			buildTemplateGuideline(templateSummary),
-			"To retry a failed subagent, pass its run ID as retryRunId. The retried run uses the same task and parameters as the original. Parallel-origin entries retry as a single-subtask run carrying that subtask's task, label, and priority. Explicit parameters on this call override the original's. Use /brl-subagent retry to browse failed runs and get their IDs.",
+			"To retry a failed subagent, pass its run ID as retryRunId. The retry restores the recorded params - including background, gitMode, approvalMode, force - with explicit values on this call winning. Multi-step runs degrade to a single task. See the retryRunId description for the full field list.",
 			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
 			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. With tasks, background fans out: every task starts as its own background agent, the call returns one ID per task in task order, and the conductor is woken once per agent as each finishes; chain and graph cannot be combined with background (rejected). Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate.",
 			"",
@@ -2723,9 +2771,9 @@ export default function (pi: ExtensionAPI) {
 			"2. **Thinking level**: Match thinking level to task complexity: off/minimal for trivial tasks (file listing, grep), low for refactoring/docs, medium for code review/debugging, high for security audits/complex debugging, xhigh for multi-step reasoning/novel problems.",
 			"3. **Git mode**: Use gitMode='branch' for tasks that create commits or PRs. Use gitMode='none' for read-only tasks.",
 			"4. **Tools**: Verify the subagent has the tools it needs. If the task writes files, ensure write and edit are not excluded. If the task runs commands, ensure bash is not excluded.",
-			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s.",
+			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s. Background runs are hard-capped at 30 minutes regardless of the value set.",
 			"",
-			"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1): tool warnings are informational, but outputFile with the write tool excluded is a HARD error and the delegation is rejected. Getting it right the first time is faster and more efficient.",
+			"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1): tool warnings are surfaced in the returned result, but two mismatches are HARD errors that reject the delegation — outputFile with the write tool excluded, and a capability-critical task/toolset mismatch (a run/execute/test/compile/benchmark task without bash, or an exploration task with none of find/ls/grep/bash; pass force: true to override the capability class). Getting it right the first time is faster and more efficient.",
 			"",
 			"Before delegating, evaluate existing presets to find the best match for the task: tech-writer (documentation), code-reviewer (code review), security-auditor (security analysis), test-engineer (test writing), debugger (debugging), refactorer (refactoring), data-analyst (data analysis), rapid-prototyper (quick prototypes). Use the preset parameter to apply the best match. If no preset fits, use dev-agent for general development tasks.",
 			"The autoRoutePreset() function can automatically select the best preset based on task keywords. Consider using it for preset selection.",
@@ -2780,7 +2828,8 @@ export default function (pi: ExtensionAPI) {
 				Type.Number({
 					description:
 						"Maximum time in milliseconds the subagent is allowed to run. " +
-						"If exceeded, the subagent is killed and an error is returned.",
+						"If exceeded, the subagent is killed and an error is returned. " +
+						"Background runs are additionally hard-capped at 30 minutes, so a larger value is silently shortened there.",
 				}),
 			),
 			cwd: Type.Optional(
@@ -2836,9 +2885,21 @@ export default function (pi: ExtensionAPI) {
 				Type.String({
 					description:
 						"ID of a previously failed subagent run to retry. " +
-						"The retried run uses the same task and parameters as the original. " +
-						"Only works with runs that ended in failure (exitCode != 0, timeout, error, or abort). " +
-						"Explicit parameters on this call override the original's.",
+						"The retry rebuilds the parameter object from a fixed field set, falling back to the " +
+						"original run's recorded values, with explicit values on this call winning: task, label, " +
+						"model, preset, systemPrompt, inheritSystemPrompt, thinkingLevel, priority, outputFile, " +
+						"timeout, cwd, tools, excludeTools, noBuiltinTools, background, gitMode, approvalMode, force. " +
+						"The execution-shape fields ARE restored: a retried background run stays background (with its " +
+						"completion wake), and a retried branch-mode run keeps its work branch, its approvalMode " +
+						"gating and its force override. Qualify that by the effective gitMode - when neither the record " +
+						"nor this call carries one, the configured default applies, which may still be 'branch'. " +
+						"Not restored: chain/tasks/graph and params, so a retried multi-step run silently degrades to a " +
+						"single task - re-issue it fresh. retryOnTimeout is explicit-only: never restored, honoured when passed. " +
+						"template is asymmetric: the original's template is NOT restored, but a template passed on the " +
+						"retry call DOES take effect (it is resolved before the retry merge). " +
+						"Fan-out units (parallel/chain/graph origin) record no background, so retrying one is a single " +
+						"foreground run - pass background: true for a background retry. " +
+						"Only works with runs that ended in failure (exitCode != 0, timeout, error, or abort).",
 				}),
 			),
 			gitMode: Type.Optional(
@@ -2861,6 +2922,15 @@ export default function (pi: ExtensionAPI) {
 					description:
 						"Change approval mode: auto (never ask), writes (ask when files changed), " +
 						"always (ask every time). Default is user config (/brl-subagent approval).",
+				}),
+			),
+			force: Type.Optional(
+				Type.Boolean({
+					description:
+						"Override for capability pre-flight errors (default false). A dispatch is blocked when the task clearly needs a capability the resolved toolset lacks — " +
+						"a run/execute/test/compile/benchmark task with no bash, or an exploration task (search/grep/find/list/locate/glob) with none of find/ls/grep/bash. " +
+						"Set force: true to dispatch anyway: the mismatch is then delivered as a warning in the result instead of rejecting the call. " +
+						"Warnings are surfaced either way. force never suppresses outputFile-without-write conflicts.",
 				}),
 			),
 			background: Type.Optional(
@@ -2928,7 +2998,7 @@ export default function (pi: ExtensionAPI) {
 			})),
 			graph: Type.Optional(Type.Array(Type.Object({
 				id: Type.String({ description: "Unique identifier for this task node" }),
-				task: Type.String({ description: "Task description. Use {otherId} to reference output from another task." }),
+				task: Type.String({ description: "Task description. Use {<nodeId>} to reference output from another task (the referenced node's own id, which must be a word-character id - letters, digits, underscore; ids like 'step-1' or 'node.a' are not matched and the braces are left as literal text)." }),
 				label: Type.Optional(Type.String({})),
 				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
 				dependsOn: Type.Optional(Type.Array(Type.String({}), { description: "IDs of tasks that must complete before this one starts" })),
@@ -2977,6 +3047,7 @@ export default function (pi: ExtensionAPI) {
 				retryRunId?: string;
 				retryOnTimeout?: boolean;
 				background?: boolean;
+				force?: boolean;
 				gitMode?: string;
 				priority?: string;
 				chain?: Array<{
@@ -3257,31 +3328,14 @@ export default function (pi: ExtensionAPI) {
 
 			// R5: Check session cost limit before spawning
 			// Use a default per-task estimate of $0.05 if no perTaskCostEstimate is set
-			const perTaskEstimate = state.config.perTaskCostEstimate > 0
-				? state.config.perTaskCostEstimate
-				: 0.05;
-			const currentTotal = state.getSessionTotalCost(ctx);
-			if (state.checkCostLimit(perTaskEstimate, ctx)) {
-				const limit = state.config.sessionCostLimit;
-				log.warn("Subagent delegation rejected: session cost limit reached", {
-					currentTotal,
-					estimatedCost: perTaskEstimate,
-					limit,
-				});
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text:
-								`Cannot delegate: session cost limit reached ` +
-								`($${currentTotal.toFixed(4)} spent of $${limit.toFixed(2)} limit). ` +
-								`Increase the limit via /brl-subagent costlimit or set to 0 for unlimited.`,
-						},
-					],
-					details: undefined,
-					isError: true,
-				};
-			}
+			const costError = gateSessionCost({
+				state,
+				ctx,
+				log,
+				units: 1,
+				label: "Subagent delegation",
+			});
+			if (costError) return costError;
 
 			// Reject delegation if recursion depth exceeds configured max.
 			// This prevents subagents from spawning infinite sub-subagents while
@@ -3321,6 +3375,7 @@ export default function (pi: ExtensionAPI) {
 				resolvedApprovalMode,
 				resolvedPreset,
 				autoRoutedPreset,
+				autoRouteKeyword,
 			} = resolveSubagentParams({ ...params, task: singleTask }, state, ctx, log);
 
 			// F1: Validate CWD
@@ -3362,12 +3417,14 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// H1: Pre-task validation — deterministic check that tools/thinking match task
+			// (`force` degrades capability errors to warnings — B2's override).
 			const validation = validatePreTask({
 				task,
 				toolOptions,
 				thinkingLevel,
 				gitMode: resolvedGitMode,
 				outputFile: resolvedOutputFile,
+				force: params.force,
 			});
 			if (validation.warnings.length > 0) {
 				log.warn("Pre-task validation warnings", { warnings: validation.warnings });
@@ -3384,6 +3441,9 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
+			// C: surface warnings in the returned result (not just the log) —
+			// shared renderer so foreground/background wording stays identical.
+			const warningsNote = formatValidationWarnings(validation.warnings);
 
 			// Resolve model (per-call top-level model override beats preset)
 			const modelResult = resolveSubagentModel(ctx, resolvedPreset, params.model);
@@ -3771,6 +3831,9 @@ export default function (pi: ExtensionAPI) {
 					if (suggestions.length > 0) {
 						finalMsg += "\n\nSuggestions:\n" + suggestions.map((s) => `- ${s}`).join("\n");
 					}
+					// C: warnings ride the returned result too — a failed run is
+					// exactly when the conductor most needs the mismatch signal.
+					finalMsg += warningsNote;
 
 				completeTranscript(runId, 'failed');
 
@@ -3797,16 +3860,17 @@ export default function (pi: ExtensionAPI) {
 				state.recordSuccess();
 
 				// B2: Surface auto-route decisions in the tool result so the conductor
-				// sees which preset was applied and what it restricts. Derive the
-				// restriction from the RESOLVED toolOptions (reflects per-call
-				// overrides) rather than the preset's declared values.
+				// sees WHICH preset was auto-selected, the KEYWORD evidence for it,
+				// and what it restricts. Derive the restriction from the RESOLVED
+				// toolOptions (reflects per-call overrides) rather than the preset's
+				// declared values.
 				const autoRouteNote = autoRoutedPreset
-					? `\n\n[auto-routed to preset '${autoRoutedPreset.name}' — ${toolOptions ? formatToolRestriction(toolOptions) : formatPresetRestriction(autoRoutedPreset)}]`
+					? `\n\n[auto-routed to preset '${autoRoutedPreset.name}'${autoRouteKeyword ? ` (matched keyword '${autoRouteKeyword}')` : ""} — ${toolOptions ? formatToolRestriction(toolOptions) : formatPresetRestriction(autoRoutedPreset)}]`
 					: "";
 
 				return {
 					content: [
-						{ type: "text" as const, text: (finalOutput || "(no output)") + autoRouteNote },
+						{ type: "text" as const, text: (finalOutput || "(no output)") + autoRouteNote + warningsNote },
 					],
 					details: result,
 				};
@@ -3886,11 +3950,6 @@ export default function (pi: ExtensionAPI) {
 			agent_id: Type.String({
 				description: "The agent ID returned by delegate_task when background=true",
 			}),
-			wait: Type.Optional(
-				Type.Boolean({
-					description: "If true, wait for the agent to complete before returning. Default: false.",
-				}),
-			),
 			verbose: Type.Optional(
 				Type.Boolean({
 					description: "If true, include the full conversation log. Default: false.",

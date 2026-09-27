@@ -27,7 +27,7 @@ delegation-heavy work.
 - Background single returns immediately with an agent id; a completion message wakes you (see below).
 - Chain, parallel, and graph are batch — one call, many subtasks. Chain and graph are foreground; `tasks` + `background: true` fans out: every task starts as its own background agent, the call returns with one id per task in task order, and you are woken once per agent as each finishes.
 - Fan-out validates the whole batch before spawning anything: any invalid task (cwd, `outputFile`, or a pre-task check) rejects the entire batch before a single spawn starts, and the error names the task (`Task N ("label")`).
-- Fan-out rejects `gitMode: "branch"` for the batch — the git lock is awaited inside the first spawn and held until that agent settles, so same-cwd branch-mode spawns would serialize and block the call (the rule is blanket because the lock is keyed by the cwd path, not the repository root). It also rejects `approvalMode: "always"` up front, and the session cost limit is checked as per-task estimate × N.
+- Fan-out rejects `gitMode: "branch"` for the batch — the git lock is awaited inside the first spawn and held until that agent settles, so branch-mode spawns targeting the same repository would serialize and block the call (the rule is blanket because the lock is keyed by the resolved repository root, so any two units of the same repo contend). It also rejects `approvalMode: "always"` up front, and the session cost limit is checked as per-task estimate × N.
 - Spawn failure mid-loop stops further spawns and reports the failed task plus the ids already started; abort mid-loop stops further spawns and reports the ids already started. Either way those agents are detached and still wake you.
 - Chain stops at the first failure; max 10 steps.
 - Parallel runs every task regardless of the others — no short-circuit.
@@ -35,21 +35,28 @@ delegation-heavy work.
 
 ## The completion contract
 
-- A background run wakes you with a structured `subagent-completion` message when it reaches a terminal state (`completed`, `failed`, or `stopped`). The `details` carry `id`, `status`, `errorCategory` (with `errorMessage` when present), cost/tokens/duration, and `label`; the content carries a tail of output.
-- The wake triggers a turn even when you are idle. Do not poll for it.
+- A background run wakes you with a structured `subagent-completion` message when it reaches a terminal state (`completed`, `failed`, or `stopped`). The `details` carry `id`, `status`, `errorCategory` (`"unknown"` when unclassified) and `label`; `errorMessage`, `stopReason`, cost/tokens/duration ride along only when the run entry has been finalized — a `stopped` run is notified at stop time, **before** finalize, so those fields are usually absent there. The content carries a tail of output when one has been captured.
+- The wake triggers a turn even when you are idle — whenever the knob's wake condition covers that terminal status (see the matrix below). Do not poll for it.
 - Delivery mode by status holds at knob `"all"`: `failed`/`stopped` → steering you to act; `completed` → follow-up. The `completionNotify` knob changes both the delivery mode and the wake: under `"failed"` a `completed` run is delivered as a passive `nextTurn` (no wake) while `failed`/`stopped` still steer; under `"off"` everything is a passive `nextTurn` and nothing wakes you. (The knob controls whether an idle conductor is triggered — see below.)
-- Knob dependency: polling is correct only when wakes are disabled (`completionNotify: "off"`). The wake is per-terminal-status and knob-scoped: under `"all"` a terminal run always wakes you; under `"failed"` only a `failed` or `stopped` run wakes you — a `completed` run stays a passive `nextTurn` (no wake); under `"off"` nothing wakes you. So polling is wrong unless wakes are disabled. One status check as a stall check is legitimate; repeated polling is not.
+- Knob dependency: polling is correct only when wakes are disabled (`completionNotify: "off"`). The wake is per-terminal-status and knob-scoped: under `"all"` a terminal run always wakes you; under `"failed"` only a `failed` or `stopped` run wakes you — a `completed` run stays a passive `nextTurn` (no wake); under `"off"` nothing wakes you. So repeated polling is wrong; a single status check as a stall check is legitimate, and a status check is needed only when the knob will not wake you for that outcome (`"off"`, or a `completed` run under `"failed"`).
 - One message per run — the extension deduplicates on the first terminal event for a run id, so don't expect multiple messages for a single run. A fan-out wakes you once per agent — still one message per run (each agent is its own run), never coalesced.
-- Honest records: trust the message's `category`/abort source over your own guess. The provider/abort origin is authoritative on why the run stopped.
+- Honest records: trust the message's `errorCategory`/abort source over your own guess. The provider/abort origin is authoritative on why the run stopped.
 - Steering is not an abort. Being steered to act on a terminal run is not terminating it. A real `stop` is an abort — and a stopped run still wakes you.
 
 ## Delegation judgment
 
 - Foreground vs background: if your next step needs the result inline, run foreground. If the user can keep working or is AFK, run background and act on the wake. Pre-declared independent work while the user is away → `tasks` + `background: true` (fan-out); act on each wake.
 - Batch vs sequential: if the work is pre-declared, use chain/parallel/graph. If you're steering incrementally with the user, issue sequential calls.
-- Retry taxonomy: `retryRunId` is a retry — it re-runs with the recorded task and params. A re-dispatch (a fresh call with the same task text) is not a retry. Never re-issue an identical spec after a termination without confirming the cause with the user (Rule 18).
+- Retry taxonomy: `retryRunId` is a retry — it re-runs with the recorded task and params. A re-dispatch (a fresh call with the same task text) is not a retry. Never re-issue an identical spec after a termination without confirming the cause with the user.
 - When to delegate: when the task needs an isolated context, a deep investigation, parallel research, or a long-running analysis.
 - Approval: `approvalMode: "always"` is rejected in background — there is no dialog. Use `auto` (default) or `writes`; `writes` auto-approves in background.
+
+### Claim verification
+
+- Ground claims about run state, liveness, or elapsed time in observed results — the subagent result API (`get_subagent_result`), the user-visible monitor, or a command's output.
+- Do not infer liveness from a run record: an agent's output record is finalized when the run completes, so a quiet record is not evidence the agent has stopped.
+- Measure elapsed time rather than estimating it; state the measured value.
+- When a claim is unverified, say so.
 
 ## Canonical shapes
 

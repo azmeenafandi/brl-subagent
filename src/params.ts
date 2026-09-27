@@ -23,7 +23,7 @@ import type {
 } from "./types";
 import { resolveThinkingLevel } from "./types";
 import { getAllPresets, getPreset } from "./presets";
-import { autoRoutePreset } from "./router";
+import { classifyTask } from "./router";
 import { normalizeTimeout } from "./validate";
 import type { SessionState } from "./state";
 import type { Logger } from "./logging";
@@ -49,7 +49,7 @@ export const KNOWN_DELEGATE_KEYS = new Set([
 	"outputFile", "label", "model", "timeout", "cwd", "tools",
 	"excludeTools", "noBuiltinTools", "preset", "template", "params",
 	"retryRunId", "gitMode", "retryOnTimeout", "approvalMode", "background",
-	"priority", "chain", "tasks", "graph",
+	"priority", "chain", "tasks", "graph", "force",
 ] as const);
 
 /**
@@ -76,6 +76,11 @@ export function findUnknownParams(
  * degrade retries of that path.
  * NOTE: the schema's `params` (template slots) key is intentionally NOT
  * snapshotted — it is a template-resolution input, not a retry override.
+ * The execution-shape keys (background, gitMode, approvalMode, force) ARE
+ * snapshotted: omitting them is the known failure mode of this design, since
+ * resolveRetryParams rebuilds a fresh literal and a key missing here is both
+ * unrestored AND discarded when passed explicitly on a retry call. Records
+ * written before this change simply lack the keys (additive, undefined-safe).
  */
 export function snapshotOriginalParams(params: {
 	systemPrompt?: string;
@@ -90,6 +95,10 @@ export function snapshotOriginalParams(params: {
 	excludeTools?: string[];
 	noBuiltinTools?: boolean;
 	preset?: string;
+	background?: boolean;
+	gitMode?: string;
+	approvalMode?: string;
+	force?: boolean;
 }): Record<string, unknown> {
 	return {
 		systemPrompt: params.systemPrompt,
@@ -104,6 +113,10 @@ export function snapshotOriginalParams(params: {
 		excludeTools: params.excludeTools,
 		noBuiltinTools: params.noBuiltinTools,
 		preset: params.preset,
+		background: params.background,
+		gitMode: params.gitMode,
+		approvalMode: params.approvalMode,
+		force: params.force,
 	};
 }
 
@@ -124,6 +137,12 @@ export function resolveSubagentParams(
 		gitMode?: string;
 		approvalMode?: string;
 		template?: string;
+		/**
+		 * Capability-block override: carried here so the validation call sites
+		 * (which receive the resolved params) can forward it to validatePreTask.
+		 * Resolution itself ignores it.
+		 */
+		force?: boolean;
 	},
 	state: SessionState,
 	ctx: ExtensionContext,
@@ -133,6 +152,9 @@ export function resolveSubagentParams(
 	resolvedApprovalMode: ApprovalMode;
 	resolvedPreset?: SubagentPreset;
 	autoRoutedPreset?: SubagentPreset; // set only when autoRoutePreset chose it
+	/** Set only when auto-route chose the preset: the keyword that matched —
+	 * the evidence the dispatch result surfaces (auto-route transparency). */
+	autoRouteKeyword?: string;
 } {
 	// E2: Auto-route to best preset only when the conductor expressed NO
 	// explicit preference — an explicit preset, template, or tool
@@ -140,17 +162,19 @@ export function resolveSubagentParams(
 	// that must win over keyword-based routing (issue #57).
 	let resolvedPreset = params.preset;
 	let wasAutoRouted = false;
+	let routeKeyword: string | undefined;
 	const hasExplicitToolPreference =
 		params.tools !== undefined ||
 		params.excludeTools !== undefined ||
 		params.noBuiltinTools !== undefined;
 	if (!resolvedPreset && !params.template && !hasExplicitToolPreference) {
 		const allPresets = getAllPresets(state.builtinPresets, state.customPresets);
-		const suggested = autoRoutePreset(params.task, allPresets);
-		if (suggested) {
-			resolvedPreset = suggested;
+		const matched = classifyTask(params.task, allPresets);
+		if (matched) {
+			resolvedPreset = matched.preset;
 			wasAutoRouted = true;
-			log.info("Auto-routed task to preset", { preset: suggested });
+			routeKeyword = matched.keyword;
+			log.info("Auto-routed task to preset", { preset: matched.preset, keyword: matched.keyword });
 		}
 	}
 
@@ -221,5 +245,6 @@ export function resolveSubagentParams(
 		resolvedApprovalMode,
 		resolvedPreset: preset,
 		autoRoutedPreset,
+		autoRouteKeyword: autoRoutedPreset ? routeKeyword : undefined,
 	};
 }

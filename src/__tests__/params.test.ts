@@ -68,7 +68,7 @@ describe("findUnknownParams (issue #99)", () => {
 });
 
 describe("snapshotOriginalParams (issue #108)", () => {
-	it("copies exactly the 12 retry-override fields with values preserved (priority since issue #114)", () => {
+	it("copies exactly the 16 retry-override fields with values preserved (priority since issue #114; execution-shape fields since issue #227)", () => {
 		const snap = snapshotOriginalParams({
 			systemPrompt: "custom sys",
 			inheritSystemPrompt: false,
@@ -115,17 +115,46 @@ describe("snapshotOriginalParams (issue #108)", () => {
 		expect(Object.entries(snap).filter(([, v]) => v !== undefined)).toEqual([["timeout", 5_000]]);
 	});
 
-	it("never copies non-override keys (params/task/label/background are not retry overrides)", () => {
+	it("never copies non-override keys (params/task/label are not retry overrides)", () => {
 		// The typed signature already excludes them, but ratchet the contract:
 		// a schema-drifted extra key must not leak into the retry snapshot.
+		// NOTE: `background` used to appear in this list; it is now a real
+		// override (issue #227) and has its own test below.
 		const input = {
 			systemPrompt: "x",
 			timeout: 1,
 			params: { slot: "v" },
 			task: "do it",
 			label: "lbl",
-			background: true,
 		} as unknown as Parameters<typeof snapshotOriginalParams>[0];
 		expect(snapshotOriginalParams(input)).toEqual({ systemPrompt: "x", timeout: 1 });
+	});
+
+	it("captures the four execution-shape fields (issue #227)", () => {
+		// The failure mode this pins: snapshotOriginalParams builds a literal and
+		// resolveRetryParams REPLACES the param object with its own literal, so a
+		// key missing here is both unrestored AND discarded when passed explicitly.
+		expect(
+			snapshotOriginalParams({
+				background: true,
+				gitMode: "branch",
+				approvalMode: "writes",
+				force: true,
+			}),
+		).toEqual({
+			background: true,
+			gitMode: "branch",
+			approvalMode: "writes",
+			force: true,
+		});
+	});
+
+	it("records a foreground run's background as false (a retry stays foreground)", () => {
+		const snap = snapshotOriginalParams({ background: false, gitMode: "none" });
+		expect(snap.background).toBe(false);
+		expect(Object.entries(snap).filter(([, v]) => v !== undefined)).toEqual([
+			["background", false],
+			["gitMode", "none"],
+		]);
 	});
 });

@@ -105,15 +105,25 @@ function escapeRegExp(s: string): string {
 // Router
 // ---------------------------------------------------------------------------
 
+/** One auto-route decision: the selected preset AND the keyword that
+ * matched — the evidence the dispatch result must show (transparency). */
+export interface AutoRouteDecision {
+	/** The preset name selected. */
+	preset: string;
+	/** The classification keyword whose match selected the preset. */
+	keyword: string;
+}
+
 /**
- * Auto-classify a task description to the best preset personality.
+ * Auto-classify a task description to the best preset personality, returning
+ * the preset AND the matched keyword (evidence for the dispatch result).
  * Uses case-insensitive keyword matching, checked in priority order.
- * Returns the first matching preset name, or undefined if no match.
+ * Returns the first match, or undefined if no rule matches.
  */
-export function autoRoutePreset(
+export function classifyTask(
 	task: string,
 	presets: SubagentPreset[],
-): string | undefined {
+): AutoRouteDecision | undefined {
 	if (!task || task.trim().length === 0) return undefined;
 
 	const lower = task.toLowerCase();
@@ -124,10 +134,21 @@ export function autoRoutePreset(
 
 		for (const keyword of rule.keywords) {
 			if (keywordMatches(lower, keyword)) {
-				return rule.preset;
+				return { preset: rule.preset, keyword };
 			}
 		}
 	}
 
 	return undefined;
+}
+
+/**
+ * Auto-classify a task description to the best preset personality.
+ * Thin wrapper over classifyTask — preset name only, no evidence.
+ */
+export function autoRoutePreset(
+	task: string,
+	presets: SubagentPreset[],
+): string | undefined {
+	return classifyTask(task, presets)?.preset;
 }

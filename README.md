@@ -82,14 +82,39 @@ All settings persist across sessions.
 | `inheritSystemPrompt` | boolean | `true` | Whether to inherit the main agent's system prompt. Set `false` to save tokens. |
 | `thinkingLevel` | string | — | `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. Capped at user's configured max. |
 | `outputFile` | string | — | Path for the subagent to write full findings. Returns only a summary. |
-| `timeout` | number | — | Max milliseconds. Exceeded → SIGTERM (5s grace) → SIGKILL. |
+| `timeout` | number | — | Max milliseconds. Exceeded → SIGTERM (5s grace) → SIGKILL. Background runs are additionally hard-capped at 30 minutes, so a larger value is silently shortened. |
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
 | `background` | boolean | `false` | Spawn as an independent background session; returns an ID immediately. With `tasks` it fans out (one background agent per task, one ID per task), and the conductor is woken once per agent as each finishes. See [Background execution](#background-execution). |
 | `priority` | string | — | Concurrency priority: `critical` / `high` / `normal` / `low`. Defaults to `normal`; higher-priority delegations queue ahead. `tasks[]` / `graph[]` steps can set `priority` per unit (see below). |
+| `tools` | array | — | Explicit tool allowlist for the subagent. |
+| `excludeTools` | array | — | Tool names to disable for the subagent. |
+| `noBuiltinTools` | boolean | — | Disable all pi built-in tools for the subagent. |
+
+### Safety & control
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `gitMode` | string | — | `'branch'` creates a work branch, captures the diff, and switches back; `'none'` does nothing. Falls back to the configured default. |
+| `approvalMode` | string | — | `auto` / `writes` / `always`. Default is user config (`/brl-subagent approval`). `always` is rejected for background runs. |
+| `force` | boolean | `false` | Dispatch anyway past a capability pre-flight block; the block is downgraded to a warning. |
+| `retryRunId` | string | — | Re-run a previously failed run with its recorded task and params. |
+| `retryOnTimeout` | boolean | `false` | Retry once if the subagent times out. The second timeout is a final failure. |
+
+**Capability pre-flight:** before spawning, the extension checks that the resolved toolset can actually do the task — a run/execute/test/compile/benchmark task with no `bash`, or an exploration task (search/grep/find/list/locate/glob) with none of `find`/`ls`/`grep`/`bash`. Such a dispatch is **rejected** by default; `force: true` downgrades the rejection to a **warning**. `force` never suppresses an `outputFile`-without-write conflict — that stays a hard error. Warnings are surfaced in the returned result in every mode.
+
+**Retries (`retryRunId`):** a retry rebuilds the parameter object from a fixed set of fields, falling back to the original run's recorded values, with explicit values on the retry call winning: `task`, `label`, `model`, `preset`, `systemPrompt`, `inheritSystemPrompt`, `thinkingLevel`, `priority`, `outputFile`, `timeout`, `cwd`, `tools`, `excludeTools`, `noBuiltinTools`, plus the four **execution-shape** fields `background`, `gitMode`, `approvalMode` and `force`.
+
+**The execution-shape fields are restored, so a retry keeps the original's shape:** retrying a background run re-runs it in the background (with its completion wake), a `gitMode: 'branch'` retry keeps its work branch, an `approvalMode`-constrained retry keeps that gating, and a retry that was capability-blocked keeps its `force`. Passing any of them explicitly on the retry call overrides the recorded value. One qualification on `gitMode`: when neither the record nor the call carries one, the **configured** default still applies — so a user with a global `gitMode: 'branch'` gets a work branch on every retry, and one with the default `'none'` gets none. Do not assume "no work branch" without checking the effective `gitMode`.
+
+**Fan-out origins are the exception.** Parallel/chain/graph units are recorded per unit, and those records deliberately snapshot **no** `background`, so retrying a unit is a **single run in the foreground**. Pass `background: true` explicitly if you want a background retry.
+
+**Not restored:** `chain` / `tasks` / `graph` and `params` are discarded, so retrying a multi-step run silently degrades to a single task — re-issue it fresh for those shapes. `retryOnTimeout` is **explicit-only**: it is never restored from the recorded run and takes effect only when you pass it on the retry call (it arms a deadline for *this* call).
+
+**`template` is asymmetric:** the original run's template is **not** restored, but a `template` you supply explicitly on the retry call **does** take effect (it is resolved before the retry merge, issue #175) — its body wins over the recorded `task`.
 
 ## Multi-step modes (chain, tasks, graph)
 
-Beyond a single `task`, `delegate_task` accepts three multi-step shapes: `chain` (sequential steps, `{previous}` references the prior step's output), `tasks` (parallel, independent), and `graph` (dependency-ordered, `{otherId}` references another task's output).
+Beyond a single `task`, `delegate_task` accepts three multi-step shapes: `chain` (sequential steps, `{previous}` references the prior step's output), `tasks` (parallel, independent), and `graph` (dependency-ordered, `{<nodeId>}` references another node's output — the referenced node's own `id`, which must be a word-character id: letters, digits, and underscore. `{step-1}` and `{node.a}` are not matched and are left as literal text).
 
 `background: true` fans out the `tasks` shape into one background agent per task (one ID per task, one completion wake per agent); `chain` and `graph` reject it.
 
@@ -113,7 +138,7 @@ Stops a running background agent — a real abort, not a status flip.
 |---|---|---|
 | `agent_id` | string | Agent ID of the running background session to stop |
 
-**What it does:** aborts the live session via `session.abort()` — the pending `prompt()` resolves with `stopReason: "aborted"` rather than hanging — and marks the agent `stopped`. Partial work from a `gitMode: 'branch'` run is captured in the result before the work branch is discarded. Returns an error if the agent is not found or already terminal. Use it to halt a background agent that is no longer needed.
+**What it does:** aborts the live session via `session.abort()` — the pending `prompt()` resolves with `stopReason: "aborted"` rather than hanging — and marks the agent `stopped`. Partial work from a `gitMode: 'branch'` run is captured in the result before the work branch is discarded. Returns an error if the agent is not found; an already-terminal agent is a no-op success (the call is idempotent). Use it to halt a background agent that is no longer needed.
 
 ---
 
@@ -215,9 +240,11 @@ These are deliberately THIN teaching examples — 2-4 line bodies showing `${par
 ```js
 delegate_task({
   template: "code-review",
-  params: { pr: "https://github.com/org/repo/pull/42" },
+  params: { target: "https://github.com/org/repo/pull/42" },
 });
 ```
+
+The built-in `code-review` template's slot is `${target}` (its companion `security-audit` / `refactor` templates use `${target}` too). The `${pr}` slot in the custom-template YAML example above belongs to *that* file, not the built-in one.
 
 - Every `${param}` slot in the template must be provided in `params` — a missing slot fails the call with an error listing the missing names.
 - Template fields are **defaults**: explicitly-provided `delegate_task` parameters override them.
@@ -254,7 +281,7 @@ Set `background: true` to spawn the subagent as an independent session that retu
 
 **Background safety controls (issue #28):** background agents honor the same safety controls as foreground runs — no more unattended sessions that bypass approval, git isolation, deadlines, or cost:
 
-- **Per-agent timeout** — the deadline is armed before the prompt starts (preflight time counts toward it). On expiry the session is aborted and the agent ends with status `stopped` and the timeout reason. Timeout values are normalized (`0`/negative/`NaN`/`Infinity`/`≥ 2^31` → no timeout) and a double-fire guard prevents the timer from acting on an already-settled agent.
+- **Per-agent timeout** — the deadline is armed immediately after the prompt is issued, so in-prompt preflight (auth, model resolution) counts toward it. Background timeouts are hard-capped at 30 minutes — a larger `timeout` is silently shortened. On expiry the session is aborted and the agent ends with status `stopped` and the timeout reason. Timeout values are normalized (`0`/negative/`NaN`/`Infinity`/`≥ 2^31` → no timeout) and a double-fire guard prevents the timer from acting on an already-settled agent.
 - **Session cost limit (R5)** — the cost check runs before the background spawn, so a session at its limit cannot bypass it by delegating to background. For a background fan-out the whole batch is checked up front as per-task estimate × N.
 - **Approval mode** — `approvalMode: 'always'` is rejected for background agents (there is no interactive dialog to approve a diff while running unattended); `'writes'` silently auto-approves with a warning logged. For a fan-out, `'always'` rejects the whole batch before any spawn and `'writes'` warns once for the batch.
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch. `gitMode: 'branch'` is rejected for background fan-out — see [Background fan-out](#background-fan-out).
@@ -265,7 +292,7 @@ Set `background: true` to spawn the subagent as an independent session that retu
 
 Fan-out validates the entire batch before spawning anything. Any invalid task — `cwd`, `outputFile`, or a pre-task check — rejects the whole batch before a single spawn starts, and the error names the task (`Task N ("label")`). Per-task overrides are honoured: `model`, `thinkingLevel`, `tools` / `excludeTools` / `noBuiltinTools`, `systemPrompt` / `inheritSystemPrompt`, `outputFile`, `timeout`, `cwd`, `priority`, `label`.
 
-Three checks reject the fan-out up front, before any spawn: `approvalMode: 'always'`; `gitMode: 'branch'` for the batch (the git lock is awaited inside the first spawn and held until that agent settles, so same-cwd branch-mode spawns would serialize and block the call — the rule is blanket because the lock is keyed by the cwd path, not the repository root); and the session cost limit, checked as per-task estimate × N.
+Three checks reject the fan-out up front, before any spawn: `approvalMode: 'always'`; `gitMode: 'branch'` for the batch (the git lock is awaited inside the first spawn and held until that agent settles, so branch-mode spawns targeting the same repository would serialize and block the call — the rule is blanket because the lock is keyed by the resolved repository root, so any two units of the same repo contend); and the session cost limit, checked as per-task estimate × N.
 
 If a spawn fails mid-loop, fan-out stops and reports the failed task plus the IDs already started; an abort mid-loop stops further spawns. Either way, the agents already started stay detached and still wake the conductor. Everything else is unchanged: single background, foreground parallel, the `MAX_PARALLEL_TASKS` cap (8), a live-monitor row per agent, `get_subagent_result` / `steer_subagent` / `stop_subagent` by agent ID, per-agent timeouts, and a single `'writes'` approval warning for the batch.
 

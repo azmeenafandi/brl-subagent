@@ -65,6 +65,10 @@ import { createSessionState, sweepStaleLiveSubagents } from "../state";
 // module cache), pinned by the crash-test probe below.
 import { __setOutputDir } from "../transcript";
 import { __setStorageDir } from "../session-manager";
+// Issue #195: the REAL session_start handler points the module-level logger's
+// file sink at testCwd (setLogCwd(ctx.cwd)); the suite disables that sink
+// around teardown so late writes cannot re-create removed test dirs.
+import { setLogCwd } from "../logging";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -220,7 +224,19 @@ let tempPiBase = ""; // <tmpdir>/brl-step-model-pi-XXXX, fresh per test
 let tempOutputDir = "";
 let tempStorageDir = "";
 
+// Issue #195: /tmp dirs matching this suite's prefix that existed BEFORE the
+// suite ran (leftovers from earlier runs). The afterAll ratchet below fails
+// only on dirs this run created, so a dirty /tmp cannot redden it.
+const preexistingTmpDirs = new Set(
+	fs.readdirSync(os.tmpdir()).filter((e) => e.startsWith("brl-per-step-model-")),
+);
+
 beforeEach(() => {
+	// Issue #195: disable the shared file sink BEFORE removing the previous
+	// testCwd. The sink still points at that previous cwd until THIS test's
+	// session_start re-points it, so a late/async write landing in between
+	// would re-create the just-removed dir (the logger mkdirs on write).
+	setLogCwd(undefined);
 	recordedEntries = [];
 	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
 	sentMessages = [];
@@ -243,9 +259,20 @@ beforeEach(() => {
 	tool = setupExtension();
 });
 
-afterAll(() => {
+afterAll(async () => {
+	// Issue #195: make teardown final for the file sink. Disable it FIRST —
+	// the sink resolves its log path per write, so once disabled no late/async
+	// write can re-create the dirs removed below.
+	setLogCwd(undefined);
 	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
 	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
+	// Drain in-flight async work, then ratchet: this run must not leave a
+	// single new brl-per-step-model-* dir behind (issue #195).
+	await new Promise((resolve) => setImmediate(resolve));
+	const leaked = fs
+		.readdirSync(os.tmpdir())
+		.filter((e) => e.startsWith("brl-per-step-model-") && !preexistingTmpDirs.has(e));
+	expect(leaked).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------
