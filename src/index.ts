@@ -512,7 +512,8 @@ export default function (pi: ExtensionAPI) {
 		// #32). Chain top-level tasks are empty (modeCount forbids task+chain), so
 		// keyword warnings skip on empty text and only the hard outputFile-vs-write
 		// conflict applies (issue #34). The mode-level outputFile on globalParams is
-		// the one validated; per-step outputFiles are future work (issue #3).
+		// the one validated here; every step's own cwd/outputFile/tools are
+		// validated by the per-step pre-pass below (issue #222).
 		const validation = validatePreTask({
 			task: globalParams.task,
 			toolOptions: globalParams.toolOptions,
@@ -531,6 +532,47 @@ export default function (pi: ExtensionAPI) {
 				details: undefined,
 				isError: true,
 			};
+		}
+
+		// Per-step pre-pass (issue #222): resolve + validate EVERY step before
+		// any spawn, so a single bad step rejects the chain with nothing
+		// started — the same all-before-any-spawn semantics the background
+		// fan-out and the parallel `tasks` shape use. Chain steps are fully
+		// known up front and a step's cwd/outputFile never depend on a previous
+		// step's output (only its TASK text consumes {previous}), so the pass
+		// can run up front — and must, because discovering step 5's bad cwd
+		// after four steps already ran would waste their whole budget.
+		const stepCwds: string[] = [];
+		const stepWarnings: string[] = [];
+		for (let i = 0; i < chainSteps.length; i++) {
+			const merged = mergeSubTaskParams(globalParams, chainSteps[i]);
+			const stepPrefix = `Step ${i + 1} ("${displayTaskName(merged)}")`;
+
+			const stepTargets = validateDelegationTargets({
+				ctx,
+				effectiveCwd: merged.effectiveCwd,
+				outputFile: merged.outputFile,
+				prefix: stepPrefix,
+			});
+			if (!stepTargets.ok) return stepTargets.error;
+			stepCwds.push(stepTargets.cwd);
+
+			const stepValidation = runPreTaskValidation({
+				log,
+				label: "Chain",
+				prefix: stepPrefix,
+				logContext: { step: i + 1 },
+				preTask: {
+					task: merged.task,
+					toolOptions: merged.toolOptions,
+					thinkingLevel: merged.thinkingLevel,
+					gitMode: globalParams.resolvedGitMode,
+					outputFile: merged.outputFile,
+					force: params.force as boolean | undefined,
+				},
+			});
+			if (stepValidation.error) return stepValidation.error;
+			for (const w of stepValidation.warnings) stepWarnings.push(`${stepPrefix}: ${w}`);
 		}
 
 		// Resolve model once (per-call top-level model override beats preset)
@@ -697,7 +739,10 @@ export default function (pi: ExtensionAPI) {
 				let result: SubagentResult;
 				try {
 					result = await runSubagent(
-						resolvedCwd,
+						// Issue #222: this step's OWN validated cwd (the pre-pass
+						// resolved it against ctx.cwd) — the mode-level
+						// resolvedCwd is the fallback for steps that declare none.
+						stepCwds[i],
 						subagentPrompt,
 						stepModel,
 						merged.thinkingLevel,
@@ -715,7 +760,7 @@ export default function (pi: ExtensionAPI) {
 					// run entry as failed — crashOutput comes from the live entry's
 					// last streamed output (the crash result itself has no
 					// messages), and errorCategory is classified onto originalParams.
-					finalizeUnitRunCrash(state, pi, run, err, "Chain step", resolvedCwd, log, {
+					finalizeUnitRunCrash(state, pi, run, err, "Chain step", stepCwds[i], log, {
 						step: i + 1,
 					});
 				}
@@ -860,9 +905,15 @@ export default function (pi: ExtensionAPI) {
 			};
 			state.persistRun(pi, chainAggregateRun);
 
+			// Per-step validation warnings ride the result, prefixed with their
+			// step (issue #222), after the JSON payload — empty renders nothing so
+			// warning-free results stay byte-identical.
 			return {
 				content: [
-					{ type: "text" as const, text: JSON.stringify(chainDetails, null, 2) },
+					{
+						type: "text" as const,
+						text: JSON.stringify(chainDetails, null, 2) + formatValidationWarnings(stepWarnings),
+					},
 				],
 				details: chainDetails,
 			};
@@ -973,8 +1024,9 @@ export default function (pi: ExtensionAPI) {
 		// #32). Parallel top-level tasks are empty (modeCount forbids task+tasks),
 		// so keyword warnings skip on empty text and only the hard
 		// outputFile-vs-write conflict applies (issue #34). The mode-level
-		// outputFile on globalParams is the one validated; per-step outputFiles
-		// are future work (issue #3).
+		// outputFile on globalParams is the one validated here; every task's own
+		// cwd/outputFile/tools are validated by the per-task pre-pass below
+		// (issue #222).
 		const preTask = runPreTaskValidation({
 			log,
 			label: "Parallel",
@@ -988,17 +1040,32 @@ export default function (pi: ExtensionAPI) {
 		});
 		if (preTask.error) return preTask.error;
 
-		// Per-task pre-pass (issue #220): validate EVERY task before any spawn,
-		// so a single capability-blocked task rejects the batch with nothing
+		// Per-task pre-pass (issue #220, extended by #222): validate EVERY task
+		// before any spawn, so a single bad task rejects the batch with nothing
 		// started (`force` degrades capability errors to warnings) — the same
-		// semantics runBackgroundFanOut applies. Per-task warnings are prefixed
-		// with their unit and collected here to ride the final result. The
-		// mode-entry validation above stays for the mode-level outputFile
-		// (issue #34).
+		// semantics runBackgroundFanOut applies. Each task's OWN cwd is resolved
+		// and validated here (with its outputFile, resolved against that cwd) and
+		// the resolved value is what that task spawns in — issue #222 closed the
+		// gap where a per-task `cwd` was merged but the spawn still used the
+		// mode-level cwd. Per-task warnings are prefixed with their unit and
+		// collected here to ride the final result. The mode-entry validation
+		// above stays for the mode-level outputFile (issue #34).
 		const taskWarnings: string[] = [];
+		// Parallel index → the task's own validated cwd (issue #222).
+		const taskCwds: string[] = [];
 		for (let i = 0; i < taskList.length; i++) {
 			const merged = mergeSubTaskParams(globalParams, taskList[i]);
 			const taskPrefix = `Task ${i + 1} ("${displayTaskName(merged)}")`;
+
+			const taskTargets = validateDelegationTargets({
+				ctx,
+				effectiveCwd: merged.effectiveCwd,
+				outputFile: merged.outputFile,
+				prefix: taskPrefix,
+			});
+			if (!taskTargets.ok) return taskTargets.error;
+			taskCwds.push(taskTargets.cwd);
+
 			const unitValidation = runPreTaskValidation({
 				log,
 				label: "Parallel",
@@ -1065,6 +1132,7 @@ export default function (pi: ExtensionAPI) {
 		const runTask = async (
 			index: number,
 			merged: ReturnType<typeof mergeSubTaskParams>,
+			unitCwd: string,
 		): Promise<boolean> => {
 
 			// C3: Resolve this step's model override (step.model > global resolved model)
@@ -1141,7 +1209,8 @@ export default function (pi: ExtensionAPI) {
 			// the live ghost (grace logic treats a 'running' record as live).
 			try {
 				const result = await runSubagent(
-					resolvedCwd,
+					// Issue #222: this task's OWN validated cwd.
+					unitCwd,
 					subagentPrompt,
 					stepModel,
 					merged.thinkingLevel,
@@ -1184,7 +1253,7 @@ export default function (pi: ExtensionAPI) {
 				// the live drill-in loops forever. finalizeLiveSubagent is
 				// idempotent; the rethrow keeps Promise.allSettled semantics (the
 				// caller's finally still releases the concurrency slot).
-				finalizeUnitRunCrash(state, pi, run, err, "Parallel subtask", resolvedCwd, log, {
+				finalizeUnitRunCrash(state, pi, run, err, "Parallel subtask", unitCwd, log, {
 					index,
 				});
 			}
@@ -1262,7 +1331,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			let taskSuccess = false;
 			try {
-				taskSuccess = await runTask(index, merged);
+				taskSuccess = await runTask(index, merged, taskCwds[index]);
 			} finally {
 				// Issue #137: release with the unit's real success — the status
 				// bar's "N failed" count reflects the true outcome.
@@ -1453,8 +1522,9 @@ export default function (pi: ExtensionAPI) {
 		// #32). Graph top-level tasks are empty (modeCount forbids task+graph),
 		// so keyword warnings skip on empty text and only the hard
 		// outputFile-vs-write conflict applies (issue #34). The mode-level
-		// outputFile on globalParams is the one validated; per-step outputFiles
-		// are future work (issue #3).
+		// outputFile on globalParams is the one validated here; every node's own
+		// cwd/outputFile/tools are validated by the per-node pre-pass below
+		// (issue #222).
 		const validation = validatePreTask({
 			task: globalParams.task,
 			toolOptions: globalParams.toolOptions,
@@ -1530,6 +1600,65 @@ export default function (pi: ExtensionAPI) {
 		}
 		const waves = sortResult.waves;
 
+		// Per-node pre-pass (issue #222): resolve + validate EVERY node before
+		// any spawn, so a single bad node rejects the whole graph with nothing
+		// started — the same all-before-any-spawn semantics the background
+		// fan-out, the parallel `tasks` shape and the chain use. Each node's OWN
+		// cwd is resolved and validated here (with its outputFile, resolved
+		// against that cwd) and the resolved value is what that node spawns in.
+		// The pre-pass runs on the DECLARED task text, before {id} substitution
+		// (the substituted text is only known mid-dispatch, once a dependency's
+		// output exists) — the capability/keyword rules do not read the
+		// placeholder body, and refusing to validate up front would mean a bad
+		// node in the LAST wave is discovered after every earlier wave already
+		// spent its budget.
+		const nodeCwds = new Map<string, string>();
+		const nodeWarnings: string[] = [];
+		for (const graphTask of graphTasks) {
+			const merged = mergeSubTaskParams(globalParams, {
+				task: graphTask.task,
+				label: graphTask.label,
+				model: graphTask.model,
+				thinkingLevel: graphTask.thinkingLevel,
+				priority: graphTask.priority,
+				cwd: graphTask.cwd,
+				timeout: graphTask.timeout,
+				outputFile: graphTask.outputFile,
+				tools: graphTask.tools,
+				excludeTools: graphTask.excludeTools,
+				noBuiltinTools: graphTask.noBuiltinTools,
+				systemPrompt: graphTask.systemPrompt,
+				inheritSystemPrompt: graphTask.inheritSystemPrompt,
+			});
+			const nodePrefix = `Node "${graphTask.id}"`;
+
+			const nodeTargets = validateDelegationTargets({
+				ctx,
+				effectiveCwd: merged.effectiveCwd,
+				outputFile: merged.outputFile,
+				prefix: nodePrefix,
+			});
+			if (!nodeTargets.ok) return nodeTargets.error;
+			nodeCwds.set(graphTask.id, nodeTargets.cwd);
+
+			const nodeValidation = runPreTaskValidation({
+				log,
+				label: "Graph",
+				prefix: nodePrefix,
+				logContext: { id: graphTask.id },
+				preTask: {
+					task: merged.task,
+					toolOptions: merged.toolOptions,
+					thinkingLevel: merged.thinkingLevel,
+					gitMode: globalParams.resolvedGitMode,
+					outputFile: merged.outputFile,
+					force: params.force as boolean | undefined,
+				},
+			});
+			if (nodeValidation.error) return nodeValidation.error;
+			for (const w of nodeValidation.warnings) nodeWarnings.push(`${nodePrefix}: ${w}`);
+		}
+
 		// Build base prompt once
 		const basePrompt = ctx.getSystemPrompt();
 
@@ -1601,6 +1730,10 @@ export default function (pi: ExtensionAPI) {
 					};
 
 					const merged = mergeSubTaskParams(globalParams, subTaskParams);
+					// Issue #222: the node's OWN validated cwd (pre-pass);
+					// resolvedCwd (the mode-level cwd) is the guaranteed
+					// fallback, so a node that declares none still resolves.
+					const nodeCwd = nodeCwds.get(graphTask.id) ?? resolvedCwd;
 
 					// C3: Resolve this step's model override (step.model > global resolved model)
 					const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
@@ -1684,7 +1817,7 @@ export default function (pi: ExtensionAPI) {
 						const stepOnUpdate = makeLiveOnUpdate(state, runId, onUpdate);
 
 						const result = await runSubagent(
-							resolvedCwd,
+							nodeCwd,
 							subagentPrompt,
 							stepModel,
 							merged.thinkingLevel,
@@ -1735,7 +1868,7 @@ export default function (pi: ExtensionAPI) {
 						// finalizeLiveSubagent is idempotent; the rethrow keeps
 						// Promise.allSettled semantics (a failing node must NOT cancel
 						// sibling nodes in the wave).
-						finalizeUnitRunCrash(state, pi, run, err, "Graph node", resolvedCwd, log, {
+						finalizeUnitRunCrash(state, pi, run, err, "Graph node", nodeCwd, log, {
 							id: graphTask.id,
 						});
 					} finally {
@@ -1832,9 +1965,15 @@ export default function (pi: ExtensionAPI) {
 			};
 			state.persistRun(pi, graphAggregateRun);
 
+			// Per-node validation warnings ride the result, prefixed with their
+			// node id (issue #222), after the JSON payload — empty renders
+			// nothing so warning-free results stay byte-identical.
 			return {
 				content: [
-					{ type: "text" as const, text: JSON.stringify(graphDetails, null, 2) },
+					{
+						type: "text" as const,
+						text: JSON.stringify(graphDetails, null, 2) + formatValidationWarnings(nodeWarnings),
+					},
 				],
 				details: graphDetails,
 			};
