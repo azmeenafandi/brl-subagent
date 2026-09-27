@@ -2079,8 +2079,7 @@ export default function (pi: ExtensionAPI) {
 		// block this call for the whole chain. The rule is blanket (not
 		// per-repository-checked) because the lock is keyed by the resolved
 		// repository root: units in different directories of one repo share the
-		// working tree and contend for the same lock, and the cheap up-front
-		// check cannot prove otherwise.
+		// working tree and contend for the same lock.
 		if (globalParams.resolvedGitMode === 'branch') {
 			return {
 				content: [{ type: "text" as const, text:
