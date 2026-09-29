@@ -69,7 +69,7 @@ import { preflightCheck } from "./preflight";
 import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets, formatValidationWarnings } from "./prelude";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
-import { validatePreTask, diagnoseFailure } from "./validate";
+import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
 import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams, snapshotOriginalParams } from "./params";
 import { createSessionState } from "./state";
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
@@ -2434,9 +2434,11 @@ export default function (pi: ExtensionAPI) {
 		// Hard cap: stop polling AND abort the session after the deadline.
 		// W2 (issue #28): previously this only stopped the poller — the pi
 		// session kept running forever (orphaned). Now it pre-sets
-		// 'stopped' (so the .then keeps it, per W1) and aborts the
-		// session. The cap honors a shorter per-agent timeout.
-		const hardCapMs = Math.min(spawn.timeout ?? 30 * 60 * 1000, 30 * 60 * 1000);
+		// 'stopped' (so the .then keeps it, per W1) and aborts the session.
+		// Issue #240: an explicit per-agent timeout is HONORED verbatim; this
+		// deadline DEFAULTS to 30m only when no timeout is given. It is a
+		// default, not a ceiling.
+		const hardCapMs = spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS;
 		const hardCapHandle = setTimeout(() => {
 			if (!completed && !agent.completedAt) {
 				try {
@@ -2744,7 +2746,7 @@ export default function (pi: ExtensionAPI) {
 			"You can customize per-call via inheritSystemPrompt and systemPrompt: set inheritSystemPrompt: false to save context, provide a systemPrompt for custom instructions, or use both to add instructions on top of inheritance.",
 			"Set thinkingLevel per call to match task complexity. The level is capped at the user's configured maximum. Map tasks to levels using this heuristic: off = file listing, grep, simple read. minimal = file diff, syntax check, find-and-replace. low = refactoring, test generation, documentation. medium = default — code review, debugging, moderate analysis. high = security audit, architecture review, complex debugging. xhigh = multi-step causal reasoning, research, novel problem solving. Default to 'off' or 'minimal' for trivial tasks — do not waste the user's budget.",
 			"Use outputFile to have the subagent write full findings to disk and return only a structured summary — saves context tokens for large investigations.",
-			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck. Background runs are additionally hard-capped at 30 minutes, so a larger value is silently shortened.",
+			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck. Background runs default to a 30-minute deadline when no timeout is given; an explicit timeout is honored as given (30 minutes is a default, not a ceiling).",
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
 			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
 			`Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.`,
@@ -2760,7 +2762,7 @@ export default function (pi: ExtensionAPI) {
 			"2. **Thinking level**: Match thinking level to task complexity: off/minimal for trivial tasks (file listing, grep), low for refactoring/docs, medium for code review/debugging, high for security audits/complex debugging, xhigh for multi-step reasoning/novel problems.",
 			"3. **Git mode**: Use gitMode='branch' for tasks that create commits or PRs. Use gitMode='none' for read-only tasks.",
 			"4. **Tools**: Verify the subagent has the tools it needs. If the task writes files, ensure write and edit are not excluded. If the task runs commands, ensure bash is not excluded.",
-			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s. Background runs are hard-capped at 30 minutes regardless of the value set.",
+			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s. Background runs default to a 30-minute deadline when no timeout is set; an explicit timeout is honored.",
 			"",
 			"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1): tool warnings are surfaced in the returned result, but two mismatches are HARD errors that reject the delegation — outputFile with the write tool excluded, and a capability-critical task/toolset mismatch (a run/execute/test/compile/benchmark task without bash, or an exploration task with none of find/ls/grep/bash; pass force: true to override the capability class). Getting it right the first time is faster and more efficient.",
 			"",
@@ -2818,7 +2820,7 @@ export default function (pi: ExtensionAPI) {
 					description:
 						"Maximum time in milliseconds the subagent is allowed to run. " +
 						"If exceeded, the subagent is killed and an error is returned. " +
-						"Background runs are additionally hard-capped at 30 minutes, so a larger value is silently shortened there.",
+						"Background runs default to a 30-minute deadline when no timeout is given; an explicit timeout is honored as given (30 minutes is a default, not a ceiling). A raw value ≥ 2^31-1 normalizes to the default.",
 				}),
 			),
 			cwd: Type.Optional(
