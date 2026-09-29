@@ -764,7 +764,7 @@ describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 		}
 	});
 
-	it("clamps an oversized timeout to the 30min hard cap (m1)", async () => {
+	it("neutralizes an oversized raw timeout to the background default (m1)", async () => {
 		vi.useFakeTimers();
 		try {
 			mocks.session.prompt.mockReturnValue(new Promise(() => {}));
@@ -773,16 +773,44 @@ describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
 				task: "test oversized timeout",
 				// Direct spawnBackgroundSession call (no resolveSubagentParams):
-				// a raw overflow value must not become an instant kill.
+				// a raw overflow value must not become an instant kill. #240:
+				// normalizeTimeout maps it to undefined → the 30m default.
 				timeout: 2 ** 31,
 			});
-			// Clamped to 30min — 1ms is NOT enough to fire.
+			// Normalized to the 30m default — 1ms is NOT enough to fire.
 			await vi.advanceTimersByTimeAsync(1);
 			expect(mocks.session.abort).not.toHaveBeenCalled();
-			// It fires at the 30min clamp.
+			// It fires at the 30m background default.
 			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
 			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
 			expect(getAgent(agent.id)?.status).toBe("stopped");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("honors an explicit timeout beyond 30 minutes (no ceiling) (#240)", async () => {
+		vi.useFakeTimers();
+		try {
+			mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+			mocks.session.abort.mockClear();
+			const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "test long explicit timeout",
+				timeout: 45 * 60 * 1000,
+			});
+
+			// The pre-#240 30min clamp would have fired here; an explicit 45m
+			// timeout must be honored verbatim — no ceiling.
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+			expect(getAgent(agent.id)?.status).toBe("running");
+
+			// It fires at the explicit 45m deadline.
+			await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+			expect(getAgent(agent.id)?.error).toContain("Timed out after 2700000ms");
 		} finally {
 			vi.useRealTimers();
 		}

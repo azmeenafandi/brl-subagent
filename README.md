@@ -11,7 +11,7 @@
 `brl-subagent` is **one of the most capable subagent orchestration extensions for pi** — one `delegate_task` tool that spawns fully isolated subagent processes, each with its own model, context window, tool permissions, and thinking level.
 
 - **Multi-step delegation, natively** — chain, parallel, and dependency-graph modes with per-step model routing, so a complex task fans out exactly as you design it.
-- **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and hard caps. Nothing orphans; nothing leaks.
+- **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and a 30-minute default deadline for runs that don't set one. Nothing orphans; nothing leaks.
 - **Preset-driven tool scoping** — every subagent runs with exactly the tools its job needs, restricted by preset or per-call `tools`/`excludeTools`, with auto-route that picks the right preset when you don't.
 - **Templates with slots** — saved, file-backed task templates with `${param}` placeholders for workflows you run again and again.
 - **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence, and a 975+ test suite pinning every contract against the real pi SDK.
@@ -89,7 +89,7 @@ All settings persist across sessions.
 | `inheritSystemPrompt` | boolean | `true` | Whether to inherit the main agent's system prompt. Set `false` to save tokens. |
 | `thinkingLevel` | string | — | `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. Capped at user's configured max. |
 | `outputFile` | string | — | Path for the subagent to write full findings. Returns only a summary. |
-| `timeout` | number | — | Max milliseconds. Exceeded → SIGTERM (5s grace) → SIGKILL. Background runs are additionally hard-capped at 30 minutes, so a larger value is silently shortened. |
+| `timeout` | number | — | Max milliseconds. Exceeded → SIGTERM (5s grace) → SIGKILL. Background runs with no explicit `timeout` get a 30-minute default deadline; an explicit timeout is honored as given (30 minutes is a default, not a ceiling). A raw value `≥ 2^31-1` normalizes to the default. |
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
 | `background` | boolean | `false` | Spawn as an independent background session; returns an ID immediately. With `tasks` it fans out (one background agent per task, one ID per task), and the conductor is woken once per agent as each finishes. See [Background execution](#background-execution). |
 | `priority` | string | — | Concurrency priority: `critical` / `high` / `normal` / `low`. Defaults to `normal`; higher-priority delegations queue ahead. `tasks[]` / `graph[]` steps can set `priority` per unit (see below). |
@@ -288,7 +288,7 @@ Set `background: true` to spawn the subagent as an independent session that retu
 
 **Background safety controls (issue #28):** background agents honor the same safety controls as foreground runs — no more unattended sessions that bypass approval, git isolation, deadlines, or cost:
 
-- **Per-agent timeout** — the deadline is armed immediately after the prompt is issued, so in-prompt preflight (auth, model resolution) counts toward it. Background timeouts are hard-capped at 30 minutes — a larger `timeout` is silently shortened. On expiry the session is aborted and the agent ends with status `stopped` and the timeout reason. Timeout values are normalized (`0`/negative/`NaN`/`Infinity`/`≥ 2^31` → no timeout) and a double-fire guard prevents the timer from acting on an already-settled agent.
+- **Per-agent timeout** — the deadline is armed immediately after the prompt is issued, so in-prompt preflight (auth, model resolution) counts toward it. A background run with no explicit `timeout` gets a 30-minute default deadline (the issue #28 orphan protection); an explicit timeout is honored as given — 30 minutes is the default, not a ceiling. On expiry the session is aborted and the agent ends with status `stopped` and the timeout reason. Timeout values are normalized (`0`/negative/`NaN`/`Infinity`/`≥ 2^31` → no timeout, which for a background run means the 30-minute default) and a double-fire guard prevents the timer from acting on an already-settled agent.
 - **Session cost limit (R5)** — the cost check runs before the background spawn, so a session at its limit cannot bypass it by delegating to background. For a background fan-out the whole batch is checked up front as per-task estimate × N.
 - **Approval mode** — `approvalMode: 'always'` is rejected for background agents (there is no interactive dialog to approve a diff while running unattended); `'writes'` silently auto-approves with a warning logged. For a fan-out, `'always'` rejects the whole batch before any spawn and `'writes'` warns once for the batch.
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch. `gitMode: 'branch'` is rejected for background fan-out — see [Background fan-out](#background-fan-out).

@@ -11,6 +11,7 @@ import { assertSafeAgentId, sanitizeErrorMessage } from './sanitize';
 import { wrapTask } from './prompt';
 import { createLogger } from './logging';
 import { getCurrentBranch, createWorkBranch, captureDiff, switchToBranch, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
+import { normalizeTimeout, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -865,9 +866,13 @@ export async function spawnBackgroundSession(
   // Armed immediately after the prompt call so in-prompt preflight (auth
   // check, model resolution) counts toward the deadline; the abort lands in
   // the .then below as an aborted run (probe contract). We pre-set the status
-  // so the .then keeps 'stopped' with the timeout reason recorded. The value
-  // is normalized upstream (normalizeTimeout) but clamp again here — a raw
-  // >=2^31 or Infinity would make Node fire the timer at ~1ms (instant kill).
+  // so the .then keeps 'stopped' with the timeout reason recorded. The raw
+  // value is normalized here (issue #240): a raw >=2^31 or Infinity would make
+  // Node fire the timer at ~1ms (instant kill), so normalizeTimeout maps it to
+  // undefined. An explicit timeout is HONORED verbatim (no ceiling); only the
+  // no-timeout fallback uses the 30m background default. The `params.timeout`
+  // guard below keeps this timer unarmed on the no-timeout path, where the
+  // index.ts hard cap already owns the default deadline (no redundant timer).
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   if (params.timeout && params.timeout > 0) {
     timeoutHandle = setTimeout(() => {
@@ -887,7 +892,7 @@ export async function spawnBackgroundSession(
           error: (err as Error).message,
         });
       }
-    }, Math.min(params.timeout, 30 * 60 * 1000));
+    }, normalizeTimeout(params.timeout) ?? DEFAULT_BACKGROUND_DEADLINE_MS);
   }
 
   runPromise.then(() => {

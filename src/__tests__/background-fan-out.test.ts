@@ -564,3 +564,77 @@ describe("background fan-out for tasks mode (#198 phase 2)", () => {
 		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Background hard-cap deadline: a default, not a ceiling (#240)
+// ---------------------------------------------------------------------------
+
+describe("background hard-cap deadline is a default, not a ceiling (#240)", () => {
+	/**
+	 * A fake agent with a live session ref, so the 2s poller never takes its
+	 * nulled-ref crash path (which would clear the hard-cap timer first) and the
+	 * hard-cap abort is observable. The mocked spawn does not populate the
+	 * session-manager agent map, so `updateAgentStatus` on an unknown id is a
+	 * no-op — the abort call on the fake session ref is the firing signal.
+	 */
+	function stubLiveSpawn(abort: ReturnType<typeof vi.fn>): void {
+		h.spawnBackgroundSession.mockImplementation(
+			async (_pi: unknown, _ctx: unknown, p: SpawnParams) => ({
+				...makeFakeAgent(p),
+				_sessionRef: {
+					messages: [],
+					getSessionStats: () => ({ tokens: { input: 0, output: 0 } }),
+					abort,
+				},
+			}),
+		);
+	}
+
+	it("fires the hard cap at 30m when no timeout is given", async () => {
+		const abort = vi.fn().mockResolvedValue(undefined);
+		stubLiveSpawn(abort);
+		vi.useFakeTimers();
+		try {
+			await tool.execute(
+				"call-240-default",
+				{ task: "no explicit timeout", background: true },
+				undefined,
+				undefined,
+				makeCtx(),
+			);
+			// Not before the 30m default.
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 1);
+			expect(abort).not.toHaveBeenCalled();
+			// Fires at the 30m default.
+			await vi.advanceTimersByTimeAsync(1);
+			expect(abort).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("honors an explicit 45m timeout — fires at 45m, not at 30m (#240)", async () => {
+		const abort = vi.fn().mockResolvedValue(undefined);
+		stubLiveSpawn(abort);
+		vi.useFakeTimers();
+		try {
+			await tool.execute(
+				"call-240-45m",
+				{ task: "long explicit timeout", background: true, timeout: 45 * 60 * 1000 },
+				undefined,
+				undefined,
+				makeCtx(),
+			);
+			// The pre-#240 cap would have fired here; an explicit timeout must not.
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+			expect(abort).not.toHaveBeenCalled();
+			// Fires at the explicit 45m deadline.
+			await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
+			expect(abort).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+});
