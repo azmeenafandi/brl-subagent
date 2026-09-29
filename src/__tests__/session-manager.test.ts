@@ -22,6 +22,9 @@ const mocks = vi.hoisted(() => ({
 		setSessionName: vi.fn(),
 		prompt: vi.fn().mockResolvedValue(undefined),
 		abort: vi.fn().mockResolvedValue(undefined),
+		// Issue #241: steerAgent delivers via AgentSession.steer — the live-agent
+		// fixture exposes it so delivery tests can observe/redirect the call.
+		steer: vi.fn().mockResolvedValue(undefined),
 	},
 }));
 
@@ -136,6 +139,8 @@ beforeEach(() => {
 	});
 	mocks.session.prompt.mockClear();
 	mocks.session.setSessionName.mockClear();
+	mocks.session.steer.mockReset();
+	mocks.session.steer.mockResolvedValue(undefined);
 	(fakeCtx.modelRegistry.find as ReturnType<typeof vi.fn>).mockClear();
 	reloadImpl.reload.mockReset();
 	reloadImpl.reload.mockResolvedValue(undefined);
@@ -454,8 +459,10 @@ describe("agent id validation (F24)", () => {
 		expect(updateAgentStatus("../../etc/passwd", "running")).toBeNull();
 	});
 
-	it("steerAgent returns null for a traversal id (via getAgent)", () => {
-		expect(steerAgent("../../etc/passwd", "hi")).toBeNull();
+	it("steerAgent returns null for a traversal id (via getAgent)", async () => {
+		// getAgent rejects the id BEFORE the live-session check, so this resolves
+		// null without ever touching the fs or a session ref.
+		await expect(steerAgent("../../etc/passwd", "hi")).resolves.toBeNull();
 	});
 
 	it("getTranscriptPath throws for a traversal id", () => {
@@ -476,15 +483,18 @@ describe("agent id validation (F24)", () => {
 
 	it("persistAgent refuses a planted record with a traversal id (F24 indirection bypass)", () => {
 		// Attack chain from the review: plant a record with a valid-UUID filename
-		// but a traversal id FIELD, then steer it — getAgent passes the UUID
+		// but a traversal id FIELD, then mutate it — getAgent passes the UUID
 		// check, loadAgent returns the crafted record, and persistAgent would
 		// write via join(STORAGE_DIR, agent.id) outside the storage dir.
+		//
+		// Issue #241: steerAgent no longer persists (steering is not a state
+		// transition), so the F24 guard is only reachable through a
+		// still-persisting API — updateAgentStatus shares persistAgent, so the
+		// traversal-regression intent is preserved here.
 		const fs = require("node:fs") as typeof import("node:fs");
 		const path = require("node:path") as typeof import("node:path");
 		const plantDir = tempStorageDir;
-		const transcriptDir = tempOutputDir;
 		fs.mkdirSync(plantDir, { recursive: true });
-		fs.mkdirSync(transcriptDir, { recursive: true });
 		const planted = path.join(plantDir, `${ATTACK_UUID}.json`);
 		// The traversal id "../../brl-persist-bypass-test" from a two-level-deep
 		// storage dir (tempPiBase/subagents) resolves to tempPiBase/.. (the OS
@@ -493,12 +503,6 @@ describe("agent id validation (F24)", () => {
 			tempPiBase,
 			"..",
 			"brl-persist-bypass-test.json",
-		);
-		// steerAgent requires the transcript to exist (appendEntry throws otherwise)
-		fs.writeFileSync(
-			path.join(transcriptDir, `agent-${ATTACK_UUID}.jsonl`),
-			"",
-			"utf-8",
 		);
 
 		fs.writeFileSync(
@@ -512,7 +516,7 @@ describe("agent id validation (F24)", () => {
 			"utf-8",
 		);
 
-		const result = steerAgent(ATTACK_UUID, "hi");
+		const result = updateAgentStatus(ATTACK_UUID, "running");
 		expect(result).not.toBeNull(); // getAgent accepted the valid UUID
 		expect(fs.existsSync(escapeTarget)).toBe(false); // NO write outside the storage dir
 	});
@@ -521,24 +525,21 @@ describe("agent id validation (F24)", () => {
 		const fs = require("node:fs") as typeof import("node:fs");
 		const path = require("node:path") as typeof import("node:path");
 		const plantDir = tempStorageDir;
-		const transcriptDir = tempOutputDir;
 		fs.mkdirSync(plantDir, { recursive: true });
-		fs.mkdirSync(transcriptDir, { recursive: true });
 		const planted = path.join(plantDir, `${VALID_UUID}.json`);
-		fs.writeFileSync(
-			path.join(transcriptDir, `agent-${VALID_UUID}.jsonl`),
-			"",
-			"utf-8",
-		);
 		fs.writeFileSync(
 			planted,
 			JSON.stringify({ id: VALID_UUID, status: "running", task: "ok", startedAt: Date.now() }),
 			"utf-8",
 		);
 
-		steerAgent(VALID_UUID, "hi");
+		// Issue #241: steering no longer writes a status; exercise persistence
+		// through a still-persisting API. The error field proves the write landed
+		// while the status stays 'running' (steering is not a state transition).
+		updateAgentStatus(VALID_UUID, "running", "persisted via updateAgentStatus");
 		const persisted = JSON.parse(fs.readFileSync(planted, "utf-8"));
-		expect(persisted.status).toBe("steered"); // valid record persisted normally
+		expect(persisted.status).toBe("running"); // valid record persisted normally
+		expect(persisted.error).toBe("persisted via updateAgentStatus");
 	});
 });
 
@@ -2186,7 +2187,7 @@ describe("updateAgentStatus / steerAgent terminal-state contract", () => {
 		});
 		updateAgentStatus(agent.id, "completed");
 
-		expect(() => steerAgent(agent.id, "x")).toThrow(/Cannot steer agent/);
+		await expect(steerAgent(agent.id, "x")).rejects.toThrow(/Cannot steer agent/);
 	});
 
 	it("emits subagent:failed carrying the error when updateAgentStatus flips an agent to failed", async () => {
@@ -2208,5 +2209,90 @@ describe("updateAgentStatus / steerAgent terminal-state contract", () => {
 		expect(failed).toHaveLength(1);
 		expect(failed[0].agentId).toBe(agent.id);
 		expect(failed[0].data?.error).toBe("boom");
+	});
+});
+
+// =========================================================================
+// Issue #241 — steer_subagent DELIVERS into the live session.
+//
+// Pre-fix, steerAgent only recorded the message and flipped the agent to
+// 'steered' (which made the NEXT steer throw). These tests pin delivery,
+// repeat delivery, error propagation, and the no-session / no-SDK guards.
+//
+// Coverage boundary: these unit tests do NOT prove the real SDK queue drains
+// the message on the next model call — the conductor-side live sleep-ladder
+// probe covers that end-to-end property.
+// =========================================================================
+describe("steerAgent delivery (issue #241)", () => {
+	// A never-resolving prompt keeps the agent 'running' and its _sessionRef
+	// live while the run is pending — the W3 timeout / stopAgent fixture.
+	const makeLiveAgent = async (task: string) => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		return spawnBackgroundSession(fakePi as never, fakeCtx as never, { task });
+	};
+
+	it("(a) delivers via session.steer and leaves the status 'running'", async () => {
+		const agent = await makeLiveAgent("deliver a steer");
+		expect(agent.status).toBe("running");
+		expect(agent._sessionRef).toBe(mocks.session);
+
+		const result = await steerAgent(agent.id, "redirect to the other file");
+
+		expect(mocks.session.steer).toHaveBeenCalledTimes(1);
+		expect(mocks.session.steer).toHaveBeenCalledWith("redirect to the other file");
+		expect(result?.id).toBe(agent.id);
+		// Steering is NOT a state transition — flipping to 'steered' is what
+		// broke the second steer pre-fix.
+		expect(result?.status).toBe("running");
+	});
+
+	it("(b) repeat steers both deliver (one-shot regression pin)", async () => {
+		const agent = await makeLiveAgent("repeat steers");
+
+		await steerAgent(agent.id, "first");
+		await steerAgent(agent.id, "second");
+
+		expect(mocks.session.steer).toHaveBeenCalledTimes(2);
+		expect(mocks.session.steer).toHaveBeenNthCalledWith(1, "first");
+		expect(mocks.session.steer).toHaveBeenNthCalledWith(2, "second");
+		expect(getAgent(agent.id)?.status).toBe("running");
+	});
+
+	it("(c) propagates a delivery rejection (never a false success)", async () => {
+		const agent = await makeLiveAgent("failed delivery");
+		mocks.session.steer.mockRejectedValueOnce(new Error("session is closing"));
+
+		await expect(steerAgent(agent.id, "do not swallow me")).rejects.toThrow(
+			"session is closing",
+		);
+		expect(getAgent(agent.id)?.status).toBe("running");
+	});
+
+	it("(d) rejects with a clear error when there is no live session", async () => {
+		const agent = await makeLiveAgent("no live session");
+		agent._sessionRef = undefined;
+
+		await expect(steerAgent(agent.id, "orphan")).rejects.toThrow(
+			/no live session/,
+		);
+	});
+
+	it("rejects with a clear error when the installed SDK has no steer()", async () => {
+		const agent = await makeLiveAgent("unsupported sdk");
+		agent._sessionRef = { steer: undefined } as never;
+
+		await expect(steerAgent(agent.id, "unsupported")).rejects.toThrow(
+			/steering unsupported/,
+		);
+	});
+
+	it("records the transcript audit line after successful delivery", async () => {
+		const agent = await makeLiveAgent("audit line");
+		const transcript = await import("../transcript");
+
+		await steerAgent(agent.id, "audit me");
+
+		const entries = transcript.getTranscript(agent.id);
+		expect(entries.some((e) => e.content === "Steering: audit me")).toBe(true);
 	});
 });

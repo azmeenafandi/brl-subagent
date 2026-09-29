@@ -3717,7 +3717,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Steer Subagent",
 		description: [
 			"Send a steering message to a running background agent.",
-			"The message interrupts after the current tool execution.",
+			"The message is delivered after the agent's current tool call finishes, before its next model call.",
 			"Use this to redirect an agent's work without restarting it.",
 		].join(" "),
 		parameters: Type.Object({
@@ -3732,7 +3732,7 @@ export default function (pi: ExtensionAPI) {
 			const { steerAgent } = await import('./session-manager');
 			
 			try {
-				const agent = steerAgent(params.agent_id, params.message);
+				const agent = await steerAgent(params.agent_id, params.message);
 				
 				if (!agent) {
 					return {
