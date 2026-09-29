@@ -273,24 +273,45 @@ export async function stopAgent(id: string): Promise<BackgroundAgent | null> {
 }
 
 /**
- * Steer a running agent by injecting a message
- * 
- * NOTE: In v2.0.3, this is a placeholder.
- * Actual message injection will be implemented when pi's ExtensionAPI supports it.
+ * Steer a running agent by injecting a message into its live session.
+ *
+ * Issue #241: steering DELIVERS via the SDK's `AgentSession.steer()` — the
+ * message is queued while the agent is running and delivered after the current
+ * assistant turn finishes its tool calls, before the next model call.
+ *
+ * Steering is NOT a state transition: the agent stays 'running' (no status
+ * flip, no persistAgent) so REPEAT steers keep working. Delivery failures
+ * propagate to the caller — a false success would tell the conductor a steer
+ * landed when the agent never saw it. The transcript line is an audit record
+ * written AFTER successful delivery, best-effort: a landed steer must never be
+ * reported as failed because the audit write failed.
  */
-export function steerAgent(id: string, message: string): BackgroundAgent | null {
+export async function steerAgent(id: string, message: string): Promise<BackgroundAgent | null> {
   const agent = getAgent(id);
   if (!agent) return null;
   if (agent.status !== 'running') {
     throw new Error(`Cannot steer agent ${id}: status is ${agent.status}, not running`);
   }
 
-  // Record steering in transcript
-  transcript.appendEntry(id, 'user', `Steering: ${message}`);
+  const session = agent._sessionRef;
+  if (!session) {
+    throw new Error(`Cannot steer agent ${id}: no live session (the run may be settling)`);
+  }
+  if (typeof session.steer !== 'function') {
+    throw new Error('installed pi SDK has no AgentSession.steer — steering unsupported');
+  }
 
-  agent.status = 'steered';
-  agents.set(id, agent);
-  persistAgent(agent);
+  // Deliver FIRST — a rejection here must surface as a real tool error, never
+  // a recorded-but-undelivered steer.
+  await session.steer(message);
+
+  // Audit line — best-effort. The steer already landed; an append failure is
+  // logged, not propagated.
+  try {
+    transcript.appendEntry(id, 'user', `Steering: ${message}`);
+  } catch (err) {
+    log.warn(`steerAgent: transcript append failed for ${id}`, { error: (err as Error).message });
+  }
 
   eventBus.emit(eventBus.createEvent('subagent:steered', agent.id, { message }));
 
