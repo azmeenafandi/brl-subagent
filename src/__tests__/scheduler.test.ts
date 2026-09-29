@@ -30,7 +30,7 @@ function makeTask(
 // The runtime schema (Type.Optional) permits omitting it; the scheduler
 // must tolerate that (dependsOn may be undefined at runtime).
 function rootTask(id: string, task?: string): GraphTask {
-	return { id, task: task || `Task ${id}` } as unknown as GraphTask;
+	return { id, task: task || `Task ${id}` };
 }
 
 // =========================================================================
