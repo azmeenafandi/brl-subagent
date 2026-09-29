@@ -557,8 +557,8 @@ describe("normalizeTimeout (issue #28 PR #49 review M1/m1)", () => {
 	it("passes through valid deadlines unchanged (foreground may exceed 30min)", () => {
 		expect(normalizeTimeout(5000)).toBe(5000);
 		expect(normalizeTimeout(30 * 60 * 1000)).toBe(30 * 60 * 1000);
-		// Foreground legitimately supports >30min timeouts (runner kill); the
-		// background hard cap applies its own 30min Math.min.
+		// An explicit timeout is honored verbatim (no ceiling); 30m is only the
+		// no-timeout background default.
 		expect(normalizeTimeout(45 * 60 * 1000)).toBe(45 * 60 * 1000);
 	});
 });

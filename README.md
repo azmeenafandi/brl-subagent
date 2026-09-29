@@ -105,7 +105,7 @@ All settings persist across sessions.
 | `approvalMode` | string | — | `auto` / `writes` / `always`. Default is user config (`/brl-subagent approval`). `always` is rejected for background runs. |
 | `force` | boolean | `false` | Dispatch anyway past a capability pre-flight block; the block is downgraded to a warning. |
 | `retryRunId` | string | — | Re-run a previously failed run with its recorded task and params. |
-| `retryOnTimeout` | boolean | `false` | Retry once if the subagent times out. The second timeout is a final failure. |
+| `retryOnTimeout` | boolean | `false` | Retry once if a **foreground** subagent times out. The second timeout is a final failure. Background runs are not auto-retried — re-dispatch with `retryRunId`. |
 
 **Capability pre-flight:** before spawning, the extension checks that the resolved toolset can actually do the task — a run/execute/test/compile/benchmark task with no `bash`, or an exploration task (search/grep/find/list/locate/glob) with none of `find`/`ls`/`grep`/`bash`. Such a dispatch is **rejected** by default; `force: true` downgrades the rejection to a **warning**. `force` never suppresses an `outputFile`-without-write conflict — that stays a hard error. Warnings are surfaced in the returned result in every mode.
 
@@ -115,7 +115,7 @@ All settings persist across sessions.
 
 **Fan-out origins are the exception.** Parallel/chain/graph units are recorded per unit, and those records deliberately snapshot **no** `background`, so retrying a unit is a **single run in the foreground**. Pass `background: true` explicitly if you want a background retry.
 
-**Not restored:** `chain` / `tasks` / `graph` and `params` are discarded, so retrying a multi-step run silently degrades to a single task — re-issue it fresh for those shapes. `retryOnTimeout` is **explicit-only**: it is never restored from the recorded run and takes effect only when you pass it on the retry call (it arms a deadline for *this* call).
+**Not restored:** `chain` / `tasks` / `graph` and `params` are discarded, so retrying a multi-step run silently degrades to a single task — re-issue it fresh for those shapes. `retryOnTimeout` is **explicit-only**: it is never restored from the recorded run and takes effect only when you pass it on the retry call (foreground only; it arms a deadline for *this* call).
 
 **`template` is asymmetric:** the original run's template is **not** restored, but a `template` you supply explicitly on the retry call **does** take effect (it is resolved before the retry merge, issue #175) — its body wins over the recorded `task`.
 

@@ -2238,10 +2238,10 @@ export default function (pi: ExtensionAPI) {
 	// startBackgroundAgent — the shared background-spawn tail.
 	// Used by BOTH spawnBackgroundRun (single task) and runBackgroundFanOut
 	// (tasks fan-out): the session-manager import, the spawn call, live-monitor
-	// registration, footer counters, the 2s progress poller and the hard-cap
-	// timer live here exactly once. Callers keep their own prelude, checks,
-	// validations and result formatting. THROWS on spawn failure — callers
-	// translate the error into their own result shape.
+	// registration, footer counters, the 2s progress poller and the default
+	// deadline timer live here exactly once. Callers keep their own prelude,
+	// checks, validations and result formatting. THROWS on spawn failure —
+	// callers translate the error into their own result shape.
 	// -------------------------------------------------------------------
 
 	async function startBackgroundAgent(
@@ -2397,7 +2397,7 @@ export default function (pi: ExtensionAPI) {
 						}, { deliverAs: "followUp" });
 					} else if (agent.status === 'stopped') {
 						// User-initiated stop (stop_subagent) or deadline abort
-						// (timeout/hard cap) — not a failure.
+						// (timeout/deadline) — not a failure.
 						updateProgressStatus(state, ctx);
 					} else {
 						state.completedSubagents++;
@@ -2432,22 +2432,28 @@ export default function (pi: ExtensionAPI) {
 			}
 		}, 2000);
 		
-		// Hard cap: stop polling AND abort the session after the deadline.
-		// W2 (issue #28): previously this only stopped the poller — the pi
-		// session kept running forever (orphaned). Now it pre-sets
+		// Default deadline: stop polling AND abort the session after the
+		// deadline. W2 (issue #28): previously this only stopped the poller —
+		// the pi session kept running forever (orphaned). Now it pre-sets
 		// 'stopped' (so the .then keeps it, per W1) and aborts the session.
 		// Issue #240: an explicit per-agent timeout is HONORED verbatim; this
 		// deadline DEFAULTS to 30m only when no timeout is given. It is a
-		// default, not a ceiling.
+		// default, not a ceiling. Issue #244: exactly ONE deadline timer per
+		// run — an explicit timeout is owned by the session-manager W3 timer,
+		// so this index timer arms ONLY on the no-timeout path, mirroring
+		// spawnBackgroundSession's `params.timeout && params.timeout > 0` guard
+		// (with no timeout, it owns the 30m default, #28).
+		const hasExplicitDeadline = spawn.timeout !== undefined && spawn.timeout > 0;
 		const hardCapMs = spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS;
-		const hardCapHandle = setTimeout(() => {
+		const hardCapHandle: ReturnType<typeof setTimeout> | undefined =
+			hasExplicitDeadline ? undefined : setTimeout(() => {
 			if (!completed && !agent.completedAt) {
 				try {
 					completed = true;
 					clearInterval(pollInterval);
 					// Pre-set stopped BEFORE aborting so the .then in
 					// spawnBackgroundSession keeps the stopped state.
-					updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
+					updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
 					agent._sessionRef?.abort().catch(() => {
 						// Abort may reject if the session is mid-dispose;
 						// the status flip above is already recorded.
@@ -2467,7 +2473,7 @@ export default function (pi: ExtensionAPI) {
 					// W3/poller stopped path (no completedSubagents increment).
 					updateProgressStatus(state, ctx);
 				} catch (err) {
-					// Defensive: never let the hard-cap timer throw uncaught — that would
+					// Defensive: never let the deadline timer throw uncaught — that would
 					// skip finalizeLiveSubagent, the counter decrement, and the notification.
 					// Do all fallible work first (output capture), then mutate counters,
 					// then notify — a throw mid-path can't double-fire mutations.
@@ -2478,7 +2484,7 @@ export default function (pi: ExtensionAPI) {
 					// get_subagent_result doesn't report 'running' and the W3 timer
 					// guard (!agent.completedAt) can't re-fire later.
 					try {
-						updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
+						updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
 					} catch { /* ignore */ }
 					try {
 						setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
@@ -2753,7 +2759,7 @@ export default function (pi: ExtensionAPI) {
 			`Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.`,
 			buildTemplateGuideline(templateSummary),
 			"To retry a failed subagent, pass its run ID as retryRunId. The retry restores the recorded params - including background, gitMode, approvalMode, force - with explicit values on this call winning. Multi-step runs degrade to a single task. See the retryRunId description for the full field list.",
-			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
+			"Set retryOnTimeout: true to automatically retry a FOREGROUND subagent that times out. Only retries once — the second timeout is treated as a final failure. Background runs are not auto-retried; re-dispatch with retryRunId.",
 			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. With tasks, background fans out: every task starts as its own background agent, the call returns one ID per task in task order, and the conductor is woken once per agent as each finishes; chain and graph cannot be combined with background (rejected). Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate.",
 			"",
 			"## Conductor Guardrails",
