@@ -29,6 +29,7 @@ import type {
 	GraphDetails,
 	GraphWave,
 	DelegateTaskDetails,
+	DelegateTaskParams,
 	Priority,
 	TaskTemplate,
 	ToolResult,
@@ -163,6 +164,17 @@ export function buildTemplateGuideline(templateSummary: string): string {
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
+
+/**
+ * Compile-time coverage (issue #229 item 4): fails to compile if
+ * DelegateTaskParams omits any KNOWN_DELEGATE_KEYS entry. Runtime drift is
+ * invisible (the schema passes the key through, the handler ignores it), so
+ * only the compiler can catch it. Together with per-step-model.test.ts's
+ * runtime ratchet this closes the chain: registered schema <-> KNOWN_DELEGATE_KEYS <-> DelegateTaskParams.
+ */
+type _KnownDelegateKey = (typeof KNOWN_DELEGATE_KEYS extends Set<infer K> ? K : never) & string;
+type _ExpectNever<T extends never> = T;
+type _DelegateParamCoverage = _ExpectNever<Exclude<_KnownDelegateKey, keyof DelegateTaskParams>>;
 
 export default function (pi: ExtensionAPI) {
 	const log = createLogger("brl-subagent");
@@ -3003,77 +3015,7 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(
 			_toolCallId: string,
-			params: {
-				// Schema registers task as Type.Optional — required for single mode only,
-				// omitted by chain/tasks/graph calls. Aligned with Static<TParams>.
-				task?: string;
-				label?: string;
-				model?: string;
-				preset?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-				template?: string;
-				params?: Record<string, string>;
-				retryRunId?: string;
-				retryOnTimeout?: boolean;
-				background?: boolean;
-				force?: boolean;
-				gitMode?: string;
-				priority?: string;
-				chain?: Array<{
-					task: string;
-					label?: string;
-					model?: string;
-					thinkingLevel?: string;
-					cwd?: string;
-					timeout?: number;
-					outputFile?: string;
-					tools?: string[];
-					excludeTools?: string[];
-					noBuiltinTools?: boolean;
-					systemPrompt?: string;
-					inheritSystemPrompt?: boolean;
-				}>;
-				tasks?: Array<{
-					task: string;
-					label?: string;
-					model?: string;
-					thinkingLevel?: string;
-					priority?: string;
-					cwd?: string;
-					timeout?: number;
-					outputFile?: string;
-					tools?: string[];
-					excludeTools?: string[];
-					noBuiltinTools?: boolean;
-					systemPrompt?: string;
-					inheritSystemPrompt?: boolean;
-				}>;
-				graph?: Array<{
-					id: string;
-					task: string;
-					label?: string;
-					model?: string;
-					dependsOn?: string[];
-					thinkingLevel?: string;
-					priority?: string;
-					cwd?: string;
-					timeout?: number;
-					outputFile?: string;
-					tools?: string[];
-					excludeTools?: string[];
-					noBuiltinTools?: boolean;
-					systemPrompt?: string;
-					inheritSystemPrompt?: boolean;
-				}>;
-			},
+			params: DelegateTaskParams,
 			signal: AbortSignal | undefined,
 			onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 			ctx: ExtensionContext,
