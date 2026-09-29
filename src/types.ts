@@ -492,6 +492,95 @@ export type DelegateTaskDetails =
 	| GraphDetails
 	| undefined;
 
+/**
+ * The delegate_task handler's params (issue #229 item 4) — the type the
+ * handler's inline block used to spell out, hoisted here so it is nameable.
+ *
+ * Why it matters: `approvalMode` is in the registered schema and in
+ * KNOWN_DELEGATE_KEYS, and reaches execute() at runtime through the spread —
+ * but a reader of `params` inside the handler could not see it. The key-set
+ * is compile-time ratcheted in src/index.ts against KNOWN_DELEGATE_KEYS
+ * (schema ↔ KNOWN_DELEGATE_KEYS ↔ this type); the missing key is invisible at
+ * runtime, so only the compiler can catch its removal.
+ *
+ * A type ALIAS, not an interface: the handler passes `params` to
+ * findUnknownParams/resolveSubagentParams (Record<string, unknown> params),
+ * and only a type alias gets the implicit index signature an interface
+ * lacks.
+ */
+export type DelegateTaskParams = {
+	// Schema registers task as Type.Optional — required for single mode only,
+	// omitted by chain/tasks/graph calls. Aligned with Static<TParams>.
+	task?: string;
+	label?: string;
+	model?: string;
+	preset?: string;
+	systemPrompt?: string;
+	inheritSystemPrompt?: boolean;
+	thinkingLevel?: string;
+	outputFile?: string;
+	timeout?: number;
+	cwd?: string;
+	tools?: string[];
+	excludeTools?: string[];
+	noBuiltinTools?: boolean;
+	template?: string;
+	params?: Record<string, string>;
+	retryRunId?: string;
+	retryOnTimeout?: boolean;
+	background?: boolean;
+	force?: boolean;
+	gitMode?: string;
+	approvalMode?: string;
+	priority?: string;
+	chain?: Array<{
+		task: string;
+		label?: string;
+		model?: string;
+		thinkingLevel?: string;
+		cwd?: string;
+		timeout?: number;
+		outputFile?: string;
+		tools?: string[];
+		excludeTools?: string[];
+		noBuiltinTools?: boolean;
+		systemPrompt?: string;
+		inheritSystemPrompt?: boolean;
+	}>;
+	tasks?: Array<{
+		task: string;
+		label?: string;
+		model?: string;
+		thinkingLevel?: string;
+		priority?: string;
+		cwd?: string;
+		timeout?: number;
+		outputFile?: string;
+		tools?: string[];
+		excludeTools?: string[];
+		noBuiltinTools?: boolean;
+		systemPrompt?: string;
+		inheritSystemPrompt?: boolean;
+	}>;
+	graph?: Array<{
+		id: string;
+		task: string;
+		label?: string;
+		model?: string;
+		dependsOn?: string[];
+		thinkingLevel?: string;
+		priority?: string;
+		cwd?: string;
+		timeout?: number;
+		outputFile?: string;
+		tools?: string[];
+		excludeTools?: string[];
+		noBuiltinTools?: boolean;
+		systemPrompt?: string;
+		inheritSystemPrompt?: boolean;
+	}>;
+};
+
 // ---------------------------------------------------------------------------
 // Resolved params (after preset merging + validation)
 // ---------------------------------------------------------------------------
