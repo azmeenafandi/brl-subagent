@@ -54,6 +54,7 @@ vi.mock("@earendil-works/pi-tui", () => {
 });
 
 import initExtension from "../index";
+import { delegateTaskParamsSchema } from "../schema";
 import * as concurrencyModule from "../concurrency";
 import { KNOWN_DELEGATE_KEYS } from "../params";
 import { CUSTOM_ENTRY_TYPES } from "../types";
@@ -371,6 +372,21 @@ describe("KNOWN_DELEGATE_KEYS ratchet (issue #99 R1)", () => {
 		expect(Object.keys(tool.parameters.properties).sort()).toEqual(
 			[...KNOWN_DELEGATE_KEYS].sort(),
 		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #239: the registered schema IS the module export.
+//
+// index.ts must register src/schema.ts's object directly, not an inlined copy.
+// Identity (toBe), not deep-equality: a copy (e.g. structuredClone) keeps every
+// top-level key yet silently re-forks the source of truth. This pin is what
+// keeps DelegateTaskParams = Static<typeof delegateTaskParamsSchema> honest.
+// ---------------------------------------------------------------------------
+
+describe("delegate_task schema identity (issue #239)", () => {
+	it("the registered tool's parameters ARE the delegateTaskParamsSchema export", () => {
+		expect(tool.parameters).toBe(delegateTaskParamsSchema);
 	});
 });
 

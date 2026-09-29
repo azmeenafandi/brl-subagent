@@ -6,6 +6,8 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { Static } from "typebox";
+import type { delegateTaskParamsSchema } from "./schema";
 import type { TranscriptMessage } from "./transcript-tail";
 
 // ---------------------------------------------------------------------------
@@ -458,7 +460,7 @@ export interface GraphTask {
 	noBuiltinTools?: boolean;
 	systemPrompt?: string;
 	inheritSystemPrompt?: boolean;
-	dependsOn: string[];
+	dependsOn?: string[];
 }
 
 /** One wave of tasks executed together in a graph. */
@@ -508,78 +510,7 @@ export type DelegateTaskDetails =
  * and only a type alias gets the implicit index signature an interface
  * lacks.
  */
-export type DelegateTaskParams = {
-	// Schema registers task as Type.Optional — required for single mode only,
-	// omitted by chain/tasks/graph calls. Aligned with Static<TParams>.
-	task?: string;
-	label?: string;
-	model?: string;
-	preset?: string;
-	systemPrompt?: string;
-	inheritSystemPrompt?: boolean;
-	thinkingLevel?: string;
-	outputFile?: string;
-	timeout?: number;
-	cwd?: string;
-	tools?: string[];
-	excludeTools?: string[];
-	noBuiltinTools?: boolean;
-	template?: string;
-	params?: Record<string, string>;
-	retryRunId?: string;
-	retryOnTimeout?: boolean;
-	background?: boolean;
-	force?: boolean;
-	gitMode?: string;
-	approvalMode?: string;
-	priority?: string;
-	chain?: Array<{
-		task: string;
-		label?: string;
-		model?: string;
-		thinkingLevel?: string;
-		cwd?: string;
-		timeout?: number;
-		outputFile?: string;
-		tools?: string[];
-		excludeTools?: string[];
-		noBuiltinTools?: boolean;
-		systemPrompt?: string;
-		inheritSystemPrompt?: boolean;
-	}>;
-	tasks?: Array<{
-		task: string;
-		label?: string;
-		model?: string;
-		thinkingLevel?: string;
-		priority?: string;
-		cwd?: string;
-		timeout?: number;
-		outputFile?: string;
-		tools?: string[];
-		excludeTools?: string[];
-		noBuiltinTools?: boolean;
-		systemPrompt?: string;
-		inheritSystemPrompt?: boolean;
-	}>;
-	graph?: Array<{
-		id: string;
-		task: string;
-		label?: string;
-		model?: string;
-		dependsOn?: string[];
-		thinkingLevel?: string;
-		priority?: string;
-		cwd?: string;
-		timeout?: number;
-		outputFile?: string;
-		tools?: string[];
-		excludeTools?: string[];
-		noBuiltinTools?: boolean;
-		systemPrompt?: string;
-		inheritSystemPrompt?: boolean;
-	}>;
-};
+export type DelegateTaskParams = Static<typeof delegateTaskParamsSchema>;
 
 // ---------------------------------------------------------------------------
 // Resolved params (after preset merging + validation)
