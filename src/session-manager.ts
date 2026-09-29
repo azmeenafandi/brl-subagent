@@ -203,7 +203,7 @@ function defaultTerminalMessage(stopReason: string | undefined): string {
  * Extract the final assistant text from a session's messages.
  * Falls back to the LAST assistant message with non-empty text content — the
  * final message is often a tool-call-only turn (agent stopped mid-turn, failed,
- * or hit the hard cap), and that turn carries no text of its own.
+ * or hit the deadline), and that turn carries no text of its own.
  */
 export function extractFinalOutput(session: { messages: Array<{ role: string; content?: Array<{ type: string; text?: string }> | string | null }> }): string {
   const assistants = [...session.messages].reverse().filter(m => m.role === 'assistant');
@@ -893,7 +893,7 @@ export async function spawnBackgroundSession(
   // undefined. An explicit timeout is HONORED verbatim (no ceiling); only the
   // no-timeout fallback uses the 30m background default. The `params.timeout`
   // guard below keeps this timer unarmed on the no-timeout path, where the
-  // index.ts hard cap already owns the default deadline (no redundant timer).
+  // index.ts deadline timer owns the no-timeout default (no redundant timer).
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   if (params.timeout && params.timeout > 0) {
     timeoutHandle = setTimeout(() => {

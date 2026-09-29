@@ -233,8 +233,8 @@ type Ctx = ReturnType<typeof makeCtx>;
 
 /**
  * Run delegate_task under fake timers: a SUCCESSFUL fan-out arms a 2s poller
- * + hard-cap timer per spawned agent — clear both afterwards so vitest exits
- * with no open handles.
+ * + (no-timeout) deadline timer per spawned agent — clear both afterwards so
+ * vitest exits with no open handles.
  */
 async function runFanOut(
 	params: Record<string, unknown>,
@@ -566,14 +566,14 @@ describe("background fan-out for tasks mode (#198 phase 2)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Background hard-cap deadline: a default, not a ceiling (#240)
+// Background deadline: a default, not a ceiling (#240)
 // ---------------------------------------------------------------------------
 
-describe("background hard-cap deadline is a default, not a ceiling (#240)", () => {
+describe("background deadline is a default, not a ceiling (#240)", () => {
 	/**
 	 * A fake agent with a live session ref, so the 2s poller never takes its
-	 * nulled-ref crash path (which would clear the hard-cap timer first) and the
-	 * hard-cap abort is observable. The mocked spawn does not populate the
+	 * nulled-ref crash path (which would clear the deadline timer first) and the
+	 * deadline abort is observable. The mocked spawn does not populate the
 	 * session-manager agent map, so `updateAgentStatus` on an unknown id is a
 	 * no-op — the abort call on the fake session ref is the firing signal.
 	 */
@@ -590,7 +590,7 @@ describe("background hard-cap deadline is a default, not a ceiling (#240)", () =
 		);
 	}
 
-	it("fires the hard cap at 30m when no timeout is given", async () => {
+	it("fires the default deadline at 30m when no timeout is given", async () => {
 		const abort = vi.fn().mockResolvedValue(undefined);
 		stubLiveSpawn(abort);
 		vi.useFakeTimers();
@@ -614,7 +614,7 @@ describe("background hard-cap deadline is a default, not a ceiling (#240)", () =
 		}
 	});
 
-	it("honors an explicit 45m timeout — fires at 45m, not at 30m (#240)", async () => {
+	it("does not arm the index timer for an explicit timeout — W3 owns it (#244)", async () => {
 		const abort = vi.fn().mockResolvedValue(undefined);
 		stubLiveSpawn(abort);
 		vi.useFakeTimers();
@@ -626,12 +626,14 @@ describe("background hard-cap deadline is a default, not a ceiling (#240)", () =
 				undefined,
 				makeCtx(),
 			);
-			// The pre-#240 cap would have fired here; an explicit timeout must not.
-			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+			// #244 single-timer ownership: an explicit timeout is owned by the
+			// session-manager W3 timer, so the index layer arms NO timer. Advance
+			// well past the explicit deadline — the index path must not abort (nor
+			// finalize) the run. W3's own 45m firing is pinned in
+			// session-manager.test.ts ("honors an explicit timeout beyond 30
+			// minutes (no ceiling) (#240)").
+			await vi.advanceTimersByTimeAsync(45 * 60 * 1000 + 1);
 			expect(abort).not.toHaveBeenCalled();
-			// Fires at the explicit 45m deadline.
-			await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
-			expect(abort).toHaveBeenCalledTimes(1);
 		} finally {
 			vi.clearAllTimers();
 			vi.useRealTimers();
