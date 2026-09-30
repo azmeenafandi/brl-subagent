@@ -1,3 +1,4 @@
+// Purpose: Shared types, constants, and the error/termination classification taxonomy.
 /**
  * brl-subagent — Type Definitions
  *

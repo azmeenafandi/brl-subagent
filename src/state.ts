@@ -1,3 +1,4 @@
+// Purpose: Session-bound state container with versioned validation and migration for persisted settings.
 /**
  * brl-subagent — State Management (F5, F7, F9)
  *

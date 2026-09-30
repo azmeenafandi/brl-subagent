@@ -1,3 +1,4 @@
+// Purpose: The registered `delegate_task` parameter schema — the single source of truth for its types.
 /**
  * delegate_task parameter schema — the SINGLE source of truth (issue #239).
  * index.ts registers this object; DelegateTaskParams (types.ts) is

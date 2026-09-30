@@ -25,7 +25,8 @@
     ]
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "docs:arch": "node scripts/docs-arch.mjs --write"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

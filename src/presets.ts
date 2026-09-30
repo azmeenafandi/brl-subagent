@@ -1,3 +1,4 @@
+// Purpose: Preset loading, parsing, validation, and the file-backed custom-preset tier.
 /**
  * brl-subagent — Presets
  *

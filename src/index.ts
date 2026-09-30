@@ -1,3 +1,4 @@
+// Purpose: Entry point: tool/command registration, the delegate_task handlers, and the execution-mode runners.
 /**
  * brl-subagent — multi-agent orchestration for pi.
  * Entry point: tool registrations, command surface, and the multi-mode runners.

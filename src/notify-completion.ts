@@ -1,3 +1,4 @@
+// Purpose: Builds and sends the completion-push wake message for terminal background runs.
 /**
  * brl-subagent — Completion-push wake (issue #147)
  *

@@ -1,3 +1,4 @@
+// Purpose: All TUI surfaces: config menus, preset/template managers, history, live monitor, and result rendering.
 /**
  * brl-subagent — TUI Components
  *

@@ -1,3 +1,4 @@
+// Purpose: Auto-route: keyword classification of a task description to the best preset.
 /**
  * brl-subagent — Skill-based Routing
  *

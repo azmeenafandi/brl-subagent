@@ -1,3 +1,4 @@
+// Purpose: Shared guard/validation prelude opening every delegation mode (cost gate, approval, H1 validation, dispatch guards).
 /**
  * Shared guard/validation prelude for delegation modes (issue #201).
  *

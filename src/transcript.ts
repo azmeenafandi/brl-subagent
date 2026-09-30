@@ -1,3 +1,4 @@
+// Purpose: JSONL transcript recording for every agent run (`.pi/output/agent-<id>.jsonl`).
 import { join } from 'path';
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'fs';
 import type { TranscriptEntry, TranscriptEntryType } from './types';

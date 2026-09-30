@@ -1,3 +1,4 @@
+// Purpose: Auth-aware model availability: distinguishes catalog presence from configured provider auth.
 /**
  * Auth-aware model availability check (issue #4).
  *
