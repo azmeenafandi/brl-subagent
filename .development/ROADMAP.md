@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Generated: 2026-08-03 | Version: 2.3.9 (released 2026-09-27). The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
+> Updated: 2026-09-30 | Released: **v2.3.9** (2026-09-27) | Integration: `dev` @ `83769aa` — the next release is **v2.4.0** (see "Merged to `dev` — v2.4.0" below). Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -280,6 +280,28 @@ Goal: ship brl-subagent as a first-class pi package so installation and updates 
 
 **Deferred → RESOLVED in v2.3.6:** pin doc version strings to `package.json` (the README ×2 and the AGENT.md header shipped stale in 2.3.5). Now enforced mechanically (#166).
 
+### Merged to `dev` — v2.4.0 (unreleased, as of 2026-09-30)
+
+Eight issues fixed after v2.3.9 shipped; all of them auto-close when the next `dev → main` release merge lands
+(the `Fixes #N` keywords fire on the merge to the default branch).
+
+| Issue | Item | Shipped as |
+|---|---|---|
+| #229 | **Retry pins** — origin e2e + snapshot↔resolve drift guard, plus the `approvalMode` handler-param declaration | PR #238 |
+| #233 | **Dead `setAgentResult` removed** — a second, untested copy of the #179 D1 policy | `773c110` |
+| #235 | **Dead-code triage** — six dead exports from the graphify+grep pipeline removed | PR #236 |
+| #239 | **Schema-linked types** — `DelegateTaskParams` derived from the registered schema (4 casts collapsed) | PR #243 |
+| #240 | **Explicit timeouts honored** — the 30-minute "hard cap" was silently overriding legitimate long runs; 30m is now a default, not a ceiling | PR #242 |
+| #241 | **Steer delivery** — `steer_subagent` actually delivers to the live session (it previously only recorded the request) | PR #245 |
+| #244 | **Deadline follow-ups** — honest "deadline" wording, exactly one deadline timer per run, `retryOnTimeout` documented foreground-only | PR #246 |
+| #247 | **Contributor parity** — `.development/**`, `.pi/skills/**`, `.pi/extensions/**` tracked on `dev`; `.gitignore` reworked; `CONTRIBUTING.md` added | PR #248 |
+
+**Also on `dev` (infrastructure, no issue):** the 2026-09-30 **cockpit move** — `.development/`,
+`graphify-out/`, the `.pi` tools and the shared `node_modules` now live in the `brl-subagent-dev` checkout
+(`main` is pristine); the knowledge graph describes `dev` and is refreshed at every merge by
+`.pi/skills/worktree/graph-refresh.sh` (1223 nodes / 2823 edges / 77 communities at the first refresh);
+`worktree-prep.sh` now accepts linked worktrees. **1201 tests across 55 files.**
+
 ### Shipped (2026-09-27, v2.3.9)
 
 | Issue | Item | Release |
@@ -517,7 +539,7 @@ INCIDENTAL FIX (with #41/#44): the old parallel path passed 16 args to the 15-pa
 
 ### Open
 
-**Open:** none — the extension board is empty (#147/#149/#151 closed in v2.3.3; #154 closed in v2.3.4; #153 — gitignored local tooling — fixed and closed 2026-09-04).
+**Open (2026-09-30):** **#230** — P0 (Rule 11): the graph hook rebuilds incomplete graphs (3rd occurrence) and `graph-check.py` is not on the hook's path. Parked pending the user's upstream-evidence call; it also owns the hook-side path model — hooks read and validate the canonical **dev** graph, and only `graph-refresh.sh` rebuilds it. Everything else on the board is merged to `dev` and auto-closes at the v2.4.0 release merge: **#229/#233/#235/#239/#240/#241/#244/#247** (see the v2.4.0 table above).
 
 **Closed in v2.3.3 (2026-09-02) — removed from Open:** #147 (completion-push wake — the event-bus's first consumer; structured wake + `completionNotify` knob; live-verified on completed/stopped/mid-turn paths), #149 (poller echo removal — one notification per run; the crash trio + failed site kept by decision), #151 (orphaned comment — C3, PR #152).
 
@@ -531,6 +553,8 @@ INCIDENTAL FIX (with #41/#44): the old parallel path passed 16 args to the 15-pa
 
 ### Planned Next
 
+- **#230 — the graph hook (P0).** Design it against the current layout: the canonical graph lives in the cockpit (`dev`) and is refreshed by `graph-refresh.sh` at merges; the hook should READ and validate it (module + symbol coverage via `graph-check.py`) and never rebuild; its script path must resolve from the cockpit.
+- **v2.4.0 release.** Held by the user for the weekly Dependabot visit and dogfooding findings; the eight issues above auto-close at the `dev → main` merge.
 - **(b) Sensor-stage for reviews (2026-08-22 discussion)** — mechanical structural-smell gate (eslint + jscpd, diff-scoped) feeding the focused/adversarial review templates as machine-flagged cues with coaching, per the habit-hooks pattern ("cue → action"; bare metrics get gamed — 5.6% vs 83.3% genuine fix). Reviewer starts from findings, not zero; sensors catch structure, reviewer judges the rest. Deliberately QUEUED: give Rule 14's dispatch router one measured sprint first — don't stack unproven layers. C3-class change (tooling + templates only, no runtime code).
 - **Graph-mode dogfood run — DONE (2026-08-24)**: first-ever graph dispatch found latent bug #127 (root nodes crashed the scheduler — 't.dependsOn is not iterable', 4 unguarded sites, latent since shipping because the capability was never used) → fixed + merged → re-ran → full success (waves ordered, E10 intercom round-trip verified first time, priorities threaded, aggregation correct, $0.009). Graph mode 0× → 1× in the capability audit.
 - **Parallel-subtask run entries** — **DONE (v2.3.0, #119)**: per-subtask SubagentRun records shipped (spawn persist → finalize with status/cost/tokens/output, crash-protected), so parallel priority is monitor-visible, not just arbitration-only.
@@ -579,7 +603,7 @@ The user no longer relays completions; the conductor receives them as events (M1
 
 > Added 2026-08-22 audit: the roadmap previously documented FEATURES only. The process layer now governs development and belongs in the record. Full detail in `.pi/skills/worktree/SKILL.md`.
 
-### The rules (SKILL.md team agreement, 1-14)
+### The rules (SKILL.md team agreement — the authoritative list lives there; this section summarizes 1–14, written 2026-08-22 — the numbering has grown since)
 
 - **1-8** — worktree lifecycle invariants (deps repo-level, clean deliverable, rule #5 all code via worktree, reload checkpoint, delegation threshold, Fixes #N)
 - **9** — Verify outputs, not existence (mandatory live verification for C1/C2; point-of-use timing)
@@ -599,7 +623,8 @@ The user no longer relays completions; the conductor receives them as events (M1
 
 - **Templates** (`.pi/brl-subagent/templates/`): adversarial-review (C1 contract), focused-review (C2 contract), debug-task (Rule 12 contract) — all CONTRACT + free-form TARGET since the 2026-08-22 redesign
 - **Presets** (`.pi/brl-subagent/presets/`): project-reviewer (read-only, Gate A, SOLID/DRY), project-implementer (full access, quality bar), project-docs (surgical, fact-verified — bash restored 2026-08-22)
-- **Scripts** (`.pi/skills/worktree/`): check-repo.sh (pre-flight), worktree-prep.sh (provision + `--force-isolated`), worktree-cleanup.sh (teardown + staleness WARN), sprint-metrics.py (derived metrics)
+- **Scripts** (`.pi/skills/worktree/`): check-repo.sh (pre-flight), worktree-prep.sh (provision + `--force-isolated`), worktree-cleanup.sh (teardown + staleness WARN), sprint-metrics.py (derived metrics), graph-refresh.sh (graphify `--update` + `graph-check.py` after every merge)
+- **Development home** — the **cockpit**: the `brl-subagent-dev` checkout (branch `dev`) holds `.development/`, `graphify-out/`, the `.pi` tools and the shared `node_modules`; `main` is the pristine release checkout. Since #247 the docs and tools are TRACKED, so a contributor checking out `dev` gets them (see `CONTRIBUTING.md`).
 - **Extension** (`.pi/extensions/worktree-guard/`): rule #5 + #100/#106 enforcement (blocks src/presets writes outside worktrees; blocks npm install through symlinked node_modules)
 - **Metrics store** (`.development/METRICS.md`): sprint rows, derived never vibed
 
