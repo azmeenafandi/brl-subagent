@@ -1,3 +1,4 @@
+// Purpose: Leveled structured logging with file output and rotation under `.pi/subagent-logs/`.
 /**
  * brl-subagent — Structured Logging (F10)
  *

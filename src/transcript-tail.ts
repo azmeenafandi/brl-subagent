@@ -1,3 +1,4 @@
+// Purpose: Pure line-planning for the drill-in transcript overlay (no TUI imports).
 /**
  * brl-subagent — Pure transcript-tail rendering for the drill-in overlay
  *

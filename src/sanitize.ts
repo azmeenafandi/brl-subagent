@@ -1,3 +1,4 @@
+// Purpose: Input validation, environment allowlisting, and output sanitization (task, cwd, outputFile, agent ids).
 /**
  * brl-subagent — Sanitization (F1, F2, F3)
  *

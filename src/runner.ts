@@ -1,3 +1,4 @@
+// Purpose: Foreground execution: spawns the `pi` subprocess, parses its JSON-line stream, and folds usage.
 /**
  * brl-subagent — Process Runner
  *

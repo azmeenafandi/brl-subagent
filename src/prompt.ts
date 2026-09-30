@@ -1,3 +1,4 @@
+// Purpose: Builds the subagent system prompt, including the task fence and inherited-instruction handling.
 /**
  * brl-subagent — Prompt Builder
  *

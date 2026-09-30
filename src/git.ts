@@ -1,3 +1,4 @@
+// Purpose: Branch-based git workflow for worktree runs: branch creation, diff capture, switch-back, cleanup.
 /**
  * brl-subagent — Git Integration (P3)
  *

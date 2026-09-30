@@ -1,3 +1,4 @@
+// Purpose: Compliance reporting: file-access records and secrets-exposure detection.
 /**
  * brl-subagent — Compliance Reports (E5)
  *

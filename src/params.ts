@@ -1,3 +1,4 @@
+// Purpose: Param resolution: per-call + preset merge, thinking caps, timeout normalization, tool and git/approval resolution, auto-routing.
 /**
  * brl-subagent — Parameter Resolution (issue #59)
  *

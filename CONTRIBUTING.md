@@ -55,7 +55,8 @@ Behaviour changes need a test that fails before and passes after. If a bug was r
 
 Design docs, investigations, and the roadmap live in [`.development/`](.development/) — start with
 `ARCHITECTURE.md`, `ROADMAP.md`, and `TASKS.md`. The dev workflow's own record (friction log, metrics,
-handoff) is there too.
+handoff) is there too. `ARCHITECTURE.md`'s module map is generated from each `src/*.ts` purpose header: give
+new modules a `// Purpose:` first line and run `npm run docs:arch` (CI fails otherwise).
 
 ## The knowledge graph (optional)
 

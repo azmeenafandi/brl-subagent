@@ -1,3 +1,4 @@
+// Purpose: H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems.
 /**
  * H1: Pre-task validation
  *

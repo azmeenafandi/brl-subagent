@@ -1,3 +1,4 @@
+// Purpose: Session-bound concurrency queue: slot acquisition/release, priority insertion, and progress counters.
 /**
  * brl-subagent — Concurrency Controller (F8)
  *

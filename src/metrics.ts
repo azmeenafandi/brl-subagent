@@ -1,3 +1,4 @@
+// Purpose: SLA metrics over run history: p50/p95/p99 latency, success and cost rates, degradation detection.
 /**
  * brl-subagent — SLA Metrics (E4)
  *

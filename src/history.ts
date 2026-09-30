@@ -1,3 +1,4 @@
+// Purpose: Run-record store: creation, finalization, retry lookup, and history pruning.
 /**
  * brl-subagent — Run History
  *

@@ -1,3 +1,4 @@
+// Purpose: Inter-subagent messaging: the Intercom channel and `[TO:id]` output parsing.
 /**
  * brl-subagent — Subagent-to-Subagent Messaging (E10)
  *

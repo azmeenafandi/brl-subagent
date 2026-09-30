@@ -505,8 +505,10 @@ because nothing checked them and no test pins them.
 2. **`.development/` docs** (TRACKED since #247 — doc updates are direct-to-dev commits):
    - `ROADMAP.md` — header version → new; add a **"Shipped (<date>, vX)"** table
      for this release's items
-   - `ARCHITECTURE.md` / `AUDIT.md` — header version → new; AUDIT gets a
+   - `AUDIT.md` — header version → new; AUDIT gets a
      **"vX Audit Follow-up (<date>)"** section
+   - `ARCHITECTURE.md` — **no release-time edit**: it is version-free by design and its
+     module map is generated + CI-checked (`npm run docs:arch`, issue #249)
    - `TASKS.md` — a changelog row: items, issues closed, process changes, test
      count, board state, friction
    - `METRICS.md` — the sprint's row (run the metrics script; see the
