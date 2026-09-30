@@ -1,0 +1,7 @@
+diff --git a/src/index.ts b/src/index.ts
+index 3b2ee99..fe5d46f 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -3269 +3269 @@ export default function (pi: ExtensionAPI) {
+-			if (params.background && (isChain || isGraph)) {
++			if (params.background && (isChain || isGraph) && false) {

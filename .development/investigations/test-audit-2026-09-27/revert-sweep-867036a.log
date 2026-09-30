@@ -1,0 +1,40 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-231
+
+stderr | src/__tests__/per-step-cwd.test.ts > per-step capability validation covers chain and graph (issue #222) > graph: a {id} placeholder whose dependency id is a keyword does not block
+[brl-subagent] WARN: Graph pre-task validation failed
+
+ ❯ src/__tests__/per-step-cwd.test.ts (21 tests | 1 failed) 80ms
+   ❯ per-step capability validation covers chain and graph (issue #222) (8)
+     × graph: a {id} placeholder whose dependency id is a keyword does not block 7ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/per-step-cwd.test.ts > per-step capability validation covers chain and graph (issue #222) > graph: a {id} placeholder whose dependency id is a keyword does not block
+AssertionError: expected true to be falsy
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/__tests__/per-step-cwd.test.ts:442:26
+    440|   });
+    441|
+    442|   expect(result.isError).toBeFalsy();
+       |                          ^
+    443|   expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(2);
+    444|   expect(firstText(result)).not.toContain("directory exploration");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 20 passed (21)
+   Start at  17:42:20
+   Duration  768ms (transform 59%, import 27%, tests 13%, worker 1%)
+

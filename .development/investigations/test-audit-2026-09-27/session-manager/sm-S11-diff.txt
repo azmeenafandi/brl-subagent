@@ -1,0 +1,7 @@
+diff --git a/src/session-manager.ts b/src/session-manager.ts
+index 1f8840d..b595362 100644
+--- a/src/session-manager.ts
++++ b/src/session-manager.ts
+@@ -266 +266 @@ function defaultTerminalMessage(stopReason: string | undefined): string {
+-      return 'Run ended with a provider error (stopReason "error")';
++      return 'Run ended without completing';

@@ -1,6 +1,16 @@
-.development/
-graphify-out/
+# — local / build state (never tracked) —
 node_modules
-.pi/
 .tmp/
 REVIEW_*.md
+graphify-out/
+__pycache__/
+
+# — .pi: the TOOLS are tracked for contributor parity; session state and
+# local config stay local. Any NEW .pi state dir is ignored by default. —
+.pi/*
+!.pi/skills/
+!.pi/extensions/
+
+# NOTE: .development/ is tracked deliberately (#247). It was untracked in
+# b134db4 (2026-07-26) together with the graph-snapshot bloat; #247 restores
+# the documentation half.

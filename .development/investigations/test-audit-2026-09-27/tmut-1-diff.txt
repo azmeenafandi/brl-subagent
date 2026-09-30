@@ -1,0 +1,7 @@
+diff --git a/src/session-manager.ts b/src/session-manager.ts
+index 1f8840d..531629b 100644
+--- a/src/session-manager.ts
++++ b/src/session-manager.ts
+@@ -731 +731 @@ export async function spawnBackgroundSession(
+-    const lockKey = getRepoRoot(gitCwd) ?? gitCwd;
++    const lockKey = gitCwd;

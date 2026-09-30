@@ -1,0 +1,57 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+ ❯ src/__tests__/scheduler.test.ts (17 tests | 2 failed) 23ms
+   ❯ validateGraph (6)
+     × returns error for missing dependency reference 6ms
+     × returns empty errors for valid small graph 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > validateGraph > returns error for missing dependency reference
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/__tests__/scheduler.test.ts:220:58
+    218|   const tasks = [makeTask("A", ["nonexistent"])];
+    219|   const errors = validateGraph(tasks);
+    220|   expect(errors.some((e) => e.includes("non-existent"))).toBe(true);
+       |                                                          ^
+    221|   expect(errors.some((e) => e.includes("nonexistent"))).toBe(true);
+    222|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > validateGraph > returns empty errors for valid small graph
+AssertionError: expected [ …(2) ] to have a length of +0 but got 2
+
+- Expected
++ Received
+
+- 0
++ 2
+
+ ❯ src/__tests__/scheduler.test.ts:252:18
+    250|   ];
+    251|   const errors = validateGraph(tasks);
+    252|   expect(errors).toHaveLength(0);
+       |                  ^
+    253|  });
+    254| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 15 passed (17)
+   Start at  17:41:26
+   Duration  241ms (transform 55%, tests 26%, import 15%, worker 4%)
+

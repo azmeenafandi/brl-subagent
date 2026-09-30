@@ -1,0 +1,245 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+stdout | src/__tests__/per-step-cwd.test.ts > per-step cwd is honoured at spawn (issue #222) > chain: each step spawns in its OWN cwd, steps without one in the mode-level cwd
+[brl-subagent] INFO: Chain completed
+
+stdout | src/__tests__/per-step-cwd.test.ts > per-step cwd is honoured at spawn (issue #222) > parallel: each task spawns in its OWN cwd, tasks without one in the mode-level cwd
+[brl-subagent] INFO: Parallel execution completed
+
+stdout | src/__tests__/per-step-cwd.test.ts > per-step cwd is honoured at spawn (issue #222) > graph: each node spawns in its OWN cwd, nodes without one in the mode-level cwd
+[brl-subagent] INFO: Graph completed
+
+stdout | src/__tests__/per-step-cwd.test.ts > per-step cwd is honoured at spawn (issue #222) > a step cwd is resolved relative to the session cwd
+[brl-subagent] INFO: Chain completed
+
+stdout | src/__tests__/per-step-cwd.test.ts > an invalid per-step cwd rejects before any spawn (issue #222) > chain
+[brl-subagent] INFO: Chain completed
+
+stdout | src/__tests__/per-step-cwd.test.ts > an invalid per-step cwd rejects before any spawn (issue #222) > parallel
+[brl-subagent] INFO: Parallel execution completed
+
+stdout | src/__tests__/per-step-cwd.test.ts > an invalid per-step cwd rejects before any spawn (issue #222) > graph
+[brl-subagent] INFO: Graph completed
+
+stdout | src/__tests__/per-step-cwd.test.ts > an invalid per-step cwd rejects before any spawn (issue #222) > a step cwd resolving into a restricted system directory is rejected too
+[brl-subagent] INFO: Chain completed
+
+stdout | src/__tests__/per-step-cwd.test.ts > a step's outputFile is validated against that step's cwd (issue #222) > an outputFile INSIDE the step's cwd is accepted and the step still spawns there
+[brl-subagent] INFO: Chain completed
+
+ ❯ src/__tests__/per-step-cwd.test.ts (21 tests | 9 failed) 84ms
+   ❯ per-step cwd is honoured at spawn (issue #222) (5)
+     × chain: each step spawns in its OWN cwd, steps without one in the mode-level cwd 22ms
+     × parallel: each task spawns in its OWN cwd, tasks without one in the mode-level cwd 5ms
+     × graph: each node spawns in its OWN cwd, nodes without one in the mode-level cwd 11ms
+     × a step cwd is resolved relative to the session cwd 6ms
+   ❯ an invalid per-step cwd rejects before any spawn (issue #222) (4)
+     × chain 3ms
+     × parallel 2ms
+     × graph 2ms
+     × a step cwd resolving into a restricted system directory is rejected too 3ms
+   ❯ a step's outputFile is validated against that step's cwd (issue #222) (4)
+     × an outputFile INSIDE the step's cwd is accepted and the step still spawns there 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 9 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/per-step-cwd.test.ts > per-step cwd is honoured at spawn (issue #222) > chain: each step spawns in its OWN cwd, steps without one in the mode-level cwd
+AssertionError: expected [ '/tmp/brl-step-cwd-VHjonC', …(2) ] to deeply equal [ …(3) ]
+
+- Expected
++ Received
+
+  [
+-   "/tmp/brl-step-cwd-VHjonC/step-a",
+    "/tmp/brl-step-cwd-VHjonC",
+-   "/tmp/brl-step-cwd-VHjonC/step-b",
++   "/tmp/brl-step-cwd-VHjonC",
++   "/tmp/brl-step-cwd-VHjonC",
+  ]
+
+ ❯ src/__tests__/per-step-cwd.test.ts:222:23
+    220|
+    221|   expect(result.isError).toBeFalsy();
+    222|   expect(spawnCwds()).toEqual([stepA, testCwd, stepB]);
+       |                       ^
+    223|  });
+    224|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/9]⎯
+
+ FAIL  src/__tests__/per-step-cwd.test.ts > per-step cwd is honoured at spawn (issue #222) > parallel: each task spawns in its OWN cwd, tasks without one in the mode-level cwd
+AssertionError: expected [ '/tmp/brl-step-cwd-KsEa31', …(2) ] to deeply equal [ '/tmp/brl-step-cwd-KsEa31', …(2) ]
+
+- Expected
++ Received
+
+  [
+    "/tmp/brl-step-cwd-KsEa31",
+-   "/tmp/brl-step-cwd-KsEa31/task-a",
+-   "/tmp/brl-step-cwd-KsEa31/task-b",
++   "/tmp/brl-step-cwd-KsEa31",
++   "/tmp/brl-step-cwd-KsEa31",
+  ]
+
+ ❯ src/__tests__/per-step-cwd.test.ts:240:30
+    238|
+    239|   expect(result.isError).toBeFalsy();
+    240|   expect(spawnCwds().sort()).toEqual([taskA, taskB, testCwd].sort());
+       |                              ^
+    241|  });
+    242|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/9]⎯
+
+ FAIL  src/__tests__/per-step-cwd.test.ts > per-step cwd is honoured at spawn (issue #222) > graph: each node spawns in its OWN cwd, nodes without one in the mode-level cwd
+AssertionError: expected [ '/tmp/brl-step-cwd-jqL50G', …(2) ] to deeply equal [ '/tmp/brl-step-cwd-jqL50G', …(2) ]
+
+- Expected
++ Received
+
+  [
+    "/tmp/brl-step-cwd-jqL50G",
+-   "/tmp/brl-step-cwd-jqL50G/node-a",
+-   "/tmp/brl-step-cwd-jqL50G/node-b",
++   "/tmp/brl-step-cwd-jqL50G",
++   "/tmp/brl-step-cwd-jqL50G",
+  ]
+
+ ❯ src/__tests__/per-step-cwd.test.ts:258:30
+    256|
+    257|   expect(result.isError).toBeFalsy();
+    258|   expect(spawnCwds().sort()).toEqual([nodeA, nodeB, testCwd].sort());
+       |                              ^
+    259|  });
+    260|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/9]⎯
+
+ FAIL  src/__tests__/per-step-cwd.test.ts > per-step cwd is honoured at spawn (issue #222) > a step cwd is resolved relative to the session cwd
+AssertionError: expected [ '/tmp/brl-step-cwd-7JbUna' ] to deeply equal [ '/tmp/brl-step-cwd-7JbUna/nested' ]
+
+- Expected
++ Received
+
+  [
+-   "/tmp/brl-step-cwd-7JbUna/nested",
++   "/tmp/brl-step-cwd-7JbUna",
+  ]
+
+ ❯ src/__tests__/per-step-cwd.test.ts:264:23
+    262|   fs.mkdirSync(path.join(testCwd, "nested"));
+    263|   await execute({ chain: [{ task: "relative cwd", cwd: "nested" }] });
+    264|   expect(spawnCwds()).toEqual([path.join(testCwd, "nested")]);
+       |                       ^
+    265|  });
+    266|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/9]⎯
+
+ FAIL  src/__tests__/per-step-cwd.test.ts > an invalid per-step cwd rejects before any spawn (issue #222) > chain
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/per-step-cwd.test.ts:296:26
+    294|    ],
+    295|   });
+    296|   expect(result.isError).toBe(true);
+       |                          ^
+    297|   expect(firstText(result)).toContain(`Step 2 ("broken"): Invalid cwd:…
+    298|   expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/9]⎯
+
+ FAIL  src/__tests__/per-step-cwd.test.ts > an invalid per-step cwd rejects before any spawn (issue #222) > parallel
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/per-step-cwd.test.ts:308:26
+    306|    ],
+    307|   });
+    308|   expect(result.isError).toBe(true);
+       |                          ^
+    309|   expect(firstText(result)).toContain(`Task 2 ("broken"): Invalid cwd:…
+    310|   expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/9]⎯
+
+ FAIL  src/__tests__/per-step-cwd.test.ts > an invalid per-step cwd rejects before any spawn (issue #222) > graph
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/per-step-cwd.test.ts:320:26
+    318|    ],
+    319|   });
+    320|   expect(result.isError).toBe(true);
+       |                          ^
+    321|   expect(firstText(result)).toContain(`Node "n2": Invalid cwd:`);
+    322|   expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/9]⎯
+
+ FAIL  src/__tests__/per-step-cwd.test.ts > an invalid per-step cwd rejects before any spawn (issue #222) > a step cwd resolving into a restricted system directory is rejected too
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/per-step-cwd.test.ts:327:26
+    325|  it("a step cwd resolving into a restricted system directory is reject…
+    326|   const result = await execute({ chain: [{ task: "escape", cwd: "/etc"…
+    327|   expect(result.isError).toBe(true);
+       |                          ^
+    328|   expect(firstText(result)).toContain("Invalid cwd:");
+    329|   expect(runnerMocks.runSubagent).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/9]⎯
+
+ FAIL  src/__tests__/per-step-cwd.test.ts > a step's outputFile is validated against that step's cwd (issue #222) > an outputFile INSIDE the step's cwd is accepted and the step still spawns there
+AssertionError: expected [ '/tmp/brl-step-cwd-3WzcNE' ] to deeply equal [ '/tmp/brl-step-cwd-3WzcNE/step' ]
+
+- Expected
++ Received
+
+  [
+-   "/tmp/brl-step-cwd-3WzcNE/step",
++   "/tmp/brl-step-cwd-3WzcNE",
+  ]
+
+ ❯ src/__tests__/per-step-cwd.test.ts:392:23
+    390|
+    391|   expect(result.isError).toBeFalsy();
+    392|   expect(spawnCwds()).toEqual([stepCwd]);
+       |                       ^
+    393|  });
+    394| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/9]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  9 failed | 12 passed (21)
+   Start at  17:48:04
+   Duration  718ms (transform 56%, import 28%, tests 15%, worker 1%)
+

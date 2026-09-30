@@ -1,0 +1,7 @@
+diff --git a/src/session-manager.ts b/src/session-manager.ts
+index 1f8840d..e19f3d2 100644
+--- a/src/session-manager.ts
++++ b/src/session-manager.ts
+@@ -330 +330 @@ export async function stopAgent(id: string): Promise<BackgroundAgent | null> {
+-  if (agent.status === 'completed' || agent.status === 'failed' || agent.status === 'stopped') {
++  if (agent.status === 'completed') {

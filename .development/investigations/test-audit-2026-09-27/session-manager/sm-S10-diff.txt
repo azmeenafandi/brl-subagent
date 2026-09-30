@@ -1,0 +1,7 @@
+diff --git a/src/session-manager.ts b/src/session-manager.ts
+index 1f8840d..91f8112 100644
+--- a/src/session-manager.ts
++++ b/src/session-manager.ts
+@@ -217 +217 @@ export function updateAgentStatus(id: string, status: AgentStatus, error?: strin
+-  } else if (status === 'failed') {
++  } else if (false) {

@@ -1,0 +1,12 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+
+ Test Files  1 passed (1)
+      Tests  17 passed (17)
+   Start at  17:41:30
+   Duration  225ms (transform 59%, tests 19%, import 17%, worker 4%)
+
