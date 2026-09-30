@@ -1,0 +1,37 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+ ❯ src/__tests__/scheduler.test.ts (17 tests | 1 failed) 22ms
+   ❯ validateGraph (6)
+     × accepts graph at exactly MAX_GRAPH_TASKS 6ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > validateGraph > accepts graph at exactly MAX_GRAPH_TASKS
+AssertionError: expected [ Array(1) ] to have a length of +0 but got 1
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ src/__tests__/scheduler.test.ts:241:18
+    239|   }
+    240|   const errors = validateGraph(tasks);
+    241|   expect(errors).toHaveLength(0);
+       |                  ^
+    242|  });
+    243|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 16 passed (17)
+   Start at  17:41:23
+   Duration  243ms (transform 56%, tests 25%, import 15%, worker 4%)
+

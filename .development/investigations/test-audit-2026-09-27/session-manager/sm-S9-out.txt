@@ -1,0 +1,81 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-234
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession .then abort discrimination (probe contract) > marks agent stopped (not completed) when prompt resolves with an aborted run
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > issue #31 — terminal paths release agent._sessionRef > releases the ref on the aborted/stopped path
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > issue #31 — terminal paths release agent._sessionRef > releases the ref on the stopped-in-catch path (rejecting prompt while already stopped)
+[brl-subagent] INFO: Background run settled
+
+ ❯ src/__tests__/session-manager.test.ts (83 tests | 4 failed) 323ms
+   ❯ spawnBackgroundSession .then abort discrimination (probe contract) (2)
+     × marks agent stopped (not completed) when prompt resolves with an aborted run 8ms
+   ❯ spawnBackgroundSession per-agent timeout (issue #28 W3) (4)
+     × aborts the session and marks stopped after the deadline 3ms
+   ❯ issue #31 — terminal paths release agent._sessionRef (5)
+     × releases the ref on the aborted/stopped path 1ms
+     × releases the ref on the stopped-in-catch path (rejecting prompt while already stopped) 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > spawnBackgroundSession .then abort discrimination (probe contract) > marks agent stopped (not completed) when prompt resolves with an aborted run
+AssertionError: expected undefined to be defined
+ ❯ src/__tests__/session-manager.test.ts:578:30
+    576|   const after = getAgent(agent.id);
+    577|   expect(after?.status).toBe("stopped");
+    578|   expect(after?.completedAt).toBeDefined();
+       |                              ^
+    579|  });
+    580|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > spawnBackgroundSession per-agent timeout (issue #28 W3) > aborts the session and marks stopped after the deadline
+AssertionError: expected undefined to be defined
+ ❯ src/__tests__/session-manager.test.ts:660:31
+    658|    expect(after?.status).toBe("stopped");
+    659|    expect(after?.error).toContain("Timed out after 5000ms");
+    660|    expect(after?.completedAt).toBeDefined();
+       |                               ^
+    661|   } finally {
+    662|    vi.useRealTimers();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > issue #31 — terminal paths release agent._sessionRef > releases the ref on the aborted/stopped path
+AssertionError: expected undefined to be defined
+ ❯ src/__tests__/session-manager.test.ts:1386:29
+    1384|
+    1385|   expect(agent.status).toBe("stopped");
+    1386|   expect(agent.completedAt).toBeDefined();
+       |                             ^
+    1387|   expect(agent._sessionRef).toBeUndefined();
+    1388|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > issue #31 — terminal paths release agent._sessionRef > releases the ref on the stopped-in-catch path (rejecting prompt while already stopped)
+AssertionError: expected undefined to be defined
+ ❯ src/__tests__/session-manager.test.ts:1469:29
+    1467|
+    1468|   expect(agent.status).toBe("stopped");
+    1469|   expect(agent.completedAt).toBeDefined();
+       |                             ^
+    1470|   expect(agent.finalOutput).toBe("stopped mid-run");
+    1471|   expect(agent._sessionRef).toBeUndefined();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 79 passed (83)
+   Start at  18:16:28
+   Duration  697ms (tests 59%, transform 33%, import 7%, worker 1%)
+
+EXIT=1

@@ -1,0 +1,44 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-234
+
+ ❯ src/__tests__/session-manager.test.ts (83 tests | 2 failed) 327ms
+   ❯ agent id validation (F24) (12)
+     × getTranscriptPath throws for a traversal id 6ms
+     × getTranscriptPath throws for an absolute path 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > agent id validation (F24) > getTranscriptPath throws for a traversal id
+AssertionError: expected [Function] to throw an error
+ ❯ src/__tests__/session-manager.test.ts:427:55
+    425|
+    426|  it("getTranscriptPath throws for a traversal id", () => {
+    427|   expect(() => getTranscriptPath("../../etc/passwd")).toThrow();
+       |                                                       ^
+    428|  });
+    429|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > agent id validation (F24) > getTranscriptPath throws for an absolute path
+AssertionError: expected [Function] to throw an error
+ ❯ src/__tests__/session-manager.test.ts:431:47
+    429|
+    430|  it("getTranscriptPath throws for an absolute path", () => {
+    431|   expect(() => getTranscriptPath("/tmp/foo")).toThrow();
+       |                                               ^
+    432|  });
+    433|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 81 passed (83)
+   Start at  18:09:16
+   Duration  695ms (tests 59%, transform 33%, import 7%, worker 1%)
+
+EXIT=1

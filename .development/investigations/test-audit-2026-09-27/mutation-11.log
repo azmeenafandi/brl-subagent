@@ -1,0 +1,37 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+ ❯ src/__tests__/scheduler.test.ts (17 tests | 1 failed) 23ms
+   ❯ validateGraph (6)
+     × returns error for duplicate task IDs 5ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > validateGraph > returns error for duplicate task IDs
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/__tests__/scheduler.test.ts:213:55
+    211|   const tasks = [makeTask("A"), makeTask("A")];
+    212|   const errors = validateGraph(tasks);
+    213|   expect(errors.some((e) => e.includes("Duplicate"))).toBe(true);
+       |                                                       ^
+    214|  });
+    215|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 16 passed (17)
+   Start at  17:41:25
+   Duration  237ms (transform 54%, tests 27%, import 16%, worker 4%)
+

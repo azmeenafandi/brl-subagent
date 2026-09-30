@@ -1,0 +1,56 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-231
+
+ ❯ src/__tests__/notify-completion.test.ts (31 tests | 1 failed) 18ms
+   ❯ buildCompletionMessage (12)
+     × appends the soft directive paragraph 7ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/notify-completion.test.ts > buildCompletionMessage > appends the soft directive paragraph
+AssertionError: expected 'Background agent "review-the-docs" (r…' to contain 'confirming the cause with the user'
+
+- Expected
++ Received
+
+- confirming the cause with the user
++ Background agent "review-the-docs" (run-123) — failed in 42.0s · $0.02 · category: unknown
++
++ … (truncated)
++ line03
++ line04
++ line05
++ line06
++ line07
++ line08
++ line09
++ line10
++ line11
++ line12
++ line13
++ line14
++ line15
++ line16
++ line17
++
++ Process this completion silently unless action is needed. If the run failed, apply the retry taxonomy: a re-dispatch is not a retry, and Rule 18 governs terminations — ask the user before terminating anything.
+
+ ❯ src/__tests__/notify-completion.test.ts:142:23
+    140|   const msg = buildCompletionMessage(makeAgent({ status: "failed" }), …
+    141|   expect(msg.content).toContain("Process this completion silently");
+    142|   expect(msg.content).toContain("confirming the cause with the user");
+       |                       ^
+    143|  });
+    144|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 30 passed (31)
+   Start at  17:47:52
+   Duration  264ms (transform 64%, import 17%, tests 16%, worker 3%)
+

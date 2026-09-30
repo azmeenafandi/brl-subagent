@@ -1,0 +1,7 @@
+diff --git a/src/session-manager.ts b/src/session-manager.ts
+index 1f8840d..4cb7b8a 100644
+--- a/src/session-manager.ts
++++ b/src/session-manager.ts
+@@ -84 +84 @@ function persistAgent(agent: BackgroundAgent): void {
+-    assertSafeAgentId(agent.id);
++    void agent.id;

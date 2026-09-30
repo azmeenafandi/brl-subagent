@@ -1,0 +1,38 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-234
+
+ ❯ src/__tests__/session-manager.test.ts (83 tests | 1 failed) 341ms
+   ❯ agent id validation (F24) (12)
+     × persistAgent refuses a planted record with a traversal id (F24 indirection bypass) 7ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > agent id validation (F24) > persistAgent refuses a planted record with a traversal id (F24 indirection bypass)
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/__tests__/session-manager.test.ts:482:39
+    480|   const result = steerAgent(ATTACK_UUID, "hi");
+    481|   expect(result).not.toBeNull(); // getAgent accepted the valid UUID
+    482|   expect(fs.existsSync(escapeTarget)).toBe(false); // NO write outside…
+       |                                       ^
+    483|  });
+    484|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 82 passed (83)
+   Start at  18:09:03
+   Duration  712ms (tests 60%, transform 33%, import 7%, worker 1%)
+
+EXIT=1

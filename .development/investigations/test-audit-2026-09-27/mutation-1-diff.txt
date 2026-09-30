@@ -1,0 +1,7 @@
+diff --git a/src/scheduler.ts b/src/scheduler.ts
+index beb913f..7638085 100644
+--- a/src/scheduler.ts
++++ b/src/scheduler.ts
+@@ -38 +38 @@ export function detectCycle(tasks: GraphTask[]): string[] | null {
+-				if (depColor === 1) {
++				if (depColor === 2) {

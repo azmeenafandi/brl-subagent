@@ -1,0 +1,7 @@
+diff --git a/src/scheduler.ts b/src/scheduler.ts
+index beb913f..97152bd 100644
+--- a/src/scheduler.ts
++++ b/src/scheduler.ts
+@@ -170 +170 @@ export function validateGraph(tasks: GraphTask[]): string[] {
+-		if (ids.has(t.id)) {
++		if (false) {

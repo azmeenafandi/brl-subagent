@@ -1,0 +1,40 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+stderr | src/__tests__/background-run-extraction.test.ts > spawnBackgroundRun extraction (#198 phase 1) > spawns exactly one background run with the resolved values and never touches the foreground runner
+[brl-subagent] WARN: Background agent spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+
+stdout | src/__tests__/background-run-extraction.test.ts > spawnBackgroundRun extraction (#198 phase 1) > spawns exactly one background run with the resolved values and never touches the foreground runner
+[brl-subagent] INFO: Background agent spawned
+
+ ❯ src/__tests__/background-run-extraction.test.ts (1 test | 1 failed) 20ms
+   ❯ spawnBackgroundRun extraction (#198 phase 1) (1)
+     × spawns exactly one background run with the resolved values and never touches the foreground runner 18ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/background-run-extraction.test.ts > spawnBackgroundRun extraction (#198 phase 1) > spawns exactly one background run with the resolved values and never touches the foreground runner
+AssertionError: expected 'Draft the phase-1 extraction summary …' to be 'Draft the phase-1 extraction summary …' // Object.is equality
+
+Expected: "Draft the phase-1 extraction summary document."
+Received: "Draft the phase-1 extraction summary document. (mutated)"
+
+ ❯ src/__tests__/background-run-extraction.test.ts:247:28
+    245|    model?: string;
+    246|   };
+    247|   expect(spawnParams.task).toBe(TASK);
+       |                            ^
+    248|   expect(spawnParams.cwd).toBe(testCwd);
+    249|   expect(spawnParams.model).toBe(`${GLOBAL_MODEL.provider}/${GLOBAL_MO…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  17:48:46
+   Duration  638ms (transform 63%, import 32%, tests 4%, worker 1%)
+

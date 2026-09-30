@@ -1,0 +1,7 @@
+diff --git a/src/session-manager.ts b/src/session-manager.ts
+index 1f8840d..9927c15 100644
+--- a/src/session-manager.ts
++++ b/src/session-manager.ts
+@@ -741 +741 @@ export async function spawnBackgroundSession(
+-      if (gitBranchLocks.get(lockKey) === entry) gitBranchLocks.delete(lockKey);
++      gitBranchLocks.delete(lockKey);

@@ -303,6 +303,11 @@ Three checks reject the fan-out up front, before any spawn: `approvalMode: 'alwa
 
 If a spawn fails mid-loop, fan-out stops and reports the failed task plus the IDs already started; an abort mid-loop stops further spawns. Either way, the agents already started stay detached and still wake the conductor. Everything else is unchanged: single background, foreground parallel, the `MAX_PARALLEL_TASKS` cap (8), a live-monitor row per agent, `get_subagent_result` / `steer_subagent` / `stop_subagent` by agent ID, per-agent timeouts, and a single `'writes'` approval warning for the batch.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the branch model (`main` = releases, `dev` = integration),
+the worktree workflow, and the test gates. Development docs live in [`.development/`](.development/).
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for the release history.

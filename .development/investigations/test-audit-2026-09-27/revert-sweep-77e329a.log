@@ -1,0 +1,57 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-231
+
+ ❯ src/__tests__/streaming-sentinel.test.ts (6 tests | 2 failed) 31ms
+   ❯ streaming partials carry the unsettled sentinel (issue #206) (2)
+     × parseSubagentLine: every partial has exitCode -1; the accumulator keeps its real code 7ms
+     × runSubagent: partials stay -1 through the run; the final result carries the real exit code 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/streaming-sentinel.test.ts > streaming partials carry the unsettled sentinel (issue #206) > parseSubagentLine: every partial has exitCode -1; the accumulator keeps its real code
+AssertionError: expected +0 to be -1 // Object.is equality
+
+- Expected
++ Received
+
+- -1
++ 0
+
+ ❯ src/__tests__/streaming-sentinel.test.ts:132:37
+    130|   expect(partials.length).toBeGreaterThanOrEqual(4);
+    131|   for (const partial of partials) {
+    132|    expect(partial.details.exitCode).toBe(-1);
+       |                                     ^
+    133|   }
+    134|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/__tests__/streaming-sentinel.test.ts > streaming partials carry the unsettled sentinel (issue #206) > runSubagent: partials stay -1 through the run; the final result carries the real exit code
+AssertionError: expected +0 to be -1 // Object.is equality
+
+- Expected
++ Received
+
+- -1
++ 0
+
+ ❯ src/__tests__/streaming-sentinel.test.ts:202:37
+    200|   expect(partials.length).toBeGreaterThan(0);
+    201|   for (const partial of partials) {
+    202|    expect(partial.details.exitCode).toBe(-1);
+       |                                     ^
+    203|   }
+    204|   expect(partials.some((p) => p.details.stopReason === "toolUse")).toB…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 4 passed (6)
+   Start at  17:42:34
+   Duration  1.10s (import 71%, transform 25%, tests 3%)
+

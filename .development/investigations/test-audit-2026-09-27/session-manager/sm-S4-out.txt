@@ -1,0 +1,35 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-234
+
+ ❯ src/__tests__/session-manager.test.ts (83 tests | 1 failed) 331ms
+   ❯ agent id validation (F24) (12)
+     × persistAgent still writes valid records (regression guard) 8ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > agent id validation (F24) > persistAgent still writes valid records (regression guard)
+AssertionError: expected 'running' to be 'steered' // Object.is equality
+
+Expected: "steered"
+Received: "running"
+
+ ❯ src/__tests__/session-manager.test.ts:506:28
+    504|   steerAgent(VALID_UUID, "hi");
+    505|   const persisted = JSON.parse(fs.readFileSync(planted, "utf-8"));
+    506|   expect(persisted.status).toBe("steered"); // valid record persisted …
+       |                            ^
+    507|  });
+    508| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 82 passed (83)
+   Start at  18:08:57
+   Duration  695ms (tests 60%, transform 32%, import 7%, worker 1%)
+
+EXIT=1

@@ -1,0 +1,43 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+ ❯ src/__tests__/scheduler.test.ts (17 tests | 2 failed) 21ms
+   ❯ detectCycle (3)
+     × detects self-loop (A→A) 4ms
+     × detects mutual dependency (A↔B) 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > detectCycle > detects self-loop (A→A)
+AssertionError: expected null not to be null
+ ❯ src/__tests__/scheduler.test.ts:168:21
+    166|   const tasks = [makeTask("A", ["A"])];
+    167|   const cycle = detectCycle(tasks);
+    168|   expect(cycle).not.toBeNull();
+       |                     ^
+    169|   expect(cycle).toContain("A");
+    170|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > detectCycle > detects mutual dependency (A↔B)
+AssertionError: expected null not to be null
+ ❯ src/__tests__/scheduler.test.ts:177:21
+    175|   const tasks = [makeTask("A", ["B"]), makeTask("B", ["A"])];
+    176|   const cycle = detectCycle(tasks);
+    177|   expect(cycle).not.toBeNull();
+       |                     ^
+    178|   expect(cycle!.length).toBeGreaterThanOrEqual(2);
+    179|   // Both A and B should be in the cycle
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 15 passed (17)
+   Start at  17:41:12
+   Duration  237ms (transform 56%, tests 24%, import 16%, worker 4%)
+

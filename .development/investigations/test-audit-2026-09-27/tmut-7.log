@@ -1,0 +1,51 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+ ❯ src/__tests__/background-batch-rejection.test.ts (3 tests | 2 failed) 23ms
+   ❯ background: true is rejected with the non-fannable batch modes (3)
+     × rejects chain (sequential) + background, naming "chain" 9ms
+     × rejects graph (dependency graph) + background, naming "graph" 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/background-batch-rejection.test.ts > background: true is rejected with the non-fannable batch modes > rejects chain (sequential) + background, naming "chain"
+TypeError: Cannot destructure property 'command' of 'getPiInvocation(...)' as it is undefined.
+ ❯ checkPiBinary src/preflight.ts:31:10
+     29|  */
+     30| function checkPiBinary(): PreflightResult {
+     31|  const { command } = getPiInvocation([]);
+       |          ^
+     32|
+     33|  if (command !== "pi") {
+ ❯ preflightCheck src/preflight.ts:140:19
+ ❯ runChainMode src/index.ts:495:20
+ ❯ Object.execute src/index.ts:3296:12
+ ❯ src/__tests__/background-batch-rejection.test.ts:205:29
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/__tests__/background-batch-rejection.test.ts > background: true is rejected with the non-fannable batch modes > rejects graph (dependency graph) + background, naming "graph"
+TypeError: Cannot destructure property 'command' of 'getPiInvocation(...)' as it is undefined.
+ ❯ checkPiBinary src/preflight.ts:31:10
+     29|  */
+     30| function checkPiBinary(): PreflightResult {
+     31|  const { command } = getPiInvocation([]);
+       |          ^
+     32|
+     33|  if (command !== "pi") {
+ ❯ preflightCheck src/preflight.ts:140:19
+ ❯ runGraphMode src/index.ts:1505:20
+ ❯ Object.execute src/index.ts:3317:12
+ ❯ src/__tests__/background-batch-rejection.test.ts:220:29
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 1 passed (3)
+   Start at  17:48:54
+   Duration  660ms (transform 64%, import 30%, tests 5%, worker 1%)
+

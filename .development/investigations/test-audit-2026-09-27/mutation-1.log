@@ -1,0 +1,167 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+ ❯ src/__tests__/scheduler.test.ts (17 tests | 8 failed) 23ms
+   ❯ topologicalSort (8)
+     × linear chain A→B→C produces 3 waves 7ms
+     × diamond graph produces 3 waves (A, B+C parallel, D) 1ms
+     × mixed deps produce 2 waves (A+C parallel, B) 1ms
+     × handles tasks already in topological order 0ms
+     × root node without dependsOn field + dependent produces 2 waves 1ms
+   ❯ detectCycle (3)
+     × detects self-loop (A→A) 2ms
+     × detects mutual dependency (A↔B) 0ms
+     × returns null for valid DAG 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > topologicalSort > linear chain A→B→C produces 3 waves
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/__tests__/scheduler.test.ts:49:21
+     47|   ];
+     48|   const result = topologicalSort(tasks);
+     49|   expect(result.ok).toBe(true);
+       |                     ^
+     50|   if (!result.ok) return;
+     51|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > topologicalSort > diamond graph produces 3 waves (A, B+C parallel, D)
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/__tests__/scheduler.test.ts:67:21
+     65|   ];
+     66|   const result = topologicalSort(tasks);
+     67|   expect(result.ok).toBe(true);
+       |                     ^
+     68|   if (!result.ok) return;
+     69|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > topologicalSort > mixed deps produce 2 waves (A+C parallel, B)
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/__tests__/scheduler.test.ts:93:21
+     91|   const tasks = [makeTask("A"), makeTask("B", ["A"]), makeTask("C")];
+     92|   const result = topologicalSort(tasks);
+     93|   expect(result.ok).toBe(true);
+       |                     ^
+     94|   if (!result.ok) return;
+     95|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/8]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > topologicalSort > handles tasks already in topological order
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/__tests__/scheduler.test.ts:124:21
+    122|   ];
+    123|   const result = topologicalSort(tasks);
+    124|   expect(result.ok).toBe(true);
+       |                     ^
+    125|   if (!result.ok) return;
+    126|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/8]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > topologicalSort > root node without dependsOn field + dependent produces 2 waves
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/__tests__/scheduler.test.ts:139:21
+    137|   const tasks = [rootTask("A"), makeTask("B", ["A"])];
+    138|   const result = topologicalSort(tasks);
+    139|   expect(result.ok).toBe(true);
+       |                     ^
+    140|   if (!result.ok) return;
+    141|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/8]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > detectCycle > detects self-loop (A→A)
+AssertionError: expected null not to be null
+ ❯ src/__tests__/scheduler.test.ts:168:21
+    166|   const tasks = [makeTask("A", ["A"])];
+    167|   const cycle = detectCycle(tasks);
+    168|   expect(cycle).not.toBeNull();
+       |                     ^
+    169|   expect(cycle).toContain("A");
+    170|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/8]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > detectCycle > detects mutual dependency (A↔B)
+AssertionError: expected null not to be null
+ ❯ src/__tests__/scheduler.test.ts:177:21
+    175|   const tasks = [makeTask("A", ["B"]), makeTask("B", ["A"])];
+    176|   const cycle = detectCycle(tasks);
+    177|   expect(cycle).not.toBeNull();
+       |                     ^
+    178|   expect(cycle!.length).toBeGreaterThanOrEqual(2);
+    179|   // Both A and B should be in the cycle
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/8]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > detectCycle > returns null for valid DAG
+AssertionError: expected [ 'B', 'A' ] to be null
+
+- Expected:
+null
+
++ Received:
+[
+  "B",
+  "A",
+]
+
+ ❯ src/__tests__/scheduler.test.ts:193:17
+    191|   ];
+    192|   const cycle = detectCycle(tasks);
+    193|   expect(cycle).toBeNull();
+       |                 ^
+    194|  });
+    195| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/8]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  8 failed | 9 passed (17)
+   Start at  17:41:10
+   Duration  266ms (transform 55%, tests 26%, import 15%, worker 4%)
+

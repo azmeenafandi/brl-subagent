@@ -1,0 +1,10 @@
+diff --git a/src/validate.ts b/src/validate.ts
+index 71023b4..458baee 100644
+--- a/src/validate.ts
++++ b/src/validate.ts
+@@ -321,4 +321 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
+-    const capabilityBlock =
+-      !config.force &&
+-      req.blockMessage !== undefined &&
+-      (req.blockingPatterns ?? []).some(p => p.test(taskText));
++    const capabilityBlock = false;

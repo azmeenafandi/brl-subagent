@@ -1,0 +1,38 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-234
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession run-entry audit fields (issue #122) > carries the REAL summed session usage on the finalized entry when the agent completed
+[brl-subagent] INFO: Background run settled
+
+ ❯ src/__tests__/session-manager.test.ts (83 tests | 1 failed) 332ms
+   ❯ spawnBackgroundSession run-entry audit fields (issue #122) (4)
+     × carries the REAL summed session usage on the finalized entry when the agent completed 11ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > spawnBackgroundSession run-entry audit fields (issue #122) > carries the REAL summed session usage on the finalized entry when the agent completed
+AssertionError: expected 'planning turn' to be 'completed audit output xxxxxxxxxxxxxx…' // Object.is equality
+
+Expected: "completed audit output xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+Received: "planning turn"
+
+ ❯ src/__tests__/session-manager.test.ts:1697:29
+    1695|   expect(run.tokensIn).toBe(1500);
+    1696|   expect(run.tokensOut).toBe(450);
+    1697|   expect(run.outputSummary).toBe(fullOutput.slice(0, 200));
+       |                             ^
+    1698|   expect(run.outputSummary).toHaveLength(200);
+    1699|   expect(run.fullOutput).toBe(fullOutput);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 82 passed (83)
+   Start at  18:16:54
+   Duration  698ms (tests 60%, transform 32%, import 7%, worker 1%)
+
+EXIT=1

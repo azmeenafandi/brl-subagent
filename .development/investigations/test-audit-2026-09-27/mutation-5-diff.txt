@@ -1,0 +1,7 @@
+diff --git a/src/scheduler.ts b/src/scheduler.ts
+index beb913f..dfe95a1 100644
+--- a/src/scheduler.ts
++++ b/src/scheduler.ts
+@@ -131 +131 @@ export function topologicalSort(tasks: GraphTask[]):
+-				const newDegree = (inDegree.get(depId) ?? 1) - 1;
++				const newDegree = (inDegree.get(depId) ?? 1) + 1;

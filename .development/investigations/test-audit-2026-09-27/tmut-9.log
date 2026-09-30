@@ -1,0 +1,40 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+stdout | src/__tests__/per-step-model.test.ts > retry-only delegate_task calls dispatch (issue #175 review) > resolves the template before retry (a combined template + retryRunId call keeps the template body)
+[brl-subagent] INFO: Session started
+
+stdout | src/__tests__/per-step-model.test.ts > retry-only delegate_task calls dispatch (issue #175 review) > resolves the template before retry (a combined template + retryRunId call keeps the template body)
+[brl-subagent] INFO: Subagent completed successfully
+
+ ❯ src/__tests__/per-step-model.test.ts (69 tests | 1 failed) 344ms
+   ❯ retry-only delegate_task calls dispatch (issue #175 review) (2)
+     × resolves the template before retry (a combined template + retryRunId call keeps the template body) 12ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/per-step-model.test.ts > retry-only delegate_task calls dispatch (issue #175 review) > resolves the template before retry (a combined template + retryRunId call keeps the template body)
+AssertionError: expected 'Recorded task that the template must …' to be 'Template body wins over the recorded …' // Object.is equality
+
+Expected: "Template body wins over the recorded retry task."
+Received: "Recorded task that the template must override."
+
+ ❯ src/__tests__/per-step-model.test.ts:1131:52
+    1129|   expect(result.isError).toBeFalsy();
+    1130|   expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
+    1131|   expect(runnerMocks.runSubagent.mock.calls[0][4]).toBe(templateTask);
+       |                                                    ^
+    1132|  });
+    1133| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 68 passed (69)
+   Start at  17:51:43
+   Duration  1.04s (transform 42%, tests 39%, import 19%)
+
