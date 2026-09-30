@@ -156,6 +156,7 @@ Each rule below is enforced in code and pinned by tests; the pointer is where it
 ## Where to go next
 
 - **Behaviour of a tool or parameter** → `AGENT.md` (the registered contract) and `README.md` (usage).
+- **Why a rule exists** → `.development/decisions/` (accepted ADRs).
 - **Why something is the way it is** → the issue / PR numbers cited above, the `ROADMAP.md` "Shipped" tables,
   the `TASKS.md` changelog, and git history.
 - **How development works** → `.pi/skills/worktree/SKILL.md`; contributors start at `CONTRIBUTING.md`.
