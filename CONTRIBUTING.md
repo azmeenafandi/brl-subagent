@@ -51,6 +51,10 @@ edits to `src/` and `presets/` outside a worktree, and blocks `npm install` thro
 
 Behaviour changes need a test that fails before and passes after. If a bug was reported, pin the reported case.
 
+Structure is enforced too: [`architecture-rules.test.ts`](src/__tests__/architecture-rules.test.ts) audits the
+import graph (cycles, layering, runtime-dependency allowlist) and `architecture-doc.test.ts` guards the
+generated module map — a change that breaks either fails CI with the rule named.
+
 ## Documentation
 
 Design docs, investigations, and the roadmap live in [`.development/`](.development/) — start with
