@@ -60,7 +60,9 @@ generated module map — a change that breaks either fails CI with the rule name
 Design docs, investigations, and the roadmap live in [`.development/`](.development/) — start with
 `ARCHITECTURE.md`, `ROADMAP.md`, and `TASKS.md`. The dev workflow's own record (friction log, metrics,
 handoff) is there too. `ARCHITECTURE.md`'s module map is generated from each `src/*.ts` purpose header: give
-new modules a `// Purpose:` first line and run `npm run docs:arch` (CI fails otherwise).
+new modules a `// Purpose:` first line and run `npm run docs:arch` (CI fails otherwise). Load-bearing decisions
+are recorded as ADRs in `.development/decisions/` (index generated, CI-guarded); read them before proposing a
+structural change — supersede, never edit an accepted record. Regenerate with `npm run docs:decisions`.
 
 ## The knowledge graph (optional)
 
