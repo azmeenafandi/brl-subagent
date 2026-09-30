@@ -37,8 +37,14 @@
   preserved as an archive). pi now runs FROM the cockpit: guard suite green natively (no `NODE_PATH`),
   `check-repo.sh` green end-to-end — including the new dev-branch check and the informational runtime-skew
   line (0.99.1 > 0.87.1).
-- **Then Phase 2 (tracking infra)**: `.gitignore` rework + track `.development/**`, `.pi/skills/**`,
-  `.pi/extensions/**` on `dev` (contributor parity), `CONTRIBUTING.md`, framework-doc updates. **Then #230**.
+- **Phase 2 (tracking infra) — PR #248 MERGED `dec5fb65`** (branch `chore/247-contributor-parity-tracking`,
+  issue #247): `.gitignore` reworked (`.pi/*` + negations so new state dirs are ignored by default;
+  `.development/` unignored), `.development/**` + `.pi/skills/**` + `.pi/extensions/**` tracked,
+  `CONTRIBUTING.md` added, SKILL.md + WORKTREE_FRAMEWORK.md updated for the tracking model. Gates green
+  (1201/1201). **Dogfood caught a real bug**: `worktree-prep.sh` demanded `.git` be a directory, so
+  provisioning failed on the cockpit (a LINKED worktree, `.git` is a file) — fixed to ask git
+  (`rev-parse --is-inside-work-tree`). Reconciliation done in the cockpit (preserve → pull → re-apply →
+  docs-churn commit); `graph-refresh.sh` run post-merge. **#230 is the next tracked fix.**
 - Backup before the move: `cockpit-backup-20260930-203530.tar.gz` (workspace root).
 - Transitional (pre-restart) known breakages: anything under `main/.pi` that resolves repo deps (e.g. the
   guard test needs `NODE_PATH=<dev>/node_modules` until the move) or finds `.development/`/`graphify-out/`
@@ -248,4 +254,4 @@ install is the DEV tree (daily-driving; #240 + #241 + #244 live). Board: **#230*
 now also the owner of the hook-side path model, parked pending the upstream-evidence call);
 **#229/#233/#235/#239/#240/#241/#244** merged to `dev`, auto-close at the next dev→main release.
 Cockpit move **COMPLETE** (Phases 0–1b DONE 2026-09-30; pi now runs from `brl-subagent-dev`);
-Phase 2 (tracking infra) next; #230 after.
+Phase 2 **MERGED** (PR #248 → `dec5fb65`; contributor parity live on `dev`); **#230 next**.
