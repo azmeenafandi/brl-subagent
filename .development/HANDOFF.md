@@ -2,7 +2,7 @@
 
 > Updated 2026-09-30 — **the cockpit moved to the `dev` checkout** (`.development/`, `graphify-out/`,
 > `.pi/` tools, shared `node_modules`); `main` is the pristine release checkout. **v2.3.9 live on npm; the user
-> daily-drives the DEV tree** (local-path install @ the dev tree — `290cf9f`; dogfooding green; pi 0.99.1 smoke-verified).
+> daily-drives the DEV tree** (local-path install @ the dev tree — `290cf9f`; dogfooding green; pi **1.0.0** smoke-verified 2026-10-02).
 > Read this first: it is the state a fresh conductor cannot infer from the repo alone.
 > Companion durable records: `.development/` (ROADMAP, AUDIT, TASKS, METRICS, FRICTION_LOG,
 > INVESTIGATION_reload_wake.md), `.pi/skills/worktree/SKILL.md` (the rituals),
@@ -12,10 +12,12 @@
 
 | | |
 |---|---|
-| pi runtime | **0.99.1** (updated 2026-09-30; post-update smoke PASSED) — devDeps/lockfile still **0.87.1**: the known skew, informational in check-repo §1c; the Dependabot bump pairs with the v2.4.0 line |
+| pi runtime | **1.0.0** (updated 2026-10-02; boot clean + live smoke PASSED: spawn → steer → completion, guard probe blocked a cockpit `src/` write — Rule 5 still enforced under 1.0.0) — devDeps/lockfile still **0.87.1** (now two majors behind): the Dependabot bump pairs with the v2.4.0 line |
 | `main` | **`b7c52e4`** — **v2.3.9 released** (release merge `7289618`; bump commit; GitHub release published; npm live). **Pristine since 2026-09-30: no `node_modules`, no docs/graph/.pi** (all moved to the dev cockpit) |
 | `dev` | **`290cf9f`** — the post-2.3.9 fix cycle merged: **#242** (#240 default-not-ceiling timeouts, `35badde`), **#243** (#239 schema-linked types, `fcb9dc2`, rebased after #242), **#245** (#241 steer delivery, `9c9b754`), **#246** (#244 deadline wording + single-timer ownership, `f892e3f`), **#248** (#247 contributor parity, `dec5fb65`), **#250** (#249 ARCHITECTURE rewrite + module-map guard, `949be9d`), **#252** (#251 architecture rules as tests, `3e17491`) and **#254** (#253 ADR backfill, `290cf9f`); main still at the `b7c52e4` release; **COCKPIT since 2026-09-30** (holds `.development/`, `graphify-out/`, `.pi/`, the shared `node_modules`) |
-| Running extension | **Developing mode — local-path install of the dev checkout** (`brl-subagent-dev` @ `290cf9f`, includes #237–#254; #249/#251/#253 are comments/docs/tests only — no reload needed; **reloaded 2026-09-29 15:03Z — #240/#241/#244 all LIVE**; **pi updated to 0.99.1 (2026-09-30) — post-update smoke PASSED** (clean boot, zero errors; live spawn → steer → completion probe, output + audit line + settle all correct): `npm:brl-subagent` was removed and the ABSOLUTE dev path installed; `pi list` shows exactly one brl-subagent entry (the dev tree, registered source displays as a relative path but resolves correctly). A user `/reload` activates it in-session — until then the session still holds the published 2.3.9. To remove later, use the ABSOLUTE path from `pi list` (friction `pi-remove-source-mismatch`). Rationale: the user is daily-driving the dev tree for a few days. |
+| Running extension | **Developing mode — local-path install of the dev checkout** (`brl-subagent-dev` @ `290cf9f`, includes #237–#254; #249/#251/#253 are comments/docs/tests only — no reload needed; **reloaded 2026-09-29 15:03Z — #240/#241/#244 all LIVE**; **pi updated to 1.0.0 (2026-10-02) — post-update smoke PASSED** (clean boot, zero errors; live spawn → steer → completion probe
+SMOKE-STEER-100; the guard extension loaded and blocked a cockpit `src/` write probe; 1.0.0's changelog has no breaking
+format, no extension-API changes and no migration doc — its defaults changed TUI mode to fullscreen): `npm:brl-subagent` was removed and the ABSOLUTE dev path installed; `pi list` shows exactly one brl-subagent entry (the dev tree, registered source displays as a relative path but resolves correctly). A user `/reload` activates it in-session — until then the session still holds the published 2.3.9. To remove later, use the ABSOLUTE path from `pi list` (friction `pi-remove-source-mismatch`). Rationale: the user is daily-driving the dev tree for a few days. |
 | npm | **2.3.9 live (latest)** — published and approved 2026-09-27; the running install was switched to it (step 8) |
 | Worktrees | main + dev only (cockpit = dev; every task worktree cleaned) |
 | Graph | **1028 nodes / 2619 edges / 62 communities** — refreshed **2026-09-30** to describe the **DEV** tree (first refresh under the new model: `graph-refresh.sh` per merge; 17 files re-extracted, ~$0.01; `graph-check.py` green: 33/33 modules, 313/313 exported symbols). Pre-refresh state archived by graphify as `graphify-out/2026-09-30/` |
