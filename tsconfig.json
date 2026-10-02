@@ -2,6 +2,7 @@
   "compilerOptions": {
     "strict": true,
     "noEmit": true,
+    "erasableSyntaxOnly": true,
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "module": "esnext",
