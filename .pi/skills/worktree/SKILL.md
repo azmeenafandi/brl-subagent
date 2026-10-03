@@ -513,22 +513,30 @@ because nothing checked them and no test pins them.
      count, board state, friction
    - `METRICS.md` — the sprint's row (run the metrics script; see the
      sprint-end ritual below)
-3. **Bump** — `npm version <X> --no-git-tag-version` (updates `package.json`
+3. **Release merge (`dev` → `main`)** — merge commit, never squash; a release PR is preferred for the record. Two post-merge checks, both learned the hard way (2026-10-03, v2.4.0):
+   - **Auto-close fired?** The PR body must list **one `Fixes #N` per line** — a comma-separated list does NOT close (friction `fixes-keyword-omission`, recurrence: v2.4.0 auto-closed 3 of 13). Verify after the merge and close stragglers with a status comment naming the release commit.
+   - **`dev` still exists?** GitHub's *auto-delete head branches* deletes the PR head — and the release PR's head is `dev`. Restore with `git push origin dev` at the release commit if it is gone. After the bump + tag, fast-forward `dev` to the release commit (`git fetch origin main && git merge --ff-only origin/main && git push origin dev`) so both branches sit on the release.
+4. **Bump** — `npm version <X> --no-git-tag-version` (updates `package.json`
    **and** `package-lock.json`).
-4. **Docs that ship** — `README.md` version header; `CHANGELOG.md` release entry
+5. **Docs that ship** — `README.md` version header; `CHANGELOG.md` release entry
    (newest-first, project voice). *(The git-install example tag was dropped in
    #171 — npm is the sole user-facing install/update path.)*
-5. **Commit + tag + push** — `chore: bump version to <X>`. The commit carries
+6. **Commit + tag + push** — `chore: bump version to <X>`. The commit carries
    only `package.json`, `package-lock.json`, `README.md`, `CHANGELOG.md`
    (`.development/` docs are tracked now — commit them separately, so the bump
    commit stays code + shipping docs only).
-6. **Release note as a GitHub DRAFT** —
+7. **Release note as a GitHub DRAFT** —
    `gh release create vX --draft --title "…" --notes-file <file>`, then tell the
    user where to review it. **The user publishes it** — and that publish is what
    triggers `publish.yml`.
-7. **`graphify . --update`** — refresh the knowledge graph to the released state
-   (Rule 13's graph-first scoping depends on a current graph). Then **verify it
-   against ground truth** — never trust that the refresh succeeded:
+8. **Graph — no release-time step** (ADR 0011/0012). The canonical graph describes the **cockpit (`dev`)**
+   and is refreshed at every merge into `dev` by `graph-refresh.sh` (lifecycle step 6). A release changes
+   `main`, which the graph does not describe — and the graphify post-commit hook will fire on the bump
+   commit, writing an incomplete graph wherever the commit ran (observed in `main`, 2026-10-03; #230).
+
+   The refresh discipline below still applies **at merge time**:
+
+   Never trust that a refresh succeeded —
 
    ```bash
    python3 .pi/skills/worktree/graph-check.py
@@ -555,7 +563,7 @@ because nothing checked them and no test pins them.
    were deleted and two shipped docs trimmed, so forcing was correct. That
    reasoning is recorded here **so it is not re-derived or assumed**; record the
    equivalent reasoning each time the guard fires.
-8. **Switch the running install back to the published package** — *only after the
+9. **Switch the running install back to the published package** — *only after the
    staged publish is approved*, never before.
 
    If the local development toggle is in use (`pi install <path>`, see
