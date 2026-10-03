@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Updated: 2026-09-30 | Released: **v2.3.9** (2026-09-27) | Integration: `dev` @ `83769aa` — the next release is **v2.4.0** (see "Merged to `dev` — v2.4.0" below). Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
+> Updated: 2026-10-03 | Released: **v2.4.0** (2026-10-03) | Integration: `dev` @ the v2.4.0 release commit (see "Shipped (2026-10-03, v2.4.0)" below). Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -280,10 +280,14 @@ Goal: ship brl-subagent as a first-class pi package so installation and updates 
 
 **Deferred → RESOLVED in v2.3.6:** pin doc version strings to `package.json` (the README ×2 and the AGENT.md header shipped stale in 2.3.5). Now enforced mechanically (#166).
 
-### Merged to `dev` — v2.4.0 (unreleased, as of 2026-10-03)
+### Shipped (2026-10-03, v2.4.0)
 
-Thirteen issues fixed after v2.3.9 shipped; all of them auto-close when the next `dev → main` release merge lands
-(the `Fixes #N` keywords fire on the merge to the default branch).
+Thirteen issues closed by the `dev → main` release merge.
+
+- **User-visible:** explicit timeouts are honored — 30 minutes is a default, not a ceiling (#240); `steer_subagent` delivers to the live session (#241); honest "deadline" wording, exactly one deadline timer per run, and `retryOnTimeout` documented foreground-only (#244).
+- **Toolchain:** pi SDK 1.0.0 alignment, closing the long-standing type/runtime skew (#255); TypeScript 7.0.2 + ES2024 behind the single containment adapter `scripts/ts-ast.mjs` (#256, ADR 0013).
+- **Contributor-facing:** docs and tooling tracked on `dev` (#247); lean, generated-guarded `ARCHITECTURE.md` (#249); seven executable architecture rules, mutation-proven (#251); thirteen ADR records with a guarded index (#253).
+- **Hardening:** retry pins (#229), schema-linked types (#239), dead-code removals (#233, #235).
 
 | Issue | Item | Shipped as |
 |---|---|---|
