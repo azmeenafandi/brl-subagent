@@ -22,6 +22,9 @@ const mocks = vi.hoisted(() => ({
 		setSessionName: vi.fn(),
 		prompt: vi.fn().mockResolvedValue(undefined),
 		abort: vi.fn().mockResolvedValue(undefined),
+		// Issue #241: steerAgent delivers via AgentSession.steer — the live-agent
+		// fixture exposes it so delivery tests can observe/redirect the call.
+		steer: vi.fn().mockResolvedValue(undefined),
 	},
 }));
 
@@ -136,6 +139,8 @@ beforeEach(() => {
 	});
 	mocks.session.prompt.mockClear();
 	mocks.session.setSessionName.mockClear();
+	mocks.session.steer.mockReset();
+	mocks.session.steer.mockResolvedValue(undefined);
 	(fakeCtx.modelRegistry.find as ReturnType<typeof vi.fn>).mockClear();
 	reloadImpl.reload.mockReset();
 	reloadImpl.reload.mockResolvedValue(undefined);
@@ -403,6 +408,41 @@ describe("agent id validation (F24)", () => {
 		expect(getAgent("../../etc/passwd")).toBeNull();
 	});
 
+	it("getAgent returns null for a traversal id that RESOLVES to a real parseable record one level above the storage dir", () => {
+		// The sibling test ("../../etc/passwd") passes for the WRONG reason —
+		// no such file exists, so the guard is never load-bearing. Plant a REAL,
+		// parseable record that join(STORAGE_DIR, '../planted-escape.json')
+		// actually resolves to (tempStorageDir is <tempPiBase>/subagents, so
+		// one level up is <tempPiBase>), making the id guard the ONLY thing
+		// between the traversal id and that record.
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path");
+		fs.mkdirSync(tempStorageDir, { recursive: true });
+		const planted = path.join(tempPiBase, "planted-escape.json");
+		fs.writeFileSync(
+			planted,
+			JSON.stringify({
+				id: "../planted-escape",
+				status: "running",
+				task: "planted escape record",
+				startedAt: Date.now(),
+			}),
+			"utf-8",
+		);
+		try {
+			// Precondition: the escape target really is reachable from the
+			// storage dir — a regression would load and return it.
+			expect(fs.existsSync(path.join(tempStorageDir, "..", "planted-escape.json"))).toBe(true);
+
+			const result = getAgent("../planted-escape");
+
+			expect(result).toBeNull();
+			expect(result?.id).not.toBe("../planted-escape");
+		} finally {
+			try { fs.unlinkSync(planted); } catch { /* ok */ }
+		}
+	});
+
 	it("getAgent returns null for an absolute-path id", () => {
 		expect(getAgent("/tmp/foo")).toBeNull();
 	});
@@ -419,8 +459,10 @@ describe("agent id validation (F24)", () => {
 		expect(updateAgentStatus("../../etc/passwd", "running")).toBeNull();
 	});
 
-	it("steerAgent returns null for a traversal id (via getAgent)", () => {
-		expect(steerAgent("../../etc/passwd", "hi")).toBeNull();
+	it("steerAgent returns null for a traversal id (via getAgent)", async () => {
+		// getAgent rejects the id BEFORE the live-session check, so this resolves
+		// null without ever touching the fs or a session ref.
+		await expect(steerAgent("../../etc/passwd", "hi")).resolves.toBeNull();
 	});
 
 	it("getTranscriptPath throws for a traversal id", () => {
@@ -441,15 +483,18 @@ describe("agent id validation (F24)", () => {
 
 	it("persistAgent refuses a planted record with a traversal id (F24 indirection bypass)", () => {
 		// Attack chain from the review: plant a record with a valid-UUID filename
-		// but a traversal id FIELD, then steer it — getAgent passes the UUID
+		// but a traversal id FIELD, then mutate it — getAgent passes the UUID
 		// check, loadAgent returns the crafted record, and persistAgent would
 		// write via join(STORAGE_DIR, agent.id) outside the storage dir.
+		//
+		// Issue #241: steerAgent no longer persists (steering is not a state
+		// transition), so the F24 guard is only reachable through a
+		// still-persisting API — updateAgentStatus shares persistAgent, so the
+		// traversal-regression intent is preserved here.
 		const fs = require("node:fs") as typeof import("node:fs");
 		const path = require("node:path") as typeof import("node:path");
 		const plantDir = tempStorageDir;
-		const transcriptDir = tempOutputDir;
 		fs.mkdirSync(plantDir, { recursive: true });
-		fs.mkdirSync(transcriptDir, { recursive: true });
 		const planted = path.join(plantDir, `${ATTACK_UUID}.json`);
 		// The traversal id "../../brl-persist-bypass-test" from a two-level-deep
 		// storage dir (tempPiBase/subagents) resolves to tempPiBase/.. (the OS
@@ -458,12 +503,6 @@ describe("agent id validation (F24)", () => {
 			tempPiBase,
 			"..",
 			"brl-persist-bypass-test.json",
-		);
-		// steerAgent requires the transcript to exist (appendEntry throws otherwise)
-		fs.writeFileSync(
-			path.join(transcriptDir, `agent-${ATTACK_UUID}.jsonl`),
-			"",
-			"utf-8",
 		);
 
 		fs.writeFileSync(
@@ -477,7 +516,7 @@ describe("agent id validation (F24)", () => {
 			"utf-8",
 		);
 
-		const result = steerAgent(ATTACK_UUID, "hi");
+		const result = updateAgentStatus(ATTACK_UUID, "running");
 		expect(result).not.toBeNull(); // getAgent accepted the valid UUID
 		expect(fs.existsSync(escapeTarget)).toBe(false); // NO write outside the storage dir
 	});
@@ -486,24 +525,21 @@ describe("agent id validation (F24)", () => {
 		const fs = require("node:fs") as typeof import("node:fs");
 		const path = require("node:path") as typeof import("node:path");
 		const plantDir = tempStorageDir;
-		const transcriptDir = tempOutputDir;
 		fs.mkdirSync(plantDir, { recursive: true });
-		fs.mkdirSync(transcriptDir, { recursive: true });
 		const planted = path.join(plantDir, `${VALID_UUID}.json`);
-		fs.writeFileSync(
-			path.join(transcriptDir, `agent-${VALID_UUID}.jsonl`),
-			"",
-			"utf-8",
-		);
 		fs.writeFileSync(
 			planted,
 			JSON.stringify({ id: VALID_UUID, status: "running", task: "ok", startedAt: Date.now() }),
 			"utf-8",
 		);
 
-		steerAgent(VALID_UUID, "hi");
+		// Issue #241: steering no longer writes a status; exercise persistence
+		// through a still-persisting API. The error field proves the write landed
+		// while the status stays 'running' (steering is not a state transition).
+		updateAgentStatus(VALID_UUID, "running", "persisted via updateAgentStatus");
 		const persisted = JSON.parse(fs.readFileSync(planted, "utf-8"));
-		expect(persisted.status).toBe("steered"); // valid record persisted normally
+		expect(persisted.status).toBe("running"); // valid record persisted normally
+		expect(persisted.error).toBe("persisted via updateAgentStatus");
 	});
 });
 
@@ -542,6 +578,23 @@ describe("stopAgent — real abort (issue #28 W1)", () => {
 
 		expect(result?.status).toBe("completed");
 		expect(abort).not.toHaveBeenCalled();
+	});
+
+	it("leaves an already-FAILED agent alone — a second stop never rewrites it to 'stopped'", async () => {
+		// stopAgent is idempotent by contract: a terminal record is returned
+		// as-is. Stopping an agent that already FAILED must not overwrite the
+		// honest terminal status (and its error) with 'stopped'.
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const { stopAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test stop idempotency",
+		});
+		updateAgentStatus(agent.id, "failed", "x");
+
+		const result = await stopAgent(agent.id);
+
+		expect(result?.status).toBe("failed");
+		expect(result?.error).toBe("x");
 	});
 
 	it("returns null for an unknown id", async () => {
@@ -712,7 +765,7 @@ describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 		}
 	});
 
-	it("clamps an oversized timeout to the 30min hard cap (m1)", async () => {
+	it("neutralizes an oversized raw timeout to the background default (m1)", async () => {
 		vi.useFakeTimers();
 		try {
 			mocks.session.prompt.mockReturnValue(new Promise(() => {}));
@@ -721,16 +774,44 @@ describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
 				task: "test oversized timeout",
 				// Direct spawnBackgroundSession call (no resolveSubagentParams):
-				// a raw overflow value must not become an instant kill.
+				// a raw overflow value must not become an instant kill. #240:
+				// normalizeTimeout maps it to undefined → the 30m default.
 				timeout: 2 ** 31,
 			});
-			// Clamped to 30min — 1ms is NOT enough to fire.
+			// Normalized to the 30m default — 1ms is NOT enough to fire.
 			await vi.advanceTimersByTimeAsync(1);
 			expect(mocks.session.abort).not.toHaveBeenCalled();
-			// It fires at the 30min clamp.
+			// It fires at the 30m background default.
 			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
 			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
 			expect(getAgent(agent.id)?.status).toBe("stopped");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("honors an explicit timeout beyond 30 minutes (no ceiling) (#240)", async () => {
+		vi.useFakeTimers();
+		try {
+			mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+			mocks.session.abort.mockClear();
+			const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "test long explicit timeout",
+				timeout: 45 * 60 * 1000,
+			});
+
+			// The pre-#240 30min clamp would have fired here; an explicit 45m
+			// timeout must be honored verbatim — no ceiling.
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+			expect(getAgent(agent.id)?.status).toBe("running");
+
+			// It fires at the explicit 45m deadline.
+			await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+			expect(getAgent(agent.id)?.error).toContain("Timed out after 2700000ms");
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1024,6 +1105,71 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 		expect(mocks.git.getCurrentBranch).toHaveBeenCalled();
 		await secondPromise;
 		expect(secondSettled).toBe(true);
+	});
+
+	// The lock chain must be a QUEUE, not a flat mutex: with three spawns
+	// waiting on the same repo, releasing the head must hand the lock to the
+	// NEXT waiter only — the third must keep waiting behind the new head.
+	// (releaseGitLock deletes the map entry ONLY when it is still the head of
+	// the chain; a queued spawn behind us replaced the entry with its own.)
+	it("C2: a third queued branch-mode spawn keeps waiting behind the SECOND (lock is a chain, not a flat mutex)", async () => {
+		resetGitMocks();
+		// One repository for all three → one shared lock key.
+		mocks.git.getRepoRoot.mockReturnValue("/repo-chain");
+		// Every spawn's setup reads a clean tree on 'main'; the teardown guard
+		// still sees our work branch.
+		mocks.git.getCurrentBranch.mockReset();
+		mocks.git.getCurrentBranch.mockReturnValue("main");
+		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-chain" });
+		mocks.git.hasUncommittedChanges.mockReset();
+		mocks.git.hasUncommittedChanges.mockReturnValue(false);
+		// One deferred gate PER prompt() call, pushed in spawn order A, B, C.
+		const gates: Array<() => void> = [];
+		mocks.session.prompt.mockImplementation(
+			() => new Promise<void>((r) => { gates.push(r); }),
+		);
+
+		const { spawnBackgroundSession } = await import("../session-manager");
+		// A: acquires the lock and reaches its prompt.
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "chain A",
+			gitMode: "branch",
+		});
+		expect(gates).toHaveLength(1);
+		// B and C queue behind A — they must not have touched git at all.
+		let bSettled = false;
+		let cSettled = false;
+		const bPromise = spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "chain B",
+			gitMode: "branch",
+		}).then(() => { bSettled = true; });
+		const cPromise = spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "chain C",
+			gitMode: "branch",
+		}).then(() => { cSettled = true; });
+		await new Promise((r) => setTimeout(r, 50));
+		expect(bSettled).toBe(false);
+		expect(cSettled).toBe(false);
+		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(1); // A only
+
+		// Release A → the lock passes to B (the new head), NOT to C as well.
+		gates[0]();
+		await new Promise((r) => setTimeout(r, 50));
+		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(2);
+		expect(bSettled).toBe(true);
+		expect(cSettled).toBe(false);
+
+		// Release B → only now does C proceed.
+		gates[1]();
+		await new Promise((r) => setTimeout(r, 50));
+		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(3);
+		expect(cSettled).toBe(true);
+
+		// C is the chain head now — release it so nothing dangles.
+		gates[2]();
+		await bPromise;
+		await cPromise;
+		await new Promise((r) => setTimeout(r, 20));
 	});
 
 	// Issue #224: the lock map used to be keyed by the raw cwd path, so two
@@ -1622,6 +1768,41 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		expect(run.finalTurnError).toBe(false);
 	});
 
+	it("appends exactly ONE terminal run entry when the completion-path emit throws (single-finalize guard)", async () => {
+		// The completion branch finalizes the run entry BEFORE its
+		// subagent:completed emit. When that emit throws, control jumps to
+		// markTerminalBestEffort, which calls finalizeRunEntry a SECOND time —
+		// the `runFinalized` guard is what keeps the session's run log free of a
+		// duplicate terminal entry (history/retry/metrics all read it).
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		// The real event-bus never throws; force it so the settle handler's
+		// catch-all actually runs after the branch already finalized.
+		eventBusMock.emit.mockImplementation((event: { type: string }) => {
+			if (event.type === "subagent:completed") throw new Error("emit exploded");
+		});
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "completes but the emit throws",
+		});
+		await new Promise((r) => setTimeout(r, 10));
+
+		const runEntries = fakePi.appendEntry.mock.calls
+			.filter(([t]) => t === CUSTOM_ENTRY_TYPES.run)
+			.map(([, run]) => run);
+		// Exactly two: the spawn entry + ONE terminal entry.
+		expect(runEntries).toHaveLength(2);
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		expect(runEntries[0].status).toBe("running");
+		expect(runEntries[1].status).toBe("done");
+		expect(runEntries[1].id).toBe(agent.id);
+		// The record still settled as completed (the catch-all keeps the status).
+		expect(getAgent(agent.id)?.status).toBe("completed");
+	});
+
 	it("finalizes the run entry to failed when prompt() throws synchronously (review F1)", async () => {
 		// A synchronous prompt() throw means the .then/.catch settle handlers
 		// never attach — without the F1 catch path a zombie 'running' entry
@@ -1658,7 +1839,7 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 // =========================================================================
 describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 	it("carries the REAL summed session usage on the finalized entry when the agent completed", async () => {
-		// Real data flow (no setAgentResult planting): the assistant messages
+		// Real data flow (the result is never planted directly): the assistant messages
 		// in the session carry per-turn usage; the terminal path folds them
 		// with accumulateUsage and merges the sum onto the run entry.
 		mocks.session.prompt.mockResolvedValue(undefined);
@@ -1698,7 +1879,7 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 		expect(run.outputSummary).toHaveLength(200);
 		expect(run.fullOutput).toBe(fullOutput);
 		// The agent record itself carries the merged usage — extracted from the
-		// session, never planted via setAgentResult.
+		// session, never planted directly.
 		const after = getAgent(agent.id);
 		expect(after?.result?.usage).toMatchObject({
 			input: 1500,
@@ -1986,5 +2167,132 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 		} finally {
 			setLogCwd(undefined);
 		}
+	});
+});
+
+// =========================================================================
+// Mutation-audit gap closure: the two public mutators (updateAgentStatus /
+// steerAgent) whose terminal-state contract and event emission no other test
+// observed. Both are reachable from LLM tool params (get_agent_status,
+// steer_subagent), so a silent regression would mis-report a run's state.
+// =========================================================================
+describe("updateAgentStatus / steerAgent terminal-state contract", () => {
+	it("steerAgent refuses a non-running agent with a 'Cannot steer agent' error", async () => {
+		// steerAgent must reject any status other than 'running' — steering a
+		// settled agent would resurrect a dead run and inject a user message
+		// into a released session graph.
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "steer a completed agent",
+		});
+		updateAgentStatus(agent.id, "completed");
+
+		await expect(steerAgent(agent.id, "x")).rejects.toThrow(/Cannot steer agent/);
+	});
+
+	it("emits subagent:failed carrying the error when updateAgentStatus flips an agent to failed", async () => {
+		// The other subagent:failed assertions in this file all come from the
+		// spawn settle path. This one observes updateAgentStatus DIRECTLY — the
+		// status flippers a tool caller triggers (timeout handler, poller) rely
+		// on the event to reach the UI.
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "flip to failed",
+		});
+		eventBusMock.emit.mockClear();
+
+		updateAgentStatus(agent.id, "failed", "boom");
+
+		const failed = eventBusMock.emit.mock.calls
+			.map(([e]) => e as { type: string; agentId: string; data?: { error?: string } })
+			.filter((e) => e.type === "subagent:failed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0].agentId).toBe(agent.id);
+		expect(failed[0].data?.error).toBe("boom");
+	});
+});
+
+// =========================================================================
+// Issue #241 — steer_subagent DELIVERS into the live session.
+//
+// Pre-fix, steerAgent only recorded the message and flipped the agent to
+// 'steered' (which made the NEXT steer throw). These tests pin delivery,
+// repeat delivery, error propagation, and the no-session / no-SDK guards.
+//
+// Coverage boundary: these unit tests do NOT prove the real SDK queue drains
+// the message on the next model call — the conductor-side live sleep-ladder
+// probe covers that end-to-end property.
+// =========================================================================
+describe("steerAgent delivery (issue #241)", () => {
+	// A never-resolving prompt keeps the agent 'running' and its _sessionRef
+	// live while the run is pending — the W3 timeout / stopAgent fixture.
+	const makeLiveAgent = async (task: string) => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		return spawnBackgroundSession(fakePi as never, fakeCtx as never, { task });
+	};
+
+	it("(a) delivers via session.steer and leaves the status 'running'", async () => {
+		const agent = await makeLiveAgent("deliver a steer");
+		expect(agent.status).toBe("running");
+		expect(agent._sessionRef).toBe(mocks.session);
+
+		const result = await steerAgent(agent.id, "redirect to the other file");
+
+		expect(mocks.session.steer).toHaveBeenCalledTimes(1);
+		expect(mocks.session.steer).toHaveBeenCalledWith("redirect to the other file");
+		expect(result?.id).toBe(agent.id);
+		// Steering is NOT a state transition — flipping to 'steered' is what
+		// broke the second steer pre-fix.
+		expect(result?.status).toBe("running");
+	});
+
+	it("(b) repeat steers both deliver (one-shot regression pin)", async () => {
+		const agent = await makeLiveAgent("repeat steers");
+
+		await steerAgent(agent.id, "first");
+		await steerAgent(agent.id, "second");
+
+		expect(mocks.session.steer).toHaveBeenCalledTimes(2);
+		expect(mocks.session.steer).toHaveBeenNthCalledWith(1, "first");
+		expect(mocks.session.steer).toHaveBeenNthCalledWith(2, "second");
+		expect(getAgent(agent.id)?.status).toBe("running");
+	});
+
+	it("(c) propagates a delivery rejection (never a false success)", async () => {
+		const agent = await makeLiveAgent("failed delivery");
+		mocks.session.steer.mockRejectedValueOnce(new Error("session is closing"));
+
+		await expect(steerAgent(agent.id, "do not swallow me")).rejects.toThrow(
+			"session is closing",
+		);
+		expect(getAgent(agent.id)?.status).toBe("running");
+	});
+
+	it("(d) rejects with a clear error when there is no live session", async () => {
+		const agent = await makeLiveAgent("no live session");
+		agent._sessionRef = undefined;
+
+		await expect(steerAgent(agent.id, "orphan")).rejects.toThrow(
+			/no live session/,
+		);
+	});
+
+	it("rejects with a clear error when the installed SDK has no steer()", async () => {
+		const agent = await makeLiveAgent("unsupported sdk");
+		agent._sessionRef = { steer: undefined } as never;
+
+		await expect(steerAgent(agent.id, "unsupported")).rejects.toThrow(
+			/steering unsupported/,
+		);
+	});
+
+	it("records the transcript audit line after successful delivery", async () => {
+		const agent = await makeLiveAgent("audit line");
+		const transcript = await import("../transcript");
+
+		await steerAgent(agent.id, "audit me");
+
+		const entries = transcript.getTranscript(agent.id);
+		expect(entries.some((e) => e.content === "Steering: audit me")).toBe(true);
 	});
 });

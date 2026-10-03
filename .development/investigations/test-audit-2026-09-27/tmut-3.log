@@ -1,0 +1,382 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+stderr | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > background: run task without bash is rejected before any spawn
+[brl-subagent] WARN: Background agent spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > background: run task without bash is rejected before any spawn
+[brl-subagent] INFO: Background agent spawned
+
+stderr | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > background: force: true proceeds past the capability block (spawn happens)
+[brl-subagent] WARN: Background agent spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > background: force: true proceeds past the capability block (spawn happens)
+[brl-subagent] INFO: Background agent spawned
+
+stderr | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > fan-out: a capability-blocked unit rejects the whole batch before any spawn
+[brl-subagent] WARN: Background fan-out spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > fan-out: a capability-blocked unit rejects the whole batch before any spawn
+[brl-subagent] INFO: Background agent spawned
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground parallel: run task without bash is rejected before any spawn (issue #220)
+[brl-subagent] INFO: Parallel execution completed
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground parallel: force: true proceeds past the capability block (spawn happens)
+[brl-subagent] INFO: Parallel execution completed
+
+stderr | src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > background spawn result carries the warnings, labelled
+[brl-subagent] WARN: Background agent spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > background spawn result carries the warnings, labelled
+[brl-subagent] INFO: Background agent spawned
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > foreground parallel result carries per-task warnings, prefixed with the task (issue #220)
+[brl-subagent] INFO: Parallel execution completed
+
+stderr | src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > normalized 'Task involves …' rendering — standalone and unit-prefixed, no doubled 'Task'
+[brl-subagent] WARN: Pre-task validation warnings
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > normalized 'Task involves …' rendering — standalone and unit-prefixed, no doubled 'Task'
+[brl-subagent] INFO: Subagent completed successfully
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > normalized 'Task involves …' rendering — standalone and unit-prefixed, no doubled 'Task'
+[brl-subagent] INFO: Parallel execution completed
+
+stderr | src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > fan-out spawn result carries per-task warnings, labelled with the task
+[brl-subagent] WARN: Background fan-out spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > fan-out spawn result carries per-task warnings, labelled with the task
+[brl-subagent] INFO: Background agent spawned
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts (17 tests | 9 failed) 82ms
+   ❯ pre-run capability block (dispatch does not spawn) (8)
+     × background: run task without bash is rejected before any spawn 10ms
+     × background: force: true proceeds past the capability block (spawn happens) 7ms
+     × fan-out: a capability-blocked unit rejects the whole batch before any spawn 3ms
+     × foreground parallel: run task without bash is rejected before any spawn (issue #220) 3ms
+     × foreground parallel: force: true proceeds past the capability block (spawn happens) 4ms
+   ❯ pre-task validation warnings are surfaced in the result (5)
+     × background spawn result carries the warnings, labelled 3ms
+     × foreground parallel result carries per-task warnings, prefixed with the task (issue #220) 3ms
+     × normalized 'Task involves …' rendering — standalone and unit-prefixed, no doubled 'Task' 6ms
+     × fan-out spawn result carries per-task warnings, labelled with the task 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 9 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > background: run task without bash is rejected before any spawn
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:306:26
+    304|   const result = await execute({ ...RUN_TASK_NO_BASH, background: true…
+    305|
+    306|   expect(result.isError).toBe(true);
+       |                          ^
+    307|   expect(result.content[0].text).toContain("force: true");
+    308|   expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > background: force: true proceeds past the capability block (spawn happens)
+AssertionError: expected 'Background agent started: bg-guard-1\…' to contain '[pre-task validation warnings]'
+
+- Expected
++ Received
+
+- [pre-task validation warnings]
++ Background agent started: bg-guard-1
++
++ Description: 
++ Task: run the test suite
++ Status: running
++
++ You'll be woken with a completion message when it finishes; use get_subagent_result({ agent_id: "bg-guard-1" }) for retrieval and stall checks.
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:317:34
+    315|   expect(result.isError).toBeFalsy();
+    316|   expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+    317|   expect(result.content[0].text).toContain("[pre-task validation warni…
+       |                                  ^
+    318|  });
+    319|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > fan-out: a capability-blocked unit rejects the whole batch before any spawn
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:338:26
+    336|   });
+    337|
+    338|   expect(result.isError).toBe(true);
+       |                          ^
+    339|   expect(result.content[0].text).toContain(`Task 1 ("run")`);
+    340|   expect(result.content[0].text).toContain("force: true");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground parallel: run task without bash is rejected before any spawn (issue #220)
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:349:26
+    347|   });
+    348|
+    349|   expect(result.isError).toBe(true);
+       |                          ^
+    350|   const text = result.content[0].text;
+    351|   // The per-task block carries the unit prefix, the capability…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground parallel: force: true proceeds past the capability block (spawn happens)
+AssertionError: expected '{\n  "mode": "parallel",\n  "results"…' to contain '[pre-task validation warnings]'
+
+- Expected
++ Received
+
+- [pre-task validation warnings]
++ {
++   "mode": "parallel",
++   "results": [
++     {
++       "task": "run the test suite",
++       "label": "run",
++       "exitCode": 0,
++       "messages": [
++         {
++           "role": "assistant",
++           "content": [
++             {
++               "type": "text",
++               "text": "done"
++             }
++           ],
++           "model": "test/test-model"
++         }
++       ],
++       "stderr": "",
++       "usage": {
++         "input": 10,
++         "output": 5,
++         "cacheRead": 0,
++         "cacheWrite": 0,
++         "cost": 0.001,
++         "contextTokens": 0,
++         "turns": 1
++       },
++       "model": "test/test-model",
++       "stopReason": "end_turn",
++       "errorCategory": "unknown"
++     }
++   ],
++   "totalInput": 10,
++   "totalOutput": 5,
++   "totalCost": 0.001,
++   "totalTurns": 1,
++   "succeeded": 1,
++   "failed": 0
++ }
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:373:16
+    371|   // prefixed with its unit.
+    372|   const text = result.content[0].text;
+    373|   expect(text).toContain("[pre-task validation warnings]");
+       |                ^
+    374|   expect(text).toContain(`Task 1 ("run"): Task involves running comman…
+    375|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > background spawn result carries the warnings, labelled
+AssertionError: expected 'Background agent started: bg-guard-1\…' to contain '[pre-task validation warnings]'
+
+- Expected
++ Received
+
+- [pre-task validation warnings]
++ Background agent started: bg-guard-1
++
++ Description: 
++ Task: deploy the app
++ Status: running
++
++ You'll be woken with a completion message when it finishes; use get_subagent_result({ agent_id: "bg-guard-1" }) for retrieval and stall checks.
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:392:16
+    390|   const text = result.content[0].text;
+    391|   expect(text).toContain("Background agent started: bg-guard-1");
+    392|   expect(text).toContain("[pre-task validation warnings]");
+       |                ^
+    393|   expect(text).toContain("'bash' is not available (tools=read,write,ed…
+    394|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > foreground parallel result carries per-task warnings, prefixed with the task (issue #220)
+AssertionError: expected '{\n  "mode": "parallel",\n  "results"…' to contain '[pre-task validation warnings]'
+
+- Expected
++ Received
+
+- [pre-task validation warnings]
++ {
++   "mode": "parallel",
++   "results": [
++     {
++       "task": "deploy the app",
++       "label": "deploy",
++       "exitCode": 0,
++       "messages": [
++         {
++           "role": "assistant",
++           "content": [
++             {
++               "type": "text",
++               "text": "done"
++             }
++           ],
++           "model": "test/test-model"
++         }
++       ],
++       "stderr": "",
++       "usage": {
++         "input": 10,
++         "output": 5,
++         "cacheRead": 0,
++         "cacheWrite": 0,
++         "cost": 0.001,
++         "contextTokens": 0,
++         "turns": 1
++       },
++       "model": "test/test-model",
++       "stopReason": "end_turn",
++       "errorCategory": "unknown"
++     }
++   ],
++   "totalInput": 10,
++   "totalOutput": 5,
++   "totalCost": 0.001,
++   "totalTurns": 1,
++   "succeeded": 1,
++   "failed": 0
++ }
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:417:16
+    415|   expect(h.runSubagent).toHaveBeenCalledTimes(1);
+    416|   const text = result.content[0].text;
+    417|   expect(text).toContain("[pre-task validation warnings]");
+       |                ^
+    418|   expect(text).toContain(
+    419|    `Task 1 ("deploy"): Task involves running commands but 'bash' is no…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > normalized 'Task involves …' rendering — standalone and unit-prefixed, no doubled 'Task'
+AssertionError: expected '{\n  "mode": "parallel",\n  "results"…' to contain 'Task 1 ("deploy"): Task involves runn…'
+
+- Expected
++ Received
+
+- Task 1 ("deploy"): Task involves running commands but 'bash' is not available (tools=read,write,edit, excludeTools=none)
++ {
++   "mode": "parallel",
++   "results": [
++     {
++       "task": "deploy the app",
++       "label": "deploy",
++       "exitCode": 0,
++       "messages": [
++         {
++           "role": "assistant",
++           "content": [
++             {
++               "type": "text",
++               "text": "done"
++             }
++           ],
++           "model": "test/test-model"
++         }
++       ],
++       "stderr": "",
++       "usage": {
++         "input": 10,
++         "output": 5,
++         "cacheRead": 0,
++         "cacheWrite": 0,
++         "cost": 0.001,
++         "contextTokens": 0,
++         "turns": 1
++       },
++       "model": "test/test-model",
++       "stopReason": "end_turn",
++       "errorCategory": "unknown"
++     }
++   ],
++   "totalInput": 10,
++   "totalOutput": 5,
++   "totalCost": 0.001,
++   "totalTurns": 1,
++   "succeeded": 1,
++   "failed": 0
++ }
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:441:16
+    439|   expect(parallel.isError).toBeFalsy();
+    440|   const text = parallel.content[0].text;
+    441|   expect(text).toContain(
+       |                ^
+    442|    `Task 1 ("deploy"): Task involves running commands but 'bash' is no…
+    443|   );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-task validation warnings are surfaced in the result > fan-out spawn result carries per-task warnings, labelled with the task
+AssertionError: expected 'Background agents started: 1\n\n1. "d…' to contain '[pre-task validation warnings]'
+
+- Expected
++ Received
+
+- [pre-task validation warnings]
++ Background agents started: 1
++
++ 1. "deploy" — bg-guard-1
++
++ You'll be woken with a completion message as each finishes; use get_subagent_result({ agent_id }) for retrieval and stall checks.
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:457:16
+    455|   const text = result.content[0].text;
+    456|   expect(text).toContain("Background agents started: 1");
+    457|   expect(text).toContain("[pre-task validation warnings]");
+       |                ^
+    458|   expect(text).toContain(`Task 1 ("deploy"): Task involves running com…
+    459|   // Issue #220: the unit prefix and the warning lead normalize to ONE
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/9]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  9 failed | 8 passed (17)
+   Start at  17:48:10
+   Duration  723ms (transform 57%, import 28%, tests 14%, worker 1%)
+

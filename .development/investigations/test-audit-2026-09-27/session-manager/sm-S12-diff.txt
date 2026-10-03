@@ -1,0 +1,7 @@
+diff --git a/src/session-manager.ts b/src/session-manager.ts
+index 1f8840d..aeca44f 100644
+--- a/src/session-manager.ts
++++ b/src/session-manager.ts
+@@ -287 +287 @@ export function extractFinalOutput(session: { messages: Array<{ role: string; co
+-  const assistants = [...session.messages].reverse().filter(m => m.role === 'assistant');
++  const assistants = [...session.messages].filter(m => m.role === 'assistant');

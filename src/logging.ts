@@ -1,3 +1,4 @@
+// Purpose: Leveled structured logging with file output and rotation under `.pi/subagent-logs/`.
 /**
  * brl-subagent — Structured Logging (F10)
  *
@@ -41,8 +42,27 @@ const LOG_LEVELS: Record<LogLevel, number> = {
 	error: 3,
 };
 
+/** The level names BRL_LOG_LEVEL accepts (the keys of LOG_LEVELS). */
+const LOG_LEVEL_NAMES: readonly LogLevel[] = ["debug", "info", "warn", "error"];
+
 /** Current minimum log level — can be changed at runtime */
-let minLevel: LogLevel = "info";
+let minLevel: LogLevel = resolveInitialLogLevel();
+
+/**
+ * Issue #235: the log verbosity knob was never wired, so the three `log.debug()`
+ * call sites were permanently suppressed with no way to turn them on.
+ * `BRL_LOG_LEVEL` is read ONCE at module load (logger call sites are spread
+ * across the codebase, and re-reading env per call would be wasteful and
+ * non-deterministic mid-run). `setLogLevel()` remains the programmatic override.
+ * Anything outside debug|info|warn|error falls back to "info".
+ */
+function resolveInitialLogLevel(): LogLevel {
+	const raw = process.env.BRL_LOG_LEVEL?.trim().toLowerCase();
+	if (raw && (LOG_LEVEL_NAMES as readonly string[]).includes(raw)) {
+		return raw as LogLevel;
+	}
+	return "info";
+}
 
 // ---------------------------------------------------------------------------
 // Logger

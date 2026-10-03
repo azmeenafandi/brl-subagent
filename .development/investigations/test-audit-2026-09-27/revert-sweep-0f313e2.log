@@ -1,0 +1,155 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-231
+
+ ❯ src/__tests__/params.test.ts (13 tests | 2 failed) 14ms
+   ❯ snapshotOriginalParams (issue #108) (6)
+     × captures the four execution-shape fields (issue #227) 6ms
+     × records a foreground run's background as false (a retry stays foreground) 1ms
+ ❯ src/__tests__/integration.test.ts (108 tests | 4 failed) 32ms
+   ❯ resolveRetryParams (12)
+     × restores background: true so a retried background run stays background 6ms
+     × restores gitMode, approvalMode and force from the record 1ms
+     × explicit execution-shape values override the restored ones 1ms
+     × an explicit background: true on a unit record is honoured (foreground -> background) 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/integration.test.ts > resolveRetryParams > restores background: true so a retried background run stays background
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/integration.test.ts:994:29
+    992|   );
+    993|
+    994|   expect(params.background).toBe(true);
+       |                             ^
+    995|  });
+    996|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  src/__tests__/integration.test.ts > resolveRetryParams > restores gitMode, approvalMode and force from the record
+AssertionError: expected undefined to be 'branch' // Object.is equality
+
+- Expected:
+"branch"
+
++ Received:
+undefined
+
+ ❯ src/__tests__/integration.test.ts:1010:26
+    1008|   const params = resolveRetryParams({ task: "", retryRunId: "retry-sha…
+    1009|
+    1010|   expect(params.gitMode).toBe("branch");
+       |                          ^
+    1011|   expect(params.approvalMode).toBe("writes");
+    1012|   expect(params.force).toBe(true);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+
+ FAIL  src/__tests__/integration.test.ts > resolveRetryParams > explicit execution-shape values override the restored ones
+AssertionError: expected undefined to be false // Object.is equality
+
+- Expected:
+false
+
++ Received:
+undefined
+
+ ❯ src/__tests__/integration.test.ts:1039:29
+    1037|   );
+    1038|
+    1039|   expect(params.background).toBe(false);
+       |                             ^
+    1040|   expect(params.gitMode).toBe("none");
+    1041|   expect(params.approvalMode).toBe("always");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+
+ FAIL  src/__tests__/integration.test.ts > resolveRetryParams > an explicit background: true on a unit record is honoured (foreground -> background)
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/integration.test.ts:1061:5
+    1059|     run,
+    1060|    ).background,
+    1061|   ).toBe(true);
+       |     ^
+    1062|  });
+    1063|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+
+ FAIL  src/__tests__/params.test.ts > snapshotOriginalParams (issue #108) > captures the four execution-shape fields (issue #227)
+AssertionError: expected { systemPrompt: undefined, …(11) } to deeply equal { background: true, …(3) }
+
+- Expected
++ Received
+
+  {
+-   "approvalMode": "writes",
+-   "background": true,
+-   "force": true,
+-   "gitMode": "branch",
++   "cwd": undefined,
++   "excludeTools": undefined,
++   "inheritSystemPrompt": undefined,
++   "model": undefined,
++   "noBuiltinTools": undefined,
++   "outputFile": undefined,
++   "preset": undefined,
++   "priority": undefined,
++   "systemPrompt": undefined,
++   "thinkingLevel": undefined,
++   "timeout": undefined,
++   "tools": undefined,
+  }
+
+ ❯ src/__tests__/params.test.ts:144:5
+    142|     force: true,
+    143|    }),
+    144|   ).toEqual({
+       |     ^
+    145|    background: true,
+    146|    gitMode: "branch",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+
+ FAIL  src/__tests__/params.test.ts > snapshotOriginalParams (issue #108) > records a foreground run's background as false (a retry stays foreground)
+AssertionError: expected undefined to be false // Object.is equality
+
+- Expected:
+false
+
++ Received:
+undefined
+
+ ❯ src/__tests__/params.test.ts:154:27
+    152|  it("records a foreground run's background as false (a retry stays for…
+    153|   const snap = snapshotOriginalParams({ background: false, gitMode: "n…
+    154|   expect(snap.background).toBe(false);
+       |                           ^
+    155|   expect(Object.entries(snap).filter(([, v]) => v !== undefined)).toEq…
+    156|    ["background", false],
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  6 failed | 115 passed (121)
+   Start at  17:40:45
+   Duration  327ms (transform 69%, tests 15%, import 13%, worker 2%)
+

@@ -1,0 +1,6 @@
+diff --git a/src/session-manager.ts b/src/session-manager.ts
+index 1f8840d..fb4b90c 100644
+--- a/src/session-manager.ts
++++ b/src/session-manager.ts
+@@ -385 +384,0 @@ export function getTranscriptPath(id: string): string {
+-  assertSafeAgentId(id);

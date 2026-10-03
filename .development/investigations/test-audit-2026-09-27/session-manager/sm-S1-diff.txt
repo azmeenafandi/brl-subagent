@@ -1,0 +1,7 @@
+diff --git a/src/session-manager.ts b/src/session-manager.ts
+index 1f8840d..0371a7a 100644
+--- a/src/session-manager.ts
++++ b/src/session-manager.ts
+@@ -239 +239 @@ export function setAgentResult(id: string, result: SubagentResult): BackgroundAg
+-  agent.status = isSubagentError(result) ? 'failed' : 'completed';
++  agent.status = 'completed';

@@ -1,3 +1,4 @@
+// Purpose: Package-root path resolution (`pkgPath()`) so shipped assets resolve from the extension directory.
 /**
  * brl-subagent — Package-root path resolution
  *

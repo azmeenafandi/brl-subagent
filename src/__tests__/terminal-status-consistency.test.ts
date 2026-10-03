@@ -33,8 +33,24 @@
 
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
-import { join, relative, sep } from "node:path";
-import ts from "typescript";
+import { join, relative, resolve, sep } from "node:path";
+import {
+	isArrayLiteralExpression,
+	isBinaryExpression,
+	isCallExpression,
+	isCaseClause,
+	isIdentifier,
+	isNewExpression,
+	isNoSubstitutionTemplateLiteral,
+	isNumericLiteral,
+	isPrefixUnaryExpression,
+	isPropertyAccessExpression,
+	isStringLiteral,
+	isSwitchStatement,
+	parseTexts,
+	SyntaxKind,
+} from "../../scripts/ts-ast.mjs";
+import type { ArrayLiteralExpression, Node, SourceFile } from "../../scripts/ts-ast.mjs";
 import {
 	isSubagentError,
 	countSubagentOutcomes,
@@ -139,26 +155,26 @@ export interface ReimplementationHit {
 	code: string;
 }
 
-const EQUALITY_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set<ts.SyntaxKind>([
-	ts.SyntaxKind.EqualsEqualsToken,
-	ts.SyntaxKind.EqualsEqualsEqualsToken,
-	ts.SyntaxKind.ExclamationEqualsToken,
-	ts.SyntaxKind.ExclamationEqualsEqualsToken,
+const EQUALITY_OPERATORS: ReadonlySet<SyntaxKind> = new Set<SyntaxKind>([
+	SyntaxKind.EqualsEqualsToken,
+	SyntaxKind.EqualsEqualsEqualsToken,
+	SyntaxKind.ExclamationEqualsToken,
+	SyntaxKind.ExclamationEqualsEqualsToken,
 ]);
 
 /**
  * Ordering operators, valid only for the numeric `exitCode` arm. `exitCode > 0`
  * is the same verdict as `exitCode !== 0`, so it must not slip past the guard.
  */
-const RELATIONAL_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set<ts.SyntaxKind>([
-	ts.SyntaxKind.GreaterThanToken,
-	ts.SyntaxKind.LessThanToken,
-	ts.SyntaxKind.GreaterThanEqualsToken,
-	ts.SyntaxKind.LessThanEqualsToken,
+const RELATIONAL_OPERATORS: ReadonlySet<SyntaxKind> = new Set<SyntaxKind>([
+	SyntaxKind.GreaterThanToken,
+	SyntaxKind.LessThanToken,
+	SyntaxKind.GreaterThanEqualsToken,
+	SyntaxKind.LessThanEqualsToken,
 ]);
 
 /** Every operator the `exitCode` rule recognises: equality plus ordering. */
-const COMPARISON_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set<ts.SyntaxKind>([
+const COMPARISON_OPERATORS: ReadonlySet<SyntaxKind> = new Set<SyntaxKind>([
 	...EQUALITY_OPERATORS,
 	...RELATIONAL_OPERATORS,
 ]);
@@ -168,34 +184,34 @@ const COMPARISON_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set<ts.SyntaxKind>(
  * no-substitution backtick). A template EXPRESSION with substitutions
  * (`` `error${x}` ``) is runtime-computed and returns undefined.
  */
-function stringLiteralText(node: ts.Node): string | undefined {
-	if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+function stringLiteralText(node: Node): string | undefined {
+	if (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) return node.text;
 	return undefined;
 }
 
 /** `node`'s text as a failure reason — a recognized stop-reason literal, else undefined. */
-function failureLiteralText(node: ts.Node): string | undefined {
+function failureLiteralText(node: Node): string | undefined {
 	const text = stringLiteralText(node);
 	return text !== undefined && FAILURE_REASON_SET.has(text) ? text : undefined;
 }
 
 /** Numeric literal text, including the `-1` prefix form used for the unset sentinel. */
-function numericLiteralText(node: ts.Node): string | undefined {
-	if (ts.isNumericLiteral(node)) return node.text;
+function numericLiteralText(node: Node): string | undefined {
+	if (isNumericLiteral(node)) return node.text;
 	if (
-		ts.isPrefixUnaryExpression(node) &&
-		(node.operator === ts.SyntaxKind.MinusToken || node.operator === ts.SyntaxKind.PlusToken) &&
-		ts.isNumericLiteral(node.operand)
+		isPrefixUnaryExpression(node) &&
+		(node.operator === SyntaxKind.MinusToken || node.operator === SyntaxKind.PlusToken) &&
+		isNumericLiteral(node.operand)
 	) {
-		return node.operator === ts.SyntaxKind.MinusToken ? `-${node.operand.text}` : node.operand.text;
+		return node.operator === SyntaxKind.MinusToken ? `-${node.operand.text}` : node.operand.text;
 	}
 	return undefined;
 }
 
 /** `exitCode` as a bare identifier or a `.exitCode` property read. */
-function isExitCodeExpression(node: ts.Node): boolean {
-	if (ts.isIdentifier(node) && node.text === "exitCode") return true;
-	if (ts.isPropertyAccessExpression(node) && node.name.text === "exitCode") return true;
+function isExitCodeExpression(node: Node): boolean {
+	if (isIdentifier(node) && node.text === "exitCode") return true;
+	if (isPropertyAccessExpression(node) && node.name.text === "exitCode") return true;
 	return false;
 }
 
@@ -205,17 +221,17 @@ function isExitCodeExpression(node: ts.Node): boolean {
  * other receiver (an identifier, a call, a string), which keeps membership
  * checks on message CONTENT (e.g. `msg.includes("aborted")`) out of scope.
  */
-function listLiteral(node: ts.Node): ts.ArrayLiteralExpression | undefined {
-	if (ts.isArrayLiteralExpression(node)) return node;
-	if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Set") {
+function listLiteral(node: Node): ArrayLiteralExpression | undefined {
+	if (isArrayLiteralExpression(node)) return node;
+	if (isNewExpression(node) && isIdentifier(node.expression) && node.expression.text === "Set") {
 		const [arg] = node.arguments ?? [];
-		if (arg && ts.isArrayLiteralExpression(arg)) return arg;
+		if (arg && isArrayLiteralExpression(arg)) return arg;
 	}
 	return undefined;
 }
 
 /** Failure reasons among an array literal's direct elements. */
-function failureLiteralsIn(array: ts.ArrayLiteralExpression): string[] {
+function failureLiteralsIn(array: ArrayLiteralExpression): string[] {
 	const literals: string[] = [];
 	for (const element of array.elements) {
 		const text = failureLiteralText(element);
@@ -233,13 +249,19 @@ const normalize = (text: string): string => text.replace(/\s+/g, " ").trim();
  * ratchet, and that is exactly what the original regex-only guard was.
  */
 export function scanReimplementations(source: string, file: string): ReimplementationHit[] {
-	const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const sourceFile = parseTexts([{ path: file, text: source }]).get(resolve(file));
+	if (!sourceFile) throw new Error(`terminal-status: no parsed source file for ${file}`);
+	return scanSourceFile(sourceFile, file);
+}
+
+/** Scan an already-parsed source file (the tree sweep parses all files in one call). */
+function scanSourceFile(sourceFile: SourceFile, file: string): ReimplementationHit[] {
 	const hits: ReimplementationHit[] = [];
 	// Array literals already covered by a membership hit, so a `[...].includes(x)`
 	// is reported once (at the call) rather than twice (call + literal).
-	const coveredLists = new Set<ts.Node>();
+	const coveredLists = new Set<Node>();
 
-	const record = (node: ts.Node, kind: ReimplementationKind, literal: string): void => {
+	const record = (node: Node, kind: ReimplementationKind, literal: string): void => {
 		const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
 		hits.push({
 			file,
@@ -250,12 +272,12 @@ export function scanReimplementations(source: string, file: string): Reimplement
 		});
 	};
 
-	const visit = (node: ts.Node): void => {
+	const visit = (node: Node): void => {
 		// Rules 1 & 4: comparisons against a failure reason / exitCode. The
 		// failure-reason arm deliberately ignores the OTHER operand's name — that
 		// is what catches a renamed/aliased identifier. Only equality is legal for
 		// reasons; exitCode also accepts the ordering operators (rule 4).
-		if (ts.isBinaryExpression(node)) {
+		if (isBinaryExpression(node)) {
 			const { left, right } = node;
 			const operator = node.operatorToken.kind;
 			if (EQUALITY_OPERATORS.has(operator)) {
@@ -276,7 +298,7 @@ export function scanReimplementations(source: string, file: string): Reimplement
 		}
 
 		// Rule 2: membership against an inline failure-reason list.
-		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+		if (isCallExpression(node) && isPropertyAccessExpression(node.expression)) {
 			const method = node.expression.name.text;
 			if (method === "includes" || method === "has") {
 				const array = listLiteral(node.expression.expression);
@@ -295,7 +317,7 @@ export function scanReimplementations(source: string, file: string): Reimplement
 		// failure reasons dominate (at least two) or where every element is stop
 		// vocabulary (`["error", "stop"]`) — a keyword list that merely contains
 		// the word "error" is neither.
-		if (ts.isArrayLiteralExpression(node) && !coveredLists.has(node)) {
+		if (isArrayLiteralExpression(node) && !coveredLists.has(node)) {
 			const literals = failureLiteralsIn(node);
 			// Both quoting styles count for parity: a backtick list ``[`error`]`` is
 			// the same re-hard-coding as `["error"]`. Template expressions with
@@ -313,10 +335,10 @@ export function scanReimplementations(source: string, file: string): Reimplement
 		// Rule 5: a `switch` that re-hard-codes the stop vocabulary as `case`
 		// labels. This is a private copy of the enum just as much as an array or
 		// `===` chain is — the only difference is the syntax carrying the list.
-		if (ts.isSwitchStatement(node)) {
+		if (isSwitchStatement(node)) {
 			const reasons: string[] = [];
 			for (const clause of node.caseBlock.clauses) {
-				if (ts.isCaseClause(clause)) {
+				if (isCaseClause(clause)) {
 					const text = failureLiteralText(clause.expression);
 					if (text !== undefined) reasons.push(text);
 				}
@@ -324,7 +346,7 @@ export function scanReimplementations(source: string, file: string): Reimplement
 			if (reasons.length > 0) record(node, "switch-case", reasons.join(", "));
 		}
 
-		ts.forEachChild(node, visit);
+		node.forEachChild(visit);
 	};
 	visit(sourceFile);
 	return hits;
@@ -434,10 +456,15 @@ function isAllowed(hit: ReimplementationHit): boolean {
 
 /** Scan the real tree and drop any hit with a recorded allow-list reason. */
 function scanTree(): ReimplementationHit[] {
+	// ONE parse for the whole sweep — the sources do not change during a run.
+	const files = scannedSourceFiles();
+	const parsed = parseTexts(files.map((absolute) => ({ path: absolute, text: readFileSync(absolute, "utf8") })));
 	const violations: ReimplementationHit[] = [];
-	for (const absolute of scannedSourceFiles()) {
+	for (const absolute of files) {
 		const file = toRepoPath(absolute);
-		for (const hit of scanReimplementations(readFileSync(absolute, "utf8"), file)) {
+		const sourceFile = parsed.get(resolve(absolute));
+		if (!sourceFile) throw new Error(`terminal-status: no parsed source file for ${file}`);
+		for (const hit of scanSourceFile(sourceFile, file)) {
 			if (!isAllowed(hit)) violations.push(hit);
 		}
 	}

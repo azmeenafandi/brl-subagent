@@ -1,0 +1,271 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-234
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > passes systemPrompt via DefaultResourceLoader.appendSystemPrompt
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for 2ee5c136-ace7-42f6-ab14-e535071c63ad
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > passes systemPrompt via DefaultResourceLoader.appendSystemPrompt
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > a path-looking systemPrompt is NOT read as a file (F26 security property)
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > a path-looking systemPrompt is NOT read as a file (F26 security property)
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for 1a211dbb-6b58-4e4e-bae3-2e07fea3528b
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > still passes a resourceLoader when systemPrompt is empty (F25)
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > still passes a resourceLoader when systemPrompt is empty (F25)
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for eb26c38f-10c1-4e6b-a7db-616a9ddd1145
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > still passes a resourceLoader when systemPrompt is only whitespace (F25)
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > still passes a resourceLoader when systemPrompt is only whitespace (F25)
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for e9e0c806-c9fc-4e9f-83c9-e818387c7c57
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > never loads extensions or skills from the target cwd (F25)
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > never loads extensions or skills from the target cwd (F25)
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for 7986774c-2c71-4ee7-a9a4-27cac47c56a2
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > calls session.prompt with the task wrapped in the data fence (F27)
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > calls session.prompt with the task wrapped in the data fence (F27)
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for 9c258ad7-4c54-40e2-955f-a2012fde9714
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > model resolution > resolves the model string to a Model object via the registry
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > model resolution > resolves the model string to a Model object via the registry
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for 1e70f760-4f22-48f8-a3c0-234fb4d5bd07
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > model resolution > passes no model when none given (SDK falls back to findInitialModel)
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > model resolution > passes no model when none given (SDK falls back to findInitialModel)
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for c90252c6-832c-4da4-842f-185483349e48
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > model resolution > passes no model when the string has no slash separator
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > model resolution > passes no model when the string has no slash separator
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for 48260eee-e084-4f87-b261-cc2dbb3aa3cc
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > thinkingLevel forwarding > passes thinkingLevel to createAgentSession
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > thinkingLevel forwarding > passes thinkingLevel to createAgentSession
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for 6fd73bd5-21c0-43c2-b600-c7aebbbfec60
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > passes the tools allowlist to createAgentSession
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > passes the tools allowlist to createAgentSession
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for eccc9167-0bc5-4323-b0b3-a01bf28b0dde
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > passes excludeTools to createAgentSession
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > passes excludeTools to createAgentSession
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for 721f1b61-a3a2-4d01-92ef-1f202c7e6788
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > passes noTools: 'builtin' when noBuiltinTools is set
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > passes noTools: 'builtin' when noBuiltinTools is set
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for fc87602a-6757-42b7-9e78-746225304b19
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > defaults to the full toolset when no toolOptions are given
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > defaults to the full toolset when no toolOptions are given
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for 7d1c618e-9059-4172-8d4d-d55b917ac055
+
+stderr | src/__tests__/session-manager.test.ts > agent id validation (F24) > persistAgent refuses a planted record with a traversal id (F24 indirection bypass)
+[brl-subagent] Refusing to persist agent with invalid id: ../../brl-persist-bypass-test
+
+stdout | src/__tests__/session-manager.test.ts > stopAgent — real abort (issue #28 W1) > does not call abort for an already-completed agent
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > stopAgent — real abort (issue #28 W1) > does not call abort for an already-completed agent
+[brl-subagent] ERROR: spawnBackgroundSession: completion handler failed for 2bdb4a03-3efd-4e85-bbdf-9d0bc66990f1
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession .then abort discrimination (probe contract) > marks agent stopped (not completed) when prompt resolves with an aborted run
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession .then abort discrimination (probe contract) > marks agent stopped when stopAgent pre-set status before abort
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession per-agent timeout (issue #28 W3) > does not abort when the agent completes before the deadline
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession gitMode branch lifecycle (issue #28 W4) > creates a work branch before the prompt when gitMode=branch
+[brl-subagent] INFO: Created work branch for background agent
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession gitMode branch lifecycle (issue #28 W4) > throws (refusing to spawn unisolated) when branch creation fails
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession gitMode branch lifecycle (issue #28 W4) > captures the diff and discards the branch on completion
+[brl-subagent] INFO: Created work branch for background agent
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession gitMode branch lifecycle (issue #28 W4) > captures the diff and discards the branch on completion
+[brl-subagent] INFO: Committed background agent work on work branch
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession gitMode branch lifecycle (issue #28 W4) > captures any partial diff and discards the branch on failure
+[brl-subagent] INFO: Created work branch for background agent
+
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession gitMode branch lifecycle (issue #28 W4) > captures any partial diff and discards the branch on failure
+[brl-subagent] INFO: Committed background agent work on work branch
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > W4 concurrency guard — cleanup when another spawn moved the tree > skips switch/delete when the tree is no longer on our work branch
+[brl-subagent] INFO: Created work branch for background agent
+
+stdout | src/__tests__/session-manager.test.ts > W4 concurrency guard — cleanup when another spawn moved the tree > skips switch/delete when the tree is no longer on our work branch
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > W4 concurrency guard — cleanup when another spawn moved the tree > skips switch/delete when the tree is no longer on our work branch
+[brl-subagent] WARN: cleanupWorkBranch: tree moved off brl-subagent-abc12345 — skipping switch/delete
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C1: refuses to spawn when the base tree has uncommitted changes
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C1: commits the agent's work before capturing the diff at teardown
+[brl-subagent] INFO: Created work branch for background agent
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C1: commits the agent's work before capturing the diff at teardown
+[brl-subagent] INFO: Committed background agent work on work branch
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C1: falls back to working-tree diff when commitAll fails (no git identity)
+[brl-subagent] INFO: Created work branch for background agent
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C1: falls back to working-tree diff when commitAll fails (no git identity)
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C1: falls back to working-tree diff when commitAll fails (no git identity)
+[brl-subagent] WARN: commitAll failed for background agent e9bc9765-dda1-48df-a91e-267429fa24d5 — capturing working diff
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > M1: records the diff on the ABORTED path (stop/timeout)
+[brl-subagent] INFO: Created work branch for background agent
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > M1: records the diff on the ABORTED path (stop/timeout)
+[brl-subagent] INFO: Committed background agent work on work branch
+[brl-subagent] INFO: Background run settled
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second concurrent branch-mode spawn waits for the first's lock
+[brl-subagent] INFO: Created work branch for background agent
+
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > passes systemPrompt via DefaultResourceLoader.appendSystemPrompt 7ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > a path-looking systemPrompt is NOT read as a file (F26 security property) 2ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > still passes a resourceLoader when systemPrompt is empty (F25) 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > still passes a resourceLoader when systemPrompt is only whitespace (F25) 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > never loads extensions or skills from the target cwd (F25) 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > calls session.prompt with the task wrapped in the data fence (F27) 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > model resolution > resolves the model string to a Model object via the registry 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > model resolution > passes no model when none given (SDK falls back to findInitialModel) 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > model resolution > passes no model when the string has no slash separator 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > thinkingLevel forwarding > passes thinkingLevel to createAgentSession 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > passes the tools allowlist to createAgentSession 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > passes excludeTools to createAgentSession 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > passes noTools: 'builtin' when noBuiltinTools is set 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > toolOptions forwarding (background honors restrictions) > defaults to the full toolset when no toolOptions are given 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession systemPrompt injection > loader.reload failure > propagates the error out of spawnBackgroundSession 1ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > getAgent returns null for a path-traversal id without touching the fs 1ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > getAgent returns null for an absolute-path id 0ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > getAgent returns null for a non-uuid id 0ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > getAgent accepts a valid uuid (no throw; just not found) 1ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > updateAgentStatus returns null for a traversal id (via getAgent) 1ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > steerAgent returns null for a traversal id (via getAgent) 0ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > getTranscriptPath throws for a traversal id 1ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > getTranscriptPath throws for an absolute path 1ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > getTranscriptPath accepts a valid uuid 1ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > transcript.getTranscriptPath throws for a traversal id 1ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > persistAgent refuses a planted record with a traversal id (F24 indirection bypass) 1ms
+ ✓ src/__tests__/session-manager.test.ts > agent id validation (F24) > persistAgent still writes valid records (regression guard) 1ms
+ ✓ src/__tests__/session-manager.test.ts > stopAgent — real abort (issue #28 W1) > aborts the session ref and marks the agent stopped 1ms
+ ✓ src/__tests__/session-manager.test.ts > stopAgent — real abort (issue #28 W1) > does not call abort for an already-completed agent 2ms
+ ✓ src/__tests__/session-manager.test.ts > stopAgent — real abort (issue #28 W1) > returns null for an unknown id 0ms
+ ✓ src/__tests__/session-manager.test.ts > stopAgent — real abort (issue #28 W1) > returns null for a traversal id 0ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession .then abort discrimination (probe contract) > marks agent stopped (not completed) when prompt resolves with an aborted run 3ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession .then abort discrimination (probe contract) > marks agent stopped when stopAgent pre-set status before abort 3ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession per-agent timeout (issue #28 W3) > aborts the session and marks stopped after the deadline 3ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession per-agent timeout (issue #28 W3) > does not abort when the agent completes before the deadline 2ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession per-agent timeout (issue #28 W3) > ignores a zero/undefined timeout (no timer armed) 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession per-agent timeout (issue #28 W3) > clamps an oversized timeout to the 30min hard cap (m1) 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession gitMode branch lifecycle (issue #28 W4) > creates a work branch before the prompt when gitMode=branch 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession gitMode branch lifecycle (issue #28 W4) > does not touch git when gitMode is none/undefined 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession gitMode branch lifecycle (issue #28 W4) > throws (refusing to spawn unisolated) when branch creation fails 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession gitMode branch lifecycle (issue #28 W4) > captures the diff and discards the branch on completion 1ms
+ ✓ src/__tests__/session-manager.test.ts > spawnBackgroundSession gitMode branch lifecycle (issue #28 W4) > captures any partial diff and discards the branch on failure 3ms
+ ✓ src/__tests__/session-manager.test.ts > W4 concurrency guard — cleanup when another spawn moved the tree > skips switch/delete when the tree is no longer on our work branch 2ms
+ ✓ src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C1: refuses to spawn when the base tree has uncommitted changes 1ms
+ ✓ src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C1: commits the agent's work before capturing the diff at teardown 2ms
+ ✓ src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C1: falls back to working-tree diff when commitAll fails (no git identity) 2ms
+ ✓ src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > M1: records the diff on the ABORTED path (stop/timeout) 3ms
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second concurrent branch-mode spawn waits for the first's lock
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second concurrent branch-mode spawn waits for the first's lock
+[brl-subagent] WARN: cleanupWorkBranch: tree moved off brl-subagent-abc12345 — skipping switch/delete
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second concurrent branch-mode spawn waits for the first's lock
+[brl-subagent] INFO: Created work branch for background agent
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second branch-mode spawn in a DIFFERENT cwd of the SAME repo waits for the first's lock
+[brl-subagent] INFO: Created work branch for background agent
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second branch-mode spawn in a DIFFERENT cwd of the SAME repo waits for the first's lock
+[brl-subagent] INFO: Background run settled
+
+stderr | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second branch-mode spawn in a DIFFERENT cwd of the SAME repo waits for the first's lock
+[brl-subagent] WARN: cleanupWorkBranch: tree moved off brl-subagent-abc12345 — skipping switch/delete
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second branch-mode spawn in a DIFFERENT cwd of the SAME repo waits for the first's lock
+[brl-subagent] INFO: Created work branch for background agent
+
+ ✓ src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second concurrent branch-mode spawn waits for the first's lock 72ms
+ ✓ src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second branch-mode spawn in a DIFFERENT cwd of the SAME repo waits for the first's lock 73ms
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: two branch-mode spawns in DIFFERENT non-repo cwds do not serialize
+[brl-subagent] INFO: Created work branch for background agent
+
+ × src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: two branch-mode spawns in DIFFERENT non-repo cwds do not serialize 108ms
+   → promise rejected "Error: second spawn blocked" instead of resolving
+ × src/__tests__/session-manager.test.ts > settle handlers never throw — missing transcript / throwing emit (issue #53) > does not crash when the transcript is deleted before a FAILING run settles 15003ms
+   → Test timed out in 15000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ × src/__tests__/session-manager.test.ts > settle handlers never throw — missing transcript / throwing emit (issue #53) > does not crash when the failed-event emit throws (defensive wrapper) 15016ms
+   → Test timed out in 15000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ × src/__tests__/session-manager.test.ts > settle handlers never throw — missing transcript / throwing emit (issue #53) > sanitizes error messages (issue #30) before persist/echo — cwd paths are neutralized 15017ms
+   → Test timed out in 15000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ × src/__tests__/session-manager.test.ts > settle handlers never throw — missing transcript / throwing emit (issue #53) > does not crash when the transcript is deleted before a COMPLETING run settles 15014ms
+   → Test timed out in 15000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ × src/__tests__/session-manager.test.ts > persisted file modes (F6 / issue #29) > writes agent records and transcripts owner-only (0o600) 15016ms
+   → Test timed out in 15000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ × src/__tests__/session-manager.test.ts > test storage isolation (issue #52) > a hanging-prompt spawn leaves NO new files in the real repo .pi/ 15017ms
+   → Test timed out in 15000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ × src/__tests__/session-manager.test.ts > issue #31 — terminal paths release agent._sessionRef > releases the ref on the completed path (finalOutput captured first) 15016ms
+   → Test timed out in 15000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ × src/__tests__/session-manager.test.ts > issue #31 — terminal paths release agent._sessionRef > releases the ref on the aborted/stopped path 15015ms
+   → Test timed out in 15000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ × src/__tests__/session-manager.test.ts > issue #31 — terminal paths release agent._sessionRef > releases the ref on the failed path 15016ms
+   → Test timed out in 15000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ × src/__tests__/session-manager.test.ts > issue #31 — terminal paths release agent._sessionRef > releases the ref via markTerminalBestEffort when a settle handler throws 15015ms
+   → Test timed out in 15000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".

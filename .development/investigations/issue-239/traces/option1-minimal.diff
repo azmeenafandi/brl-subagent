@@ -1,0 +1,73 @@
+diff -ruN /tmp/probe239/p0/src/index.ts /tmp/probe239/p2/src/index.ts
+--- /tmp/probe239/p0/src/index.ts	2026-09-29 21:11:20.525427238 +0800
++++ /tmp/probe239/p2/src/index.ts	2026-09-29 21:09:16.346572108 +0800
+@@ -397,12 +397,12 @@
+ 	// -------------------------------------------------------------------
+ 
+ 	async function runChainMode(
+-		params: Record<string, unknown>,
++		params: DelegateTaskParams,
+ 		signal: AbortSignal | undefined,
+ 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
+ 		ctx: ExtensionContext,
+ 	): Promise<ToolResult<SubagentResult | ChainDetails | undefined>> {
+-		const chainSteps = params.chain as SubTaskParams[];
++		const chainSteps: SubTaskParams[] = params.chain!;
+ 
+ 		// Issue #133: dispatch-start timestamp — the aggregate run entry's
+ 		// startedAt (captured once, at mode entry, not at completion).
+@@ -921,12 +921,12 @@
+ 	// -------------------------------------------------------------------
+ 
+ 	async function runParallelMode(
+-		params: Record<string, unknown>,
++		params: DelegateTaskParams,
+ 		signal: AbortSignal | undefined,
+ 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
+ 		ctx: ExtensionContext,
+ 	): Promise<ToolResult<SubagentResult | ParallelDetails | undefined>> {
+-		const taskList = params.tasks as SubTaskParams[];
++		const taskList: SubTaskParams[] = params.tasks!;
+ 
+ 		// R5: Check session cost limit before spawning
+ 		const costError = gateSessionCost({
+@@ -1391,12 +1391,12 @@
+ 	// -------------------------------------------------------------------
+ 
+ 	async function runGraphMode(
+-		params: Record<string, unknown>,
++		params: DelegateTaskParams,
+ 		signal: AbortSignal | undefined,
+ 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
+ 		ctx: ExtensionContext,
+ 	): Promise<ToolResult<SubagentResult | GraphDetails | undefined>> {
+-		const graphTasks = params.graph as GraphTask[];
++		const graphTasks: GraphTask[] = params.graph!;
+ 
+ 		// Issue #133: dispatch-start timestamp — the aggregate run entry's
+ 		// startedAt (captured once, at mode entry, not at completion).
+@@ -1996,10 +1996,10 @@
+ 	async function runBackgroundFanOut(
+ 		pi: ExtensionAPI,
+ 		ctx: ExtensionContext,
+-		params: Record<string, unknown>,
++		params: DelegateTaskParams,
+ 		signal: AbortSignal | undefined,
+ 	): Promise<ToolResult<SubagentResult | undefined>> {
+-		const taskList = params.tasks as SubTaskParams[];
++		const taskList: SubTaskParams[] = params.tasks!;
+ 
+ 		// Session cost limit gates the WHOLE batch before any spawn — same
+ 		// estimate/limit logic as runParallelMode, scaled by task count.
+diff -ruN /tmp/probe239/p0/src/types.ts /tmp/probe239/p2/src/types.ts
+--- /tmp/probe239/p0/src/types.ts	2026-09-29 21:11:20.526414394 +0800
++++ /tmp/probe239/p2/src/types.ts	2026-09-29 21:09:16.346817825 +0800
+@@ -458,7 +458,7 @@
+ 	noBuiltinTools?: boolean;
+ 	systemPrompt?: string;
+ 	inheritSystemPrompt?: boolean;
+-	dependsOn: string[];
++	dependsOn?: string[];
+ }
+ 
+ /** One wave of tasks executed together in a graph. */

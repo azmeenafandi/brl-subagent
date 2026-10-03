@@ -1,3 +1,4 @@
+// Purpose: Task-template resolution: `${param}` substitution over the file-backed template tiers.
 /**
  * brl-subagent — Task Templates
  *

@@ -1,3 +1,4 @@
+// Purpose: Dependency-graph scheduler: cycle detection, topological waves, and graph validation.
 /**
  * brl-subagent — Dependency Graph Scheduler
  *

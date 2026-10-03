@@ -1,0 +1,51 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+ ❯ src/__tests__/notify-completion.test.ts (31 tests | 2 failed) 16ms
+   ❯ buildCompletionMessage (12)
+     × does NOT default to success when the run entry records a mid-run failure 5ms
+     × downgrades a completed agent whose run entry is failed even with no stopReason 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/notify-completion.test.ts > buildCompletionMessage > does NOT default to success when the run entry records a mid-run failure
+AssertionError: expected 'completed' to be 'failed' // Object.is equality
+
+Expected: "failed"
+Received: "completed"
+
+ ❯ src/__tests__/notify-completion.test.ts:224:30
+    222|   const msg = buildCompletionMessage(agent, run);
+    223|
+    224|   expect(msg.details.status).toBe("failed");
+       |                              ^
+    225|   expect(msg.details.errorCategory).toBe("exit_error");
+    226|   expect(msg.details.stopReason).toBe("error");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/__tests__/notify-completion.test.ts > buildCompletionMessage > downgrades a completed agent whose run entry is failed even with no stopReason
+AssertionError: expected 'completed' to be 'failed' // Object.is equality
+
+Expected: "failed"
+Received: "completed"
+
+ ❯ src/__tests__/notify-completion.test.ts:236:30
+    234|   const msg = buildCompletionMessage(agent, run);
+    235|
+    236|   expect(msg.details.status).toBe("failed");
+       |                              ^
+    237|   expect(msg.details.errorCategory).toBe("timeout");
+    238|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  2 failed | 61 passed (63)
+   Start at  17:51:32
+   Duration  681ms (transform 34%, import 33%, tests 32%, worker 1%)
+

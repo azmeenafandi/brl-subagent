@@ -1,0 +1,835 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255
+
+ ❯ src/__tests__/architecture-rules.test.ts (7 tests | 7 failed) 10ms
+   ❯ architecture rules (issue #251) (7)
+     × no runtime import cycles (type-only imports are erased and do not count) 5ms
+     × the entry point is not a library (only tests import index.ts) 1ms
+     × types.ts references schema.ts only in type positions (#239) 1ms
+     × pure helper modules import nothing but ./types and no bare specifiers 1ms
+     × process execution is confined to runner.ts and git.ts 0ms
+     × every bare specifier is a node builtin or a declared peerDependency 1ms
+     × non-entry modules take only the reader API from session-manager 0ms
+ ❯ src/__tests__/runtime-vocabulary.test.ts (17 tests | 16 failed) 16ms
+   ❯ runtime-string vocabulary ratchet (#183) (2)
+     × finds no internal vocabulary or issue reference in src/** runtime strings 5ms
+   ❯ scanner coverage — every runtime literal form is seen (#183) (8)
+     × catches a double-quoted literal 1ms
+     × catches a single-quoted literal 1ms
+     × catches a template literal without substitutions 0ms
+     × catches a template literal with substitutions 0ms
+     × catches a concatenation whose term spans literal boundaries 0ms
+     × catches a leak inside one fragment of a longer concatenation 0ms
+     × reports the offending file and line 0ms
+     × catches each forbidden term 2ms
+   ❯ scanner coverage — non-runtime positions are excluded (#183) (4)
+     × ignores comments 0ms
+     × ignores type-only string positions 0ms
+     × does not flag an unrelated marker that merely resembles E<nn> 0ms
+     × passes a clean runtime string 0ms
+   ❯ scanner coverage — regresses the #174 leaks (#183) (3)
+     × would have flagged the completion directive 0ms
+     × would have flagged the retry-run-id tool result 0ms
+     × would have flagged the dangling-template-preset warning 0ms
+ ❯ src/__tests__/terminal-status-consistency.test.ts (0 test)
+Switched to a new branch 'brl-subagent-6b00032c'
+Switched to branch 'main'
+Switched to a new branch 'brl-subagent-4fbd1a20'
+Switched to branch 'main'
+Switched to a new branch 'brl-subagent-6e9586f8'
+Switched to branch 'main'
+Switched to a new branch 'brl-subagent-51b52afa'
+Switched to branch 'main'
+Switched to a new branch 'brl-subagent-3bb43f5b'
+error: cannot delete branch 'brl-subagent-3bb43f5b' used by worktree at '/tmp/brl-gate-a-A4SIhg'
+Switched to branch 'main'
+Switched to a new branch 'brl-subagent-59998bfd'
+Switched to a new branch 'brl-subagent-45cf287f'
+Switched to branch 'brl-subagent-59998bfd'
+Switched to branch 'main'
+Switched to a new branch 'brl-subagent-83d8f337'
+Switched to branch 'main'
+Switched to a new branch 'brl-subagent-f4e86355'
+Switched to branch 'main'
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts (28 tests | 28 failed) 44ms
+   ❯ collectRuntimeSpecifiers — runtime import forms (9)
+     × collects a default import 14ms
+     × collects a named import 1ms
+     × collects a namespace import 1ms
+     × collects a side-effect import 1ms
+     × collects a bare `import {}` 1ms
+     × collects a dynamic import() expression 1ms
+     × collects a CommonJS require() call 1ms
+     × collects an `import = require()` declaration 1ms
+     × collects each runtime form exactly once when combined 1ms
+   ❯ collectRuntimeSpecifiers — re-exports (3)
+     × collects `export { … } from` 1ms
+     × collects `export * from` 1ms
+     × collects `export * as ns from` 1ms
+   ❯ collectRuntimeSpecifiers — type-only forms impose no runtime dependency (8)
+     × ignores `import type { … }` 1ms
+     × ignores `import type Default from …` 1ms
+     × ignores `import type * as ns from …` 1ms
+     × ignores a fully inline type-only named import 1ms
+     × keeps a mixed inline import (value + type specifier) 1ms
+     × ignores `export type { … } from …` 1ms
+     × ignores a fully inline type-only re-export 1ms
+     × ignores `import type x = require(…)` 1ms
+   ❯ classifyRuntimeSpecifiers — dependency classification (8)
+     × keeps a sub-path specifier as its package 1ms
+     × keeps a scoped package intact 1ms
+     × reduces a scoped sub-path specifier to the scoped package 1ms
+     × ignores relative specifiers (they resolve inside the package) 1ms
+     × ignores node: builtins 1ms
+     × ignores bare builtins 1ms
+     × ignores package subpath imports (#internal) 1ms
+     × classifies require() and import = require() as dependencies 1ms
+
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/terminal-status-consistency.test.ts [ src/__tests__/terminal-status-consistency.test.ts ]
+TypeError: Cannot read properties of undefined (reading 'EqualsEqualsToken')
+ ❯ src/__tests__/terminal-status-consistency.test.ts:143:16
+    141|
+    142| const EQUALITY_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set<ts.Synt…
+    143|  ts.SyntaxKind.EqualsEqualsToken,
+       |                ^
+    144|  ts.SyntaxKind.EqualsEqualsEqualsToken,
+    145|  ts.SyntaxKind.ExclamationEqualsToken,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/52]⎯
+
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 51 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/architecture-rules.test.ts > architecture rules (issue #251) > no runtime import cycles (type-only imports are erased and do not count)
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ parseImports src/__tests__/architecture-rules.test.ts:71:65
+     69| function parseImports(file: string): ImportEdge[] {
+     70|  const text = readFileSync(join(SRC, file), "utf8");
+     71|  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest…
+       |                                                                 ^
+     72|  const edges: ImportEdge[] = [];
+     73|
+ ❯ allEdges src/__tests__/architecture-rules.test.ts:104:23
+ ❯ src/__tests__/architecture-rules.test.ts:122:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/52]⎯
+
+ FAIL  src/__tests__/architecture-rules.test.ts > architecture rules (issue #251) > the entry point is not a library (only tests import index.ts)
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ parseImports src/__tests__/architecture-rules.test.ts:71:65
+     69| function parseImports(file: string): ImportEdge[] {
+     70|  const text = readFileSync(join(SRC, file), "utf8");
+     71|  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest…
+       |                                                                 ^
+     72|  const edges: ImportEdge[] = [];
+     73|
+ ❯ allEdges src/__tests__/architecture-rules.test.ts:104:23
+ ❯ src/__tests__/architecture-rules.test.ts:151:21
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/52]⎯
+
+ FAIL  src/__tests__/architecture-rules.test.ts > architecture rules (issue #251) > types.ts references schema.ts only in type positions (#239)
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ parseImports src/__tests__/architecture-rules.test.ts:71:65
+     69| function parseImports(file: string): ImportEdge[] {
+     70|  const text = readFileSync(join(SRC, file), "utf8");
+     71|  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest…
+       |                                                                 ^
+     72|  const edges: ImportEdge[] = [];
+     73|
+ ❯ allEdges src/__tests__/architecture-rules.test.ts:104:23
+ ❯ src/__tests__/architecture-rules.test.ts:161:21
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/52]⎯
+
+ FAIL  src/__tests__/architecture-rules.test.ts > architecture rules (issue #251) > pure helper modules import nothing but ./types and no bare specifiers
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ parseImports src/__tests__/architecture-rules.test.ts:71:65
+     69| function parseImports(file: string): ImportEdge[] {
+     70|  const text = readFileSync(join(SRC, file), "utf8");
+     71|  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest…
+       |                                                                 ^
+     72|  const edges: ImportEdge[] = [];
+     73|
+ ❯ allEdges src/__tests__/architecture-rules.test.ts:104:23
+ ❯ src/__tests__/architecture-rules.test.ts:169:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/52]⎯
+
+ FAIL  src/__tests__/architecture-rules.test.ts > architecture rules (issue #251) > process execution is confined to runner.ts and git.ts
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ parseImports src/__tests__/architecture-rules.test.ts:71:65
+     69| function parseImports(file: string): ImportEdge[] {
+     70|  const text = readFileSync(join(SRC, file), "utf8");
+     71|  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest…
+       |                                                                 ^
+     72|  const edges: ImportEdge[] = [];
+     73|
+ ❯ allEdges src/__tests__/architecture-rules.test.ts:104:23
+ ❯ src/__tests__/architecture-rules.test.ts:182:21
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/52]⎯
+
+ FAIL  src/__tests__/architecture-rules.test.ts > architecture rules (issue #251) > every bare specifier is a node builtin or a declared peerDependency
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ parseImports src/__tests__/architecture-rules.test.ts:71:65
+     69| function parseImports(file: string): ImportEdge[] {
+     70|  const text = readFileSync(join(SRC, file), "utf8");
+     71|  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest…
+       |                                                                 ^
+     72|  const edges: ImportEdge[] = [];
+     73|
+ ❯ allEdges src/__tests__/architecture-rules.test.ts:104:23
+ ❯ src/__tests__/architecture-rules.test.ts:191:21
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/52]⎯
+
+ FAIL  src/__tests__/architecture-rules.test.ts > architecture rules (issue #251) > non-entry modules take only the reader API from session-manager
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ parseImports src/__tests__/architecture-rules.test.ts:71:65
+     69| function parseImports(file: string): ImportEdge[] {
+     70|  const text = readFileSync(join(SRC, file), "utf8");
+     71|  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest…
+       |                                                                 ^
+     72|  const edges: ImportEdge[] = [];
+     73|
+ ❯ allEdges src/__tests__/architecture-rules.test.ts:104:23
+ ❯ src/__tests__/architecture-rules.test.ts:203:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > runtime-string vocabulary ratchet (#183) > finds no internal vocabulary or issue reference in src/** runtime strings
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanTree src/__tests__/runtime-vocabulary.test.ts:178:21
+ ❯ src/__tests__/runtime-vocabulary.test.ts:195:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — every runtime literal form is seen (#183) > catches a double-quoted literal
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:222:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — every runtime literal form is seen (#183) > catches a single-quoted literal
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:226:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — every runtime literal form is seen (#183) > catches a template literal without substitutions
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:230:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — every runtime literal form is seen (#183) > catches a template literal with substitutions
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:236:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — every runtime literal form is seen (#183) > catches a concatenation whose term spans literal boundaries
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:240:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — every runtime literal form is seen (#183) > catches a leak inside one fragment of a longer concatenation
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:245:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — every runtime literal form is seen (#183) > reports the offending file and line
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:250:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — every runtime literal form is seen (#183) > catches each forbidden term
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:266:11
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — non-runtime positions are excluded (#183) > ignores comments
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:273:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — non-runtime positions are excluded (#183) > ignores type-only string positions
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:277:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — non-runtime positions are excluded (#183) > does not flag an unrelated marker that merely resembles E<nn>
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:283:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[20/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — non-runtime positions are excluded (#183) > passes a clean runtime string
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:287:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[21/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — regresses the #174 leaks (#183) > would have flagged the completion directive
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:296:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[22/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — regresses the #174 leaks (#183) > would have flagged the retry-run-id tool result
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:305:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[23/52]⎯
+
+ FAIL  src/__tests__/runtime-vocabulary.test.ts > scanner coverage — regresses the #174 leaks (#183) > would have flagged the dangling-template-preset warning
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ scanRuntimeVocabulary src/__tests__/runtime-vocabulary.test.ts:116:71
+    114|  */
+    115| export function scanRuntimeVocabulary(source: string, file: string): V…
+    116|  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.…
+       |                                                                       ^
+    117|  const hits: VocabularyHit[] = [];
+    118|
+ ❯ scanFixture src/__tests__/runtime-vocabulary.test.ts:218:58
+ ❯ src/__tests__/runtime-vocabulary.test.ts:310:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[24/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — runtime import forms > collects a default import
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:27:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[25/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — runtime import forms > collects a named import
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:31:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[26/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — runtime import forms > collects a namespace import
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:35:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[27/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — runtime import forms > collects a side-effect import
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:39:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[28/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — runtime import forms > collects a bare `import {}`
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:43:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[29/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — runtime import forms > collects a dynamic import() expression
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:47:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[30/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — runtime import forms > collects a CommonJS require() call
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:51:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[31/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — runtime import forms > collects an `import = require()` declaration
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:55:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[32/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — runtime import forms > collects each runtime form exactly once when combined
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:68:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[33/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — re-exports > collects `export { … } from`
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:82:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[34/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — re-exports > collects `export * from`
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:86:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[35/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — re-exports > collects `export * as ns from`
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:90:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[36/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — type-only forms impose no runtime dependency > ignores `import type { … }`
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:96:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[37/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — type-only forms impose no runtime dependency > ignores `import type Default from …`
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:100:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[38/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — type-only forms impose no runtime dependency > ignores `import type * as ns from …`
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:104:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[39/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — type-only forms impose no runtime dependency > ignores a fully inline type-only named import
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:108:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[40/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — type-only forms impose no runtime dependency > keeps a mixed inline import (value + type specifier)
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:112:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[41/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — type-only forms impose no runtime dependency > ignores `export type { … } from …`
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:116:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[42/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — type-only forms impose no runtime dependency > ignores a fully inline type-only re-export
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:120:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[43/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > collectRuntimeSpecifiers — type-only forms impose no runtime dependency > ignores `import type x = require(…)`
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ scan src/__tests__/smoke-artifact-scanner.test.ts:20:44
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:124:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[44/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > classifyRuntimeSpecifiers — dependency classification > keeps a sub-path specifier as its package
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ classifyRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:288:26
+ ❯ deps src/__tests__/smoke-artifact-scanner.test.ts:23:2
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:130:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[45/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > classifyRuntimeSpecifiers — dependency classification > keeps a scoped package intact
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ classifyRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:288:26
+ ❯ deps src/__tests__/smoke-artifact-scanner.test.ts:23:2
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:134:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[46/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > classifyRuntimeSpecifiers — dependency classification > reduces a scoped sub-path specifier to the scoped package
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ classifyRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:288:26
+ ❯ deps src/__tests__/smoke-artifact-scanner.test.ts:23:2
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:138:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[47/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > classifyRuntimeSpecifiers — dependency classification > ignores relative specifiers (they resolve inside the package)
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ classifyRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:288:26
+ ❯ deps src/__tests__/smoke-artifact-scanner.test.ts:23:2
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:142:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[48/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > classifyRuntimeSpecifiers — dependency classification > ignores node: builtins
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ classifyRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:288:26
+ ❯ deps src/__tests__/smoke-artifact-scanner.test.ts:23:2
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:146:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[49/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > classifyRuntimeSpecifiers — dependency classification > ignores bare builtins
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ classifyRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:288:26
+ ❯ deps src/__tests__/smoke-artifact-scanner.test.ts:23:2
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:150:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[50/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > classifyRuntimeSpecifiers — dependency classification > ignores package subpath imports (#internal)
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ classifyRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:288:26
+ ❯ deps src/__tests__/smoke-artifact-scanner.test.ts:23:2
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:154:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[51/52]⎯
+
+ FAIL  src/__tests__/smoke-artifact-scanner.test.ts > classifyRuntimeSpecifiers — dependency classification > classifies require() and import = require() as dependencies
+TypeError: Cannot read properties of undefined (reading 'Latest')
+ ❯ collectRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:240:75
+    238|  */
+    239| function collectRuntimeSpecifiers(filePath, source) {
+    240|  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTar…
+       |                                                                           ^
+    241|  /** @type {string[]} */
+    242|  const specifiers = [];
+ ❯ classifyRuntimeSpecifiers .github/scripts/smoke-artifact.mjs:288:26
+ ❯ deps src/__tests__/smoke-artifact-scanner.test.ts:23:2
+ ❯ src/__tests__/smoke-artifact-scanner.test.ts:158:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[52/52]⎯
+
+
+ Test Files  4 failed | 54 passed (58)
+      Tests  51 failed | 1129 passed (1180)
+   Start at  17:19:45
+   Duration  21.86s (tests 66%, import 19%, transform 15%, worker 1%)
+

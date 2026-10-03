@@ -1,0 +1,7 @@
+diff --git a/src/session-manager.ts b/src/session-manager.ts
+index 1f8840d..e99630f 100644
+--- a/src/session-manager.ts
++++ b/src/session-manager.ts
+@@ -369 +369 @@ export function steerAgent(id: string, message: string): BackgroundAgent | null
+-  agent.status = 'steered';
++  agent.status = 'running';

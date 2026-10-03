@@ -30,7 +30,7 @@ function makeTask(
 // The runtime schema (Type.Optional) permits omitting it; the scheduler
 // must tolerate that (dependsOn may be undefined at runtime).
 function rootTask(id: string, task?: string): GraphTask {
-	return { id, task: task || `Task ${id}` } as unknown as GraphTask;
+	return { id, task: task || `Task ${id}` };
 }
 
 // =========================================================================
@@ -154,6 +154,29 @@ describe("topologicalSort", () => {
 		expect(result.waves).toHaveLength(1);
 		expect(result.waves[0].map((t) => t.id).sort()).toEqual(["A", "B"]);
 	});
+
+	// 9. Mutation-audit fixture: exact wave ordering with a NON-alphabetical
+	// input, asserting deep equality on the *ordered* ids of every wave.
+	// Input [z, m, b, a] deliberately does not match sorted order, so a
+	// dropped `.sort()` in EITHER the initial wave assignment or the
+	// `currentWave = nextWave.sort(...)` update is observable.
+	it("orders every wave by id regardless of input order", () => {
+		const tasks = [
+			makeTask("z"),
+			makeTask("m"),
+			makeTask("b", ["m"]),
+			makeTask("a", ["z"]),
+		];
+		const result = topologicalSort(tasks);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		expect(result.waves).toHaveLength(2);
+		expect(result.waves.map((w) => w.map((t) => t.id))).toEqual([
+			["m", "z"],
+			["a", "b"],
+		]);
+	});
 });
 
 // =========================================================================
@@ -191,6 +214,19 @@ describe("detectCycle", () => {
 		];
 		const cycle = detectCycle(tasks);
 		expect(cycle).toBeNull();
+	});
+
+	// 10. Mutation-audit fixture: exact cycle content, not just membership.
+	// R→[X,Y], X has no deps, Y→[R]. DFS visits X first and must POP it
+	// before descending into Y, so the reported path is exactly
+	// ["R","Y","R"] — not ["R","X","Y","R"].
+	it("returns the exact cycle path, excluding already-backtracked nodes", () => {
+		const tasks = [
+			makeTask("R", ["X", "Y"]),
+			makeTask("X"),
+			makeTask("Y", ["R"]),
+		];
+		expect(detectCycle(tasks)).toEqual(["R", "Y", "R"]);
 	});
 });
 

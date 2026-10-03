@@ -1,0 +1,102 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-231
+
+ ❯ src/__tests__/history.test.ts (11 tests | 3 failed) 14ms
+   ❯ finalizeRunRecord stopReason coherence (issue #187) (3)
+     × records a coherent non-undefined stopReason for a failed result with no stopReason 5ms
+     × records 'aborted' for a failed result classified as the aborted category 1ms
+     × keeps the success stopReason and records status done for a completed result 1ms
+stdout | src/__tests__/session-manager.test.ts > spawnBackgroundSession run-entry persistence (issue #98) > finalizes the run entry to failed when prompt() throws synchronously (review F1)
+[brl-subagent] INFO: Background run settled
+
+ ❯ src/__tests__/session-manager.test.ts (83 tests | 1 failed) 329ms
+   ❯ spawnBackgroundSession run-entry persistence (issue #98) (7)
+     × finalizes the run entry to failed when prompt() throws synchronously (review F1) 8ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/history.test.ts > finalizeRunRecord stopReason coherence (issue #187) > records a coherent non-undefined stopReason for a failed result with no stopReason
+AssertionError: expected undefined to be 'error' // Object.is equality
+
+- Expected:
+"error"
+
++ Received:
+undefined
+
+ ❯ src/__tests__/history.test.ts:120:26
+    118|
+    119|   expect(run.status).toBe("failed");
+    120|   expect(run.stopReason).toBe("error");
+       |                          ^
+    121|  });
+    122|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  src/__tests__/history.test.ts > finalizeRunRecord stopReason coherence (issue #187) > records 'aborted' for a failed result classified as the aborted category
+AssertionError: expected undefined to be 'aborted' // Object.is equality
+
+- Expected:
+"aborted"
+
++ Received:
+undefined
+
+ ❯ src/__tests__/history.test.ts:133:26
+    131|
+    132|   expect(run.status).toBe("failed");
+    133|   expect(run.stopReason).toBe("aborted");
+       |                          ^
+    134|  });
+    135|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  src/__tests__/history.test.ts > finalizeRunRecord stopReason coherence (issue #187) > keeps the success stopReason and records status done for a completed result
+AssertionError: expected undefined to be 'stop' // Object.is equality
+
+- Expected:
+"stop"
+
++ Received:
+undefined
+
+ ❯ src/__tests__/history.test.ts:143:26
+    141|
+    142|   expect(run.status).toBe("done");
+    143|   expect(run.stopReason).toBe("stop");
+       |                          ^
+    144|  });
+    145| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > spawnBackgroundSession run-entry persistence (issue #98) > finalizes the run entry to failed when prompt() throws synchronously (review F1)
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/__tests__/session-manager.test.ts:1648:35
+    1646|   // RAW terminal reason is absent, so finalTurnError must be false — …
+    1647|   // the fix the coerced reason ('error') leaked into this narrower si…
+    1648|   expect(finalRun.finalTurnError).toBe(false);
+       |                                   ^
+    1649|   // The recorded stopReason is still the coerced, status-coherent val…
+    1650|   expect(finalRun.stopReason).toBe("error");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  4 failed | 90 passed (94)
+   Start at  17:42:45
+   Duration  708ms (tests 48%, transform 43%, import 8%, worker 1%)
+

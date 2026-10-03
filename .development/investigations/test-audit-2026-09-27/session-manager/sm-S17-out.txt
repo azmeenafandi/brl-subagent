@@ -1,0 +1,38 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-234
+
+stdout | src/__tests__/session-manager.test.ts > issue #179 — honest terminal status (D1/D2/D3) > D4: surfaces the failure reason as the output HEADLINE, not an earlier turn's prose
+[brl-subagent] INFO: Background run settled
+
+ ❯ src/__tests__/session-manager.test.ts (83 tests | 1 failed) 330ms
+   ❯ issue #179 — honest terminal status (D1/D2/D3) (11)
+     × D4: surfaces the failure reason as the output HEADLINE, not an earlier turn's prose 9ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > issue #179 — honest terminal status (D1/D2/D3) > D4: surfaces the failure reason as the output HEADLINE, not an earlier turn's prose
+AssertionError: expected 'provider died' to contain 'planned the work'
+
+Expected: "planned the work"
+Received: "provider died"
+
+ ❯ src/__tests__/session-manager.test.ts:1908:30
+    1906|   // The reason leads; the earlier prose is still available below it.
+    1907|   expect(after?.finalOutput?.startsWith("provider died")).toBe(true);
+    1908|   expect(after?.finalOutput).toContain("planned the work");
+       |                              ^
+    1909|   const run = fakePi.appendEntry.mock.calls[1][1];
+    1910|   expect(run.outputSummary).toContain("provider died");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 82 passed (83)
+   Start at  18:17:05
+   Duration  703ms (tests 59%, transform 33%, import 7%, worker 1%)
+
+EXIT=1

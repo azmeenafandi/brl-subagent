@@ -27,9 +27,19 @@
  */
 
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
-import ts from "typescript";
+import {
+	isBinaryExpression,
+	isNoSubstitutionTemplateLiteral,
+	isParenthesizedExpression,
+	isStringLiteral,
+	isTemplateExpression,
+	isTypeNode,
+	parseTexts,
+	SyntaxKind,
+} from "../../scripts/ts-ast.mjs";
+import type { BinaryExpression, Node, SourceFile } from "../../scripts/ts-ast.mjs";
 
 // ---------------------------------------------------------------------------
 // Forbidden vocabulary (the list comes from issue #183)
@@ -79,13 +89,13 @@ export interface VocabularyHit {
 	text: string;
 }
 
-const isPlusConcatenation = (node: ts.Node): node is ts.BinaryExpression =>
-	ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken;
+const isPlusConcatenation = (node: Node): node is BinaryExpression =>
+	isBinaryExpression(node) && node.operatorToken.kind === SyntaxKind.PlusToken;
 
 /** Nearest non-parenthesised ancestor satisfying `pred`, if any. */
-function closestAncestor(node: ts.Node, pred: (n: ts.Node) => boolean): ts.Node | undefined {
-	let parent = node.parent as ts.Node | undefined;
-	while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+function closestAncestor(node: Node, pred: (n: Node) => boolean): Node | undefined {
+	let parent = node.parent as Node | undefined;
+	while (parent && isParenthesizedExpression(parent)) parent = parent.parent;
 	return parent && pred(parent) ? parent : undefined;
 }
 
@@ -95,10 +105,10 @@ function closestAncestor(node: ts.Node, pred: (n: ts.Node) => boolean): ts.Node 
  * non-literal operand becomes `SUBSTITUTION`, which keeps the surrounding text
  * scannable without pretending to know the runtime value.
  */
-function flattenLiteralText(node: ts.Node): string {
-	if (ts.isParenthesizedExpression(node)) return flattenLiteralText(node.expression);
-	if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
-	if (ts.isTemplateExpression(node)) {
+function flattenLiteralText(node: Node): string {
+	if (isParenthesizedExpression(node)) return flattenLiteralText(node.expression);
+	if (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) return node.text;
+	if (isTemplateExpression(node)) {
 		let text = node.head.text;
 		for (const span of node.templateSpans) text += SUBSTITUTION + span.literal.text;
 		return text;
@@ -113,10 +123,16 @@ function flattenLiteralText(node: ts.Node): string {
  * pruned before descending.
  */
 export function scanRuntimeVocabulary(source: string, file: string): VocabularyHit[] {
-	const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const sourceFile = parseTexts([{ path: file, text: source }]).get(resolve(file));
+	if (!sourceFile) throw new Error(`runtime-vocabulary: no parsed source file for ${file}`);
+	return scanSourceFile(sourceFile, file);
+}
+
+/** Scan an already-parsed source file (the tree sweep parses all files in one call). */
+function scanSourceFile(sourceFile: SourceFile, file: string): VocabularyHit[] {
 	const hits: VocabularyHit[] = [];
 
-	const record = (node: ts.Node, text: string): void => {
+	const record = (node: Node, text: string): void => {
 		for (const { term, pattern } of FORBIDDEN_TERMS) {
 			if (!pattern.test(text)) continue;
 			const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
@@ -124,13 +140,13 @@ export function scanRuntimeVocabulary(source: string, file: string): VocabularyH
 		}
 	};
 
-	const visit = (node: ts.Node): void => {
+	const visit = (node: Node): void => {
 		// Type-only string positions (`type T = "handoff"`) are erased at
 		// compile time and can never reach a user; skip their whole subtree.
-		if (ts.isTypeNode(node)) return;
+		if (isTypeNode(node)) return;
 
 		const literal =
-			ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node);
+			isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node) || isTemplateExpression(node);
 		if (literal) {
 			// An outermost `+` concatenation is scanned as a whole; a literal
 			// that is one of its operands would otherwise double-report.
@@ -139,7 +155,7 @@ export function scanRuntimeVocabulary(source: string, file: string): VocabularyH
 			record(node, flattenLiteralText(node));
 		}
 
-		ts.forEachChild(node, visit);
+		node.forEachChild(visit);
 	};
 	visit(sourceFile);
 	return hits;
@@ -172,10 +188,15 @@ const allowlistKey = (hit: VocabularyHit): string => `${hit.file}|${hit.term}`;
 
 /** Scan the real tree and drop any hit with a recorded allow-list reason. */
 function scanTree(): VocabularyHit[] {
+	// ONE parse for the whole sweep — the sources do not change during a run.
+	const files = runtimeSourceFiles();
+	const parsed = parseTexts(files.map((absolute) => ({ path: absolute, text: readFileSync(absolute, "utf8") })));
 	const violations: VocabularyHit[] = [];
-	for (const absolute of runtimeSourceFiles()) {
+	for (const absolute of files) {
 		const file = toRepoPath(absolute);
-		for (const hit of scanRuntimeVocabulary(readFileSync(absolute, "utf8"), file)) {
+		const sourceFile = parsed.get(resolve(absolute));
+		if (!sourceFile) throw new Error(`runtime-vocabulary: no parsed source file for ${file}`);
+		for (const hit of scanSourceFile(sourceFile, file)) {
 			if (VOCABULARY_ALLOWLIST.has(allowlistKey(hit))) continue;
 			violations.push(hit);
 		}

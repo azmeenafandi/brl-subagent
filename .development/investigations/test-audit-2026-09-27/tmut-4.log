@@ -1,0 +1,246 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+ ❯ src/__tests__/validate.test.ts (58 tests | 3 failed) 26ms
+   ❯ validatePreTask (37)
+     × blocks a run task when bash is absent (capability error, not a warning) 6ms
+     ❯ exploration capability (search|grep|find|list|locate|glob) (6)
+       × blocks when none of find/ls/grep/bash is available (capability error) 1ms
+     ❯ blocking vs warning classification (4)
+       × blocks on the high-confidence run verbs (run|execute|test|compile|benchmark) 1ms
+stderr | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground: run task without bash is rejected before the runner is called
+[brl-subagent] WARN: Pre-task validation warnings
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground: run task without bash is rejected before the runner is called
+[brl-subagent] INFO: Subagent completed successfully
+
+stderr | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > background: run task without bash is rejected before any spawn
+[brl-subagent] WARN: Background agent spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+[brl-subagent] WARN: Background pre-task validation warnings
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > background: run task without bash is rejected before any spawn
+[brl-subagent] INFO: Background agent spawned
+
+stderr | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground: exploration task with none of find/ls/grep/bash is rejected
+[brl-subagent] WARN: Pre-task validation warnings
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground: exploration task with none of find/ls/grep/bash is rejected
+[brl-subagent] INFO: Subagent completed successfully
+
+stderr | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > fan-out: a capability-blocked unit rejects the whole batch before any spawn
+[brl-subagent] WARN: Background fan-out spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+[brl-subagent] WARN: Background fan-out pre-task validation warnings
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > fan-out: a capability-blocked unit rejects the whole batch before any spawn
+[brl-subagent] INFO: Background agent spawned
+
+stderr | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground parallel: run task without bash is rejected before any spawn (issue #220)
+[brl-subagent] WARN: Parallel pre-task validation warnings
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground parallel: run task without bash is rejected before any spawn (issue #220)
+[brl-subagent] INFO: Parallel execution completed
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > auto-route transparency and read-only preset mismatch > read-only auto-selected preset + run task blocks like B (no spawn)
+[brl-subagent] INFO: Session started
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > auto-route transparency and read-only preset mismatch > read-only auto-selected preset + run task blocks like B (no spawn)
+[brl-subagent] INFO: Auto-routed task to preset
+
+stderr | src/__tests__/dispatch-capability-guards.test.ts > auto-route transparency and read-only preset mismatch > read-only auto-selected preset + run task blocks like B (no spawn)
+[brl-subagent] WARN: Pre-task validation warnings
+
+stdout | src/__tests__/dispatch-capability-guards.test.ts > auto-route transparency and read-only preset mismatch > read-only auto-selected preset + run task blocks like B (no spawn)
+[brl-subagent] INFO: Subagent completed successfully
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts (17 tests | 6 failed) 78ms
+   ❯ pre-run capability block (dispatch does not spawn) (8)
+     × foreground: run task without bash is rejected before the runner is called 21ms
+     × background: run task without bash is rejected before any spawn 4ms
+     × foreground: exploration task with none of find/ls/grep/bash is rejected 5ms
+     × fan-out: a capability-blocked unit rejects the whole batch before any spawn 3ms
+     × foreground parallel: run task without bash is rejected before any spawn (issue #220) 3ms
+   ❯ auto-route transparency and read-only preset mismatch (4)
+     × read-only auto-selected preset + run task blocks like B (no spawn) 4ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 9 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground: run task without bash is rejected before the runner is called
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:281:26
+    279|   const result = await execute(RUN_TASK_NO_BASH);
+    280|
+    281|   expect(result.isError).toBe(true);
+       |                          ^
+    282|   const text = result.content[0].text;
+    283|   // Names the missing capability…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > background: run task without bash is rejected before any spawn
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:306:26
+    304|   const result = await execute({ ...RUN_TASK_NO_BASH, background: true…
+    305|
+    306|   expect(result.isError).toBe(true);
+       |                          ^
+    307|   expect(result.content[0].text).toContain("force: true");
+    308|   expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground: exploration task with none of find/ls/grep/bash is rejected
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:323:26
+    321|   const result = await execute(EXPLORE_TASK_NO_BROWSE);
+    322|
+    323|   expect(result.isError).toBe(true);
+       |                          ^
+    324|   const text = result.content[0].text;
+    325|   expect(text).toContain("directory exploration");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > fan-out: a capability-blocked unit rejects the whole batch before any spawn
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:338:26
+    336|   });
+    337|
+    338|   expect(result.isError).toBe(true);
+       |                          ^
+    339|   expect(result.content[0].text).toContain(`Task 1 ("run")`);
+    340|   expect(result.content[0].text).toContain("force: true");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > pre-run capability block (dispatch does not spawn) > foreground parallel: run task without bash is rejected before any spawn (issue #220)
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:349:26
+    347|   });
+    348|
+    349|   expect(result.isError).toBe(true);
+       |                          ^
+    350|   const text = result.content[0].text;
+    351|   // The per-task block carries the unit prefix, the capability…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/9]⎯
+
+ FAIL  src/__tests__/dispatch-capability-guards.test.ts > auto-route transparency and read-only preset mismatch > read-only auto-selected preset + run task blocks like B (no spawn)
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/dispatch-capability-guards.test.ts:502:26
+    500|   const result = await execute({ task: AUTO_ROUTE_BLOCK_TASK });
+    501|
+    502|   expect(result.isError).toBe(true);
+       |                          ^
+    503|   const text = result.content[0].text;
+    504|   expect(text).toContain("'bash' tool (running commands)");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/9]⎯
+
+ FAIL  src/__tests__/validate.test.ts > validatePreTask > blocks a run task when bash is absent (capability error, not a warning)
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/__tests__/validate.test.ts:37:26
+     35|       toolOptions: { tools: ["read", "write", "edit"], excludeTools: […
+     36|     });
+     37|     expect(result.valid).toBe(false);
+       |                          ^
+     38|     expect(result.errors.length).toBeGreaterThan(0);
+     39|     expect(result.errors[0]).toMatch(/'bash'/);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/9]⎯
+
+ FAIL  src/__tests__/validate.test.ts > validatePreTask > exploration capability (search|grep|find|list|locate|glob) > blocks when none of find/ls/grep/bash is available (capability error)
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/__tests__/validate.test.ts:105:28
+    103|         toolOptions: { tools: ["read", "write", "edit"] },
+    104|       });
+    105|       expect(result.valid).toBe(false);
+       |                            ^
+    106|       expect(result.errors).toHaveLength(1);
+    107|       expect(result.errors[0]).toMatch(/directory exploration/);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/9]⎯
+
+ FAIL  src/__tests__/validate.test.ts > validatePreTask > blocking vs warning classification > blocks on the high-confidence run verbs (run|execute|test|compile|benchmark)
+AssertionError: run the suite: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/__tests__/validate.test.ts:132:36
+    130|           toolOptions: { tools: ["read", "write", "edit"] },
+    131|         });
+    132|         expect(result.valid, task).toBe(false);
+       |                                    ^
+    133|         expect(result.errors[0], task).toMatch(/'bash'/);
+    134|       }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/9]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  9 failed | 66 passed (75)
+   Start at  17:48:33
+   Duration  708ms (transform 60%, import 25%, tests 14%, worker 1%)
+

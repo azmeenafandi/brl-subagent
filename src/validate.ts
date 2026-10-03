@@ -1,3 +1,4 @@
+// Purpose: H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems.
 /**
  * H1: Pre-task validation
  *
@@ -383,6 +384,17 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
 }
 
 /**
+ * Default deadline for a BACKGROUND run that specifies no explicit `timeout`
+ * (issue #28 orphan protection). This is a DEFAULT, not a ceiling: an explicit
+ * timeout is honored verbatim (after normalizeTimeout), however long it is
+ * (issue #240). Callers must NOT treat this as an upper bound.
+ *
+ * Kept next to normalizeTimeout (same setTimeout-boundary concern) and shared
+ * by the session-manager W3 timer and the index.ts hard-cap timer.
+ */
+export const DEFAULT_BACKGROUND_DEADLINE_MS = 30 * 60 * 1000;
+
+/**
  * Normalize a user-supplied timeout to a safe deadline value, or undefined for
  * "no timeout". Guards the setTimeout boundary — Node fires `setTimeout(fn, 0)`,
  * negative, NaN, and >=2^31-1 delays immediately (~1ms), so an unvalidated
@@ -390,8 +402,10 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
  * review M1/m1).
  *
  * Returns undefined for: undefined, 0, negative, NaN, Infinity, >=2^31-1.
- * Returns the value unchanged otherwise (foreground permits >30min timeouts;
- * the background hard cap applies its own 30min Math.min).
+ * Returns the value unchanged otherwise. A background run with no explicit
+ * timeout (undefined here) falls back to DEFAULT_BACKGROUND_DEADLINE_MS; an
+ * explicit timeout is honored verbatim — the 30m default is not a ceiling
+ * (issue #240).
  */
 export function normalizeTimeout(timeout: number | undefined): number | undefined {
 	if (timeout === undefined) return undefined;

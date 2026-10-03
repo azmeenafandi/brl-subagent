@@ -1,7 +1,7 @@
 {
   "name": "brl-subagent",
   "version": "2.3.9",
-  "description": "Subagent extension for pi with configurable model and thinking mode via selection UI",
+  "description": "Subagent delegation for pi — blocking or background runs, chain/parallel/graph modes, presets and task templates, live monitor, and dispatch capability guards.",
   "keywords": [
     "pi-package"
   ],
@@ -25,7 +25,9 @@
     ]
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "docs:arch": "node scripts/docs-arch.mjs --write",
+    "docs:decisions": "node scripts/docs-decisions.mjs --write"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
@@ -35,13 +37,13 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.87.0",
-    "@earendil-works/pi-ai": "^0.87.0",
-    "@earendil-works/pi-coding-agent": "^0.87.0",
-    "@earendil-works/pi-tui": "^0.87.0",
+    "@earendil-works/pi-agent-core": "^1.0.0",
+    "@earendil-works/pi-ai": "^1.0.0",
+    "@earendil-works/pi-coding-agent": "^1.0.0",
+    "@earendil-works/pi-tui": "^1.0.0",
     "jiti": "^2.7.0",
-    "typebox": "^1.3.25",
-    "typescript": "^5.9.3",
+    "typebox": "^1.3.34",
+    "typescript": "7.0.2",
     "vitest": "^5.0.0"
   },
   "overrides": {

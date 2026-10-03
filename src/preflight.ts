@@ -1,3 +1,4 @@
+// Purpose: Pre-spawn environment checks: pi binary, temp-dir writability, cwd readability.
 /**
  * brl-subagent — Pre-flight Checks (R3)
  *

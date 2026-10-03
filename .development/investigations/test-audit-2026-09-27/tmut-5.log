@@ -1,0 +1,121 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+stderr | src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > spawns one background agent per task and returns the ids in task order with labels
+[brl-subagent] WARN: Background fan-out spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+
+stdout | src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > spawns one background agent per task and returns the ids in task order with labels
+[brl-subagent] INFO: Background agent spawned
+
+stdout | src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > routes per-task values to each spawn (label/priority; per-task model override wins)
+[brl-subagent] INFO: Using step model override
+
+stderr | src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > routes per-task values to each spawn (label/priority; per-task model override wins)
+[brl-subagent] WARN: Background fan-out spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+
+stdout | src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > routes per-task values to each spawn (label/priority; per-task model override wins)
+[brl-subagent] INFO: Background agent spawned
+
+stderr | src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > stops at a failing spawn and names the failed task plus the ids already started
+[brl-subagent] WARN: Background fan-out spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+
+stdout | src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > stops at a failing spawn and names the failed task plus the ids already started
+[brl-subagent] INFO: Background agent spawned
+
+stderr | src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > aborting after the first spawn reports that agent as detached (1 spawn)
+[brl-subagent] WARN: Background fan-out spawned with approvalMode 'writes' — auto-approving (no dialog in background)
+
+stdout | src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > aborting after the first spawn reports that agent as detached (1 spawn)
+[brl-subagent] INFO: Background agent spawned
+
+ ❯ src/__tests__/background-fan-out.test.ts (11 tests | 4 failed) 57ms
+   ❯ background fan-out for tasks mode (#198 phase 2) (11)
+     × spawns one background agent per task and returns the ids in task order with labels 21ms
+     × routes per-task values to each spawn (label/priority; per-task model override wins) 5ms
+     × stops at a failing spawn and names the failed task plus the ids already started 4ms
+     × aborting after the first spawn reports that agent as detached (1 spawn) 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > spawns one background agent per task and returns the ids in task order with labels
+AssertionError: expected 'Background agents started: 1\n\n1. "a…' to contain 'Background agents started: 3'
+
+- Expected
++ Received
+
+- Background agents started: 3
++ Background agents started: 1
++
++ 1. "alpha" — bg-fanout-1
++
++ You'll be woken with a completion message as each finishes; use get_subagent_result({ agent_id }) for retrieval and stall checks.
+
+ ❯ src/__tests__/background-fan-out.test.ts:310:16
+    308|   expect(result.details).toBeUndefined();
+    309|   const text = result.content[0].text;
+    310|   expect(text).toContain("Background agents started: 3");
+       |                ^
+    311|   expect(text).toContain(`1. "alpha" — bg-fanout-1`);
+    312|   expect(text).toContain(`2. "beta" — bg-fanout-2`);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > routes per-task values to each spawn (label/priority; per-task model override wins)
+AssertionError: expected "vi.fn()" to be called 3 times, but got 1 times
+ ❯ src/__tests__/background-fan-out.test.ts:347:36
+    345|
+    346|   expect(result.isError).toBeFalsy();
+    347|   expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(3);
+       |                                    ^
+    348|
+    349|   const c1 = spawnParams(0);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > stops at a failing spawn and names the failed task plus the ids already started
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/background-fan-out.test.ts:433:26
+    431|   });
+    432|
+    433|   expect(result.isError).toBe(true);
+       |                          ^
+    434|   expect(result.details).toBeUndefined();
+    435|   expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(2);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  src/__tests__/background-fan-out.test.ts > background fan-out for tasks mode (#198 phase 2) > aborting after the first spawn reports that agent as detached (1 spawn)
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ src/__tests__/background-fan-out.test.ts:476:26
+    474|   );
+    475|
+    476|   expect(result.isError).toBe(true);
+       |                          ^
+    477|   expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+    478|   const text = result.content[0].text;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 7 passed (11)
+   Start at  17:48:40
+   Duration  711ms (transform 61%, import 28%, tests 10%, worker 1%)
+

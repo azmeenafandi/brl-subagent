@@ -1,0 +1,117 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+ ❯ src/__tests__/scheduler.test.ts (17 tests | 5 failed) 24ms
+   ❯ topologicalSort (8)
+     × linear chain A→B→C produces 3 waves 8ms
+     × diamond graph produces 3 waves (A, B+C parallel, D) 1ms
+     × mixed deps produce 2 waves (A+C parallel, B) 1ms
+     × handles tasks already in topological order 1ms
+     × root node without dependsOn field + dependent produces 2 waves 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > topologicalSort > linear chain A→B→C produces 3 waves
+AssertionError: expected [ [ { id: 'A', …(2) } ] ] to have a length of 3 but got 1
+
+- Expected
++ Received
+
+- 3
++ 1
+
+ ❯ src/__tests__/scheduler.test.ts:52:24
+     50|   if (!result.ok) return;
+     51|
+     52|   expect(result.waves).toHaveLength(3);
+       |                        ^
+     53|   expect(result.waves[0].map((t) => t.id)).toEqual(["A"]);
+     54|   expect(result.waves[1].map((t) => t.id)).toEqual(["B"]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > topologicalSort > diamond graph produces 3 waves (A, B+C parallel, D)
+AssertionError: expected [ [ { id: 'A', …(2) } ] ] to have a length of 3 but got 1
+
+- Expected
++ Received
+
+- 3
++ 1
+
+ ❯ src/__tests__/scheduler.test.ts:70:24
+     68|   if (!result.ok) return;
+     69|
+     70|   expect(result.waves).toHaveLength(3);
+       |                        ^
+     71|   expect(result.waves[0].map((t) => t.id)).toEqual(["A"]);
+     72|   // B and C should be in wave 2 (sorted alphabetically within wave)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > topologicalSort > mixed deps produce 2 waves (A+C parallel, B)
+AssertionError: expected [ [ { id: 'A', …(2) }, …(1) ] ] to have a length of 2 but got 1
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ src/__tests__/scheduler.test.ts:96:24
+     94|   if (!result.ok) return;
+     95|
+     96|   expect(result.waves).toHaveLength(2);
+       |                        ^
+     97|   // Wave 1: A and C (no deps) — sorted alphabetically
+     98|   expect(result.waves[0].map((t) => t.id).sort()).toEqual(["A", "C"]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > topologicalSort > handles tasks already in topological order
+AssertionError: expected [ [ { id: 'A', …(2) } ] ] to have a length of 4 but got 1
+
+- Expected
++ Received
+
+- 4
++ 1
+
+ ❯ src/__tests__/scheduler.test.ts:127:24
+    125|   if (!result.ok) return;
+    126|
+    127|   expect(result.waves).toHaveLength(4);
+       |                        ^
+    128|   for (let i = 0; i < 4; i++) {
+    129|    expect(result.waves[i].map((t) => t.id)).toEqual(
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  src/__tests__/scheduler.test.ts > topologicalSort > root node without dependsOn field + dependent produces 2 waves
+AssertionError: expected [ [ { id: 'A', task: 'Task A' } ] ] to have a length of 2 but got 1
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ src/__tests__/scheduler.test.ts:142:24
+    140|   if (!result.ok) return;
+    141|
+    142|   expect(result.waves).toHaveLength(2);
+       |                        ^
+    143|   expect(result.waves[0].map((t) => t.id)).toEqual(["A"]);
+    144|   expect(result.waves[1].map((t) => t.id)).toEqual(["B"]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  5 failed | 12 passed (17)
+   Start at  17:41:19
+   Duration  264ms (transform 54%, tests 27%, import 15%, worker 4%)
+

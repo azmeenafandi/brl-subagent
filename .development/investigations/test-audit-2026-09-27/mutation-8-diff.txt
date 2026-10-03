@@ -1,0 +1,9 @@
+diff --git a/src/scheduler.ts b/src/scheduler.ts
+index beb913f..6b7ff42 100644
+--- a/src/scheduler.ts
++++ b/src/scheduler.ts
+@@ -118,3 +118 @@ export function topologicalSort(tasks: GraphTask[]):
+-	let currentWave = tasks
+-		.filter((t) => (inDegree.get(t.id) ?? 0) === 0)
+-		.sort((a, b) => a.id.localeCompare(b.id));
++	let currentWave = tasks.filter((t) => (inDegree.get(t.id) ?? 0) === 0);

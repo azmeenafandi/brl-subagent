@@ -1,0 +1,7 @@
+diff --git a/src/session-manager.ts b/src/session-manager.ts
+index 1f8840d..385b923 100644
+--- a/src/session-manager.ts
++++ b/src/session-manager.ts
+@@ -296 +296 @@ export function extractFinalOutput(session: { messages: Array<{ role: string; co
+-    if (text.trim()) return text;
++    return text;

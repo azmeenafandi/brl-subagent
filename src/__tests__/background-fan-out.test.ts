@@ -233,8 +233,8 @@ type Ctx = ReturnType<typeof makeCtx>;
 
 /**
  * Run delegate_task under fake timers: a SUCCESSFUL fan-out arms a 2s poller
- * + hard-cap timer per spawned agent — clear both afterwards so vitest exits
- * with no open handles.
+ * + (no-timeout) deadline timer per spawned agent — clear both afterwards so
+ * vitest exits with no open handles.
  */
 async function runFanOut(
 	params: Record<string, unknown>,
@@ -562,5 +562,81 @@ describe("background fan-out for tasks mode (#198 phase 2)", () => {
 		expect(text).toContain("write");
 		// Whole batch rejected pre-spawn — tasks 1 and 3 never started either.
 		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Background deadline: a default, not a ceiling (#240)
+// ---------------------------------------------------------------------------
+
+describe("background deadline is a default, not a ceiling (#240)", () => {
+	/**
+	 * A fake agent with a live session ref, so the 2s poller never takes its
+	 * nulled-ref crash path (which would clear the deadline timer first) and the
+	 * deadline abort is observable. The mocked spawn does not populate the
+	 * session-manager agent map, so `updateAgentStatus` on an unknown id is a
+	 * no-op — the abort call on the fake session ref is the firing signal.
+	 */
+	function stubLiveSpawn(abort: ReturnType<typeof vi.fn>): void {
+		h.spawnBackgroundSession.mockImplementation(
+			async (_pi: unknown, _ctx: unknown, p: SpawnParams) => ({
+				...makeFakeAgent(p),
+				_sessionRef: {
+					messages: [],
+					getSessionStats: () => ({ tokens: { input: 0, output: 0 } }),
+					abort,
+				},
+			}),
+		);
+	}
+
+	it("fires the default deadline at 30m when no timeout is given", async () => {
+		const abort = vi.fn().mockResolvedValue(undefined);
+		stubLiveSpawn(abort);
+		vi.useFakeTimers();
+		try {
+			await tool.execute(
+				"call-240-default",
+				{ task: "no explicit timeout", background: true },
+				undefined,
+				undefined,
+				makeCtx(),
+			);
+			// Not before the 30m default.
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 1);
+			expect(abort).not.toHaveBeenCalled();
+			// Fires at the 30m default.
+			await vi.advanceTimersByTimeAsync(1);
+			expect(abort).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not arm the index timer for an explicit timeout — W3 owns it (#244)", async () => {
+		const abort = vi.fn().mockResolvedValue(undefined);
+		stubLiveSpawn(abort);
+		vi.useFakeTimers();
+		try {
+			await tool.execute(
+				"call-240-45m",
+				{ task: "long explicit timeout", background: true, timeout: 45 * 60 * 1000 },
+				undefined,
+				undefined,
+				makeCtx(),
+			);
+			// #244 single-timer ownership: an explicit timeout is owned by the
+			// session-manager W3 timer, so the index layer arms NO timer. Advance
+			// well past the explicit deadline — the index path must not abort (nor
+			// finalize) the run. W3's own 45m firing is pinned in
+			// session-manager.test.ts ("honors an explicit timeout beyond 30
+			// minutes (no ceiling) (#240)").
+			await vi.advanceTimersByTimeAsync(45 * 60 * 1000 + 1);
+			expect(abort).not.toHaveBeenCalled();
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
 	});
 });

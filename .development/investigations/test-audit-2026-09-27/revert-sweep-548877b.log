@@ -1,0 +1,97 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-231
+
+ ❯ src/__tests__/state-sweep.test.ts (25 tests | 5 failed) 22ms
+   ❯ sweepStaleLiveSubagents — no agent record (foreground runs / removed records) (5)
+     × finalizes a stale foreground entry whose entries are [spawn 'running', final 'done'] (#185) 6ms
+     × finalizes a stale foreground entry whose entries are [spawn 'running', final 'failed'] (#185) 1ms
+   ❯ SessionState run-entry lookups (issue #185) (3)
+     × findTerminalRunById returns the final entry (terminal status + fullOutput) 1ms
+     × findSpawnRunById returns the spawn entry (originalParams intact) 0ms
+     × both lookups return undefined for an unknown id 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/state-sweep.test.ts > sweepStaleLiveSubagents — no agent record (foreground runs / removed records) > finalizes a stale foreground entry whose entries are [spawn 'running', final 'done'] (#185)
+AssertionError: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ src/__tests__/state-sweep.test.ts:206:21
+    204|   const finalized = sweepStaleLiveSubagents(state, getAgent);
+    205|
+    206|   expect(finalized).toBe(1);
+       |                     ^
+    207|   expect(state.subagentSessions.has("fg-185")).toBe(false);
+    208|   expect(state.activeSubagents).toBe(0);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  src/__tests__/state-sweep.test.ts > sweepStaleLiveSubagents — no agent record (foreground runs / removed records) > finalizes a stale foreground entry whose entries are [spawn 'running', final 'failed'] (#185)
+AssertionError: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ src/__tests__/state-sweep.test.ts:222:21
+    220|   const finalized = sweepStaleLiveSubagents(state, getAgent);
+    221|
+    222|   expect(finalized).toBe(1);
+       |                     ^
+    223|   expect(state.subagentSessions.has("fg-185")).toBe(false);
+    224|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  src/__tests__/state-sweep.test.ts > SessionState run-entry lookups (issue #185) > findTerminalRunById returns the final entry (terminal status + fullOutput)
+TypeError: state.findTerminalRunById is not a function
+ ❯ src/__tests__/state-sweep.test.ts:483:26
+    481|   const state = createSessionState();
+    482|
+    483|   const resolved = state.findTerminalRunById(twoEntryContext(), "run-1…
+       |                          ^
+    484|
+    485|   expect(resolved?.status).toBe("done");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  src/__tests__/state-sweep.test.ts > SessionState run-entry lookups (issue #185) > findSpawnRunById returns the spawn entry (originalParams intact)
+TypeError: state.findSpawnRunById is not a function
+ ❯ src/__tests__/state-sweep.test.ts:493:26
+    491|   const state = createSessionState();
+    492|
+    493|   const resolved = state.findSpawnRunById(twoEntryContext(), "run-185"…
+       |                          ^
+    494|
+    495|   expect(resolved?.status).toBe("running");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  src/__tests__/state-sweep.test.ts > SessionState run-entry lookups (issue #185) > both lookups return undefined for an unknown id
+TypeError: state.findSpawnRunById is not a function
+ ❯ src/__tests__/state-sweep.test.ts:506:16
+    504|   const ctx = twoEntryContext();
+    505|
+    506|   expect(state.findSpawnRunById(ctx, "missing")).toBeUndefined();
+       |                ^
+    507|   expect(state.findTerminalRunById(ctx, "missing")).toBeUndefined();
+    508|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  1 failed | 2 passed (3)
+      Tests  5 failed | 172 passed (177)
+   Start at  17:42:49
+   Duration  1.00s (transform 50%, tests 37%, import 12%, worker 1%)
+

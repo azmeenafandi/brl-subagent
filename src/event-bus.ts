@@ -1,3 +1,4 @@
+// Purpose: In-memory lifecycle pub/sub (`subagent:*` events) for extensions and the completion wake.
 import type { SubagentEvent, SubagentEventType, SubagentEventListener } from './types';
 
 // Event listeners by type

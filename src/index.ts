@@ -1,3 +1,4 @@
+// Purpose: Entry point: tool/command registration, the delegate_task handlers, and the execution-mode runners.
 /**
  * brl-subagent — multi-agent orchestration for pi.
  * Entry point: tool registrations, command surface, and the multi-mode runners.
@@ -29,6 +30,7 @@ import type {
 	GraphDetails,
 	GraphWave,
 	DelegateTaskDetails,
+	DelegateTaskParams,
 	Priority,
 	TaskTemplate,
 	ToolResult,
@@ -68,8 +70,9 @@ import { preflightCheck } from "./preflight";
 import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets, formatValidationWarnings } from "./prelude";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
-import { validatePreTask, diagnoseFailure } from "./validate";
+import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
 import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams, snapshotOriginalParams } from "./params";
+import { delegateTaskParamsSchema } from "./schema";
 import { createSessionState } from "./state";
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
@@ -100,6 +103,7 @@ import {
 	showRunHistory,
 	showMonitor,
 	showDashboard,
+	showComplianceMenu,
 	showRetryMenu,
 	renderDelegateCall,
 	renderDelegateResult,
@@ -118,35 +122,6 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Sanitize a text preview for markdown-rendered notifications: strip code
- * fences (``` and ~~~) and backticks, keep whole non-empty lines with
- * mid-line truncation for over-long lines, and never split surrogate pairs
- * at the boundary.
- */
-function sanitizePreview(text: string, maxLen = 500): string {
-  // Strip markdown fences and backticks
-  const cleaned = text.replace(/```/g, '').replace(/~~~+/g, '').replace(/`/g, '');
-  const lines = cleaned.split('\n').filter(l => l.trim());
-  let out = '';
-  for (const line of lines) {
-    if (out.length + line.length + 1 > maxLen) {
-      // Mid-line truncation: keep as much of this line as fits
-      const remaining = maxLen - out.length - 1;
-      if (remaining > 10) {
-        out += line.slice(0, remaining - 3) + '...\n';
-      }
-      break;
-    }
-    out += line + '\n';
-  }
-  // Avoid splitting surrogate pairs at the boundary (reachable now via slice above)
-  const safe = out.slice(0, maxLen);
-  const lastChar = safe[safe.length - 1];
-  const stripped = lastChar && /[\uD800-\uDBFF]/.test(lastChar) ? safe.slice(0, -1) : safe;
-  return stripped.trimEnd();
-}
 
 /**
  * DRY helper (issue #154 review): shape an inventory of items into a single
@@ -191,6 +166,17 @@ export function buildTemplateGuideline(templateSummary: string): string {
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
+
+/**
+ * Compile-time coverage (issue #229 item 4): fails to compile if
+ * DelegateTaskParams omits any KNOWN_DELEGATE_KEYS entry. Runtime drift is
+ * invisible (the schema passes the key through, the handler ignores it), so
+ * only the compiler can catch it. Together with per-step-model.test.ts's
+ * runtime ratchet this closes the chain: registered schema <-> KNOWN_DELEGATE_KEYS <-> DelegateTaskParams.
+ */
+type _KnownDelegateKey = (typeof KNOWN_DELEGATE_KEYS extends Set<infer K> ? K : never) & string;
+type _ExpectNever<T extends never> = T;
+type _DelegateParamCoverage = _ExpectNever<Exclude<_KnownDelegateKey, keyof DelegateTaskParams>>;
 
 export default function (pi: ExtensionAPI) {
 	const log = createLogger("brl-subagent");
@@ -413,12 +399,12 @@ export default function (pi: ExtensionAPI) {
 	// -------------------------------------------------------------------
 
 	async function runChainMode(
-		params: Record<string, unknown>,
+		params: DelegateTaskParams,
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
 	): Promise<ToolResult<SubagentResult | ChainDetails | undefined>> {
-		const chainSteps = params.chain as SubTaskParams[];
+		const chainSteps: SubTaskParams[] = params.chain!;
 
 		// Issue #133: dispatch-start timestamp — the aggregate run entry's
 		// startedAt (captured once, at mode entry, not at completion).
@@ -937,12 +923,12 @@ export default function (pi: ExtensionAPI) {
 	// -------------------------------------------------------------------
 
 	async function runParallelMode(
-		params: Record<string, unknown>,
+		params: DelegateTaskParams,
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
 	): Promise<ToolResult<SubagentResult | ParallelDetails | undefined>> {
-		const taskList = params.tasks as SubTaskParams[];
+		const taskList: SubTaskParams[] = params.tasks!;
 
 		// R5: Check session cost limit before spawning
 		const costError = gateSessionCost({
@@ -1407,12 +1393,12 @@ export default function (pi: ExtensionAPI) {
 	// -------------------------------------------------------------------
 
 	async function runGraphMode(
-		params: Record<string, unknown>,
+		params: DelegateTaskParams,
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
 	): Promise<ToolResult<SubagentResult | GraphDetails | undefined>> {
-		const graphTasks = params.graph as GraphTask[];
+		const graphTasks: GraphTask[] = params.graph!;
 
 		// Issue #133: dispatch-start timestamp — the aggregate run entry's
 		// startedAt (captured once, at mode entry, not at completion).
@@ -2012,10 +1998,10 @@ export default function (pi: ExtensionAPI) {
 	async function runBackgroundFanOut(
 		pi: ExtensionAPI,
 		ctx: ExtensionContext,
-		params: Record<string, unknown>,
+		params: DelegateTaskParams,
 		signal: AbortSignal | undefined,
 	): Promise<ToolResult<SubagentResult | undefined>> {
-		const taskList = params.tasks as SubTaskParams[];
+		const taskList: SubTaskParams[] = params.tasks!;
 
 		// Session cost limit gates the WHOLE batch before any spawn — same
 		// estimate/limit logic as runParallelMode, scaled by task count.
@@ -2253,10 +2239,10 @@ export default function (pi: ExtensionAPI) {
 	// startBackgroundAgent — the shared background-spawn tail.
 	// Used by BOTH spawnBackgroundRun (single task) and runBackgroundFanOut
 	// (tasks fan-out): the session-manager import, the spawn call, live-monitor
-	// registration, footer counters, the 2s progress poller and the hard-cap
-	// timer live here exactly once. Callers keep their own prelude, checks,
-	// validations and result formatting. THROWS on spawn failure — callers
-	// translate the error into their own result shape.
+	// registration, footer counters, the 2s progress poller and the default
+	// deadline timer live here exactly once. Callers keep their own prelude,
+	// checks, validations and result formatting. THROWS on spawn failure —
+	// callers translate the error into their own result shape.
 	// -------------------------------------------------------------------
 
 	async function startBackgroundAgent(
@@ -2412,7 +2398,7 @@ export default function (pi: ExtensionAPI) {
 						}, { deliverAs: "followUp" });
 					} else if (agent.status === 'stopped') {
 						// User-initiated stop (stop_subagent) or deadline abort
-						// (timeout/hard cap) — not a failure.
+						// (timeout/deadline) — not a failure.
 						updateProgressStatus(state, ctx);
 					} else {
 						state.completedSubagents++;
@@ -2447,20 +2433,28 @@ export default function (pi: ExtensionAPI) {
 			}
 		}, 2000);
 		
-		// Hard cap: stop polling AND abort the session after the deadline.
-		// W2 (issue #28): previously this only stopped the poller — the pi
-		// session kept running forever (orphaned). Now it pre-sets
-		// 'stopped' (so the .then keeps it, per W1) and aborts the
-		// session. The cap honors a shorter per-agent timeout.
-		const hardCapMs = Math.min(spawn.timeout ?? 30 * 60 * 1000, 30 * 60 * 1000);
-		const hardCapHandle = setTimeout(() => {
+		// Default deadline: stop polling AND abort the session after the
+		// deadline. W2 (issue #28): previously this only stopped the poller —
+		// the pi session kept running forever (orphaned). Now it pre-sets
+		// 'stopped' (so the .then keeps it, per W1) and aborts the session.
+		// Issue #240: an explicit per-agent timeout is HONORED verbatim; this
+		// deadline DEFAULTS to 30m only when no timeout is given. It is a
+		// default, not a ceiling. Issue #244: exactly ONE deadline timer per
+		// run — an explicit timeout is owned by the session-manager W3 timer,
+		// so this index timer arms ONLY on the no-timeout path, mirroring
+		// spawnBackgroundSession's `params.timeout && params.timeout > 0` guard
+		// (with no timeout, it owns the 30m default, #28).
+		const hasExplicitDeadline = spawn.timeout !== undefined && spawn.timeout > 0;
+		const hardCapMs = spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS;
+		const hardCapHandle: ReturnType<typeof setTimeout> | undefined =
+			hasExplicitDeadline ? undefined : setTimeout(() => {
 			if (!completed && !agent.completedAt) {
 				try {
 					completed = true;
 					clearInterval(pollInterval);
 					// Pre-set stopped BEFORE aborting so the .then in
 					// spawnBackgroundSession keeps the stopped state.
-					updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
+					updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
 					agent._sessionRef?.abort().catch(() => {
 						// Abort may reject if the session is mid-dispose;
 						// the status flip above is already recorded.
@@ -2480,7 +2474,7 @@ export default function (pi: ExtensionAPI) {
 					// W3/poller stopped path (no completedSubagents increment).
 					updateProgressStatus(state, ctx);
 				} catch (err) {
-					// Defensive: never let the hard-cap timer throw uncaught — that would
+					// Defensive: never let the deadline timer throw uncaught — that would
 					// skip finalizeLiveSubagent, the counter decrement, and the notification.
 					// Do all fallible work first (output capture), then mutate counters,
 					// then notify — a throw mid-path can't double-fire mutations.
@@ -2491,7 +2485,7 @@ export default function (pi: ExtensionAPI) {
 					// get_subagent_result doesn't report 'running' and the W3 timer
 					// guard (!agent.completedAt) can't re-fire later.
 					try {
-						updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms hard cap)`);
+						updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
 					} catch { /* ignore */ }
 					try {
 						setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
@@ -2696,6 +2690,11 @@ export default function (pi: ExtensionAPI) {
 				retry: () => showRetryMenu(ctx, state),
 			sla: () => showSLAConfig(ctx, state, applyConfig),
 			"sla-stats": () => showSLAStats(ctx, state),
+			// E5: the compliance report menu (file access / secrets exposure /
+			// full summary) shipped in tui.ts but had no handler key, so
+			// `/brl-subagent compliance` fell through to the config menu and the
+			// feature was unreachable (broken wiring, not dead code).
+			compliance: () => showComplianceMenu(ctx, state),
 			};
 
 			if (trimmed && trimmed in handlers) {
@@ -2755,13 +2754,13 @@ export default function (pi: ExtensionAPI) {
 			"You can customize per-call via inheritSystemPrompt and systemPrompt: set inheritSystemPrompt: false to save context, provide a systemPrompt for custom instructions, or use both to add instructions on top of inheritance.",
 			"Set thinkingLevel per call to match task complexity. The level is capped at the user's configured maximum. Map tasks to levels using this heuristic: off = file listing, grep, simple read. minimal = file diff, syntax check, find-and-replace. low = refactoring, test generation, documentation. medium = default — code review, debugging, moderate analysis. high = security audit, architecture review, complex debugging. xhigh = multi-step causal reasoning, research, novel problem solving. Default to 'off' or 'minimal' for trivial tasks — do not waste the user's budget.",
 			"Use outputFile to have the subagent write full findings to disk and return only a structured summary — saves context tokens for large investigations.",
-			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck. Background runs are additionally hard-capped at 30 minutes, so a larger value is silently shortened.",
+			"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck. Background runs default to a 30-minute deadline when no timeout is given; an explicit timeout is honored as given (30 minutes is a default, not a ceiling).",
 			"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
 			"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
 			`Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.`,
 			buildTemplateGuideline(templateSummary),
 			"To retry a failed subagent, pass its run ID as retryRunId. The retry restores the recorded params - including background, gitMode, approvalMode, force - with explicit values on this call winning. Multi-step runs degrade to a single task. See the retryRunId description for the full field list.",
-			"Set retryOnTimeout: true to automatically retry a subagent that times out. Only retries once — the second timeout is treated as a final failure.",
+			"Set retryOnTimeout: true to automatically retry a FOREGROUND subagent that times out. Only retries once — the second timeout is treated as a final failure. Background runs are not auto-retried; re-dispatch with retryRunId.",
 			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. With tasks, background fans out: every task starts as its own background agent, the call returns one ID per task in task order, and the conductor is woken once per agent as each finishes; chain and graph cannot be combined with background (rejected). Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate.",
 			"",
 			"## Conductor Guardrails",
@@ -2771,7 +2770,7 @@ export default function (pi: ExtensionAPI) {
 			"2. **Thinking level**: Match thinking level to task complexity: off/minimal for trivial tasks (file listing, grep), low for refactoring/docs, medium for code review/debugging, high for security audits/complex debugging, xhigh for multi-step reasoning/novel problems.",
 			"3. **Git mode**: Use gitMode='branch' for tasks that create commits or PRs. Use gitMode='none' for read-only tasks.",
 			"4. **Tools**: Verify the subagent has the tools it needs. If the task writes files, ensure write and edit are not excluded. If the task runs commands, ensure bash is not excluded.",
-			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s. Background runs are hard-capped at 30 minutes regardless of the value set.",
+			"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s. Background runs default to a 30-minute deadline when no timeout is set; an explicit timeout is honored.",
 			"",
 			"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1): tool warnings are surfaced in the returned result, but two mismatches are HARD errors that reject the delegation — outputFile with the write tool excluded, and a capability-critical task/toolset mismatch (a run/execute/test/compile/benchmark task without bash, or an exploration task with none of find/ls/grep/bash; pass force: true to override the capability class). Getting it right the first time is faster and more efficient.",
 			"",
@@ -2779,324 +2778,11 @@ export default function (pi: ExtensionAPI) {
 			"The autoRoutePreset() function can automatically select the best preset based on task keywords. Consider using it for preset selection.",
 			"Prefer a preset when the delegation matches a standard shape — review/audit/test/docs; override per-call deliberately.",
 		],
-		parameters: Type.Object({
-			task: Type.Optional(Type.String({
-				description: "Detailed description of the task for the subagent to complete (required for single mode, optional for chain/tasks/graph)",
-			})),
-			systemPrompt: Type.Optional(
-				Type.String({
-					description:
-						"Custom system prompt or additional instructions for the subagent. " +
-						"When inheritSystemPrompt is true (default), this is appended after the inherited prompt. " +
-						"When inheritSystemPrompt is false, this replaces the inherited prompt entirely.",
-				}),
-			),
-			inheritSystemPrompt: Type.Optional(
-				Type.Boolean({
-					description:
-						"Whether to inherit the main agent's system prompt. " +
-						"Default: true. Set to false to use only your custom systemPrompt, " +
-						"or to avoid passing a large inherited prompt to the subagent.",
-				}),
-			),
-			thinkingLevel: Type.Optional(
-				Type.String({
-					description:
-						"Requested thinking level for this subagent call. " +
-						"One of: off, minimal, low, medium, high, xhigh. " +
-						"Capped at the user's configured maximum. If omitted, the user's configured level is used.",
-				}),
-			),
-			outputFile: Type.Optional(
-				Type.String({
-					description:
-						"Project-relative path where the subagent should write its full findings. " +
-						"When provided, the subagent is instructed to write complete output to this file " +
-						"and return only a structured summary.",
-				}),
-			),
-			label: Type.Optional(
-				Type.String({
-					description:
-						"Human-readable label for this subagent (e.g., 'security-audit', 'docs-review'). " +
-						"Appears in the status bar and tool call display. " +
-						"Omit to use the default anonymous counter.",
-				}),
-			),
-			model: Type.Optional(Type.String({ description: "Model override (provider/model-id). Defaults to the global subagent model." })),
-			timeout: Type.Optional(
-				Type.Number({
-					description:
-						"Maximum time in milliseconds the subagent is allowed to run. " +
-						"If exceeded, the subagent is killed and an error is returned. " +
-						"Background runs are additionally hard-capped at 30 minutes, so a larger value is silently shortened there.",
-				}),
-			),
-			cwd: Type.Optional(
-				Type.String({
-					description:
-						"Working directory for the subagent. Must be an existing directory. " +
-						"Defaults to the conductor's current working directory.",
-				}),
-			),
-			tools: Type.Optional(
-				Type.Array(Type.String(), {
-					description:
-						"Explicit allowlist of tool names for the subagent. Maps to pi's --tools flag.",
-				}),
-			),
-			excludeTools: Type.Optional(
-				Type.Array(Type.String(), {
-					description:
-						"Tool names to disable for the subagent. Maps to pi's --exclude-tools flag.",
-				}),
-			),
-			noBuiltinTools: Type.Optional(
-				Type.Boolean({
-					description:
-						"Disable all built-in tools for the subagent. Maps to pi's --no-builtin-tools flag.",
-				}),
-			),
-			preset: Type.Optional(
-				Type.String({
-					description:
-						"Name of a saved delegation preset (created via /brl-subagent preset). " +
-						"Preset values are used as defaults; explicit parameters on this call override them.",
-				}),
-			),
-			template: Type.Optional(
-				Type.String({
-					description:
-						"Name of a saved task template. Use with params to fill template slots. " +
-						"Templates are file-backed: 9 builtin templates ship with the extension " +
-						"(browse via /brl-subagent templates); override or add via .md files in " +
-						"~/.pi/agent/brl-subagent/templates/ or .pi/brl-subagent/templates/ " +
-						"(project-local wins over user-global over builtin).",
-				}),
-			),
-			params: Type.Optional(
-				Type.Record(Type.String(), Type.String(), {
-					description:
-						"Parameter values for template ${param} slots. " +
-						"Keys are param names, values are the substitution text.",
-				}),
-			),
-			retryRunId: Type.Optional(
-				Type.String({
-					description:
-						"ID of a previously failed subagent run to retry. " +
-						"The retry rebuilds the parameter object from a fixed field set, falling back to the " +
-						"original run's recorded values, with explicit values on this call winning: task, label, " +
-						"model, preset, systemPrompt, inheritSystemPrompt, thinkingLevel, priority, outputFile, " +
-						"timeout, cwd, tools, excludeTools, noBuiltinTools, background, gitMode, approvalMode, force. " +
-						"The execution-shape fields ARE restored: a retried background run stays background (with its " +
-						"completion wake), and a retried branch-mode run keeps its work branch, its approvalMode " +
-						"gating and its force override. Qualify that by the effective gitMode - when neither the record " +
-						"nor this call carries one, the configured default applies, which may still be 'branch'. " +
-						"Not restored: chain/tasks/graph and params, so a retried multi-step run silently degrades to a " +
-						"single task - re-issue it fresh. retryOnTimeout is explicit-only: never restored, honoured when passed. " +
-						"template is asymmetric: the original's template is NOT restored, but a template passed on the " +
-						"retry call DOES take effect (it is resolved before the retry merge). " +
-						"Fan-out units (parallel/chain/graph origin) record no background, so retrying one is a single " +
-						"foreground run - pass background: true for a background retry. " +
-						"Only works with runs that ended in failure (exitCode != 0, timeout, error, or abort).",
-				}),
-			),
-			gitMode: Type.Optional(
-				Type.String({
-					description:
-						"Git integration mode for this subagent call. " +
-						"'branch' creates a work branch, captures the diff, and switches back. " +
-						"'none' (default) does nothing. Falls back to the configured default.",
-				}),
-			),
-			retryOnTimeout: Type.Optional(
-				Type.Boolean({
-					description:
-						"If true and the subagent times out, automatically retry with the same parameters. " +
-						"Only retries once — the second timeout is treated as a final failure.",
-				}),
-			),
-			approvalMode: Type.Optional(
-				Type.String({
-					description:
-						"Change approval mode: auto (never ask), writes (ask when files changed), " +
-						"always (ask every time). Default is user config (/brl-subagent approval).",
-				}),
-			),
-			force: Type.Optional(
-				Type.Boolean({
-					description:
-						"Override for capability pre-flight errors (default false). A dispatch is blocked when the task clearly needs a capability the resolved toolset lacks — " +
-						"a run/execute/test/compile/benchmark task with no bash, or an exploration task (search/grep/find/list/locate/glob) with none of find/ls/grep/bash. " +
-						"Set force: true to dispatch anyway: the mismatch is then delivered as a warning in the result instead of rejecting the call. " +
-						"Warnings are surfaced either way. force never suppresses outputFile-without-write conflicts.",
-				}),
-			),
-			background: Type.Optional(
-				Type.Boolean({
-					description:
-						"Run the subagent in the background without blocking the conductor. " +
-						"When true, the tool returns immediately with an agent ID. " +
-						"The conductor is woken with a completion message; use get_subagent_result for post-wake retrieval and stall checks. " +
-						"Supports a single task or the tasks array (a fan-out that starts one background agent per task; with tasks the call returns one ID per task and the conductor is woken once per agent as each finishes); combining background with chain or graph is rejected. " +
-						"Default: false (blocking mode).",
-				}),
-			),
-			priority: Type.Optional(
-				Type.Union([
-					Type.Literal("critical"),
-					Type.Literal("high"),
-					Type.Literal("normal"),
-					Type.Literal("low"),
-				], {
-					description: "Concurrency priority for this delegation: critical, high, normal, or low. Higher-priority delegations queue ahead. Defaults to normal.",
-				})
-			),
-			// Issue #114: NO per-step `priority` on chain[] — chain steps never
-			// compete for concurrency slots (the chain holds ONE slot for its whole
-			// duration); array order IS the priority.
-			chain: Type.Optional(Type.Array(Type.Object({
-				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
-				label: Type.Optional(Type.String({})),
-				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
-				thinkingLevel: Type.Optional(Type.String({})),
-				cwd: Type.Optional(Type.String({})),
-				timeout: Type.Optional(Type.Number({})),
-				outputFile: Type.Optional(Type.String({})),
-				tools: Type.Optional(Type.Array(Type.String({}))),
-				excludeTools: Type.Optional(Type.Array(Type.String({}))),
-				noBuiltinTools: Type.Optional(Type.Boolean({})),
-				systemPrompt: Type.Optional(Type.String({})),
-				inheritSystemPrompt: Type.Optional(Type.Boolean({})),
-			}), {
-				description: "Sequential chain of tasks. Each step receives the previous step output via {previous} placeholder in the task string. Chain stops at the first failure. Max " + MAX_CHAIN_STEPS + " steps."
-			})),
-			tasks: Type.Optional(Type.Array(Type.Object({
-				task: Type.String({ description: "Task description for this parallel subtask" }),
-				label: Type.Optional(Type.String({})),
-				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
-				thinkingLevel: Type.Optional(Type.String({})),
-				priority: Type.Optional(
-					Type.Union([
-						Type.Literal("critical"),
-						Type.Literal("high"),
-						Type.Literal("normal"),
-						Type.Literal("low"),
-					], { description: "Concurrency priority for this subtask (overrides the call-level default)." })
-				),
-				cwd: Type.Optional(Type.String({})),
-				timeout: Type.Optional(Type.Number({})),
-				outputFile: Type.Optional(Type.String({})),
-				tools: Type.Optional(Type.Array(Type.String({}))),
-				excludeTools: Type.Optional(Type.Array(Type.String({}))),
-				noBuiltinTools: Type.Optional(Type.Boolean({})),
-				systemPrompt: Type.Optional(Type.String({})),
-				inheritSystemPrompt: Type.Optional(Type.Boolean({})),
-			}), {
-				description: "Parallel tasks to execute concurrently. All tasks run regardless of individual failures. Max " + MAX_PARALLEL_TASKS + " tasks."
-			})),
-			graph: Type.Optional(Type.Array(Type.Object({
-				id: Type.String({ description: "Unique identifier for this task node" }),
-				task: Type.String({ description: "Task description. Use {<nodeId>} to reference output from another task (the referenced node's own id, which must be a word-character id - letters, digits, underscore; ids like 'step-1' or 'node.a' are not matched and the braces are left as literal text)." }),
-				label: Type.Optional(Type.String({})),
-				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
-				dependsOn: Type.Optional(Type.Array(Type.String({}), { description: "IDs of tasks that must complete before this one starts" })),
-				thinkingLevel: Type.Optional(Type.String({})),
-				priority: Type.Optional(
-					Type.Union([
-						Type.Literal("critical"),
-						Type.Literal("high"),
-						Type.Literal("normal"),
-						Type.Literal("low"),
-					], { description: "Concurrency priority for this subtask (overrides the call-level default)." })
-				),
-				cwd: Type.Optional(Type.String({})),
-				timeout: Type.Optional(Type.Number({})),
-				outputFile: Type.Optional(Type.String({})),
-				tools: Type.Optional(Type.Array(Type.String({}))),
-				excludeTools: Type.Optional(Type.Array(Type.String({}))),
-				noBuiltinTools: Type.Optional(Type.Boolean({})),
-				systemPrompt: Type.Optional(Type.String({})),
-				inheritSystemPrompt: Type.Optional(Type.Boolean({})),
-			}), {
-				description: "Declare tasks with dependencies. The scheduler parallelizes independent tasks and sequences dependent ones. Max " + MAX_GRAPH_TASKS + " tasks."
-			})),
-		}),
+		parameters: delegateTaskParamsSchema,
 
 		async execute(
 			_toolCallId: string,
-			params: {
-				// Schema registers task as Type.Optional — required for single mode only,
-				// omitted by chain/tasks/graph calls. Aligned with Static<TParams>.
-				task?: string;
-				label?: string;
-				model?: string;
-				preset?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-				template?: string;
-				params?: Record<string, string>;
-				retryRunId?: string;
-				retryOnTimeout?: boolean;
-				background?: boolean;
-				force?: boolean;
-				gitMode?: string;
-				priority?: string;
-				chain?: Array<{
-					task: string;
-					label?: string;
-					model?: string;
-					thinkingLevel?: string;
-					cwd?: string;
-					timeout?: number;
-					outputFile?: string;
-					tools?: string[];
-					excludeTools?: string[];
-					noBuiltinTools?: boolean;
-					systemPrompt?: string;
-					inheritSystemPrompt?: boolean;
-				}>;
-				tasks?: Array<{
-					task: string;
-					label?: string;
-					model?: string;
-					thinkingLevel?: string;
-					priority?: string;
-					cwd?: string;
-					timeout?: number;
-					outputFile?: string;
-					tools?: string[];
-					excludeTools?: string[];
-					noBuiltinTools?: boolean;
-					systemPrompt?: string;
-					inheritSystemPrompt?: boolean;
-				}>;
-				graph?: Array<{
-					id: string;
-					task: string;
-					label?: string;
-					model?: string;
-					dependsOn?: string[];
-					thinkingLevel?: string;
-					priority?: string;
-					cwd?: string;
-					timeout?: number;
-					outputFile?: string;
-					tools?: string[];
-					excludeTools?: string[];
-					noBuiltinTools?: boolean;
-					systemPrompt?: string;
-					inheritSystemPrompt?: boolean;
-				}>;
-			},
+			params: DelegateTaskParams,
 			signal: AbortSignal | undefined,
 			onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 			ctx: ExtensionContext,
@@ -3204,7 +2890,7 @@ export default function (pi: ExtensionAPI) {
 			if (params.retryRunId) {
 				const runEntry = state.findSpawnRunById(ctx, params.retryRunId);
 				if (runEntry) {
-					params = resolveRetryParams(params, runEntry);
+					params = resolveRetryParams(params, runEntry) as DelegateTaskParams;
 				} else {
 					// Issue #98: a silent no-op here made retries of background runs
 					// (which previously never wrote run entries) start as FRESH runs
@@ -4038,7 +3724,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Steer Subagent",
 		description: [
 			"Send a steering message to a running background agent.",
-			"The message interrupts after the current tool execution.",
+			"The message is delivered after the agent's current tool call finishes, before its next model call.",
 			"Use this to redirect an agent's work without restarting it.",
 		].join(" "),
 		parameters: Type.Object({
@@ -4053,7 +3739,7 @@ export default function (pi: ExtensionAPI) {
 			const { steerAgent } = await import('./session-manager');
 			
 			try {
-				const agent = steerAgent(params.agent_id, params.message);
+				const agent = await steerAgent(params.agent_id, params.message);
 				
 				if (!agent) {
 					return {

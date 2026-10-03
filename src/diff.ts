@@ -1,3 +1,4 @@
+// Purpose: Parses git unified diffs into structured per-file summaries and hunks for the result UI.
 /**
  * brl-subagent — Git Diff Parser (P5)
  *

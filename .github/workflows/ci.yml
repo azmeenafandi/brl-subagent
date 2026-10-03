@@ -23,4 +23,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
-      - run: npx vitest run
+      # The README's "<N>+ test suite" claim is pinned to reality (docs-pinning class, issue #166):
+      # the JSON report feeds a drift check — the claim may trail the real count by at most 100.
+      - run: npx vitest run --reporter=default --reporter=json --outputFile=vitest-report.json
+      - run: node scripts/check-readme-test-count.mjs vitest-report.json

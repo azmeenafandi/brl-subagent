@@ -1,8 +1,9 @@
+// Purpose: Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths.
 import { randomUUID } from 'crypto';
 import { join } from 'path';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
-import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isSubagentError, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
+import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -11,6 +12,7 @@ import { assertSafeAgentId, sanitizeErrorMessage } from './sanitize';
 import { wrapTask } from './prompt';
 import { createLogger } from './logging';
 import { getCurrentBranch, createWorkBranch, captureDiff, switchToBranch, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
+import { normalizeTimeout, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -118,49 +120,6 @@ function loadAgent(id: string): BackgroundAgent | null {
 }
 
 /**
- * Create a new background agent session
- * 
- * NOTE: In v2.0.3, this creates a record but does NOT actually spawn a pi session.
- * The actual session spawning will be implemented when pi's ExtensionAPI supports it.
- * For now, this is a placeholder that creates the agent record.
- */
-export function createSession(params: {
-  task: string;
-  type?: string;
-  description?: string;
-  model?: string;
-  thinkingLevel?: ThinkingLevel;
-  systemPrompt?: string;
-}): BackgroundAgent {
-  const id = generateUUID();
-  const agent: BackgroundAgent = {
-    id,
-    sessionId: `session-${id}`,
-    type: params.type || 'general-purpose',
-    description: params.description || params.task.slice(0, 50),
-    status: 'pending',
-    startedAt: Date.now(),
-    task: params.task,
-    model: params.model || 'unknown',
-    thinkingLevel: params.thinkingLevel || 'medium',
-  };
-  
-  agents.set(id, agent);
-  persistAgent(agent);
-
-  // Start transcript for this agent
-  transcript.startTranscript(agent.id, params.task);
-
-  eventBus.emit(eventBus.createEvent('subagent:created', agent.id, {
-    type: agent.type,
-    description: agent.description,
-    task: agent.task,
-  }));
-
-  return agent;
-}
-
-/**
  * Get agent record by ID
  */
 export function getAgent(id: string): BackgroundAgent | null {
@@ -175,23 +134,6 @@ export function getAgent(id: string): BackgroundAgent | null {
     return null;
   }
   return agents.get(id) || loadAgent(id);
-}
-
-/**
- * List all background agents
- */
-export function listAgents(): BackgroundAgent[] {
-  ensureStorageDir();
-  const files = readdirSync(STORAGE_DIR).filter(f => f.endsWith('.json'));
-  const result: BackgroundAgent[] = [];
-  
-  for (const file of files) {
-    const id = file.replace('.json', '');
-    const agent = agents.get(id) || loadAgent(id);
-    if (agent) result.push(agent);
-  }
-  
-  return result.sort((a, b) => b.startedAt - a.startedAt);
 }
 
 /**
@@ -222,25 +164,6 @@ export function updateAgentStatus(id: string, status: AgentStatus, error?: strin
     eventBus.emit(eventBus.createEvent('subagent:steered', id, {}));
   }
 
-  return agent;
-}
-
-/**
- * Set agent result
- */
-export function setAgentResult(id: string, result: SubagentResult): BackgroundAgent | null {
-  const agent = getAgent(id);
-  if (!agent) return null;
-  
-  agent.result = result;
-  // Issue #179 (D1): honor the full terminal reason (stopReason error/aborted/
-  // length/incomplete), not exitCode alone — a mid-run provider death resolves
-  // with exitCode 0 and was previously recorded as 'completed'.
-  agent.status = isSubagentError(result) ? 'failed' : 'completed';
-  agent.completedAt = Date.now();
-  
-  agents.set(id, agent);
-  persistAgent(agent);
   return agent;
 }
 
@@ -281,7 +204,7 @@ function defaultTerminalMessage(stopReason: string | undefined): string {
  * Extract the final assistant text from a session's messages.
  * Falls back to the LAST assistant message with non-empty text content — the
  * final message is often a tool-call-only turn (agent stopped mid-turn, failed,
- * or hit the hard cap), and that turn carries no text of its own.
+ * or hit the deadline), and that turn carries no text of its own.
  */
 export function extractFinalOutput(session: { messages: Array<{ role: string; content?: Array<{ type: string; text?: string }> | string | null }> }): string {
   const assistants = [...session.messages].reverse().filter(m => m.role === 'assistant');
@@ -351,24 +274,45 @@ export async function stopAgent(id: string): Promise<BackgroundAgent | null> {
 }
 
 /**
- * Steer a running agent by injecting a message
- * 
- * NOTE: In v2.0.3, this is a placeholder.
- * Actual message injection will be implemented when pi's ExtensionAPI supports it.
+ * Steer a running agent by injecting a message into its live session.
+ *
+ * Issue #241: steering DELIVERS via the SDK's `AgentSession.steer()` — the
+ * message is queued while the agent is running and delivered after the current
+ * assistant turn finishes its tool calls, before the next model call.
+ *
+ * Steering is NOT a state transition: the agent stays 'running' (no status
+ * flip, no persistAgent) so REPEAT steers keep working. Delivery failures
+ * propagate to the caller — a false success would tell the conductor a steer
+ * landed when the agent never saw it. The transcript line is an audit record
+ * written AFTER successful delivery, best-effort: a landed steer must never be
+ * reported as failed because the audit write failed.
  */
-export function steerAgent(id: string, message: string): BackgroundAgent | null {
+export async function steerAgent(id: string, message: string): Promise<BackgroundAgent | null> {
   const agent = getAgent(id);
   if (!agent) return null;
   if (agent.status !== 'running') {
     throw new Error(`Cannot steer agent ${id}: status is ${agent.status}, not running`);
   }
 
-  // Record steering in transcript
-  transcript.appendEntry(id, 'user', `Steering: ${message}`);
+  const session = agent._sessionRef;
+  if (!session) {
+    throw new Error(`Cannot steer agent ${id}: no live session (the run may be settling)`);
+  }
+  if (typeof session.steer !== 'function') {
+    throw new Error('installed pi SDK has no AgentSession.steer — steering unsupported');
+  }
 
-  agent.status = 'steered';
-  agents.set(id, agent);
-  persistAgent(agent);
+  // Deliver FIRST — a rejection here must surface as a real tool error, never
+  // a recorded-but-undelivered steer.
+  await session.steer(message);
+
+  // Audit line — best-effort. The steer already landed; an append failure is
+  // logged, not propagated.
+  try {
+    transcript.appendEntry(id, 'user', `Steering: ${message}`);
+  } catch (err) {
+    log.warn(`steerAgent: transcript append failed for ${id}`, { error: (err as Error).message });
+  }
 
   eventBus.emit(eventBus.createEvent('subagent:steered', agent.id, { message }));
 
@@ -944,9 +888,13 @@ export async function spawnBackgroundSession(
   // Armed immediately after the prompt call so in-prompt preflight (auth
   // check, model resolution) counts toward the deadline; the abort lands in
   // the .then below as an aborted run (probe contract). We pre-set the status
-  // so the .then keeps 'stopped' with the timeout reason recorded. The value
-  // is normalized upstream (normalizeTimeout) but clamp again here — a raw
-  // >=2^31 or Infinity would make Node fire the timer at ~1ms (instant kill).
+  // so the .then keeps 'stopped' with the timeout reason recorded. The raw
+  // value is normalized here (issue #240): a raw >=2^31 or Infinity would make
+  // Node fire the timer at ~1ms (instant kill), so normalizeTimeout maps it to
+  // undefined. An explicit timeout is HONORED verbatim (no ceiling); only the
+  // no-timeout fallback uses the 30m background default. The `params.timeout`
+  // guard below keeps this timer unarmed on the no-timeout path, where the
+  // index.ts deadline timer owns the no-timeout default (no redundant timer).
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   if (params.timeout && params.timeout > 0) {
     timeoutHandle = setTimeout(() => {
@@ -966,7 +914,7 @@ export async function spawnBackgroundSession(
           error: (err as Error).message,
         });
       }
-    }, Math.min(params.timeout, 30 * 60 * 1000));
+    }, normalizeTimeout(params.timeout) ?? DEFAULT_BACKGROUND_DEADLINE_MS);
   }
 
   runPromise.then(() => {

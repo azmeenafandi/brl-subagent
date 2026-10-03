@@ -1,0 +1,43 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-232
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second branch-mode spawn in a DIFFERENT cwd of the SAME repo waits for the first's lock
+[brl-subagent] INFO: Created work branch for background agent
+
+stdout | src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second branch-mode spawn in a DIFFERENT cwd of the SAME repo waits for the first's lock
+[brl-subagent] INFO: Created work branch for background agent
+
+ ❯ src/__tests__/session-manager.test.ts (83 tests | 1 failed) 315ms
+   ❯ W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock (7)
+     × C2: a second branch-mode spawn in a DIFFERENT cwd of the SAME repo waits for the first's lock 61ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff, C2 lock > C2: a second branch-mode spawn in a DIFFERENT cwd of the SAME repo waits for the first's lock
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/__tests__/session-manager.test.ts:1071:25
+    1069|
+    1070|   await new Promise((r) => setTimeout(r, 50));
+    1071|   expect(secondSettled).toBe(false);
+       |                         ^
+    1072|   expect(mocks.git.getCurrentBranch).not.toHaveBeenCalled();
+    1073|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 82 passed (83)
+   Start at  17:47:55
+   Duration  706ms (tests 57%, transform 35%, import 7%, worker 1%)
+

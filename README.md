@@ -11,10 +11,10 @@
 `brl-subagent` is **one of the most capable subagent orchestration extensions for pi** — one `delegate_task` tool that spawns fully isolated subagent processes, each with its own model, context window, tool permissions, and thinking level.
 
 - **Multi-step delegation, natively** — chain, parallel, and dependency-graph modes with per-step model routing, so a complex task fans out exactly as you design it.
-- **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and hard caps. Nothing orphans; nothing leaks.
+- **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and a 30-minute default deadline for runs that don't set one. Nothing orphans; nothing leaks.
 - **Preset-driven tool scoping** — every subagent runs with exactly the tools its job needs, restricted by preset or per-call `tools`/`excludeTools`, with auto-route that picks the right preset when you don't.
 - **Templates with slots** — saved, file-backed task templates with `${param}` placeholders for workflows you run again and again.
-- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence, and a 975+ test suite pinning every contract against the real pi SDK.
+- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence, and a 1200+ test suite pinning every contract against the real pi SDK.
 
 ---
 
@@ -59,10 +59,17 @@ pi remove npm:brl-subagent    # uninstall
 | `/brl-subagent history` | Browse past subagent runs |
 | `/brl-subagent monitor` | Live monitor running subagents |
 | `/brl-subagent dashboard` | Live observability dashboard |
+| `/brl-subagent compliance` | Compliance reports (file access, secrets exposure, full summary) |
 | `/brl-subagent retry` | Browse failed runs to retry |
 | `/brl-subagent reset` | Reset all configuration |
 
 All settings persist across sessions.
+
+### Environment variables
+
+- `BRL_LOG_LEVEL` — minimum level written to the log file. One of `debug`,
+  `info` (default), `warn`, `error`. Read once at module load; unrecognised
+  values fall back to `info`. Runtime changes go through `setLogLevel()`.
 
 ---
 
@@ -82,7 +89,7 @@ All settings persist across sessions.
 | `inheritSystemPrompt` | boolean | `true` | Whether to inherit the main agent's system prompt. Set `false` to save tokens. |
 | `thinkingLevel` | string | — | `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. Capped at user's configured max. |
 | `outputFile` | string | — | Path for the subagent to write full findings. Returns only a summary. |
-| `timeout` | number | — | Max milliseconds. Exceeded → SIGTERM (5s grace) → SIGKILL. Background runs are additionally hard-capped at 30 minutes, so a larger value is silently shortened. |
+| `timeout` | number | — | Max milliseconds. Foreground: exceeded → SIGTERM (5s grace) → SIGKILL. Background: the session is aborted and the run ends `stopped` with the timeout reason. A background run with no explicit `timeout` gets the 30-minute default deadline — an explicit timeout is honored as given (a default, not a ceiling). A raw value `≥ 2^31-1` normalizes to no timeout (for a background run, the 30-minute default then applies). |
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
 | `background` | boolean | `false` | Spawn as an independent background session; returns an ID immediately. With `tasks` it fans out (one background agent per task, one ID per task), and the conductor is woken once per agent as each finishes. See [Background execution](#background-execution). |
 | `priority` | string | — | Concurrency priority: `critical` / `high` / `normal` / `low`. Defaults to `normal`; higher-priority delegations queue ahead. `tasks[]` / `graph[]` steps can set `priority` per unit (see below). |
@@ -98,7 +105,7 @@ All settings persist across sessions.
 | `approvalMode` | string | — | `auto` / `writes` / `always`. Default is user config (`/brl-subagent approval`). `always` is rejected for background runs. |
 | `force` | boolean | `false` | Dispatch anyway past a capability pre-flight block; the block is downgraded to a warning. |
 | `retryRunId` | string | — | Re-run a previously failed run with its recorded task and params. |
-| `retryOnTimeout` | boolean | `false` | Retry once if the subagent times out. The second timeout is a final failure. |
+| `retryOnTimeout` | boolean | `false` | Retry once if a **foreground** subagent times out. The second timeout is a final failure. Background runs are not auto-retried — re-dispatch with `retryRunId`. |
 
 **Capability pre-flight:** before spawning, the extension checks that the resolved toolset can actually do the task — a run/execute/test/compile/benchmark task with no `bash`, or an exploration task (search/grep/find/list/locate/glob) with none of `find`/`ls`/`grep`/`bash`. Such a dispatch is **rejected** by default; `force: true` downgrades the rejection to a **warning**. `force` never suppresses an `outputFile`-without-write conflict — that stays a hard error. Warnings are surfaced in the returned result in every mode.
 
@@ -108,7 +115,7 @@ All settings persist across sessions.
 
 **Fan-out origins are the exception.** Parallel/chain/graph units are recorded per unit, and those records deliberately snapshot **no** `background`, so retrying a unit is a **single run in the foreground**. Pass `background: true` explicitly if you want a background retry.
 
-**Not restored:** `chain` / `tasks` / `graph` and `params` are discarded, so retrying a multi-step run silently degrades to a single task — re-issue it fresh for those shapes. `retryOnTimeout` is **explicit-only**: it is never restored from the recorded run and takes effect only when you pass it on the retry call (it arms a deadline for *this* call).
+**Not restored:** `chain` / `tasks` / `graph` and `params` are discarded, so retrying a multi-step run silently degrades to a single task — re-issue it fresh for those shapes. `retryOnTimeout` is **explicit-only**: it is never restored from the recorded run and takes effect only when you pass it on the retry call (foreground only; it arms a deadline for *this* call).
 
 **`template` is asymmetric:** the original run's template is **not** restored, but a `template` you supply explicitly on the retry call **does** take effect (it is resolved before the retry merge, issue #175) — its body wins over the recorded `task`.
 
@@ -273,7 +280,7 @@ The built-in `code-review` template's slot is `${target}` (its companion `securi
 
 ## Background execution
 
-Set `background: true` to spawn the subagent as an independent session that returns an ID immediately and keeps running. Its progress is tracked via `getAgent` and the live monitor while the main session continues. (Steering via `steerAgent` currently records the message in the transcript and marks the agent as steered — delivery to the live session is pending pi's extension API.)
+Set `background: true` to spawn the subagent as an independent session that returns an ID immediately and keeps running. Its progress is tracked via `getAgent` and the live monitor while the main session continues. Steering via `steerAgent` delivers the message into the agent's live session — it is queued while the agent runs and delivered after the current tool call finishes, before the next model call. Repeat steers work, and a delivery failure surfaces as a real tool error rather than a recorded-but-undelivered steer.
 
 **System prompt semantics:** background sessions are spawned with the same built prompt as foreground subagents (base prompt when `inheritSystemPrompt: true`, custom prompt, preset guidance, and subagent instructions). Like pi's own `--append-system-prompt`, supplying this prompt **replaces** any discovered `.pi/APPEND_SYSTEM.md` / global `APPEND_SYSTEM.md` content — this matches foreground subagent behavior exactly. With `inheritSystemPrompt: true` (the default) your conductor session's instructions — including its own appended content — are inherited through the base prompt.
 
@@ -281,7 +288,7 @@ Set `background: true` to spawn the subagent as an independent session that retu
 
 **Background safety controls (issue #28):** background agents honor the same safety controls as foreground runs — no more unattended sessions that bypass approval, git isolation, deadlines, or cost:
 
-- **Per-agent timeout** — the deadline is armed immediately after the prompt is issued, so in-prompt preflight (auth, model resolution) counts toward it. Background timeouts are hard-capped at 30 minutes — a larger `timeout` is silently shortened. On expiry the session is aborted and the agent ends with status `stopped` and the timeout reason. Timeout values are normalized (`0`/negative/`NaN`/`Infinity`/`≥ 2^31` → no timeout) and a double-fire guard prevents the timer from acting on an already-settled agent.
+- **Per-agent timeout** — the deadline is armed immediately after the prompt is issued, so in-prompt preflight (auth, model resolution) counts toward it. A background run with no explicit `timeout` gets a 30-minute default deadline (the issue #28 orphan protection); an explicit timeout is honored as given — 30 minutes is the default, not a ceiling. On expiry the session is aborted and the agent ends with status `stopped` and the timeout reason. Timeout values are normalized (`0`/negative/`NaN`/`Infinity`/`≥ 2^31` → no timeout, which for a background run means the 30-minute default) and a double-fire guard prevents the timer from acting on an already-settled agent.
 - **Session cost limit (R5)** — the cost check runs before the background spawn, so a session at its limit cannot bypass it by delegating to background. For a background fan-out the whole batch is checked up front as per-task estimate × N.
 - **Approval mode** — `approvalMode: 'always'` is rejected for background agents (there is no interactive dialog to approve a diff while running unattended); `'writes'` silently auto-approves with a warning logged. For a fan-out, `'always'` rejects the whole batch before any spawn and `'writes'` warns once for the batch.
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch. `gitMode: 'branch'` is rejected for background fan-out — see [Background fan-out](#background-fan-out).
@@ -295,6 +302,11 @@ Fan-out validates the entire batch before spawning anything. Any invalid task �
 Three checks reject the fan-out up front, before any spawn: `approvalMode: 'always'`; `gitMode: 'branch'` for the batch (the git lock is awaited inside the first spawn and held until that agent settles, so branch-mode spawns targeting the same repository would serialize and block the call — the rule is blanket because the lock is keyed by the resolved repository root, so any two units of the same repo contend); and the session cost limit, checked as per-task estimate × N.
 
 If a spawn fails mid-loop, fan-out stops and reports the failed task plus the IDs already started; an abort mid-loop stops further spawns. Either way, the agents already started stay detached and still wake the conductor. Everything else is unchanged: single background, foreground parallel, the `MAX_PARALLEL_TASKS` cap (8), a live-monitor row per agent, `get_subagent_result` / `steer_subagent` / `stop_subagent` by agent ID, per-agent timeouts, and a single `'writes'` approval warning for the batch.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the branch model (`main` = releases, `dev` = integration),
+the worktree workflow, and the test gates. Development docs live in [`.development/`](.development/).
 
 ## Changelog
 

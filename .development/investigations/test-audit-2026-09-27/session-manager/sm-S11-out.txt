@@ -1,0 +1,38 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.1 /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-234
+
+stdout | src/__tests__/session-manager.test.ts > issue #179 — honest terminal status (D1/D2/D3) > D3: a 'did nothing' provider death is recorded with turns 0 and a synthesized reason
+[brl-subagent] INFO: Background run settled
+
+ ❯ src/__tests__/session-manager.test.ts (83 tests | 1 failed) 330ms
+   ❯ issue #179 — honest terminal status (D1/D2/D3) (11)
+     × D3: a 'did nothing' provider death is recorded with turns 0 and a synthesized reason 9ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/session-manager.test.ts > issue #179 — honest terminal status (D1/D2/D3) > D3: a 'did nothing' provider death is recorded with turns 0 and a synthesized reason
+AssertionError: expected 'Run ended without completing' to contain 'stopReason "error"'
+
+Expected: "stopReason "error""
+Received: "Run ended without completing"
+
+ ❯ src/__tests__/session-manager.test.ts:1929:28
+    1927|   expect(run.turns).toBe(0);
+    1928|   expect(run.finalTurnError).toBe(true);
+    1929|   expect(run.errorMessage).toContain('stopReason "error"');
+       |                            ^
+    1930|  });
+    1931|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 82 passed (83)
+   Start at  18:16:51
+   Duration  700ms (tests 60%, transform 33%, import 7%, worker 1%)
+
+EXIT=1

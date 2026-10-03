@@ -1,0 +1,7 @@
+diff --git a/src/notify-completion.ts b/src/notify-completion.ts
+index 25a22fd..f7c934c 100644
+--- a/src/notify-completion.ts
++++ b/src/notify-completion.ts
+@@ -133 +133 @@ export function buildCompletionMessage(
+-	if (status === "completed" && run) {
++	if (status === "completed" && run && false) {

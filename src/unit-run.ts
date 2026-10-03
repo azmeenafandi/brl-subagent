@@ -1,3 +1,4 @@
+// Purpose: Per-unit run-entry helpers shared by chain, parallel, and graph modes.
 /**
  * Per-unit run-entry helpers extracted from src/index.ts (issue #132).
  *

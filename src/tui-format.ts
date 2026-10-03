@@ -1,3 +1,4 @@
+// Purpose: Pure TUI row formatting shared by the monitor and dashboard (no TUI imports).
 /**
  * brl-subagent — Pure TUI formatting helpers
  *

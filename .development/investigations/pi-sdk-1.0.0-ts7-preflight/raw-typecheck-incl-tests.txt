@@ -1,0 +1,263 @@
+src/__tests__/architecture-rules.test.ts(71,20): error TS2339: Property 'createSourceFile' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/architecture-rules.test.ts(71,52): error TS2339: Property 'ScriptTarget' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/architecture-rules.test.ts(74,26): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/architecture-rules.test.ts(75,10): error TS2339: Property 'isImportDeclaration' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/architecture-rules.test.ts(75,42): error TS2339: Property 'isStringLiteral' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/architecture-rules.test.ts(78,36): error TS2339: Property 'isNamedImports' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/architecture-rules.test.ts(87,17): error TS2339: Property 'isExportDeclaration' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/architecture-rules.test.ts(87,73): error TS2339: Property 'isStringLiteral' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/architecture-rules.test.ts(90,7): error TS2339: Property 'isCallExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/architecture-rules.test.ts(91,32): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/architecture-rules.test.ts(93,7): error TS2339: Property 'isStringLiteral' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/chain-parallel.test.ts(418,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(419,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(441,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(442,77): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(464,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(465,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(466,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(489,56): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(523,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(524,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(539,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(540,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(562,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(563,76): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(564,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(586,77): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(587,77): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(588,77): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(610,53): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/chain-parallel.test.ts(611,75): error TS2322: Type '{ input: number; output: number; cost: number; turns: number; }' is not assignable to type 'UsageStats & Partial<UsageStats>'.
+  Type '{ input: number; output: number; cost: number; turns: number; }' is missing the following properties from type 'UsageStats': cacheRead, cacheWrite, contextTokens
+src/__tests__/git.test.ts(28,23): error TS2339: Property 'error' does not exist on type 'T'.
+src/__tests__/git.test.ts(107,12): error TS2345: Argument of type '{ ok: true; branch: string; } | { ok: false; error: string; }' is not assignable to parameter of type '{ ok: false; }'.
+  Type '{ ok: true; branch: string; }' is not assignable to type '{ ok: false; }'.
+    Types of property 'ok' are incompatible.
+      Type 'true' is not assignable to type 'false'.
+src/__tests__/git.test.ts(139,12): error TS2345: Argument of type '{ ok: true; diff: string; } | { ok: false; error: string; }' is not assignable to parameter of type '{ ok: false; }'.
+  Type '{ ok: true; diff: string; }' is not assignable to type '{ ok: false; }'.
+    Types of property 'ok' are incompatible.
+      Type 'true' is not assignable to type 'false'.
+src/__tests__/git.test.ts(168,12): error TS2345: Argument of type '{ ok: true; } | { ok: false; error: string; }' is not assignable to parameter of type '{ ok: false; }'.
+  Type '{ ok: true; }' is not assignable to type '{ ok: false; }'.
+    Types of property 'ok' are incompatible.
+      Type 'true' is not assignable to type 'false'.
+src/__tests__/git.test.ts(197,12): error TS2345: Argument of type '{ ok: true; } | { ok: false; error: string; }' is not assignable to parameter of type '{ ok: false; }'.
+  Type '{ ok: true; }' is not assignable to type '{ ok: false; }'.
+    Types of property 'ok' are incompatible.
+      Type 'true' is not assignable to type 'false'.
+src/__tests__/git.test.ts(217,12): error TS2345: Argument of type '{ ok: true; branch: string; } | { ok: false; error: string; }' is not assignable to parameter of type '{ ok: false; }'.
+  Type '{ ok: true; branch: string; }' is not assignable to type '{ ok: false; }'.
+    Types of property 'ok' are incompatible.
+      Type 'true' is not assignable to type 'false'.
+src/__tests__/git.test.ts(221,12): error TS2345: Argument of type '{ ok: true; diff: string; } | { ok: false; error: string; }' is not assignable to parameter of type '{ ok: false; }'.
+  Type '{ ok: true; diff: string; }' is not assignable to type '{ ok: false; }'.
+    Types of property 'ok' are incompatible.
+      Type 'true' is not assignable to type 'false'.
+src/__tests__/git.test.ts(225,12): error TS2345: Argument of type '{ ok: true; } | { ok: false; error: string; }' is not assignable to parameter of type '{ ok: false; }'.
+  Type '{ ok: true; }' is not assignable to type '{ ok: false; }'.
+    Types of property 'ok' are incompatible.
+      Type 'true' is not assignable to type 'false'.
+src/__tests__/git.test.ts(229,12): error TS2345: Argument of type '{ ok: true; } | { ok: false; error: string; }' is not assignable to parameter of type '{ ok: false; }'.
+  Type '{ ok: true; }' is not assignable to type '{ ok: false; }'.
+    Types of property 'ok' are incompatible.
+      Type 'true' is not assignable to type 'false'.
+src/__tests__/integration.test.ts(162,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(188,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(208,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(220,58): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(229,77): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(245,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(267,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(281,71): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(289,58): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(299,83): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(311,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(322,81): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(334,61): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(358,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(378,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(394,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(410,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(426,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(442,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(458,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(472,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(488,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(503,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(518,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(534,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(547,58): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(559,4): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(572,70): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(581,73): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(983,5): error TS2353: Object literal may only specify known properties, and 'task' does not exist in type '{ systemPrompt?: string | undefined; inheritSystemPrompt?: boolean | undefined; model?: string | undefined; thinkingLevel?: string | undefined; priority?: string | undefined; outputFile?: string | undefined; ... 10 more ...; errorCategory?: ErrorCategory | undefined; }'.
+src/__tests__/integration.test.ts(1105,36): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1115,36): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1126,37): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1132,38): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1137,16): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1153,21): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1157,38): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1161,38): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1165,15): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1181,21): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1185,37): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1201,21): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1202,21): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1205,15): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1206,15): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1213,21): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1214,15): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1225,15): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/integration.test.ts(1236,24): error TS2740: Type 'MockSessionState' is missing the following properties from type 'SessionState': subagentSessions, _finalizedLiveIds, builtinTemplates, log, and 20 more.
+src/__tests__/live-subagent.test.ts(26,29): error TS2459: Module '"../types"' declares 'TranscriptMessage' locally, but it is not exported.
+src/__tests__/per-step-model.test.ts(736,5): error TS2322: Type '{ type: string; customType: string; data: { model: { provider: string; id: string; }; }; }' is not assignable to type 'never'.
+src/__tests__/per-step-model.test.ts(1807,50): error TS2304: Cannot find name 'ExtensionContext'.
+src/__tests__/per-step-model.test.ts(1817,19): error TS2304: Cannot find name 'ExtensionContext'.
+src/__tests__/per-step-model.test.ts(1821,45): error TS2304: Cannot find name 'ExtensionContext'.
+src/__tests__/per-step-model.test.ts(2027,71): error TS2344: Type '"releaseSlot"' does not satisfy the constraint 'never'.
+src/__tests__/presets-files.test.ts(204,25): error TS2339: Property 'mock' does not exist on type '(message: string, data?: Record<string, unknown> | undefined) => void'.
+src/__tests__/presets-files.test.ts(204,42): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/__tests__/runtime-vocabulary.test.ts(82,39): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/runtime-vocabulary.test.ts(82,57): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'BinaryExpression'.
+src/__tests__/runtime-vocabulary.test.ts(83,5): error TS2339: Property 'isBinaryExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(83,64): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(86,35): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/runtime-vocabulary.test.ts(86,54): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/runtime-vocabulary.test.ts(86,76): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/runtime-vocabulary.test.ts(87,33): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/runtime-vocabulary.test.ts(88,22): error TS2339: Property 'isParenthesizedExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(98,38): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/runtime-vocabulary.test.ts(99,9): error TS2339: Property 'isParenthesizedExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(100,9): error TS2339: Property 'isStringLiteral' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(100,37): error TS2339: Property 'isNoSubstitutionTemplateLiteral' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(101,9): error TS2339: Property 'isTemplateExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(116,24): error TS2339: Property 'createSourceFile' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(116,58): error TS2339: Property 'ScriptTarget' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(116,88): error TS2339: Property 'ScriptKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(119,27): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/runtime-vocabulary.test.ts(127,26): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/runtime-vocabulary.test.ts(130,10): error TS2339: Property 'isTypeNode' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(133,7): error TS2339: Property 'isStringLiteral' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(133,35): error TS2339: Property 'isNoSubstitutionTemplateLiteral' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(133,79): error TS2339: Property 'isTemplateExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/runtime-vocabulary.test.ts(142,6): error TS2339: Property 'forEachChild' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/session-manager.test.ts(137,30): error TS18048: 'loader.reload.mock.calls.length' is possibly 'undefined'.
+src/__tests__/session-manager.test.ts(618,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(640,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(723,18): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(894,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(958,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1001,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1022,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1041,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1067,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1187,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1234,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1373,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1493,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1518,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1561,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1595,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1683,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1719,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1748,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1778,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1849,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1907,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(1959,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(2034,18): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(2069,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(2098,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(2115,17): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/session-manager.test.ts(2141,18): error TS2339: Property 'messages' does not exist on type '{ sessionId: string; setSessionName: Mock<Procedure>; prompt: Mock<Procedure>; abort: Mock<Procedure>; steer: Mock<Procedure>; }'.
+src/__tests__/smoke-artifact-scanner.test.ts(3,69): error TS7016: Could not find a declaration file for module '../../.github/scripts/smoke-artifact.mjs'. '/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/.github/scripts/smoke-artifact.mjs' implicitly has an 'any' type.
+src/__tests__/smoke-artifact-scanner.test.ts(23,55): error TS7006: Parameter 'entry' implicitly has an 'any' type.
+src/__tests__/state-sweep.test.ts(421,31): error TS2740: Type '{ ui: { setStatus: Mock<Procedure>; theme: { fg: (_c: string, t: string) => string; }; }; }' is missing the following properties from type 'ExtensionContext': mode, hasUI, cwd, sessionManager, and 12 more.
+src/__tests__/state-sweep.test.ts(435,31): error TS2740: Type '{ ui: { setStatus: Mock<Procedure>; theme: { fg: (_c: string, t: string) => string; }; }; }' is missing the following properties from type 'ExtensionContext': mode, hasUI, cwd, sessionManager, and 12 more.
+src/__tests__/state-sweep.test.ts(449,31): error TS2740: Type '{ ui: { setStatus: Mock<Procedure>; theme: { fg: (_c: string, t: string) => string; }; }; }' is missing the following properties from type 'ExtensionContext': mode, hasUI, cwd, sessionManager, and 12 more.
+src/__tests__/templates-files.test.ts(151,25): error TS2339: Property 'mock' does not exist on type '(message: string, data?: Record<string, unknown> | undefined) => void'.
+src/__tests__/templates-files.test.ts(151,42): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/__tests__/templates-files.test.ts(187,26): error TS2339: Property 'mock' does not exist on type '(message: string, data?: Record<string, unknown> | undefined) => void'.
+src/__tests__/templates-files.test.ts(187,45): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/__tests__/templates-files.test.ts(189,29): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/__tests__/templates-files.test.ts(507,25): error TS2339: Property 'mock' does not exist on type '(message: string, data?: Record<string, unknown> | undefined) => void'.
+src/__tests__/templates-files.test.ts(507,42): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/__tests__/templates-files.test.ts(535,26): error TS2339: Property 'mock' does not exist on type '(message: string, data?: Record<string, unknown> | undefined) => void'.
+src/__tests__/templates-files.test.ts(535,45): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/__tests__/templates.test.ts(213,19): error TS2339: Property 'mock' does not exist on type '(message: string, data?: Record<string, unknown> | undefined) => void'.
+src/__tests__/templates.test.ts(214,19): error TS2339: Property 'mock' does not exist on type '(message: string, data?: Record<string, unknown> | undefined) => void'.
+src/__tests__/terminal-status-consistency.test.ts(142,42): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'SyntaxKind'.
+src/__tests__/terminal-status-consistency.test.ts(142,67): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'SyntaxKind'.
+src/__tests__/terminal-status-consistency.test.ts(143,5): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(144,5): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(145,5): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(146,5): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(153,44): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'SyntaxKind'.
+src/__tests__/terminal-status-consistency.test.ts(153,69): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'SyntaxKind'.
+src/__tests__/terminal-status-consistency.test.ts(154,5): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(155,5): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(156,5): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(157,5): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(161,44): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'SyntaxKind'.
+src/__tests__/terminal-status-consistency.test.ts(161,69): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'SyntaxKind'.
+src/__tests__/terminal-status-consistency.test.ts(171,37): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/terminal-status-consistency.test.ts(172,9): error TS2339: Property 'isStringLiteral' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(172,37): error TS2339: Property 'isNoSubstitutionTemplateLiteral' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(177,38): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/terminal-status-consistency.test.ts(183,38): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/terminal-status-consistency.test.ts(184,9): error TS2339: Property 'isNumericLiteral' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(186,6): error TS2339: Property 'isPrefixUnaryExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(187,25): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(187,71): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(188,6): error TS2339: Property 'isNumericLiteral' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(190,31): error TS2339: Property 'SyntaxKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(196,40): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/terminal-status-consistency.test.ts(197,9): error TS2339: Property 'isIdentifier' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(198,9): error TS2339: Property 'isPropertyAccessExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(208,31): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/terminal-status-consistency.test.ts(208,41): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'ArrayLiteralExpression'.
+src/__tests__/terminal-status-consistency.test.ts(209,9): error TS2339: Property 'isArrayLiteralExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(210,9): error TS2339: Property 'isNewExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(210,37): error TS2339: Property 'isIdentifier' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(212,17): error TS2339: Property 'isArrayLiteralExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(218,38): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'ArrayLiteralExpression'.
+src/__tests__/terminal-status-consistency.test.ts(236,24): error TS2339: Property 'createSourceFile' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(236,58): error TS2339: Property 'ScriptTarget' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(236,88): error TS2339: Property 'ScriptKind' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(240,34): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/terminal-status-consistency.test.ts(242,27): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/terminal-status-consistency.test.ts(253,26): error TS2694: Namespace '"/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version"' has no exported member 'Node'.
+src/__tests__/terminal-status-consistency.test.ts(258,10): error TS2339: Property 'isBinaryExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(279,10): error TS2339: Property 'isCallExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(279,39): error TS2339: Property 'isPropertyAccessExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(298,10): error TS2339: Property 'isArrayLiteralExpression' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(304,51): error TS7006: Parameter 'element' implicitly has an 'any' type.
+src/__tests__/terminal-status-consistency.test.ts(316,10): error TS2339: Property 'isSwitchStatement' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(319,12): error TS2339: Property 'isCaseClause' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/terminal-status-consistency.test.ts(327,6): error TS2339: Property 'forEachChild' does not exist on type 'typeof import("/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-255/node_modules/typescript/lib/version")'.
+src/__tests__/test.bench.ts(10,10): error TS2724: '"vitest"' has no exported member named 'bench'. Did you mean 'Bench'?
+src/__tests__/unit-run.test.ts(19,54): error TS2459: Module '"../types"' declares 'TranscriptMessage' locally, but it is not exported.
+src/__tests__/unit-run.test.ts(159,7): error TS2352: Conversion of type '{ content: never[]; }' to type 'AgentToolResult<SubagentResult>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'details' is missing in type '{ content: never[]; }' but required in type 'AgentToolResult<SubagentResult>'.

@@ -1,3 +1,4 @@
+// Purpose: Shared types, constants, and the error/termination classification taxonomy.
 /**
  * brl-subagent — Type Definitions
  *
@@ -6,6 +7,8 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { Static } from "typebox";
+import type { delegateTaskParamsSchema } from "./schema";
 import type { TranscriptMessage } from "./transcript-tail";
 
 // ---------------------------------------------------------------------------
@@ -458,7 +461,7 @@ export interface GraphTask {
 	noBuiltinTools?: boolean;
 	systemPrompt?: string;
 	inheritSystemPrompt?: boolean;
-	dependsOn: string[];
+	dependsOn?: string[];
 }
 
 /** One wave of tasks executed together in a graph. */
@@ -491,6 +494,24 @@ export type DelegateTaskDetails =
 	| ParallelDetails
 	| GraphDetails
 	| undefined;
+
+/**
+ * The delegate_task handler's params (issue #229 item 4) — the type the
+ * handler's inline block used to spell out, hoisted here so it is nameable.
+ *
+ * Why it matters: `approvalMode` is in the registered schema and in
+ * KNOWN_DELEGATE_KEYS, and reaches execute() at runtime through the spread —
+ * but a reader of `params` inside the handler could not see it. The key-set
+ * is compile-time ratcheted in src/index.ts against KNOWN_DELEGATE_KEYS
+ * (schema ↔ KNOWN_DELEGATE_KEYS ↔ this type); the missing key is invisible at
+ * runtime, so only the compiler can catch its removal.
+ *
+ * A type ALIAS, not an interface: the handler passes `params` to
+ * findUnknownParams/resolveSubagentParams (Record<string, unknown> params),
+ * and only a type alias gets the implicit index signature an interface
+ * lacks.
+ */
+export type DelegateTaskParams = Static<typeof delegateTaskParamsSchema>;
 
 // ---------------------------------------------------------------------------
 // Resolved params (after preset merging + validation)
@@ -636,7 +657,7 @@ export const RESERVED_COMMAND_NAMES = new Set([
 	"model", "thinking", "concurrency", "depth", "history", "monitor",
 	"preset", "retry", "reset", "priority", "templates", "dashboard", "approval",
  "costlimit", "historyentries", "sla", "completionnotify",
-	"graph", "sla-stats",
+	"graph", "sla-stats", "compliance",
 ]);
 
 // ---------------------------------------------------------------------------
