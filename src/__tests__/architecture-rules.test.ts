@@ -23,9 +23,18 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { builtinModules } from "node:module";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import ts from "typescript";
+import {
+	isCallExpression,
+	isExportDeclaration,
+	isImportDeclaration,
+	isNamedImports,
+	isStringLiteral,
+	parseTexts,
+	SyntaxKind,
+} from "../../scripts/ts-ast.mjs";
+import type { Node, SourceFile } from "../../scripts/ts-ast.mjs";
 
 const SRC = "src";
 
@@ -66,16 +75,35 @@ function listModules(): string[] {
 		.sort();
 }
 
+/**
+ * Every module's parsed source, built with ONE `parseTexts` call per run (not
+ * one per file): the sources do not change during a run, so re-parsing would be
+ * pure overhead.
+ */
+let parsedModules: Map<string, SourceFile> | undefined;
+
+function moduleSourceFiles(): Map<string, SourceFile> {
+	if (!parsedModules) {
+		parsedModules = parseTexts(
+			listModules().map((file) => {
+				const absolute = join(SRC, file);
+				return { path: absolute, text: readFileSync(absolute, "utf8") };
+			}),
+		);
+	}
+	return parsedModules;
+}
+
 function parseImports(file: string): ImportEdge[] {
-	const text = readFileSync(join(SRC, file), "utf8");
-	const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+	const source = moduleSourceFiles().get(resolve(join(SRC, file)));
+	if (!source) throw new Error(`architecture-rules: no parsed source file for ${file}`);
 	const edges: ImportEdge[] = [];
 
-	const visit = (node: ts.Node): void => {
-		if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+	const visit = (node: Node): void => {
+		if (isImportDeclaration(node) && isStringLiteral(node.moduleSpecifier)) {
 			const clause = node.importClause;
 			const names: string[] = [];
-			if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+			if (clause?.namedBindings && isNamedImports(clause.namedBindings)) {
 				for (const element of clause.namedBindings.elements) names.push((element.propertyName ?? element.name).text);
 			}
 			edges.push({
@@ -84,13 +112,13 @@ function parseImports(file: string): ImportEdge[] {
 				typeOnly: clause?.isTypeOnly ?? false,
 				names,
 			});
-		} else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+		} else if (isExportDeclaration(node) && node.moduleSpecifier && isStringLiteral(node.moduleSpecifier)) {
 			edges.push({ from: file, specifier: node.moduleSpecifier.text, typeOnly: node.isTypeOnly, names: [] });
 		} else if (
-			ts.isCallExpression(node) &&
-			node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+			isCallExpression(node) &&
+			node.expression.kind === SyntaxKind.ImportKeyword &&
 			node.arguments.length > 0 &&
-			ts.isStringLiteral(node.arguments[0])
+			isStringLiteral(node.arguments[0])
 		) {
 			edges.push({ from: file, specifier: node.arguments[0].text, typeOnly: false, names: [] });
 		}
