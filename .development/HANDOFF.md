@@ -2,7 +2,7 @@
 
 > Updated 2026-09-30 — **the cockpit moved to the `dev` checkout** (`.development/`, `graphify-out/`,
 > `.pi/` tools, shared `node_modules`); `main` is the pristine release checkout. **v2.3.9 live on npm; the user
-> daily-drives the DEV tree** (local-path install @ the dev tree — `5827745`; dogfooding green; pi **1.0.0** smoke-verified 2026-10-02).
+> daily-drives the DEV tree** (local-path install @ the dev tree — `0b1cdc3`; dogfooding green; pi **1.0.0** smoke-verified 2026-10-02).
 > Read this first: it is the state a fresh conductor cannot infer from the repo alone.
 > Companion durable records: `.development/` (ROADMAP, AUDIT, TASKS, METRICS, FRICTION_LOG,
 > INVESTIGATION_reload_wake.md), `.pi/skills/worktree/SKILL.md` (the rituals),
@@ -12,10 +12,10 @@
 
 | | |
 |---|---|
-| pi runtime | **1.0.0** (updated 2026-10-02; boot clean + live smoke PASSED: spawn → steer → completion, guard probe blocked a cockpit `src/` write — Rule 5 still enforced under 1.0.0) — devDeps/lockfile now **1.0.0 too** (PR #257, `5827745`): **the skew is CLOSED**, check-repo's runtime line is green, and the cockpit's shared tree was refreshed with `npm ci`. TypeScript stays **5.9.3** (TS 7 parked — #256: its root AST API is gone, blocking 3 ratchets + the release-gating smoke scanner) |
+| pi runtime | **1.0.0** (updated 2026-10-02; boot clean + live smoke PASSED: spawn → steer → completion, guard probe blocked a cockpit `src/` write — Rule 5 still enforced under 1.0.0) — devDeps/lockfile now **1.0.0 too** (PR #257, `5827745`): **the skew is CLOSED**, check-repo's runtime line is green, and the cockpit's shared tree was refreshed with `npm ci`. **TypeScript is now 7.0.2** (PR #263, `0b1cdc3`): migrated via the single containment adapter `scripts/ts-ast.mjs` (`typescript/unstable/*`), exact pin, `target: es2024` (ADR 0013; #256 closes at release) — the cockpit tree was refreshed again and `check-repo` is green under TS 7 |
 | `main` | **`b7c52e4`** — **v2.3.9 released** (release merge `7289618`; bump commit; GitHub release published; npm live). **Pristine since 2026-09-30: no `node_modules`, no docs/graph/.pi** (all moved to the dev cockpit) |
-| `dev` | **`5827745`** — the post-2.3.9 fix cycle merged: **#242** (#240 default-not-ceiling timeouts, `35badde`), **#243** (#239 schema-linked types, `fcb9dc2`, rebased after #242), **#245** (#241 steer delivery, `9c9b754`), **#246** (#244 deadline wording + single-timer ownership, `f892e3f`), **#248** (#247 contributor parity, `dec5fb65`), **#250** (#249 ARCHITECTURE rewrite + module-map guard, `949be9d`), **#252** (#251 architecture rules as tests, `3e17491`), **#254** (#253 ADR backfill, `290cf9f`) and **#257** (#255 SDK 1.0.0 bump + `erasableSyntaxOnly`, `5827745`); main still at the `b7c52e4` release; **COCKPIT since 2026-09-30** (holds `.development/`, `graphify-out/`, `.pi/`, the shared `node_modules`) |
-| Running extension | **Developing mode — local-path install of the dev checkout** (`brl-subagent-dev` @ `5827745`, includes #237–#257; #249/#251/#253/#255 are comments/docs/tests/deps only — no reload needed; **reloaded 2026-09-29 15:03Z — #240/#241/#244 all LIVE**; **pi updated to 1.0.0 (2026-10-02) — post-update smoke PASSED** (clean boot, zero errors; live spawn → steer → completion probe
+| `dev` | **`0b1cdc3`** — the post-2.3.9 fix cycle merged: **#242** (#240 default-not-ceiling timeouts, `35badde`), **#243** (#239 schema-linked types, `fcb9dc2`), **#245** (#241 steer delivery, `9c9b754`), **#246** (#244 deadline wording + single-timer ownership, `f892e3f`), **#248** (#247 contributor parity, `dec5fb65`), **#250** (#249 ARCHITECTURE rewrite + module-map guard, `949be9d`), **#252** (#251 architecture rules as tests, `3e17491`), **#254** (#253 ADR backfill, `290cf9f`), **#257** (#255 SDK 1.0.0 bump + `erasableSyntaxOnly`, `5827745`) and **#263** (#256 TypeScript 7.0.2 + ES2024 via the AST adapter, `0b1cdc3`); main still at the `b7c52e4` release; **COCKPIT since 2026-09-30** (holds `.development/`, `graphify-out/`, `.pi/`, the shared `node_modules`) |
+| Running extension | **Developing mode — local-path install of the dev checkout** (`brl-subagent-dev` @ `0b1cdc3`, includes #237–#263; #249/#251/#253/#255/#256 are comments/docs/tests/deps/tooling only — no reload needed; **reloaded 2026-09-29 15:03Z — #240/#241/#244 all LIVE**; **pi updated to 1.0.0 (2026-10-02) — post-update smoke PASSED** (clean boot, zero errors; live spawn → steer → completion probe
 SMOKE-STEER-100; the guard extension loaded and blocked a cockpit `src/` write probe; 1.0.0's changelog has no breaking
 format, no extension-API changes and no migration doc — its defaults changed TUI mode to fullscreen): `npm:brl-subagent` was removed and the ABSOLUTE dev path installed; `pi list` shows exactly one brl-subagent entry (the dev tree, registered source displays as a relative path but resolves correctly). A user `/reload` activates it in-session — until then the session still holds the published 2.3.9. To remove later, use the ABSOLUTE path from `pi list` (friction `pi-remove-source-mismatch`). Rationale: the user is daily-driving the dev tree for a few days. |
 | npm | **2.3.9 live (latest)** — published and approved 2026-09-27; the running install was switched to it (step 8) |
@@ -267,15 +267,16 @@ the first fixture also matched the text scan; see friction `spec-derived-test-ta
 dev→main release. Findings:
 `.development/investigations/deadcode-triage-2026-09-27/`.
 
-All worktrees cleaned; `main` @ `b7c52e4` (v2.3.9, **pristine**), `dev` @ `5827745` (**the cockpit**); the running
+All worktrees cleaned; `main` @ `b7c52e4` (v2.3.9, **pristine**), `dev` @ `0b1cdc3` (**the cockpit**); the running
 install is the DEV tree (daily-driving; #240 + #241 + #244 live). Board: **#230** (P0 Rule 11, graph hook —
-now also the owner of the hook-side path model, parked pending the upstream-evidence call) + **#256** (parked: TS 7
-migration, blocked on the classic AST API);
-**#229/#233/#235/#239/#240/#241/#244/#247/#249/#251/#253/#255** merged to `dev`, auto-close at the next dev→main release.
+now also the owner of the hook-side path model, parked pending the upstream-evidence call) + **#259/#260/#261**
+(LOW, Run History UX — one row per run / list-returning navigation / full-output view; logged 2026-10-03);
+**#229/#233/#235/#239/#240/#241/#244/#247/#249/#251/#253/#255/#256** merged to `dev`, auto-close at the next dev→main release.
 Cockpit move **COMPLETE** (Phases 0–1b DONE 2026-09-30; pi now runs from `brl-subagent-dev`);
 Phase 2 **MERGED** (PR #248 → `dec5fb65`; contributor parity live on `dev`); docs infra **MERGED**
 (PR #250 → `949be9d` — ARCHITECTURE lean + generated-guarded) + architecture rules **MERGED**
 (PR #252 → `3e17491` — seven mutation-proofed fitness functions) + ADR backfill **MERGED**
-(PR #254 → `290cf9f` — twelve accepted records + generated, guarded index); dependency line **CLOSED**
-(PR #257 → `5827745` — `@earendil-works/*` 1.0.0 + typebox 1.3.34 + `erasableSyntaxOnly`; cockpit tree
-refreshed; graph 1339 nodes / 2969 edges / 148 communities); **#230 next**.
+(PR #254 → `290cf9f` — twelve records + guarded index; ADR 0013 added → 13) + dependency line **CLOSED**
+(PR #257 → `5827745` — `@earendil-works/*` 1.0.0 + typebox 1.3.34 + `erasableSyntaxOnly`) + **toolchain parity
+CLOSED** (PR #263 → `0b1cdc3` — TypeScript 7.0.2 + ES2024 behind the `scripts/ts-ast.mjs` adapter; 7/7 mutations
+re-proven; graph 1397 nodes / 3066 edges / 157 communities); **#230 next**.
