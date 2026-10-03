@@ -20,8 +20,9 @@ _Generated from each `.development/decisions/NNNN-*.md` record by `npm run docs:
 | 0010 | [Distribution: npm-only installs, staged OIDC releases](./0010-distribution-npm-only.md) | Accepted | 2026-09-12 |
 | 0011 | [The cockpit: development lives in the dev checkout, main stays pristine](./0011-cockpit-dev-checkout.md) | Accepted | 2026-09-30 |
 | 0012 | [Documentation that cannot drift: generated module map + executable architecture rules](./0012-documentation-cannot-drift.md) | Accepted | 2026-09-30 |
+| 0013 | [TypeScript 7: the AST lives behind one unstable-API adapter](./0013-typescript-7-unstable-ast.md) | Accepted | 2026-10-03 |
 
-**12 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
+**13 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
 
 <!-- END GENERATED: adr-index -->
 

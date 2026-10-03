@@ -35,7 +35,19 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createJiti } from "jiti";
-import ts from "typescript";
+import {
+	SyntaxKind,
+	isCallExpression,
+	isExportDeclaration,
+	isExternalModuleReference,
+	isIdentifier,
+	isImportDeclaration,
+	isImportEqualsDeclaration,
+	isNamedExports,
+	isNamespaceImport,
+	isStringLiteral,
+	parseTexts,
+} from "../../scripts/ts-ast.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..");
@@ -159,7 +171,7 @@ function walkFiles(dir, ext) {
  * and fully type-only named imports are erased at compile time, so they impose
  * no runtime dependency.
  *
- * @param {ts.ImportClause | undefined} clause
+ * @param {import("../../scripts/ts-ast.mjs").ImportClause | undefined} clause
  */
 function isRuntimeImportClause(clause) {
 	if (!clause) return true; // `import "x"` — side-effect import
@@ -167,18 +179,18 @@ function isRuntimeImportClause(clause) {
 	if (clause.name) return true; // default binding
 	const bindings = clause.namedBindings;
 	if (!bindings) return true;
-	if (ts.isNamespaceImport(bindings)) return true;
+	if (isNamespaceImport(bindings)) return true;
 	// NamedImports: runtime if it has any value binding (or is a bare `import {}`).
 	return bindings.elements.length === 0 || bindings.elements.some((el) => !el.isTypeOnly);
 }
 
 /**
- * @param {ts.ExportDeclaration} node
+ * @param {import("../../scripts/ts-ast.mjs").ExportDeclaration} node
  */
 function isTypeOnlyExport(node) {
 	if (node.isTypeOnly) return true;
 	const clause = node.exportClause;
-	if (clause && ts.isNamedExports(clause) && clause.elements.length > 0 && clause.elements.every((el) => el.isTypeOnly)) {
+	if (clause && isNamedExports(clause) && clause.elements.length > 0 && clause.elements.every((el) => el.isTypeOnly)) {
 		return true;
 	}
 	return false;
@@ -192,16 +204,16 @@ function isTypeOnlyExport(node) {
  * callee (`ImportKeyword`) and is handled separately, so the two never double
  * count.
  *
- * @param {ts.Node} node
+ * @param {import("../../scripts/ts-ast.mjs").Node} node
  * @returns {string | undefined}
  */
 function requireSpecifier(node) {
 	if (
-		ts.isCallExpression(node) &&
-		ts.isIdentifier(node.expression) &&
+		isCallExpression(node) &&
+		isIdentifier(node.expression) &&
 		node.expression.text === "require" &&
 		node.arguments.length > 0 &&
-		ts.isStringLiteral(node.arguments[0])
+		isStringLiteral(node.arguments[0])
 	) {
 		return node.arguments[0].text;
 	}
@@ -214,13 +226,13 @@ function requireSpecifier(node) {
  * compile time and imposes no runtime dependency, so it is excluded like the
  * other type-only forms.
  *
- * @param {ts.Node} node
+ * @param {import("../../scripts/ts-ast.mjs").Node} node
  * @returns {string | undefined}
  */
 function importEqualsSpecifier(node) {
-	if (!ts.isImportEqualsDeclaration(node) || node.isTypeOnly) return undefined;
+	if (!isImportEqualsDeclaration(node) || node.isTypeOnly) return undefined;
 	const ref = node.moduleReference;
-	if (ts.isExternalModuleReference(ref) && ref.expression && ts.isStringLiteral(ref.expression)) {
+	if (isExternalModuleReference(ref) && ref.expression && isStringLiteral(ref.expression)) {
 		return ref.expression.text;
 	}
 	return undefined;
@@ -237,35 +249,58 @@ function importEqualsSpecifier(node) {
  * @returns {string[]}
  */
 function collectRuntimeSpecifiers(filePath, source) {
-	const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	return collectRuntimeSpecifiersFromFile(filePath, parseOne(filePath, source));
+}
+
+/**
+ * Parse a single in-memory source through the shared AST adapter.
+ *
+ * @param {string} filePath
+ * @param {string} source
+ * @returns {import("../../scripts/ts-ast.mjs").SourceFile}
+ */
+function parseOne(filePath, source) {
+	const sourceFile = parseTexts([{ path: filePath, text: source }]).get(resolve(filePath));
+	if (!sourceFile) throw new Error(`smoke-artifact: no parsed source file for ${filePath}`);
+	return sourceFile;
+}
+
+/**
+ * Collect every runtime import specifier in an already-parsed source file.
+ *
+ * @param {string} filePath
+ * @param {import("../../scripts/ts-ast.mjs").SourceFile} sourceFile
+ * @returns {string[]}
+ */
+function collectRuntimeSpecifiersFromFile(filePath, sourceFile) {
 	/** @type {string[]} */
 	const specifiers = [];
 
-	/** @param {ts.Node} node */
+	/** @param {import("../../scripts/ts-ast.mjs").Node} node */
 	const visit = (node) => {
 		/** @type {string | undefined} */
 		let specifier;
 		if (
-			ts.isImportDeclaration(node) &&
-			ts.isStringLiteral(node.moduleSpecifier) &&
+			isImportDeclaration(node) &&
+			isStringLiteral(node.moduleSpecifier) &&
 			isRuntimeImportClause(node.importClause)
 		) {
 			specifier = node.moduleSpecifier.text;
 		} else if (
-			ts.isExportDeclaration(node) &&
+			isExportDeclaration(node) &&
 			node.moduleSpecifier &&
-			ts.isStringLiteral(node.moduleSpecifier) &&
+			isStringLiteral(node.moduleSpecifier) &&
 			!isTypeOnlyExport(node)
 		) {
 			specifier = node.moduleSpecifier.text;
-		} else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+		} else if (isCallExpression(node) && node.expression.kind === SyntaxKind.ImportKeyword) {
 			const [arg] = node.arguments;
-			if (arg && ts.isStringLiteral(arg)) specifier = arg.text;
+			if (arg && isStringLiteral(arg)) specifier = arg.text;
 		} else {
 			specifier = requireSpecifier(node) ?? importEqualsSpecifier(node);
 		}
 		if (specifier !== undefined) specifiers.push(specifier);
-		ts.forEachChild(node, visit);
+		node.forEachChild(visit);
 	};
 	visit(sourceFile);
 	return specifiers;
@@ -283,9 +318,21 @@ function collectRuntimeSpecifiers(filePath, source) {
  * @returns {{ specifier: string, packageName: string }[]}
  */
 function classifyRuntimeSpecifiers(filePath, source) {
+	return classifyRuntimeSpecifiersFromFile(filePath, parseOne(filePath, source));
+}
+
+/**
+ * Classify an already-parsed source file's runtime specifiers (see
+ * `classifyRuntimeSpecifiers`).
+ *
+ * @param {string} filePath
+ * @param {import("../../scripts/ts-ast.mjs").SourceFile} sourceFile
+ * @returns {{ specifier: string, packageName: string }[]}
+ */
+function classifyRuntimeSpecifiersFromFile(filePath, sourceFile) {
 	/** @type {{ specifier: string, packageName: string }[]} */
 	const out = [];
-	for (const specifier of collectRuntimeSpecifiers(filePath, source)) {
+	for (const specifier of collectRuntimeSpecifiersFromFile(filePath, sourceFile)) {
 		if (isRelativeSpecifier(specifier) || isBuiltinSpecifier(specifier) || specifier.startsWith("#")) continue;
 		out.push({ specifier, packageName: packageNameOf(specifier) });
 	}
@@ -398,9 +445,12 @@ function runArtifactChecks(packageRoot) {
 		/** @type {string[]} */
 		const missing = [];
 		const used = new Set();
+		// ONE parse for all packed sources — the tarball is immutable during the run.
+		const parsed = parseTexts(srcFiles.map((file) => ({ path: file, text: readFileSync(file, "utf8") })));
 		for (const file of srcFiles) {
-			const source = readFileSync(file, "utf8");
-			for (const { specifier, packageName } of classifyRuntimeSpecifiers(file, source)) {
+			const sourceFile = parsed.get(resolve(file));
+			if (!sourceFile) throw new Error(`smoke-artifact: no parsed source file for ${file}`);
+			for (const { specifier, packageName } of classifyRuntimeSpecifiersFromFile(file, sourceFile)) {
 				used.add(packageName);
 				if (!declared.has(packageName)) {
 					missing.push(
