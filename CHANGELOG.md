@@ -2,6 +2,17 @@
 
 Release history for brl-subagent. Newest first. The full narrative for each release lives in the GitHub release notes.
 
+### v2.4.0
+
+- **Explicit timeouts are honored (issue #240):** the 30-minute "hard cap" silently shortened any explicit `timeout`, so a legitimate long background run could not be given one. An explicit timeout is now honored verbatim — 30 minutes is the default for a background run that passes none (the orphan protection for unattended runs), never a ceiling.
+- **One deadline timer per run (issue #244):** with an explicit timeout, two timers armed at the same deadline; the session-manager now owns it and the index-level timer arms only on the no-timeout default path. User-visible wording says "deadline", and `retryOnTimeout` is documented as foreground-only.
+- **Steering actually steers (issue #241):** `steer_subagent` recorded the request and flipped a status but never delivered the message — it now delivers to the live session via the SDK, and writes its transcript audit line only after a successful delivery.
+- **Toolchain parity with pi 1.0.0 (issue #255):** the `@earendil-works/*` devDependencies move to 1.0.0, closing a long-standing skew between the types the extension compiles against and the runtime it executes on; `erasableSyntaxOnly` now pins the property pi's direct TypeScript-source loading depends on.
+- **TypeScript 7.0.2 + ES2024 (issue #256):** TypeScript 7 removed the classic compiler API from the package root; the four guards that consumed it — three AST ratchets and the release-gating packaging scanner — now run through a single containment adapter (`scripts/ts-ast.mjs`) holding every `typescript/unstable/*` import. All seven architecture mutations were re-proven after the port; the compiler is pinned exactly, and ADR 0013 records that TypeScript majors are deliberate migrations.
+- **Hardening (issues #229, #239, #233, #235):** retry pins (origin e2e + snapshot/resolve drift guard), parameter types derived from the registered schema, and dead-code removals.
+- **For contributors (issues #247, #249, #251, #253 — GitHub-visible):** development docs and tooling are tracked on `dev` (see `CONTRIBUTING.md`); `ARCHITECTURE.md` is a lean current-state document whose module map is generated and CI-guarded; seven architecture rules execute as tests; thirteen ADRs record the load-bearing decisions behind a guarded index.
+- 1212 tests across 58 files.
+
 ### v2.3.9
 
 - **A running subagent no longer flashes ✗ (issue #206):** while a foreground run was using tools, its rendered line showed the failure icon (and before the first turn, ✓) because every live partial update was classified with the *settled-result* predicate — a mid-run `stopReason: "toolUse"` reads as an error there. Live partials now carry the unsettled sentinel (`exitCode: -1`), so a streaming run renders as running until the real result lands; a run that genuinely *ends* on a tool turn still renders ✗. This is the release's only user-visible runtime change. It also adds the first tests for the live-render path (level-1 emitted partials through the real paths; level-2 renderer assertions) — mutation-verified: reverting the one-line fix fails exactly the two partial assertions.
