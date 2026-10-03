@@ -1,8 +1,9 @@
 # Handoff — 2026-09-22 (night)
 
-> Updated 2026-09-30 — **the cockpit moved to the `dev` checkout** (`.development/`, `graphify-out/`,
-> `.pi/` tools, shared `node_modules`); `main` is the pristine release checkout. **v2.3.9 live on npm; the user
-> daily-drives the DEV tree** (**v2.4.0 is published on npm and installed**; the running extension is the published artifact, probe-verified 2026-10-03; the dev cockpit stays on disk for the next cycle; pi **1.0.0**).
+> Updated 2026-10-03 — **v2.4.0 is published on npm (`latest`) and installed**; the running extension is the
+> published artifact (published-build probe passed 2026-10-03). The **cockpit** is the `dev` checkout
+> (`.development/`, `graphify-out/`, `.pi/` tools, shared `node_modules`); `main` is the pristine release
+> checkout (v2.4.0 tagged).
 > Read this first: it is the state a fresh conductor cannot infer from the repo alone.
 > Companion durable records: `.development/` (ROADMAP, AUDIT, TASKS, METRICS, FRICTION_LOG,
 > INVESTIGATION_reload_wake.md), `.pi/skills/worktree/SKILL.md` (the rituals),
@@ -13,7 +14,7 @@
 | | |
 |---|---|
 | pi runtime | **1.0.0** (updated 2026-10-02; boot clean + live smoke PASSED: spawn → steer → completion, guard probe blocked a cockpit `src/` write — Rule 5 still enforced under 1.0.0) — devDeps/lockfile now **1.0.0 too** (PR #257, `5827745`): **the skew is CLOSED**, check-repo's runtime line is green, and the cockpit's shared tree was refreshed with `npm ci`. **TypeScript is now 7.0.2** (PR #263, `0b1cdc3`): migrated via the single containment adapter `scripts/ts-ast.mjs` (`typescript/unstable/*`), exact pin, `target: es2024` (ADR 0013; #256 closes at release) — the cockpit tree was refreshed again and `check-repo` is green under TS 7 |
-| `main` | **`8a00ee3`** — **v2.4.0 tagged** (release merge `d954dd6`; bump commit `8a00ee3`; GitHub release **draft awaiting the user's publish**; the staged npm publish follows). **Pristine since 2026-09-30: no `node_modules`, no docs/graph/.pi** (all moved to the dev cockpit) |
+| `main` | **`8a00ee3`** — **v2.4.0 released** (release merge `d954dd6`; bump commit `8a00ee3`; GitHub release published 2026-10-03; npm `latest` = 2.4.0 with signed provenance). **Pristine since 2026-09-30: no `node_modules`, no docs/graph/.pi** (all moved to the dev cockpit) |
 | `dev` | **`92cb3da`** (the v2.4.0 release commit `8a00ee3` + post-release docs commits) — the post-2.3.9 fix cycle shipped as **v2.4.0**: all 13 issues closed (10 manually — the release PR's comma-separated keyword list did not auto-close: friction `fixes-keyword-omission`; `dev` was briefly deleted by GitHub's auto-delete-head-branches and restored). Cycle: **#242** (#240 default-not-ceiling timeouts, `35badde`), **#243** (#239 schema-linked types, `fcb9dc2`), **#245** (#241 steer delivery, `9c9b754`), **#246** (#244 deadline wording + single-timer ownership, `f892e3f`), **#248** (#247 contributor parity, `dec5fb65`), **#250** (#249 ARCHITECTURE rewrite + module-map guard, `949be9d`), **#252** (#251 architecture rules as tests, `3e17491`), **#254** (#253 ADR backfill, `290cf9f`), **#257** (#255 SDK 1.0.0 bump + `erasableSyntaxOnly`, `5827745`) and **#263** (#256 TypeScript 7.0.2 + ES2024 via the AST adapter, `0b1cdc3`); main at the `v2.4.0` tag; **COCKPIT since 2026-09-30** (holds `.development/`, `graphify-out/`, `.pi/`, the shared `node_modules`) |
 | Running extension | **`npm:brl-subagent` 2.4.0 — the PUBLISHED artifact** (ritual step 9 done 2026-10-03: dev-path install removed → `pi install npm:brl-subagent` → `pi update --extensions` → `/reload`; `pi list` shows exactly one brl-subagent entry; **published-build probe PASSED** — `RELEASE-240-OK`, 870 ms, spawn → completion; the single boot warning is the designed `approvalMode: 'writes'` auto-approve notice). **History of the dev-install period:** **reloaded 2026-09-29 15:03Z — #240/#241/#244 all LIVE**; **pi updated to 1.0.0 (2026-10-02) — post-update smoke PASSED** (clean boot, zero errors; live spawn → steer → completion probe
 SMOKE-STEER-100; the guard extension loaded and blocked a cockpit `src/` write probe; 1.0.0's changelog has no breaking
