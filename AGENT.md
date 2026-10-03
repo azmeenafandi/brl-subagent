@@ -66,6 +66,11 @@ delegation-heavy work.
 - Background fan-out: `tasks: [...], background: true` — one background agent per task, one id per task in task order, one wake per agent.
 - retryRunId: pass a failed run's id to re-run it with its recorded task and params; explicit parameters override the originals.
 
+## Deadlines and retries
+
+- `timeout` (ms) is a **deadline, not a ceiling** — an explicit value is honored as given; 30 minutes is only the default for a background run that passes none. Background expiry aborts the session (the run ends `stopped`); foreground expiry kills the process.
+- `retryOnTimeout` applies to **foreground runs only**. A timed-out background run is not auto-retried: re-dispatch it with `retryRunId` if that is the right call.
+
 ## Mechanics pointer
 
 Presets and templates are documented in the schema, not here. Judgment only:

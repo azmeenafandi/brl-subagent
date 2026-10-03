@@ -14,7 +14,7 @@
 - **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and a 30-minute default deadline for runs that don't set one. Nothing orphans; nothing leaks.
 - **Preset-driven tool scoping** — every subagent runs with exactly the tools its job needs, restricted by preset or per-call `tools`/`excludeTools`, with auto-route that picks the right preset when you don't.
 - **Templates with slots** — saved, file-backed task templates with `${param}` placeholders for workflows you run again and again.
-- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence, and a 975+ test suite pinning every contract against the real pi SDK.
+- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence, and a 1200+ test suite pinning every contract against the real pi SDK.
 
 ---
 
@@ -89,7 +89,7 @@ All settings persist across sessions.
 | `inheritSystemPrompt` | boolean | `true` | Whether to inherit the main agent's system prompt. Set `false` to save tokens. |
 | `thinkingLevel` | string | — | `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. Capped at user's configured max. |
 | `outputFile` | string | — | Path for the subagent to write full findings. Returns only a summary. |
-| `timeout` | number | — | Max milliseconds. Exceeded → SIGTERM (5s grace) → SIGKILL. Background runs with no explicit `timeout` get a 30-minute default deadline; an explicit timeout is honored as given (30 minutes is a default, not a ceiling). A raw value `≥ 2^31-1` normalizes to the default. |
+| `timeout` | number | — | Max milliseconds. Foreground: exceeded → SIGTERM (5s grace) → SIGKILL. Background: the session is aborted and the run ends `stopped` with the timeout reason. A background run with no explicit `timeout` gets the 30-minute default deadline — an explicit timeout is honored as given (a default, not a ceiling). A raw value `≥ 2^31-1` normalizes to no timeout (for a background run, the 30-minute default then applies). |
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
 | `background` | boolean | `false` | Spawn as an independent background session; returns an ID immediately. With `tasks` it fans out (one background agent per task, one ID per task), and the conductor is woken once per agent as each finishes. See [Background execution](#background-execution). |
 | `priority` | string | — | Concurrency priority: `critical` / `high` / `normal` / `low`. Defaults to `normal`; higher-priority delegations queue ahead. `tasks[]` / `graph[]` steps can set `priority` per unit (see below). |

@@ -280,9 +280,9 @@ Goal: ship brl-subagent as a first-class pi package so installation and updates 
 
 **Deferred → RESOLVED in v2.3.6:** pin doc version strings to `package.json` (the README ×2 and the AGENT.md header shipped stale in 2.3.5). Now enforced mechanically (#166).
 
-### Merged to `dev` — v2.4.0 (unreleased, as of 2026-09-30)
+### Merged to `dev` — v2.4.0 (unreleased, as of 2026-10-03)
 
-Eight issues fixed after v2.3.9 shipped; all of them auto-close when the next `dev → main` release merge lands
+Thirteen issues fixed after v2.3.9 shipped; all of them auto-close when the next `dev → main` release merge lands
 (the `Fixes #N` keywords fire on the merge to the default branch).
 
 | Issue | Item | Shipped as |
@@ -295,12 +295,17 @@ Eight issues fixed after v2.3.9 shipped; all of them auto-close when the next `d
 | #241 | **Steer delivery** — `steer_subagent` actually delivers to the live session (it previously only recorded the request) | PR #245 |
 | #244 | **Deadline follow-ups** — honest "deadline" wording, exactly one deadline timer per run, `retryOnTimeout` documented foreground-only | PR #246 |
 | #247 | **Contributor parity** — `.development/**`, `.pi/skills/**`, `.pi/extensions/**` tracked on `dev`; `.gitignore` reworked; `CONTRIBUTING.md` added | PR #248 |
+| #249 | **Lean `ARCHITECTURE.md` + generated module map** — 923 → 157 lines; the map is generated from per-module purpose headers and CI-guarded | PR #250 |
+| #251 | **Executable architecture rules** — seven import-graph fitness functions (no runtime cycles, entry-point confinement, the `types`→`schema` type-only direction, pure-helper boundary, process-execution confinement, runtime-dependency allowlist, session-manager reader API), all mutation-proven | PR #252 |
+| #253 | **ADR backfill** — twelve accepted decision records with a generated, CI-guarded index (ADR 0013 added later; 13 total) | PR #254 |
+| #255 | **SDK 1.0.0 + `erasableSyntaxOnly`** — closes the type/runtime skew (the runtime was already pi 1.0.0); the TypeScript 7 migration was evaluated here and landed separately | PR #257 |
+| #256 | **TypeScript 7.0.2 + ES2024** — the four classic-AST consumers ported through one containment adapter (`scripts/ts-ast.mjs`); exact pin; ADR 0013; seven mutations re-proven | PR #263 |
 
 **Also on `dev` (infrastructure, no issue):** the 2026-09-30 **cockpit move** — `.development/`,
 `graphify-out/`, the `.pi` tools and the shared `node_modules` now live in the `brl-subagent-dev` checkout
 (`main` is pristine); the knowledge graph describes `dev` and is refreshed at every merge by
-`.pi/skills/worktree/graph-refresh.sh` (1223 nodes / 2823 edges / 77 communities at the first refresh);
-`worktree-prep.sh` now accepts linked worktrees. **1201 tests across 55 files.**
+`.pi/skills/worktree/graph-refresh.sh` (1397 nodes / 3066 edges / 157 communities as of 2026-10-03);
+`worktree-prep.sh` now accepts linked worktrees; Dependabot is pinned to `dev`. **1212 tests across 58 files.**
 
 ### Shipped (2026-09-27, v2.3.9)
 

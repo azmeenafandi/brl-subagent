@@ -1,7 +1,7 @@
 {
   "name": "brl-subagent",
   "version": "2.3.9",
-  "description": "Subagent extension for pi with configurable model and thinking mode via selection UI",
+  "description": "Subagent delegation for pi — blocking or background runs, chain/parallel/graph modes, presets and task templates, live monitor, and dispatch capability guards.",
   "keywords": [
     "pi-package"
   ],

@@ -4,6 +4,7 @@ node_modules
 REVIEW_*.md
 graphify-out/
 __pycache__/
+vitest-report.json
 
 # — .pi: the TOOLS are tracked for contributor parity; session state and
 # local config stay local. Any NEW .pi state dir is ignored by default. —
