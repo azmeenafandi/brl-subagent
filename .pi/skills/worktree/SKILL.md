@@ -260,14 +260,18 @@ mechanics, verdict format: `references/review-dispatch.md`.
 - **`worktree-cleanup.sh <path> [--branch <name>]`** — after the PR is merged OR
   closed. Removes the worktree; deletes the branch (auto-derived when `--branch`
   is omitted) from local and `origin` (never `dev`/`main`); then syncs the
-  cockpit. Unconditional; warns if the shared tree is stale.
+  cockpit. The pull is skipped with a warning when the cockpit has uncommitted
+  changes. Unconditional; warns if the shared tree is stale.
 - **`graph-refresh.sh`** — after EVERY merge into `dev` (lifecycle step 6): runs
   `graphify . --update` in the cockpit, then `graph-check.py`. Refreshed by this
-  explicit step, never by a hook (#230).
+  explicit step, never by a hook (#230). Add `graphify cluster-only <cockpit>`
+  manually when a fresh `GRAPH_REPORT.md`/community naming is wanted (the extract
+  keeps `graph.json` — nodes, edges, communities — current on its own).
 - **`graph-check.py`** — after a refresh, and on demand. Verifies module AND
   exported-symbol coverage against `src/*.ts`, prints its coverage boundaries
-  (what it does NOT check), and exits non-zero on any discrepancy. Run from the
-  cockpit.
+  (what it does NOT check), and exits non-zero on any discrepancy — catching the
+  silent refresh failures that issues #173 (missing module) and #189 (missing
+  symbols / stale-content rewrite) record. Run from the cockpit.
 
 ## Notes
 

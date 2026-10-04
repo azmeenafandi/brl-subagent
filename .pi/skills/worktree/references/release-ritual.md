@@ -40,7 +40,7 @@ because nothing checked them and no test pins them.
    - `TASKS.md` — a changelog row: items, issues closed, process changes, test
      count, board state, friction
    - `METRICS.md` — the sprint's row (run the metrics script; see the
-     sprint-end ritual below)
+     sprint-end ritual — `references/sprint-end-ritual.md`)
 3. **Release merge (`dev` → `main`)** — merge commit, never squash; a release PR is preferred for the record. Two post-merge checks, both learned the hard way (2026-10-03, v2.4.0):
    - **Auto-close fired?** The PR body must list **one `Fixes #N` per line** — a comma-separated list does NOT close (friction `fixes-keyword-omission`, recurrence: v2.4.0 auto-closed 3 of 13). Verify after the merge and close stragglers with a status comment naming the release commit.
    - **`dev` still exists?** GitHub's *auto-delete head branches* deletes the PR head — and the release PR's head is `dev`. Restore with `git push origin dev` at the release commit if it is gone. After the bump + tag, fast-forward `dev` to the release commit (`git fetch origin main && git merge --ff-only origin/main && git push origin dev`) so both branches sit on the release.
@@ -94,9 +94,10 @@ because nothing checked them and no test pins them.
 9. **Switch the running install back to the published package** — *only after the
    staged publish is approved*, never before.
 
-   If the local development toggle is in use (`pi install <path>`, see
-   § Local development), the running extension is a **working-tree checkout**, not
-   the released artifact. Restore the shipped path:
+   If the local development toggle is in use (`pi install <path>`, see the
+   local-path toggle — `references/local-development.md`), the running extension
+   is a **working-tree checkout**, not the released artifact. Restore the
+   shipped path:
 
    ```bash
    pi remove /abs/path/to/brl-subagent-dev
@@ -114,7 +115,7 @@ because nothing checked them and no test pins them.
    The dev checkout itself can stay on disk for the next cycle — it is the
    *install* that changes, not the directory.
 
-9. **Sprint-end ritual** — Rule 11 recurrence escalation + trust metrics (below).
+9. **Sprint-end ritual** — Rule 11 recurrence escalation + trust metrics (see `references/sprint-end-ritual.md`).
 10. **Friction log** — one line per unexpected or inefficient outcome, logged as
    it happens, not deferred to the end.
 
