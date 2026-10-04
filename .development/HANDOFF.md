@@ -23,14 +23,16 @@ format, no extension-API changes and no migration doc — its defaults changed T
 | Worktrees | main + dev only (cockpit = dev; every task worktree cleaned) |
 | Graph | **1028 nodes / 2619 edges / 62 communities** — refreshed **2026-09-30** to describe the **DEV** tree (first refresh under the new model: `graph-refresh.sh` per merge; 17 files re-extracted, ~$0.01; `graph-check.py` green: 33/33 modules, 313/313 exported symbols). Pre-refresh state archived by graphify as `graphify-out/2026-09-30/` |
 
-## Next actions (2026-10-03, post-v2.4.0)
+## Next actions (2026-10-04, post-#266)
 
-1. **#230 (P0, Rule 11) — the graphify hook.** Fresh evidence from the release: the hook fired on the bump commit
-   and wrote an incomplete graph (87 nodes / 85 edges / 7 communities, vs the cockpit's 1397/3066/157) into
-   `main` — the release checkout — and it was removed by hand. Design against ADR 0011/0012: the graph is a
-   cockpit (`dev`) artifact refreshed only by `graph-refresh.sh`; the hook must stand down outside the cockpit
-   or delegate to that script (with `graph-check.py` verification). The issue carries the full evidence
-   (comment 2026-10-03).
+**Recently closed:** #230 (P0, Rule 11) — **closed no-fix 2026-10-04**: the installed graphify hook stands down in
+linked worktrees, so the cockpit graph changes only through the check-gated `graph-refresh.sh`; the residual
+exposure is the `main` checkout's gitignored artifact (nothing consumes it for scoping). Upstream graphify#3580
+stays open for them; local graphify 0.9.73 — upgrading to ≥0.9.75 is routine maintenance.
+
+1. **#265 (BUG) — raw console logs corrupt the TUI**: make logging file-only by default, add the
+   `BRL_LOG_CONSOLE=1` opt-in, sweep the five direct `console.*` sites, update the two logging tests;
+   optional executable rule (no `console.*` outside `logging.ts`).
 2. **#259/#260/#261 (LOW) — Run History UX**, scoped and ready: one row per run (collapse spawn+terminal,
    outcomes only), detail → list navigation, and the full-output view (v1: stored output + honesty lines).
 3. **Optional repo hygiene:** disable GitHub's *auto-delete head branches* (it deleted `dev` at the release
