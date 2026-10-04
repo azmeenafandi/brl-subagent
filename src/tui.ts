@@ -57,7 +57,7 @@ import { formatPresetSummary, getPreset, loadCustomPresets } from "./presets";
 import { formatRunDuration } from "./history";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { sweepStaleLiveSubagents, type SessionState } from "./state";
+import { collapseRunsForHistory, sweepStaleLiveSubagents, type SessionState } from "./state";
 import { getAgent } from "./session-manager";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
 import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim } from "./tui-format";
@@ -1088,7 +1088,7 @@ export async function showRunHistory(
 	state: SessionState,
 	persistState: () => void,
 ): Promise<void> {
-	const runs = state.getRunEntries(ctx).reverse();
+	const runs = collapseRunsForHistory(state.getRunEntries(ctx));
 
 	if (runs.length === 0) {
 		ctx.ui.notify("No subagent runs recorded yet. Delegate a task to see history.", "info");

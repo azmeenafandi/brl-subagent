@@ -87,6 +87,32 @@ export function resolveTerminalRunEntry(
 	return matching.find((r) => r.status !== "running") ?? matching[0];
 }
 
+/**
+ * Run-history display projection (issue #259): ONE record per SETTLED run.
+ *
+ * Each run appends two entries sharing its id — a spawn entry (status
+ * "running") first, then the terminal entry at settle — so a raw entry list
+ * renders every run twice and the spawn row shows a stale "running" forever.
+ * This collapses each id to its terminal-preferred entry via the ONE shared
+ * rule (`resolveTerminalRunEntry`). Runs still in flight (spawn entry, no
+ * terminal entry yet) are omitted: live state belongs to the monitor.
+ *
+ * Ordering is preserved from `entries`; callers pass `getRunEntries` output
+ * (newest-first via `cleanupRuns`), which stays the single ordering authority —
+ * no re-sort is performed here.
+ */
+export function collapseRunsForHistory(entries: SubagentRun[]): SubagentRun[] {
+	const display: SubagentRun[] = [];
+	const seen = new Set<string>();
+	for (const entry of entries) {
+		if (seen.has(entry.id)) continue;
+		seen.add(entry.id);
+		const resolved = resolveTerminalRunEntry(entries, entry.id);
+		if (resolved && resolved.status !== "running") display.push(resolved);
+	}
+	return display;
+}
+
 // ---------------------------------------------------------------------------
 // SessionState — session-bound mutable state
 // ---------------------------------------------------------------------------
