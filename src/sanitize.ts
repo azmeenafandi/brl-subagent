@@ -210,6 +210,16 @@ export function stripAnsi(str: string): string {
 }
 
 /**
+ * End-anchored trailing marker `capOutput` appends when it truncates output.
+ * Exported (issue #261) so callers can detect a genuinely capped record by its
+ * notice instead of re-deriving the format; a byte-length comparison cannot
+ * tell a capped record from an uncapped one (the background/crash paths store
+ * raw `liveOutput` without calling `capOutput`).
+ */
+export const OUTPUT_TRUNCATION_SUFFIX =
+	"omitted. Full output available in run history details.]";
+
+/**
  * Cap output size to prevent subagent results from overwhelming
  * the conductor's context window or TUI.
  *
@@ -227,7 +237,17 @@ export function capOutput(output: string, maxBytes: number = 100 * 1024): string
 	}
 
 	const omitted = byteLength - Buffer.byteLength(truncated, "utf8");
-	return `${truncated}\n\n[Output truncated: ${formatBytes(omitted)} omitted. Full output available in run history details.]`;
+	return `${truncated}\n\n[Output truncated: ${formatBytes(omitted)} ${OUTPUT_TRUNCATION_SUFFIX}`;
+}
+
+/**
+ * True when `output` was truncated by `capOutput` — i.e. it carries the exact,
+ * end-anchored truncation notice. This is the authoritative "hit the cap"
+ * signal: `capOutput` returns the input unchanged while it fits, so a capped
+ * record always ends with this suffix and a non-capped one never does.
+ */
+export function isOutputTruncated(output: string | undefined | null): boolean {
+	return typeof output === "string" && output.endsWith(OUTPUT_TRUNCATION_SUFFIX);
 }
 
 function formatBytes(bytes: number): string {
