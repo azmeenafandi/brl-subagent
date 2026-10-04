@@ -14,7 +14,7 @@ import type {
 	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Container, type Component, type SelectItem, SelectList, Spacer, Text, Markdown } from "@earendil-works/pi-tui";
+import { Container, type Component, type SelectItem, SelectList, Spacer, Text, Markdown, matchesKey } from "@earendil-works/pi-tui";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type {
@@ -1283,7 +1283,7 @@ async function showRunDetail(ctx: ExtensionContext, run: SubagentRun): Promise<v
 			container.addChild(new Spacer(1));
 			container.addChild(
 				new Text(
-					theme.fg("dim", "\u2191\u2193 scroll \u00b7 PgUp/PgDn page \u00b7 any other key to close"),
+					theme.fg("dim", "\u2191\u2193 scroll \u00b7 space/b page \u00b7 any other key to close"),
 					1,
 					0,
 				),
@@ -1313,6 +1313,24 @@ async function showRunDetail(ctx: ExtensionContext, run: SubagentRun): Promise<v
 				}
 				if (kb.matches(data, "tui.select.pageDown")) {
 					scrollTop += RUN_DETAIL_OUTPUT_VIEWPORT_LINES;
+					tui.requestRender();
+					return;
+				}
+				// PgUp/PgDn are reserved by the host's alt-screen viewport in
+				// fullscreen mode: `tui.altScreen.pageUp/pageDown` claim the same
+				// physical keys and the root consumes them (scrolling the main
+				// transcript) before this overlay ever sees the input — a
+				// `ctx.ui.custom` component cannot register as a viewport owner in
+				// pi 1.0.2. Paging therefore needs unbound alternates: space =
+				// page down, b = page up (verified live 2026-10-04). The two checks
+				// above stay for inline mode, where PgUp/PgDn do reach the overlay.
+				if (matchesKey(data, "space")) {
+					scrollTop += RUN_DETAIL_OUTPUT_VIEWPORT_LINES;
+					tui.requestRender();
+					return;
+				}
+				if (matchesKey(data, "b")) {
+					scrollTop -= RUN_DETAIL_OUTPUT_VIEWPORT_LINES;
 					tui.requestRender();
 					return;
 				}
