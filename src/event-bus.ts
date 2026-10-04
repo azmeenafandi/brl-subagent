@@ -1,5 +1,10 @@
 // Purpose: In-memory lifecycle pub/sub (`subagent:*` events) for extensions and the completion wake.
 import type { SubagentEvent, SubagentEventType, SubagentEventListener } from './types';
+import { createLogger } from './logging';
+
+// Issue #265: listener failures route through the logger (file-only by default)
+// so raw console.error writes cannot corrupt the pi TUI.
+const log = createLogger('event-bus');
 
 // Event listeners by type
 const listeners = new Map<SubagentEventType, Set<SubagentEventListener>>();
@@ -49,7 +54,7 @@ export function emit(event: SubagentEvent): void {
         listener(event);
       } catch (err) {
         // Don't let listener errors break the event loop
-        console.error(`[event-bus] Listener error for ${event.type}:`, err);
+        log.error(`Listener error for ${event.type}`, { error: err instanceof Error ? err.message : String(err) });
       }
     }
   }
@@ -59,7 +64,7 @@ export function emit(event: SubagentEvent): void {
     try {
       listener(event);
     } catch (err) {
-      console.error(`[event-bus] Global listener error:`, err);
+      log.error('Global listener error', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 }

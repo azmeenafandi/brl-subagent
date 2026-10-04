@@ -85,7 +85,7 @@ function persistAgent(agent: BackgroundAgent): void {
   try {
     assertSafeAgentId(agent.id);
   } catch {
-    console.error(`[brl-subagent] Refusing to persist agent with invalid id: ${agent.id}`);
+    log.error(`Refusing to persist agent with invalid id: ${agent.id}`);
     return;
   }
   ensureStorageDir();
@@ -102,7 +102,7 @@ function persistAgent(agent: BackgroundAgent): void {
     writeFileSync(filePath, JSON.stringify(persistable, null, 2), { encoding: 'utf-8', mode: 0o600 });
   } catch (err) {
     // Log but never throw — persistence must not break execution
-    console.error(`[brl-subagent] Failed to persist agent ${agent.id}:`, err);
+    log.error(`Failed to persist agent ${agent.id}`, { error: err instanceof Error ? err.message : String(err) });
   }
 }
 

@@ -28,8 +28,10 @@ import { describe, expect, it } from "vitest";
 import {
 	isCallExpression,
 	isExportDeclaration,
+	isIdentifier,
 	isImportDeclaration,
 	isNamedImports,
+	isPropertyAccessExpression,
 	isStringLiteral,
 	parseTexts,
 	SyntaxKind,
@@ -47,6 +49,13 @@ const PROCESS_EXECUTION_MODULES = new Set(["runner.ts", "git.ts"]);
 
 /** Modules whose whole point is to stay dependency-free so they remain unit-testable. */
 const PURE_HELPER_MODULES = new Set(["tui-format.ts", "transcript-tail.ts"]);
+
+/**
+ * The one module allowed to reference `console.*` directly: it owns the opt-in
+ * terminal mirror (issue #265). Every other module routes through its logger so
+ * extension code cannot corrupt pi's TUI renderer.
+ */
+const CONSOLE_MIRROR_MODULE = "logging.ts";
 
 /**
  * The reader API of `session-manager.ts` that non-entry modules may import. `tui.ts` reads live agent
@@ -238,6 +247,32 @@ describe("architecture rules (issue #251)", () => {
 		expect(
 			offenders,
 			`lifecycle mutators belong to the entry point: allowed from session-manager outside index.ts — ${[...SESSION_MANAGER_READER_API].join(", ")}`,
+		).toEqual([]);
+	});
+
+	it("raw console calls are confined to logging.ts (#265)", () => {
+		const CONSOLE_METHODS = new Set(["log", "warn", "error", "info"]);
+		const offenders: string[] = [];
+		for (const [absolute, source] of moduleSourceFiles()) {
+			const file = absolute.slice(absolute.lastIndexOf("/") + 1);
+			if (file === CONSOLE_MIRROR_MODULE) continue;
+			const visit = (node: Node): void => {
+				if (
+					isCallExpression(node) &&
+					isPropertyAccessExpression(node.expression) &&
+					isIdentifier(node.expression.expression) &&
+					node.expression.expression.text === "console" &&
+					CONSOLE_METHODS.has(node.expression.name.text)
+				) {
+					offenders.push(`${file} → console.${node.expression.name.text}()`);
+				}
+				node.forEachChild(visit);
+			};
+			source.forEachChild(visit);
+		}
+		expect(
+			offenders,
+			"extension code runs inside pi's TUI process — route console output through createLogger (logging.ts); raw writes corrupt the renderer",
 		).toEqual([]);
 	});
 });
