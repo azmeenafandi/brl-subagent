@@ -14,7 +14,7 @@ import type {
 	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Container, type SelectItem, SelectList, Spacer, Text, Markdown } from "@earendil-works/pi-tui";
+import { Container, type Component, type SelectItem, SelectList, Spacer, Text, Markdown } from "@earendil-works/pi-tui";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type {
@@ -41,6 +41,7 @@ import {
 	COLLAPSED_OUTPUT_LINES,
 	COLLAPSED_DIFF_FILES_PREVIEW,
 	EXPANDED_HUNKS_PER_FILE,
+	DEFAULT_OUTPUT_CAP_BYTES,
 	formatTokens,
 	formatUsageStats,
 	formatModel,
@@ -54,7 +55,7 @@ import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSu
 import { extractParamNames } from "./templates";
 import { parseDiff } from "./diff";
 import { formatPresetSummary, getPreset, loadCustomPresets } from "./presets";
-import { formatRunDuration } from "./history";
+import { buildOutputHonestyLines, formatRunDuration } from "./history";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { collapseRunsForHistory, sweepStaleLiveSubagents, type SessionState } from "./state";
@@ -1136,93 +1137,187 @@ export async function showRunHistory(
 }
 
 /**
- * Detail view for one settled run (issue #260): any key — including Esc —
- * closes it. The showRunHistory browse loop re-shows the list on return.
+ * Number of output lines a run-detail viewport shows at once (issue #261):
+ * the stored text can be up to the 100 KB cap, so the panel is height-capped
+ * and scrolled rather than dumped whole (which would push the footer and
+ * header off-screen).
+ */
+const RUN_DETAIL_OUTPUT_VIEWPORT_LINES = 12;
+
+/**
+ * Detail view for one settled run (issue #260, #261): ↑/↓ and PgUp/PgDn scroll
+ * the stored output; any OTHER key — including Esc — closes it. The
+ * showRunHistory browse loop re-shows the list on return.
+ *
+ * The output region follows the approval dialog's full-diff view structure
+ * (see `showApprovalDialog.buildDiffView` / `withDiffKeybinding`: a bordered
+ * Container with a title, the content, and a return footer) but adds the
+ * height cap + scroll state that view lacks. Output is wrapped through the
+ * same `Text` component those views use, so wrapping/padding stay consistent.
  */
 async function showRunDetail(ctx: ExtensionContext, run: SubagentRun): Promise<void> {
-	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-		const container = new Container();
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+	const outputText = run.fullOutput ?? run.outputSummary ?? "";
+	await ctx.ui.custom<void>((tui, theme, kb, done) => {
+		// First line of the viewport (0 = top). Mutated by scroll keys and
+		// clamped to the wrapped-content length on every render.
+		let scrollTop = 0;
+		// Wrapped output lines for the current width, and the width they were
+		// produced at, so a resize re-wraps and a redraw does not.
+		let wrappedLines: string[] = [];
+		let wrappedWidth = -1;
 
-		const statusLabel =
-			run.status === "done" ? "Completed" : run.status === "failed" ? "Failed" : "Running";
-		container.addChild(
-			new Text(
-				theme.fg(
-					"toolTitle",
-					theme.bold(`${run.label || "Subagent"} — ${statusLabel}`),
-				),
-				1,
-				0,
-			),
-		);
-		container.addChild(new Text("", 0, 0));
-		container.addChild(
-			new Text(theme.fg("dim", `Task: ${run.task.slice(0, 200)}`), 1, 0),
-		);
-		container.addChild(
-			new Text(
-				theme.fg("dim", `Model: ${run.model} · Thinking: ${run.thinkingLevel}`),
-				1,
-				0,
-			),
-		);
-		container.addChild(new Text(theme.fg("dim", `Started: ${run.startedAt}`), 1, 0));
-		if (run.finishedAt) {
-			container.addChild(
+		const wrapOutput = (width: number): string[] => {
+			if (width === wrappedWidth) return wrappedLines;
+			wrappedLines = new Text(theme.fg("toolOutput", outputText), 1, 0).render(width);
+			wrappedWidth = width;
+			return wrappedLines;
+		};
+
+		const buildOutputSection = (width: number): Container => {
+			const section = new Container();
+			const lines = wrapOutput(width);
+			const total = lines.length;
+			const maxScroll = Math.max(0, total - RUN_DETAIL_OUTPUT_VIEWPORT_LINES);
+			if (scrollTop > maxScroll) scrollTop = maxScroll;
+			if (scrollTop < 0) scrollTop = 0;
+			const from = total === 0 ? 0 : Math.min(scrollTop + 1, total);
+			const to = Math.min(scrollTop + RUN_DETAIL_OUTPUT_VIEWPORT_LINES, total);
+			const indicator =
+				total > RUN_DETAIL_OUTPUT_VIEWPORT_LINES
+					? `  (lines ${from}\u2013${to} of ${total} \u00b7 \u2191\u2193 / PgUp\u00b7PgDn)`
+					: `  (${total} line${total === 1 ? "" : "s"})`;
+
+			section.addChild(
 				new Text(
-					theme.fg(
-						"dim",
-						`Finished: ${run.finishedAt} (${formatRunDuration(run.durationMs || 0)})`,
-					),
+					theme.fg("muted", "\u2500\u2500\u2500 Output \u2500\u2500\u2500") + theme.fg("dim", indicator),
 					1,
 					0,
 				),
 			);
-		}
-		if (run.cost) {
-			container.addChild(
-				new Text(
-					theme.fg(
-						"dim",
-						`Cost: $${run.cost.toFixed(4)} · ↑${formatTokens(run.tokensIn || 0)} ↓${formatTokens(run.tokensOut || 0)}`,
-					),
-					1,
-					0,
-				),
-			);
-		}
-		if (run.errorMessage) {
-			container.addChild(new Spacer(1));
-			container.addChild(
-				new Text(theme.fg("error", `Error: ${run.errorMessage}`), 1, 0),
-			);
-		}
-		if (run.outputSummary) {
-			container.addChild(new Spacer(1));
-			container.addChild(
-				new Text(
-					theme.fg("muted", "\u2500\u2500\u2500 Output Preview \u2500\u2500\u2500"),
-					1,
-					0,
-				),
-			);
-			container.addChild(
-				new Text(theme.fg("toolOutput", run.outputSummary), 1, 0),
-			);
-			if ((run.outputSummary || "").length >= 200) {
-				container.addChild(new Text(theme.fg("dim", "(first 200 characters)"), 1, 0));
+
+			if (total === 0) {
+				section.addChild(new Text(theme.fg("dim", "(no output recorded)"), 1, 0));
+				return section;
 			}
-		}
 
-		container.addChild(new Spacer(1));
-		container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+			// Height-capped viewport: the output was already wrapped to `width`
+			// above, so hand the sliced lines back directly instead of feeding them
+			// through another Text (which would re-wrap at the padded width).
+			const viewport: Component = {
+				render: () => lines.slice(scrollTop, scrollTop + RUN_DETAIL_OUTPUT_VIEWPORT_LINES),
+				invalidate: () => {
+					wrappedWidth = -1;
+				},
+			};
+			section.addChild(viewport);
+			return section;
+		};
+
+		const buildDetailView = (width: number): Container => {
+			const container = new Container();
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+			const statusLabel =
+				run.status === "done" ? "Completed" : run.status === "failed" ? "Failed" : "Running";
+			container.addChild(
+				new Text(
+					theme.fg(
+						"toolTitle",
+						theme.bold(`${run.label || "Subagent"} — ${statusLabel}`),
+					),
+					1,
+					0,
+				),
+			);
+			container.addChild(new Text("", 0, 0));
+			container.addChild(
+				new Text(theme.fg("dim", `Task: ${run.task.slice(0, 200)}`), 1, 0),
+			);
+			container.addChild(
+				new Text(
+					theme.fg("dim", `Model: ${run.model} · Thinking: ${run.thinkingLevel}`),
+					1,
+					0,
+				),
+			);
+			container.addChild(new Text(theme.fg("dim", `Started: ${run.startedAt}`), 1, 0));
+			if (run.finishedAt) {
+				container.addChild(
+					new Text(
+						theme.fg(
+							"dim",
+							`Finished: ${run.finishedAt} (${formatRunDuration(run.durationMs || 0)})`,
+						),
+						1,
+						0,
+					),
+				);
+			}
+			if (run.cost) {
+				container.addChild(
+					new Text(
+						theme.fg(
+							"dim",
+							`Cost: $${run.cost.toFixed(4)} · ↑${formatTokens(run.tokensIn || 0)} ↓${formatTokens(run.tokensOut || 0)}`,
+						),
+						1,
+						0,
+					),
+				);
+			}
+			if (run.errorMessage) {
+				container.addChild(new Spacer(1));
+				container.addChild(
+					new Text(theme.fg("error", `Error: ${run.errorMessage}`), 1, 0),
+				);
+			}
+
+			container.addChild(new Spacer(1));
+			container.addChild(buildOutputSection(width));
+			// Honest disclosures (issue #261): the transcript is the only place the
+			// uncapped text lives, and the cap is stated when it was hit.
+			for (const line of buildOutputHonestyLines(run, DEFAULT_OUTPUT_CAP_BYTES)) {
+				container.addChild(new Text(theme.fg("dim", line), 1, 0));
+			}
+
+			container.addChild(new Spacer(1));
+			container.addChild(
+				new Text(
+					theme.fg("dim", "\u2191\u2193 scroll \u00b7 PgUp/PgDn page \u00b7 any other key to close"),
+					1,
+					0,
+				),
+			);
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+			return container;
+		};
 
 		return {
-			render: (w: number) => container.render(w),
-			invalidate: () => container.invalidate(),
-			handleInput: (_data: string) => done(),
+			render: (w: number) => buildDetailView(w).render(w),
+			invalidate: () => {},
+			handleInput: (data: string) => {
+				if (kb.matches(data, "tui.select.up")) {
+					scrollTop -= 1;
+					tui.requestRender();
+					return;
+				}
+				if (kb.matches(data, "tui.select.down")) {
+					scrollTop += 1;
+					tui.requestRender();
+					return;
+				}
+				if (kb.matches(data, "tui.select.pageUp")) {
+					scrollTop -= RUN_DETAIL_OUTPUT_VIEWPORT_LINES;
+					tui.requestRender();
+					return;
+				}
+				if (kb.matches(data, "tui.select.pageDown")) {
+					scrollTop += RUN_DETAIL_OUTPUT_VIEWPORT_LINES;
+					tui.requestRender();
+					return;
+				}
+				done();
+			},
 		};
 	});
 }
