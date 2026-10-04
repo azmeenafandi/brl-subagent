@@ -16,7 +16,7 @@
 | pi runtime | **1.0.2** (updated 2026-10-04; changelog scan clean — additive only (`registerToolRenderer` etc.), no extension-API breaks, no migration; boot clean 02:00:05Z on the **dev-path install**; live smoke PASSED `PI-102-SMOKE` — 970 ms spawn → completion; guard probe BLOCKED a cockpit `src/` write — Rule 5 enforced; **SDK parity CLOSED the same day — PR #266 (`f3c1da9`, merge `7d2acbc`): the four devDeps → `^1.0.2`, cockpit tree refreshed with `npm ci`, check-repo fully green (the lockfile diff was a legitimate npm-11 dedupe: 323→233 tree entries, no direct-spec changes)**). **Previous: 1.0.0** (updated 2026-10-02; boot clean + live smoke PASSED: spawn → steer → completion, guard probe blocked a cockpit `src/` write — Rule 5 still enforced under 1.0.0) — devDeps/lockfile were **1.0.0 too** (PR #257, `5827745`): **that skew was CLOSED**, check-repo's runtime line was green then, and the cockpit's shared tree was refreshed with `npm ci`. **TypeScript is now 7.0.2** (PR #263, `0b1cdc3`): migrated via the single containment adapter `scripts/ts-ast.mjs` (`typescript/unstable/*`), exact pin, `target: es2024` (ADR 0013; #256 closes at release) — the cockpit tree was refreshed again and `check-repo` is green under TS 7 |
 | `main` | **`8a00ee3`** — **v2.4.0 released** (release merge `d954dd6`; bump commit `8a00ee3`; GitHub release published 2026-10-03; npm `latest` = 2.4.0 with signed provenance). **Pristine since 2026-09-30: no `node_modules`, no docs/graph/.pi** (all moved to the dev cockpit) |
 | `dev` | **`92cb3da`** (the v2.4.0 release commit `8a00ee3` + post-release docs commits) — the post-2.3.9 fix cycle shipped as **v2.4.0**: all 13 issues closed (10 manually — the release PR's comma-separated keyword list did not auto-close: friction `fixes-keyword-omission`; `dev` was briefly deleted by GitHub's auto-delete-head-branches and restored). Cycle: **#242** (#240 default-not-ceiling timeouts, `35badde`), **#243** (#239 schema-linked types, `fcb9dc2`), **#245** (#241 steer delivery, `9c9b754`), **#246** (#244 deadline wording + single-timer ownership, `f892e3f`), **#248** (#247 contributor parity, `dec5fb65`), **#250** (#249 ARCHITECTURE rewrite + module-map guard, `949be9d`), **#252** (#251 architecture rules as tests, `3e17491`), **#254** (#253 ADR backfill, `290cf9f`), **#257** (#255 SDK 1.0.0 bump + `erasableSyntaxOnly`, `5827745`) and **#263** (#256 TypeScript 7.0.2 + ES2024 via the AST adapter, `0b1cdc3`); main at the `v2.4.0` tag; **COCKPIT since 2026-09-30** (holds `.development/`, `graphify-out/`, `.pi/`, the shared `node_modules`) |
-| Running extension | **WORKTREE-INSTALL MODE — temporary, live-verifying #265** (`pi remove <dev path>` → `pi install /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-wt-265`, 2026-10-04; exact code `e4f37cc`; **verified live: zero terminal writes on a dispatch that emits `Background agent spawned` + `Using step model override`, all entries present in the file log**; switch back to the dev-path install after #267 merges; do NOT run `worktree-cleanup.sh` on wt-265 while it is the running install). **Before that — DEV-INSTALL MODE (2026-10-04):** (`pi remove npm:brl-subagent` → `pi install /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev`; `pi list` shows exactly one brl-subagent entry; `/reload` switches the running session; npm `latest` stays 2.4.0). **Previously — published dogfooding (2026-10-03):** **`npm:brl-subagent` 2.4.0 — the PUBLISHED artifact** (ritual step 9 done 2026-10-03: dev-path install removed → `pi install npm:brl-subagent` → `pi update --extensions` → `/reload`; `pi list` shows exactly one brl-subagent entry; **published-build probe PASSED** — `RELEASE-240-OK`, 870 ms, spawn → completion; the single boot warning is the designed `approvalMode: 'writes'` auto-approve notice). **History of the dev-install period:** **reloaded 2026-09-29 15:03Z — #240/#241/#244 all LIVE**; **pi updated to 1.0.0 (2026-10-02) — post-update smoke PASSED** (clean boot, zero errors; live spawn → steer → completion probe
+| Running extension | **DEV-INSTALL MODE — restored 2026-10-04 after #267 merged** (`pi install /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev`, which now includes #265 — file-only logging; the running session picks it up on `/reload`; `pi list` shows exactly one entry; npm `latest` stays 2.4.0). **History:** worktree mode `brl-subagent-wt-265` (`e4f37cc`) for the #265 live verification — the TUI stayed clean through a dispatch emitting the exact screenshot lines; before that, published dogfooding (`npm:brl-subagent` 2.4.0, ritual step 9, 2026-10-03): **`npm:brl-subagent` 2.4.0 — the PUBLISHED artifact** (ritual step 9 done 2026-10-03: dev-path install removed → `pi install npm:brl-subagent` → `pi update --extensions` → `/reload`; `pi list` shows exactly one brl-subagent entry; **published-build probe PASSED** — `RELEASE-240-OK`, 870 ms, spawn → completion; the single boot warning is the designed `approvalMode: 'writes'` auto-approve notice). **History of the dev-install period:** **reloaded 2026-09-29 15:03Z — #240/#241/#244 all LIVE**; **pi updated to 1.0.0 (2026-10-02) — post-update smoke PASSED** (clean boot, zero errors; live spawn → steer → completion probe
 SMOKE-STEER-100; the guard extension loaded and blocked a cockpit `src/` write probe; 1.0.0's changelog has no breaking
 format, no extension-API changes and no migration doc — its defaults changed TUI mode to fullscreen): `npm:brl-subagent` was removed and the ABSOLUTE dev path installed; `pi list` shows exactly one brl-subagent entry (the dev tree, registered source displays as a relative path but resolves correctly). A user `/reload` activates it in-session — until then the session still holds the published 2.3.9. To remove later, use the ABSOLUTE path from `pi list` (friction `pi-remove-source-mismatch`). Rationale: the user is daily-driving the dev tree for a few days. |
 | npm | **2.3.9 live (latest)** — published and approved 2026-09-27; the running install was switched to it (step 8) |
@@ -25,22 +25,22 @@ format, no extension-API changes and no migration doc — its defaults changed T
 
 ## Next actions (2026-10-04, post-#266)
 
-**Recently closed:** #230 (P0, Rule 11) — **closed no-fix 2026-10-04**: the installed graphify hook stands down in
-linked worktrees, so the cockpit graph changes only through the check-gated `graph-refresh.sh`; the residual
-exposure is the `main` checkout's gitignored artifact (nothing consumes it for scoping). Upstream graphify#3580
-stays open for them; local graphify 0.9.73 — upgrading to ≥0.9.75 is routine maintenance.
+**Recently closed:**
+- **#230** (P0, Rule 11) — closed no-fix 2026-10-04: the installed graphify hook stands down in linked
+  worktrees, so the cockpit graph changes only through the check-gated `graph-refresh.sh`; the residual
+  exposure is the `main` checkout's gitignored artifact (nothing consumes it for scoping). Upstream
+  graphify#3580 stays open for them; local graphify is now 0.9.75.
+- **#265** (BUG) — fixed & closed 2026-10-04: PR #267 (merge `984a52e`) — logging is file-only by default
+  (`BRL_LOG_CONSOLE=1` opt-in), five `console.*` sites routed through loggers, 8th architecture rule
+  (AST-based). Live-verified at the point of use: the dispatch that used to corrupt the TUI produced zero
+  terminal writes while every entry landed in the file log. Reaches npm users with the next release.
 
-1. **#265 (BUG) — raw console logs corrupt the TUI**: **PR #267 open** (`e4f37cc`) — file-only logging by
-   default, `BRL_LOG_CONSOLE=1` opt-in, five `console.*` sites swept, 8th architecture rule (AST-based),
-   1218 tests green. **Live-verified at the point of use 2026-10-04** (install pointed at wt-265): the TUI
-   stayed clean through a dispatch emitting the exact screenshot lines; all entries present in the file log.
-   Awaiting review/merge.
-2. **#259/#260/#261 (LOW) — Run History UX**, scoped and ready: one row per run (collapse spawn+terminal,
+1. **#259/#260/#261 (LOW) — Run History UX**, scoped and ready: one row per run (collapse spawn+terminal,
    outcomes only), detail → list navigation, and the full-output view (v1: stored output + honesty lines).
-3. **Optional repo hygiene:** disable GitHub's *auto-delete head branches* (it deleted `dev` at the release
+2. **Optional repo hygiene:** disable GitHub's *auto-delete head branches* (it deleted `dev` at the release
    merge; restored manually) and teach `worktree-cleanup.sh` to delete remote branch heads explicitly.
-4. **Optional local cleanup:** the workspace-root backup tarball (`cockpit-backup-20260930-203530.tar.gz`,
-   12 MB) and `main`'s `.tmp/` can be pruned.
+3. **Optional local cleanup:** the workspace-root backup tarball (`cockpit-backup-20260930-203530.tar.gz`,
+   12 MB), `main`'s `.tmp/`, and the `wt-265` teardown (pending the post-reload cleanup).
 
 ## Cockpit layout (moved 2026-09-30)
 
