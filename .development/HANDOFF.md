@@ -35,11 +35,6 @@ format, no extension-API changes and no migration doc — its defaults changed T
   (AST-based). Live-verified at the point of use: the dispatch that used to corrupt the TUI produced zero
   terminal writes while every entry landed in the file log. Reaches npm users with the next release.
 
-**Hygiene done 2026-10-04:** GitHub *auto-delete head branches* is **OFF** (`delete_branch_on_merge=false`);
-`worktree-cleanup.sh` now auto-derives the branch and deletes **local + remote** heads (never `dev`/`main`)
-and skips its cockpit pull with a warning on a dirty tree — functionally tested end-to-end; the local backup
-tarball (`cockpit-backup-20260930-203530.tar.gz`, 12 MB) and `main/.tmp/` are pruned.
-
 - **#259/#260/#261 (LOW) — Run History UX** — fixed & closed 2026-10-04: PR #268 (merge `a54ca6a`) — one
   row per settled run (`collapseRunsForHistory`, terminal-preferred, in-flight omitted; ordering fixed to
   newest-first after a stray `.reverse()` made it oldest-first), detail returns to the list (browse loop),
@@ -47,6 +42,24 @@ tarball (`cockpit-backup-20260930-203530.tar.gz`, 12 MB) and `main/.tmp/` are pr
   by pi's alt-screen viewport in fullscreen mode and a `ctx.ui.custom` overlay cannot claim them (live-
   proven; terminal-encoding differences out of scope unless a user reports one). Live-verified end-to-end
   before merge; 60 files / 1235 tests.
+- **Worktree skill progressive disclosure** (PR #269, merge `c6ec1f5`) — `SKILL.md` 642→**290 lines** + six
+  one-level `references/` files (release ritual, local development, review dispatch, friction log, sprint-end,
+  rule narratives). Reviewed honestly: the first pass overstated preservation (“nothing deleted”) — the
+  completion pass (`89f804f`) restored the full verbatim rule narratives and three dropped index details;
+  verified 18/18 narrative rule blocks verbatim, all 21 rules intact in order.
+
+**Hygiene done 2026-10-04:** GitHub *auto-delete head branches* is **OFF** (`delete_branch_on_merge=false`);
+`worktree-cleanup.sh` now auto-derives the branch and deletes **local + remote** heads (never `dev`/`main`)
+and skips its cockpit pull with a warning on a dirty tree — functionally tested end-to-end; the local backup
+tarball (`cockpit-backup-20260930-203530.tar.gz`, 12 MB) and `main/.tmp/` are pruned. Also fixed locally: the
+`project-docs` preset's tools list omitted `bash` despite its own “do not remove” comment (the first
+skill-restructure dispatch was stopped pre-write by the pre-flight warning), and today's three frictions are
+logged (merge-refresh miss, preservation-claim overstatement, preset drift).
+
+**Post-merge (2026-10-04):** lifecycle step 6 graph-refresh ran after #269 (catching up #266–#268) — cockpit
+**graph 1438 nodes / 3195 edges / 160 communities**; `graph-check` complete (33/33 modules, 318/318 symbols);
+the flagged `SKILL.md` semantic shrink (23→10) is the restructure itself (content moved into the new
+references, extracted in the same pass).
 
 **No open issues.** Candidates for the next sprint (marked, not filed): the three #261-adjacent follow-ups
 (dead `DEFAULT_OUTPUT_CAP_BYTES` in types.ts; `capOutput`'s now-misleading notice wording; transcript-path
