@@ -1088,44 +1088,58 @@ export async function showRunHistory(
 	state: SessionState,
 	persistState: () => void,
 ): Promise<void> {
-	const runs = collapseRunsForHistory(state.getRunEntries(ctx));
-
-	if (runs.length === 0) {
-		ctx.ui.notify("No subagent runs recorded yet. Delegate a task to see history.", "info");
-		return;
-	}
-
 	const statusIcon: Record<string, string> = {
 		running: ctx.ui.theme.fg("accent", "◉"),
 		done: ctx.ui.theme.fg("success", "✓"),
 		failed: ctx.ui.theme.fg("error", "✗"),
 	};
 
-	const items: SelectItem[] = runs.map((r) => {
-		const icon = statusIcon[r.status] || "·";
-		const name = r.label || r.task.slice(0, 60);
-		const model = r.model.split("/").pop() || r.model;
-		const when = r.finishedAt ? formatRunDuration(r.durationMs || 0) : "running...";
-		const cost = r.cost ? ` $${r.cost.toFixed(4)}` : "";
-		const desc = `${r.thinkingLevel} · ${model} · ${when}${cost}`;
-		return { value: r.id, label: `${icon} ${name}`, description: desc };
-	});
+	// Browse loop (issue #260): list → detail → list … until the LIST is exited
+	// with Esc. Closing a detail returns here, not to the /brl-subagent menu.
+	while (true) {
+		// One row per SETTLED run (issue #259): collapse each run's spawn+terminal
+		// entry pair to its terminal-preferred record; in-flight runs are omitted
+		// (the live monitor owns running state).
+		const runs = collapseRunsForHistory(state.getRunEntries(ctx));
 
-	const selectedId = await showSelectList(ctx, "Subagent History", items, 15);
-	if (!selectedId) return;
+		if (runs.length === 0) {
+			ctx.ui.notify("No subagent runs recorded yet. Delegate a task to see history.", "info");
+			return;
+		}
 
-	const run = runs.find((r) => r.id === selectedId);
-	if (!run) return;
-
-	// Mark as seen
-	if (state.markRunSeen(run.id)) {
-		persistState();
-		import("./concurrency").then(({ updateProgressStatus }) => {
-			updateProgressStatus(state, ctx);
+		const items: SelectItem[] = runs.map((r) => {
+			const icon = statusIcon[r.status] || "·";
+			const name = r.label || r.task.slice(0, 60);
+			const model = r.model.split("/").pop() || r.model;
+			const when = r.finishedAt ? formatRunDuration(r.durationMs || 0) : "running...";
+			const cost = r.cost ? ` $${r.cost.toFixed(4)}` : "";
+			const desc = `${r.thinkingLevel} · ${model} · ${when}${cost}`;
+			return { value: r.id, label: `${icon} ${name}`, description: desc };
 		});
-	}
 
-	// Show detail view
+		const selectedId = await showSelectList(ctx, "Subagent History", items, 15);
+		if (!selectedId) return; // Esc at the list exits to the menu
+
+		const run = runs.find((r) => r.id === selectedId);
+		if (!run) continue; // selected run pruned since listing — re-show the list
+
+		// Mark as seen
+		if (state.markRunSeen(run.id)) {
+			persistState();
+			import("./concurrency").then(({ updateProgressStatus }) => {
+				updateProgressStatus(state, ctx);
+			});
+		}
+
+		await showRunDetail(ctx, run);
+	}
+}
+
+/**
+ * Detail view for one settled run (issue #260): any key — including Esc —
+ * closes it. The showRunHistory browse loop re-shows the list on return.
+ */
+async function showRunDetail(ctx: ExtensionContext, run: SubagentRun): Promise<void> {
 	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
