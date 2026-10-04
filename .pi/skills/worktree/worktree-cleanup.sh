@@ -5,6 +5,8 @@
 # Usage: worktree-cleanup.sh <worktree-path> [--branch <name>] [--repo-root <path>] [--skip-extension-sync]
 #
 # UNCONDITIONAL: runs the same whether the PR was merged or closed without merge.
+# --branch is optional: when omitted it is auto-derived from the worktree before
+# removal. Local AND remote heads are deleted — never dev/main (protected).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +31,18 @@ if [[ -z "${WORKTREE_PATH}" ]]; then
 fi
 REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/../../.." && pwd)}"
 
+# Long-lived branches that teardown must never delete (auto-derive makes this guard
+# load-bearing: cleanup now resolves the branch itself when --branch is omitted).
+PROTECTED_BRANCHES_REGEX='^(main|master|dev)$'
+
+# ── 0. Resolve the branch (--branch wins; else derive from the worktree) ───
+if [[ -z "${BRANCH}" && -d "${WORKTREE_PATH}" ]]; then
+    BRANCH="$(git -C "${WORKTREE_PATH}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    # Detached HEAD reports "HEAD" — treat as no branch.
+    [[ "${BRANCH}" == "HEAD" ]] && BRANCH=""
+    [[ -n "${BRANCH}" ]] && echo "  branch derived from worktree: ${BRANCH}"
+fi
+
 echo "Cleaning up worktree: ${WORKTREE_PATH}"
 echo "  cockpit repo: ${REPO_ROOT}"
 echo ""
@@ -41,13 +55,28 @@ else
     echo "  worktree already gone: ${WORKTREE_PATH}"
 fi
 
-# ── 2. Delete the branch ─────────────────────────────────────────────────
+# ── 2. Delete the branch (local, then remote) ────────────────────────────
 if [[ -n "${BRANCH}" ]]; then
-    if (cd "${REPO_ROOT}" && git show-ref --verify --quiet "refs/heads/${BRANCH}" 2>/dev/null); then
-        (cd "${REPO_ROOT}" && git branch -D "${BRANCH}")
-        echo "  branch deleted: ${BRANCH}"
+    if [[ "${BRANCH}" =~ ${PROTECTED_BRANCHES_REGEX} ]]; then
+        echo "  WARNING: refusing to delete protected branch: ${BRANCH}"
     else
-        echo "  branch already gone: ${BRANCH}"
+        if (cd "${REPO_ROOT}" && git show-ref --verify --quiet "refs/heads/${BRANCH}" 2>/dev/null); then
+            (cd "${REPO_ROOT}" && git branch -D "${BRANCH}")
+            echo "  local branch deleted: ${BRANCH}"
+        else
+            echo "  local branch already gone: ${BRANCH}"
+        fi
+        # Remote head: since auto-delete on merge is disabled (repo setting,
+        # 2026-10-04), merged PR branches linger unless teardown removes them.
+        if [[ -n "$(cd "${REPO_ROOT}" && git ls-remote --heads origin "refs/heads/${BRANCH}" 2>/dev/null)" ]]; then
+            if (cd "${REPO_ROOT}" && git push origin --delete "${BRANCH}" >/dev/null 2>&1); then
+                echo "  remote branch deleted: ${BRANCH}"
+            else
+                echo "  WARNING: could not delete remote branch: ${BRANCH} (protected, or already deleted?)"
+            fi
+        else
+            echo "  remote branch already gone: ${BRANCH}"
+        fi
     fi
 fi
 
@@ -56,8 +85,12 @@ CUR_BRANCH="$(cd "${REPO_ROOT}" && git rev-parse --abbrev-ref HEAD 2>/dev/null |
 if [[ "${CUR_BRANCH}" != "dev" ]]; then
     echo "  WARNING: cockpit checkout is on '${CUR_BRANCH}', not dev — skipping fetch/pull"
 else
-    (cd "${REPO_ROOT}" && git fetch origin --quiet && git pull --rebase origin dev --quiet)
-    echo "  cockpit synced with origin/dev"
+    if ! (cd "${REPO_ROOT}" && git diff --quiet && git diff --cached --quiet); then
+        echo "  WARNING: cockpit has uncommitted changes — skipping pull (commit or stash, then 'git pull --rebase origin dev')"
+    else
+        (cd "${REPO_ROOT}" && git fetch origin --quiet && git pull --rebase origin dev --quiet)
+        echo "  cockpit synced with origin/dev"
+    fi
 fi
 
 # ── 3b. Shared node_modules staleness after a merged bump (issue #100, M1) ──

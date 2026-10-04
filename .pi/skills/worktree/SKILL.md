@@ -305,7 +305,8 @@ never re-type their logic by hand.
                 hooks only read/validate it, never rebuild (#230).
 7. CHECKPOINT   release checkpoint for extension-code changes — conductor
                 pauses for the user (rule #6; docs/tests/tooling: none)
-8. CLEANUP      worktree-cleanup.sh <path> --branch <branch>   (UNCONDITIONAL)
+8. CLEANUP      worktree-cleanup.sh <path>   (UNCONDITIONAL — auto-derives the branch;
+                deletes local + remote heads, never dev/main)
 9. VERIFY       (rule #9) at the point of use — for C1/C2 changes dispatch a
                 live probe and confirm the behavior, verifying what the
                 mechanism PRODUCES, not that it exists. Under npm dogfooding
@@ -435,9 +436,11 @@ worktree from the returned verdict, and presents it for the user loop.
   `package-lock.json`) — the lockfile diverges by design and the symlink
   would clobber the cockpit's pristine node_modules. Runs the pre-flight
   (check-repo.sh) itself before provisioning.
-- **`worktree-cleanup.sh <path> --branch <name>`** — after the PR is merged OR
-  closed without merge. Removes the worktree, deletes the branch, syncs the
-  cockpit.
+- **`worktree-cleanup.sh <path> [--branch <name>]`** — after the PR is merged OR
+  closed without merge. Removes the worktree, deletes the branch — auto-derived
+  from the worktree when `--branch` is omitted — from BOTH the local repo and
+  `origin` (never `dev`/`main`), then syncs the cockpit. The pull is skipped
+  with a warning when the cockpit has uncommitted changes.
   (`sync-extension.sh` was retired 2026-09-11 — that step is a guarded no-op.)
   Unconditional — cleanup happens regardless of
   merge outcome. Warns if the cockpit's node_modules is stale vs the merged lockfile
