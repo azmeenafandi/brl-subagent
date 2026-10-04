@@ -40,7 +40,7 @@ format, no extension-API changes and no migration doc — its defaults changed T
 2. **Optional repo hygiene:** disable GitHub's *auto-delete head branches* (it deleted `dev` at the release
    merge; restored manually) and teach `worktree-cleanup.sh` to delete remote branch heads explicitly.
 3. **Optional local cleanup:** the workspace-root backup tarball (`cockpit-backup-20260930-203530.tar.gz`,
-   12 MB), `main`'s `.tmp/`, and the `wt-265` teardown (pending the post-reload cleanup).
+   12 MB) and `main`'s `.tmp/` can be pruned.
 
 ## Cockpit layout (moved 2026-09-30)
 
