@@ -35,12 +35,13 @@ format, no extension-API changes and no migration doc — its defaults changed T
   (AST-based). Live-verified at the point of use: the dispatch that used to corrupt the TUI produced zero
   terminal writes while every entry landed in the file log. Reaches npm users with the next release.
 
+**Hygiene done 2026-10-04:** GitHub *auto-delete head branches* is **OFF** (`delete_branch_on_merge=false`);
+`worktree-cleanup.sh` now auto-derives the branch and deletes **local + remote** heads (never `dev`/`main`)
+and skips its cockpit pull with a warning on a dirty tree — functionally tested end-to-end; the local backup
+tarball (`cockpit-backup-20260930-203530.tar.gz`, 12 MB) and `main/.tmp/` are pruned.
+
 1. **#259/#260/#261 (LOW) — Run History UX**, scoped and ready: one row per run (collapse spawn+terminal,
    outcomes only), detail → list navigation, and the full-output view (v1: stored output + honesty lines).
-2. **Optional repo hygiene:** disable GitHub's *auto-delete head branches* (it deleted `dev` at the release
-   merge; restored manually) and teach `worktree-cleanup.sh` to delete remote branch heads explicitly.
-3. **Optional local cleanup:** the workspace-root backup tarball (`cockpit-backup-20260930-203530.tar.gz`,
-   12 MB) and `main`'s `.tmp/` can be pruned.
 
 ## Cockpit layout (moved 2026-09-30)
 
