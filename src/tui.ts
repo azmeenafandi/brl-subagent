@@ -1283,7 +1283,7 @@ async function showRunDetail(ctx: ExtensionContext, run: SubagentRun): Promise<v
 			container.addChild(new Spacer(1));
 			container.addChild(
 				new Text(
-					theme.fg("dim", "\u2191\u2193 scroll \u00b7 space/b page \u00b7 any other key to close"),
+					theme.fg("dim", "\u2191\u2193 scroll \u00b7 alt+\u2191\u2193 page \u00b7 any other key to close"),
 					1,
 					0,
 				),
@@ -1296,6 +1296,24 @@ async function showRunDetail(ctx: ExtensionContext, run: SubagentRun): Promise<v
 			render: (w: number) => buildDetailView(w).render(w),
 			invalidate: () => {},
 			handleInput: (data: string) => {
+				// Paging: alt+↑ / alt+↓. Checked BEFORE the plain arrows so an
+				// alt-modified sequence can never be consumed as a line step.
+				// PgUp/PgDn are unusable here: the host binds them to the
+				// alt-screen transcript scroll (`tui.altScreen.pageUp/pageDown`)
+				// and consumes them before a `ctx.ui.custom` overlay sees input —
+				// pi 1.0.2 has no viewport-owner registration for overlays. The
+				// PgUp/PgDn checks below stay for inline mode, where they do
+				// reach the overlay.
+				if (matchesKey(data, "alt+up")) {
+					scrollTop -= RUN_DETAIL_OUTPUT_VIEWPORT_LINES;
+					tui.requestRender();
+					return;
+				}
+				if (matchesKey(data, "alt+down")) {
+					scrollTop += RUN_DETAIL_OUTPUT_VIEWPORT_LINES;
+					tui.requestRender();
+					return;
+				}
 				if (kb.matches(data, "tui.select.up")) {
 					scrollTop -= 1;
 					tui.requestRender();
@@ -1313,24 +1331,6 @@ async function showRunDetail(ctx: ExtensionContext, run: SubagentRun): Promise<v
 				}
 				if (kb.matches(data, "tui.select.pageDown")) {
 					scrollTop += RUN_DETAIL_OUTPUT_VIEWPORT_LINES;
-					tui.requestRender();
-					return;
-				}
-				// PgUp/PgDn are reserved by the host's alt-screen viewport in
-				// fullscreen mode: `tui.altScreen.pageUp/pageDown` claim the same
-				// physical keys and the root consumes them (scrolling the main
-				// transcript) before this overlay ever sees the input — a
-				// `ctx.ui.custom` component cannot register as a viewport owner in
-				// pi 1.0.2. Paging therefore needs unbound alternates: space =
-				// page down, b = page up (verified live 2026-10-04). The two checks
-				// above stay for inline mode, where PgUp/PgDn do reach the overlay.
-				if (matchesKey(data, "space")) {
-					scrollTop += RUN_DETAIL_OUTPUT_VIEWPORT_LINES;
-					tui.requestRender();
-					return;
-				}
-				if (matchesKey(data, "b")) {
-					scrollTop -= RUN_DETAIL_OUTPUT_VIEWPORT_LINES;
 					tui.requestRender();
 					return;
 				}
