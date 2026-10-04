@@ -49,6 +49,12 @@ const LOG_LEVEL_NAMES: readonly LogLevel[] = ["debug", "info", "warn", "error"];
 let minLevel: LogLevel = resolveInitialLogLevel();
 
 /**
+ * Whether the console mirror is enabled — opt-in via BRL_LOG_CONSOLE (issue #265).
+ * File-only is the default so extension logging never corrupts the pi TUI.
+ */
+let consoleOutput: boolean = resolveInitialConsoleOutput();
+
+/**
  * Issue #235: the log verbosity knob was never wired, so the three `log.debug()`
  * call sites were permanently suppressed with no way to turn them on.
  * `BRL_LOG_LEVEL` is read ONCE at module load (logger call sites are spread
@@ -64,6 +70,22 @@ function resolveInitialLogLevel(): LogLevel {
 	return "info";
 }
 
+/**
+ * Issue #265: extension code runs inside pi's TUI process, so a raw console
+ * write lands wherever the renderer's cursor sits and corrupts the display.
+ * File-only is the default; `BRL_LOG_CONSOLE` opts the terminal mirror back in.
+ * Read ONCE at module load for the same reason as BRL_LOG_LEVEL — logger call
+ * sites are spread across the codebase. Accepts `1|true|yes`; anything else is
+ * off. `setConsoleOutput()` remains the programmatic override.
+ *
+ * Explicitly NOT gated on process.stdout.isTTY: in pi print mode stdout IS the
+ * result channel, so that test is exactly backwards.
+ */
+function resolveInitialConsoleOutput(): boolean {
+	const raw = process.env.BRL_LOG_CONSOLE?.trim().toLowerCase();
+	return raw === "1" || raw === "true" || raw === "yes";
+}
+
 // ---------------------------------------------------------------------------
 // Logger
 // ---------------------------------------------------------------------------
@@ -77,6 +99,15 @@ export interface Logger {
 
 export function setLogLevel(level: LogLevel): void {
 	minLevel = level;
+}
+
+/**
+ * Programmatic override for the console mirror (issue #265). Mirrors
+ * setLogLevel: module-level state, so tests can toggle it without re-reading
+ * the environment.
+ */
+export function setConsoleOutput(enabled: boolean): void {
+	consoleOutput = enabled;
 }
 
 // Issue #179 (D6): createLogger() runs at MODULE LOAD (index.ts,
@@ -121,9 +152,12 @@ export function createLogger(prefix: string, cwd?: string): Logger {
 
 		const line = JSON.stringify(entry);
 
-		// Console output
-		const consoleMethod = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
-		consoleMethod(`[${prefix}] ${level.toUpperCase()}: ${message}`);
+		// Console mirror — opt-in (issue #265). Off by default so a logger call
+		// can never corrupt the pi TUI renderer; BRL_LOG_CONSOLE opts back in.
+		if (consoleOutput) {
+			const consoleMethod = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
+			consoleMethod(`[${prefix}] ${level.toUpperCase()}: ${message}`);
+		}
 
 		// File output — resolved on each call because the cwd may be set after
 		// createLogger ran (module load) but before the first entry.

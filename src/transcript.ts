@@ -3,6 +3,11 @@ import { join } from 'path';
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'fs';
 import type { TranscriptEntry, TranscriptEntryType } from './types';
 import { assertSafeAgentId } from './sanitize';
+import { createLogger } from './logging';
+
+// Issue #265: route the settle-path warning through the logger (file-only by
+// default) instead of a raw console.warn that corrupts the pi TUI.
+const log = createLogger('brl-subagent');
 
 // Output directory — overridable for tests (issue #52): unit tests must NOT
 // write into the real repo .pi/ dir; the setter is test-only.
@@ -118,7 +123,7 @@ export function completeTranscript(agentId: string, status: string): void {
   // appending — that invariant is load-bearing for caller validation).
   const path = getTranscriptPath(agentId);
   if (!existsSync(path)) {
-    console.warn(`[brl-subagent] completeTranscript: transcript missing for agent ${agentId} — skipping completion entry`);
+    log.warn(`completeTranscript: transcript missing for agent ${agentId} — skipping completion entry`);
     return;
   }
   appendEntry(agentId, 'system', `Transcript completed: ${status}`);

@@ -69,7 +69,7 @@ import { __setStorageDir } from "../session-manager";
 // Issue #195: the REAL session_start handler points the module-level logger's
 // file sink at testCwd (setLogCwd(ctx.cwd)); the suite disables that sink
 // around teardown so late writes cannot re-create removed test dirs.
-import { setLogCwd } from "../logging";
+import { setLogCwd, setConsoleOutput } from "../logging";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -769,6 +769,9 @@ describe("top-level model override (issue #96)", () => {
 	});
 
 	it("falls back with a warn on a malformed top-level model string", async () => {
+		// Issue #265: the console mirror is opt-in — enable it so this test can
+		// observe the logger's warning. Restored in finally below.
+		setConsoleOutput(true);
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			const ctx = makeCtx();
@@ -787,10 +790,13 @@ describe("top-level model override (issue #96)", () => {
 			expect(warn).toBeDefined();
 		} finally {
 			warnSpy.mockRestore();
+			setConsoleOutput(false);
 		}
 	});
 
 	it("falls back with a warn when the top-level model is unauthed", async () => {
+		// Issue #265: the console mirror is opt-in. See the malformed-string case.
+		setConsoleOutput(true);
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			const ctx = makeCtx();
@@ -814,6 +820,7 @@ describe("top-level model override (issue #96)", () => {
 			expect(warn).toBeDefined();
 		} finally {
 			warnSpy.mockRestore();
+			setConsoleOutput(false);
 		}
 	});
 });
@@ -1258,6 +1265,9 @@ describe("no-template parity (issue #175 review)", () => {
 
 describe("session_start warns on dangling template preset refs (issue #81)", () => {
 	it("seeds a project template with a typo'd preset and asserts the session-start warn", async () => {
+		// Issue #265: the console mirror is opt-in. Enable it so the logger's
+		// session-start warning reaches console.warn; restored in finally below.
+		setConsoleOutput(true);
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			const ctx = makeCtx();
@@ -1288,6 +1298,7 @@ describe("session_start warns on dangling template preset refs (issue #81)", () 
 			expect(String(warnCall![0])).toContain("preset-less with auto-route suppressed");
 		} finally {
 			warnSpy.mockRestore();
+			setConsoleOutput(false);
 		}
 	});
 });
