@@ -61,9 +61,12 @@ logged (merge-refresh miss, preservation-claim overstatement, preset drift).
 318/318 symbols). The 10-04 flagged `SKILL.md` semantic shrink (23→10) is the restructure itself (content
 moved into the new references, extracted in the same pass).
 
-**#271 (TEST) — fix implemented, PR #272 open** (`c1e63eb`): `BRL_PI_BIN` override before the argv[1]
-heuristic + deterministic stub child + tightened assertions (mutation check: 4/6 e2e cases fail without the
-override); focused review in flight. **Standing instruction (2026-10-05): review dispatches use
+**#271 (TEST) — PR #272 open, review passed** (`c1e63eb` + `b00f4d9` + `5d04055`): `BRL_PI_BIN` override
+before the argv[1] heuristic + deterministic stub child + tightened assertions (mutation check: 4/6 e2e
+cases fail without the override). Focused review: **PASS WITH NOTES** — all accepted findings fixed
+(strict `readStubLog` errors, honest test names, shared `resolvePiOnPath`, loud real-pi opt-in, stale
+ARCHITECTURE.md claim), two notes recorded inline; `sandbox` naming fully purged (that system was removed
+in v2.1.1, not v2.0.4). **Standing instruction (2026-10-05): review dispatches use
 `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which dropped a review mid-run on a transient
 connection error (28 turns, no recoverable output).
 
