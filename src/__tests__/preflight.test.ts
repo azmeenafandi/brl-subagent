@@ -148,3 +148,39 @@ describe("preflightCheck", () => {
 		}
 	});
 });
+
+// ---------------------------------------------------------------------------
+// BRL_PI_BIN override (issue #271) — exercise the REAL resolution, not the mock
+// ---------------------------------------------------------------------------
+
+describe("preflightCheck validates the BRL_PI_BIN override (issue #271)", () => {
+	afterEach(() => {
+		delete process.env.BRL_PI_BIN;
+	});
+
+	it("fails when BRL_PI_BIN points at a missing binary (real getPiInvocation)", async () => {
+		// preflight imports getPiInvocation from the mocked module; point that mock
+		// at the REAL implementation so the BRL_PI_BIN override decides the command.
+		const actualRunner = await vi.importActual<typeof import("../runner")>("../runner");
+		mockGetPiInvocation.mockImplementation(actualRunner.getPiInvocation);
+
+		process.env.BRL_PI_BIN = "/nonexistent/brl-pi-bin-271";
+
+		const result = preflightCheck(realCwd);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toMatch(/not accessible|not executable/);
+			expect(result.error).toContain("/nonexistent/brl-pi-bin-271");
+		}
+	});
+
+	it("passes when BRL_PI_BIN points at an executable binary (real getPiInvocation)", async () => {
+		const actualRunner = await vi.importActual<typeof import("../runner")>("../runner");
+		mockGetPiInvocation.mockImplementation(actualRunner.getPiInvocation);
+
+		process.env.BRL_PI_BIN = process.execPath;
+
+		const result = preflightCheck(realCwd);
+		expect(result.ok).toBe(true);
+	});
+});

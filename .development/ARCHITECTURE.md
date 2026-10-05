@@ -141,8 +141,10 @@ Each rule below is enforced in code and pinned by tests; the pointer is where it
 
 ## Tests
 
-- `src/__tests__/` — unit and integration suites, one per module; `e2e.test.ts` spawns a real `pi`, and
-  `*-real.test.ts` suites exercise real git / session paths.
+- `src/__tests__/` — unit and integration suites, one per module; `e2e.test.ts` is Tier-1 jiti
+  import verification (it spawns nothing), `e2e-subprocess.test.ts` spawns a controlled stub `pi`
+  (real `pi` is opt-in via `BRL_E2E_REAL_PI=1`), and `*-real.test.ts` suites exercise real git /
+  session paths.
 - CI runs `npm run typecheck` and `npx vitest run`; `.pi/skills/worktree/check-repo.sh` mirrors the gate
   locally before a worktree is created.
 - The module map's own guard is `src/__tests__/architecture-doc.test.ts`: regeneration must equal the
