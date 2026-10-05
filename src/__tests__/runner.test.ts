@@ -6,7 +6,7 @@
  * coverage gap — the primary foreground wrap had zero assertions).
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock spawn so runSubagent never launches a real process.
 const mocks = vi.hoisted(() => ({
@@ -131,10 +131,65 @@ describe("runSubagent foreground task fencing (F27)", () => {
 });
 
 describe("getPiInvocation", () => {
+	afterEach(() => {
+		delete process.env.BRL_PI_BIN;
+	});
+
 	it("returns the current script when it exists (dev path)", () => {
 		const inv = getPiInvocation(["--mode", "json"]);
 		expect(inv.args).toContain("--mode");
 		expect(inv.args).toContain("json");
+	});
+
+	// Issue #271: inside the Tier-2 harness argv[1] is the HARNESS script, not
+	// pi's CLI. BRL_PI_BIN pins the command explicitly and MUST win over the
+	// argv[1] heuristic so the harness spawns its stub instead of re-running
+	// itself.
+	it("BRL_PI_BIN wins over the argv[1] heuristic and passes args through", () => {
+		process.env.BRL_PI_BIN = "/opt/custom/bin/pi";
+		const inv = getPiInvocation(["--mode", "json", "task"]);
+		expect(inv).toEqual({ command: "/opt/custom/bin/pi", args: ["--mode", "json", "task"] });
+	});
+
+	it("trims surrounding whitespace on BRL_PI_BIN", () => {
+		process.env.BRL_PI_BIN = "  /opt/custom/bin/pi\t";
+		const inv = getPiInvocation([]);
+		expect(inv.command).toBe("/opt/custom/bin/pi");
+	});
+
+	it("ignores a whitespace-only BRL_PI_BIN and falls through to the default resolution", () => {
+		process.env.BRL_PI_BIN = "   \t ";
+		const inv = getPiInvocation(["--mode"]);
+		// Never echoes the blank override as the command.
+		expect(inv.command).not.toBe("   \t ");
+		expect(inv.command === process.execPath || inv.command === "pi").toBe(true);
+		// Fell through to the argv[1] heuristic (which prepends the script).
+		expect(inv.args).toContain("--mode");
+	});
+});
+
+describe("runSubagent honors the BRL_PI_BIN override (issue #271)", () => {
+	afterEach(() => {
+		delete process.env.BRL_PI_BIN;
+	});
+
+	it("spawns the override command instead of re-running argv[1]", async () => {
+		process.env.BRL_PI_BIN = "/opt/custom/bin/pi";
+		await runSubagent(
+			"/tmp/cwd",
+			"",
+			{ provider: "test", id: "model" },
+			"medium",
+			"task",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			() => "",
+		);
+
+		expect(mocks.spawn).toHaveBeenCalledTimes(1);
+		expect(mocks.spawn.mock.calls[0][0]).toBe("/opt/custom/bin/pi");
 	});
 });
 

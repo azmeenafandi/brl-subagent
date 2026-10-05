@@ -47,8 +47,28 @@ import type {
 
 /**
  * Resolve the pi binary and command-line invocation for subprocess spawning.
+ *
+ * Precedence:
+ *   1. `BRL_PI_BIN` — an explicit override, read per call. A non-empty
+ *      (trimmed) value is used verbatim as the command; whitespace-only is
+ *      ignored and falls through. This exists for the Tier-2 e2e harness
+ *      (issue #271): it spawns a synthetic node process that loads the
+ *      extension, so `process.argv[1]` is the HARNESS script, not pi's CLI.
+ *      Without this override the argv[1] heuristic below re-runs the harness
+ *      as if it were pi (a delegation no-op that still "passes"). Production
+ *      behaviour is unchanged while the variable is unset.
+ *   2. `process.argv[1]` — a real script path (the dev/pi-CLI case). Spawn it
+ *      with the current runtime.
+ *   3. A non-generic `process.execPath` (a bundled/custom binary) — spawn it
+ *      directly.
+ *   4. `"pi"` on PATH.
  */
 export function getPiInvocation(extraArgs: string[]): { command: string; args: string[] } {
+	const override = process.env.BRL_PI_BIN?.trim();
+	if (override) {
+		return { command: override, args: extraArgs };
+	}
+
 	const currentScript = process.argv[1];
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
 	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {

@@ -176,6 +176,16 @@ describe("getSafeEnv", () => {
 		if (process.env.HOME) expect(env.HOME).toBeDefined();
 		if (process.env.PATH) expect(env.PATH).toBeDefined();
 	});
+
+	it("does not forward BRL_PI_BIN (issue #271 — children resolve their own pi)", () => {
+		// The override is read from the PARENT process to decide the spawn command;
+		// it must not leak into the child's environment (the child would otherwise
+		// inherit a resolution decision that is not its own).
+		process.env.BRL_PI_BIN = "/opt/custom/bin/pi";
+		const env = getSafeEnv();
+		expect(env.BRL_PI_BIN).toBeUndefined();
+		delete process.env.BRL_PI_BIN;
+	});
 });
 
 // ---------------------------------------------------------------------------
