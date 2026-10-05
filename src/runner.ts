@@ -49,9 +49,10 @@ import type {
  * Resolve the pi binary and command-line invocation for subprocess spawning.
  *
  * Precedence:
- *   1. `BRL_PI_BIN` — an explicit override, read per call. A non-empty
- *      (trimmed) value is used verbatim as the command; whitespace-only is
- *      ignored and falls through. This exists for the Tier-2 e2e harness
+ *   1. `BRL_PI_BIN` — an explicit override, read per call. A non-empty value
+ *      (after trimming surrounding whitespace) is used as the command;
+ *      whitespace-only is ignored and falls through. This exists for the
+ *      Tier-2 e2e harness
  *      (issue #271): it spawns a synthetic node process that loads the
  *      extension, so `process.argv[1]` is the HARNESS script, not pi's CLI.
  *      Without this override the argv[1] heuristic below re-runs the harness

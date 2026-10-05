@@ -31,8 +31,9 @@ import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { readFile, unlink, rm } from "fs/promises";
-import { writeFileSync, mkdirSync, accessSync, constants } from "fs";
-import { join, delimiter } from "path";
+import { writeFileSync, mkdirSync } from "fs";
+import { join } from "path";
+import { resolvePiOnPath } from "../preflight";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,25 +49,15 @@ const STUB_LOG_PATH = join(TMP_SCRIPT_DIR, "stub-pi-invocations.jsonl");
 // Spawn target resolution
 // ---------------------------------------------------------------------------
 
-/** Walk PATH for an executable `pi`, mirroring preflight's checkPiBinary. */
-function resolveRealPi(): string | undefined {
-	const pathDirs = (process.env.PATH || "").split(delimiter);
-	const names = process.platform === "win32" ? ["pi.cmd", "pi.exe", "pi"] : ["pi"];
-	for (const dir of pathDirs) {
-		for (const name of names) {
-			const fullPath = join(dir, name);
-			try {
-				accessSync(fullPath, constants.X_OK);
-				return fullPath;
-			} catch {
-				// Not found here — keep searching.
-			}
-		}
+// Real pi is opt-in (BRL_E2E_REAL_PI=1) and resolved via preflight's shared
+// PATH walk. Default stays on the committed stub: no model, network, or cost.
+let realPi: string | undefined;
+if (process.env.BRL_E2E_REAL_PI === "1") {
+	realPi = resolvePiOnPath();
+	if (!realPi) {
+		throw new Error("BRL_E2E_REAL_PI=1 but no 'pi' executable found on PATH");
 	}
-	return undefined;
 }
-
-const realPi = process.env.BRL_E2E_REAL_PI === "1" ? resolveRealPi() : undefined;
 const PI_BIN = realPi ?? STUB_PI_PATH;
 const STUB_MODE = realPi === undefined;
 
@@ -82,15 +73,20 @@ interface StubRecord {
 }
 
 async function readStubLog(): Promise<StubRecord[]> {
+	let raw: string;
 	try {
-		const raw = await readFile(STUB_LOG_PATH, "utf8");
-		return raw
-			.split("\n")
-			.filter(Boolean)
-			.map((line) => JSON.parse(line) as StubRecord);
-	} catch {
-		return [];
+		raw = await readFile(STUB_LOG_PATH, "utf8");
+	} catch (err: any) {
+		// A missing log is the legitimate empty case. Any other failure
+		// (including JSON parse errors below) must surface, so a corrupt or
+		// partial line can't masquerade as "no child spawned".
+		if (err?.code === "ENOENT") return [];
+		throw err;
 	}
+	return raw
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as StubRecord);
 }
 
 /** Start/end timestamps for the invocation whose task contains `needle`. */
@@ -421,7 +417,10 @@ describe("Tier 2: Subprocess integration tests", () => {
 		if (!canRun) return;
 
 		// Explicit delays make the overlap deterministic: the "goodbye" task
-		// finishes well before the (still sleeping) "hello" task.
+		// finishes well before the (still sleeping) "hello" task. The binding
+		// margin is goodbye's [delay=120] against the near-simultaneous starts,
+		// ~120ms; hello's [delay=700] keeps it overlapping long after. Low flake
+		// risk — a scheduler stall would have to exceed ~120ms.
 		const result = await runDelegateTask({
 			tasks: [
 				{ task: "Say hello [delay=700]" },
@@ -457,6 +456,8 @@ describe("Tier 2: Subprocess integration tests", () => {
 	it("git mode handles branch workflow", async () => {
 		if (!canRun) return;
 
+		// NOTE: assumes the cwd is a git checkout — branch-mode creation
+		// requires a repo (the project root is one in development and CI).
 		const result = await runDelegateTask({
 			task: "Say hello",
 			gitMode: "branch",
@@ -483,7 +484,7 @@ describe("Tier 2: Subprocess integration tests", () => {
 		console.log("Git mode result:", text?.slice(0, 200));
 	});
 
-	it("sandbox enforcement blocks write tools", async () => {
+	it("pre-spawn validation rejects outputFile when the write tool is excluded", async () => {
 		if (!canRun) return;
 
 		// A write-restricted "sandbox": the write tool is excluded via the
@@ -516,7 +517,7 @@ describe("Tier 2: Subprocess integration tests", () => {
 		console.log("Sandbox enforcement result:", text.slice(0, 200));
 	});
 
-	it("template resolution substitutes params", async () => {
+	it("unknown template is reported explicitly", async () => {
 		if (!canRun) return;
 
 		const result = await runDelegateTask({
