@@ -23,7 +23,7 @@ format, no extension-API changes and no migration doc — its defaults changed T
 | Worktrees | main + dev only (cockpit = dev; every task worktree cleaned) |
 | Graph | **1028 nodes / 2619 edges / 62 communities** — refreshed **2026-09-30** to describe the **DEV** tree (first refresh under the new model: `graph-refresh.sh` per merge; 17 files re-extracted, ~$0.01; `graph-check.py` green: 33/33 modules, 313/313 exported symbols). Pre-refresh state archived by graphify as `graphify-out/2026-09-30/` |
 
-## Next actions (2026-10-04, post-#266)
+## Next actions (2026-10-05, post-#272)
 
 **Recently closed:**
 - **#230** (P0, Rule 11) — closed no-fix 2026-10-04: the installed graphify hook stands down in linked
@@ -56,19 +56,18 @@ tarball (`cockpit-backup-20260930-203530.tar.gz`, 12 MB) and `main/.tmp/` are pr
 skill-restructure dispatch was stopped pre-write by the pre-flight warning), and today's three frictions are
 logged (merge-refresh miss, preservation-claim overstatement, preset drift).
 
-**Post-merge graph refreshes:** #269 (2026-10-04) → 1438 / 3195 / 160; **#270 (2026-10-05) → 1458 nodes / 3219 edges
-/ 159 communities** (5 files re-extracted, $0.037); `graph-check` complete both times (33/33 modules,
-318/318 symbols). The 10-04 flagged `SKILL.md` semantic shrink (23→10) is the restructure itself (content
+**Post-merge graph refreshes:** #269 (2026-10-04) → 1438 / 3195 / 160; #270 (2026-10-05) → 1458 / 3219 / 159;
+**#272 (2026-10-05) → 1517 / 3339 / 161, coverage 33/33 modules + 319/319 symbols** (the +1 symbol is
+`resolvePiOnPath`). The 10-04 flagged `SKILL.md` semantic shrink (23→10) is the restructure itself (content
 moved into the new references, extracted in the same pass).
 
-**#271 (TEST) — PR #272 open, review passed** (`c1e63eb` + `b00f4d9` + `5d04055`): `BRL_PI_BIN` override
-before the argv[1] heuristic + deterministic stub child + tightened assertions (mutation check: 4/6 e2e
-cases fail without the override). Focused review: **PASS WITH NOTES** — all accepted findings fixed
-(strict `readStubLog` errors, honest test names, shared `resolvePiOnPath`, loud real-pi opt-in, stale
-ARCHITECTURE.md claim), two notes recorded inline; `sandbox` naming fully purged (that system was removed
-in v2.1.1, not v2.0.4). **Standing instruction (2026-10-05): review dispatches use
-`deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which dropped a review mid-run on a transient
-connection error (28 turns, no recoverable output).
+**#271 (TEST) — fixed & closed 2026-10-05: PR #272 (merge `a1b30ca`)** — Tier-2 harness spawns a
+controlled stub via `BRL_PI_BIN` (real pi opt-in via `BRL_E2E_REAL_PI=1`, loud when unavailable); no
+vacuous passes (sentinel rejected per case, order/overlap proven from a stub log, pre-spawn case asserts
+the specific conflict + empty log). Focused review PASS WITH NOTES → all accepted findings fixed; two
+notes recorded inline; `sandbox` naming purged (that system was removed in v2.1.1). **Standing instruction
+(2026-10-05): review dispatches use `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which
+dropped a review mid-run on a transient connection error.
 
 **Other candidates (marked, not filed):** the three #261-adjacent follow-ups
 (dead `DEFAULT_OUTPUT_CAP_BYTES` in types.ts; `capOutput`'s now-misleading notice wording; transcript-path
