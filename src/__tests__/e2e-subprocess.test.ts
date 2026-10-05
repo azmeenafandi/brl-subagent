@@ -487,12 +487,12 @@ describe("Tier 2: Subprocess integration tests", () => {
 	it("pre-spawn validation rejects outputFile when the write tool is excluded", async () => {
 		if (!canRun) return;
 
-		// A write-restricted "sandbox": the write tool is excluded via the
+		// A write-restricted configuration: the write tool is excluded via the
 		// supported toolOptions, and an outputFile (which REQUIRES write) is
 		// requested. This is a hard, pre-spawn validation conflict.
 		const result = await runDelegateTask({
 			task: "Write 'hello' to /tmp/test-e2e.txt",
-			outputFile: "e2e-sandbox-report.md",
+			outputFile: "e2e-write-restricted-report.md",
 			excludeTools: ["write", "edit"],
 		});
 
@@ -514,7 +514,7 @@ describe("Tier 2: Subprocess integration tests", () => {
 			expect(await readStubLog()).toHaveLength(0);
 		}
 
-		console.log("Sandbox enforcement result:", text.slice(0, 200));
+		console.log("Pre-spawn validation result:", text.slice(0, 200));
 	});
 
 	it("unknown template is reported explicitly", async () => {
