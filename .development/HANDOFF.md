@@ -70,11 +70,16 @@ notes recorded inline; `sandbox` naming purged (that system was removed in v2.1.
 (2026-10-05): review dispatches use `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which
 dropped a review mid-run on a transient connection error.
 
-**#280 (LOW) + #282 (LOW) OPEN — filed 2026-10-06:**
+**#280 (LOW) + #282 (LOW) + #283 (TEST) + #284 (LOW) OPEN:**
 - **#280** — `get_agent_result`'s "Transcript:" pointer still uses the filesystem form while run-history uses
   the POSIX display form (#276 aftermath; the id is already validated via `getAgent` in the same handler)
 - **#282** — test temp-dir/log-cwd teardown copy-pasted across 12 test files and already drifted (one copy
   missed the `setLogCwd(undefined)` step → the #277 leak); fix = one shared lifecycle helper (`fixtures/`)
+- **#283** — `e2e-subprocess` fails 4× in full-suite low-worker runs (`--maxWorkers=2`/`--no-file-parallelism`);
+  passes alone at 2 workers → leading hypothesis: cross-file module-state leakage under worker reuse; may
+  share a root cause with #282
+- **#284** — reuse one long-lived TS7 `API` in `scripts/ts-ast.mjs` (92 tsgo spawn/kills per full run; the only
+  our-side lever for the #277 `context canceled` noise)
 
 **Batch 2026-10-06, autonomous resolution** (maintainer blanket approval; specs = the issue bodies +
 pinned decisions): **#274 + #275 + #276 + #277 MERGED — batch complete.** PRs #278 (`6e837fc`), #279
