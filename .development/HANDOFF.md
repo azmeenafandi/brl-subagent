@@ -70,9 +70,9 @@ notes recorded inline; `sandbox` naming purged (that system was removed in v2.1.
 (2026-10-05): review dispatches use `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which
 dropped a review mid-run on a transient connection error.
 
-**#276 (LOW) + #277 (TEST) OPEN — filed 2026-10-06:**
-- **#276** — transcript-path format duplicated (validated builder vs inlined literal), blocked from a direct
-  import by the `SESSION_MANAGER_READER_API` architecture rule
+**#280 (LOW) + #277 (TEST) OPEN — filed 2026-10-06:**
+- **#280** — `get_agent_result`'s "Transcript:" pointer still uses the filesystem form while run-history uses
+  the POSIX display form (#276 aftermath; the id is already validated via `getAgent` in the same handler)
 
 - **#277** — suite output noise (TEST): the expected branch-delete failure prints every run (unsuppressed
   stderr); `background-fan-out` leaks one `/tmp/brl-bg-fanout-*` dir per run (no `afterAll`); `context canceled`
@@ -80,13 +80,17 @@ dropped a review mid-run on a transient connection error.
   the initial attribution to that suite was wrong.
 
 **Batch 2026-10-06, autonomous resolution** (maintainer blanket approval; specs = the issue bodies +
-pinned decisions): **#274 + #275 MERGED** — PR #278 (merge commit `6e837fc`), issues closed **manually** (`Fixes`
-keywords do NOT auto-fire: PRs here target `dev`, not the repo's default branch — close every merged issue by
-hand), worktree
-cleaned, graph refreshed at the merge (one exact-duplicate node required `--allow-dedup-shrink`; graph now
-1530/3322/164, `graph-check.py` passes 33/33 modules and 320/320 symbols). **#276 standalone** (module
-relocation, C2-ish → focused review); **#277 standalone** (test-infra hygiene) — both remain. None of the
-four block a release. Any reviewer dispatch uses `deepseek/deepseek-flash` (standing instruction).
+pinned decisions): **#274 + #275 + #276 MERGED** — #278 (`6e837fc`), #279 (`615d05e`); all three closed
+**manually** (`Fixes` keywords do NOT auto-fire: PRs here target `dev`, not the repo's default branch — close
+every merged issue by hand). **#277 remains.** None block a release. Any reviewer dispatch uses
+`deepseek/deepseek-flash` (standing instruction).
+
+**Graph (2026-10-06):** the post-#279 incremental refresh thinned the docs semantic pass (the completeness
+guard refused every write); resolved with a **from-scratch build** (current graph moved aside, semantic cache
+re-extracted): graph now **1394 nodes / 3229 edges / 120 communities**, `graph-check.py` passes 34/34 modules
+and 322/322 symbols. Residual: 22 doc files still produced no semantic nodes (LLM omissions; a
+`graphify . --update` re-run retries them). The pre-rebuild 1530-node graph is kept at
+`graphify-out/graph.json.pre-276-rebuild` (the dated `2026-10-06/` backup holds an intermediate 1375-node copy).
 
 **Other candidates (marked, not filed):** the `showSelectList` preselect nice-to-have deferred from #260, and
 cutting a release when the accumulated fixes should reach npm users.
