@@ -320,15 +320,13 @@ export async function steerAgent(id: string, message: string): Promise<Backgroun
 }
 
 /**
- * Get transcript path for an agent
+ * Get transcript path for an agent.
+ *
+ * Issue #276: the format lives in `transcript-path.ts` (the single source).
+ * This re-export preserves the historical `session-manager.getTranscriptPath`
+ * surface for `index.ts`'s dynamic import and the existing tests.
  */
-export function getTranscriptPath(id: string): string {
-  // F24: reachable with LLM-controlled ids (get_agent_result). Throw on invalid
-  // ids — the tool caller surfaces it as an error. (Defense in depth: getAgent
-  // already validated before this is reached with a live agent.)
-  assertSafeAgentId(id);
-  return join('.pi', 'output', `agent-${id}.jsonl`);
-}
+export { transcriptPath as getTranscriptPath } from './transcript-path';
 
 /**
  * Spawn a background session using pi's session API

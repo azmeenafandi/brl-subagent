@@ -9,6 +9,7 @@
 import type { SubagentRun, SubagentResult } from "./types";
 import { isSubagentError, getFinalOutput, isSubagentRunShape, classifyError, coherentFailureReason, CUSTOM_ENTRY_TYPES, MAX_RUN_HISTORY_ENTRIES, DEFAULT_OUTPUT_CAP_BYTES } from "./types";
 import { isOutputTruncated } from "./sanitize";
+import { transcriptDisplayPath } from "./transcript-path";
 import type { ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -241,7 +242,7 @@ export function buildOutputHonestyLines(
 	run: Pick<SubagentRun, "id" | "fullOutput">,
 	capBytes: number = DEFAULT_OUTPUT_CAP_BYTES,
 ): string[] {
-	const transcriptPath = `.pi/output/agent-${run.id}.jsonl`;
+	const transcriptPath = transcriptDisplayPath(run.id);
 	const lines = [`Transcript: ${transcriptPath}`];
 	const output = run.fullOutput;
 	const size = formatCapSize(capBytes);
