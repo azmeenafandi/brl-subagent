@@ -71,8 +71,64 @@ export {
 	isTypeNode,
 };
 
-/** A synthetic project filename that cannot collide with a real source file. */
-const CONFIG_PATH = resolve(process.cwd(), ".ts-ast-virtual-project.json");
+/**
+ * The one long-lived TS7 API client for this process/worker, created lazily on
+ * first use. Constructing an `API` spawns the tsgo native compiler
+ * (`typescript/unstable/sync` -> `@typescript/typescript-linux-x64/lib/tsc`)
+ * and `close()` kills it, so a per-call instance meant one spawn/kill per
+ * `parseTexts()` call (~92 per full suite run, plus a stderr race that leaks
+ * the Go `context canceled` string). One client per worker removes ~90
+ * startups and nearly all of the kill races. See issue #284.
+ *
+ * @type {API | undefined}
+ */
+let api;
+
+/**
+ * The in-flight `parseTexts` request, if any. The API's `fs` hooks are
+ * registered once when the client is constructed, so they cannot close over a
+ * single call's virtual project; instead they read this module-level slot.
+ *
+ * This is safe because the TS7 *sync* API is synchronous and single-threaded
+ * per worker: `updateSnapshot(...)` and the `getSourceFile(...)` loop for a
+ * call run to completion before any other `parseTexts()` can start, so two
+ * requests can never interleave in the slot.
+ *
+ * @type {{ virtual: Map<string, string>, config: string, configPath: string } | undefined}
+ */
+let currentRequest;
+
+/** Starts at 0 and increments once per `parseTexts` call. */
+let configCounter = 0;
+
+/**
+ * Returns the process-wide API client, constructing it (and its tsgo child) on
+ * first use. Registers a once-only `exit` hook so the child cannot outlive the
+ * worker.
+ */
+function getApi() {
+	if (!api) {
+		const client = new API({
+			cwd: process.cwd(),
+			fs: {
+				fileExists: (fileName) => {
+					if (!currentRequest) return undefined;
+					const request = resolve(fileName);
+					return request === currentRequest.configPath || currentRequest.virtual.has(request) ? true : undefined;
+				},
+				readFile: (fileName) => {
+					if (!currentRequest) return undefined;
+					const request = resolve(fileName);
+					if (request === currentRequest.configPath) return currentRequest.config;
+					return currentRequest.virtual.get(request);
+				},
+			},
+		});
+		api = client;
+		process.once("exit", () => client.close());
+	}
+	return api;
+}
 
 /**
  * Parse in-memory sources through one synthetic TypeScript project.
@@ -83,8 +139,8 @@ const CONFIG_PATH = resolve(process.cwd(), ".ts-ast-virtual-project.json");
  * the program to exactly these files, so the real filesystem is only touched
  * for the paths actually requested.
  *
- * The API client is always closed before returning (or throwing) so a caller
- * cannot leak a worker process.
+ * The shared API client is reused across calls and closed once on process exit,
+ * so callers need not (and cannot) release it per call.
  *
  * @param {readonly { path: string, text: string }[]} entries
  * @returns {Map<string, import("typescript/unstable/ast").SourceFile>}
@@ -103,21 +159,25 @@ export function parseTexts(entries) {
 		compilerOptions: { noResolve: true, noLib: true, types: [] },
 		files,
 	});
+	// A UNIQUE synthetic project path per call. The shared API keeps project and
+	// source-file state between `updateSnapshot` calls; reusing one path with a
+	// different file set could let the unstable API serve a stale program. A
+	// fresh path makes each call an independent project while the process (and
+	// its one tsgo child) is reused. The path is virtual — it is served by the
+	// fs hooks below and never touches disk.
+	const configPath = resolve(process.cwd(), `.ts-ast-virtual-project-${configCounter++}.json`);
 
-	const api = new API({
-		cwd: process.cwd(),
-		fs: {
-			fileExists: (fileName) => (resolve(fileName) === CONFIG_PATH || virtual.has(resolve(fileName)) ? true : undefined),
-			readFile: (fileName) => {
-				const request = resolve(fileName);
-				if (request === CONFIG_PATH) return config;
-				return virtual.get(request);
-			},
-		},
-	});
-
+	currentRequest = { virtual, config, configPath };
 	try {
-		const program = api.updateSnapshot({ openProjects: [CONFIG_PATH] }).getProject(CONFIG_PATH).program;
+		// `fileChanges.changed` is REQUIRED because the client is long-lived: the
+		// server caches file content by path, so a path reused across calls with
+		// new text (e.g. the `fixture.ts` scans) is otherwise served stale. It is
+		// accurate per call — both the config and every entry are re-supplied —
+		// and a per-call API never needed it only because a fresh tsgo child
+		// started with an empty cache.
+		const program = getApi()
+			.updateSnapshot({ openProjects: [configPath], fileChanges: { changed: files } })
+			.getProject(configPath).program;
 		/** @type {Map<string, import("typescript/unstable/ast").SourceFile>} */
 		const parsed = new Map();
 		for (const absolute of files) {
@@ -129,6 +189,6 @@ export function parseTexts(entries) {
 		}
 		return parsed;
 	} finally {
-		api.close();
+		currentRequest = undefined;
 	}
 }
