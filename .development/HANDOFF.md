@@ -70,13 +70,14 @@ notes recorded inline; `sandbox` naming purged (that system was removed in v2.1.
 (2026-10-05): review dispatches use `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which
 dropped a review mid-run on a transient connection error.
 
-**#282 (LOW) OPEN — the final item:**
-- **#282** — test temp-dir/log-cwd teardown copy-pasted across 12 test files and already drifted (one copy
-  missed the `setLogCwd(undefined)` step → the #277 leak); fix = one shared lifecycle helper (`fixtures/`).
-  NOTE (2026-10-06): the `isolate: true` finding — per-file workers even under `--maxWorkers=2` — makes this
-  purely DRY/hygiene; there is no cross-file leakage mechanism to fix. GRAPH-REFINED SCOPE (see the issue
-  comment): three levers — `setLogCwd` (6 test files + `src/index.ts` production setter), `__setOutputDir`
-  (9 test files), `__setStorageDir` (8) — union = 9 test files; the helper must reset all three in order.
+**#282 MERGED 2026-10-06 — BOARD EMPTY.** PR #289 (`9c7cf3b`), closed manually. One shared temp-dir +
+log-cwd lifecycle helper (`src/__tests__/fixtures/temp-lifecycle.ts`) adopted by the 8 drifted files; the
+load-bearing order is now structural: clear log cwd → drain (`setImmediate`) → rmSync (the #277 late-write
+lesson). `transcript.test.ts` (single dir in `beforeAll` + per-test unlinks) and the three non-lever `mkdtemp`
+users are documented exclusions. Conductor-run acceptance: suite 61/1258 green, `/tmp` = 0 after a full run,
+after fan-out ×3, and after session-manager alone; `cannot delete branch` 0 and `context canceled` 0 (the
+#277/#284 fixes holding). Test-only — no `/reload` needed. Delivered across EIGHT external connection drops
+with ~3 minutes of total lost work: commit-per-step cadence + short units (friction log: connection-drop-grind).
 
 **#287 MERGED 2026-10-06** — PR #288 (`b20e794`), closed manually. The transcript-path format is now
 ratcheted by an architecture rule (mirrors the runtime-vocabulary literal walk; type-position skip; scope =
@@ -110,10 +111,10 @@ temp dir, not a missing `afterAll`); item 3 sourced to the **TypeScript 7 native
 `.development/investigations/277-context-canceled/`; optional lever = one long-lived `API` in
 `scripts/ts-ast.mjs`. None block a release. Any reviewer dispatch uses `deepseek/deepseek-flash`.
 
-**Graph (2026-10-06, end of day):** the post-#288 refresh passed cleanly — graph now **1487 nodes / 3294
+**Graph (2026-10-06, end of day):** the post-#289 refresh passed cleanly — graph now **1504 nodes / 3294
 links**, `graph-check.py` passes 34/34 modules and 322/322 symbols. Day pattern: 3 refusals (post-#278 dedup →
 `--allow-dedup-shrink`; post-#279 incomplete docs pass → from-scratch rebuild; post-#286 net −1 →
-`--allow-partial` + coverage check) and 3 clean passes — intermittent, not uniform; monitoring continues per the
+`--allow-partial` + coverage check) and 4 clean passes — intermittent, not uniform; monitoring continues per the
 maintainer decision. Pre-rebuild 1530-node graph kept at `graphify-out/graph.json.pre-276-rebuild`.
 
 **Other candidates (marked, not filed):** the `showSelectList` preselect nice-to-have deferred from #260, and
