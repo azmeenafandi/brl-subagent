@@ -9,7 +9,12 @@
  */
 import { describe, expect, it } from "vitest";
 import { buildOutputHonestyLines } from "../history";
-import { capOutput } from "../sanitize";
+import {
+	capOutput,
+	isOutputTruncated,
+	OUTPUT_TRUNCATION_SUFFIX,
+	LEGACY_OUTPUT_TRUNCATION_SUFFIX,
+} from "../sanitize";
 import { DEFAULT_OUTPUT_CAP_BYTES } from "../types";
 
 const ID = "11111111-2222-3333-4444-555555555555";
@@ -84,5 +89,35 @@ describe("buildOutputHonestyLines (issue #261)", () => {
 		expect(lines).toHaveLength(2);
 		expect(lines[1]).toContain("truncated");
 		expect(lines[1]).toContain("100 KB cap");
+	});
+
+	it("adds the truncation line for a record capped with the LEGACY suffix (issue #275)", () => {
+		// Session files written before the #275 reword persist the old marker.
+		// Detection must keep matching it so the honesty line does not silently
+		// regress. Asserting "truncated" (rather than "at or over") proves the
+		// notice branch fired — the length fallback would also produce a cap line
+		// for this long string, so the wording is the discriminator.
+		const legacy =
+			`${"x".repeat(100)}\n\n[Output truncated: 100B ${LEGACY_OUTPUT_TRUNCATION_SUFFIX}`;
+		const lines = buildOutputHonestyLines({ id: ID, fullOutput: legacy }, 100);
+
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toBe(TRANSCRIPT);
+		expect(lines[1]).toContain("truncated");
+		expect(lines[1]).toContain("100 B cap");
+		expect(lines[1]).toContain(`.pi/output/agent-${ID}.jsonl`);
+	});
+
+	it("detects a freshly capOutput-capped record as truncated (issue #275)", () => {
+		const capped = capOutput("x".repeat(200), 100);
+
+		// The writer emits the current suffix; detection agrees.
+		expect(capped.endsWith(OUTPUT_TRUNCATION_SUFFIX)).toBe(true);
+		expect(isOutputTruncated(capped)).toBe(true);
+
+		const lines = buildOutputHonestyLines({ id: ID, fullOutput: capped }, 100);
+		expect(lines).toHaveLength(2);
+		expect(lines[1]).toContain("truncated");
+		expect(lines[1]).toContain("100 B cap");
 	});
 });
