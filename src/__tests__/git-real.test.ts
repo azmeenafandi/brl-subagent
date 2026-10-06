@@ -212,6 +212,10 @@ describe("git.ts real-git behavior (Gate A)", () => {
 			// Still checked out → delete must fail (the reviewer's C2 end state).
 			const del = deleteBranch(repo, workBranch);
 			expect(del.ok).toBe(false);
+			// stderr is CAPTURED (not inherited), so the git diagnostic must
+			// survive in the returned error — a real failure stays diagnosable
+			// from the value instead of leaking to the test runner's stderr.
+			expect(del.ok ? "" : del.error).toContain("cannot delete branch");
 
 			switchToBranch(repo, "main");
 			const del2 = deleteBranch(repo, workBranch);
