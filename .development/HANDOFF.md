@@ -70,10 +70,16 @@ notes recorded inline; `sandbox` naming purged (that system was removed in v2.1.
 (2026-10-05): review dispatches use `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which
 dropped a review mid-run on a transient connection error.
 
-**Other candidates (marked, not filed):** the three #261-adjacent follow-ups
-(dead `DEFAULT_OUTPUT_CAP_BYTES` in types.ts; `capOutput`'s now-misleading notice wording; transcript-path
-format duplication), the `showSelectList` preselect nice-to-have deferred from #260, and cutting a release
-when the accumulated fixes should reach npm users.
+**#274–#276 (LOW) OPEN — the three #261-adjacent follow-ups, filed 2026-10-06:**
+- **#274** — two sources of truth for the 100 KB cap (`capOutput` hardcodes what `DEFAULT_OUTPUT_CAP_BYTES` declares)
+- **#275** — the embedded truncation notice points at “run history details” (which show the capped text) instead
+  of the transcript; carries a dual-suffix detection wrinkle for pre-change records
+- **#276** — transcript-path format duplicated (validated builder vs inlined literal), blocked from a direct
+  import by the `SESSION_MANAGER_READER_API` architecture rule
+
+**Other candidates (marked, not filed):** the `showSelectList` preselect nice-to-have deferred from #260, the
+`git-real` suite's `/tmp/brl-gate-*` worktree/branch cleanup noise (offered as a `TEST:` issue), and cutting a
+release when the accumulated fixes should reach npm users.
 
 ## Cockpit layout (moved 2026-09-30)
 
