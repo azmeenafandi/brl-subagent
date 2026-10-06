@@ -70,13 +70,19 @@ notes recorded inline; `sandbox` naming purged (that system was removed in v2.1.
 (2026-10-05): review dispatches use `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which
 dropped a review mid-run on a transient connection error.
 
-**#280 (LOW) + #282 (LOW) OPEN:**
-- **#280** — `get_agent_result`'s "Transcript:" pointer still uses the filesystem form while run-history uses
-  the POSIX display form (#276 aftermath; the id is already validated via `getAgent` in the same handler)
+**#282 (LOW) OPEN — the only open item:**
 - **#282** — test temp-dir/log-cwd teardown copy-pasted across 12 test files and already drifted (one copy
   missed the `setLogCwd(undefined)` step → the #277 leak); fix = one shared lifecycle helper (`fixtures/`).
   NOTE (2026-10-06): the `isolate: true` finding — per-file workers even under `--maxWorkers=2` — makes this
-  purely DRY/hygiene; there is no cross-file leakage mechanism to fix
+  purely DRY/hygiene; there is no cross-file leakage mechanism to fix. GRAPH-REFINED SCOPE (see the issue
+  comment): three levers — `setLogCwd` (6 test files + `src/index.ts` production setter), `__setOutputDir`
+  (9 test files), `__setStorageDir` (8) — union = 9 test files; the helper must reset all three in order.
+
+**#280 MERGED 2026-10-06** — PR #286 (`aed2aa8`), closed manually. One-file fix: `get_agent_result`'s pointer
+renders via `transcriptDisplayPath`; the redundant dynamic `getTranscriptPath` import is gone. Needs one
+`/reload` to activate (extension code). Graph: the post-merge refresh was the day's third guard refusal
+(net −1, docs-semantic variance) — written with `--allow-partial` after graph-check verified 34/34 modules
+and 322/322 symbols.
 
 **#284 MERGED 2026-10-06** — PR #285 (`15f82c6`), closed manually. One long-lived TS7 `API` per worker in
 `scripts/ts-ast.mjs`; measured tsgo spawns **92 → 4**, `context canceled` **13 → 0**, suite green, no orphans.
