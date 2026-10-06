@@ -70,15 +70,20 @@ notes recorded inline; `sandbox` naming purged (that system was removed in v2.1.
 (2026-10-05): review dispatches use `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which
 dropped a review mid-run on a transient connection error.
 
-**#280 (LOW) + #282 (LOW) + #284 (LOW) OPEN:**
+**#280 (LOW) + #282 (LOW) OPEN:**
 - **#280** — `get_agent_result`'s "Transcript:" pointer still uses the filesystem form while run-history uses
   the POSIX display form (#276 aftermath; the id is already validated via `getAgent` in the same handler)
 - **#282** — test temp-dir/log-cwd teardown copy-pasted across 12 test files and already drifted (one copy
   missed the `setLogCwd(undefined)` step → the #277 leak); fix = one shared lifecycle helper (`fixtures/`).
   NOTE (2026-10-06): the `isolate: true` finding — per-file workers even under `--maxWorkers=2` — makes this
   purely DRY/hygiene; there is no cross-file leakage mechanism to fix
-- **#284** — reuse one long-lived TS7 `API` in `scripts/ts-ast.mjs` (92 tsgo spawn/kills per full run; the only
-  our-side lever for the #277 `context canceled` noise)
+
+**#284 MERGED 2026-10-06** — PR #285 (`15f82c6`), closed manually. One long-lived TS7 `API` per worker in
+`scripts/ts-ast.mjs`; measured tsgo spawns **92 → 4**, `context canceled` **13 → 0**, suite green, no orphans.
+API gotcha for anyone making the adapter long-lived again: the tsgo server caches virtual file content **by
+path**, so a reused client must pass `updateSnapshot({ fileChanges: { changed } })` (the per-call client only
+avoided it via an empty per-child cache). Wall-clock delta negligible — the win is process churn, noise, and
+kill-race surface. Not extension code (scripts/), so no `/reload` needed.
 
 **#283 (TEST) closed 2026-10-06 as not reproducible** — filed from a second-hand side observation without
 retained raw evidence; `isolate: true` (per-file workers) killed the leakage hypothesis; 5 green low-worker
