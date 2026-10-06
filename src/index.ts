@@ -78,6 +78,7 @@ import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash,
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs } from "./runner";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
+import { transcriptDisplayPath } from "./transcript-path";
 import {
 	finalizeRunRecord,
 	resolveRetryParams,
@@ -3704,8 +3705,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			
 			// Include transcript path
-			const { getTranscriptPath } = await import('./session-manager');
-			resultText += `\nTranscript: ${getTranscriptPath(params.agent_id)}`;
+			resultText += `\nTranscript: ${transcriptDisplayPath(params.agent_id)}`;
 			
 			return {
 				content: [{ type: "text" as const, text: resultText }],
