@@ -70,29 +70,28 @@ notes recorded inline; `sandbox` naming purged (that system was removed in v2.1.
 (2026-10-05): review dispatches use `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which
 dropped a review mid-run on a transient connection error.
 
-**#280 (LOW) + #277 (TEST) + #282 (LOW) OPEN — filed 2026-10-06:**
+**#280 (LOW) + #282 (LOW) OPEN — filed 2026-10-06:**
 - **#280** — `get_agent_result`'s "Transcript:" pointer still uses the filesystem form while run-history uses
   the POSIX display form (#276 aftermath; the id is already validated via `getAgent` in the same handler)
 - **#282** — test temp-dir/log-cwd teardown copy-pasted across 12 test files and already drifted (one copy
   missed the `setLogCwd(undefined)` step → the #277 leak); fix = one shared lifecycle helper (`fixtures/`)
 
-- **#277** — suite output noise (TEST): the expected branch-delete failure prints every run (unsuppressed
-  stderr); `background-fan-out` leaks one `/tmp/brl-bg-fanout-*` dir per run (no `afterAll`); `context canceled`
-  ×14 appears only in the full parallel run (source unsourced). `git-real`'s own scratch dirs verified clean —
-  the initial attribution to that suite was wrong.
-
 **Batch 2026-10-06, autonomous resolution** (maintainer blanket approval; specs = the issue bodies +
-pinned decisions): **#274 + #275 + #276 MERGED** — #278 (`6e837fc`), #279 (`615d05e`); all three closed
-**manually** (`Fixes` keywords do NOT auto-fire: PRs here target `dev`, not the repo's default branch — close
-every merged issue by hand). **#277 remains.** None block a release. Any reviewer dispatch uses
-`deepseek/deepseek-flash` (standing instruction).
+pinned decisions): **#274 + #275 + #276 + #277 MERGED — batch complete.** PRs #278 (`6e837fc`), #279
+(`615d05e`), #281 (`0d068aa`); all four closed **manually** (`Fixes` keywords do NOT auto-fire: PRs here
+target `dev`, not the repo's default branch — close every merged issue by hand). **#277 outcome:** items 1+2
+fixed (git stderr capture; fan-out log-cwd teardown — root cause was a late logger write re-creating a deleted
+temp dir, not a missing `afterAll`); item 3 sourced to the **TypeScript 7 native compiler's Go runtime**
+(`context canceled` under load: stderr inherit + kill race) — record + self-contained repro at
+`.development/investigations/277-context-canceled/`; optional lever = one long-lived `API` in
+`scripts/ts-ast.mjs`. None block a release. Any reviewer dispatch uses `deepseek/deepseek-flash`.
 
-**Graph (2026-10-06):** the post-#279 incremental refresh thinned the docs semantic pass (the completeness
-guard refused every write); resolved with a **from-scratch build** (current graph moved aside, semantic cache
-re-extracted): graph now **1394 nodes / 3229 edges / 120 communities**, `graph-check.py` passes 34/34 modules
-and 322/322 symbols. Residual: 22 doc files still produced no semantic nodes (LLM omissions; a
-`graphify . --update` re-run retries them). The pre-rebuild 1530-node graph is kept at
-`graphify-out/graph.json.pre-276-rebuild` (the dated `2026-10-06/` backup holds an intermediate 1375-node copy).
+**Graph (2026-10-06):** a mid-batch incremental refresh thinned the docs semantic pass and the completeness
+guard refused every write; resolved with a **from-scratch build** (graph moved aside, semantic cache
+re-extracted). The post-#281 refresh then passed normally (incremental, 29 files, $0.036). Graph now
+**1418 nodes / 3224 links**, `graph-check.py` passes 34/34 modules and 322/322 symbols. Residual: ~22 doc
+files produce no semantic nodes under the current extractor (LLM omissions). Pre-rebuild 1530-node graph kept
+at `graphify-out/graph.json.pre-276-rebuild`.
 
 **Other candidates (marked, not filed):** the `showSelectList` preselect nice-to-have deferred from #260, and
 cutting a release when the accumulated fixes should reach npm users.
