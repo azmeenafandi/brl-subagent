@@ -17,6 +17,11 @@ function gitOpts(cwd: string) {
 		cwd,
 		encoding: "utf-8" as const,
 		timeout: 10_000,
+		// Capture child stderr instead of inheriting it: expected git failures
+		// (e.g. deleting a checked-out branch) are caught and returned as
+		// {ok:false, error}; execFileSync still puts the captured stderr in the
+		// thrown error's message, so real failures stay diagnosable.
+		stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
 	};
 }
 

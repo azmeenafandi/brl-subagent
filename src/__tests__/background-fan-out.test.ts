@@ -99,6 +99,7 @@ import initExtension from "../index";
 // resolves to (vitest module cache).
 import { __setOutputDir } from "../transcript";
 import { __setStorageDir } from "../session-manager";
+import { setLogCwd } from "../logging";
 
 // ---------------------------------------------------------------------------
 // Harness (background-run-extraction pattern)
@@ -262,6 +263,10 @@ const THREE_TASKS = [
 ];
 
 beforeEach(() => {
+	// Clear the logger's cwd BEFORE deleting the previous test's dirs: a late
+	// write from a completed test's trailing async continuation would otherwise
+	// mkdirSync the deleted path back into existence (#277 item 2).
+	setLogCwd(undefined);
 	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
 	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
 	tempPiBase = fs.mkdtempSync(path.join(os.tmpdir(), "brl-bg-fanout-pi-"));
@@ -285,6 +290,9 @@ afterEach(() => {
 });
 
 afterAll(() => {
+	// Same guard as beforeEach: point the logger away from the dirs about to be
+	// removed so a trailing async log write cannot re-create them (#277 item 2).
+	setLogCwd(undefined);
 	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
 	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
 });
