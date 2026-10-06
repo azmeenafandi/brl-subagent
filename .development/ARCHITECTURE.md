@@ -151,10 +151,12 @@ Each rule below is enforced in code and pinned by tests; the pointer is where it
 - The module map's own guard is `src/__tests__/architecture-doc.test.ts`: regeneration must equal the
   checked-in block, so a new module without a purpose header — or an edit that skips `npm run docs:arch` —
   fails the suite.
-- Structural rules are executable: `src/__tests__/architecture-rules.test.ts` enforces no runtime import
-  cycles, entry-point confinement (nothing imports `index.ts`), the pure-helper boundary, process-execution
-  confinement, the runtime-dependency allowlist, and the session-manager reader API. A violation fails CI
-  with the rule's name and remedy in the message.
+- Structural rules are executable: `src/__tests__/architecture-rules.test.ts` enforces nine rules — no
+  runtime import cycles, entry-point confinement (nothing imports `index.ts`), `types.ts`→`schema.ts`
+  type-only references (#239), the pure-helper boundary, process-execution confinement, the
+  runtime-dependency allowlist, the session-manager reader API, raw-console confinement (#265), and the
+  transcript-path single-source format (#287). A violation fails CI with the rule's name and remedy in the
+  message.
 
 ## Where to go next
 
