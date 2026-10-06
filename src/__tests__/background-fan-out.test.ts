@@ -43,9 +43,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing the extension
@@ -94,12 +91,7 @@ vi.mock("@earendil-works/pi-tui", () => {
 });
 
 import initExtension from "../index";
-// Redirect the real execute handler's transcript (and agent-record) writes
-// away from the repo .pi/ — same module instance index.ts's dynamic import
-// resolves to (vitest module cache).
-import { __setOutputDir } from "../transcript";
-import { __setStorageDir } from "../session-manager";
-import { setLogCwd } from "../logging";
+import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 // ---------------------------------------------------------------------------
 // Harness (background-run-extraction pattern)
@@ -169,8 +161,7 @@ let tool: ToolEntry;
 let sessionStartHandler:
 	| ((_event: unknown, ctx: Record<string, unknown>) => Promise<void>)
 	| undefined;
-let testCwd: string;
-let tempPiBase = "";
+const env = createTempEnv("brl-bg-fanout");
 
 function setupExtension(): ToolEntry {
 	const registeredTools = new Map<string, ToolEntry>();
@@ -213,7 +204,7 @@ function makeCtx(
 	availableModels: string[] = [`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`],
 ) {
 	return {
-		cwd: testCwd,
+		cwd: env.testCwd,
 		model: GLOBAL_MODEL,
 		modelRegistry: makeRegistry(availableModels),
 		getSystemPrompt: () => "You are a helpful assistant.",
@@ -263,17 +254,7 @@ const THREE_TASKS = [
 ];
 
 beforeEach(() => {
-	// Clear the logger's cwd BEFORE deleting the previous test's dirs: a late
-	// write from a completed test's trailing async continuation would otherwise
-	// mkdirSync the deleted path back into existence (#277 item 2).
-	setLogCwd(undefined);
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
-	tempPiBase = fs.mkdtempSync(path.join(os.tmpdir(), "brl-bg-fanout-pi-"));
-	// Redirect transcript/storage writes out of the repo .pi/.
-	__setOutputDir(path.join(tempPiBase, "output"));
-	__setStorageDir(path.join(tempPiBase, "subagents"));
-	testCwd = fs.mkdtempSync(path.join(os.tmpdir(), "brl-bg-fanout-"));
+	env.setUp();
 
 	h.runSubagent.mockReset();
 	h.spawnBackgroundSession.mockReset();
@@ -289,12 +270,8 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-afterAll(() => {
-	// Same guard as beforeEach: point the logger away from the dirs about to be
-	// removed so a trailing async log write cannot re-create them (#277 item 2).
-	setLogCwd(undefined);
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
+afterAll(async () => {
+	await env.tearDown();
 });
 
 // ---------------------------------------------------------------------------
@@ -359,7 +336,7 @@ describe("background fan-out for tasks mode (#198 phase 2)", () => {
 		expect(c1.description).toBe("one");
 		expect(c1.priority).toBe("low"); // call-level fallback
 		expect(c1.model).toBe(`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`);
-		expect(c1.cwd).toBe(testCwd);
+		expect(c1.cwd).toBe(env.testCwd);
 
 		const c2 = spawnParams(1);
 		expect(c2.task).toBe("unit two");
@@ -369,7 +346,7 @@ describe("background fan-out for tasks mode (#198 phase 2)", () => {
 		// Retry parity: the unit's own values land on originalParams.
 		expect(c2.originalParams?.model).toBe(STEP_MODEL);
 		expect(c2.originalParams?.priority).toBe("critical");
-		expect(c2.originalParams?.cwd).toBe(testCwd);
+		expect(c2.originalParams?.cwd).toBe(env.testCwd);
 
 		const c3 = spawnParams(2);
 		expect(c3.description).toBe("three");
