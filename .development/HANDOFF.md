@@ -82,6 +82,13 @@ dropped a review mid-run on a transient connection error.
   ×14 appears only in the full parallel run (source unsourced). `git-real`'s own scratch dirs verified clean —
   the initial attribution to that suite was wrong.
 
+**Batch approved 2026-10-06 for autonomous resolution** (maintainer blanket approval; specs = the issue bodies
++ the pinned decisions below): **#274 + #275 batched in one PR** (same neighborhood — cap constant + suffix
+detection); **#276 standalone** (module relocation, C2-ish → focused review); **#277 standalone** (test-infra
+hygiene). **#275 decision pinned on the issue: dual-suffix detection** (old + new suffix both recognised; no
+detection regression for historical records). None of the four block a release. Any reviewer dispatch uses
+`deepseek/deepseek-flash` (standing instruction).
+
 **Other candidates (marked, not filed):** the `showSelectList` preselect nice-to-have deferred from #260, and
 cutting a release when the accumulated fixes should reach npm users.
 
