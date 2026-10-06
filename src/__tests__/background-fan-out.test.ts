@@ -68,7 +68,9 @@ vi.mock("../runner", () => ({
 // The extension destructures spawnBackgroundSession out of a DYNAMIC
 // import('./session-manager') inside the shared spawn tail — vi.mock
 // intercepts dynamic imports too. Spread the real module so the state/session
-// helpers (and the __setStorageDir redirect) stay real; stub only the spawn.
+// helpers stay real (the output/storage redirects + log-cwd clearing come from
+// the shared lifecycle helper in src/__tests__/fixtures/temp-lifecycle.ts);
+// stub only the spawn.
 vi.mock("../session-manager", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../session-manager")>()),
 	spawnBackgroundSession: h.spawnBackgroundSession,

@@ -41,7 +41,8 @@
  *
  * Harness cloned from dispatch-capability-guards.test.ts (hoisted ../runner
  * mock; partial ../session-manager mock stubbing ONLY spawnBackgroundSession;
- * tui module mocks; temp-dir output/storage redirect; setLogCwd cleanup;
+ * tui module mocks; temp dirs + output/storage redirects + log-cwd clearing
+ * from the shared lifecycle helper (src/__tests__/fixtures/temp-lifecycle.ts);
  * executeWithSpawn fake-timer wrapper), plus per-step-model.test.ts's
  * seed-a-run-entry retry pattern.
  */
@@ -69,8 +70,9 @@ vi.mock("../runner", () => ({
 	parseSubagentLine: h.parseSubagentLine,
 }));
 
-// Partial session-manager mock: stub ONLY the spawn; state/session helpers
-// and the __setStorageDir redirect stay real.
+// Partial session-manager mock: stub ONLY the spawn; state/session helpers stay
+// real (the output/storage redirects + log-cwd clearing come from the shared
+// lifecycle helper in src/__tests__/fixtures/temp-lifecycle.ts).
 vi.mock("../session-manager", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../session-manager")>()),
 	spawnBackgroundSession: h.spawnBackgroundSession,
