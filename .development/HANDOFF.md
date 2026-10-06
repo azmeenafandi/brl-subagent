@@ -80,7 +80,9 @@ dropped a review mid-run on a transient connection error.
   the initial attribution to that suite was wrong.
 
 **Batch 2026-10-06, autonomous resolution** (maintainer blanket approval; specs = the issue bodies +
-pinned decisions): **#274 + #275 MERGED** — PR #278 (merge commit `6e837fc`), issues auto-closed, worktree
+pinned decisions): **#274 + #275 MERGED** — PR #278 (merge commit `6e837fc`), issues closed **manually** (`Fixes`
+keywords do NOT auto-fire: PRs here target `dev`, not the repo's default branch — close every merged issue by
+hand), worktree
 cleaned, graph refreshed at the merge (one exact-duplicate node required `--allow-dedup-shrink`; graph now
 1530/3322/164, `graph-check.py` passes 33/33 modules and 320/320 symbols). **#276 standalone** (module
 relocation, C2-ish → focused review); **#277 standalone** (test-infra hygiene) — both remain. None of the
