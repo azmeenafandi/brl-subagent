@@ -117,8 +117,17 @@ links**, `graph-check.py` passes 34/34 modules and 322/322 symbols. Day pattern:
 `--allow-partial` + coverage check) and 4 clean passes — intermittent, not uniform; monitoring continues per the
 maintainer decision. Pre-rebuild 1530-node graph kept at `graphify-out/graph.json.pre-276-rebuild`.
 
-**Other candidates (marked, not filed):** the `showSelectList` preselect nice-to-have deferred from #260, and
-cutting a release when the accumulated fixes should reach npm users.
+**Other candidates (marked, not filed):** the `showSelectList` preselect nice-to-have deferred from #260,
+cutting a release when the accumulated fixes should reach npm users, and — **parked 2026-10-06** — the
+**codegraph evaluation** (`colbymchenry/codegraph`: MIT, Rust/tree-sitter kernel, local SQLite, MCP + CLI,
+no LLM in the extraction path). Front-runner alternative to graphify precisely because graphify's failures are
+all in its LLM semantic layer (3 guard refusals on 2026-10-06, thin doc extraction, no true rebuild path,
+~$0.2 rebuilds). Bake-off bar if/when picked up: (1) reproduce `graph-check.py`'s coverage (34/34 modules +
+322 exported symbols reachable via its JSON/DB), (2) query parity on today's real questions — the re-export
+seam (`session-manager.getTranscriptPath` → `transcript-path.ts`) and `setLogCwd`'s callers, (3) determinism
+(index twice → identical; incremental sync with no manual intervention), (4) integration cost (`graph-check` +
+`graph-refresh` rewrite; explicit `codegraph sync` in the merge ritual, not the watcher — the #230 discipline).
+Hold until graphify's monitoring window closes; telemetry off, `.codegraph/` gitignored, pinned version.
 
 ## Cockpit layout (moved 2026-09-30)
 
