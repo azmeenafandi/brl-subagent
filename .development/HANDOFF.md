@@ -70,10 +70,7 @@ notes recorded inline; `sandbox` naming purged (that system was removed in v2.1.
 (2026-10-05): review dispatches use `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which
 dropped a review mid-run on a transient connection error.
 
-**#274–#276 (LOW) + #277 (TEST) OPEN — filed 2026-10-06:**
-- **#274** — two sources of truth for the 100 KB cap (`capOutput` hardcodes what `DEFAULT_OUTPUT_CAP_BYTES` declares)
-- **#275** — the embedded truncation notice points at “run history details” (which show the capped text) instead
-  of the transcript; carries a dual-suffix detection wrinkle for pre-change records
+**#276 (LOW) + #277 (TEST) OPEN — filed 2026-10-06:**
 - **#276** — transcript-path format duplicated (validated builder vs inlined literal), blocked from a direct
   import by the `SESSION_MANAGER_READER_API` architecture rule
 
@@ -82,12 +79,12 @@ dropped a review mid-run on a transient connection error.
   ×14 appears only in the full parallel run (source unsourced). `git-real`'s own scratch dirs verified clean —
   the initial attribution to that suite was wrong.
 
-**Batch approved 2026-10-06 for autonomous resolution** (maintainer blanket approval; specs = the issue bodies
-+ the pinned decisions below): **#274 + #275 batched in one PR** (same neighborhood — cap constant + suffix
-detection); **#276 standalone** (module relocation, C2-ish → focused review); **#277 standalone** (test-infra
-hygiene). **#275 decision pinned on the issue: dual-suffix detection** (old + new suffix both recognised; no
-detection regression for historical records). None of the four block a release. Any reviewer dispatch uses
-`deepseek/deepseek-flash` (standing instruction).
+**Batch 2026-10-06, autonomous resolution** (maintainer blanket approval; specs = the issue bodies +
+pinned decisions): **#274 + #275 MERGED** — PR #278 (merge commit `6e837fc`), issues auto-closed, worktree
+cleaned, graph refreshed at the merge (one exact-duplicate node required `--allow-dedup-shrink`; graph now
+1530/3322/164, `graph-check.py` passes 33/33 modules and 320/320 symbols). **#276 standalone** (module
+relocation, C2-ish → focused review); **#277 standalone** (test-infra hygiene) — both remain. None of the
+four block a release. Any reviewer dispatch uses `deepseek/deepseek-flash` (standing instruction).
 
 **Other candidates (marked, not filed):** the `showSelectList` preselect nice-to-have deferred from #260, and
 cutting a release when the accumulated fixes should reach npm users.
