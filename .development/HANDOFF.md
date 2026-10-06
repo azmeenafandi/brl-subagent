@@ -70,9 +70,11 @@ notes recorded inline; `sandbox` naming purged (that system was removed in v2.1.
 (2026-10-05): review dispatches use `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which
 dropped a review mid-run on a transient connection error.
 
-**#280 (LOW) + #277 (TEST) OPEN — filed 2026-10-06:**
+**#280 (LOW) + #277 (TEST) + #282 (LOW) OPEN — filed 2026-10-06:**
 - **#280** — `get_agent_result`'s "Transcript:" pointer still uses the filesystem form while run-history uses
   the POSIX display form (#276 aftermath; the id is already validated via `getAgent` in the same handler)
+- **#282** — test temp-dir/log-cwd teardown copy-pasted across 12 test files and already drifted (one copy
+  missed the `setLogCwd(undefined)` step → the #277 leak); fix = one shared lifecycle helper (`fixtures/`)
 
 - **#277** — suite output noise (TEST): the expected branch-delete failure prints every run (unsuppressed
   stderr); `background-fan-out` leaks one `/tmp/brl-bg-fanout-*` dir per run (no `afterAll`); `context canceled`
