@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { mkdtempSync, rmSync, existsSync, statSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Mocks must exist before vi.mock factory runs (hoisted).
@@ -90,9 +89,10 @@ vi.mock("../event-bus", () => ({
 	createEvent: eventBusMock.createEvent,
 }));
 
-import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, __setStorageDir } from "../session-manager";
-import { getTranscriptPath as transcriptGetTranscriptPath, __setOutputDir } from "../transcript";
+import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus } from "../session-manager";
+import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
 import { CUSTOM_ENTRY_TYPES } from "../types";
+import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 // Issue #98: spawnBackgroundSession persists session run entries via
 // pi.appendEntry (same store the foreground path writes to).
@@ -106,27 +106,20 @@ const fakeCtx = {
 
 // Issue #52: isolate EVERY test from the real repo .pi/ — the agent-record
 // storage dir and the transcript output dir are redirected to throwaway temp
-// dirs (fresh per test). The __set* setters reach the SAME module instance the
-// tests drive (static imports + vitest module cache), so the hanging-prompt
-// mocks can no longer leave zombie 'running' records in the repo .pi/subagents.
-let tempPiBase = ""; // <tmpdir>/brl-session-test-XXXX, fresh per test
-let tempStorageDir = ""; // <tempPiBase>/subagents — mirrors .pi/subagents
-let tempOutputDir = ""; // <tempPiBase>/output — mirrors .pi/output
+// dirs (fresh per test) by the shared lifecycle helper, which also owns the
+// log-cwd clearing + teardown ordering. Its __set* setters reach the SAME
+// module instance the tests drive (static imports + vitest module cache), so
+// the hanging-prompt mocks can no longer leave zombie 'running' records in the
+// repo .pi/subagents.
+const env = createTempEnv("brl-session-test", { withCwd: false });
 
 beforeEach(() => {
-	// Remove the PREVIOUS test's base (the last one is removed in afterAll) so
-	// temp dirs don't accumulate across the file's ~50 spawn tests.
-	if (tempPiBase) rmSync(tempPiBase, { recursive: true, force: true });
-	tempPiBase = mkdtempSync(join(tmpdir(), "brl-session-test-"));
-	tempStorageDir = join(tempPiBase, "subagents");
-	tempOutputDir = join(tempPiBase, "output");
-	__setStorageDir(tempStorageDir);
-	__setOutputDir(tempOutputDir);
+	env.setUp();
 	fakePi.appendEntry.mockClear();
 });
 
-afterAll(() => {
-	if (tempPiBase) rmSync(tempPiBase, { recursive: true, force: true });
+afterAll(async () => {
+	await env.tearDown();
 });
 
 beforeEach(() => {
@@ -391,13 +384,13 @@ describe("agent id validation (F24)", () => {
 		const path = require("node:path") as typeof import("node:path");
 		for (const id of [VALID_UUID, ATTACK_UUID]) {
 			for (const p of [
-				path.join(tempStorageDir, `${id}.json`),
-				path.join(tempOutputDir, `agent-${id}.jsonl`),
+				path.join(env.storageDir, `${id}.json`),
+				path.join(env.outputDir, `agent-${id}.jsonl`),
 			]) {
 				try { fs.unlinkSync(p); } catch { /* ok */ }
 			}
 		}
-		try { fs.unlinkSync(path.join(tempPiBase, "..", "brl-persist-bypass-test.json")); } catch { /* ok */ }
+		try { fs.unlinkSync(path.join(env.baseDir, "..", "brl-persist-bypass-test.json")); } catch { /* ok */ }
 	};
 
 	beforeEach(cleanupF24);
@@ -412,13 +405,13 @@ describe("agent id validation (F24)", () => {
 		// The sibling test ("../../etc/passwd") passes for the WRONG reason —
 		// no such file exists, so the guard is never load-bearing. Plant a REAL,
 		// parseable record that join(STORAGE_DIR, '../planted-escape.json')
-		// actually resolves to (tempStorageDir is <tempPiBase>/subagents, so
-		// one level up is <tempPiBase>), making the id guard the ONLY thing
+		// actually resolves to (env.storageDir is <env.baseDir>/subagents, so
+		// one level up is <env.baseDir>), making the id guard the ONLY thing
 		// between the traversal id and that record.
 		const fs = require("node:fs") as typeof import("node:fs");
 		const path = require("node:path");
-		fs.mkdirSync(tempStorageDir, { recursive: true });
-		const planted = path.join(tempPiBase, "planted-escape.json");
+		fs.mkdirSync(env.storageDir, { recursive: true });
+		const planted = path.join(env.baseDir, "planted-escape.json");
 		fs.writeFileSync(
 			planted,
 			JSON.stringify({
@@ -432,7 +425,7 @@ describe("agent id validation (F24)", () => {
 		try {
 			// Precondition: the escape target really is reachable from the
 			// storage dir — a regression would load and return it.
-			expect(fs.existsSync(path.join(tempStorageDir, "..", "planted-escape.json"))).toBe(true);
+			expect(fs.existsSync(path.join(env.storageDir, "..", "planted-escape.json"))).toBe(true);
 
 			const result = getAgent("../planted-escape");
 
@@ -493,14 +486,14 @@ describe("agent id validation (F24)", () => {
 		// traversal-regression intent is preserved here.
 		const fs = require("node:fs") as typeof import("node:fs");
 		const path = require("node:path") as typeof import("node:path");
-		const plantDir = tempStorageDir;
+		const plantDir = env.storageDir;
 		fs.mkdirSync(plantDir, { recursive: true });
 		const planted = path.join(plantDir, `${ATTACK_UUID}.json`);
 		// The traversal id "../../brl-persist-bypass-test" from a two-level-deep
-		// storage dir (tempPiBase/subagents) resolves to tempPiBase/.. (the OS
+		// storage dir (env.baseDir/subagents) resolves to env.baseDir/.. (the OS
 		// tmp dir) — exactly where a regression would land the file.
 		const escapeTarget = path.join(
-			tempPiBase,
+			env.baseDir,
 			"..",
 			"brl-persist-bypass-test.json",
 		);
@@ -524,7 +517,7 @@ describe("agent id validation (F24)", () => {
 	it("persistAgent still writes valid records (regression guard)", () => {
 		const fs = require("node:fs") as typeof import("node:fs");
 		const path = require("node:path") as typeof import("node:path");
-		const plantDir = tempStorageDir;
+		const plantDir = env.storageDir;
 		fs.mkdirSync(plantDir, { recursive: true });
 		const planted = path.join(plantDir, `${VALID_UUID}.json`);
 		fs.writeFileSync(
@@ -1275,8 +1268,8 @@ describe("settle handlers never throw — missing transcript / throwing emit (is
 
 	const cleanupPiFiles = () => {
 		for (const id of spawnedIds) {
-			try { fs.unlinkSync(path.join(tempStorageDir, `${id}.json`)); } catch { /* ok */ }
-			try { fs.unlinkSync(path.join(tempOutputDir, `agent-${id}.jsonl`)); } catch { /* ok */ }
+			try { fs.unlinkSync(path.join(env.storageDir, `${id}.json`)); } catch { /* ok */ }
+			try { fs.unlinkSync(path.join(env.outputDir, `agent-${id}.jsonl`)); } catch { /* ok */ }
 		}
 		spawnedIds.length = 0;
 	};
@@ -1299,7 +1292,7 @@ describe("settle handlers never throw — missing transcript / throwing emit (is
 		spawnedIds.push(agent.id);
 		// startTranscript ran during spawn, so the file exists — delete it
 		// BEFORE the deferred rejection settles.
-		fs.unlinkSync(path.join(tempOutputDir, `agent-${agent.id}.jsonl`));
+		fs.unlinkSync(path.join(env.outputDir, `agent-${agent.id}.jsonl`));
 
 		// Let the deferred rejection settle.
 		await new Promise((r) => setTimeout(r, 10));
@@ -1379,7 +1372,7 @@ describe("settle handlers never throw — missing transcript / throwing emit (is
 			task: "test transcript deleted (complete)",
 		});
 		spawnedIds.push(agent.id);
-		fs.unlinkSync(path.join(tempOutputDir, `agent-${agent.id}.jsonl`));
+		fs.unlinkSync(path.join(env.outputDir, `agent-${agent.id}.jsonl`));
 
 		// Let the deferred resolve settle.
 		await new Promise((r) => setTimeout(r, 10));
@@ -1408,15 +1401,15 @@ describe("persisted file modes (F6 / issue #29)", () => {
 		// The temp storage/output dirs are freshly created per test (issue #52),
 		// so the subagents/output dirs below are guaranteed to be CREATED by
 		// this spawn — the 0o700 dir-mode assertions always apply.
-		const subagentsExisted = fs.existsSync(tempStorageDir);
-		const outputExisted = fs.existsSync(tempOutputDir);
+		const subagentsExisted = fs.existsSync(env.storageDir);
+		const outputExisted = fs.existsSync(env.outputDir);
 
 		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
 			task: "test file modes",
 		});
 
-		const recordPath = path.join(tempStorageDir, `${agent.id}.json`);
-		const transcriptPath = path.join(tempOutputDir, `agent-${agent.id}.jsonl`);
+		const recordPath = path.join(env.storageDir, `${agent.id}.json`);
+		const transcriptPath = path.join(env.outputDir, `agent-${agent.id}.jsonl`);
 		try {
 			expect(getAgent(agent.id)).not.toBeNull();
 			expect(fs.existsSync(recordPath)).toBe(true);
@@ -1425,10 +1418,10 @@ describe("persisted file modes (F6 / issue #29)", () => {
 			expect(fs.statSync(transcriptPath).mode & 0o777).toBe(0o600);
 			// Freshly-created storage/output subdirs must be 0o700 (owner-only).
 			if (!subagentsExisted) {
-				expect(fs.statSync(tempStorageDir).mode & 0o777).toBe(0o700);
+				expect(fs.statSync(env.storageDir).mode & 0o777).toBe(0o700);
 			}
 			if (!outputExisted) {
-				expect(fs.statSync(tempOutputDir).mode & 0o777).toBe(0o700);
+				expect(fs.statSync(env.outputDir).mode & 0o777).toBe(0o700);
 			}
 		} finally {
 			try { fs.unlinkSync(recordPath); } catch { /* ok */ }
@@ -1464,8 +1457,8 @@ describe("test storage isolation (issue #52)", () => {
 		expect(agent.status).toBe("running");
 
 		// The record + transcript landed in the TEMP dirs...
-		expect(fs.existsSync(path.join(tempStorageDir, `${agent.id}.json`))).toBe(true);
-		expect(fs.existsSync(path.join(tempOutputDir, `agent-${agent.id}.jsonl`))).toBe(true);
+		expect(fs.existsSync(path.join(env.storageDir, `${agent.id}.json`))).toBe(true);
+		expect(fs.existsSync(path.join(env.outputDir, `agent-${agent.id}.jsonl`))).toBe(true);
 
 		// ...and the real repo .pi/ gained nothing.
 		expect(list(realSubagents)).toEqual(subagentsBefore);
@@ -2135,7 +2128,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 
 	it("D6: writes the shared cwd log with the classified settle line", async () => {
 		const { setLogCwd } = await import("../logging");
-		setLogCwd(tempPiBase);
+		setLogCwd(env.baseDir);
 		try {
 			mocks.session.prompt.mockResolvedValue(undefined);
 			mocks.session.messages = [
@@ -2146,7 +2139,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 			});
 			await new Promise((r) => setTimeout(r, 0));
 
-			const logPath = join(tempPiBase, ".pi", "subagent-logs", "brl-subagent.log");
+			const logPath = join(env.baseDir, ".pi", "subagent-logs", "brl-subagent.log");
 			expect(existsSync(logPath)).toBe(true);
 			// mode is applied on CREATE and is not retroactive.
 			expect(statSync(logPath).mode & 0o777).toBe(0o600);
