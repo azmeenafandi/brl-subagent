@@ -8,7 +8,7 @@
 
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { EMPTY_USAGE } from "./types";
+import { EMPTY_USAGE, DEFAULT_OUTPUT_CAP_BYTES } from "./types";
 
 // ---------------------------------------------------------------------------
 // F1: Input sanitization
@@ -215,8 +215,20 @@ export function stripAnsi(str: string): string {
  * notice instead of re-deriving the format; a byte-length comparison cannot
  * tell a capped record from an uncapped one (the background/crash paths store
  * raw `liveOutput` without calling `capOutput`).
+ *
+ * Reworded in issue #275 to point at the transcript (run-history details now
+ * show the capped text). `capOutput` writes ONLY this suffix.
  */
 export const OUTPUT_TRUNCATION_SUFFIX =
+	"omitted. Full text in the run transcript.]";
+
+/**
+ * Pre-#275 truncation marker, retained for DETECTION ONLY. Session files
+ * written before the reword persist records capped with this suffix; matching
+ * it keeps their truncation honesty line from silently regressing. No code
+ * writes this suffix.
+ */
+export const LEGACY_OUTPUT_TRUNCATION_SUFFIX =
 	"omitted. Full output available in run history details.]";
 
 /**
@@ -226,7 +238,7 @@ export const OUTPUT_TRUNCATION_SUFFIX =
  * Returns the original string if within limits, or a truncated version
  * with a clear notice about how much was omitted.
  */
-export function capOutput(output: string, maxBytes: number = 100 * 1024): string {
+export function capOutput(output: string, maxBytes: number = DEFAULT_OUTPUT_CAP_BYTES): string {
 	const byteLength = Buffer.byteLength(output, "utf8");
 	if (byteLength <= maxBytes) return output;
 
@@ -245,9 +257,16 @@ export function capOutput(output: string, maxBytes: number = 100 * 1024): string
  * end-anchored truncation notice. This is the authoritative "hit the cap"
  * signal: `capOutput` returns the input unchanged while it fits, so a capped
  * record always ends with this suffix and a non-capped one never does.
+ *
+ * Matches the legacy (#275) suffix too, so records persisted before the reword
+ * keep detecting as truncated.
  */
 export function isOutputTruncated(output: string | undefined | null): boolean {
-	return typeof output === "string" && output.endsWith(OUTPUT_TRUNCATION_SUFFIX);
+	return (
+		typeof output === "string" &&
+		(output.endsWith(OUTPUT_TRUNCATION_SUFFIX) ||
+			output.endsWith(LEGACY_OUTPUT_TRUNCATION_SUFFIX))
+	);
 }
 
 function formatBytes(bytes: number): string {
