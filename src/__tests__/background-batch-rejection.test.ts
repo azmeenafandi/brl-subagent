@@ -25,9 +25,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing the extension
@@ -69,9 +66,10 @@ import initExtension from "../index";
 // Redirect the real execute handler's transcript/agent-record writes away
 // from the repo .pi/ — same reason as per-step-model.test.ts: even the
 // mutation-check run (check removed → a batch mode actually dispatches with
-// the runner mocked) must never write into the repository's .pi/.
-import { __setOutputDir } from "../transcript";
-import { __setStorageDir } from "../session-manager";
+// the runner mocked) must never write into the repository's .pi/. The shared
+// temp lifecycle also clears the module-level logger's file sink around
+// teardown, so no late write can re-create the removed dirs.
+import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 // ---------------------------------------------------------------------------
 // Harness (mirrors per-step-model.test.ts)
@@ -136,11 +134,11 @@ function makeRegistry(
 	};
 }
 
-let testCwd: string;
+const env = createTempEnv("brl-bg-batch");
 
 function makeCtx() {
 	return {
-		cwd: testCwd,
+		cwd: env.testCwd,
 		model: GLOBAL_MODEL,
 		modelRegistry: makeRegistry([`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`]),
 		getSystemPrompt: () => "You are a helpful assistant.",
@@ -157,27 +155,14 @@ function makeCtx() {
 	};
 }
 
-// Per-test temp dirs standing in for the real repo .pi/ and the project dir.
-let tempPiBase = "";
-let tempOutputDir = "";
-let tempStorageDir = "";
-
 beforeEach(() => {
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
-	tempPiBase = fs.mkdtempSync(path.join(os.tmpdir(), "brl-bg-batch-pi-"));
-	tempOutputDir = path.join(tempPiBase, "output");
-	tempStorageDir = path.join(tempPiBase, "subagents");
-	__setOutputDir(tempOutputDir);
-	__setStorageDir(tempStorageDir);
-	testCwd = fs.mkdtempSync(path.join(os.tmpdir(), "brl-bg-batch-"));
+	env.setUp();
 	runnerMocks.runSubagent.mockReset();
 	tool = setupExtension();
 });
 
-afterAll(() => {
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
+afterAll(async () => {
+	await env.tearDown();
 });
 
 // ---------------------------------------------------------------------------
