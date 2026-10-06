@@ -28,9 +28,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing the extension
@@ -77,9 +74,7 @@ vi.mock("@earendil-works/pi-tui", () => {
 });
 
 import initExtension from "../index";
-import { __setOutputDir } from "../transcript";
-import { __setStorageDir } from "../session-manager";
-import { setLogCwd } from "../logging";
+import { createTempEnv } from "./fixtures/temp-lifecycle";
 import type { SubagentResult } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -143,8 +138,7 @@ let tool: ToolEntry;
 let sessionStartHandler:
 	| ((_event: unknown, ctx: Record<string, unknown>) => Promise<void>)
 	| undefined;
-let testCwd: string;
-let tempPiBase = "";
+const env = createTempEnv("brl-guards");
 
 function setupExtension(): ToolEntry {
 	const registeredTools = new Map<string, ToolEntry>();
@@ -179,7 +173,7 @@ function makeRegistry(available: string[]) {
 
 function makeCtx() {
 	return {
-		cwd: testCwd,
+		cwd: env.testCwd,
 		model: GLOBAL_MODEL,
 		modelRegistry: makeRegistry([`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`]),
 		getSystemPrompt: () => "You are a helpful assistant.",
@@ -234,12 +228,7 @@ const WARNING_TASK = { task: "deploy the app", tools: ["read", "write", "edit"] 
 const AUTO_ROUTE_BLOCK_TASK = "review this PR and run the test suite";
 
 beforeEach(() => {
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
-	tempPiBase = fs.mkdtempSync(path.join(os.tmpdir(), "brl-guards-pi-"));
-	__setOutputDir(path.join(tempPiBase, "output"));
-	__setStorageDir(path.join(tempPiBase, "subagents"));
-	testCwd = fs.mkdtempSync(path.join(os.tmpdir(), "brl-guards-"));
+	env.setUp();
 	h.runSubagent.mockReset();
 	h.runSubagent.mockImplementation(
 		async (_cwd: string, _prompt: string, model: { provider: string; id: string }) =>
@@ -262,12 +251,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-	// Session-start redirected the logger's file sink at testCwd — disable it
-	// FIRST, drain late writes, then remove the dirs (per-step-model pattern).
-	setLogCwd(undefined);
-	await new Promise((resolve) => setImmediate(resolve));
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
+	await env.tearDown();
 });
 
 // ---------------------------------------------------------------------------

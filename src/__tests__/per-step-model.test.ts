@@ -64,12 +64,11 @@ import { createSessionState, sweepStaleLiveSubagents } from "../state";
 // agent-record) writes away from the repo .pi/ — they reach the SAME module
 // instance index.ts's dynamic import('./transcript') resolves to (vitest
 // module cache), pinned by the crash-test probe below.
-import { __setOutputDir } from "../transcript";
-import { __setStorageDir } from "../session-manager";
-// Issue #195: the REAL session_start handler points the module-level logger's
-// file sink at testCwd (setLogCwd(ctx.cwd)); the suite disables that sink
-// around teardown so late writes cannot re-create removed test dirs.
-import { setLogCwd, setConsoleOutput } from "../logging";
+import { setConsoleOutput } from "../logging";
+// Issue #195: the shared temp lifecycle clears the module-level logger's file
+// sink (setLogCwd(undefined)) around teardown, so late writes cannot
+// re-create the removed test dirs.
+import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -180,11 +179,11 @@ function makeRegistry(
 	};
 }
 
-let testCwd: string;
+const env = createTempEnv("brl-step-model");
 
 function makeCtx() {
 	return {
-		cwd: testCwd,
+		cwd: env.testCwd,
 		model: GLOBAL_MODEL,
 		modelRegistry: makeRegistry([`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`, STEP_MODEL]),
 		getSystemPrompt: () => "You are a helpful assistant.",
@@ -221,35 +220,18 @@ function makeResult(modelStr: string): SubagentResult {
 // execute handler writes transcripts under the transcript module's OUTPUT_DIR
 // (and records under session-manager's STORAGE_DIR) — both are redirected here
 // so no test run ever touches <repo>/.pi.
-let tempPiBase = ""; // <tmpdir>/brl-step-model-pi-XXXX, fresh per test
-let tempOutputDir = "";
-let tempStorageDir = "";
 
 // Issue #195: /tmp dirs matching this suite's prefix that existed BEFORE the
 // suite ran (leftovers from earlier runs). The afterAll ratchet below fails
 // only on dirs this run created, so a dirty /tmp cannot redden it.
 const preexistingTmpDirs = new Set(
-	fs.readdirSync(os.tmpdir()).filter((e) => e.startsWith("brl-per-step-model-")),
+	fs.readdirSync(os.tmpdir()).filter((e) => e.startsWith("brl-step-model-")),
 );
 
 beforeEach(() => {
-	// Issue #195: disable the shared file sink BEFORE removing the previous
-	// testCwd. The sink still points at that previous cwd until THIS test's
-	// session_start re-points it, so a late/async write landing in between
-	// would re-create the just-removed dir (the logger mkdirs on write).
-	setLogCwd(undefined);
+	env.setUp();
 	recordedEntries = [];
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
 	sentMessages = [];
-	// testCwd leaks too (template/preset seed dirs under it); rm the previous
-	// one before creating the next, mirroring tempPiBase.
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
-	tempPiBase = fs.mkdtempSync(path.join(os.tmpdir(), "brl-step-model-pi-"));
-	tempOutputDir = path.join(tempPiBase, "output");
-	tempStorageDir = path.join(tempPiBase, "subagents");
-	__setOutputDir(tempOutputDir);
-	__setStorageDir(tempStorageDir);
-	testCwd = fs.mkdtempSync(path.join(os.tmpdir(), "brl-per-step-model-"));
 	runnerMocks.runSubagent.mockReset();
 	runnerMocks.runSubagent.mockImplementation(
 		async (_cwd: string, _prompt: string, model: { provider: string; id: string }) =>
@@ -261,18 +243,13 @@ beforeEach(() => {
 });
 
 afterAll(async () => {
-	// Issue #195: make teardown final for the file sink. Disable it FIRST —
-	// the sink resolves its log path per write, so once disabled no late/async
-	// write can re-create the dirs removed below.
-	setLogCwd(undefined);
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
-	// Drain in-flight async work, then ratchet: this run must not leave a
-	// single new brl-per-step-model-* dir behind (issue #195).
-	await new Promise((resolve) => setImmediate(resolve));
+	await env.tearDown();
+	// Ratchet: this run must not leave a single new brl-step-model-* dir
+	// behind (issue #195). The prefix covers both the `-pi-` base dir and the
+	// bare test cwd the shared helper creates.
 	const leaked = fs
 		.readdirSync(os.tmpdir())
-		.filter((e) => e.startsWith("brl-per-step-model-") && !preexistingTmpDirs.has(e));
+		.filter((e) => e.startsWith("brl-step-model-") && !preexistingTmpDirs.has(e));
 	expect(leaked).toEqual([]);
 });
 
@@ -399,7 +376,7 @@ describe("chain mode per-step model", () => {
 		// Install a custom preset with a model into the test cwd, then run
 		// session_start so state picks it up. The chain step declares a
 		// DIFFERENT model — the step must win.
-		const presetDir = path.join(testCwd, ".pi", "brl-subagent", "presets");
+		const presetDir = path.join(env.testCwd, ".pi", "brl-subagent", "presets");
 		fs.mkdirSync(presetDir, { recursive: true });
 		fs.writeFileSync(
 			path.join(presetDir, "preset-with-model.md"),
@@ -509,7 +486,7 @@ describe("chain mode per-step model", () => {
 		// Install a custom preset that SHADOWS a built-in routing name
 		// (security-auditor) with a pinned model. "audit" in the task
 		// auto-routes to it — the step's explicit model must still win.
-		const presetDir = path.join(testCwd, ".pi", "brl-subagent", "presets");
+		const presetDir = path.join(env.testCwd, ".pi", "brl-subagent", "presets");
 		fs.mkdirSync(presetDir, { recursive: true });
 		fs.writeFileSync(
 			path.join(presetDir, "security-auditor.md"),
@@ -738,7 +715,7 @@ describe("top-level model override (issue #96)", () => {
 			appendCustomEntry: () => {},
 		};
 		// Preset with a DIFFERENT pinned model
-		const presetDir = path.join(testCwd, ".pi", "brl-subagent", "presets");
+		const presetDir = path.join(env.testCwd, ".pi", "brl-subagent", "presets");
 		fs.mkdirSync(presetDir, { recursive: true });
 		fs.writeFileSync(
 			path.join(presetDir, "preset-with-model.md"),
@@ -1411,7 +1388,7 @@ describe("crash-path error sanitization (issue #65)", () => {
 		// context ("Chain mode crashed: ..."). A message embedding the subagent
 		// cwd must arrive as <cwd>/... — never the raw absolute path.
 		runnerMocks.runSubagent.mockRejectedValue(
-			new Error(`config load failed: ${testCwd}/.pi/settings.json`),
+			new Error(`config load failed: ${env.testCwd}/.pi/settings.json`),
 		);
 
 		const result = await tool.execute("call-crash-1", {
@@ -1422,7 +1399,7 @@ describe("crash-path error sanitization (issue #65)", () => {
 		const text = (result.content as Array<{ type: string; text: string }>)[0].text;
 		expect(text).toContain("Chain mode crashed:");
 		expect(text).toContain("config load failed: <cwd>/.pi/settings.json");
-		expect(text).not.toContain(testCwd);
+		expect(text).not.toContain(env.testCwd);
 	});
 
 	it("single-mode crash sanitizes the cwd out of the tool result", async () => {
@@ -1433,7 +1410,7 @@ describe("crash-path error sanitization (issue #65)", () => {
 		// instance the execute handler's dynamic import('./transcript') resolves
 		// to, or the file would land in the real repo .pi/output.
 		runnerMocks.runSubagent.mockRejectedValue(
-			new Error(`spawn failed: ${testCwd}/bin/pi`),
+			new Error(`spawn failed: ${env.testCwd}/bin/pi`),
 		);
 
 		const result = await tool.execute("call-crash-2", {
@@ -1444,10 +1421,10 @@ describe("crash-path error sanitization (issue #65)", () => {
 		const text = (result.content as Array<{ type: string; text: string }>)[0].text;
 		expect(text).toContain("Subagent crashed:");
 		expect(text).toContain("spawn failed: <cwd>/bin/pi");
-		expect(text).not.toContain(testCwd);
+		expect(text).not.toContain(env.testCwd);
 
 		// Issue #52 probe: the crash transcript landed in the TEMP output dir.
-		const tempFiles = fs.readdirSync(tempOutputDir);
+		const tempFiles = fs.readdirSync(env.outputDir);
 		expect(tempFiles).toHaveLength(1);
 		expect(tempFiles[0]).toMatch(/^agent-[0-9a-f-]+\.jsonl$/);
 	});
@@ -1555,7 +1532,7 @@ describe("parallel subtask run entries (issue #119)", () => {
 	// its observable effect is the finalized entry below.
 	it("crash path: rejected runSubagent finalizes the entry as failed and the mode still settles (R1 C1 fix)", async () => {
 		runnerMocks.runSubagent.mockRejectedValue(
-			new Error(`spawn failed: ${testCwd}/bin/pi`),
+			new Error(`spawn failed: ${env.testCwd}/bin/pi`),
 		);
 
 		let settled = true;
@@ -1591,7 +1568,7 @@ describe("parallel subtask run entries (issue #119)", () => {
 			expect(finalized.errorMessage).toBeDefined();
 			// F7: the crash error is sanitized before it reaches the entry
 			expect(finalized.errorMessage).toContain("<cwd>/bin/pi");
-			expect(finalized.errorMessage).not.toContain(testCwd);
+			expect(finalized.errorMessage).not.toContain(env.testCwd);
 			// classifyError on the crash details (spawn-class error)
 			expect(finalized.originalParams?.errorCategory).toBe("tool_error");
 		}
@@ -1678,7 +1655,7 @@ describe("graph mode crash semantics with live registration (issue #130)", () =>
 				task: string,
 			) => {
 				if (task.includes("boom")) {
-					throw new Error(`spawn failed: ${testCwd}/bin/pi`);
+					throw new Error(`spawn failed: ${env.testCwd}/bin/pi`);
 				}
 				return makeResult(`${model.provider}/${model.id}`);
 			},
@@ -1716,7 +1693,7 @@ describe("graph mode crash semantics with live registration (issue #130)", () =>
 describe("chain mode crash semantics with live registration (issue #130)", () => {
 	it("a throwing step completes via buildCrashResult: execute resolves with isError, no escape", async () => {
 		runnerMocks.runSubagent.mockRejectedValue(
-			new Error(`spawn failed: ${testCwd}/bin/pi`),
+			new Error(`spawn failed: ${env.testCwd}/bin/pi`),
 		);
 
 		let settled = true;
@@ -1735,7 +1712,7 @@ describe("chain mode crash semantics with live registration (issue #130)", () =>
 		// F7: the mode's outer buildCrashResult sanitizes the absolute path.
 		const content = JSON.stringify(result?.content ?? []);
 		expect(content).toContain("<cwd>/bin/pi");
-		expect(content).not.toContain(testCwd);
+		expect(content).not.toContain(env.testCwd);
 
 		// Sequential: exactly one step was spawned before the crash.
 		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(1);
@@ -2097,7 +2074,7 @@ describe("per-unit releaseSlot success flags (issue #137)", () => {
 				_thinkingLevel: unknown,
 				task: string,
 			) => {
-				if (task.includes("boom")) throw new Error(`spawn failed: ${testCwd}/bin/pi`);
+				if (task.includes("boom")) throw new Error(`spawn failed: ${env.testCwd}/bin/pi`);
 				return { ...makeResult(`${model.provider}/${model.id}`), stopReason: "stop" };
 			},
 		);
@@ -2153,7 +2130,7 @@ describe("per-unit releaseSlot success flags (issue #137)", () => {
 				_thinkingLevel: unknown,
 				task: string,
 			) => {
-				if (task.includes("boom")) throw new Error(`spawn failed: ${testCwd}/bin/pi`);
+				if (task.includes("boom")) throw new Error(`spawn failed: ${env.testCwd}/bin/pi`);
 				return { ...makeResult(`${model.provider}/${model.id}`), stopReason: "stop" };
 			},
 		);

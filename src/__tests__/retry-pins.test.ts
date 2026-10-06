@@ -41,15 +41,13 @@
  *
  * Harness cloned from dispatch-capability-guards.test.ts (hoisted ../runner
  * mock; partial ../session-manager mock stubbing ONLY spawnBackgroundSession;
- * tui module mocks; temp-dir output/storage redirect; setLogCwd cleanup;
+ * tui module mocks; temp dirs + output/storage redirects + log-cwd clearing
+ * from the shared lifecycle helper (src/__tests__/fixtures/temp-lifecycle.ts);
  * executeWithSpawn fake-timer wrapper), plus per-step-model.test.ts's
  * seed-a-run-entry retry pattern.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing the extension
@@ -72,8 +70,9 @@ vi.mock("../runner", () => ({
 	parseSubagentLine: h.parseSubagentLine,
 }));
 
-// Partial session-manager mock: stub ONLY the spawn; state/session helpers
-// and the __setStorageDir redirect stay real.
+// Partial session-manager mock: stub ONLY the spawn; state/session helpers stay
+// real (the output/storage redirects + log-cwd clearing come from the shared
+// lifecycle helper in src/__tests__/fixtures/temp-lifecycle.ts).
 vi.mock("../session-manager", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../session-manager")>()),
 	spawnBackgroundSession: h.spawnBackgroundSession,
@@ -97,11 +96,9 @@ vi.mock("@earendil-works/pi-tui", () => {
 import initExtension from "../index";
 import { snapshotOriginalParams } from "../params";
 import { resolveRetryParams } from "../history";
-import { __setOutputDir } from "../transcript";
-import { __setStorageDir } from "../session-manager";
-import { setLogCwd } from "../logging";
 import { CUSTOM_ENTRY_TYPES } from "../types";
 import type { SubagentResult, SubagentRun } from "../types";
+import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -164,8 +161,7 @@ let tool: ToolEntry;
 let sessionStartHandler:
 	| ((_event: unknown, ctx: Record<string, unknown>) => Promise<void>)
 	| undefined;
-let testCwd: string;
-let tempPiBase = "";
+const env = createTempEnv("brl-retry-pins");
 
 function setupExtension(): ToolEntry {
 	const registeredTools = new Map<string, ToolEntry>();
@@ -200,7 +196,7 @@ function makeRegistry(available: string[]) {
 
 function makeCtx(): Record<string, unknown> {
 	return {
-		cwd: testCwd,
+		cwd: env.testCwd,
 		model: GLOBAL_MODEL,
 		modelRegistry: makeRegistry([`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`]),
 		getSystemPrompt: () => "You are a helpful assistant.",
@@ -261,12 +257,7 @@ function makeRun(id: string, task: string, originalParams?: Record<string, unkno
 }
 
 beforeEach(() => {
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
-	tempPiBase = fs.mkdtempSync(path.join(os.tmpdir(), "brl-retry-pins-pi-"));
-	__setOutputDir(path.join(tempPiBase, "output"));
-	__setStorageDir(path.join(tempPiBase, "subagents"));
-	testCwd = fs.mkdtempSync(path.join(os.tmpdir(), "brl-retry-pins-"));
+	env.setUp();
 	h.runSubagent.mockReset();
 	h.runSubagent.mockImplementation(
 		async (_cwd: string, _prompt: string, model: { provider: string; id: string }) =>
@@ -289,10 +280,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-	setLogCwd(undefined);
-	await new Promise((resolve) => setImmediate(resolve));
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
+	await env.tearDown();
 });
 
 // ---------------------------------------------------------------------------
