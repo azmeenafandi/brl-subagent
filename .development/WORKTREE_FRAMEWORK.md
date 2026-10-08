@@ -5,7 +5,9 @@
 > to it); `main` is the pristine release checkout. Since #247, `.development/**` and `.pi/skills/**` +
 > `.pi/extensions/**` are TRACKED (contributor parity); `graphify-out/` and `.pi` session state stay
 > gitignored. The canonical graph describes the COCKPIT tree and is refreshed at every merge into `dev` by
-> `graph-refresh.sh` (never by a hook side effect — #230). **In the text below, read "main repo" / "main
+> `graph-refresh.sh` (never by a hook side effect — #230). **CodeGraph prototype (Phase 1, 2026-10-08):** a
+> parallel `codegraph-refresh.sh` + `codegraph-check.py` pair lives in `.pi/skills/worktree/` for the
+> Phase 2 dogfooding — the canonical graph above remains graphify's until the switch decision. **In the text below, read "main repo" / "main
 > checkout" as the cockpit (dev) checkout** — the design predates the move; see `HANDOFF.md` for the current
 > layout.
 

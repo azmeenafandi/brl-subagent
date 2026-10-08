@@ -153,7 +153,9 @@ off (the #230 discipline); then the switch decision and an ADR in the 0013/0014 
 **Phase 0 RUN 2026-10-08 — PASS on every bar item** (coverage 34/34 + 0/322 in 5ms; query parity incl.
 the re-export seam, both directions; byte-identical re-index; docs-only sync a no-op; adapter prototyped).
 Findings + prototype: `.development/investigations/codegraph-bakeoff-2026-10-08/` (PR #291, merged
-`bf4a628`). Phase 1 not yet started (awaiting the user's go).
+`bf4a628`). **Phase 1 in PR** — prototype on `chore/codegraph-phase1-integration`:
+`codegraph-refresh.sh` + `codegraph-check.py` in `.pi/skills/worktree/`, marked prototype (graphify
+stays canonical until Phase 2). Phase 2 (dogfooding) not started.
 
 ## Cockpit layout (moved 2026-09-30)
 

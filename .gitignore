@@ -3,6 +3,7 @@ node_modules
 .tmp/
 REVIEW_*.md
 graphify-out/
+.codegraph/
 __pycache__/
 vitest-report.json
 

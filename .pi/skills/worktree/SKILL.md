@@ -273,6 +273,22 @@ mechanics, verdict format: `references/review-dispatch.md`.
   silent refresh failures that issues #173 (missing module) and #189 (missing
   symbols / stale-content rewrite) record. Run from the cockpit.
 
+**CodeGraph prototype (Phase 1, 2026-10-08 — NOT part of the ritual yet).** The
+canonical graph above remains graphify's until the Phase 2 dogfooding decision
+(`.development/investigations/codegraph-bakeoff-2026-10-08/findings.md`). The
+prototype pair mirrors the contract for anyone dogfooding it manually:
+
+- **`codegraph-refresh.sh`** — `codegraph sync` (or `--full` for a rebuild) in
+  the cockpit, then `codegraph-check.py`. Needs the pinned CLI
+  (`npm i -g @colbymchenry/codegraph@1.6.2`; `CODEGRAPH_BIN` overrides the path);
+  run `codegraph telemetry off` once (the script also sets `DO_NOT_TRACK=1`).
+  Refuses cleanly when the project has no `.codegraph/` yet (init instructions).
+- **`codegraph-check.py`** — the CodeGraph analogue of `graph-check.py`: module +
+  exported-symbol coverage from `codegraph.db`, plus a freshness assertion
+  (`indexed_at_commit` equals HEAD, `index_state = complete`) that is stronger
+  than the mtime check, plus a dirty-paths advisory (indexed files not in HEAD).
+  Boundaries stated in the script, same as its analogue.
+
 ## Notes
 
 - **The cockpit is the `dev` checkout** (`brl-subagent-dev`): it holds
