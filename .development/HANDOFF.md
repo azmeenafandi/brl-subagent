@@ -128,7 +128,10 @@ dedup → `--allow-dedup-shrink`; post-#279 incomplete docs pass → from-scratc
 `graphify-out/graph.json.pre-276-rebuild`.
 
 **Other candidates (marked, not filed):** the `showSelectList` preselect nice-to-have deferred from #260,
-cutting a release when the accumulated fixes should reach npm users, and — **parked 2026-10-06** — the
+**the next release — user decision 2026-10-08: after dependabot's weekly visit (Saturdays; next 2026-10-10)**,
+so one release absorbs any dependabot bumps (urgent/security still interrupts). Saturday is expected to re-open
+vitest (`^5.0.0` vs latest 5.0.3) and typebox (`^1.3.34` vs 1.3.36) — triage → merge (bump worktrees +
+`npm ci` refresh) → doc cleanup → release ritual; and — **parked 2026-10-06** — the
 **codegraph evaluation** (`colbymchenry/codegraph`: MIT, Rust/tree-sitter kernel, local SQLite, MCP + CLI,
 no LLM in the extraction path). Front-runner alternative to graphify precisely because graphify's failures are
 all in its LLM semantic layer (3 guard refusals on 2026-10-06, thin doc extraction, no true rebuild path,
