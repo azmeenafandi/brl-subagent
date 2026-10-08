@@ -161,7 +161,11 @@ in opposite directions — the definition-line/definition-file treatment; CodeGr
 Caveat found: `is_exported` has false positives (`displayTaskName` is unexported but flagged) — the guard matches
 by name, so it is unaffected; do not use the flag as ECMAScript-export truth. Same-day contrast: the post-#292
 graphify refresh **passed cleanly, no refusal** (1528/3368, ~$0.06) — same input class as #5's refusal;
-variance confirmed. Dogfood window open.
+variance confirmed. Dogfood window open. **CLI pinned at 1.6.2** (decision 2026-10-08): updates are
+deliberate bumps — `pnpm add -g @colbymchenry/codegraph@<v>` → full `codegraph index` → refresh green;
+`codegraph upgrade --check` is the awareness command; never `codegraph upgrade` while pnpm-managed.
+Install layout: registry route (per-platform optional-dep carrying the vendored Node runtime; no postinstall
+script); the GitHub-releases download fallback exists but is unused here.
 
 ## Cockpit layout (moved 2026-09-30)
 

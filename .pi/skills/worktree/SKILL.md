@@ -284,6 +284,11 @@ prototype pair mirrors the contract for anyone dogfooding it manually:
   here; `CODEGRAPH_BIN` overrides the path);
   run `codegraph telemetry off` once (the script also sets `DO_NOT_TRACK=1`).
   Refuses cleanly when the project has no `.codegraph/` yet (init instructions).
+  **Version policy:** pinned at **1.6.2** for the dogfood window (2026-10-08).
+  Awareness: `codegraph upgrade --check`. Deliberate bump: `pnpm add -g
+  @colbymchenry/codegraph@<v>` → full `codegraph index` → this refresh green →
+  update the version here. Never `codegraph upgrade` while pnpm-managed (one
+  writer per install; the npm route ships a vendored runtime with no postinstall).
 - **`codegraph-check.py`** — the CodeGraph analogue of `graph-check.py`: module +
   exported-symbol coverage from `codegraph.db`, plus a freshness assertion
   (`indexed_at_commit` equals HEAD, `index_state = complete`) that is stronger
