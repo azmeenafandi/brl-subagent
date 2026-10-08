@@ -135,14 +135,20 @@ seam (`session-manager.getTranscriptPath` → `transcript-path.ts`) and `setLogC
 Hold until graphify's monitoring window closes; telemetry off, `.codegraph/` gitignored, pinned version.
 
 **PHASED METHOD (agreed 2026-10-08; user approved Phase 0 execution).** *Phase 0 — bake-off, tool-side only:*
-CLI-only (no MCP/agent wiring), pinned install, `DO_NOT_TRACK=1`; index a **scratch `git clone --local`** of the
-repo (NOT the cockpit — an untracked `.codegraph/` there would trip `check-repo.sh`'s working-tree-clean gate,
-and the cockpit is ADR 0011's authoritative tree); run the bake-off bar above plus cost/latency/DB-size; and
+CLI-only (no MCP/agent wiring), pinned install, `DO_NOT_TRACK=1`; index a **scratch clone** of the
+repo (NOT the cockpit — ADR 0011's authoritative tree must not carry exploration state; note
+`check-repo.sh` filters untracked paths, so a cockpit `.codegraph/` would NOT trip it — that earlier
+claim was wrong); run the bake-off bar above plus cost/latency/DB-size; and
 cost the **third option** — an in-repo `ts-ast` extractor for the same four queries, reusing `allEdges()`.
 Deliverable: findings file + recommendation. *Phase 1 (only if Phase 0 passes):* integration prototype in a
 worktree — `.gitignore`, a `graph-check` adapter over its SQLite/JSON, a `graph-refresh` equivalent, skill +
 ARCHITECTURE docs. *Phase 2:* side-by-side dogfooding with explicit `codegraph sync` at merges and the watcher
 off (the #230 discipline); then the switch decision and an ADR in the 0013/0014 shape.
+
+**Phase 0 RUN 2026-10-08 — PASS on every bar item** (coverage 34/34 + 0/322 in 5ms; query parity incl.
+the re-export seam, both directions; byte-identical re-index; docs-only sync a no-op; adapter prototyped).
+Findings + prototype: `.development/investigations/codegraph-bakeoff-2026-10-08/` (docs PR
+`docs/codegraph-phase0-bakeoff`). Phase 1 not yet started.
 
 ## Cockpit layout (moved 2026-09-30)
 
