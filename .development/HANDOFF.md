@@ -153,9 +153,15 @@ off (the #230 discipline); then the switch decision and an ADR in the 0013/0014 
 **Phase 0 RUN 2026-10-08 — PASS on every bar item** (coverage 34/34 + 0/322 in 5ms; query parity incl.
 the re-export seam, both directions; byte-identical re-index; docs-only sync a no-op; adapter prototyped).
 Findings + prototype: `.development/investigations/codegraph-bakeoff-2026-10-08/` (PR #291, merged
-`bf4a628`). **Phase 1 in PR** — prototype on `chore/codegraph-phase1-integration`:
-`codegraph-refresh.sh` + `codegraph-check.py` in `.pi/skills/worktree/`, marked prototype (graphify
-stays canonical until Phase 2). Phase 2 (dogfooding) not started.
+`bf4a628`). **Phase 2 STARTED (2026-10-08)** — CLI installed pinned via **pnpm global** (`pnpm add -g @colbymchenry/codegraph@1.6.2`; `npm i -g` targets `/usr/local` → needs root on this machine — merged docs/error text corrected in place
+the same day). Cockpit indexed: 122 files → 2,272 nodes / 7,797 edges, `.codegraph/` gitignored, porcelain
+clean. First dogfood: `codegraph-refresh.sh` green (34/34 + 0/322, "index was built from HEAD"). Query-parity
+sample: **12/12** after fixing my comparison methodology (two intermediate passes each had ground-truth artifacts
+in opposite directions — the definition-line/definition-file treatment; CodeGraph was correct in all cases).
+Caveat found: `is_exported` has false positives (`displayTaskName` is unexported but flagged) — the guard matches
+by name, so it is unaffected; do not use the flag as ECMAScript-export truth. Same-day contrast: the post-#292
+graphify refresh **passed cleanly, no refusal** (1528/3368, ~$0.06) — same input class as #5's refusal;
+variance confirmed. Dogfood window open.
 
 ## Cockpit layout (moved 2026-09-30)
 

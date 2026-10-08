@@ -280,7 +280,8 @@ prototype pair mirrors the contract for anyone dogfooding it manually:
 
 - **`codegraph-refresh.sh`** — `codegraph sync` (or `--full` for a rebuild) in
   the cockpit, then `codegraph-check.py`. Needs the pinned CLI
-  (`npm i -g @colbymchenry/codegraph@1.6.2`; `CODEGRAPH_BIN` overrides the path);
+  (`pnpm add -g @colbymchenry/codegraph@1.6.2` — npm's global prefix needs root
+  here; `CODEGRAPH_BIN` overrides the path);
   run `codegraph telemetry off` once (the script also sets `DO_NOT_TRACK=1`).
   Refuses cleanly when the project has no `.codegraph/` yet (init instructions).
 - **`codegraph-check.py`** — the CodeGraph analogue of `graph-check.py`: module +

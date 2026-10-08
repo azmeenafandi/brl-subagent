@@ -43,7 +43,7 @@ if [[ ! -d "${REPO_ROOT}/src" ]]; then
 fi
 if ! command -v "${CODEGRAPH_BIN}" >/dev/null 2>&1; then
     echo "ERROR: ${CODEGRAPH_BIN} is not on PATH (set CODEGRAPH_BIN to its path)." >&2
-    echo "       install pinned: npm i -g @colbymchenry/codegraph@1.6.2" >&2
+    echo "       install pinned: pnpm add -g @colbymchenry/codegraph@1.6.2" >&2
     exit 2
 fi
 if [[ ! -f "${REPO_ROOT}/.codegraph/codegraph.db" ]]; then
