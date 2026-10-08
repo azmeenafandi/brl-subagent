@@ -117,7 +117,12 @@ one fuzzy). Forced only after attributing the reduction to docs/reference-side v
 `package.json` + lockfile, no `src/`), then `graph-check.py` re-verified 34/34 modules + 322/322 symbols — graph
 now **1490 nodes / 3273 links**. A routine docs-only merge needing manual two-flag reconciliation is the
 strongest escalation signal yet; monitoring continues (alternatives recorded: the codegraph bake-off, or an
-in-repo `ts-ast` extractor for the critical path). Earlier day pattern (2026-10-06): 3 refusals (post-#278
+in-repo `ts-ast` extractor for the critical path). Then the **5th refusal arrived with the Phase 0 bake-off
+merge itself (PR #291, docs-only)**: unverified semantic shrink of `FRICTION_LOG.md` (26→12) and `HANDOFF.md`
+(16→9) — both files GREW that day, so pure LLM-extraction variance — net −20; forced with `--allow-partial`
+only, re-verified 34/34 + 0/322; graph now **1470 nodes / 3271 links**. Window tally: **5 refusals, 0 involving
+`src/` structure** — the alternative that cannot exhibit this class shipped its evidence in the merge that
+exhibited it. Earlier day pattern (2026-10-06): 3 refusals (post-#278
 dedup → `--allow-dedup-shrink`; post-#279 incomplete docs pass → from-scratch rebuild; post-#286 net −1 →
 `--allow-partial` + coverage check) and 4 clean passes. Pre-rebuild 1530-node graph kept at
 `graphify-out/graph.json.pre-276-rebuild`.
@@ -147,8 +152,8 @@ off (the #230 discipline); then the switch decision and an ADR in the 0013/0014 
 
 **Phase 0 RUN 2026-10-08 — PASS on every bar item** (coverage 34/34 + 0/322 in 5ms; query parity incl.
 the re-export seam, both directions; byte-identical re-index; docs-only sync a no-op; adapter prototyped).
-Findings + prototype: `.development/investigations/codegraph-bakeoff-2026-10-08/` (docs PR
-`docs/codegraph-phase0-bakeoff`). Phase 1 not yet started.
+Findings + prototype: `.development/investigations/codegraph-bakeoff-2026-10-08/` (PR #291, merged
+`bf4a628`). Phase 1 not yet started (awaiting the user's go).
 
 ## Cockpit layout (moved 2026-09-30)
 
