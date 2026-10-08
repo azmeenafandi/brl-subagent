@@ -134,6 +134,16 @@ seam (`session-manager.getTranscriptPath` → `transcript-path.ts`) and `setLogC
 `graph-refresh` rewrite; explicit `codegraph sync` in the merge ritual, not the watcher — the #230 discipline).
 Hold until graphify's monitoring window closes; telemetry off, `.codegraph/` gitignored, pinned version.
 
+**PHASED METHOD (agreed 2026-10-08; user approved Phase 0 execution).** *Phase 0 — bake-off, tool-side only:*
+CLI-only (no MCP/agent wiring), pinned install, `DO_NOT_TRACK=1`; index a **scratch `git clone --local`** of the
+repo (NOT the cockpit — an untracked `.codegraph/` there would trip `check-repo.sh`'s working-tree-clean gate,
+and the cockpit is ADR 0011's authoritative tree); run the bake-off bar above plus cost/latency/DB-size; and
+cost the **third option** — an in-repo `ts-ast` extractor for the same four queries, reusing `allEdges()`.
+Deliverable: findings file + recommendation. *Phase 1 (only if Phase 0 passes):* integration prototype in a
+worktree — `.gitignore`, a `graph-check` adapter over its SQLite/JSON, a `graph-refresh` equivalent, skill +
+ARCHITECTURE docs. *Phase 2:* side-by-side dogfooding with explicit `codegraph sync` at merges and the watcher
+off (the #230 discipline); then the switch decision and an ADR in the 0013/0014 shape.
+
 ## Cockpit layout (moved 2026-09-30)
 
 - **The cockpit is the `brl-subagent-dev` checkout** (branch `dev`): `.development/`, `graphify-out/`,
