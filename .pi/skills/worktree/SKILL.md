@@ -223,7 +223,8 @@ never re-type their logic by hand. Full design:
 7. CHECKPOINT   release checkpoint for extension-code changes — conductor
                 pauses for the user (rule #6; docs/tests/tooling: none)
 8. CLEANUP      worktree-cleanup.sh <path>   (UNCONDITIONAL — auto-derives the branch;
-                deletes local + remote heads, never dev/main)
+                deletes local + remote heads, never dev/main. Applies to EVERY
+                worktree of the unit — implementation AND review worktrees)
 9. VERIFY       (rule #9) at the point of use — for C1/C2 changes dispatch a
                 live probe and confirm the behavior, verifying what the
                 mechanism PRODUCES, not that it exists. Under npm dogfooding
