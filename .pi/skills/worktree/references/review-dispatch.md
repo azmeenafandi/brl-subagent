@@ -14,10 +14,10 @@ verdict format — the dispatch task only adds the PR-specific focus areas.
 auto-route can override an explicit tools list; an explicit preset wins) and
 NOT `dev-agent` + `excludeTools` (the retired workaround).**
 
-**Dispatch with `gitMode: "none"`.** A reviewer never commits or branches — branch
-mode in a review worktree is what leaves stray `brl-subagent-*` branches behind
-(#302: the branch-mode switch-back/delete does not run for stopped/aborted runs, and
-review worktrees were not being cleaned). Review worktrees go through
+**Dispatch with `gitMode: "none"`.** A reviewer never commits or branches — the
+review worktree must not move. (Stray `brl-subagent-*` branches in review worktrees
+were root-caused to the e2e suite's branch-mode test mutating its cwd — #302; not the
+extension's git mode.) Review worktrees go through
 `worktree-cleanup.sh` at close exactly like implementation worktrees; when
 investigating a stray, capture `git -C <review-wt> status -sb` and
 `git branch --show-current` BEFORE cleanup — the evidence dies with the worktree.
