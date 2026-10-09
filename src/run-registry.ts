@@ -211,15 +211,25 @@ export function listInflightRuns(): InflightRun[] {
 
 /**
  * Write the D3 `interruptedAt` mark onto an existing entry. Idempotent; returns
- * false when the entry is absent (nothing to mark).
+ * false when the entry is absent, its id fails the write guard, or the write
+ * fails. Issue #304: this MUST never throw — the boot scan treats a false as a
+ * durable-write failure and counts it, whereas a thrown FS error would abort
+ * the whole scan via `performBootRecovery`'s catch-all. The boolean is the
+ * only truthful success signal, so callers must not assume the mark landed.
  */
 export function markInterrupted(id: string, interruptedAt: string): boolean {
-	const file = resolvePath(id);
-	if (!file) return false;
-	const existing = readEntry(file);
-	if (!existing) return false;
-	if (existing.interruptedAt) return true;
-	return writeAtomic(file, { ...existing, interruptedAt });
+	try {
+		const file = resolvePath(id);
+		if (!file) return false;
+		const existing = readEntry(file);
+		if (!existing) return false;
+		if (existing.interruptedAt) return true;
+		return writeAtomic(file, { ...existing, interruptedAt });
+	} catch {
+		// Belt-and-braces: the inner read/write helpers already swallow FS errors,
+		// but the scan's no-throw contract must not depend on that staying true.
+		return false;
+	}
 }
 
 // ---------------------------------------------------------------------------

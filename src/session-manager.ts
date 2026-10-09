@@ -141,8 +141,11 @@ export function getAgent(id: string): BackgroundAgent | null {
 /**
  * Option B U1: every agent record persisted on disk (cross-session — the
  * `.pi/subagents/` store survives a process death; the conductor's session run
- * entries do not). Used by boot recovery to find records stuck `running`.
- * Unreadable/corrupt files and unsafe ids are skipped, never thrown.
+ * entries do not). Boot recovery does NOT use this: it sources candidates from
+ * the durable run registry and reads background records ONE at a time by id
+ * (`recoverInflightRuns`'s `readAgentRecord`), precisely to avoid parsing the
+ * whole store; production has no caller for this sweep. Unreadable/corrupt
+ * files and unsafe ids are skipped, never thrown.
  */
 export function listPersistedAgents(): BackgroundAgent[] {
   let files: string[];

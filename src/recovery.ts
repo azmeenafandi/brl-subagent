@@ -31,7 +31,8 @@
  * ownership cannot be verified.
  */
 
-import { listInflightRuns } from "./run-registry";
+import { listInflightRuns, type InflightRun } from "./run-registry";
+import { assertSafeAgentId } from "./sanitize";
 import { isProcAvailable, defaultRecoveryDeps } from "./proc";
 import { decideRecovery, reapPids, type RecoveryDeps, type RecoveryRecord } from "./recovery-engine";
 import type { Logger } from "./logging";
@@ -49,12 +50,17 @@ export * from "./proc";
 export interface BootScanSummary {
 	scanned: number;
 	skipped: number;
+	/** Records whose interruption mark was DURABLY written (issue #304). */
 	marked: number;
+	/** Records whose mark the engine decided but whose durable write failed (#304). */
+	markFailures: number;
 	reaped: number;
 	/** Already-marked records that had leftover children reaped again this boot. */
 	revisited: number;
 	skippedUnverifiable: number;
 	skippedNoOwner: number;
+	/** Registry entries skipped fail-closed because their id failed the write guard. */
+	skippedUnsafeIds: number;
 }
 
 /** The all-zero summary (a skipped scan / an empty registry). */
@@ -63,18 +69,25 @@ export function emptyBootScanSummary(): BootScanSummary {
 		scanned: 0,
 		skipped: 0,
 		marked: 0,
+		markFailures: 0,
 		reaped: 0,
 		revisited: 0,
 		skippedUnverifiable: 0,
 		skippedNoOwner: 0,
+		skippedUnsafeIds: 0,
 	};
 }
 
 export interface BootScanOptions {
 	records: RecoveryRecord[];
 	deps: RecoveryDeps;
-	/** Persist the D3 mark for this record (agent RMW / run-entry append). */
-	mark(record: RecoveryRecord, interruptedAt: string): void;
+	/**
+	 * Persist the D3 mark for this record (registry entry; agent record for
+	 * background). Returns `false` when the durable write did NOT land — the scan
+	 * then counts a `markFailure` instead of claiming `marked` (issue #304). A
+	 * `void` return keeps the historical assume-success contract.
+	 */
+	mark(record: RecoveryRecord, interruptedAt: string): boolean | void;
 	now?: () => Date;
 	log?: Pick<Logger, "debug" | "info" | "warn">;
 }
@@ -107,20 +120,34 @@ export async function runBootScan(options: BootScanOptions): Promise<BootScanSum
 
 	for (const { record, plan } of planned) {
 		if (plan.decision === "mark") {
-			mark(record, nowIso);
+			const durable = mark(record, nowIso) !== false;
 			// In-memory mark first: guarantees the scan is idempotent even when
 			// the caller's write-back is append-only (run entries) or deferred.
 			record.interruptedAt = nowIso;
-			summary.marked++;
 			const reaped = [...new Set(plan.reap)];
 			summary.reaped += reaped.length;
-			options.log?.warn("Recovery: marked interrupted record", {
-				id: record.id,
-				kind: record.kind,
-				reason: plan.reason,
-				reaped,
-				survived: reaped.filter((pid) => survived.has(pid)),
-			});
+			if (durable) {
+				summary.marked++;
+				options.log?.warn("Recovery: marked interrupted record", {
+					id: record.id,
+					kind: record.kind,
+					reason: plan.reason,
+					reaped,
+					survived: reaped.filter((pid) => survived.has(pid)),
+				});
+			} else {
+				// Issue #304: the mark did NOT land. Count the failure and warn with
+				// the id — this must be visible even when nothing was marked, so it
+				// does not hide behind the caller's `summary.marked > 0` gate.
+				summary.markFailures++;
+				options.log?.warn("Recovery: registry mark failed", {
+					id: record.id,
+					kind: record.kind,
+					reason: plan.reason,
+					reaped,
+					survived: reaped.filter((pid) => survived.has(pid)),
+				});
+			}
 		} else if (plan.decision === "reap") {
 			// B2 revisit: the record was already marked (so it is never re-marked),
 			// but it still carried a live marker child — reap it again this boot.
@@ -162,8 +189,11 @@ export interface PersistedAgentLike {
 
 export interface RegistryScanOptions {
 	deps: RecoveryDeps;
-	/** Persist the D3 mark for this record (registry entry; agent record for background). */
-	mark(record: RecoveryRecord, interruptedAt: string): void;
+	/**
+	 * Persist the D3 mark for this record (registry entry; agent record for
+	 * background). Returns `false` when the durable write did not land.
+	 */
+	mark(record: RecoveryRecord, interruptedAt: string): boolean | void;
 	/**
 	 * Read ONE background run's agent record by id (never the whole store).
 	 * Returns null when the record is absent; absent defaults to an in-flight
@@ -188,8 +218,30 @@ export interface RegistryScanOptions {
  * on what we cannot verify).
  */
 export async function recoverInflightRuns(options: RegistryScanOptions): Promise<BootScanSummary> {
-	const records: RecoveryRecord[] = [];
+	// Issue #304 read/write asymmetry, fail-closed: `listInflightRuns` accepts
+	// any string id, but every write (and `markInterrupted`) resolves through
+	// `assertSafeAgentId`. Acting on an entry the writer could never have
+	// produced is unsafe, so SKIP those here — counted and reported in ONE log
+	// line — instead of attempting a mark that would silently no-op.
+	const addressable: InflightRun[] = [];
+	const unsafeIds: string[] = [];
 	for (const entry of listInflightRuns()) {
+		try {
+			assertSafeAgentId(entry.id);
+			addressable.push(entry);
+		} catch {
+			unsafeIds.push(entry.id);
+		}
+	}
+	if (unsafeIds.length > 0) {
+		options.log?.warn("Recovery: skipped registry entries whose id fails the UUID guard", {
+			count: unsafeIds.length,
+			ids: unsafeIds,
+		});
+	}
+
+	const records: RecoveryRecord[] = [];
+	for (const entry of addressable) {
 		if (entry.kind === "background") {
 			const agent = options.readAgentRecord?.(entry.id) ?? null;
 			if (agent && agent.status !== "running") continue;
@@ -214,13 +266,15 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 			});
 		}
 	}
-	return runBootScan({
+	const summary = await runBootScan({
 		records,
 		deps: options.deps,
 		mark: options.mark,
 		now: options.now,
 		log: options.log,
 	});
+	summary.skippedUnsafeIds = unsafeIds.length;
+	return summary;
 }
 
 // ---------------------------------------------------------------------------
@@ -230,8 +284,8 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 export interface ProductionRecoveryOptions {
 	/** Process deps; defaults to the real /proc wiring (`defaultRecoveryDeps`). */
 	deps?: RecoveryDeps;
-	/** Persist the D3 mark for this record. */
-	mark(record: RecoveryRecord, interruptedAt: string): void;
+	/** Persist the D3 mark for this record; `false` = the durable write failed. */
+	mark(record: RecoveryRecord, interruptedAt: string): boolean | void;
 	readAgentRecord?(id: string): PersistedAgentLike | null;
 	now?: () => Date;
 	log?: Pick<Logger, "debug" | "info" | "warn">;

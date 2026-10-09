@@ -17,8 +17,7 @@
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vitest";
-import { spawn } from "node:child_process";
-import type { ChildProcess } from "node:child_process";
+import { spawn, ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -43,7 +42,12 @@ import {
 import { isInterruptedRun, isSubagentRunShape, type ProcessOwner, type SubagentRun } from "../types";
 import { resolveTerminalRunEntry } from "../state";
 import { CHILD_MARKER_ENV_KEY } from "../sanitize";
-import { activeChildCount, reapActiveChildren, runSubagent } from "../runner";
+import {
+	activeChildCount,
+	reapActiveChildren,
+	runSubagent,
+	__setEscalationTimingForTest,
+} from "../runner";
 import { listPersistedAgents, markAgentInterrupted } from "../session-manager";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 
@@ -586,15 +590,15 @@ async function withSleepWrapper<T>(fn: () => Promise<T>): Promise<T> {
 	}
 }
 
-/** Launch one wrapper child with a per-run marker. */
-function launchForeground(marker: string, timeout?: number) {
+/** Launch one wrapper child with a per-run marker (and optional abort signal). */
+function launchForeground(marker: string, timeout?: number, signal?: AbortSignal) {
 	return runSubagent(
 		process.cwd(),
 		"",
 		{ provider: "test", id: "test/model" },
 		"off",
 		"noop",
-		undefined,
+		signal,
 		undefined,
 		undefined,
 		timeout,
@@ -605,6 +609,64 @@ function launchForeground(marker: string, timeout?: number) {
 		undefined,
 		marker,
 	);
+}
+
+/**
+ * A single-process wrapper that IGNORES SIGTERM and stays alive (issue #303).
+ * A Node shebang script, not a shell script wrapping `sleep`: the SIGKILL the
+ * escalation sends lands on the one process, so the test leaves no orphan.
+ *
+ * The script writes `readyFile` AFTER installing its SIGTERM handler, so the
+ * test can wait for the handler to be live before triggering the escalation —
+ * otherwise SIGTERM could land during Node startup and kill the child by the
+ * default disposition, faking a pass/fail for the wrong reason.
+ */
+async function withIgnoreTermWrapper<T>(fn: (readyFile: string) => Promise<T>): Promise<T> {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-ignore-term-"));
+	const script = path.join(dir, "ignore-term.js");
+	const readyFile = path.join(dir, "ready");
+	fs.writeFileSync(
+		script,
+		`#!/usr/bin/env node\n` +
+			`const fs = require("node:fs");\n` +
+			`process.on("SIGTERM", () => {});\n` +
+			`fs.writeFileSync(${JSON.stringify(readyFile)}, "ready");\n` +
+			`setInterval(() => {}, 1000);\n`,
+		{ mode: 0o755 },
+	);
+	const previous = process.env.BRL_PI_BIN;
+	process.env.BRL_PI_BIN = script;
+	try {
+		return await fn(readyFile);
+	} finally {
+		if (previous === undefined) delete process.env.BRL_PI_BIN;
+		else process.env.BRL_PI_BIN = previous;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+/**
+ * Record every signal `ChildProcess.prototype.kill` receives (with the target
+ * pid), then call through. The runner's kill paths go through `proc.kill(...)`,
+ * so this is an exact observation of SIGTERM/SIGKILL delivery — issue #303's
+ * "force-kill spy".
+ */
+function spyOnChildKill(): { calls: Array<{ signal: string; pid: number | undefined }> } {
+	const calls: Array<{ signal: string; pid: number | undefined }> = [];
+	const original = ChildProcess.prototype.kill;
+	vi.spyOn(ChildProcess.prototype, "kill").mockImplementation(function (
+		this: ChildProcess,
+		signal?: NodeJS.Signals | number,
+	) {
+		calls.push({ signal: String(signal), pid: this.pid });
+		return original.call(this, signal as NodeJS.Signals);
+	});
+	return { calls };
+}
+
+/** The pid carried by the first recorded SIGKILL, or undefined. */
+function sigkillPid(calls: Array<{ signal: string; pid: number | undefined }>): number | undefined {
+	return calls.find((c) => c.signal === "SIGKILL")?.pid;
 }
 
 describe("shutdown reap", () => {
@@ -658,6 +720,82 @@ describe("shutdown reap", () => {
 			expect(reaped).toHaveLength(1);
 			expect(pidAlive(reaped[0])).toBe(false);
 			expect(activeChildCount()).toBe(0);
+		});
+	}, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// 5. Abort/timeout escalation must force-kill a SIGTERM-ignoring child (#303)
+// ---------------------------------------------------------------------------
+
+describe("abort/timeout escalation force-kill (issue #303)", () => {
+	afterEach(() => {
+		__setEscalationTimingForTest(); // restore production timing
+		vi.restoreAllMocks();
+	});
+
+	it("timeout path: SIGKILLs a child that ignores SIGTERM", async () => {
+		// Timeout is long enough that the child's SIGTERM handler is installed
+		// (readiness-gated below) before the timer fires; grace/poll are short.
+		__setEscalationTimingForTest({ graceMs: 100, pollMs: 10 });
+		const spy = spyOnChildKill();
+		await withIgnoreTermWrapper(async (readyFile) => {
+			const marker = `timeout-ignore-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker, 2500);
+			await waitUntil(() => fs.existsSync(readyFile), 5000);
+			const result = await promise;
+
+			// The child ignored SIGTERM, so only a real SIGKILL can have ended it.
+			const pid = sigkillPid(spy.calls);
+			expect(pid).toBeDefined();
+			expect(result.exitCode).toBe(-1);
+			await waitUntil(() => !pidAlive(pid!), 2000);
+			expect(pidAlive(pid!)).toBe(false);
+			expect(activeChildCount()).toBe(0);
+		});
+	}, 20000);
+
+	it("abort path: SIGKILLs a child that ignores SIGTERM", async () => {
+		__setEscalationTimingForTest({ graceMs: 100, pollMs: 10 });
+		const spy = spyOnChildKill();
+		await withIgnoreTermWrapper(async (readyFile) => {
+			const marker = `abort-ignore-${crypto.randomUUID()}`;
+			const controller = new AbortController();
+			const promise = launchForeground(marker, undefined, controller.signal);
+			await waitUntil(() => fs.existsSync(readyFile), 5000);
+			controller.abort();
+			const result = await promise;
+
+			const pid = sigkillPid(spy.calls);
+			expect(pid).toBeDefined();
+			expect(result.errorCategory).toBe("aborted");
+			await waitUntil(() => !pidAlive(pid!), 2000);
+			expect(pidAlive(pid!)).toBe(false);
+			expect(activeChildCount()).toBe(0);
+		});
+	}, 20000);
+
+	it("cooperative timeout path: completes early with NO SIGKILL sent", async () => {
+		// Grace far larger than the child needs: a SIGKILL here would prove the
+		// early-exit poll is broken, not that the child was slow.
+		__setEscalationTimingForTest({ graceMs: 3000, pollMs: 10 });
+		const spy = spyOnChildKill();
+		await withSleepWrapper(async () => {
+			const started = Date.now();
+			const marker = `timeout-coop-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker, 50);
+			const result = await promise;
+			const elapsed = Date.now() - started;
+			const pid = spy.calls.find((c) => c.signal === "SIGTERM")?.pid;
+
+			expect(spy.calls.some((c) => c.signal === "SIGKILL")).toBe(false);
+			expect(result.exitCode).toBe(-1);
+			if (pid !== undefined) {
+				await waitUntil(() => !pidAlive(pid), 2000);
+				expect(pidAlive(pid)).toBe(false);
+			}
+			// Early exit: `sleep` dies on SIGTERM well inside the 3s grace.
+			expect(elapsed).toBeLessThan(2000);
 		});
 	}, 20000);
 });

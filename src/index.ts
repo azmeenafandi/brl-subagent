@@ -3892,12 +3892,18 @@ export default function (pi: ExtensionAPI) {
 				// Read THAT ONE agent record by id — never the whole store.
 				readAgentRecord: (id) => getAgent(id),
 				mark(record, interruptedAt) {
-					// Registry entry = the durable mark for every kind.
-					markInterrupted(record.id, interruptedAt);
+					// Registry entry = the durable mark for every kind. Issue #304: its
+					// boolean is the durable-write result — do NOT drop it, or the boot
+					// summary would claim a mark that never landed. The scan counts a
+					// `false` as `markFailures` and warns with the id.
+					const durable = markInterrupted(record.id, interruptedAt);
 					if (record.kind === "agent") markAgentInterrupted(record.id, interruptedAt);
+					return durable;
 				},
 			});
-			if (summary.marked > 0) {
+			// Report the scan whenever it did anything durable OR attempted a mark
+			// that failed — a failure-only boot must not be silent (issue #304).
+			if (summary.marked > 0 || summary.markFailures > 0) {
 				log.warn("Boot recovery marked interrupted runs", { ...summary });
 			}
 		} catch (err) {
