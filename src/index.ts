@@ -76,7 +76,16 @@ import { delegateTaskParamsSchema } from "./schema";
 import { createSessionState } from "./state";
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
-import { runSubagent, cleanupTempDirs } from "./runner";
+import { runSubagent, cleanupTempDirs, reapActiveChildren } from "./runner";
+import {
+	isProcAvailable,
+	runBootScan,
+	defaultRecoveryDeps,
+	currentProcessOwner,
+	newDispatchIdentity,
+	dedupeRunEntriesById,
+	type RecoveryRecord,
+} from "./recovery";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
 import {
@@ -741,6 +750,9 @@ export default function (pi: ExtensionAPI) {
 						getFinalOutput,
 						log,
 						currentDepth + 1,
+						undefined, // intercom
+						undefined, // subagentId
+						run.childMarker,
 					);
 				} catch (err) {
 					// Issue #133 (mirrors the #119 R1/C1 discipline): finalize the
@@ -1211,6 +1223,7 @@ export default function (pi: ExtensionAPI) {
 					currentDepth + 1,
 					intercom,
 					subagentId,
+					run.childMarker,
 				);
 
 				// Fill SubTaskResult
@@ -1826,6 +1839,7 @@ export default function (pi: ExtensionAPI) {
 							currentDepth + 1,
 							intercom,
 							subagentId,
+							run.childMarker,
 						);
 
 						const subTaskResult: SubTaskResult = {
@@ -2264,6 +2278,10 @@ export default function (pi: ExtensionAPI) {
 			originalParams?: SubagentRun["originalParams"];
 			/** cwd used to redact paths from crash notifications. */
 			sanitizeCwd: string;
+			// Option B U1: durability identity threaded onto the background records.
+			dispatchId?: string;
+			resumeOf?: string;
+			attempt?: number;
 		},
 	): Promise<BackgroundAgent> {
 		const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
@@ -2290,6 +2308,10 @@ export default function (pi: ExtensionAPI) {
 			// Issue #98/#108: snapshotOriginalParams is the single source of truth
 			// for the caller params a later retry restores.
 			originalParams: spawn.originalParams,
+			// Option B U1: durability identity for the agent record + run entry.
+			dispatchId: spawn.dispatchId,
+			resumeOf: spawn.resumeOf,
+			attempt: spawn.attempt,
 		});
 		
 		// Register for live monitor
@@ -2523,6 +2545,10 @@ export default function (pi: ExtensionAPI) {
 			priority?: string;
 		},
 		singleTask: string,
+		// Option B U1: the spawn entry a retryRunId resolved to, so a retried
+		// background run inherits dispatchId/resumeOf/attempt (record identity,
+		// not a delegate param — D4).
+		retrySourceRun?: SubagentRun,
 	): Promise<ToolResult<undefined>> {
 		// Phase 6.5: Background execution — spawn session and return ID immediately.
 		// Resolve the preset and its model BEFORE the background branch so the
@@ -2603,6 +2629,8 @@ export default function (pi: ExtensionAPI) {
 				bgResolvedPreset?.promptGuideline,
 			);
 
+			// Option B U1: durability identity (retry inherits the original dispatch).
+			const bgIdentity = newDispatchIdentity(retrySourceRun);
 			const agent = await startBackgroundAgent(pi, ctx, {
 				task: singleTask,
 				type: params.preset || 'general-purpose',
@@ -2617,6 +2645,9 @@ export default function (pi: ExtensionAPI) {
 				gitMode: bgResolved.resolvedGitMode,
 				originalParams: snapshotOriginalParams(params),
 				sanitizeCwd: bgResolved.effectiveCwd,
+				dispatchId: bgIdentity.dispatchId,
+				resumeOf: bgIdentity.resumeOf,
+				attempt: bgIdentity.attempt,
 			});
 
 			// B2: Surface auto-route decisions in background spawn result too —
@@ -2788,6 +2819,10 @@ export default function (pi: ExtensionAPI) {
 			onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 			ctx: ExtensionContext,
 		) {
+			// Option B U1: the run a retryRunId resolves to (spawn entry). Internal
+			// record identity — dispatchId/resumeOf/attempt are threaded onto the new
+			// record, NOT through the delegate-param surface (D4).
+			let retrySourceRun: SubagentRun | undefined;
 			// Issue #99: warn on unknown params — typebox allows additional properties
 			// by default (pi's validateToolArguments passes unknown keys through), so a
 			// typo like `thinkinglevel` or a schema-drifted param is otherwise silently
@@ -2891,6 +2926,7 @@ export default function (pi: ExtensionAPI) {
 			if (params.retryRunId) {
 				const runEntry = state.findSpawnRunById(ctx, params.retryRunId);
 				if (runEntry) {
+					retrySourceRun = runEntry;
 					params = resolveRetryParams(params, runEntry) as DelegateTaskParams;
 				} else {
 					// Issue #98: a silent no-op here made retries of background runs
@@ -3010,7 +3046,7 @@ export default function (pi: ExtensionAPI) {
 			const singleTask = params.task!; // non-empty (sanitizer guarantees; isSingle confirms)
 
 			if (params.background) {
-				return spawnBackgroundRun(pi, ctx, params, singleTask);
+				return spawnBackgroundRun(pi, ctx, params, singleTask, retrySourceRun);
 			}
 
 			// R5: Check session cost limit before spawning
@@ -3157,6 +3193,10 @@ export default function (pi: ExtensionAPI) {
 
 			// Create run record
 			const runId = crypto.randomUUID();
+			// Option B U1: durability identity — a retry inherits the original
+			// dispatchId and records resumeOf/attempt; a fresh marker keys the
+			// child process for boot-time orphan discovery.
+			const identity = newDispatchIdentity(retrySourceRun);
 			const run: SubagentRun = {
 				id: runId,
 				task,
@@ -3169,6 +3209,11 @@ export default function (pi: ExtensionAPI) {
 				priority: params.priority,
 				startedAt: new Date().toISOString(),
 				originalParams: snapshotOriginalParams(params),
+				dispatchId: identity.dispatchId,
+				resumeOf: identity.resumeOf,
+				attempt: identity.attempt,
+				owner: currentProcessOwner(),
+				childMarker: crypto.randomUUID(),
 			};
 			state.persistRun(pi, run);
 
@@ -3322,6 +3367,7 @@ export default function (pi: ExtensionAPI) {
 					childDepth,
 					undefined, // intercom
 					undefined, // subagentId
+					run.childMarker,
 				);
 
 				// Auto-retry on timeout
@@ -3369,6 +3415,7 @@ export default function (pi: ExtensionAPI) {
 						childDepth,
 						undefined, // intercom
 						undefined, // subagentId
+						run.childMarker,
 					);
 				}
 
@@ -3824,6 +3871,68 @@ export default function (pi: ExtensionAPI) {
 	// Session lifecycle — F7: Session-bound state initialization
 	// -------------------------------------------------------------------
 
+	// -------------------------------------------------------------------
+	// Option B U1: boot recovery — identity/liveness detection + child reap
+	// -------------------------------------------------------------------
+	// Runs AFTER restoreFromSession so config is ready. For every persisted
+	// `running` record (the cross-session .pi/subagents/ agent records plus this
+	// session's run entries): a dead owner's orphaned child is reaped, then the
+	// record is marked `interruptedAt`. SILENT in the UI — the notice/offer
+	// surface is U3. Platforms without /proc skip the whole scan (one log line):
+	// pid-only liveness cannot rule out pid reuse, so nothing is killed or
+	// marked unverified.
+	async function performBootRecovery(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+		if (!isProcAvailable()) {
+			log.info("Boot recovery skipped: /proc start-token verification unavailable on this platform");
+			return;
+		}
+		try {
+			const { listPersistedAgents, markAgentInterrupted } = await import("./session-manager");
+			const records: RecoveryRecord[] = [];
+			for (const run of dedupeRunEntriesById(state.getRunEntries(ctx))) {
+				records.push({
+					id: run.id,
+					kind: "run",
+					status: run.status,
+					interruptedAt: run.interruptedAt,
+					owner: run.owner,
+					childMarker: run.childMarker,
+					source: run,
+				});
+			}
+			for (const agent of listPersistedAgents()) {
+				records.push({
+					id: agent.id,
+					kind: "agent",
+					status: agent.status,
+					interruptedAt: agent.interruptedAt,
+					owner: agent.owner,
+					childMarker: agent.childMarker,
+					source: agent,
+				});
+			}
+			const summary = await runBootScan({
+				records,
+				deps: defaultRecoveryDeps(),
+				log,
+				mark(record, interruptedAt) {
+					if (record.kind === "agent") {
+						markAgentInterrupted(record.id, interruptedAt);
+						return;
+					}
+					const run = record.source as SubagentRun;
+					state.persistRun(pi, { ...run, interruptedAt });
+				},
+			});
+			if (summary.marked > 0) {
+				log.warn("Boot recovery marked interrupted runs", { ...summary });
+			}
+		} catch (err) {
+			// Recovery is best-effort hygiene — it must never break session start.
+			log.warn("Boot recovery scan failed", { error: (err as Error).message });
+		}
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		// Issue #147: capture the session context for the completion-push subscriber.
 		sessionCtx = ctx;
@@ -3874,6 +3983,10 @@ export default function (pi: ExtensionAPI) {
 		// F5/F9: Safe state restoration with type guards
 		state.restoreFromSession(ctx);
 
+		// Option B U1: reap a dead conductor's orphaned children and mark the
+		// records interrupted BEFORE anything else touches their worktrees.
+		await performBootRecovery(pi, ctx);
+
 		updateStatus(state, ctx);
 	});
 
@@ -3882,6 +3995,14 @@ export default function (pi: ExtensionAPI) {
 		log.info("Session shutting down", {
 			activeSubagents: state.activeSubagents,
 		});
+
+		// Option B U1: reap in-flight foreground children first, so a clean exit
+		// never orphans a subprocess (the crash case is covered by boot recovery).
+		try {
+			await reapActiveChildren(log);
+		} catch (err) {
+			log.warn("Shutdown reap failed", { error: (err as Error).message });
+		}
 
 		// Clear all live subagent sessions
 		state.subagentSessions.clear();
