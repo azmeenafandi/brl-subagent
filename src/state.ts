@@ -70,14 +70,21 @@ export const STALE_FINALIZE_GRACE_MS = POLLER_TICK_MS + 1000;
 
 /**
  * Terminal-preferring run-entry lookup — the ONE implementation of the
- * preference rule.
+ * preference rule. Recovery's `dedupeRunEntriesById` delegates here, so the
+ * boot scan and every display/retry lookup agree by construction.
  *
  * Each run writes TWO custom entries sharing its id, in append order: a spawn
  * entry (status "running", carrying `originalParams`) FIRST, then the final
  * entry (status "done"/"failed", stamped with fullOutput/cost/duration) at
- * settle. Prefer the terminal entry; when none is terminal yet, fall back to
- * the first match (the pre-finalize spawn shape). Returns undefined when no
- * entry matches.
+ * settle. Preference, in order:
+ *
+ *   1. a TERMINAL entry (status !== "running") — the run is resolved;
+ *   2. among non-terminal entries, one carrying the D3 `interruptedAt` mark —
+ *      append-only stores keep the original spawn entry forever, so the marked
+ *      clone is the authoritative RECOVERED state U3's shared lookup reads;
+ *   3. otherwise the first match (the pre-finalize spawn shape).
+ *
+ * Returns undefined when no entry matches.
  */
 export function resolveTerminalRunEntry(
 	entries: SubagentRun[],
@@ -85,7 +92,11 @@ export function resolveTerminalRunEntry(
 ): SubagentRun | undefined {
 	const matching = entries.filter((r) => r.id === id);
 	if (matching.length === 0) return undefined;
-	return matching.find((r) => r.status !== "running") ?? matching[0];
+	return (
+		matching.find((r) => r.status !== "running") ??
+		matching.find((r) => r.interruptedAt) ??
+		matching[0]
+	);
 }
 
 /**

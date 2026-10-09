@@ -41,6 +41,7 @@ import {
 	type RecoveryRecord,
 } from "../recovery";
 import { isInterruptedRun, isSubagentRunShape, type SubagentRun } from "../types";
+import { resolveTerminalRunEntry } from "../state";
 import { CHILD_MARKER_ENV_KEY } from "../sanitize";
 import { activeChildCount, reapActiveChildren, runSubagent } from "../runner";
 import { listPersistedAgents, markAgentInterrupted } from "../session-manager";
@@ -241,6 +242,23 @@ describe("run-entry dedupe before the scan", () => {
 
 	it("prefers an interrupted mark over the unmarked spawn entry", () => {
 		expect(dedupeRunEntriesById([spawnEntry, markedEntry])).toEqual([markedEntry]);
+	});
+
+	it("B1: dedupe and resolveTerminalRunEntry agree on the marked-vs-spawn pair", () => {
+		// The historical duplicate rule picked the marked clone while the shared
+		// resolver picked the unmarked spawn. The rule is now ONE: among
+		// non-terminal entries the `interruptedAt` clone wins, so U3's shared
+		// lookup reads the recovered state.
+		const resolved = resolveTerminalRunEntry([spawnEntry, markedEntry], "r");
+		const deduped = dedupeRunEntriesById([spawnEntry, markedEntry]);
+		expect(resolved).toBe(markedEntry);
+		expect(resolved?.interruptedAt).toBe("2026-10-09T01:00:00.000Z");
+		expect(deduped).toEqual([resolved]);
+	});
+
+	it("a terminal entry still beats both the spawn and the interrupted clone", () => {
+		expect(dedupeRunEntriesById([spawnEntry, markedEntry, terminalEntry])).toEqual([terminalEntry]);
+		expect(resolveTerminalRunEntry([spawnEntry, markedEntry, terminalEntry], "r")).toBe(terminalEntry);
 	});
 
 	it("a completed run is never marked (terminal entry wins over the stale spawn)", async () => {

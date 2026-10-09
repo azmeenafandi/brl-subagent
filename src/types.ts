@@ -734,8 +734,10 @@ export interface BackgroundAgent {
 	/** @internal — session reference for live monitor polling */
 	_sessionRef?: import('@earendil-works/pi-coding-agent').AgentSession;
 	// Option B U1 (D3/D4): additive durability identity, mirroring SubagentRun.
-	// Background records carry dispatchId/owner/attempt (no childMarker — there
-	// is no child process; the session is in-process).
+	// Background records carry dispatchId/owner/attempt. `childMarker` is
+	// declared for round-trip tolerance with the run-record/agent-record JSON
+	// shape (`isSubagentRunShape`) — no background path sets it, because the
+	// session is in-process and has no child process to mark.
 	dispatchId?: string;
 	resumeOf?: string;
 	attempt?: number;

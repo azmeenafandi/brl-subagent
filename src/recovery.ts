@@ -45,6 +45,7 @@ import type { ProcessOwner, SubagentRun } from "./types";
 import { SIGKILL_GRACE_MS } from "./types";
 import { CHILD_MARKER_ENV_KEY } from "./sanitize";
 import { listInflightRuns } from "./run-registry";
+import { resolveTerminalRunEntry } from "./state";
 import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
@@ -132,33 +133,28 @@ export function newDispatchIdentity(source: SubagentRun | undefined): {
 }
 
 /**
- * Collapse run entries to ONE per id before the scan. Preference order:
- *
- *   1. a TERMINAL entry (status !== "running") — the run is resolved, so the
- *      stale spawn entry sharing its id must never be re-marked as interrupted;
- *   2. an entry that already carries the D3 `interruptedAt` mark — append-only
- *      stores keep the original spawn entry forever, so the marked clone is the
- *      authoritative one (otherwise every boot re-marks the spawn entry);
- *   3. otherwise the first entry seen.
+ * Collapse run entries to ONE per id before the scan, using the ONE shared
+ * preference rule (`resolveTerminalRunEntry`, src/state.ts): terminal-first;
+ * among non-terminal entries the D3 `interruptedAt` mark wins over the
+ * original spawn entry; otherwise the first entry seen. Ids keep their
+ * first-seen order. Delegating keeps the recovery scan and U3's display/retry
+ * lookup from diverging (the historical duplicate rule picked the marked clone
+ * while the resolver picked the unmarked spawn).
  */
 export function dedupeRunEntriesById(runs: SubagentRun[]): SubagentRun[] {
-	const byId = new Map<string, SubagentRun>();
+	const ids: string[] = [];
+	const seen = new Set<string>();
 	for (const run of runs) {
-		const existing = byId.get(run.id);
-		if (!existing) {
-			byId.set(run.id, run);
-			continue;
-		}
-		const existingTerminal = existing.status !== "running";
-		const runTerminal = run.status !== "running";
-		if (!existingTerminal && runTerminal) {
-			byId.set(run.id, run);
-			continue;
-		}
-		if (existingTerminal && !runTerminal) continue;
-		if (!existing.interruptedAt && run.interruptedAt) byId.set(run.id, run);
+		if (seen.has(run.id)) continue;
+		seen.add(run.id);
+		ids.push(run.id);
 	}
-	return [...byId.values()];
+	const collapsed: SubagentRun[] = [];
+	for (const id of ids) {
+		const resolved = resolveTerminalRunEntry(runs, id);
+		if (resolved) collapsed.push(resolved);
+	}
+	return collapsed;
 }
 
 // ---------------------------------------------------------------------------
