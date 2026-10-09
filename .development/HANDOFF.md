@@ -115,7 +115,7 @@ temp dir, not a missing `afterAll`); item 3 sourced to the **TypeScript 7 native
 `.development/investigations/277-context-canceled/`; optional lever = one long-lived `API` in
 `scripts/ts-ast.mjs`. None block a release. Any reviewer dispatch uses `deepseek/deepseek-flash`.
 
-**Graph (2026-10-08):** the post-#290 refresh was refused a 4th time — and now required **BOTH** force flags
+**Graph (2026-10-08/09):** the post-#290 refresh was refused a 4th time — and now required **BOTH** force flags
 (`--allow-partial`: unverified semantic shrink of `HANDOFF.md`, 25→18; `--allow-dedup-shrink`: 2 merged nodes,
 one fuzzy). Forced only after attributing the reduction to docs/reference-side variance (the merge touched
 `package.json` + lockfile, no `src/`), then `graph-check.py` re-verified 34/34 modules + 322/322 symbols — graph
@@ -126,7 +126,11 @@ merge itself (PR #291, docs-only)**: unverified semantic shrink of `FRICTION_LOG
 (16→9) — both files GREW that day, so pure LLM-extraction variance — net −20; forced with `--allow-partial`
 only, re-verified 34/34 + 0/322; graph now **1470 nodes / 3271 links**. Window tally: **5 refusals, 0 involving
 `src/` structure** — the alternative that cannot exhibit this class shipped its evidence in the merge that
-exhibited it. Earlier day pattern (2026-10-06): 3 refusals (post-#278
+exhibited it. **#6 (2026-10-09, PR #293, docs-only — the durability assessment):** three docs shrank
+(FRICTION_LOG 22→7, HANDOFF 10→4, SKILL 30→23), net −15 (1528→1513), again **both flags**; and the mtime
+freshness check flagged STALE purely because the auto-sync probe's restored `src/paths.ts` touch bumped its
+mtime with content unchanged — the exact class `codegraph-check.py`'s `indexed_at_commit == HEAD` assertion
+removes. **Tally: 6 refusals, 0 with `src/` structure; graph now 1513 / 3323.** Earlier day pattern (2026-10-06): 3 refusals (post-#278
 dedup → `--allow-dedup-shrink`; post-#279 incomplete docs pass → from-scratch rebuild; post-#286 net −1 →
 `--allow-partial` + coverage check) and 4 clean passes. Pre-rebuild 1530-node graph kept at
 `graphify-out/graph.json.pre-276-rebuild`.
@@ -173,6 +177,15 @@ deliberate bumps — `pnpm add -g @colbymchenry/codegraph@<v>` → full `codegra
 `codegraph upgrade --check` is the awareness command; never `codegraph upgrade` while pnpm-managed.
 Install layout: registry route (per-platform optional-dep carrying the vendored Node runtime; no postinstall
 script); the GitHub-releases download fallback exists but is unused here.
+
+**Durability decision (2026-10-09):** delegated design investigation (`pi-durable` fit → PR #293, merge
+`5f73608`) — the user approved **Option B (mine the patterns)**: idempotent `dispatchId` + intent-before-effect
+run records, `session_start` recovery, per-step checkpoints, a task-graph-style TUI panel (~3–5 C1/C2 PRs),
+with Option C (wait/watch) as the revisit trigger for Option A. Falsifiers that would flip to A are in the doc
+(pi-durable leaving Experimental AND the published coding-agent depending on it; a spike proving
+approval-as-hook + cheap TUI attach; or B's crash harness collapsing). Key evidence: crash → `resume()`
+confirmed on SQLite + JSONL; **`resume` ≠ `retry`** — the parked background-retries decision stays open.
+Implementation not started; the doc carries the 7-step execution sketch for a future spec.
 
 ## Cockpit layout (moved 2026-09-30)
 
