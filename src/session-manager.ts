@@ -11,7 +11,8 @@ import { createEvent } from './event-bus';
 import { assertSafeAgentId, sanitizeErrorMessage } from './sanitize';
 import { wrapTask } from './prompt';
 import { createLogger } from './logging';
-import { getCurrentBranch, createWorkBranch, captureDiff, switchToBranch, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
+import { getCurrentBranch, getHeadState, restoreHead, createWorkBranch, captureDiff, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
+import type { HeadState } from './git';
 import { normalizeTimeout, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
 import { currentProcessOwner } from './recovery';
 import { persistRunRecord } from './run-registry';
@@ -729,7 +730,7 @@ export async function spawnBackgroundSession(
   // hard failure — never spawn an unisolated background agent that was asked
   // for isolation (fail-loud, same principle as foreground's fallback but
   // background cannot warn-and-continue safely).
-  let originalBranch: string | undefined;
+  let headState: HeadState | undefined;
   let workBranchName: string | undefined;
   let releaseGitLock: (() => void) | undefined;
   const gitCwd = params.cwd ?? ctx.cwd;
@@ -764,13 +765,13 @@ export async function spawnBackgroundSession(
           'requesting background gitMode=branch isolation'
         );
       }
-      originalBranch = getCurrentBranch(gitCwd);
-      const branchResult = createWorkBranch(gitCwd, originalBranch);
+      headState = getHeadState(gitCwd);
+      const branchResult = createWorkBranch(gitCwd, headState.sha);
       if (branchResult.ok) {
         workBranchName = branchResult.branch;
         log.info('Created work branch for background agent', {
           branch: workBranchName,
-          base: originalBranch,
+          base: headState.branch,
           agentId: id,
         });
       } else {
@@ -808,7 +809,7 @@ export async function spawnBackgroundSession(
   // uncommitted edits would leak into the base working tree on switch —
   // commitAll first makes the diff real and the switch clean.
   const cleanupWorkBranch = (): { gitBranch?: string; gitDiff?: string } => {
-    if (!workBranchName || !originalBranch) return {};
+    if (!workBranchName || !headState) return {};
     const info: { gitBranch?: string; gitDiff?: string } = { gitBranch: workBranchName };
     // The lock MUST be released on every exit path — early returns included.
     try {
@@ -846,7 +847,7 @@ export async function spawnBackgroundSession(
             if (workingDiff) info.gitDiff = workingDiff;
           }
         }
-        const diffResult = captureDiff(gitCwd, originalBranch);
+        const diffResult = captureDiff(gitCwd, headState.sha);
         if (diffResult.ok && diffResult.diff.trim()) {
           // Merge committed + working diffs — either can exist alone.
           info.gitDiff = info.gitDiff
@@ -857,9 +858,12 @@ export async function spawnBackgroundSession(
         log.warn(`captureDiff failed for background agent ${id}`, { error: (err as Error).message });
       }
       try {
-        switchToBranch(gitCwd, originalBranch);
+        const restoreResult = restoreHead(gitCwd, headState);
+        if (!restoreResult.ok) {
+          log.warn(`restoreHead failed for background agent ${id}`, { error: restoreResult.error });
+        }
       } catch (err) {
-        log.warn(`switchToBranch failed for background agent ${id}`, { error: (err as Error).message });
+        log.warn(`restoreHead failed for background agent ${id}`, { error: (err as Error).message });
       }
       try {
         deleteBranch(gitCwd, workBranchName);

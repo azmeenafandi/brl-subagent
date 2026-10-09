@@ -27,6 +27,8 @@ import { createTempGitRepo, gitRun as run } from "./fixtures/temp-git-repo";
 
 import {
 	getCurrentBranch,
+	getHeadState,
+	restoreHead,
 	hasUncommittedChanges,
 	createWorkBranch,
 	captureDiff,
@@ -255,6 +257,63 @@ describe("git.ts real-git behavior (Gate A)", () => {
 			switchToBranch(repo, "main");
 			deleteBranch(repo, branch2);
 			await rm(join(repo, "seq.txt"), { force: true });
+		});
+	});
+
+	// #302: a spawn from a DETACHED HEAD used to capture "HEAD" as the original
+	// branch, so teardown ran `git checkout HEAD` (a no-op that stays on the
+	// work branch) and `git branch -D` then failed — leaking the branch and
+	// leaving the tree moved. HeadState captures the sha + attached-ness so
+	// teardown can re-detach instead.
+	describe.skipIf(!GIT_OK)("#302 detached-HEAD teardown", () => {
+		it("getHeadState reports the branch + sha when attached", () => {
+			switchToBranch(repo, "main");
+			const state = getHeadState(repo);
+			expect(state.detached).toBe(false);
+			expect(state.branch).toBe("main");
+			expect(state.sha).toBe(run(repo, ["rev-parse", "HEAD"]));
+		});
+
+		it("getHeadState reports the sha + detached on a detached HEAD", () => {
+			const head = run(repo, ["rev-parse", "HEAD"]);
+			run(repo, ["checkout", "-q", "--detach", head]);
+
+			const state = getHeadState(repo);
+			expect(state.detached).toBe(true);
+			expect(state.sha).toBe(head);
+			// The label getCurrentBranch WOULD have captured — the pre-fix bug.
+			expect(state.branch).toBe("HEAD");
+			expect(getCurrentBranch(repo)).toBe("HEAD");
+
+			switchToBranch(repo, "main");
+		});
+
+		it("restoreHead re-detaches at the captured sha and the work branch then deletes", () => {
+			const start = run(repo, ["rev-parse", "HEAD"]);
+			run(repo, ["checkout", "-q", "--detach", start]);
+			const state = getHeadState(repo);
+
+			// The work branch is created from the detached start.
+			const created = createWorkBranch(repo, state.sha);
+			expect(created.ok).toBe(true);
+			const workBranch = created.ok ? created.branch : "";
+			expect(getCurrentBranch(repo)).toBe(workBranch);
+
+			// PRE-FIX teardown: `checkout HEAD` is a no-op that stays on the work
+			// branch, so the delete fails — the stranding mechanism.
+			expect(switchToBranch(repo, "HEAD").ok).toBe(true);
+			expect(getCurrentBranch(repo)).toBe(workBranch);
+			expect(deleteBranch(repo, workBranch).ok).toBe(false);
+
+			// FIXED teardown: re-detach at the captured sha, then delete succeeds.
+			expect(restoreHead(repo, state).ok).toBe(true);
+			const restored = getHeadState(repo);
+			expect(restored.detached).toBe(true);
+			expect(restored.sha).toBe(start);
+			expect(deleteBranch(repo, workBranch).ok).toBe(true);
+			expect(run(repo, ["branch", "--list", "brl-subagent-*"])).toBe("");
+
+			switchToBranch(repo, "main");
 		});
 	});
 });
