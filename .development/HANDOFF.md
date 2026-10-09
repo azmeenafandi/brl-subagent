@@ -48,6 +48,10 @@ format, no extension-API changes and no migration doc — its defaults changed T
   rule narratives). Reviewed honestly: the first pass overstated preservation (“nothing deleted”) — the
   completion pass (`89f804f`) restored the full verbatim rule narratives and three dropped index details;
   verified 18/18 narrative rule blocks verbatim, all 21 rules intact in order.
+- **Glossary started (2026-10-09)** — `.development/GLOSSARY.md`: plain-language definitions for terms that
+  earned their keep (first entries: oracle, ground truth, spec, backstop, invariant, ratchet, regression,
+  linter, ADR). Added at the maintainer's request — entries are added/refreshed whenever a term causes
+  confusion or becomes load-bearing.
 
 **Hygiene done 2026-10-04:** GitHub *auto-delete head branches* is **OFF** (`delete_branch_on_merge=false`);
 `worktree-cleanup.sh` now auto-derives the branch and deletes **local + remote** heads (never `dev`/`main`)
