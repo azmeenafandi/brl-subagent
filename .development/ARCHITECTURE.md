@@ -70,6 +70,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `git.ts` | Branch-based git workflow for worktree runs: branch creation, diff capture, switch-back, cleanup. |
 | `history.ts` | Run-record store: creation, finalization, retry lookup, and history pruning. |
 | `index.ts` | Entry point: tool/command registration, the delegate_task handlers, and the execution-mode runners. |
+| `kill-escalation.ts` | The one SIGTERM → grace → SIGKILL escalation shared by foreground reap, abort/timeout, and boot recovery. |
 | `logging.ts` | Leveled structured logging with file output and rotation under `.pi/subagent-logs/`. |
 | `messaging.ts` | Inter-subagent messaging: the Intercom channel and `[TO:id]` output parsing. |
 | `metrics.ts` | SLA metrics over run history: p50/p95/p99 latency, success and cost rates, degradation detection. |
@@ -80,9 +81,13 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `preflight.ts` | Pre-spawn environment checks: pi binary, temp-dir writability, cwd readability. |
 | `prelude.ts` | Shared guard/validation prelude opening every delegation mode (cost gate, approval, H1 validation, dispatch guards). |
 | `presets.ts` | Preset loading, parsing, validation, and the file-backed custom-preset tier. |
+| `proc.ts` | Production process primitives — Linux/POSIX /proc reads, feature detection, and the default recovery deps. |
 | `prompt.ts` | Builds the subagent system prompt, including the task fence and inherited-instruction handling. |
+| `recovery-engine.ts` | Pure recovery decision engine — identity, owner liveness classification, and the boot-scan plan over injected process deps. |
+| `recovery.ts` | Boot-time recovery scan — decides whether a persisted running record is live, reaps orphaned children, and marks interrupted records. |
 | `reports.ts` | Compliance reporting: file-access records and secrets-exposure detection. |
 | `router.ts` | Auto-route: keyword classification of a task description to the best preset. |
+| `run-registry.ts` | Durable per-run in-flight registry + the single run-record persist choke point that mirrors into it. |
 | `runner.ts` | Foreground execution: spawns the `pi` subprocess, parses its JSON-line stream, and folds usage. |
 | `sanitize.ts` | Input validation, environment allowlisting, and output sanitization (task, cwd, outputFile, agent ids). |
 | `scheduler.ts` | Dependency-graph scheduler: cycle detection, topological waves, and graph validation. |
@@ -99,7 +104,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**34 modules** — every one is listed because a new module without a purpose fails CI.
+**39 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

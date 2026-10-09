@@ -14,7 +14,7 @@
 - **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and a 30-minute default deadline for runs that don't set one. Nothing orphans; nothing leaks.
 - **Preset-driven tool scoping** — every subagent runs with exactly the tools its job needs, restricted by preset or per-call `tools`/`excludeTools`, with auto-route that picks the right preset when you don't.
 - **Templates with slots** — saved, file-backed task templates with `${param}` placeholders for workflows you run again and again.
-- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence, and a 1200+ test suite pinning every contract against the real pi SDK.
+- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence, and a 1300+ test suite pinning every contract against the real pi SDK.
 
 ---
 

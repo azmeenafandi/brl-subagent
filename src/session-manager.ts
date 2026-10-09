@@ -1,9 +1,9 @@
 // Purpose: Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths.
 import { randomUUID } from 'crypto';
 import { join } from 'path';
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
-import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
+import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -13,6 +13,8 @@ import { wrapTask } from './prompt';
 import { createLogger } from './logging';
 import { getCurrentBranch, createWorkBranch, captureDiff, switchToBranch, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
 import { normalizeTimeout, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
+import { currentProcessOwner } from './recovery';
+import { persistRunRecord } from './run-registry';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -134,6 +136,51 @@ export function getAgent(id: string): BackgroundAgent | null {
     return null;
   }
   return agents.get(id) || loadAgent(id);
+}
+
+/**
+ * Option B U1: every agent record persisted on disk (cross-session — the
+ * `.pi/subagents/` store survives a process death; the conductor's session run
+ * entries do not). Used by boot recovery to find records stuck `running`.
+ * Unreadable/corrupt files and unsafe ids are skipped, never thrown.
+ */
+export function listPersistedAgents(): BackgroundAgent[] {
+  let files: string[];
+  try {
+    if (!existsSync(STORAGE_DIR)) return [];
+    files = readdirSync(STORAGE_DIR);
+  } catch {
+    return [];
+  }
+  const records: BackgroundAgent[] = [];
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    const id = file.slice(0, -'.json'.length);
+    try {
+      assertSafeAgentId(id);
+    } catch {
+      continue;
+    }
+    const record = loadAgent(id);
+    if (record) records.push(record);
+  }
+  return records;
+}
+
+/**
+ * Option B U1 (D3): read-modify-write the interrupted mark onto a persisted
+ * agent record. Idempotent: an already-marked record is returned unchanged.
+ * Returns null when the record does not exist.
+ */
+export function markAgentInterrupted(id: string, interruptedAt: string): BackgroundAgent | null {
+  const agent = getAgent(id);
+  if (!agent) return null;
+  if (!agent.interruptedAt) {
+    agent.interruptedAt = interruptedAt;
+    agents.set(id, agent);
+    persistAgent(agent);
+  }
+  return agent;
 }
 
 /**
@@ -357,6 +404,11 @@ export async function spawnBackgroundSession(
     /** Issue #114: per-unit priority — recorded on the run entry + agent record
      *  so the drill-in header and history carry it (absent → no segment). */
     priority?: string;
+    /** Option B U1: durability identity. A retry inherits the original's
+     *  dispatchId and records resumeOf/attempt; a fresh dispatch omits them. */
+    dispatchId?: string;
+    resumeOf?: string;
+    attempt?: number;
   }
 ): Promise<BackgroundAgent> {
   // Serialize access to pi API to prevent concurrent import races
@@ -467,6 +519,13 @@ export async function spawnBackgroundSession(
   // Set session name
   session.setSessionName(`background-${id.slice(0, 8)}`);
   
+  // Option B U1: durability identity. Background runs have no child process
+  // (the session is in-process), so there is no childMarker — only the owner
+  // identity that a boot scan uses to tell a live conductor from a dead one.
+  const dispatchId = params.dispatchId ?? generateUUID();
+  const attempt = params.attempt ?? 1;
+  const owner = currentProcessOwner();
+
   // Create agent record
   const agent: BackgroundAgent = {
     id,
@@ -479,6 +538,10 @@ export async function spawnBackgroundSession(
     model: params.model || 'unknown',
     thinkingLevel: params.thinkingLevel || 'medium',
     priority: params.priority,
+    dispatchId,
+    resumeOf: params.resumeOf,
+    attempt,
+    owner,
   };
   
   agents.set(id, agent);
@@ -504,8 +567,12 @@ export async function spawnBackgroundSession(
     priority: params.priority,
     startedAt: new Date().toISOString(),
     originalParams: params.originalParams,
+    dispatchId,
+    resumeOf: params.resumeOf,
+    attempt,
+    owner,
   };
-  pi.appendEntry(CUSTOM_ENTRY_TYPES.run, run);
+  persistRunRecord(pi, run, "background");
 
   // Issue #98: keep the session run entry in lockstep with the agent record —
   // every terminal branch that flips agent.status also finalizes the run entry
@@ -574,7 +641,7 @@ export async function spawnBackgroundSession(
           ? { ...(run.originalParams ?? {}), errorCategory }
           : run.originalParams,
     };
-    pi.appendEntry(CUSTOM_ENTRY_TYPES.run, entry);
+    persistRunRecord(pi, entry);
     // Issue #179 (D6): the explicit settle line — the log's job is to record the
     // CLASSIFIED OUTCOME, which cwd alone can never convey.
     log.info("Background run settled", {

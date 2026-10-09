@@ -30,6 +30,7 @@ import type {
 } from "./types";
 import { getFinalOutput, classifyError } from "./types";
 import { snapshotOriginalParams } from "./params";
+import { currentProcessOwner } from "./recovery";
 import { capOutput, stripAnsi, buildCrashResult } from "./sanitize";
 import { finalizeRunRecord, pruneSessionRuns } from "./history";
 import type { Logger } from "./logging";
@@ -123,6 +124,13 @@ export function createUnitRun(
 		// same priority the run entry itself carried.
 		priority: source.priority ?? priorityFloor,
 		startedAt: new Date().toISOString(),
+		// Option B U1: durability identity. Fan-out units are never a retry
+		// target (a retried unit degrades to a single foreground run), so a
+		// fresh dispatchId/attempt=1 and a fresh child marker always apply.
+		dispatchId: crypto.randomUUID(),
+		attempt: 1,
+		owner: currentProcessOwner(),
+		childMarker: crypto.randomUUID(),
 		// The execution-shape fields (background/gitMode/approvalMode/force) are
 		// deliberately omitted: a fan-out unit retries as a SINGLE run, so it must
 		// not inherit the fan-out's background-ness. A retry that wants background

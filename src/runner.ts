@@ -26,6 +26,7 @@ import type {
 import {
 	EMPTY_USAGE,
 	SIGKILL_GRACE_MS,
+	SIGKILL_POLL_MS,
 	TEMP_FILE_MODE,
 	MAX_TEMP_DIR_AGE_MS,
 	isProviderError,
@@ -33,7 +34,8 @@ import {
 	SUBAGENT_ABORTED_MESSAGE,
 	SUBAGENT_SIGNAL_KILLED_MESSAGE,
 } from "./types";
-import { getSafeEnv, DEPTH_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
+import { escalateKill, type EscalationTarget } from "./kill-escalation";
+import { getSafeEnv, DEPTH_ENV_KEY, CHILD_MARKER_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
 import { extractMessages, formatPendingMessages } from "./messaging";
@@ -42,6 +44,96 @@ import type {
 	TranscriptContentBlock,
 	TranscriptToolCallBlock,
 } from "./transcript-tail";
+// ---------------------------------------------------------------------------
+// In-flight child registry (Option B U1)
+// ---------------------------------------------------------------------------
+
+/**
+ * One tracked foreground child. The registry is keyed by a UNIQUE internal
+ * spawn token (B5), never by the caller marker: two concurrent children may
+ * legitimately share a marker, and a marker-keyed map would collapse them —
+ * the first close would untrack the still-live second. `marker` is retained on
+ * the entry so reap/kill can still identify children by their caller marker.
+ */
+interface ActiveChild {
+	proc: ChildProcess;
+	/** The caller-supplied child marker, when one was supplied. */
+	marker?: string;
+}
+
+/**
+ * Foreground child processes currently in flight, keyed by a process-unique
+ * spawn token. `reapActiveChildren` terminates every entry on `session_shutdown`
+ * so a clean extension exit never leaves an orphaned `pi` subprocess burning
+ * tokens.
+ *
+ * The registry is process-local and best-effort: a hard `kill -9` of the
+ * conductor cannot run this handler, which is exactly the case the boot scan
+ * (`src/recovery.ts`) covers on the next start.
+ */
+const activeChildren = new Map<string, ActiveChild>();
+
+/** Monotonic counter making every registry key unique (B5). */
+let spawnTokenSeq = 0;
+
+/** TEST-ONLY: how many foreground children are currently registered. */
+export function activeChildCount(): number {
+	return activeChildren.size;
+}
+
+/** True once the child has really exited (a signal was delivered is not enough). */
+function childExited(proc: ChildProcess): boolean {
+	return proc.exitCode !== null || proc.signalCode !== null;
+}
+
+/** Default real sleep between SIGTERM and the escalation re-check. */
+const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Escalation target for one spawned child. `verifyDeath` is the real-exit check
+ * for the reap path, and the historical signal-delivered check (`child.killed`)
+ * for the single-child abort/timeout paths.
+ */
+function childTarget(proc: ChildProcess, verifyDeath: () => boolean = () => childExited(proc)): EscalationTarget {
+	return {
+		terminate: () => {
+			proc.kill("SIGTERM");
+		},
+		forceKill: () => {
+			proc.kill("SIGKILL");
+		},
+		verifyDeath,
+	};
+}
+
+/**
+ * Terminate every registered in-flight child: SIGTERM all, wait up to the shared
+ * grace period (returning as soon as every child is dead — B4), then SIGKILL any
+ * survivor. Returns the pids targeted. Safe to call when nothing is in flight.
+ */
+export async function reapActiveChildren(log?: Logger): Promise<number[]> {
+	const pids: number[] = [];
+	const targets: EscalationTarget[] = [];
+	for (const [token, entry] of activeChildren) {
+		if (entry.proc.pid === undefined) {
+			activeChildren.delete(token);
+			continue;
+		}
+		pids.push(entry.proc.pid);
+		targets.push(childTarget(entry.proc));
+	}
+	if (targets.length === 0) return [];
+
+	await escalateKill(targets, {
+		graceMs: SIGKILL_GRACE_MS,
+		pollMs: SIGKILL_POLL_MS,
+		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+	});
+
+	log?.info("Reaped in-flight subagent children", { pids });
+	return pids;
+}
+
 // ---------------------------------------------------------------------------
 // Pi binary resolution
 // ---------------------------------------------------------------------------
@@ -242,10 +334,12 @@ function attachAbortHandler(
 		// blind kill with no result access at all.
 		result.errorMessage = SUBAGENT_ABORTED_MESSAGE;
 		result.errorCategory = "aborted";
-		proc.kill("SIGTERM");
-		setTimeout(() => {
-			if (!proc.killed) proc.kill("SIGKILL");
-		}, SIGKILL_GRACE_MS);
+		// Historical single-child semantics preserved: `child.killed` (a signal was
+		// delivered) is the death check, so a delivered SIGTERM skips the SIGKILL.
+		void escalateKill([childTarget(proc, () => Boolean(proc.killed))], {
+			graceMs: SIGKILL_GRACE_MS,
+			sleep: realSleep,
+		});
 	};
 	if (signal.aborted) killProc();
 	else signal.addEventListener("abort", killProc, { once: true });
@@ -760,6 +854,7 @@ export async function runSubagent(
 	depth?: number,
 	intercom?: Intercom,
 	subagentId?: string,
+	childMarker?: string,
 ): Promise<SubagentResult> {
 	// E10: Inject pending intercom messages into the task prompt
 	if (intercom && subagentId && intercom.hasMessages(subagentId)) {
@@ -811,14 +906,28 @@ ${msgBlock}`;
 			const exitCode = await new Promise<number>((resolve) => {
 				const invocation = getPiInvocation(args);
 				const subDepth = depth !== undefined ? depth : undefined;
-				const envOverrides: Record<string, string> | undefined =
-					subDepth !== undefined ? { [DEPTH_ENV_KEY]: String(subDepth) } : undefined;
+				const envOverrides: Record<string, string> = {};
+				if (subDepth !== undefined) envOverrides[DEPTH_ENV_KEY] = String(subDepth);
+				// Option B U1: stamp the per-run marker so boot recovery can discover
+				// this child by scanning /proc/*/environ after a conductor crash.
+				if (childMarker) envOverrides[CHILD_MARKER_ENV_KEY] = childMarker;
+				const hasEnvOverrides = Object.keys(envOverrides).length > 0;
 				const proc = spawn(invocation.command, invocation.args, {
 					cwd,
 					shell: false,
 					stdio: ["ignore", "pipe", "pipe"],
-					env: getSafeEnv(envOverrides), // F2: Environment isolation + depth tracking
+					env: getSafeEnv(hasEnvOverrides ? envOverrides : undefined), // F2: Environment isolation + depth tracking
 				});
+
+				// Option B U1: register the child for shutdown reap. Keyed by the
+				// marker when present (guaranteed unique per run), else the intercom
+				// id, else a generated fallback.
+				// Option B U1 + B5: register the child under a UNIQUE spawn token, not the
+				// caller marker — two concurrent children may share a marker, and a
+				// marker-keyed map would collapse them (one close untracking the other).
+				// The marker is kept on the entry for reap/kill identification.
+				const registryToken = `spawn-${process.pid}-${++spawnTokenSeq}`;
+				activeChildren.set(registryToken, { proc, marker: childMarker });
 
 				let buffer = "";
 
@@ -836,6 +945,7 @@ ${msgBlock}`;
 				});
 
 				proc.on("close", (code, signal) => {
+					activeChildren.delete(registryToken);
 					if (buffer.trim()) {
 						parseSubagentLine(buffer, result, onUpdate, getFinalOutputFn, log);
 					}
@@ -859,6 +969,7 @@ ${msgBlock}`;
 				});
 
 				proc.on("error", (err) => {
+					activeChildren.delete(registryToken);
 					// F7 (issue #30): subprocess errors can embed the spawn command
 					// (absolute paths to the pi binary, temp files, cwd) — sanitize the
 					// errorMessage before it reaches the conductor. stderr is left RAW:
@@ -879,10 +990,11 @@ ${msgBlock}`;
 					const timer = setTimeout(() => {
 						result.errorMessage = `Subagent timed out after ${timeout}ms`;
 						log?.warn("Subagent timed out", { timeout, pid: proc.pid });
-						proc.kill("SIGTERM");
-						setTimeout(() => {
-							if (!proc.killed) proc.kill("SIGKILL");
-						}, SIGKILL_GRACE_MS);
+						// Same single-child death check as the abort path (see there).
+						void escalateKill([childTarget(proc, () => Boolean(proc.killed))], {
+							graceMs: SIGKILL_GRACE_MS,
+							sleep: realSleep,
+						});
 					}, timeout);
 					proc.on("close", () => clearTimeout(timer));
 				}

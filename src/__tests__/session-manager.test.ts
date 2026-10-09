@@ -90,6 +90,7 @@ vi.mock("../event-bus", () => ({
 }));
 
 import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus } from "../session-manager";
+import { listInflightRuns } from "../run-registry";
 import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
 import { CUSTOM_ENTRY_TYPES } from "../types";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
@@ -2287,5 +2288,24 @@ describe("steerAgent delivery (issue #241)", () => {
 
 		const entries = transcript.getTranscript(agent.id);
 		expect(entries.some((e) => e.content === "Steering: audit me")).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Option B U1: the background spawn mirrors its run into the durable registry
+// ---------------------------------------------------------------------------
+
+describe("Option B U1: background registry mirroring", () => {
+	it("registers an in-flight background entry (kind + owner), cleared at finalize", async () => {
+		// A never-resolving prompt keeps the run in flight so the registry entry
+		// is observable after spawn (the real registration is synchronous).
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "registry mirror",
+		});
+
+		const entry = listInflightRuns().find((e) => e.id === agent.id);
+		expect(entry?.kind).toBe("background");
+		expect(entry?.owner?.pid).toBe(process.pid);
 	});
 });

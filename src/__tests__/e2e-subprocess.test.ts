@@ -31,14 +31,22 @@ import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { readFile, unlink, rm } from "fs/promises";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import { resolvePiOnPath } from "../preflight";
+import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 const execFileAsync = promisify(execFile);
 
 const PROJECT_ROOT = join(__dirname, "..", "..");
 const TMP_SCRIPT_DIR = join(PROJECT_ROOT, ".tmp", "e2e-subprocess-tests");
+
+// Option B U1 test isolation: the extension runs in the spawned harness, so
+// its cwd-relative stores (`.pi/subagents`, `.pi/run-registry`, `.pi/output`)
+// follow the HARNESS cwd. Run the harness in a throwaway temp dir (created by
+// the shared temp-lifecycle helper) so a real checkout's `.pi/subagents` store
+// is never parsed and its records are never rewritten by boot recovery.
+const env = createTempEnv("brl-e2e-subprocess", { withCwd: true });
 
 // The committed, deterministic pi stand-in (issue #271).
 const STUB_PI_PATH = join(PROJECT_ROOT, "src", "__tests__", "fixtures", "stub-pi.mjs");
@@ -304,7 +312,9 @@ try {
 		const result = await execFileAsync("node", [scriptPath, JSON.stringify(params)], {
 			timeout: 30_000,
 			maxBuffer: 1024 * 1024,
-			cwd: PROJECT_ROOT,
+			// The harness cwd is the TEMP dir: the extension's cwd-relative
+			// stores resolve there, keeping the developer's checkout untouched.
+			cwd: env.testCwd,
 			// Issue #271: pin the subprocess command so the extension spawns the
 			// controlled child instead of re-running this harness.
 			env: { ...process.env, BRL_PI_BIN: PI_BIN },
@@ -363,6 +373,7 @@ describe("Tier 2: Subprocess integration tests", () => {
 	let canRun = false;
 
 	beforeAll(async () => {
+		env.setUp();
 		canRun = await canRunSubprocessTests();
 	});
 
@@ -370,6 +381,16 @@ describe("Tier 2: Subprocess integration tests", () => {
 		try {
 			await unlink("/tmp/test-e2e.txt");
 		} catch {}
+		await env.tearDown();
+	});
+
+	it("operates on the isolated temp store, not the checkout's .pi", async () => {
+		if (!canRun) return;
+		const result = await runDelegateTask({ task: "registry isolation" });
+		expect(result.exitCode).toBe(0);
+		// The foreground run registers (creating the dir) and clears at settle —
+		// the directory under the HARNESS cwd proves the temp store was used.
+		expect(existsSync(join(env.testCwd, ".pi", "run-registry"))).toBe(true);
 	});
 
 	it("chain mode executes sequentially", async () => {

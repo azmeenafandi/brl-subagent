@@ -23,6 +23,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { __setOutputDir } from "../../transcript";
 import { __setStorageDir } from "../../session-manager";
+import { __setRegistryDir } from "../../run-registry";
 import { setLogCwd } from "../../logging";
 
 export interface TempEnvOptions {
@@ -58,6 +59,7 @@ export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEn
 	let baseDir: string | undefined;
 	let outputDir: string | undefined;
 	let storageDir: string | undefined;
+	let registryDir: string | undefined;
 	let testCwd: string | undefined;
 
 	const remove = (dir: string | undefined): void => {
@@ -78,8 +80,10 @@ export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEn
 				: undefined;
 			outputDir = path.join(baseDir, "output");
 			storageDir = path.join(baseDir, "subagents");
+			registryDir = path.join(baseDir, "run-registry");
 			__setOutputDir(outputDir);
 			__setStorageDir(storageDir);
+			__setRegistryDir(registryDir);
 		},
 		async tearDown(): Promise<void> {
 			// Same order as setUp's crossing: clear -> drain -> remove.
@@ -90,6 +94,7 @@ export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEn
 			baseDir = undefined;
 			outputDir = undefined;
 			storageDir = undefined;
+			registryDir = undefined;
 			testCwd = undefined;
 		},
 		get baseDir(): string {
