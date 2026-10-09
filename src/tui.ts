@@ -2930,7 +2930,17 @@ export function renderDelegateResult(
 	}
 
 	// Single subagent mode (original)
-	if (!details || details.exitCode === -1) {
+	// Issue #206 introduced exitCode -1 as the UNSETTLED streaming sentinel, but
+	// issue #295 made a settled signal death ALSO settle at -1 (external kill,
+	// staged timeout, staged abort). The sentinel alone is therefore no longer a
+	// running marker: a settled result always carries an errorCategory
+	// (classifyError runs on every finalize), while a live partial does not. Keep
+	// the raw running text only for a genuine partial (or when no details exist);
+	// a classified -1 is a settled FAILURE and must take the verdict branch below
+	// (✗ + error line + expanded-transcript binding), never raw text.
+	const isUnsettledPartial =
+		!details || (details.exitCode === -1 && !details.errorCategory);
+	if (isUnsettledPartial) {
 		const text = result.content[0];
 		return new Text(text?.type === "text" ? text.text : "(running\u2026)", 0, 0);
 	}

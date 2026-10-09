@@ -19,7 +19,9 @@ vi.mock("node:child_process", () => ({
 
 import { runSubagent, getPiInvocation, parseSubagentLine, toTranscriptMessage, enrichFailureDiagnostics, LIVE_TRANSCRIPT_MAX_MESSAGES, LIVE_TRANSCRIPT_MAX_BYTES } from "../runner";
 import { wrapTask } from "../prompt";
-import type { SubagentResult } from "../types";
+import { finalizeRunRecord } from "../history";
+import { isSubagentError, SUBAGENT_SIGNAL_KILLED_MESSAGE } from "../types";
+import type { SubagentResult, SubagentRun } from "../types";
 
 /** Fake child process: emits close(0) so runSubagent resolves. */
 function fakeProc() {
@@ -685,5 +687,213 @@ describe("parseSubagentLine provider-error fallback (issue #120 Track 2)", () =>
 		expect(result.errorMessage).toBe("Connection error. (after 3 provider error turns)");
 		// The diagnostic survives onto the reclassified record.
 		expect(result.errorCategory).toBe("exit_error");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #295: a SIGKILL'd foreground subagent was finalized as a false 'done'
+// ---------------------------------------------------------------------------
+// The old close handler did `resolve(code ?? 0)`: a signal death (code === null)
+// fabricated exit 0, and with no terminal event + no stamped reason
+// `isSubagentError` returned false → `status: "done"` with empty output.
+//
+// The close handler now captures the signal, records the non-zero sentinel -1 on
+// any signal death (without clobbering a staged timeout/abort reason), and stamps
+// an external-kill message (→ classifyError 'crash') only when unstamped.
+
+describe("runSubagent signal-death classification (issue #295)", () => {
+	/** Fake proc: stdout data and close(code, signal) are fired on demand. */
+	function signalProc() {
+		const closeCbs: Array<(code: number | null, signal: string | null) => void> = [];
+		const dataCbs: Array<(d: Buffer) => void> = [];
+		const proc = {
+			stdout: {
+				on: vi.fn((event: string, cb: (d: Buffer) => void) => {
+					if (event === "data") dataCbs.push(cb);
+					return proc;
+				}),
+			},
+			stderr: { on: vi.fn() },
+			on: vi.fn((event: string, cb: (code?: number | null, signal?: string | null) => void) => {
+				if (event === "close") closeCbs.push(cb as (code: number | null, signal: string | null) => void);
+				return proc;
+			}),
+			kill: vi.fn(),
+			emitStdout(line: string) {
+				for (const cb of dataCbs) cb(Buffer.from(line));
+			},
+			emitClose(code: number | null, signal: string | null = null) {
+				for (const cb of closeCbs) cb(code, signal);
+			},
+		};
+		return proc;
+	}
+
+	function makeRun(id: string): SubagentRun {
+		return {
+			id,
+			task: `task-${id}`,
+			status: "running",
+			model: "test/provider",
+			thinkingLevel: "medium",
+			startedAt: new Date().toISOString(),
+		};
+	}
+
+	it("records a SIGKILL with no terminal event as crash with a non-zero exitCode", async () => {
+		const proc = signalProc();
+		mocks.spawn.mockReturnValue(proc as never);
+
+		const promise = runSubagent(
+			"/tmp/cwd",
+			"",
+			{ provider: "test", id: "m" },
+			"medium",
+			"task",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			() => "",
+		);
+		// Mid-run external SIGKILL: no output, no terminal event, code === null.
+		proc.emitClose(null, "SIGKILL");
+
+		const result = await promise;
+		expect(result.exitCode).toBe(-1); // non-zero sentinel, never a fabricated 0
+		expect(isSubagentError(result)).toBe(true);
+		expect(result.errorCategory).toBe("crash");
+		expect(result.errorMessage).toContain(SUBAGENT_SIGNAL_KILLED_MESSAGE);
+		expect(result.errorMessage).toContain("SIGKILL");
+	});
+
+	it("keeps the staged 'timeout' reason when our own SIGTERM reports code === null", async () => {
+		vi.useFakeTimers();
+		try {
+			const proc = signalProc();
+			mocks.spawn.mockReturnValue(proc as never);
+
+			const promise = runSubagent(
+				"/tmp/cwd",
+				"",
+				{ provider: "test", id: "m" },
+				"medium",
+				"task",
+				undefined,
+				undefined,
+				undefined,
+				5000,
+				() => "",
+			);
+			// Fire the deadline: stamps 'timed out' then SIGTERMs the child.
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(proc.kill).toHaveBeenCalledWith("SIGTERM");
+			// Our own SIGTERM also reports code === null at close.
+			proc.emitClose(null, "SIGTERM");
+
+			const result = await promise;
+			// The staged reason survives — the signal rule must NOT clobber it.
+			expect(result.errorMessage).toContain("timed out");
+			expect(result.errorCategory).toBe("timeout");
+			expect(result.exitCode).toBe(-1);
+			// The exact predicate retryOnTimeout keys on (src/index.ts).
+			expect(
+				isSubagentError(result) && result.errorMessage?.includes("timed out"),
+			).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps the staged 'aborted' reason when our own SIGTERM reports code === null", async () => {
+		const controller = new AbortController();
+		controller.abort(); // already aborted -> attachAbortHandler SIGTERMs immediately
+		const proc = signalProc();
+		mocks.spawn.mockReturnValue(proc as never);
+
+		const promise = runSubagent(
+			"/tmp/cwd",
+			"",
+			{ provider: "test", id: "m" },
+			"medium",
+			"task",
+			controller.signal,
+			undefined,
+			undefined,
+			undefined,
+			() => "",
+		);
+		proc.emitClose(null, "SIGTERM");
+
+		const result = await promise;
+		expect(result.errorMessage).toBe("Subagent aborted by user");
+		expect(result.errorCategory).toBe("aborted");
+		expect(result.exitCode).toBe(-1);
+	});
+
+	it("leaves a clean exit 0 with a terminal event as done", async () => {
+		const proc = signalProc();
+		mocks.spawn.mockReturnValue(proc as never);
+
+		const promise = runSubagent(
+			"/tmp/cwd",
+			"",
+			{ provider: "test", id: "m" },
+			"medium",
+			"task",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			() => "",
+		);
+		proc.emitStdout(
+			JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "all good" }],
+					stopReason: "stop",
+				},
+			}) + "\n",
+		);
+		proc.emitClose(0, null);
+
+		const result = await promise;
+		expect(result.exitCode).toBe(0);
+		expect(isSubagentError(result)).toBe(false);
+
+		const run = makeRun("clean");
+		finalizeRunRecord(run, result, "all good", Date.now());
+		expect(run.status).toBe("done");
+	});
+
+	it("finalizes empty output + a signal death as failed, never done", async () => {
+		const proc = signalProc();
+		mocks.spawn.mockReturnValue(proc as never);
+
+		const promise = runSubagent(
+			"/tmp/cwd",
+			"",
+			{ provider: "test", id: "m" },
+			"medium",
+			"task",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			() => "",
+		);
+		proc.emitClose(null, "SIGKILL");
+		const result = await promise;
+
+		// The probe's p2a3 scenario: no output, no terminal event. The old path
+		// produced status 'done' with an empty errorMessage ('unknown'); it must
+		// now be 'failed'.
+		expect(result.messages).toEqual([]);
+		const run = makeRun("sigkill-empty");
+		finalizeRunRecord(run, result, "", Date.now());
+		expect(run.status).toBe("failed");
+		expect(run.fullOutput).toBeUndefined();
 	});
 });

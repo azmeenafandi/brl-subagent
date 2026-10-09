@@ -31,6 +31,7 @@ import {
 	isProviderError,
 	classifyError,
 	SUBAGENT_ABORTED_MESSAGE,
+	SUBAGENT_SIGNAL_KILLED_MESSAGE,
 } from "./types";
 import { getSafeEnv, DEPTH_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
@@ -727,7 +728,7 @@ export function enrichFailureDiagnostics(result: SubagentResult, cwd?: string): 
 	// Track 1 already stamped an honest source (user abort / timeout) — that is
 	// authoritative and must not be overlaid with the provider-error fallback.
 	const msg = result.errorMessage.toLowerCase();
-	if (msg.includes("aborted") || msg.includes("timed out")) return;
+	if (msg.includes("aborted") || msg.includes("timed out") || msg.includes("killed by external signal")) return;
 	const errorTurns = countModelErrorTurns(result.messages);
 	if (errorTurns === 0) return;
 
@@ -834,12 +835,27 @@ ${msgBlock}`;
 					result.stderr += data.toString();
 				});
 
-				proc.on("close", (code) => {
+				proc.on("close", (code, signal) => {
 					if (buffer.trim()) {
 						parseSubagentLine(buffer, result, onUpdate, getFinalOutputFn, log);
 					}
-					log?.info("Subagent process exited", { exitCode: code, pid: proc.pid });
-					resolve(code ?? 0);
+					log?.info("Subagent process exited", { exitCode: code, signal, pid: proc.pid });
+					// Issue #295: Node gives NO numeric code for a signal death
+					// (code === null) — the old `code ?? 0` fabricated a clean exit and
+					// masked a SIGKILL'd run as a success. Always record the non-zero
+					// sentinel -1, REGARDLESS of whether a reason was already staged:
+					// our own timeout/abort SIGTERM/SIGKILL lands here with code === null
+					// too, and a masked 0 would hide it behind the same false 'done'.
+					result.exitCode = code === null ? -1 : code;
+					if (code === null && !result.errorMessage && !result.errorCategory) {
+						// No reason staged (a timeout/abort stamp already carries its own)
+						// — this was an external kill we did not initiate. Stamp the cause
+						// and the signal name; classifyError maps it to the existing
+						// "crash" category (no new ErrorCategory value).
+						result.errorMessage = `${SUBAGENT_SIGNAL_KILLED_MESSAGE} (${signal ?? "unknown"})`;
+						log?.warn("Subagent killed by external signal", { signal, pid: proc.pid });
+					}
+					resolve(result.exitCode);
 				});
 
 				proc.on("error", (err) => {
