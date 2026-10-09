@@ -40,7 +40,7 @@ import {
 	type RecoveryDeps,
 	type RecoveryRecord,
 } from "../recovery";
-import { isInterruptedRun, isSubagentRunShape, type SubagentRun } from "../types";
+import { isInterruptedRun, isSubagentRunShape, type ProcessOwner, type SubagentRun } from "../types";
 import { resolveTerminalRunEntry } from "../state";
 import { CHILD_MARKER_ENV_KEY } from "../sanitize";
 import { activeChildCount, reapActiveChildren, runSubagent } from "../runner";
@@ -171,6 +171,32 @@ describe("recovery decision matrix (pure)", () => {
 	it("no-owner: a record with no recorded owner is left untouched", () => {
 		const plan = decideRecovery(record({ childMarker: "m" }), makeDeps({ findByMarker: () => [1] }));
 		expect(plan).toEqual({ decision: "skip", reason: "no-owner" });
+	});
+
+	it("B3: absent owner skips and the kill path is never touched", async () => {
+		const kill = vi.fn();
+		const deps = makeDeps({ kill, findByMarker: () => [555] });
+		const outcome = await recoverRecord(record({ childMarker: "m" }), deps);
+		expect(outcome).toMatchObject({ decision: "skip", reason: "no-owner", reaped: [] });
+		expect(kill).not.toHaveBeenCalled();
+	});
+
+	it("B3: present-but-unparsable owner is mark-only (owner-unverifiable), never killed", async () => {
+		// The deliberate U1 split: a corrupt owner object still proves the run
+		// was interrupted, but ownership is unverifiable → mark, never reap.
+		const badOwners = [{}, { pid: "not-a-pid" }, { pid: 0 }, { pid: -5 }, { pid: NaN }, { pid: 1.5 }] as unknown as ProcessOwner[];
+		for (const owner of badOwners) {
+			const kill = vi.fn();
+			const deps = makeDeps({ kill, findByMarker: () => [555] });
+			expect(decideRecovery(record({ owner, childMarker: "m" }), deps)).toEqual({
+				decision: "mark",
+				reason: "owner-unverifiable",
+				reap: [],
+			});
+			const outcome = await recoverRecord(record({ owner, childMarker: "m" }), deps);
+			expect(outcome).toMatchObject({ decision: "mark", reason: "owner-unverifiable", reaped: [] });
+			expect(kill).not.toHaveBeenCalled();
+		}
 	});
 
 	it("recoverRecord escalates SIGTERM → SIGKILL for a survivor", async () => {

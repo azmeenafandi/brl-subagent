@@ -33,10 +33,22 @@
  * record that is alive but whose start token cannot be read is likewise left
  * untouched (reason `ownership-unverifiable`).
  *
- * A record with no `owner` at all is also left untouched (reason `no-owner`):
+ * A record with no `owner` at all is left untouched (reason `no-owner`):
  * ownership cannot be checked, so the safe choice is to do nothing. (This is
  * the conservative reading of the plan's "missing owner is treated as
  * interrupted" line — see the U1 report for the recorded deviation.)
+ *
+ * The `owner` policy is deliberately split in three:
+ *   - ABSENT owner → SKIP (`no-owner`): the maintainer-confirmed U1 policy —
+ *     nothing to verify, so do nothing.
+ *   - PRESENT but unparsable (missing/non-integer/non-positive pid: `{}`,
+ *     `"not-a-pid"`, `0`, `-5`, `NaN`, `1.5`) → MARK-ONLY (`owner-unverifiable`):
+ *     the run is definitely interrupted (no live process can carry that pid),
+ *     but ownership cannot be established, so the kill path is NEVER touched
+ *     (`reap: []`, zero kill calls).
+ *   - PARSABLE owner → `classifyOwner`: alive → skip; alive-but-token-unreadable
+ *     → skip (`ownership-unverifiable`); dead → mark and reap any
+ *     marker-verified orphan child.
  */
 
 import * as fs from "node:fs";
@@ -90,7 +102,7 @@ export type RecoverySkipReason =
 	| "owner-alive"
 	| "ownership-unverifiable";
 
-export type RecoveryMarkReason = "owner-dead" | "child-orphaned";
+export type RecoveryMarkReason = "owner-dead" | "child-orphaned" | "owner-unverifiable";
 
 /** What the engine decided to do with one record (before any process work). */
 export type RecoveryPlan =
@@ -178,14 +190,28 @@ export function classifyOwner(owner: ProcessOwner, deps: RecoveryDeps): OwnerSta
 }
 
 /**
+ * True when an owner carries a usable pid (positive integer). Anything else —
+ * a missing pid, a string, 0, a negative, NaN, a fraction — is UNPARSABLE
+ * ownership: the record is marked but the kill path is never touched.
+ */
+function hasParsableOwnerPid(owner: ProcessOwner): boolean {
+	return Number.isInteger(owner.pid) && owner.pid > 0;
+}
+
+/**
  * Decide what to do with one persisted record. Pure — no process is touched.
  * Reaping pids come ONLY from a marker scan: without a verified marker match
- * the engine never proposes a kill.
+ * the engine never proposes a kill. An unparsable owner is mark-only (see the
+ * module header's three-way owner policy): interrupt is certain, ownership is
+ * not, so `reap` is empty and the kill path stays untouched.
  */
 export function decideRecovery(record: RecoveryRecord, deps: RecoveryDeps): RecoveryPlan {
 	if (record.status !== "running") return { decision: "skip", reason: "not-running" };
 	if (record.interruptedAt) return { decision: "skip", reason: "already-interrupted" };
 	if (!record.owner) return { decision: "skip", reason: "no-owner" };
+	if (!hasParsableOwnerPid(record.owner)) {
+		return { decision: "mark", reason: "owner-unverifiable", reap: [] };
+	}
 
 	const ownerState = classifyOwner(record.owner, deps);
 	if (ownerState === "alive") return { decision: "skip", reason: "owner-alive" };
