@@ -159,11 +159,12 @@ never re-type their logic by hand. Full design:
     re-spawn, #98); (c) conductor re-dispatch — a fresh delegation; (d) user
     retry — not a thing for a connection-interrupted agent. Correct responses to
     a surfaced connection error: triage question first, then delay or fallback
-    model. **Dispatch-parameter clause:** NEVER set a timeout on
-    implementer/reviewer dispatches — completion time is unknowable, and a
-    time-limited agent risks losing all its work. Omit the timeout parameter
-    entirely (the default is no cap); the bound is the user's monitor + the
-    worktree oracle, never a clock.
+    model. **Dispatch-parameter clause:** NEVER set a timeout in the sense of a tight clock — completion time is
+    unknowable, and a time-limited agent risks losing all its work. FOREGROUND dispatches: omit the timeout
+    (no default cap). BACKGROUND dispatches: pass an explicit generous timeout (e.g. `86400000` = 24h) instead
+    of omitting — background runs default to a 30-minute deadline (`DEFAULT_BACKGROUND_DEADLINE_MS`, applied as
+    `spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS`), which cut the #295 review's mutation probes on
+    2026-10-09. The bound is the user's monitor + the worktree oracle, never a clock.
 19. **Coverage assertion (Rule 19 — the partial-read class).** A search or read
     whose silent truncation or filter boundary is read as completeness is this
     project's most recurrent defect class. Whenever a search, read or filter

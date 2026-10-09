@@ -52,6 +52,15 @@ format, no extension-API changes and no migration doc — its defaults changed T
   earned their keep (first entries: oracle, ground truth, spec, backstop, invariant, ratchet, regression,
   linter, ADR). Added at the maintainer's request — entries are added/refreshed whenever a term causes
   confusion or becomes load-bearing.
+- **#295 (BUG) — fixed & closed 2026-10-09**: PR #297 (merge `aec6659`) — a SIGKILLed foreground subagent was
+  finalized as a false `done` (signal death → fabricated exit 0 → category `unknown`). Now: signal captured,
+  `exitCode -1` sentinel on `code === null`, unstaged external kills stamped `SUBAGENT_SIGNAL_KILLED_MESSAGE`
+  → existing category `crash`, staged timeout/abort reasons preserved. Adversarial review (glm-5.3-flash,
+  2 runs due to the 30m background cap): `approve-with-nits`; mutation probes 4a/4b killed (sentinel and
+  classify rule both load-bearing); review finding F1 (settled signal-death runs took the TUI raw-text branch)
+  fixed in `c445625` with a mutation-pinned test. 61 files / 1265 tests. **#298 filed** (centralize the
+  partial-vs-settled predicate — `-1` is overloaded). Probe evidence:
+  `.development/investigations/option-b-probes-2026-10-09.md`.
 
 **Hygiene done 2026-10-04:** GitHub *auto-delete head branches* is **OFF** (`delete_branch_on_merge=false`);
 `worktree-cleanup.sh` now auto-derives the branch and deletes **local + remote** heads (never `dev`/`main`)
