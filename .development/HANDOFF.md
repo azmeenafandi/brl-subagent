@@ -199,7 +199,7 @@ Implementation not started; the doc carries the 7-step execution sketch for a fu
 (#294, `75f41b8`):** intent-before-effect already true on both paths; **#295** filed (SIGKILLed foreground
 subprocess finalizes as false `done`); **#296** filed (conductor death → orphaned child keeps running, entry
 stuck `running`); SDK resume is **file-backed only** (background `inMemory`, foreground `--no-session`) — a
-session-persistence decision joins the prerequisites. Next: fix **#295**, then the six decisions → spec. **Option B decision log: D1 LOCKED (2026-10-09) — file-backed sessions, staged **A₁** (persistence + retention, no resume logic; measure) → **A₂** (resume with guards); the torn-write probe addendum resolved the discovery risk.** D2–D6 pending.
+session-persistence decision joins the prerequisites. Next: fix **#295**, then the six decisions → spec. **Option B decision log: D1 LOCKED (2026-10-09) — file-backed sessions, staged **A₁** (persistence + retention, no resume logic; measure) → **A₂** (resume with guards); the torn-write probe addendum resolved the discovery risk.** **D2 LOCKED (2026-10-09) — recovery posture: session-scoped config in `/brl-subagent` (`offer` default | `auto` opt-in | `off`), plus a per-run posture snapshot at dispatch so `auto` survives a session boundary; one recovery path, phased `offer`/`off` → `auto` with its guard block (cost-cap accounting, reap-first, env-exists, per-boot cap, quiet-turn, P4 dedupe).** D3–D6 pending.
 
 ## Cockpit layout (moved 2026-09-30)
 
