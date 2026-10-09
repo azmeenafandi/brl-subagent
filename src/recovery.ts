@@ -7,7 +7,8 @@
  * orphaned child process. This module is the boot-time scan that decides, in a
  * FRESH process, which of those records are genuinely live:
  *
- *   - `interruptedAt` already set  → skip (idempotent)
+ *   - `interruptedAt` already set  → never re-mark (idempotent), but re-check
+ *     for a leftover live marker child and reap it again (B2 revisit)
  *   - owner alive (pid + start token match) → leave untouched
  *   - owner dead → reap a marker-verified orphan child (SIGTERM → grace →
  *     SIGKILL), then mark `interruptedAt` on the record
@@ -107,7 +108,9 @@ export type RecoveryMarkReason = "owner-dead" | "child-orphaned" | "owner-unveri
 /** What the engine decided to do with one record (before any process work). */
 export type RecoveryPlan =
 	| { decision: "skip"; reason: RecoverySkipReason }
-	| { decision: "mark"; reason: RecoveryMarkReason; reap: number[] };
+	| { decision: "mark"; reason: RecoveryMarkReason; reap: number[] }
+	/** Already-marked record re-checked this boot: reap leftovers, never re-mark. */
+	| { decision: "reap"; reason: "revisit-interrupted"; reap: number[] };
 
 /** The engine's verdict on an owner identity. */
 export type OwnerState = "alive" | "dead" | "unknown";
@@ -116,7 +119,7 @@ export type OwnerState = "alive" | "dead" | "unknown";
 export interface RecoveryOutcome {
 	id: string;
 	kind: RecoveryKind;
-	decision: "skip" | "mark";
+	decision: "skip" | "mark" | "reap";
 	reason: string;
 	reaped: number[];
 	survived: number[];
@@ -207,7 +210,15 @@ function hasParsableOwnerPid(owner: ProcessOwner): boolean {
  */
 export function decideRecovery(record: RecoveryRecord, deps: RecoveryDeps): RecoveryPlan {
 	if (record.status !== "running") return { decision: "skip", reason: "not-running" };
-	if (record.interruptedAt) return { decision: "skip", reason: "already-interrupted" };
+	if (record.interruptedAt) {
+		// Already marked: NEVER re-mark (idempotent), but a SIGKILL survivor or a
+		// child whose marker was unreadable at mark time must stay revisitable.
+		// The registry entry is retained, so every later boot re-checks it.
+		const reap = record.childMarker ? deps.findByMarker(record.childMarker) : [];
+		return reap.length > 0
+			? { decision: "reap", reason: "revisit-interrupted", reap }
+			: { decision: "skip", reason: "already-interrupted" };
+	}
 	if (!record.owner) return { decision: "skip", reason: "no-owner" };
 	if (!hasParsableOwnerPid(record.owner)) {
 		return { decision: "mark", reason: "owner-unverifiable", reap: [] };
@@ -284,7 +295,7 @@ export async function recoverRecord(
 	return {
 		id: record.id,
 		kind: record.kind,
-		decision: "mark",
+		decision: plan.decision,
 		reason: plan.reason,
 		reaped,
 		survived,
@@ -301,6 +312,8 @@ export interface BootScanSummary {
 	skipped: number;
 	marked: number;
 	reaped: number;
+	/** Already-marked records that had leftover children reaped again this boot. */
+	revisited: number;
 	skippedUnverifiable: number;
 	skippedNoOwner: number;
 }
@@ -334,13 +347,17 @@ export async function runBootScan(options: BootScanOptions): Promise<BootScanSum
 		skipped: 0,
 		marked: 0,
 		reaped: 0,
+		revisited: 0,
 		skippedUnverifiable: 0,
 		skippedNoOwner: 0,
 	};
 
-	// Plan every record first (pure), then reap ALL proposed pids together.
+	// Plan every record first (pure), then reap ALL proposed pids together —
+	// including leftovers of already-marked records (never re-marked).
 	const planned = records.map((record) => ({ record, plan: decideRecovery(record, deps) }));
-	const allReaps = planned.flatMap(({ plan }) => (plan.decision === "mark" ? plan.reap : []));
+	const allReaps = planned.flatMap(({ plan }) =>
+		plan.decision === "mark" || plan.decision === "reap" ? plan.reap : [],
+	);
 	const survived = new Set(await reapPids(allReaps, deps));
 
 	for (const { record, plan } of planned) {
@@ -356,6 +373,18 @@ export async function runBootScan(options: BootScanOptions): Promise<BootScanSum
 				id: record.id,
 				kind: record.kind,
 				reason: plan.reason,
+				reaped,
+				survived: reaped.filter((pid) => survived.has(pid)),
+			});
+		} else if (plan.decision === "reap") {
+			// B2 revisit: the record was already marked (so it is never re-marked),
+			// but it still carried a live marker child — reap it again this boot.
+			const reaped = [...new Set(plan.reap)];
+			summary.revisited++;
+			summary.reaped += reaped.length;
+			options.log?.warn("Recovery: reaped a leftover child of an interrupted record", {
+				id: record.id,
+				kind: record.kind,
 				reaped,
 				survived: reaped.filter((pid) => survived.has(pid)),
 			});

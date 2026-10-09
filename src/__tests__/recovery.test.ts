@@ -117,12 +117,28 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe("recovery decision matrix (pure)", () => {
-	it("idempotent-skip: a record already marked interrupted is skipped", () => {
+	it("idempotent-skip: a marked record with no leftover child is skipped", () => {
 		const plan = decideRecovery(
 			record({ interruptedAt: "2026-10-09T00:00:00.000Z", owner: DEAD_OWNER, childMarker: "m" }),
-			makeDeps({ findByMarker: () => [DEAD_PID] }),
+			makeDeps({ findByMarker: () => [] }),
 		);
 		expect(plan).toEqual({ decision: "skip", reason: "already-interrupted" });
+	});
+
+	it("B2: a marked record with a live marker child is revisited (reap-only, never re-marked)", async () => {
+		const deps = makeDeps({ findByMarker: () => [555] });
+		const marked = record({
+			interruptedAt: "2026-10-09T00:00:00.000Z",
+			owner: DEAD_OWNER,
+			childMarker: "m",
+		});
+		expect(decideRecovery(marked, deps)).toEqual({
+			decision: "reap",
+			reason: "revisit-interrupted",
+			reap: [555],
+		});
+		const outcome = await recoverRecord(marked, deps);
+		expect(outcome).toMatchObject({ decision: "reap", reason: "revisit-interrupted", reaped: [555] });
 	});
 
 	it("owner-alive: a live owner's record is skipped and nothing is killed", () => {
@@ -404,6 +420,32 @@ describe("real /proc integration", () => {
 	});
 	afterAll(async () => {
 		await env.tearDown();
+	});
+
+	it("B2: a marked record with a live marker child is revisited and reaped on boot (never re-marked)", async () => {
+		if (!isProcAvailable()) return;
+
+		const marker = `revisit-${crypto.randomUUID()}`;
+		const orphan = track(spawnSleeper({ ...process.env, [CHILD_MARKER_ENV_KEY]: marker }));
+		const orphanPid = await waitForSpawn(orphan);
+		await waitUntil(() => findByMarker(marker).includes(orphanPid));
+
+		const rec = record({
+			id: crypto.randomUUID(),
+			interruptedAt: "2026-10-09T00:00:00.000Z",
+			owner: { pid: DEAD_PID, start: "100" },
+			childMarker: marker,
+		});
+		let marks = 0;
+		const deps = { ...defaultRecoveryDeps(), sleep: async () => {}, graceMs: 0 };
+		const summary = await runBootScan({ records: [rec], deps, mark: () => { marks++; } });
+
+		await waitUntil(() => !pidAlive(orphanPid));
+		expect(pidAlive(orphanPid)).toBe(false);
+		expect(marks).toBe(0); // already-interrupted is never re-marked
+		expect(summary.marked).toBe(0);
+		expect(summary.revisited).toBe(1);
+		expect(summary.reaped).toBe(1);
 	});
 
 	it("reaps a marker-verified orphan and marks both records", async () => {
