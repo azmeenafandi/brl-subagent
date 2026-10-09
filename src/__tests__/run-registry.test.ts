@@ -29,6 +29,7 @@ import {
 	markInterrupted,
 	persistRunRecord,
 	registryDir,
+	__setRegistryDir,
 	type InflightRun,
 	type InflightRunKind,
 } from "../run-registry";
@@ -467,5 +468,119 @@ describe("production /proc guard", () => {
 		}
 		// The registry entry is untouched, so a capable host can still recover it.
 		expect(readEntry(id)?.interruptedAt).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 6. TRUTHFUL MARK LEDGER (issue #304)
+//
+// `marked` used to count the engine's DECISION; a refused/failed write left the
+// entry unmarked while the boot log claimed success. These tests pin the
+// durable-write accounting: a false mark is counted as a failure and warned
+// with the id, and the log never claims a mark that did not land.
+// ---------------------------------------------------------------------------
+
+describe("boot-scan mark truthfulness (issue #304)", () => {
+	/** A registry dir whose parent is a FILE — every read/write under it fails. */
+	function pointRegistryAtUnwritablePath(): string {
+		const blocker = path.join(env.baseDir, "blocker-file");
+		fs.writeFileSync(blocker, "not a directory");
+		const previous = registryDir();
+		__setRegistryDir(path.join(blocker, "run-registry"));
+		return previous;
+	}
+
+	function quietLog(warn: ReturnType<typeof vi.fn> = vi.fn()) {
+		return { debug: () => {}, info: () => {}, warn };
+	}
+
+	it("markInterrupted never throws and returns false when the write cannot land", () => {
+		const previous = pointRegistryAtUnwritablePath();
+		try {
+			expect(() => markInterrupted(crypto.randomUUID(), ISO)).not.toThrow();
+			expect(markInterrupted(crypto.randomUUID(), ISO)).toBe(false);
+		} finally {
+			__setRegistryDir(previous);
+		}
+	});
+
+	it("a failing mark write → markFailures + a warning, and marked stays 0", async () => {
+		const previous = pointRegistryAtUnwritablePath();
+		const warn = vi.fn();
+		const id = crypto.randomUUID();
+		try {
+			const summary = await runBootScan({
+				records: [{ id, kind: "run", status: "running", owner: DEAD_OWNER }],
+				deps: { ...defaultRecoveryDeps(), sleep: async () => {}, graceMs: 0 },
+				mark: (record, at) => markInterrupted(record.id, at),
+				log: quietLog(warn),
+			});
+
+			expect(summary.marked).toBe(0);
+			expect(summary.markFailures).toBe(1);
+			// The failure is warned WITH the id, independently of any marked>0 gate.
+			const failure = warn.mock.calls.find((c) => c[0] === "Recovery: registry mark failed");
+			expect(failure).toBeDefined();
+			expect(failure![1]).toMatchObject({ id, kind: "run" });
+			// The success log never fired for a mark that did not land.
+			expect(warn.mock.calls.some((c) => c[0] === "Recovery: marked interrupted record")).toBe(false);
+		} finally {
+			__setRegistryDir(previous);
+		}
+	});
+
+	it("one durable mark + one failed mark → truthful counts (1 / 1)", async () => {
+		const durableId = crypto.randomUUID();
+		registerInflightRun({ id: durableId, kind: "foreground", owner: DEAD_OWNER, startedAt: ISO });
+		const missingId = crypto.randomUUID(); // no registry entry → mark refuses
+		const warn = vi.fn();
+
+		const summary = await runBootScan({
+			records: [
+				{ id: durableId, kind: "run", status: "running", owner: DEAD_OWNER },
+				{ id: missingId, kind: "run", status: "running", owner: DEAD_OWNER },
+			],
+			deps: { ...defaultRecoveryDeps(), sleep: async () => {}, graceMs: 0 },
+			mark: (record, at) => markInterrupted(record.id, at),
+			log: quietLog(warn),
+		});
+
+		expect(summary.marked).toBe(1);
+		expect(summary.markFailures).toBe(1);
+		expect(typeof readEntry(durableId)?.interruptedAt).toBe("string");
+		const failures = warn.mock.calls.filter((c) => c[0] === "Recovery: registry mark failed");
+		expect(failures).toHaveLength(1);
+		expect(failures[0][1]).toMatchObject({ id: missingId });
+	});
+
+	it("fail-closed: a non-UUID registry entry is skipped, counted, and logged once", async () => {
+		// Fabricated on disk exactly like the 2026-10-09 live probe: the READ side
+		// accepts it, but the WRITE side's UUID guard refuses it. Acting on it is
+		// unsafe, so the scan must skip it rather than claim a mark.
+		const garbageId = `u1-live-${crypto.randomUUID()}`;
+		fs.mkdirSync(registryDir(), { recursive: true });
+		fs.writeFileSync(
+			path.join(registryDir(), `${garbageId}.json`),
+			JSON.stringify({ id: garbageId, kind: "foreground", owner: DEAD_OWNER, startedAt: ISO }),
+		);
+		const warn = vi.fn();
+
+		const summary = await recoverInflightRuns({
+			deps: { ...defaultRecoveryDeps(), sleep: async () => {}, graceMs: 0 },
+			mark: () => {
+				throw new Error("must not act on an id the writer could not have produced");
+			},
+			log: quietLog(warn),
+		});
+
+		expect(summary.scanned).toBe(0);
+		expect(summary.marked).toBe(0);
+		expect(summary.markFailures).toBe(0);
+		expect(summary.skippedUnsafeIds).toBe(1);
+		const skips = warn.mock.calls.filter(
+			(c) => c[0] === "Recovery: skipped registry entries whose id fails the UUID guard",
+		);
+		expect(skips).toHaveLength(1);
+		expect(skips[0][1]).toMatchObject({ count: 1, ids: [garbageId] });
 	});
 });
