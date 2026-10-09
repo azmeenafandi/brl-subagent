@@ -34,6 +34,7 @@ import {
 } from "../run-registry";
 import {
 	recoverInflightRuns,
+	recoverProduction,
 	runBootScan,
 	defaultRecoveryDeps,
 	readStartToken,
@@ -43,6 +44,7 @@ import {
 	type RecoveryDeps,
 	type RecoveryRecord,
 } from "../recovery";
+import { __setProcAvailableForTest } from "../proc";
 import { CHILD_MARKER_ENV_KEY } from "../sanitize";
 import { SessionState } from "../state";
 import { createUnitRun } from "../unit-run";
@@ -430,5 +432,40 @@ describe("boot scan wait-once", () => {
 		const elapsed = Date.now() - started;
 		// Per-record sleeping would be ~5 × 100ms = 500ms; one window is ~100ms.
 		expect(elapsed).toBeLessThan(graceMs * 3);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 5. PRODUCTION /proc GUARD (B8)
+// ---------------------------------------------------------------------------
+
+describe("production /proc guard", () => {
+	it("marks and kills NOTHING when /proc is unavailable", async () => {
+		// A candidate that WOULD be marked on a /proc host (dead owner + marker).
+		const id = crypto.randomUUID();
+		registerInflightRun({
+			id,
+			kind: "foreground",
+			owner: DEAD_OWNER,
+			childMarker: "b8-marker",
+			startedAt: ISO,
+		});
+
+		const kill = vi.fn();
+		const marked: string[] = [];
+		__setProcAvailableForTest(false);
+		try {
+			const summary = await recoverProduction({
+				deps: { ...defaultRecoveryDeps(), kill, sleep: async () => {}, graceMs: 0 },
+				mark: (record) => marked.push(record.id),
+			});
+			expect(summary).toMatchObject({ scanned: 0, marked: 0, reaped: 0, revisited: 0 });
+			expect(marked).toEqual([]);
+			expect(kill).not.toHaveBeenCalled();
+		} finally {
+			__setProcAvailableForTest(undefined);
+		}
+		// The registry entry is untouched, so a capable host can still recover it.
+		expect(readEntry(id)?.interruptedAt).toBeUndefined();
 	});
 });

@@ -78,9 +78,7 @@ import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash,
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs, reapActiveChildren } from "./runner";
 import {
-	isProcAvailable,
-	recoverInflightRuns,
-	defaultRecoveryDeps,
+	recoverProduction,
 	currentProcessOwner,
 	newDispatchIdentity,
 } from "./recovery";
@@ -3885,14 +3883,11 @@ export default function (pi: ExtensionAPI) {
 	// pid-only liveness cannot rule out pid reuse, so nothing is killed or
 	// marked unverified.
 	async function performBootRecovery(): Promise<void> {
-		if (!isProcAvailable()) {
-			log.info("Boot recovery skipped: /proc start-token verification unavailable on this platform");
-			return;
-		}
 		try {
 			const { getAgent, markAgentInterrupted } = await import("./session-manager");
-			const summary = await recoverInflightRuns({
-				deps: defaultRecoveryDeps(),
+			// `recoverProduction` owns the /proc platform guard (nothing is marked or
+			// killed without start-token verification) — see src/recovery.ts.
+			const summary = await recoverProduction({
 				log,
 				// Read THAT ONE agent record by id — never the whole store.
 				readAgentRecord: (id) => getAgent(id),

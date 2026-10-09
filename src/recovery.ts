@@ -1,300 +1,45 @@
 // Purpose: Boot-time recovery scan — decides whether a persisted running record is live, reaps orphaned children, and marks interrupted records.
 /**
- * Option B U1 — recovery: identity, liveness, detection engine, child reap.
+ * Option B U1 — recovery boot orchestration.
  *
  * A run record is written BEFORE its effect (the spawn), so a crashed
  * conductor leaves `running` records and — on the foreground path — an
- * orphaned child process. This module is the boot-time scan that decides, in a
- * FRESH process, which of those records are genuinely live:
+ * orphaned child process. This module runs the boot-time scan that decides, in
+ * a FRESH process, which of those records are genuinely live:
  *
- *   - `interruptedAt` already set  → never re-mark (idempotent), but re-check
- *     for a leftover live marker child and reap it again (B2 revisit)
+ *   - `interruptedAt` already set  → never re-mark, but re-check for a leftover
+ *     live marker child and reap it again (B2 revisit)
  *   - owner alive (pid + start token match) → leave untouched
  *   - owner dead → reap a marker-verified orphan child (SIGTERM → grace →
  *     SIGKILL), then mark `interruptedAt` on the record
  *
- * The decision logic is a pure function over injected dependencies
- * (`decideRecovery` / `recoverRecord` / `runBootScan`), so the full matrix is
- * unit-testable without spawning processes; the production wiring is
- * `defaultRecoveryDeps`. `recoverInflightRuns` sources candidates from the
- * durable registry (`src/run-registry.ts`) — NOT from the current session's run
- * entries, which a fresh process cannot see after a crash.
+ * The decision logic itself is the pure engine in `src/recovery-engine.ts`
+ * (type/external surface unchanged); this module owns candidate sourcing and
+ * the scan loop. `recoverInflightRuns` sources candidates from the durable
+ * registry (`src/run-registry.ts`) — NOT from the current session's run
+ * entries, which a fresh process cannot see after a crash — and
+ * `recoverProduction` is the entry point that also enforces the platform guard.
  *
  * Reaping waits ONE grace window for the whole scan (`runBootScan` collects
  * every orphan pid and escalates them together), so N orphans cost one grace
  * period, not N.
  *
- * PLATFORM BOUNDARY (required): the start-time token (`/proc/<pid>/stat` field
- * 22) and the child-marker scan (`/proc/<pid>/environ`) are Linux/POSIX reads.
- * `isProcAvailable()` feature-detects them. Where they are unavailable, the
- * production scan is SKIPPED with one clear log line: `process.kill(pid, 0)`
- * liveness still works cross-platform, but on its own it cannot rule out pid
- * reuse, so we NEVER kill an unverified process and NEVER mark a record as
- * interrupted when ownership cannot be verified. On a capable platform a
- * record that is alive but whose start token cannot be read is likewise left
- * untouched (reason `ownership-unverifiable`).
- *
- * A record with no `owner` at all is left untouched (reason `no-owner`):
- * ownership cannot be checked, so the safe choice is to do nothing. (This is
- * the conservative reading of the plan's "missing owner is treated as
- * interrupted" line — see the U1 report for the recorded deviation.)
- *
- * The `owner` policy is deliberately split in three:
- *   - ABSENT owner → SKIP (`no-owner`): the maintainer-confirmed U1 policy —
- *     nothing to verify, so do nothing.
- *   - PRESENT but unparsable (missing/non-integer/non-positive pid: `{}`,
- *     `"not-a-pid"`, `0`, `-5`, `NaN`, `1.5`) → MARK-ONLY (`owner-unverifiable`):
- *     the run is definitely interrupted (no live process can carry that pid),
- *     but ownership cannot be established, so the kill path is NEVER touched
- *     (`reap: []`, zero kill calls).
- *   - PARSABLE owner → `classifyOwner`: alive → skip; alive-but-token-unreadable
- *     → skip (`ownership-unverifiable`); dead → mark and reap any
- *     marker-verified orphan child.
+ * PLATFORM BOUNDARY (required): the `/proc` reads live in `src/proc.ts`.
+ * Where `/proc` is unavailable, `recoverProduction` SKIPS the whole scan with
+ * one log line — `process.kill(pid, 0)` liveness alone cannot rule out pid
+ * reuse, so we NEVER kill an unverified process and NEVER mark a record when
+ * ownership cannot be verified.
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import type { ProcessOwner, SubagentRun } from "./types";
-import { SIGKILL_GRACE_MS } from "./types";
-import { CHILD_MARKER_ENV_KEY } from "./sanitize";
 import { listInflightRuns } from "./run-registry";
-import { resolveTerminalRunEntry } from "./state";
-import { escalateKill, type EscalationTarget } from "./kill-escalation";
+import { isProcAvailable, defaultRecoveryDeps } from "./proc";
+import { decideRecovery, reapPids, type RecoveryDeps, type RecoveryRecord } from "./recovery-engine";
 import type { Logger } from "./logging";
 
-// ---------------------------------------------------------------------------
-// Dependency injection surface
-// ---------------------------------------------------------------------------
-
-/** The process primitives the decision engine needs (injected for testability). */
-export interface RecoveryDeps {
-	/** True when the pid exists (SIGCONT/`kill -0` semantics; EPERM counts as alive). */
-	pidAlive(pid: number): boolean;
-	/** The process start-time token, or undefined when /proc is unavailable/unreadable. */
-	startTokenOf(pid: number): string | undefined;
-	/** Pids whose environment carries `CHILD_MARKER_ENV_KEY=<marker>`; [] when /proc is unavailable. */
-	findByMarker(marker: string): number[];
-	/** Send a signal to a pid (may throw when the pid is already gone). */
-	kill(pid: number, signal: NodeJS.Signals): void;
-	/** Sleep between SIGTERM and SIGKILL. */
-	sleep(ms: number): Promise<void>;
-	/** Grace period in ms between SIGTERM and SIGKILL. */
-	graceMs: number;
-}
-
-/** Which persisted store a candidate record came from. */
-export type RecoveryKind = "run" | "agent";
-
-/** A persisted `running` record projected into the shape the engine reasons over. */
-export interface RecoveryRecord {
-	id: string;
-	kind: RecoveryKind;
-	status: string;
-	interruptedAt?: string;
-	owner?: ProcessOwner;
-	childMarker?: string;
-	/** Original record for the caller's write-back; opaque to this module. */
-	source?: unknown;
-}
-
-export type RecoverySkipReason =
-	| "not-running"
-	| "already-interrupted"
-	| "no-owner"
-	| "owner-alive"
-	| "ownership-unverifiable";
-
-export type RecoveryMarkReason = "owner-dead" | "child-orphaned" | "owner-unverifiable";
-
-/** What the engine decided to do with one record (before any process work). */
-export type RecoveryPlan =
-	| { decision: "skip"; reason: RecoverySkipReason }
-	| { decision: "mark"; reason: RecoveryMarkReason; reap: number[] }
-	/** Already-marked record re-checked this boot: reap leftovers, never re-mark. */
-	| { decision: "reap"; reason: "revisit-interrupted"; reap: number[] };
-
-/** The engine's verdict on an owner identity. */
-export type OwnerState = "alive" | "dead" | "unknown";
-
-/** The result of applying a plan (kills performed, survivors logged). */
-export interface RecoveryOutcome {
-	id: string;
-	kind: RecoveryKind;
-	decision: "skip" | "mark" | "reap";
-	reason: string;
-	reaped: number[];
-	survived: number[];
-}
-
-// ---------------------------------------------------------------------------
-// Candidate projection
-// ---------------------------------------------------------------------------
-
-/**
- * Durability identity for a newly dispatched run record. A retry inherits the
- * original's dispatchId and records `resumeOf`/`attempt`; a fresh dispatch
- * mints a new dispatchId with attempt 1. These are RECORD fields, not
- * delegate_task params (D4).
- */
-export function newDispatchIdentity(source: SubagentRun | undefined): {
-	dispatchId: string;
-	resumeOf?: string;
-	attempt: number;
-} {
-	return {
-		dispatchId: source?.dispatchId ?? crypto.randomUUID(),
-		resumeOf: source?.id,
-		attempt: source ? (source.attempt ?? 1) + 1 : 1,
-	};
-}
-
-/**
- * Collapse run entries to ONE per id before the scan, using the ONE shared
- * preference rule (`resolveTerminalRunEntry`, src/state.ts): terminal-first;
- * among non-terminal entries the D3 `interruptedAt` mark wins over the
- * original spawn entry; otherwise the first entry seen. Ids keep their
- * first-seen order. Delegating keeps the recovery scan and U3's display/retry
- * lookup from diverging (the historical duplicate rule picked the marked clone
- * while the resolver picked the unmarked spawn).
- */
-export function dedupeRunEntriesById(runs: SubagentRun[]): SubagentRun[] {
-	const ids: string[] = [];
-	const seen = new Set<string>();
-	for (const run of runs) {
-		if (seen.has(run.id)) continue;
-		seen.add(run.id);
-		ids.push(run.id);
-	}
-	const collapsed: SubagentRun[] = [];
-	for (const id of ids) {
-		const resolved = resolveTerminalRunEntry(runs, id);
-		if (resolved) collapsed.push(resolved);
-	}
-	return collapsed;
-}
-
-// ---------------------------------------------------------------------------
-// The decision engine (pure over RecoveryDeps)
-// ---------------------------------------------------------------------------
-
-/**
- * Classify the recorded owner's liveness. `unknown` means the pid is alive but
- * the start token could not be read, so pid reuse cannot be excluded — the
- * caller must not act on it.
- */
-export function classifyOwner(owner: ProcessOwner, deps: RecoveryDeps): OwnerState {
-	if (!deps.pidAlive(owner.pid)) return "dead";
-	// An empty recorded token means the WRITER could not read one (non-/proc
-	// platform). Even on a host that can read tokens now, the record's identity
-	// is unverifiable — never act on it.
-	if (!owner.start) return "unknown";
-	const token = deps.startTokenOf(owner.pid);
-	if (token === undefined) return "unknown";
-	return token === owner.start ? "alive" : "dead";
-}
-
-/**
- * True when an owner carries a usable pid (positive integer). Anything else —
- * a missing pid, a string, 0, a negative, NaN, a fraction — is UNPARSABLE
- * ownership: the record is marked but the kill path is never touched.
- */
-function hasParsableOwnerPid(owner: ProcessOwner): boolean {
-	return Number.isInteger(owner.pid) && owner.pid > 0;
-}
-
-/**
- * Decide what to do with one persisted record. Pure — no process is touched.
- * Reaping pids come ONLY from a marker scan: without a verified marker match
- * the engine never proposes a kill. An unparsable owner is mark-only (see the
- * module header's three-way owner policy): interrupt is certain, ownership is
- * not, so `reap` is empty and the kill path stays untouched.
- */
-export function decideRecovery(record: RecoveryRecord, deps: RecoveryDeps): RecoveryPlan {
-	if (record.status !== "running") return { decision: "skip", reason: "not-running" };
-	if (record.interruptedAt) {
-		// Already marked: NEVER re-mark (idempotent), but a SIGKILL survivor or a
-		// child whose marker was unreadable at mark time must stay revisitable.
-		// The registry entry is retained, so every later boot re-checks it.
-		const reap = record.childMarker ? deps.findByMarker(record.childMarker) : [];
-		return reap.length > 0
-			? { decision: "reap", reason: "revisit-interrupted", reap }
-			: { decision: "skip", reason: "already-interrupted" };
-	}
-	if (!record.owner) return { decision: "skip", reason: "no-owner" };
-	if (!hasParsableOwnerPid(record.owner)) {
-		return { decision: "mark", reason: "owner-unverifiable", reap: [] };
-	}
-
-	const ownerState = classifyOwner(record.owner, deps);
-	if (ownerState === "alive") return { decision: "skip", reason: "owner-alive" };
-	if (ownerState === "unknown") return { decision: "skip", reason: "ownership-unverifiable" };
-
-	const reap = record.childMarker ? deps.findByMarker(record.childMarker) : [];
-	return {
-		decision: "mark",
-		reason: reap.length > 0 ? "child-orphaned" : "owner-dead",
-		reap,
-	};
-}
-
-/**
- * Escalate a set of pids together: SIGTERM every one, wait ONE grace window,
- * then SIGKILL any survivor. Returns the pids still alive afterwards. Thin
- * adapter over the shared `escalateKill` helper (src/kill-escalation.ts), which
- * `recoverRecord` (one record) and `runBootScan` (the whole scan) both call, so
- * a boot with N orphans waits one grace period total, never N.
- */
-export async function reapPids(pids: number[], deps: RecoveryDeps): Promise<number[]> {
-	const unique = [...new Set(pids)];
-	const targets: EscalationTarget[] = unique.map((pid) => ({
-		terminate: () => {
-			deps.kill(pid, "SIGTERM");
-		},
-		forceKill: () => {
-			deps.kill(pid, "SIGKILL");
-		},
-		verifyDeath: () => !deps.pidAlive(pid),
-	}));
-	const survivors = await escalateKill(targets, {
-		graceMs: deps.graceMs,
-		sleep: deps.sleep,
-	});
-	const survivedSet = new Set(survivors);
-	return unique.filter((_, index) => survivedSet.has(targets[index]));
-}
-
-/**
- * Apply a record's plan: SIGTERM every marker-verified orphan, wait the grace
- * period, SIGKILL any survivor, then report. Never throws on a vanished pid.
- */
-export async function recoverRecord(
-	record: RecoveryRecord,
-	deps: RecoveryDeps,
-): Promise<RecoveryOutcome> {
-	const plan = decideRecovery(record, deps);
-	if (plan.decision === "skip") {
-		return {
-			id: record.id,
-			kind: record.kind,
-			decision: "skip",
-			reason: plan.reason,
-			reaped: [],
-			survived: [],
-		};
-	}
-
-	const reaped = [...new Set(plan.reap)];
-	const survived = await reapPids(reaped, deps);
-
-	return {
-		id: record.id,
-		kind: record.kind,
-		decision: plan.decision,
-		reason: plan.reason,
-		reaped,
-		survived,
-	};
-}
+// Re-export the pure engine and the production wiring so existing importers
+// (`index.ts`, the recovery/registry suites) keep their single entry point.
+export * from "./recovery-engine";
+export * from "./proc";
 
 // ---------------------------------------------------------------------------
 // Boot scan orchestration
@@ -310,6 +55,19 @@ export interface BootScanSummary {
 	revisited: number;
 	skippedUnverifiable: number;
 	skippedNoOwner: number;
+}
+
+/** The all-zero summary (a skipped scan / an empty registry). */
+export function emptyBootScanSummary(): BootScanSummary {
+	return {
+		scanned: 0,
+		skipped: 0,
+		marked: 0,
+		reaped: 0,
+		revisited: 0,
+		skippedUnverifiable: 0,
+		skippedNoOwner: 0,
+	};
 }
 
 export interface BootScanOptions {
@@ -336,15 +94,8 @@ export interface BootScanOptions {
 export async function runBootScan(options: BootScanOptions): Promise<BootScanSummary> {
 	const { records, deps, mark } = options;
 	const nowIso = (options.now?.() ?? new Date()).toISOString();
-	const summary: BootScanSummary = {
-		scanned: records.length,
-		skipped: 0,
-		marked: 0,
-		reaped: 0,
-		revisited: 0,
-		skippedUnverifiable: 0,
-		skippedNoOwner: 0,
-	};
+	const summary = emptyBootScanSummary();
+	summary.scanned = records.length;
 
 	// Plan every record first (pure), then reap ALL proposed pids together —
 	// including leftovers of already-marked records (never re-marked).
@@ -405,7 +156,7 @@ export async function runBootScan(options: BootScanOptions): Promise<BootScanSum
 export interface PersistedAgentLike {
 	status: string;
 	interruptedAt?: string;
-	owner?: ProcessOwner;
+	owner?: RecoveryRecord["owner"];
 	childMarker?: string;
 }
 
@@ -473,107 +224,38 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 }
 
 // ---------------------------------------------------------------------------
-// Production wiring (Linux/POSIX /proc reads, feature-detected)
+// Production entry (owns the /proc platform guard)
 // ---------------------------------------------------------------------------
 
-const PROC_ROOT = "/proc";
-
-let procAvailable: boolean | undefined;
-
-/**
- * Feature-detect the Linux/POSIX `/proc` surface this module needs. Cached:
- * the answer cannot change mid-process. Exported so the entry point can skip
- * the whole scan with one log line on platforms without /proc.
- */
-export function isProcAvailable(): boolean {
-	if (procAvailable === undefined) {
-		try {
-			procAvailable = fs.existsSync(path.join(PROC_ROOT, "self", "stat"));
-		} catch {
-			procAvailable = false;
-		}
-	}
-	return procAvailable;
+export interface ProductionRecoveryOptions {
+	/** Process deps; defaults to the real /proc wiring (`defaultRecoveryDeps`). */
+	deps?: RecoveryDeps;
+	/** Persist the D3 mark for this record. */
+	mark(record: RecoveryRecord, interruptedAt: string): void;
+	readAgentRecord?(id: string): PersistedAgentLike | null;
+	now?: () => Date;
+	log?: Pick<Logger, "debug" | "info" | "warn">;
 }
 
 /**
- * Read a process's start-time token — `/proc/<pid>/stat` field 22 (1-indexed),
- * i.e. index 19 of the whitespace-split fields AFTER the `(comm)` field. The
- * comm field is skipped by slicing at the LAST `)` so a name containing spaces
- * or parens cannot shift the parse. Returns undefined when /proc is
- * unavailable, the pid is invalid, or the process vanished.
+ * The production boot-recovery entry. It owns the `/proc` platform guard so the
+ * guarantee "nothing is marked or killed without /proc ownership verification"
+ * is enforced — and testable — BELOW the extension entry point: on a platform
+ * without `/proc` it returns an empty summary without scanning, instead of
+ * relying on the caller's early return.
  */
-export function readStartToken(pid: number): string | undefined {
-	if (!isProcAvailable() || !Number.isInteger(pid) || pid <= 0) return undefined;
-	try {
-		const stat = fs.readFileSync(path.join(PROC_ROOT, String(pid), "stat"), "utf-8");
-		const close = stat.lastIndexOf(")");
-		if (close < 0) return undefined;
-		const rest = stat.slice(close + 1).trim();
-		if (!rest) return undefined;
-		const fields = rest.split(/\s+/);
-		const token = fields[19];
-		return token && /^\d+$/.test(token) ? token : undefined;
-	} catch {
-		return undefined;
+export async function recoverProduction(options: ProductionRecoveryOptions): Promise<BootScanSummary> {
+	if (!isProcAvailable()) {
+		options.log?.info(
+			"Boot recovery skipped: /proc start-token verification unavailable on this platform",
+		);
+		return emptyBootScanSummary();
 	}
-}
-
-/** The CURRENT process's owner identity (pid + start token; empty string when unavailable). */
-export function currentProcessOwner(): ProcessOwner {
-	return { pid: process.pid, start: readStartToken(process.pid) ?? "" };
-}
-
-/** Cross-platform pid liveness (`kill -0`). EPERM means the process exists. */
-export function pidAlive(pid: number): boolean {
-	if (!Number.isInteger(pid) || pid <= 0) return false;
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (err) {
-		return (err as NodeJS.ErrnoException).code === "EPERM";
-	}
-}
-
-/**
- * Pids whose environment carries the marker. Scans `/proc/<pid>/environ` (NUL
- * separated). Skips this process; unreadable/vanished processes are ignored.
- * Returns [] — never a kill — when /proc is unavailable.
- */
-export function findByMarker(marker: string): number[] {
-	if (!marker || !isProcAvailable()) return [];
-	const needle = `${CHILD_MARKER_ENV_KEY}=${marker}`;
-	const found: number[] = [];
-	let entries: string[];
-	try {
-		entries = fs.readdirSync(PROC_ROOT);
-	} catch {
-		return [];
-	}
-	for (const entry of entries) {
-		if (!/^\d+$/.test(entry)) continue;
-		const pid = Number(entry);
-		if (pid === process.pid) continue;
-		try {
-			const environ = fs.readFileSync(path.join(PROC_ROOT, entry, "environ"), "utf-8");
-			if (environ.split("\0").includes(needle)) found.push(pid);
-		} catch {
-			// Vanished or not readable by this user — not a verified match.
-		}
-	}
-	return found;
-}
-
-/** The real production dependencies (Linux/POSIX /proc reads + process signals). */
-export function defaultRecoveryDeps(): RecoveryDeps {
-	return {
-		pidAlive,
-		startTokenOf: readStartToken,
-		findByMarker,
-		kill: (pid, signal) => {
-			process.kill(pid, signal);
-		},
-		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-		graceMs: SIGKILL_GRACE_MS,
-	};
+	return recoverInflightRuns({
+		deps: options.deps ?? defaultRecoveryDeps(),
+		mark: options.mark,
+		readAgentRecord: options.readAgentRecord,
+		now: options.now,
+		log: options.log,
+	});
 }
