@@ -130,7 +130,8 @@ exhibited it. **#6 (2026-10-09, PR #293, docs-only — the durability assessment
 (FRICTION_LOG 22→7, HANDOFF 10→4, SKILL 30→23), net −15 (1528→1513), again **both flags**; and the mtime
 freshness check flagged STALE purely because the auto-sync probe's restored `src/paths.ts` touch bumped its
 mtime with content unchanged — the exact class `codegraph-check.py`'s `indexed_at_commit == HEAD` assertion
-removes. **Tally: 6 refusals, 0 with `src/` structure; graph now 1513 / 3323.** Earlier day pattern (2026-10-06): 3 refusals (post-#278
+removes. **Tally: 6 refusals, 0 with `src/` structure; graph now 1513 / 3323.** Post-#294 refresh (2026-10-09):
+clean pass, no refusal — variance again. Earlier day pattern (2026-10-06): 3 refusals (post-#278
 dedup → `--allow-dedup-shrink`; post-#279 incomplete docs pass → from-scratch rebuild; post-#286 net −1 →
 `--allow-partial` + coverage check) and 4 clean passes. Pre-rebuild 1530-node graph kept at
 `graphify-out/graph.json.pre-276-rebuild`.
@@ -185,7 +186,11 @@ with Option C (wait/watch) as the revisit trigger for Option A. Falsifiers that 
 (pi-durable leaving Experimental AND the published coding-agent depending on it; a spike proving
 approval-as-hook + cheap TUI attach; or B's crash harness collapsing). Key evidence: crash → `resume()`
 confirmed on SQLite + JSONL; **`resume` ≠ `retry`** — the parked background-retries decision stays open.
-Implementation not started; the doc carries the 7-step execution sketch for a future spec.
+Implementation not started; the doc carries the 7-step execution sketch for a future spec. **Probe findings merged
+(#294, `75f41b8`):** intent-before-effect already true on both paths; **#295** filed (SIGKILLed foreground
+subprocess finalizes as false `done`); **#296** filed (conductor death → orphaned child keeps running, entry
+stuck `running`); SDK resume is **file-backed only** (background `inMemory`, foreground `--no-session`) — a
+session-persistence decision joins the prerequisites. Next: fix **#295**, then the six decisions → spec.
 
 ## Cockpit layout (moved 2026-09-30)
 
