@@ -15,7 +15,13 @@
  * The decision logic is a pure function over injected dependencies
  * (`decideRecovery` / `recoverRecord` / `runBootScan`), so the full matrix is
  * unit-testable without spawning processes; the production wiring is
- * `defaultRecoveryDeps`.
+ * `defaultRecoveryDeps`. `recoverInflightRuns` sources candidates from the
+ * durable registry (`src/run-registry.ts`) — NOT from the current session's run
+ * entries, which a fresh process cannot see after a crash.
+ *
+ * Reaping waits ONE grace window for the whole scan (`runBootScan` collects
+ * every orphan pid and escalates them together), so N orphans cost one grace
+ * period, not N.
  *
  * PLATFORM BOUNDARY (required): the start-time token (`/proc/<pid>/stat` field
  * 22) and the child-marker scan (`/proc/<pid>/environ`) are Linux/POSIX reads.
@@ -38,6 +44,7 @@ import * as path from "node:path";
 import type { ProcessOwner, SubagentRun } from "./types";
 import { SIGKILL_GRACE_MS } from "./types";
 import { CHILD_MARKER_ENV_KEY } from "./sanitize";
+import { listInflightRuns } from "./run-registry";
 import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
@@ -197,6 +204,39 @@ export function decideRecovery(record: RecoveryRecord, deps: RecoveryDeps): Reco
 }
 
 /**
+ * Escalate a set of pids together: SIGTERM every one, wait ONE grace window,
+ * then SIGKILL any survivor. Returns the pids still alive afterwards.
+ *
+ * This is the single implementation of the SIGTERM → grace → SIGKILL shape;
+ * `recoverRecord` (one record) and `runBootScan` (the whole scan) both call it,
+ * so a boot with N orphans waits one grace period total, never N.
+ */
+export async function reapPids(pids: number[], deps: RecoveryDeps): Promise<number[]> {
+	const unique = [...new Set(pids)];
+	for (const pid of unique) {
+		try {
+			deps.kill(pid, "SIGTERM");
+		} catch {
+			// Already gone — the desired end state.
+		}
+	}
+	if (unique.length > 0) {
+		await deps.sleep(deps.graceMs);
+	}
+	const survived: number[] = [];
+	for (const pid of unique) {
+		if (!deps.pidAlive(pid)) continue;
+		try {
+			deps.kill(pid, "SIGKILL");
+		} catch {
+			// Race: it exited between the liveness check and the signal.
+		}
+		if (deps.pidAlive(pid)) survived.push(pid);
+	}
+	return survived;
+}
+
+/**
  * Apply a record's plan: SIGTERM every marker-verified orphan, wait the grace
  * period, SIGKILL any survivor, then report. Never throws on a vanished pid.
  */
@@ -217,26 +257,7 @@ export async function recoverRecord(
 	}
 
 	const reaped = [...new Set(plan.reap)];
-	for (const pid of reaped) {
-		try {
-			deps.kill(pid, "SIGTERM");
-		} catch {
-			// Already gone — the desired end state.
-		}
-	}
-	if (reaped.length > 0) {
-		await deps.sleep(deps.graceMs);
-	}
-	const survived: number[] = [];
-	for (const pid of reaped) {
-		if (!deps.pidAlive(pid)) continue;
-		try {
-			deps.kill(pid, "SIGKILL");
-		} catch {
-			// Race: it exited between the liveness check and the signal.
-		}
-		if (deps.pidAlive(pid)) survived.push(pid);
-	}
+	const survived = await reapPids(reaped, deps);
 
 	return {
 		id: record.id,
@@ -278,6 +299,10 @@ export interface BootScanOptions {
  *
  * Idempotent: a marked record has `interruptedAt` set in memory before the
  * next iteration, so a second scan over the same array is a no-op.
+ *
+ * Wait-once: every orphan pid across every record is reaped in ONE
+ * SIGTERM → grace → SIGKILL window (the `reapActiveChildren` shape), so a boot
+ * with N orphans is not an N × graceMs stall.
  */
 export async function runBootScan(options: BootScanOptions): Promise<BootScanSummary> {
 	const { records, deps, mark } = options;
@@ -291,35 +316,115 @@ export async function runBootScan(options: BootScanOptions): Promise<BootScanSum
 		skippedNoOwner: 0,
 	};
 
-	for (const record of records) {
-		const outcome = await recoverRecord(record, deps);
-		if (outcome.decision === "mark") {
+	// Plan every record first (pure), then reap ALL proposed pids together.
+	const planned = records.map((record) => ({ record, plan: decideRecovery(record, deps) }));
+	const allReaps = planned.flatMap(({ plan }) => (plan.decision === "mark" ? plan.reap : []));
+	const survived = new Set(await reapPids(allReaps, deps));
+
+	for (const { record, plan } of planned) {
+		if (plan.decision === "mark") {
 			mark(record, nowIso);
 			// In-memory mark first: guarantees the scan is idempotent even when
 			// the caller's write-back is append-only (run entries) or deferred.
 			record.interruptedAt = nowIso;
 			summary.marked++;
-			summary.reaped += outcome.reaped.length;
+			const reaped = [...new Set(plan.reap)];
+			summary.reaped += reaped.length;
 			options.log?.warn("Recovery: marked interrupted record", {
 				id: record.id,
 				kind: record.kind,
-				reason: outcome.reason,
-				reaped: outcome.reaped,
-				survived: outcome.survived,
+				reason: plan.reason,
+				reaped,
+				survived: reaped.filter((pid) => survived.has(pid)),
 			});
 		} else {
 			summary.skipped++;
-			if (outcome.reason === "ownership-unverifiable") summary.skippedUnverifiable++;
-			if (outcome.reason === "no-owner") summary.skippedNoOwner++;
+			if (plan.reason === "ownership-unverifiable") summary.skippedUnverifiable++;
+			if (plan.reason === "no-owner") summary.skippedNoOwner++;
 			options.log?.debug("Recovery: left record untouched", {
 				id: record.id,
 				kind: record.kind,
-				reason: outcome.reason,
+				reason: plan.reason,
 			});
 		}
 	}
 
 	return summary;
+}
+
+// ---------------------------------------------------------------------------
+// Registry-sourced scan (the production candidate source)
+// ---------------------------------------------------------------------------
+
+/** The subset of a persisted background agent record the scan reasons over. */
+export interface PersistedAgentLike {
+	status: string;
+	interruptedAt?: string;
+	owner?: ProcessOwner;
+	childMarker?: string;
+}
+
+export interface RegistryScanOptions {
+	deps: RecoveryDeps;
+	/** Persist the D3 mark for this record (registry entry; agent record for background). */
+	mark(record: RecoveryRecord, interruptedAt: string): void;
+	/**
+	 * Read ONE background run's agent record by id (never the whole store).
+	 * Returns null when the record is absent; absent defaults to an in-flight
+	 * entry so a registry without an agent file is still marked, not skipped.
+	 */
+	readAgentRecord?(id: string): PersistedAgentLike | null;
+	now?: () => Date;
+	log?: Pick<Logger, "debug" | "info" | "warn">;
+}
+
+/**
+ * The production boot scan: candidate runs come from the durable registry
+ * (`listInflightRuns`), NOT from the current session's entries and NOT from a
+ * full parse of `.pi/subagents/`. This is what makes detection work on pi's
+ * default fresh startup after a conductor crash.
+ *
+ * Foreground/unit entries become `kind: "run"` candidates straight from the
+ * registry; background entries become `kind: "agent"` candidates enriched by
+ * reading THAT ONE agent file (so a stale registry entry whose agent record is
+ * already terminal is dropped). Legacy records with no registry entry are
+ * invisible here — consistent with the maintained `no-owner` policy (don't act
+ * on what we cannot verify).
+ */
+export async function recoverInflightRuns(options: RegistryScanOptions): Promise<BootScanSummary> {
+	const records: RecoveryRecord[] = [];
+	for (const entry of listInflightRuns()) {
+		if (entry.kind === "background") {
+			const agent = options.readAgentRecord?.(entry.id) ?? null;
+			if (agent && agent.status !== "running") continue;
+			records.push({
+				id: entry.id,
+				kind: "agent",
+				status: "running",
+				interruptedAt: agent?.interruptedAt ?? entry.interruptedAt,
+				owner: agent?.owner ?? entry.owner,
+				childMarker: agent?.childMarker ?? entry.childMarker,
+				source: entry,
+			});
+		} else {
+			records.push({
+				id: entry.id,
+				kind: "run",
+				status: "running",
+				interruptedAt: entry.interruptedAt,
+				owner: entry.owner,
+				childMarker: entry.childMarker,
+				source: entry,
+			});
+		}
+	}
+	return runBootScan({
+		records,
+		deps: options.deps,
+		mark: options.mark,
+		now: options.now,
+		log: options.log,
+	});
 }
 
 // ---------------------------------------------------------------------------

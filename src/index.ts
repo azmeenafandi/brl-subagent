@@ -79,13 +79,12 @@ import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs, reapActiveChildren } from "./runner";
 import {
 	isProcAvailable,
-	runBootScan,
+	recoverInflightRuns,
 	defaultRecoveryDeps,
 	currentProcessOwner,
 	newDispatchIdentity,
-	dedupeRunEntriesById,
-	type RecoveryRecord,
 } from "./recovery";
+import { markInterrupted } from "./run-registry";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
 import {
@@ -710,7 +709,7 @@ export default function (pi: ExtensionAPI) {
 				// foreground live entry (the #130 invariant gap that swept
 				// graph/chain entries immediately).
 				const { runId, run } = createUnitRun(merged, stepModel, chainPriority, globalParams.resolvedPreset?.name);
-				state.persistRun(pi, run);
+				state.persistRun(pi, run, "unit");
 
 				// R2: Prune old run entries if history exceeds limit
 				pruneHistoryIfNeeded(state, ctx, log);
@@ -1165,7 +1164,7 @@ export default function (pi: ExtensionAPI) {
 			// monitor drill-in shows per-unit priority and a post-hoc audit
 			// trail exists per subtask (mirrors single-mode run persistence).
 			const { runId, run } = createUnitRun(merged, stepModel, parallelPriority, globalParams.resolvedPreset?.name);
-			state.persistRun(pi, run);
+			state.persistRun(pi, run, "unit");
 
 			// R2: Prune old run entries if history exceeds limit
 			pruneHistoryIfNeeded(state, ctx, log);
@@ -1802,7 +1801,7 @@ export default function (pi: ExtensionAPI) {
 					// foreground live entry (the #130 invariant gap that swept
 					// graph/chain entries immediately).
 					const { runId, run } = createUnitRun(merged, stepModel, graphPriority, globalParams.resolvedPreset?.name);
-					state.persistRun(pi, run);
+					state.persistRun(pi, run, "unit");
 
 					// R2: Prune old run entries if history exceeds limit
 					pruneHistoryIfNeeded(state, ctx, log);
@@ -3215,7 +3214,7 @@ export default function (pi: ExtensionAPI) {
 				owner: currentProcessOwner(),
 				childMarker: crypto.randomUUID(),
 			};
-			state.persistRun(pi, run);
+			state.persistRun(pi, run, "foreground");
 
 			// R2: Prune old run entries if history exceeds limit
 			pruneHistoryIfNeeded(state, ctx, log);
@@ -3874,54 +3873,33 @@ export default function (pi: ExtensionAPI) {
 	// -------------------------------------------------------------------
 	// Option B U1: boot recovery — identity/liveness detection + child reap
 	// -------------------------------------------------------------------
-	// Runs AFTER restoreFromSession so config is ready. For every persisted
-	// `running` record (the cross-session .pi/subagents/ agent records plus this
-	// session's run entries): a dead owner's orphaned child is reaped, then the
-	// record is marked `interruptedAt`. SILENT in the UI — the notice/offer
+	// Runs AFTER restoreFromSession so config is ready. Candidate runs come from
+	// the DURABLE registry (`.pi/run-registry/`), NOT from this session's run
+	// entries: a crashed session's foreground/unit records are invisible to a
+	// default fresh startup, and the full `.pi/subagents/` store is too costly to
+	// parse (only the one agent record a background entry names is read). For
+	// each in-flight run whose owner is dead, its orphaned marker-verified child
+	// is reaped and the record is marked: the registry entry always, plus the
+	// agent record for background runs. SILENT in the UI — the notice/offer
 	// surface is U3. Platforms without /proc skip the whole scan (one log line):
 	// pid-only liveness cannot rule out pid reuse, so nothing is killed or
 	// marked unverified.
-	async function performBootRecovery(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	async function performBootRecovery(): Promise<void> {
 		if (!isProcAvailable()) {
 			log.info("Boot recovery skipped: /proc start-token verification unavailable on this platform");
 			return;
 		}
 		try {
-			const { listPersistedAgents, markAgentInterrupted } = await import("./session-manager");
-			const records: RecoveryRecord[] = [];
-			for (const run of dedupeRunEntriesById(state.getRunEntries(ctx))) {
-				records.push({
-					id: run.id,
-					kind: "run",
-					status: run.status,
-					interruptedAt: run.interruptedAt,
-					owner: run.owner,
-					childMarker: run.childMarker,
-					source: run,
-				});
-			}
-			for (const agent of listPersistedAgents()) {
-				records.push({
-					id: agent.id,
-					kind: "agent",
-					status: agent.status,
-					interruptedAt: agent.interruptedAt,
-					owner: agent.owner,
-					childMarker: agent.childMarker,
-					source: agent,
-				});
-			}
-			const summary = await runBootScan({
-				records,
+			const { getAgent, markAgentInterrupted } = await import("./session-manager");
+			const summary = await recoverInflightRuns({
 				deps: defaultRecoveryDeps(),
 				log,
+				// Read THAT ONE agent record by id — never the whole store.
+				readAgentRecord: (id) => getAgent(id),
 				mark(record, interruptedAt) {
-					if (record.kind === "agent") {
-						markAgentInterrupted(record.id, interruptedAt);
-						return;
-					}
-					const run = record.source as SubagentRun;
-					state.persistRun(pi, { ...run, interruptedAt });
+					// Registry entry = the durable mark for every kind.
+					markInterrupted(record.id, interruptedAt);
+					if (record.kind === "agent") markAgentInterrupted(record.id, interruptedAt);
 				},
 			});
 			if (summary.marked > 0) {
@@ -3985,7 +3963,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Option B U1: reap a dead conductor's orphaned children and mark the
 		// records interrupted BEFORE anything else touches their worktrees.
-		await performBootRecovery(pi, ctx);
+		await performBootRecovery();
 
 		updateStatus(state, ctx);
 	});

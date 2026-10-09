@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
-import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
+import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -14,6 +14,7 @@ import { createLogger } from './logging';
 import { getCurrentBranch, createWorkBranch, captureDiff, switchToBranch, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
 import { normalizeTimeout, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
 import { currentProcessOwner } from './recovery';
+import { persistRunRecord } from './run-registry';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -571,7 +572,7 @@ export async function spawnBackgroundSession(
     attempt,
     owner,
   };
-  pi.appendEntry(CUSTOM_ENTRY_TYPES.run, run);
+  persistRunRecord(pi, run, "background");
 
   // Issue #98: keep the session run entry in lockstep with the agent record —
   // every terminal branch that flips agent.status also finalizes the run entry
@@ -640,7 +641,7 @@ export async function spawnBackgroundSession(
           ? { ...(run.originalParams ?? {}), errorCategory }
           : run.originalParams,
     };
-    pi.appendEntry(CUSTOM_ENTRY_TYPES.run, entry);
+    persistRunRecord(pi, entry);
     // Issue #179 (D6): the explicit settle line — the log's job is to record the
     // CLASSIFIED OUTCOME, which cwd alone can never convey.
     log.info("Background run settled", {

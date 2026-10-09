@@ -84,6 +84,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `recovery.ts` | Boot-time recovery scan — decides whether a persisted running record is live, reaps orphaned children, and marks interrupted records. |
 | `reports.ts` | Compliance reporting: file-access records and secrets-exposure detection. |
 | `router.ts` | Auto-route: keyword classification of a task description to the best preset. |
+| `run-registry.ts` | Durable per-run in-flight registry + the single run-record persist choke point that mirrors into it. |
 | `runner.ts` | Foreground execution: spawns the `pi` subprocess, parses its JSON-line stream, and folds usage. |
 | `sanitize.ts` | Input validation, environment allowlisting, and output sanitization (task, cwd, outputFile, agent ids). |
 | `scheduler.ts` | Dependency-graph scheduler: cycle detection, topological waves, and graph validation. |
@@ -100,7 +101,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**35 modules** — every one is listed because a new module without a purpose fails CI.
+**36 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

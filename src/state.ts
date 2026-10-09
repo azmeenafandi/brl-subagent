@@ -35,6 +35,7 @@ import {
 	CIRCUIT_DEGRADED_THINKING,
 } from "./types";
 import { cleanupRuns } from "./history";
+import { persistRunRecord, type InflightRunKind } from "./run-registry";
 import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
@@ -220,8 +221,14 @@ export class SessionState {
 		});
 	}
 
-	persistRun(pi: ExtensionAPI, run: SubagentRun): void {
-		pi.appendEntry(CUSTOM_ENTRY_TYPES.run, run);
+	/**
+	 * Persist a run record through the ONE choke point (`persistRunRecord`),
+	 * which appends the session entry AND mirrors the record into the durable
+	 * in-flight registry. `kind` is supplied at dispatch; terminal writes clear
+	 * the registry entry.
+	 */
+	persistRun(pi: ExtensionAPI, run: SubagentRun, kind?: InflightRunKind): void {
+		persistRunRecord(pi, run, kind);
 	}
 
 	// -------------------------------------------------------------------
