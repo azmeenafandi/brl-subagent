@@ -184,3 +184,21 @@ A boot-time auto-resume **does not collide at registration level** (the wake sub
 - P2a: `p2a-harness.sh` (discarded — self-matching pgrep), `p2a2-harness.sh` (terminal toolUse before kill → failed), `p2a3-harness.sh` (immediate kill → **done** false success).
 - P2b: `/tmp/optb-probe/p2b-harness.sh` (conductor kill → orphan alive, entry running).
 - Cleanup: all `pi --mode json` / `sleep` processes killed; `pgrep` clean.
+
+---
+
+## Addendum (2026-10-09, conductor-run): torn-write durability probe for file-backed sessions
+
+**Why.** Decision 1 of the Option B spec (file-backed session persistence vs non-persistent + idempotent re-dispatch) hinged on one unknown: can a session survive a `kill -9` **during** an append (a torn final line), or does a torn line make the session unloadable? Everything else about option A was a design question; this was the discovery risk. Target: `pi-coding-agent@1.1.0` (installed in the cockpit); scratch `/tmp/tornprobe`; no model calls, no credentials. Probe scripts: `/tmp/tornprobe/probe.mjs` (matrix/header/concurrency), `/tmp/tornprobe/killprobe3.mjs` (gated mid-write kill).
+
+**Expected signature (stated before).** If the reader tolerates a torn tail, a truncated file opens with the complete prior entries and no throw; a kill mid-write leaves a partial final line (no trailing newline) that loads the same way.
+
+**Results.**
+1. *Deterministic truncation matrix* (append-only session, 3 entries): full / missing-final-newline → all entries; half last line / 5-byte last line / trailing garbage → `open=ok` with the prior entries, no throw; a cut inside the first message → 0 entries (header parses; no complete entry).
+2. *Real gated mid-write kills* (64MB custom entry; kill 0.03–0.31s after READY, spread over a measured 327ms post-READY window): 4/6 landed pre-write (complete 271B files); **2/6 landed mid-write** (32,493,568 and 33,595,392 bytes, trailing newline absent) → `open=ok entries=1` on both.
+3. *Self-heal mechanism (observed end-to-end, source-confirmed)*: `loadEntriesFromFile` streams lines and pushes only lines that `parseSessionEntryLine` accepts (malformed lines skipped by design — the comment says blank/malformed lines are skipped to match this behavior); if a non-empty tail remains it **appends the missing `\n` to the file** (`if (pending) appendFileSync(resolvedFilePath, "\n")`). After our load, both torn files ended in `\n` again.
+4. *Supporting facts*: append-only confirmed (prefix immutable; one line per entry); the write path is plain `appendFileSync` — **no fsync**, so a process kill preserves everything already written while power loss is best-effort; the header carries `{"type":"session","version":3}` (schema guard feasible); `sessionDir` is honored and the default when omitted is global (`~/.pi/agent/sessions/<cwd-key>/`) — pass an explicit dir; two processes appending 200 entries each to one file → 400 interleaved lines, **0 malformed**, both exit 0 (the file stays valid; the multi-writer hazard is semantic — two agents on one worktree — not corruption).
+
+**Boundaries.** Process-kill durability only (no power-loss test); single filesystem (tmpfs); SDK-1.1.0-bound — a version bump can change the write path; the deterministic mid-UTF-8 variant cut inside the first message rather than a tail (informative about unparseable first entries, not tail splitting); the at-least-once question (side effects repeated by a re-driven turn) was **not** probed.
+
+**What it means for Decision 1.** The torn-line risk that made option A a discovery bet is resolved *by design*: a torn tail loads with the prior entries intact and is self-healed on read, losing only the incomplete entry (the correct outcome). A's remaining costs are therefore design costs (retention/lifecycle, the second serialization alongside transcripts, reap-before-resume ordering, version-skew guard), not unknowns — which is what makes a staged A (A₁ persistence + measurement, then A₂ resume) defensible rather than a gamble.
