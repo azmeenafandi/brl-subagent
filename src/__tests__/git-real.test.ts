@@ -19,10 +19,11 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+
+import { createTempGitRepo, gitRun as run } from "./fixtures/temp-git-repo";
 
 import {
 	getCurrentBranch,
@@ -48,35 +49,14 @@ function gitAvailable(): boolean {
 
 const GIT_OK = gitAvailable();
 
-const run = (cwd: string, args: string[]) =>
-	execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
-
-const gitOpts = (cwd: string) => ({ cwd, encoding: "utf-8" });
-
-function initRepo(dir: string): void {
-	run(dir, ["init", "-q"]);
-	// Portable: works on git < 2.28 where `init -b` is unavailable.
-	run(dir, ["checkout", "-q", "-b", "main"]);
-	run(dir, ["config", "user.email", "gate-a@test.local"]);
-	run(dir, ["config", "user.name", "Gate A"]);
-}
-
-async function commitFile(dir: string, name: string, content: string, msg: string): Promise<void> {
-	await writeFile(join(dir, name), content);
-	run(dir, ["add", name]);
-	run(dir, ["commit", "-q", "-m", msg]);
-}
-
 describe("git.ts real-git behavior (Gate A)", () => {
 	const scratchDirs: string[] = [];
 	let repo: string;
 
 	beforeAll(async () => {
 		if (!GIT_OK) return;
-		repo = await mkdtemp(join(tmpdir(), "brl-gate-a-"));
+		repo = await createTempGitRepo("brl-gate-a-");
 		scratchDirs.push(repo);
-		initRepo(repo);
-		await commitFile(repo, "base.txt", "base\n", "base commit");
 	});
 
 	afterAll(async () => {

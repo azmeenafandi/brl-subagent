@@ -35,6 +35,7 @@ import { writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import { resolvePiOnPath } from "../preflight";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
+import { createTempGitRepo, gitRun } from "./fixtures/temp-git-repo";
 
 const execFileAsync = promisify(execFile);
 
@@ -80,10 +81,11 @@ interface StubRecord {
 	task: string;
 }
 
-async function readStubLog(): Promise<StubRecord[]> {
+async function readStubLog(cwd: string = TMP_SCRIPT_DIR): Promise<StubRecord[]> {
+	const logPath = join(cwd, "stub-pi-invocations.jsonl");
 	let raw: string;
 	try {
-		raw = await readFile(STUB_LOG_PATH, "utf8");
+		raw = await readFile(logPath, "utf8");
 	} catch (err: any) {
 		// A missing log is the legitimate empty case. Any other failure
 		// (including JSON parse errors below) must surface, so a corrupt or
@@ -477,32 +479,55 @@ describe("Tier 2: Subprocess integration tests", () => {
 	it("git mode handles branch workflow", async () => {
 		if (!canRun) return;
 
-		// NOTE: assumes the cwd is a git checkout — branch-mode creation
-		// requires a repo (the project root is one in development and CI).
-		const result = await runDelegateTask({
-			task: "Say hello",
-			gitMode: "branch",
-		});
+		// #302: the branch workflow must run against a THROWAWAY repo, never the
+		// process cwd. Without an explicit `cwd`, the spawn runs createWorkBranch
+		// against this checkout — moving HEAD onto a random work branch and (from
+		// a detached HEAD, as in CI PR builds) leaking it past teardown.
+		const projectHeadBefore = gitRun(PROJECT_ROOT, ["rev-parse", "HEAD"]);
+		const projectBranchesBefore = gitRun(PROJECT_ROOT, ["branch", "--list", "brl-subagent-*"]);
 
-		expect(result.exitCode).toBe(0);
+		const tempRepo = await createTempGitRepo("brl-e2e-git-");
+		try {
+			const result = await runDelegateTask({
+				task: "Say hello",
+				gitMode: "branch",
+				cwd: tempRepo,
+			});
 
-		const output = parseOutput(result);
-		expect(output).toHaveProperty("result");
-		expect(output.result).toHaveProperty("content");
+			expect(result.exitCode).toBe(0);
 
-		const text = output.result.content?.[0]?.text as string;
-		expect(text).not.toContain("PARAMS_PARSE_FAILED");
-		// The delegation actually ran (not merely "execute didn't crash").
-		expect(output.result.isError).not.toBe(true);
+			const output = parseOutput(result);
+			expect(output).toHaveProperty("result");
+			expect(output.result).toHaveProperty("content");
 
-		if (STUB_MODE) {
-			const log = await readStubLog();
-			expect(log.filter((r) => r.event === "start")).toHaveLength(1);
-			// The work branch was created and recorded on the result.
-			expect(output.result.details?.gitBranch).toMatch(/^brl-subagent-/);
+			const text = output.result.content?.[0]?.text as string;
+			expect(text).not.toContain("PARAMS_PARSE_FAILED");
+			// The delegation actually ran (not merely "execute didn't crash").
+			expect(output.result.isError).not.toBe(true);
+
+			// #302 invariant guard: the branch run must not move the checkout's HEAD
+			// nor leave any work branch behind. Capture-then-compare (not a hardcoded
+			// expectation) so it works equally on a branch and in CI's detached PR
+			// builds. Asserted FIRST after the call so a regression is reported here
+			// rather than masked by a downstream assertion.
+			expect(gitRun(PROJECT_ROOT, ["rev-parse", "HEAD"])).toBe(projectHeadBefore);
+			expect(gitRun(PROJECT_ROOT, ["branch", "--list", "brl-subagent-*"])).toBe(projectBranchesBefore);
+
+			if (STUB_MODE) {
+				const log = await readStubLog(tempRepo);
+				expect(log.filter((r) => r.event === "start")).toHaveLength(1);
+				// The work branch was created and recorded on the result.
+				expect(output.result.details?.gitBranch).toMatch(/^brl-subagent-/);
+			}
+
+			// #302 invariant: the throwaway repo is left restored — no work branch
+			// survives the call.
+			expect(gitRun(tempRepo, ["branch", "--list", "brl-subagent-*"])).toBe("");
+
+			console.log("Git mode result:", text?.slice(0, 200));
+		} finally {
+			await rm(tempRepo, { recursive: true, force: true });
 		}
-
-		console.log("Git mode result:", text?.slice(0, 200));
 	});
 
 	it("pre-spawn validation rejects outputFile when the write tool is excluded", async () => {
