@@ -17,6 +17,7 @@ import {
 	isSubagentStateShape,
 	isSubagentRunShape,
 	EMPTY_USAGE,
+	SUBAGENT_SIGNAL_KILLED_MESSAGE,
 } from "../types";
 import { classifyError } from "../types";
 
@@ -374,6 +375,20 @@ describe("classifyError", () => {
 		expect(
 			classifyError(makeResult({ errorMessage: "Timed out after 5000ms — aborted by user" })),
 		).toBe("timeout");
+	});
+
+	it("returns 'crash' for the external-signal kill stamp (issue #295)", () => {
+		// The close handler stamps this BEFORE the tail classifyError runs. A signal
+		// death carries no numeric code, so the -1 sentinel would otherwise classify
+		// as 'exit_error'; the stamp must win as the honest 'crash'.
+		expect(
+			classifyError(
+				makeResult({
+					errorMessage: `${SUBAGENT_SIGNAL_KILLED_MESSAGE} (SIGKILL)`,
+					exitCode: -1,
+				}),
+			),
+		).toBe("crash");
 	});
 
 	it("returns 'permission_denied' for permission denied error", () => {

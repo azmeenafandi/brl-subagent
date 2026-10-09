@@ -62,6 +62,15 @@ export type ErrorCategory =
 // literal in sync with classifyError — do NOT reword one without the other.
 export const SUBAGENT_ABORTED_MESSAGE = "Subagent aborted by user";
 
+// Issue #295: external-signal kill stamp. A SIGKILL/SIGTERM that was NOT staged
+// by our own timeout/abort handler leaves no terminal event, and Node reports
+// code === null for a signal death. The foreground close handler stamps this
+// message (with the signal name) so classifyError can record the honest cause
+// instead of the false 'done' that a fabricated exit 0 produced. Matched below
+// on its distinctive "killed by external signal" substring (mirroring the
+// SUBAGENT_ABORTED_MESSAGE match) — keep the literal in sync with classifyError.
+export const SUBAGENT_SIGNAL_KILLED_MESSAGE = "Subagent killed by external signal";
+
 /**
  * Classify a subagent result into an error category based on its errorMessage,
  * stopReason, exitCode, and stderr content. Inspects patterns in priority order.
@@ -95,6 +104,15 @@ export function classifyError(result: SubagentResult): ErrorCategory {
 	// SUBAGENT_ABORTED_MESSAGE. The stamped category is preserved so it is not
 	// clobbered by the exitError/unknown fallbacks below.
 	if (msg.includes("aborted by user")) return "aborted";
+
+	// Issue #295: a signal death we did NOT stage (no timeout/abort reason) is
+	// stamped with SUBAGENT_SIGNAL_KILLED_MESSAGE + the signal name by the
+	// foreground close handler. classifyError cannot infer it from the dead
+	// process (a signal death carries no numeric code), so the stamp must survive
+	// reclassification as a genuine crash — checked before the exitCode fallback,
+	// which the -1 signal sentinel would otherwise turn into exit_error. Keep this
+	// substring in sync with the constant above.
+	if (msg.includes("killed by external signal")) return "crash";
 
 	if (msg.includes("model not found") || msg.includes("model unavailable"))
 		return "model_unavailable";
