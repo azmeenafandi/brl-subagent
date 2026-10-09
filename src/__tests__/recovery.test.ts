@@ -40,7 +40,7 @@ import {
 	type RecoveryDeps,
 	type RecoveryRecord,
 } from "../recovery";
-import { isSubagentRunShape, type SubagentRun } from "../types";
+import { isInterruptedRun, isSubagentRunShape, type SubagentRun } from "../types";
 import { CHILD_MARKER_ENV_KEY } from "../sanitize";
 import { activeChildCount, reapActiveChildren, runSubagent } from "../runner";
 import { listPersistedAgents, markAgentInterrupted } from "../session-manager";
@@ -298,6 +298,12 @@ describe("isSubagentRunShape tolerance", () => {
 
 	it("still rejects a malformed record", () => {
 		expect(isSubagentRunShape({ id: "r", task: "t", status: "bogus" })).toBe(false);
+	});
+
+	it("isInterruptedRun keys on running + interruptedAt, never a status value", () => {
+		expect(isInterruptedRun({ id: "r", task: "t", status: "running", interruptedAt: "iso" } as SubagentRun)).toBe(true);
+		expect(isInterruptedRun({ id: "r", task: "t", status: "running" } as SubagentRun)).toBe(false);
+		expect(isInterruptedRun({ id: "r", task: "t", status: "done", interruptedAt: "iso" } as SubagentRun)).toBe(false);
 	});
 });
 
