@@ -46,6 +46,8 @@ Each unit is its own worktree + PR, with its own implementation spec approved be
 Risk classes per the Team Agreement (C1 = state/lifecycle/persistence → adversarial review).
 
 ### U1 — Identity, liveness, and the detection engine (C1)
+**STATUS (2026-10-09): MERGED** — PR #301 (`7916dad`, merge commit into dev; no squash). Review: original adversarial `changes-requested` → Fix A + Fix B → scoped re-review **approved** (both findings files under `.development/investigations/`). #296 closes at the release merge (Fixes keywords fire on the default branch only). Live rule-9 verification deferred to release (extension code). Follow-up nit: `src/session-manager.ts:144-146` comment.
+
 
 **Goal:** every run records enough identity to decide, in a fresh process, whether it is genuinely live —
 and stray children from a dead process are reaped before anything else touches their worktree.
