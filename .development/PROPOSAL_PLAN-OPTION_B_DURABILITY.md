@@ -62,7 +62,9 @@ and stray children from a dead process are reaped before anything else touches t
 - Shutdown reap: kill in-memory in-flight children on `session_shutdown` (covers clean exits).
 - `isInterruptedRun(run)` predicate centralized in `src/types.ts` (sibling of #298's partial/settled work).
 - **Assumption stated in code and docs:** one conductor per cwd is *not* required (owner identity covers
-  it), but a background run whose owner record is missing is treated as interrupted.
+  it). A record with **no owner at all is left untouched** (`no-owner`) — **maintainer-confirmed 2026-10-09**:
+  never mark a record whose ownership cannot be checked. Revisit once every writer emits `owner`
+  (post-version-boundary), when `no-owner` can safely become interrupted.
 
 **Acceptance:** the P1/P2 crash scenarios reproduced as tests (background kill → records running then
 marked at boot; foreground conductor kill → child reaped, entry marked; child-kill → #295 classification
