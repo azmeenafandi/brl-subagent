@@ -649,6 +649,8 @@ export const EMPTY_USAGE: UsageStats = {
 export const NAV_FOOTER = "\u2191\u2193 navigate \u2022 enter select \u2022 esc cancel";
 
 export const SIGKILL_GRACE_MS = 5000;
+/** Poll interval while waiting for a reaped child to die (B4 early exit, bounded by SIGKILL_GRACE_MS). */
+export const SIGKILL_POLL_MS = 100;
 export const STATUS_RESET_DELAY_MS = 3000;
 export const TEMP_FILE_MODE = 0o600;
 export const TASK_PREVIEW_MAX_LENGTH = 80;

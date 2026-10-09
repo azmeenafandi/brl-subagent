@@ -59,6 +59,7 @@ import { SIGKILL_GRACE_MS } from "./types";
 import { CHILD_MARKER_ENV_KEY } from "./sanitize";
 import { listInflightRuns } from "./run-registry";
 import { resolveTerminalRunEntry } from "./state";
+import { escalateKill, type EscalationTarget } from "./kill-escalation";
 import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
@@ -238,35 +239,28 @@ export function decideRecovery(record: RecoveryRecord, deps: RecoveryDeps): Reco
 
 /**
  * Escalate a set of pids together: SIGTERM every one, wait ONE grace window,
- * then SIGKILL any survivor. Returns the pids still alive afterwards.
- *
- * This is the single implementation of the SIGTERM → grace → SIGKILL shape;
- * `recoverRecord` (one record) and `runBootScan` (the whole scan) both call it,
- * so a boot with N orphans waits one grace period total, never N.
+ * then SIGKILL any survivor. Returns the pids still alive afterwards. Thin
+ * adapter over the shared `escalateKill` helper (src/kill-escalation.ts), which
+ * `recoverRecord` (one record) and `runBootScan` (the whole scan) both call, so
+ * a boot with N orphans waits one grace period total, never N.
  */
 export async function reapPids(pids: number[], deps: RecoveryDeps): Promise<number[]> {
 	const unique = [...new Set(pids)];
-	for (const pid of unique) {
-		try {
+	const targets: EscalationTarget[] = unique.map((pid) => ({
+		terminate: () => {
 			deps.kill(pid, "SIGTERM");
-		} catch {
-			// Already gone — the desired end state.
-		}
-	}
-	if (unique.length > 0) {
-		await deps.sleep(deps.graceMs);
-	}
-	const survived: number[] = [];
-	for (const pid of unique) {
-		if (!deps.pidAlive(pid)) continue;
-		try {
+		},
+		forceKill: () => {
 			deps.kill(pid, "SIGKILL");
-		} catch {
-			// Race: it exited between the liveness check and the signal.
-		}
-		if (deps.pidAlive(pid)) survived.push(pid);
-	}
-	return survived;
+		},
+		verifyDeath: () => !deps.pidAlive(pid),
+	}));
+	const survivors = await escalateKill(targets, {
+		graceMs: deps.graceMs,
+		sleep: deps.sleep,
+	});
+	const survivedSet = new Set(survivors);
+	return unique.filter((_, index) => survivedSet.has(targets[index]));
 }
 
 /**

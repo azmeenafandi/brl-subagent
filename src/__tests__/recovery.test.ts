@@ -566,45 +566,98 @@ describe("real /proc integration", () => {
 // 4. Shutdown reap
 // ---------------------------------------------------------------------------
 
+/**
+ * A wrapper that ignores pi's args and sleeps — lets runSubagent spawn a
+ * long-lived child we can reap without touching a real model. Runs `fn` with
+ * BRL_PI_BIN pointed at it and always restores the environment.
+ */
+async function withSleepWrapper<T>(fn: () => Promise<T>): Promise<T> {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-reap-"));
+	const script = path.join(dir, "sleep.sh");
+	fs.writeFileSync(script, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+	const previous = process.env.BRL_PI_BIN;
+	process.env.BRL_PI_BIN = script;
+	try {
+		return await fn();
+	} finally {
+		if (previous === undefined) delete process.env.BRL_PI_BIN;
+		else process.env.BRL_PI_BIN = previous;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+/** Launch one wrapper child with a per-run marker. */
+function launchForeground(marker: string, timeout?: number) {
+	return runSubagent(
+		process.cwd(),
+		"",
+		{ provider: "test", id: "test/model" },
+		"off",
+		"noop",
+		undefined,
+		undefined,
+		undefined,
+		timeout,
+		() => "",
+		undefined,
+		0,
+		undefined,
+		undefined,
+		marker,
+	);
+}
+
 describe("shutdown reap", () => {
 	it("kills a registered in-flight child", async () => {
-		// A wrapper that ignores pi's args and sleeps — lets runSubagent spawn a
-		// long-lived child we can reap without touching a real model.
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-reap-"));
-		const script = path.join(dir, "sleep.sh");
-		fs.writeFileSync(script, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
-
-		const previous = process.env.BRL_PI_BIN;
-		process.env.BRL_PI_BIN = script;
-		try {
+		await withSleepWrapper(async () => {
 			const marker = `reap-${crypto.randomUUID()}`;
-			const promise = runSubagent(
-				process.cwd(),
-				"",
-				{ provider: "test", id: "test/model" },
-				"off",
-				"noop",
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				() => "",
-				undefined,
-				0,
-				undefined,
-				undefined,
-				marker,
-			);
+			const promise = launchForeground(marker);
 			await waitUntil(() => activeChildCount() === 1, 5000);
 			const pids = await reapActiveChildren();
 			await promise;
 			expect(pids).toHaveLength(1);
 			expect(pidAlive(pids[0])).toBe(false);
 			expect(activeChildCount()).toBe(0);
-		} finally {
-			if (previous === undefined) delete process.env.BRL_PI_BIN;
-			else process.env.BRL_PI_BIN = previous;
-			fs.rmSync(dir, { recursive: true, force: true });
-		}
+		});
+	}, 20000);
+
+	it("B4: reaps a 300ms-timeout child without the old fixed 5s wait", async () => {
+		await withSleepWrapper(async () => {
+			const started = Date.now();
+			const marker = `reap-b4-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker, 300);
+			await waitUntil(() => activeChildCount() === 1, 5000);
+			const pids = await reapActiveChildren();
+			await promise;
+			const elapsed = Date.now() - started;
+			expect(pids).toHaveLength(1);
+			expect(pidAlive(pids[0])).toBe(false);
+			// Early exit: SIGTERM kills the wrapper promptly. The old implementation
+			// always awaited the full 5s SIGKILL_GRACE_MS here.
+			expect(elapsed).toBeLessThan(3000);
+		});
+	}, 20000);
+
+	it("B5: two concurrent children sharing a marker stay independently tracked", async () => {
+		await withSleepWrapper(async () => {
+			const marker = `collide-${crypto.randomUUID()}`;
+			const first = launchForeground(marker);
+			await waitUntil(() => activeChildCount() === 1, 5000);
+			const second = launchForeground(marker);
+			await waitUntil(() => activeChildCount() === 2, 5000);
+			await waitUntil(() => findByMarker(marker).length === 2, 5000);
+
+			// Kill ONE child directly: only its registry entry may be removed. Before
+			// B5 the marker-keyed map collapsed both, so this close untracked the
+			// still-live second child and the reap below missed it.
+			process.kill(findByMarker(marker)[0], "SIGKILL");
+			await waitUntil(() => activeChildCount() === 1, 5000);
+
+			const reaped = await reapActiveChildren();
+			await Promise.allSettled([first, second]);
+			expect(reaped).toHaveLength(1);
+			expect(pidAlive(reaped[0])).toBe(false);
+			expect(activeChildCount()).toBe(0);
+		});
 	}, 20000);
 });
