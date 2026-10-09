@@ -90,9 +90,25 @@ function childExited(proc: ChildProcess): boolean {
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Escalation target for one spawned child. `verifyDeath` is the real-exit check
- * for the reap path, and the historical signal-delivered check (`child.killed`)
- * for the single-child abort/timeout paths.
+ * SIGTERM → grace → SIGKILL timing for the single-child abort/timeout kill
+ * paths. Production uses the shared `SIGKILL_GRACE_MS` / `SIGKILL_POLL_MS`
+ * constants. The test-only setter below shortens them so the real-child
+ * escalation tests need not wait the full 5 s grace.
+ */
+const escalationTiming = { graceMs: SIGKILL_GRACE_MS, pollMs: SIGKILL_POLL_MS };
+
+/** TEST-ONLY: shorten (or reset with no argument) the abort/timeout escalation timing. */
+export function __setEscalationTimingForTest(timing?: { graceMs?: number; pollMs?: number }): void {
+	escalationTiming.graceMs = timing?.graceMs ?? SIGKILL_GRACE_MS;
+	escalationTiming.pollMs = timing?.pollMs ?? SIGKILL_POLL_MS;
+}
+
+/**
+ * Escalation target for one spawned child. `verifyDeath` defaults to the
+ * REAL-exit check (`childExited`) and may be overridden per site. The abort and
+ * timeout paths must use the real check (issue #303): `child.killed` flips
+ * when a signal is *sent*, not when the process dies, so gating the SIGKILL on
+ * it would let a SIGTERM-ignoring child survive the escalation.
  */
 function childTarget(proc: ChildProcess, verifyDeath: () => boolean = () => childExited(proc)): EscalationTarget {
 	return {
@@ -334,10 +350,14 @@ function attachAbortHandler(
 		// blind kill with no result access at all.
 		result.errorMessage = SUBAGENT_ABORTED_MESSAGE;
 		result.errorCategory = "aborted";
-		// Historical single-child semantics preserved: `child.killed` (a signal was
-		// delivered) is the death check, so a delivered SIGTERM skips the SIGKILL.
-		void escalateKill([childTarget(proc, () => Boolean(proc.killed))], {
-			graceMs: SIGKILL_GRACE_MS,
+		// Issue #303: use childTarget's default REAL-exit check. `child.killed`
+		// only records that SIGTERM was SENT, so gating the SIGKILL on it declared
+		// a SIGTERM-ignoring child dead and skipped the force-kill. The same
+		// poll/early-exit wait `reapActiveChildren` uses means a cooperative child
+		// completes in ms while a stubborn one gets SIGKILL at the grace boundary.
+		void escalateKill([childTarget(proc)], {
+			graceMs: escalationTiming.graceMs,
+			pollMs: escalationTiming.pollMs,
 			sleep: realSleep,
 		});
 	};
@@ -990,9 +1010,12 @@ ${msgBlock}`;
 					const timer = setTimeout(() => {
 						result.errorMessage = `Subagent timed out after ${timeout}ms`;
 						log?.warn("Subagent timed out", { timeout, pid: proc.pid });
-						// Same single-child death check as the abort path (see there).
-						void escalateKill([childTarget(proc, () => Boolean(proc.killed))], {
-							graceMs: SIGKILL_GRACE_MS,
+						// Same REAL-exit check as the abort path (issue #303 — see there):
+						// `child.killed` flips on signal-sent, not process-death, so it would
+						// skip the SIGKILL for a SIGTERM-ignoring child.
+						void escalateKill([childTarget(proc)], {
+							graceMs: escalationTiming.graceMs,
+							pollMs: escalationTiming.pollMs,
 							sleep: realSleep,
 						});
 					}, timeout);

@@ -16,10 +16,11 @@
  * the full 5 s when children exit promptly), bounded by `graceMs`; without it
  * the helper waits the full grace once (the boot scan's wait-once shape).
  *
- * `verifyDeath` is deliberately per-site: the reap paths ask whether the
- * process REALLY exited (`exitCode`/`signalCode`), while the single-child
- * abort/timeout paths keep their historical "a signal was delivered" check
- * (`child.killed`). What was duplicated — and is now shared — is the
+ * `verifyDeath` is supplied per site but must always answer "is the process
+ * REALLY dead" — for a child, `exitCode`/`signalCode`; for a pid, `kill -0`
+ * liveness. It must never be a "a signal was delivered" check: `child.killed`
+ * flips when SIGTERM is SENT, so gating SIGKILL on it skips escalation for a
+ * SIGTERM-ignoring child (issue #303). What is shared is the
  * terminate-then-escalate order and the no-throw-on-vanished discipline.
  */
 
