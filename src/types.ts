@@ -261,6 +261,21 @@ export interface SubagentState {
  */
 export type ToolResult<T = unknown> = AgentToolResult<T> & { isError?: boolean };
 
+/**
+ * Option B U1: identity of the conductor process that owns a run record.
+ *
+ * `pid` plus `start` (the process start-time token — `/proc/<pid>/stat` field
+ * 22 on Linux) lets a fresh process distinguish "a live conductor still owns
+ * this record" from "its conductor is dead", including two conductors sharing
+ * one cwd (which would otherwise be indistinguishable by pid alone after a
+ * reboot). `start` is `""` when the platform cannot supply a start token; the
+ * boot scan then treats ownership as unverifiable and never marks the record.
+ */
+export interface ProcessOwner {
+	pid: number;
+	start: string;
+}
+
 export interface SubagentRun {
 	id: string;
 	task: string;
@@ -296,6 +311,22 @@ export interface SubagentRun {
 	// Issue #114: per-unit priority (may be absent — the run's slot priority
 	// then fell back to the call-level default, which is not recorded here).
 	priority?: string;
+	// Option B U1 (D3/D4): additive durability identity — all optional, so
+	// records written before this change simply lack the keys.
+	// - dispatchId: uuid of the logical dispatch; a retry inherits it.
+	// - resumeOf: the run id a retry resumes (retries only).
+	// - attempt: 1 at first dispatch, (prior.attempt ?? 1) + 1 on a retry.
+	// - interruptedAt: D3 mark set by the boot scan when the conductor died;
+	//   status stays "running" (see isInterruptedRun).
+	// - owner: conductor process identity written at dispatch.
+	// - childMarker: uuid injected into the child process env on the foreground
+	//   path; the boot scan discovers the orphan via /proc/*/environ.
+	dispatchId?: string;
+	resumeOf?: string;
+	attempt?: number;
+	interruptedAt?: string;
+	owner?: ProcessOwner;
+	childMarker?: string;
 	startedAt: string;
 	finishedAt?: string;
 	durationMs?: number;
@@ -702,6 +733,15 @@ export interface BackgroundAgent {
 	finalOutput?: string;
 	/** @internal — session reference for live monitor polling */
 	_sessionRef?: import('@earendil-works/pi-coding-agent').AgentSession;
+	// Option B U1 (D3/D4): additive durability identity, mirroring SubagentRun.
+	// Background records carry dispatchId/owner/attempt (no childMarker — there
+	// is no child process; the session is in-process).
+	dispatchId?: string;
+	resumeOf?: string;
+	attempt?: number;
+	interruptedAt?: string;
+	owner?: ProcessOwner;
+	childMarker?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -968,6 +1008,17 @@ export function isSubagentRunShape(value: unknown): value is SubagentRun {
 	if (typeof v.task !== "string") return false;
 	if (!["running", "done", "failed"].includes(v.status as string)) return false;
 	return true;
+}
+
+/**
+ * Option B U1 (D3): the ONE interrupted-state predicate. Status deliberately
+ * stays "running" (a new status value would be dropped by old readers and
+ * misread as resolved by the `!== "running"` guards); the additive
+ * `interruptedAt` mark is the only signal. Consumers must key on THIS helper,
+ * never on a raw status compare.
+ */
+export function isInterruptedRun(run: SubagentRun): boolean {
+	return run.status === "running" && !!run.interruptedAt;
 }
 
 /**

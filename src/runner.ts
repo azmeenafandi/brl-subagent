@@ -33,7 +33,7 @@ import {
 	SUBAGENT_ABORTED_MESSAGE,
 	SUBAGENT_SIGNAL_KILLED_MESSAGE,
 } from "./types";
-import { getSafeEnv, DEPTH_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
+import { getSafeEnv, DEPTH_ENV_KEY, CHILD_MARKER_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
 import { extractMessages, formatPendingMessages } from "./messaging";
@@ -42,6 +42,65 @@ import type {
 	TranscriptContentBlock,
 	TranscriptToolCallBlock,
 } from "./transcript-tail";
+// ---------------------------------------------------------------------------
+// In-flight child registry (Option B U1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Foreground child processes currently in flight, keyed by their child marker
+ * (or subagentId when no marker was supplied). `reapActiveChildren` terminates
+ * every entry on `session_shutdown` so a clean extension exit never leaves an
+ * orphaned `pi` subprocess burning tokens.
+ *
+ * The registry is process-local and best-effort: a hard `kill -9` of the
+ * conductor cannot run this handler, which is exactly the case the boot scan
+ * (`src/recovery.ts`) covers on the next start.
+ */
+const activeChildren = new Map<string, ChildProcess>();
+
+/** TEST-ONLY: how many foreground children are currently registered. */
+export function activeChildCount(): number {
+	return activeChildren.size;
+}
+
+/**
+ * Terminate every registered in-flight child: SIGTERM, wait the shared grace
+ * period, then SIGKILL any survivor. Returns the pids targeted. Safe to call
+ * when nothing is in flight (no-op).
+ */
+export async function reapActiveChildren(log?: Logger): Promise<number[]> {
+	const entries = [...activeChildren.entries()];
+	const pids: number[] = [];
+	for (const [key, proc] of entries) {
+		if (proc.pid === undefined) {
+			activeChildren.delete(key);
+			continue;
+		}
+		pids.push(proc.pid);
+		try {
+			proc.kill("SIGTERM");
+		} catch {
+			// Already gone.
+		}
+	}
+	if (pids.length === 0) return [];
+
+	// The `close` handler removes each entry as it exits; a survivor is still
+	// present after the grace period and gets SIGKILL.
+	await new Promise((resolve) => setTimeout(resolve, SIGKILL_GRACE_MS));
+	for (const [key, proc] of entries) {
+		if (!activeChildren.has(key)) continue;
+		try {
+			proc.kill("SIGKILL");
+		} catch {
+			// Exited between the SIGTERM and the SIGKILL.
+		}
+	}
+
+	log?.info("Reaped in-flight subagent children", { pids });
+	return pids;
+}
+
 // ---------------------------------------------------------------------------
 // Pi binary resolution
 // ---------------------------------------------------------------------------
@@ -760,6 +819,7 @@ export async function runSubagent(
 	depth?: number,
 	intercom?: Intercom,
 	subagentId?: string,
+	childMarker?: string,
 ): Promise<SubagentResult> {
 	// E10: Inject pending intercom messages into the task prompt
 	if (intercom && subagentId && intercom.hasMessages(subagentId)) {
@@ -811,14 +871,25 @@ ${msgBlock}`;
 			const exitCode = await new Promise<number>((resolve) => {
 				const invocation = getPiInvocation(args);
 				const subDepth = depth !== undefined ? depth : undefined;
-				const envOverrides: Record<string, string> | undefined =
-					subDepth !== undefined ? { [DEPTH_ENV_KEY]: String(subDepth) } : undefined;
+				const envOverrides: Record<string, string> = {};
+				if (subDepth !== undefined) envOverrides[DEPTH_ENV_KEY] = String(subDepth);
+				// Option B U1: stamp the per-run marker so boot recovery can discover
+				// this child by scanning /proc/*/environ after a conductor crash.
+				if (childMarker) envOverrides[CHILD_MARKER_ENV_KEY] = childMarker;
+				const hasEnvOverrides = Object.keys(envOverrides).length > 0;
 				const proc = spawn(invocation.command, invocation.args, {
 					cwd,
 					shell: false,
 					stdio: ["ignore", "pipe", "pipe"],
-					env: getSafeEnv(envOverrides), // F2: Environment isolation + depth tracking
+					env: getSafeEnv(hasEnvOverrides ? envOverrides : undefined), // F2: Environment isolation + depth tracking
 				});
+
+				// Option B U1: register the child for shutdown reap. Keyed by the
+				// marker when present (guaranteed unique per run), else the intercom
+				// id, else a generated fallback.
+				const registryKey =
+					childMarker ?? subagentId ?? `proc-${process.pid}-${Date.now()}-${Math.random()}`;
+				activeChildren.set(registryKey, proc);
 
 				let buffer = "";
 
@@ -836,6 +907,7 @@ ${msgBlock}`;
 				});
 
 				proc.on("close", (code, signal) => {
+					activeChildren.delete(registryKey);
 					if (buffer.trim()) {
 						parseSubagentLine(buffer, result, onUpdate, getFinalOutputFn, log);
 					}
@@ -859,6 +931,7 @@ ${msgBlock}`;
 				});
 
 				proc.on("error", (err) => {
+					activeChildren.delete(registryKey);
 					// F7 (issue #30): subprocess errors can embed the spawn command
 					// (absolute paths to the pi binary, temp files, cwd) — sanitize the
 					// errorMessage before it reaches the conductor. stderr is left RAW:

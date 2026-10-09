@@ -394,6 +394,17 @@ export function buildCrashResult(mode: string, err: unknown, cwd: string): {
 export const DEPTH_ENV_KEY = "BRL_SUBAGENT_DEPTH";
 
 /**
+ * Option B U1: env var carrying the per-run child marker injected into a
+ * foreground child's environment. Boot recovery scans `/proc/<pid>/environ` for
+ * this exact `KEY=value` pair to discover an orphaned child whose conductor
+ * died. It is passed via spawn-time overrides (never inherited from the
+ * parent's environment, because it is not in SAFE_ENV_KEYS), so an unrelated
+ * process can never carry it. Linux/POSIX only; non-/proc platforms skip the
+ * scan (see recovery.ts).
+ */
+export const CHILD_MARKER_ENV_KEY = "BRL_SUBAGENT_CHILD_MARKER";
+
+/**
  * Read the current subagent depth from the environment.
  * Returns 0 for the main (conductor) process, 1+ for nested subagents.
  */
