@@ -35,7 +35,7 @@ import { Text } from "@earendil-works/pi-tui";
 
 import { runSubagent, parseSubagentLine } from "../runner";
 import { renderDelegateResult } from "../tui";
-import { EMPTY_USAGE, isSubagentError } from "../types";
+import { EMPTY_USAGE, isSubagentError, SUBAGENT_ABORTED_MESSAGE, SUBAGENT_SIGNAL_KILLED_MESSAGE } from "../types";
 import type { SubagentResult } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -265,11 +265,38 @@ describe("renderDelegateResult renders streaming state as running, never as a ve
 		expect(renderLines(settled)).toContain("\u2717");
 	});
 
-	it("a settled successful run still renders ✓", () => {
+	it("a settled signal death (exitCode -1 + failure category) renders the failure branch (#295)", () => {
+		// #295: every signal death now settles at exitCode -1 — the very value
+		// #206 reserved for the UNSETTLED streaming sentinel. A settled result
+		// carries a classified errorCategory (classifyError runs on every
+		// finalize); that failure classification, NOT the -1 identity, must
+		// decide the branch. Each category must take the verdict branch: ✗ plus
+		// the classified error line — never the raw running text.
+		const cases: Array<{ category: SubagentResult["errorCategory"]; message: string }> = [
+			{ category: "crash", message: `${SUBAGENT_SIGNAL_KILLED_MESSAGE} (SIGKILL)` },
+			{ category: "timeout", message: "Subagent timed out after 1000ms" },
+			{ category: "aborted", message: SUBAGENT_ABORTED_MESSAGE },
+		];
+		for (const { category, message } of cases) {
+			const settled: AgentToolResult<SubagentResult> = {
+				content: [{ type: "text", text: "live output" }],
+				details: liveDetails({ exitCode: -1, errorCategory: category, errorMessage: message }),
+			};
+			const out = renderLines(settled);
+			expect(out).toContain("\u2717"); // failure verdict icon
+			expect(out).not.toContain("\u2713");
+			expect(out).toContain(`Error: ${message}`); // the classified category line
+			expect(out).not.toBe("live output"); // never the raw running branch
+		}
+	});
+
+	it("a settled successful run still renders ✓ (exitCode 0)", () => {
 		const settled: AgentToolResult<SubagentResult> = {
 			content: [{ type: "text", text: "final answer" }],
 			details: liveDetails({ exitCode: 0, stopReason: "stop" }),
 		};
-		expect(renderLines(settled)).toContain("\u2713");
+		const out = renderLines(settled);
+		expect(out).toContain("\u2713");
+		expect(out).not.toContain("\u2717");
 	});
 });
