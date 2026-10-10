@@ -1,13 +1,12 @@
 # Worktree Framework Design (settled 2026-08-02, IMPLEMENTED 2026-08-03)
 
-> **Update 2026-09-30 (cockpit move + #247):** the cockpit is the `brl-subagent-dev` checkout (branch `dev`) —
-> it owns `.development/`, `graphify-out/`, the `.pi` tools and the SHARED `node_modules` (worktrees symlink
-> to it); `main` is the pristine release checkout. Since #247, `.development/**` and `.pi/skills/**` +
-> `.pi/extensions/**` are TRACKED (contributor parity); `graphify-out/` and `.pi` session state stay
-> gitignored. The canonical graph describes the COCKPIT tree and is refreshed at every merge into `dev` by
-> `graph-refresh.sh` (never by a hook side effect — #230). **CodeGraph prototype (Phase 1, 2026-10-08):** a
-> parallel `codegraph-refresh.sh` + `codegraph-check.py` pair lives in `.pi/skills/worktree/` for the
-> Phase 2 dogfooding — the canonical graph above remains graphify's until the switch decision. **In the text below, read "main repo" / "main
+> **Update 2026-09-30 (cockpit move + #247); graph note updated 2026-10-10 (ADR 0016):** the cockpit is the
+> `brl-subagent-dev` checkout (branch `dev`) — it owns `.development/`, `.codegraph/` (the structural index),
+> the `.pi` tools and the SHARED `node_modules` (worktrees symlink to it); `main` is the pristine release
+> checkout. Since #247, `.development/**` and `.pi/skills/**` +
+> `.pi/extensions/**` are TRACKED (contributor parity); `.codegraph/` and `.pi` session state stay
+> gitignored. CodeGraph is the sole structural index and is refreshed at every merge into `dev` by
+> `codegraph-refresh.sh` (never by a hook side effect — #230). **In the text below, read "main repo" / "main
 > checkout" as the cockpit (dev) checkout** — the design predates the move; see `HANDOFF.md` for the current
 > layout.
 

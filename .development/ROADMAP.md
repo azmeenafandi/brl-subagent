@@ -635,7 +635,7 @@ The user no longer relays completions; the conductor receives them as events (M1
 - **10** — Risk-calibrated review (C1 adversarial / C2 focused / C3 diff-read; reversibility tiebreaker; mid-flight reclassification)
 - **11** — Recurrence escalation (≥2 occurrences AND unresolved → P0 with fix direction; count over mitigation labels)
 - **12** — Environment before theory (check the environment first — versions, sync, reload, audit trail; ordering, not exclusivity)
-- **13** — Graph-first scoping (conductor consults graphify-out/ for the neighborhood BEFORE grep; refresh-if-stale)
+- **13** — Graph-first scoping (conductor consults CodeGraph for the neighborhood BEFORE grep; refresh-if-stale — ADR 0016)
 - **14** — Route, don't hand-roll (dispatch router: task-shape → preset+template lookup; dev-agent safe default; templates = contract + free-form target)
 
 ### The rituals
@@ -648,8 +648,8 @@ The user no longer relays completions; the conductor receives them as events (M1
 
 - **Templates** (`.pi/brl-subagent/templates/`): adversarial-review (C1 contract), focused-review (C2 contract), debug-task (Rule 12 contract) — all CONTRACT + free-form TARGET since the 2026-08-22 redesign
 - **Presets** (`.pi/brl-subagent/presets/`): project-reviewer (read-only, Gate A, SOLID/DRY), project-implementer (full access, quality bar), project-docs (surgical, fact-verified — bash restored 2026-08-22)
-- **Scripts** (`.pi/skills/worktree/`): check-repo.sh (pre-flight), worktree-prep.sh (provision + `--force-isolated`), worktree-cleanup.sh (teardown + staleness WARN), sprint-metrics.py (derived metrics), graph-refresh.sh (graphify `--update` + `graph-check.py` after every merge)
-- **Development home** — the **cockpit**: the `brl-subagent-dev` checkout (branch `dev`) holds `.development/`, `graphify-out/`, the `.pi` tools and the shared `node_modules`; `main` is the pristine release checkout. Since #247 the docs and tools are TRACKED, so a contributor checking out `dev` gets them (see `CONTRIBUTING.md`).
+- **Scripts** (`.pi/skills/worktree/`): check-repo.sh (pre-flight), worktree-prep.sh (provision + `--force-isolated`), worktree-cleanup.sh (teardown + staleness WARN), sprint-metrics.py (derived metrics), codegraph-refresh.sh (`codegraph sync` + `codegraph-check.py` after every merge)
+- **Development home** — the **cockpit**: the `brl-subagent-dev` checkout (branch `dev`) holds `.development/`, `.codegraph/` (the structural index), the `.pi` tools and the shared `node_modules`; `main` is the pristine release checkout. Since #247 the docs and tools are TRACKED, so a contributor checking out `dev` gets them (see `CONTRIBUTING.md`).
 - **Extension** (`.pi/extensions/worktree-guard/`): rule #5 + #100/#106 enforcement (blocks src/presets writes outside worktrees; blocks npm install through symlinked node_modules)
 - **Metrics store** (`.development/METRICS.md`): sprint rows, derived never vibed
 

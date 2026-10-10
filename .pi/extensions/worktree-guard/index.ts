@@ -13,7 +13,7 @@
  *
  * Whitelist (deliberate, per #83 design): .development/, README.md,
  * package.json, .pi/ (so the guard can't block its own updates or the
- * sync-extension ritual), graphify-out/, and anything under a worktree
+ * sync-extension ritual), and anything under a worktree
  * directory (../brl-subagent-*).
  */
 
@@ -84,7 +84,6 @@ const WHITELIST_PREFIXES = [
 	"package.json",
 	"package-lock.json",
 	".pi/",
-	"graphify-out/",
 	".github/",
 	"templates/", // builtin template .md files are content, not code — editable
 	"sync-extension.sh",
@@ -187,7 +186,7 @@ export default function initWorktreeGuard(pi: {
 		// Reminder only — the tool_call block is the enforcement.
 		return {
 			message:
-				"[worktree-guard] Remember: ALL changes to src/ or presets/ go through a worktree (git worktree add -b fix/... ../brl-subagent-<branch> dev). Whitelisted: .development/, README.md, package.json, .pi/, graphify-out/, .github/, templates/.",
+				"[worktree-guard] Remember: ALL changes to src/ or presets/ go through a worktree (git worktree add -b fix/... ../brl-subagent-<branch> dev). Whitelisted: .development/, README.md, package.json, .pi/, .github/, templates/.",
 		};
 	});
 }
