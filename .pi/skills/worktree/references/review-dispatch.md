@@ -30,9 +30,14 @@ investigating a stray, capture `git -C <review-wt> status -sb` and
 `git branch --show-current` BEFORE cleanup — the evidence dies with the worktree.
 
 **The instruction MUST demand the verdict in the final output** — never tell
-the reviewer to write a file it cannot write:
+the reviewer to write a repo file (it has no `write`/`edit` tools):
 
-- Do NOT write any files.
+- Do NOT write repo files. **Banking to a `/tmp/review-<unit>-findings.md`
+  scratch file IS sanctioned and expected**: instruct the reviewer to append
+  verified findings, pending items, and expected mutation signatures there as
+  it goes (bash-side). The verdict still lives in the final response; banking
+  exists so a drop/timeout leaves a resumable artifact (Rule 21's live
+  artifact) — a re-dispatch then starts with "read the banked file first".
 - Output your verdict in this exact format in your final response:
   verdict line (`approve` / `approve-with-nits` / `changes-requested`),
   findings table (severity | file:line | one-liner), verified-OK list,
