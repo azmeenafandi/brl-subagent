@@ -60,37 +60,20 @@ import {
 } from "../runner";
 import { listPersistedAgents, markAgentInterrupted } from "../session-manager";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
+import { fsMockControl, resetFsMock } from "./fixtures/fs-mock";
 
 // ---------------------------------------------------------------------------
 // #299 fix A.2 — deterministic `/proc` inspection failure for the tri-state
-// integration test (T-new). The mock is a TRANSPARENT wrapper: with no control
-// flag set it delegates every call to the real `node:fs`, so every other test in
-// this file is unaffected.
+// integration test (T-new). The mock is a TRANSPARENT wrapper (shared with
+// proc.test.ts via `./fixtures/fs-mock`): with no control flag set it delegates
+// every call to the real `node:fs`, so every other test in this file is
+// unaffected.
 // ---------------------------------------------------------------------------
-
-const groupScanControl = vi.hoisted(() => ({
-	readdirError: undefined as NodeJS.ErrnoException | undefined,
-	statErrors: new Map<string, NodeJS.ErrnoException>(),
-	statContents: new Map<string, string>(),
-}));
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
-	return {
-		...actual,
-		readdirSync: ((...args: unknown[]) => {
-			if (groupScanControl.readdirError) throw groupScanControl.readdirError;
-			return (actual.readdirSync as (...a: unknown[]) => unknown)(...args);
-		}) as typeof actual.readdirSync,
-		readFileSync: ((...args: unknown[]) => {
-			const file = String(args[0]);
-			const err = groupScanControl.statErrors.get(file);
-			if (err) throw err;
-			const contents = groupScanControl.statContents.get(file);
-			if (contents !== undefined) return contents;
-			return (actual.readFileSync as (...a: unknown[]) => unknown)(...args);
-		}) as typeof actual.readFileSync,
-	};
+	const { buildFsMock } = await import("./fixtures/fs-mock");
+	return buildFsMock(actual);
 });
 
 // ---------------------------------------------------------------------------
@@ -180,9 +163,7 @@ afterEach(async () => {
 	strayPids.clear();
 	// #299 fix A.2: never leak a forced `/proc` inspection failure into the next
 	// test (the node:fs mock is transparent when these are clear).
-	groupScanControl.readdirError = undefined;
-	groupScanControl.statErrors.clear();
-	groupScanControl.statContents.clear();
+	resetFsMock();
 	// Any test that shortened the escalation timing must not leak it into the
 	// next file-scoped test (idempotent reset to production timing).
 	__setEscalationTimingForTest();
@@ -1129,6 +1110,42 @@ describe("shutdown reap", () => {
 		});
 	}, 20000);
 
+	it("#299 T1-false: the spawn gate leaves the child in the parent's group when the capability is off", async () => {
+		if (!isProcAvailable()) return;
+		// The capability gate is consulted at the SPAWN SITE, not only at the kill
+		// sites. Forcing it FALSE must make `runSubagent` spawn a NON-detached child,
+		// so the child inherits the conductor's process group instead of leading its
+		// own. T1 covers the TRUE branch (`pgrp === pid`); this covers the false one.
+		// M-g tripwire: forcing `detached: true` unconditionally at the spawn site
+		// fails HERE — the child would then be its own group leader.
+		__setProcessGroupKillSupportedForTest(false);
+		await withSleepWrapper(async () => {
+			const marker = `pgrp-gate-off-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker);
+			// Capture the pid INSIDE the predicate so a transient second `/proc` read
+			// cannot observe an empty scan between readiness and the read below.
+			let childPid = 0;
+			await waitUntil(() => {
+				const found = findByMarker(marker);
+				if (found.length === 0) return false;
+				childPid = found[0];
+				return true;
+			}, 5000);
+			// Safety net: if an assertion below fails before the reap, afterEach still
+			// SIGKILLs this runSubagent child (it is not a `spawned` ChildProcess here).
+			strayPids.add(childPid);
+			const childGroup = readProcessGroup(childPid);
+			// NOT its own group leader...
+			expect(childGroup).not.toBe(childPid);
+			// ...it inherits the conductor's process group (the vitest worker).
+			expect(childGroup).toBe(readProcessGroup(process.pid));
+			// The run still works and terminates through the direct-only fallback reap.
+			await reapActiveChildren();
+			await promise;
+			expect(pidAlive(childPid)).toBe(false);
+		});
+	}, 20000);
+
 	it("#299 T2: reapActiveChildren group-kills an env-SCRUBBED grandchild (seam-isolated)", async () => {
 		if (!isProcAvailable()) return;
 		await withGrandchildWrapper(async (pidFile, script) => {
@@ -1441,236 +1458,200 @@ describe("#299 re-review A.1: reaped-pid classification + honest reporting", () 
 	});
 });
 
+/**
+ * #299 fix A.2/A.3/A.4/A.5 — the SHARED fixture behind the four three-state
+ * cases: a live DETACHED leader (its own pgid) with a live same-group member and
+ * a readiness handshake, reaped through the real production deps with a `/proc`
+ * fault injected AFTER readiness. The helper owns the temp dir, the process
+ * cleanup and the fault teardown; `assert` receives the observation so each case
+ * keeps its DISTINGUISHING assertions (the two halves) at the same strictness.
+ */
+interface MembershipObservation {
+	leaderPid: number;
+	memberPid: number;
+	survivors: number[];
+	elapsed: number;
+	killCalls: Array<[number, NodeJS.Signals]>;
+	groupCalls: Array<[number, NodeJS.Signals]>;
+}
+
+async function withMembershipCase(
+	tag: string,
+	installFault: (memberPid: number) => () => void,
+	assert: (observation: MembershipObservation) => void | Promise<void>,
+): Promise<void> {
+	if (!isProcAvailable()) return;
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), `brl-${tag}-`));
+	try {
+		const memberPidFile = path.join(dir, "member.pid");
+		const readyFile = path.join(dir, "ready");
+		// A live, DETACHED leader (its own pgid) with a live same-group member. The
+		// leader carries NO run marker, so the signal guard — which refuses a signal
+		// to a LIVE pid that is not ours — refuses every group signal, leaving a live
+		// group we targeted.
+		const leaderCode =
+			`const {spawn}=require('node:child_process');const fs=require('node:fs');` +
+			`const m=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});` +
+			`fs.writeFileSync(${JSON.stringify(memberPidFile)}, String(m.pid));` +
+			`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
+			`setInterval(()=>{},1000)`;
+		const leader = track(spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true }));
+		const leaderPid = await waitForSpawn(leader);
+		strayPids.add(leaderPid);
+		await waitUntil(() => fs.existsSync(readyFile) && fs.existsSync(memberPidFile), 5000);
+		const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
+		strayPids.add(memberPid);
+		await waitUntil(() => pidAlive(memberPid), 5000);
+		// The fixture really has a live same-PGID member the real scan observes.
+		expect(readProcessGroup(memberPid)).toBe(leaderPid);
+		expect(groupHasMembers(leaderPid)).toBe(true);
+
+		const marker = `${tag}-${crypto.randomUUID()}`;
+		const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 200, pollMs: 20 });
+		const clearFault = installFault(memberPid);
+		const started = Date.now();
+		const survivors = await reapPids([leaderPid], deps, () => marker).finally(clearFault);
+		const elapsed = Date.now() - started;
+		await assert({ leaderPid, memberPid, survivors, elapsed, killCalls, groupCalls });
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 describe("#299 fix A.2: three-state group membership (unknown is never empty)", () => {
 	it("T-new: a failed membership inspection is never read as empty (no early-exit; refused group is a survivor)", async () => {
-		if (!isProcAvailable()) return;
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-unknown-members-"));
-		try {
-			const memberPidFile = path.join(dir, "member.pid");
-			const readyFile = path.join(dir, "ready");
-			// A live, DETACHED leader (its own pgid) with a live same-group member. The
-			// leader carries NO run marker, so the signal guard — which refuses a signal
-			// to a LIVE pid that is not ours — refuses every group signal, leaving a live
-			// group we targeted.
-			const leaderCode =
-				`const {spawn}=require('node:child_process');const fs=require('node:fs');` +
-				`const m=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});` +
-				`fs.writeFileSync(${JSON.stringify(memberPidFile)}, String(m.pid));` +
-				`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
-				`setInterval(()=>{},1000)`;
-			const leader = track(spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true }));
-			const leaderPid = await waitForSpawn(leader);
-			strayPids.add(leaderPid);
-			await waitUntil(() => fs.existsSync(readyFile) && fs.existsSync(memberPidFile), 5000);
-			const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
-			strayPids.add(memberPid);
-			await waitUntil(() => pidAlive(memberPid), 5000);
-			// The fixture really has a live same-PGID member the real scan observes.
-			expect(readProcessGroup(memberPid)).toBe(leaderPid);
-			expect(groupHasMembers(leaderPid)).toBe(true);
-
-			// Force the REAL `/proc` listing to fail for the duration of the reap: the
-			// production `groupHasMembers` must then answer UNKNOWN (`undefined`), never
-			// "positively empty". Every signal and every liveness read below stays real.
-			// M-c tripwire: reverting `groupHasMembers` to false-on-unknown fails HERE
-			// (both the graceful wait and the survivor report).
-			const marker = `unknown-${crypto.randomUUID()}`;
-			const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 200, pollMs: 20 });
-			const scanError = new Error("EACCES") as NodeJS.ErrnoException;
-			scanError.code = "EACCES";
-			groupScanControl.readdirError = scanError;
-			const started = Date.now();
-			const survivors = await reapPids([leaderPid], deps, () => marker).finally(() => {
-				groupScanControl.readdirError = undefined;
-			});
-			const elapsed = Date.now() - started;
-
-			// Half 1 — UNKNOWN is NOT dead: the escalation ran to at least the grace
-			// boundary instead of early-exiting. A false-on-unknown reading would have
-			// exited almost immediately. (soft: so M-c reports BOTH halves, not just the
-			// first.)
-			expect.soft(elapsed).toBeGreaterThanOrEqual(180);
-			// Half 2 — the refused final group SIGKILL over a still-unknown group is a
-			// survivor; never a clean `[]`.
-			expect.soft(survivors).toEqual([leaderPid]);
-			// Every guard check refused, so nothing was signaled and the member is alive.
-			expect(groupCalls).toEqual([]);
-			expect(killCalls).toEqual([]);
-			expect(pidAlive(memberPid)).toBe(true);
-			console.log(
-				`#299-A2 unknown leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
-			);
-		} finally {
-			fs.rmSync(dir, { recursive: true, force: true });
-		}
+		await withMembershipCase(
+			"unknown-members",
+			() => {
+				// Force the REAL `/proc` listing to fail for the duration of the reap: the
+				// production `groupHasMembers` must then answer UNKNOWN (`undefined`), never
+				// "positively empty". Every signal and every liveness read below stays real.
+				// M-c tripwire: reverting `groupHasMembers` to false-on-unknown fails HERE
+				// (both the graceful wait and the survivor report).
+				const scanError = new Error("EACCES") as NodeJS.ErrnoException;
+				scanError.code = "EACCES";
+				fsMockControl.readdirError = scanError;
+				return () => {
+					fsMockControl.readdirError = undefined;
+				};
+			},
+			({ leaderPid, memberPid, survivors, elapsed, killCalls, groupCalls }) => {
+				// Half 1 — UNKNOWN is NOT dead: the escalation ran to at least the grace
+				// boundary instead of early-exiting. A false-on-unknown reading would have
+				// exited almost immediately. (soft: so M-c reports BOTH halves, not just the
+				// first.)
+				expect.soft(elapsed).toBeGreaterThanOrEqual(180);
+				// Half 2 — the refused final group SIGKILL over a still-unknown group is a
+				// survivor; never a clean `[]`.
+				expect.soft(survivors).toEqual([leaderPid]);
+				// Every guard check refused, so nothing was signaled and the member is alive.
+				expect(groupCalls).toEqual([]);
+				expect(killCalls).toEqual([]);
+				expect(pidAlive(memberPid)).toBe(true);
+				console.log(
+					`#299-A2 unknown leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
+				);
+			},
+		);
 	}, 20000);
 
 	it("T-new-truncated: a truncated member record is PARTIAL, never empty (no early-exit; refused group is a survivor)", async () => {
-		if (!isProcAvailable()) return;
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-truncated-members-"));
-		try {
-			const memberPidFile = path.join(dir, "member.pid");
-			const readyFile = path.join(dir, "ready");
-			const leaderCode =
-				`const {spawn}=require('node:child_process');const fs=require('node:fs');` +
-				`const m=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});` +
-				`fs.writeFileSync(${JSON.stringify(memberPidFile)}, String(m.pid));` +
-				`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
-				`setInterval(()=>{},1000)`;
-			const leader = track(spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true }));
-			const leaderPid = await waitForSpawn(leader);
-			strayPids.add(leaderPid);
-			await waitUntil(() => fs.existsSync(readyFile) && fs.existsSync(memberPidFile), 5000);
-			const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
-			strayPids.add(memberPid);
-			await waitUntil(() => pidAlive(memberPid), 5000);
-			// The fixture really has a live same-PGID member the real scan observes.
-			expect(readProcessGroup(memberPid)).toBe(leaderPid);
-			expect(groupHasMembers(leaderPid)).toBe(true);
-
-			// Force ONLY the live member's `/proc/<pid>/stat` to a truncated record:
-			// a valid `)` but too few fields. The production `groupHasMembers` must
-			// answer UNKNOWN (`undefined`), never a positively-empty `false`. Every
-			// signal and every liveness read below stays real.
-			// M-d tripwire: reverting the A.3 numericity/truncation guard fails HERE
-			// (both the graceful wait and the survivor report).
-			const marker = `truncated-${crypto.randomUUID()}`;
-			const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 200, pollMs: 20 });
-			groupScanControl.statContents.set(`/proc/${memberPid}/stat`, `${memberPid} (node) S 1`);
-			const started = Date.now();
-			const survivors = await reapPids([leaderPid], deps, () => marker).finally(() => {
-				groupScanControl.statContents.clear();
-			});
-			const elapsed = Date.now() - started;
-
-			// Half 1 — UNKNOWN is NOT dead: the escalation honours the full grace
-			// window instead of early-exiting on a false-on-truncation reading.
-			expect.soft(elapsed).toBeGreaterThanOrEqual(180);
-			// Half 2 — the refused final group SIGKILL over the still-unknown group is
-			// a survivor; never a clean `[]`.
-			expect.soft(survivors).toEqual([leaderPid]);
-			// Every guard check refused, so nothing was signaled and the member is alive.
-			expect(groupCalls).toEqual([]);
-			expect(killCalls).toEqual([]);
-			expect(pidAlive(memberPid)).toBe(true);
-			console.log(
-				`#299-A3 truncated leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
-			);
-		} finally {
-			fs.rmSync(dir, { recursive: true, force: true });
-		}
+		await withMembershipCase(
+			"truncated-members",
+			(memberPid) => {
+				// Force ONLY the live member's `/proc/<pid>/stat` to a truncated record:
+				// a valid `)` but too few fields. The production `groupHasMembers` must
+				// answer UNKNOWN (`undefined`), never a positively-empty `false`. Every
+				// signal and every liveness read below stays real.
+				// M-d tripwire: reverting the A.3 numericity/truncation guard fails HERE
+				// (both the graceful wait and the survivor report).
+				fsMockControl.statContents.set(`/proc/${memberPid}/stat`, `${memberPid} (node) S 1`);
+				return () => {
+					fsMockControl.statContents.clear();
+				};
+			},
+			({ leaderPid, memberPid, survivors, elapsed, killCalls, groupCalls }) => {
+				// Half 1 — UNKNOWN is NOT dead: the escalation honours the full grace
+				// window instead of early-exiting on a false-on-truncation reading.
+				expect.soft(elapsed).toBeGreaterThanOrEqual(180);
+				// Half 2 — the refused final group SIGKILL over the still-unknown group is
+				// a survivor; never a clean `[]`.
+				expect.soft(survivors).toEqual([leaderPid]);
+				// Every guard check refused, so nothing was signaled and the member is alive.
+				expect(groupCalls).toEqual([]);
+				expect(killCalls).toEqual([]);
+				expect(pidAlive(memberPid)).toBe(true);
+				console.log(
+					`#299-A3 truncated leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
+				);
+			},
+		);
 	}, 20000);
 
 	it("T-new-shifted: a shifted member record (real integer in the pgrp slot) is PARTIAL, never empty", async () => {
-		if (!isProcAvailable()) return;
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-shifted-members-"));
-		try {
-			const memberPidFile = path.join(dir, "member.pid");
-			const readyFile = path.join(dir, "ready");
-			const leaderCode =
-				`const {spawn}=require('node:child_process');const fs=require('node:fs');` +
-				`const m=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});` +
-				`fs.writeFileSync(${JSON.stringify(memberPidFile)}, String(m.pid));` +
-				`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
-				`setInterval(()=>{},1000)`;
-			const leader = track(spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true }));
-			const leaderPid = await waitForSpawn(leader);
-			strayPids.add(leaderPid);
-			await waitUntil(() => fs.existsSync(readyFile) && fs.existsSync(memberPidFile), 5000);
-			const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
-			strayPids.add(memberPid);
-			await waitUntil(() => pidAlive(memberPid), 5000);
-			// The fixture really has a live same-PGID member the real scan observes.
-			expect(readProcessGroup(memberPid)).toBe(leaderPid);
-			expect(groupHasMembers(leaderPid)).toBe(true);
-
-			// Force ONLY the live member's `/proc/<pid>/stat` to a SHIFTED record: the
-			// state token is gone, so `9999` lands in the pgrp slot. It IS an integer,
-			// so the A.3 numeric guard alone read a positively-empty non-member; the A.4
-			// state-shape check must answer UNKNOWN (`undefined`). Every signal and every
-			// liveness read below stays real.
-			// M-e tripwire: reverting the state-shape check fails HERE (both halves).
-			const marker = `shifted-${crypto.randomUUID()}`;
-			const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 200, pollMs: 20 });
-			groupScanControl.statContents.set(`/proc/${memberPid}/stat`, `${memberPid} (node) 1 1 9999 0 0`);
-			const started = Date.now();
-			const survivors = await reapPids([leaderPid], deps, () => marker).finally(() => {
-				groupScanControl.statContents.clear();
-			});
-			const elapsed = Date.now() - started;
-
-			// Half 1 — UNKNOWN is NOT dead: no early-exit; the escalation honours the
-			// full grace window instead of reading the shifted record as empty.
-			expect.soft(elapsed).toBeGreaterThanOrEqual(180);
-			// Half 2 — the refused final group SIGKILL over the still-unknown group is
-			// a survivor; never a clean `[]`.
-			expect.soft(survivors).toEqual([leaderPid]);
-			// Every guard check refused, so nothing was signaled and the member is alive.
-			expect(groupCalls).toEqual([]);
-			expect(killCalls).toEqual([]);
-			expect(pidAlive(memberPid)).toBe(true);
-			console.log(
-				`#299-A4 shifted leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
-			);
-		} finally {
-			fs.rmSync(dir, { recursive: true, force: true });
-		}
+		await withMembershipCase(
+			"shifted-members",
+			(memberPid) => {
+				// Force ONLY the live member's `/proc/<pid>/stat` to a SHIFTED record: the
+				// state token is gone, so `9999` lands in the pgrp slot. It IS an integer,
+				// so the A.3 numeric guard alone read a positively-empty non-member; the A.4
+				// state-shape check must answer UNKNOWN (`undefined`). Every signal and every
+				// liveness read below stays real.
+				// M-e tripwire: reverting the state-shape check fails HERE (both halves).
+				fsMockControl.statContents.set(`/proc/${memberPid}/stat`, `${memberPid} (node) 1 1 9999 0 0`);
+				return () => {
+					fsMockControl.statContents.clear();
+				};
+			},
+			({ leaderPid, memberPid, survivors, elapsed, killCalls, groupCalls }) => {
+				// Half 1 — UNKNOWN is NOT dead: no early-exit; the escalation honours the
+				// full grace window instead of reading the shifted record as empty.
+				expect.soft(elapsed).toBeGreaterThanOrEqual(180);
+				// Half 2 — the refused final group SIGKILL over the still-unknown group is
+				// a survivor; never a clean `[]`.
+				expect.soft(survivors).toEqual([leaderPid]);
+				// Every guard check refused, so nothing was signaled and the member is alive.
+				expect(groupCalls).toEqual([]);
+				expect(killCalls).toEqual([]);
+				expect(pidAlive(memberPid)).toBe(true);
+				console.log(
+					`#299-A4 shifted leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
+				);
+			},
+		);
 	}, 20000);
 
 	it("T-new-aligned: a valid-state-but-misaligned member record is PARTIAL, never empty", async () => {
-		if (!isProcAvailable()) return;
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-aligned-members-"));
-		try {
-			const memberPidFile = path.join(dir, "member.pid");
-			const readyFile = path.join(dir, "ready");
-			const leaderCode =
-				`const {spawn}=require('node:child_process');const fs=require('node:fs');` +
-				`const m=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});` +
-				`fs.writeFileSync(${JSON.stringify(memberPidFile)}, String(m.pid));` +
-				`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
-				`setInterval(()=>{},1000)`;
-			const leader = track(spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true }));
-			const leaderPid = await waitForSpawn(leader);
-			strayPids.add(leaderPid);
-			await waitUntil(() => fs.existsSync(readyFile) && fs.existsSync(memberPidFile), 5000);
-			const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
-			strayPids.add(memberPid);
-			await waitUntil(() => pidAlive(memberPid), 5000);
-			// The fixture really has a live same-PGID member the real scan observes.
-			expect(readProcessGroup(memberPid)).toBe(leaderPid);
-			expect(groupHasMembers(leaderPid)).toBe(true);
-
-			// Force ONLY the live member's `/proc/<pid>/stat` to a MISALIGNED record: the
-			// state token `R` is valid and `1` lands in the pgrp slot, but the ppid slot
-			// holds a non-numeric `S`. The A.4 shape check alone accepted the state; the
-			// A.5 prefix contract must reject the alignment and answer UNKNOWN. Every
-			// signal and every liveness read below stays real.
-			// M-f tripwire: removing the ppid-alignment check fails HERE (both halves).
-			const marker = `aligned-${crypto.randomUUID()}`;
-			const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 200, pollMs: 20 });
-			groupScanControl.statContents.set(`/proc/${memberPid}/stat`, `${memberPid} (node) R S 1 9999`);
-			const started = Date.now();
-			const survivors = await reapPids([leaderPid], deps, () => marker).finally(() => {
-				groupScanControl.statContents.clear();
-			});
-			const elapsed = Date.now() - started;
-
-			// Half 1 — UNKNOWN is NOT dead: no early-exit; the escalation honours the
-			// full grace window instead of reading the misaligned record as empty.
-			expect.soft(elapsed).toBeGreaterThanOrEqual(180);
-			// Half 2 — the refused final group SIGKILL over the still-unknown group is
-			// a survivor; never a clean `[]`.
-			expect.soft(survivors).toEqual([leaderPid]);
-			// Every guard check refused, so nothing was signaled and the member is alive.
-			expect(groupCalls).toEqual([]);
-			expect(killCalls).toEqual([]);
-			expect(pidAlive(memberPid)).toBe(true);
-			console.log(
-				`#299-A5 aligned leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
-			);
-		} finally {
-			fs.rmSync(dir, { recursive: true, force: true });
-		}
+		await withMembershipCase(
+			"aligned-members",
+			(memberPid) => {
+				// Force ONLY the live member's `/proc/<pid>/stat` to a MISALIGNED record: the
+				// state token `R` is valid and `1` lands in the pgrp slot, but the ppid slot
+				// holds a non-numeric `S`. The A.4 shape check alone accepted the state; the
+				// A.5 prefix contract must reject the alignment and answer UNKNOWN. Every
+				// signal and every liveness read below stays real.
+				// M-f tripwire: removing the ppid-alignment check fails HERE (both halves).
+				fsMockControl.statContents.set(`/proc/${memberPid}/stat`, `${memberPid} (node) R S 1 9999`);
+				return () => {
+					fsMockControl.statContents.clear();
+				};
+			},
+			({ leaderPid, memberPid, survivors, elapsed, killCalls, groupCalls }) => {
+				// Half 1 — UNKNOWN is NOT dead: no early-exit; the escalation honours the
+				// full grace window instead of reading the misaligned record as empty.
+				expect.soft(elapsed).toBeGreaterThanOrEqual(180);
+				// Half 2 — the refused final group SIGKILL over the still-unknown group is
+				// a survivor; never a clean `[]`.
+				expect.soft(survivors).toEqual([leaderPid]);
+				// Every guard check refused, so nothing was signaled and the member is alive.
+				expect(groupCalls).toEqual([]);
+				expect(killCalls).toEqual([]);
+				expect(pidAlive(memberPid)).toBe(true);
+				console.log(
+					`#299-A5 aligned leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
+				);
+			},
+		);
 	}, 20000);
 });
 
