@@ -46,6 +46,9 @@ return { level: r.answers.level.choice, conf: r.answers.level.confidence,
   level below Jev on a review**, carry a one-line reason.
 - **Clamps:** artifact-producing dispatches (worktree / PR / verification) floor at
   `low`; reviews floor at `medium`.
+- **The `worktree` cell can misread `src/__tests__`** (observed: it said `n` for a test-only fix).
+  Rule 5 and the worktree-guard govern — always treat a `src/**` edit as worktree-required and
+  record the override.
 - **Unavailable is recorded, not silent:** if `codemode` or the model is missing, write
   `jev: unavailable` and proceed — never block a dispatch on the classifier.
 
