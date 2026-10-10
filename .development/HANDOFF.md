@@ -1,8 +1,8 @@
 # Handoff — 2026-09-22 (night)
 
-> Updated 2026-10-10 — **v2.5.0 PUBLISHED (GitHub release live); npm staged publish launched — maintainer approval
-> pending.** npm `latest` is still v2.4.0 until that approval. The running extension is the **`dev` checkout** (deliberate developing
-> mode: `pi install <dev path>`) — ritual step 9 switches it back to the published package after the approval.
+> Updated 2026-10-10 — **v2.5.0 PUBLISHED and LIVE on npm (`latest` = 2.5.0).** The running install was switched back to
+> `npm:brl-subagent` and reloaded; the **published-build probe PASSED** (presetsDir = the npm package path; shipped files
+> byte-identical to the tagged commit). The dev cockpit stays on disk for the next cycle — only the install changed.
 > The **cockpit** is the `dev` checkout (`.development/`, `graphify-out/`, `.pi/` tools, shared `node_modules`);
 > `main` is the pristine release checkout (v2.4.0 tagged until the release merge).
 > Read this first: it is the state a fresh conductor cannot infer from the repo alone.
