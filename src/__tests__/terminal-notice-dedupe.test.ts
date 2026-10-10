@@ -342,7 +342,11 @@ describe("poller crash paths (#315)", () => {
 		try {
 			const throwingSession = {
 				get messages(): never {
-					throw new Error("extract blew up");
+					// Issue #318 review: the message must be PATH-BEARING, built on the SAME
+					// base the spawn sanitizes against (`env.testCwd`) — a benign string would
+					// pass through `sanitizeErrorMessage` unchanged, so removing the sanitizer
+					// would not fail this test (the reviewer's mutation check).
+					throw new Error(`extract blew up at ${env.testCwd}/src/index.ts`);
 				},
 				getSessionStats: () => ({ tokens: { input: 0, output: 0 } }),
 			};
@@ -355,6 +359,10 @@ describe("poller crash paths (#315)", () => {
 			expect(notices).toHaveLength(1);
 			expect(String(notices[0].message.content)).toContain("crashed:");
 			expect(String(notices[0].message.content)).toContain("extract blew up");
+			// The sanitizer rewrites the cwd prefix; assert the SANITIZED form so the
+			// crash-site sanitization is pinned (not merely the raw message).
+			expect(String(notices[0].message.content)).toContain("<cwd>");
+			expect(String(notices[0].message.content)).not.toContain(env.testCwd);
 			expect(messagesOfType("subagent-completion")).toHaveLength(0);
 		} finally {
 			vi.clearAllTimers();
