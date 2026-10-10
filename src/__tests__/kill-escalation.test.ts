@@ -8,8 +8,21 @@
  * clock so no real process is touched.
  */
 
-import { describe, it, expect, vi } from "vitest";
-import { escalateKill, type EscalationTarget } from "../kill-escalation";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import {
+	escalateKill,
+	groupTarget,
+	pidTarget,
+	processTarget,
+	supportsProcessGroupKill,
+	__setProcessGroupKillSupportedForTest,
+	type EscalationTarget,
+	type SignalGuard,
+} from "../kill-escalation";
+
+afterEach(() => {
+	__setProcessGroupKillSupportedForTest(undefined);
+});
 
 interface FakeTarget extends EscalationTarget {
 	calls: string[];
@@ -114,5 +127,322 @@ describe("escalateKill (one SIGTERM → grace → SIGKILL sequence)", () => {
 		});
 		const result = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
 		expect(result).toEqual([target]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #299 Option B — group targets and the unconditional final group SIGKILL (D5)
+// ---------------------------------------------------------------------------
+
+describe("group-capable targets (#299 Option B)", () => {
+	it("groupTarget signals the group best-effort AND the pid directly", () => {
+		const calls: Array<[string, number, string]> = [];
+		const target = groupTarget(
+			4242,
+			(pid, signal) => calls.push(["direct", pid, signal]),
+			(pgid, signal) => calls.push(["group", pgid, signal]),
+			() => true,
+		);
+		target.terminate();
+		target.forceKill();
+		target.forceKillGroup?.();
+		expect(calls).toEqual([
+			["group", 4242, "SIGTERM"],
+			["direct", 4242, "SIGTERM"],
+			["group", 4242, "SIGKILL"],
+			["direct", 4242, "SIGKILL"],
+			["group", 4242, "SIGKILL"],
+		]);
+	});
+
+	it("a vanished group (ESRCH) never blocks the direct signal", () => {
+		const direct: string[] = [];
+		const target = groupTarget(
+			4242,
+			(_pid, signal) => direct.push(signal),
+			() => {
+				const err = new Error("no such process") as NodeJS.ErrnoException;
+				err.code = "ESRCH";
+				throw err;
+			},
+			() => false,
+		);
+		expect(() => target.terminate()).not.toThrow();
+		expect(direct).toEqual(["SIGTERM"]);
+	});
+
+	it("escalateKill sends the final group SIGKILL even when the leader verifies dead", async () => {
+		const calls: string[] = [];
+		const target: EscalationTarget = {
+			terminate: () => calls.push("TERM"),
+			forceKill: () => calls.push("KILL"),
+			verifyDeath: () => true, // leader already gone
+			forceKillGroup: () => calls.push("GROUP_KILL"),
+		};
+		const result = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(result).toEqual([]);
+		expect(calls).toEqual(["TERM", "GROUP_KILL"]);
+	});
+
+	it("processTarget picks the group shape only when a group primitive is supplied", () => {
+		const noGroup = processTarget(7, () => {}, () => true);
+		expect(noGroup.forceKillGroup).toBeUndefined();
+		expect(noGroup.verifyDeath()).toBe(false);
+		const withGroup = processTarget(7, () => {}, () => true, () => {});
+		expect(typeof withGroup.forceKillGroup).toBe("function");
+		// With no group primitive the target is exactly the direct-only `pidTarget`.
+		expect(Object.keys(noGroup).sort()).toEqual(Object.keys(pidTarget(7, () => {}, () => true)).sort());
+	});
+
+	it("supportsProcessGroupKill reflects the platform and the test override", () => {
+		expect(supportsProcessGroupKill()).toBe(process.platform !== "win32");
+		__setProcessGroupKillSupportedForTest(false);
+		expect(supportsProcessGroupKill()).toBe(false);
+		__setProcessGroupKillSupportedForTest(true);
+		expect(supportsProcessGroupKill()).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #299 review fix — signal-time marker guard (Major 1)
+// ---------------------------------------------------------------------------
+
+describe("signal-time marker guard (#299 review Major 1)", () => {
+	it("sends group + direct signals while the marker pid is still ours", () => {
+		const calls: string[] = [];
+		const guard: SignalGuard = { isOwn: () => true, isGone: () => false };
+		const target = processTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			() => true,
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			undefined,
+			guard,
+		);
+		target.terminate();
+		target.forceKill();
+		target.forceKillGroup?.();
+		expect(calls).toEqual([
+			"group:SIGTERM",
+			"direct:SIGTERM",
+			"group:SIGKILL",
+			"direct:SIGKILL",
+			"group:SIGKILL",
+		]);
+	});
+
+	it("skips BOTH signals (and records each) for a pid reused by a foreign process", () => {
+		// Alive but no longer carrying our marker is the reviewer's reuse case: the
+		// stale pid now names a foreign process, so NO signal is sent unverified.
+		const calls: string[] = [];
+		const skips: string[] = [];
+		const guard: SignalGuard = {
+			isOwn: () => false,
+			isGone: () => false, // alive, marker absent → the REUSE case
+			onSkip: (_pid, signal, phase) => skips.push(`${phase}:${signal}`),
+		};
+		const target = processTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			() => true,
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			undefined,
+			guard,
+		);
+		target.terminate();
+		target.forceKill();
+		target.forceKillGroup?.();
+		expect(calls).toEqual([]);
+		expect(skips).toEqual([
+			"terminate:SIGTERM",
+			"terminate:SIGTERM",
+			"forceKill:SIGKILL",
+			"forceKill:SIGKILL",
+			"forceKillGroup:SIGKILL",
+		]);
+	});
+
+	it("still groups-signals a confirmed-gone leader (D5 survival of its members)", () => {
+		// The leader exited (not reused): its pgid cannot name a live foreign
+		// leader, so the GROUP signal is safe and reaches our surviving members.
+		const calls: string[] = [];
+		const guard: SignalGuard = { isOwn: () => false, isGone: () => true };
+		const target = processTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			() => false,
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			undefined,
+			guard,
+		);
+		target.terminate();
+		target.forceKill();
+		target.forceKillGroup?.();
+		expect(calls).toEqual(["group:SIGTERM", "group:SIGKILL", "group:SIGKILL"]);
+	});
+
+	it("a direct-only target with a guard skips a reused pid and reads as dead-to-us", () => {
+		const calls: string[] = [];
+		const target = pidTarget(
+			9,
+			(_pid, signal) => calls.push(signal),
+			() => true,
+			{ isOwn: () => false, isGone: () => false },
+		);
+		target.terminate();
+		target.forceKill();
+		expect(calls).toEqual([]);
+		// Alive but not ours = our target identity is gone (do not report a survivor).
+		expect(target.verifyDeath()).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #299 review fix — group-empty death check (Major 2)
+// ---------------------------------------------------------------------------
+
+describe("group-empty verifyDeath (#299 review Major 2)", () => {
+	it("a dead leader with a live member is NOT dead (grace is honoured)", () => {
+		const target = groupTarget(9, () => {}, () => {}, () => false, () => true);
+		expect(target.verifyDeath()).toBe(false);
+		expect(target.verifyProcessAlive?.()).toBe(false);
+	});
+
+	it("a dead leader with no members IS dead", () => {
+		const target = groupTarget(9, () => {}, () => {}, () => false, () => false);
+		expect(target.verifyDeath()).toBe(true);
+	});
+
+	it("degrades to leader liveness when no /proc group reader is supplied", () => {
+		const target = groupTarget(9, () => {}, () => {}, () => false);
+		expect(target.verifyDeath()).toBe(true); // leader dead → no reader → dead
+	});
+
+	it("a group whose leader exited is ended by forceKillGroup, not forceKill (D5 tripwire)", async () => {
+		const calls: string[] = [];
+		const target: EscalationTarget = {
+			terminate: () => calls.push("TERM"),
+			forceKill: () => calls.push("KILL"),
+			verifyDeath: () => false, // group still non-empty
+			verifyProcessAlive: () => false, // but the leader is gone
+			forceKillGroup: () => calls.push("GROUP_KILL"),
+		};
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(calls).toEqual(["TERM", "GROUP_KILL"]);
+		expect(survivors).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #299 re-review A.1 — a refused group kill is reported, never a clean report
+// ---------------------------------------------------------------------------
+
+describe("refused group kill reporting (#299 re-review A.1)", () => {
+	it("counts a refused final group SIGKILL over a live group as a survivor", async () => {
+		const calls: string[] = [];
+		const skips: string[] = [];
+		const guard: SignalGuard = {
+			isOwn: () => false,
+			isGone: () => false, // alive but not ours → every signal is refused
+			onSkip: (_pid, signal, phase) => skips.push(`${phase}:${signal}`),
+		};
+		const target = groupTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			() => true, // leader alive for the reachability checks
+			() => true, // and its group still has a live member
+			guard,
+		);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		// No signal reached the foreign target, but the still-live group it names is
+		// reported — never a silent clean `[]`.
+		expect(calls).toEqual([]);
+		expect(survivors).toEqual([target]);
+		expect(skips).toContain("forceKillGroup:SIGKILL");
+	});
+
+	it("does NOT report a refused group signal when the targeted group is empty", async () => {
+		const guard: SignalGuard = { isOwn: () => false, isGone: () => false };
+		const target = groupTarget(
+			9,
+			() => {},
+			() => {},
+			() => true,
+			() => false, // no live members → nothing was left alive
+			guard,
+		);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(survivors).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #299 fix A.2 — three-state group membership (unknown is never empty)
+// ---------------------------------------------------------------------------
+
+describe("three-state group membership (#299 fix A.2)", () => {
+	it("an UNKNOWN membership (undefined) is NOT dead even when the leader is gone", () => {
+		// The inspection was unavailable or partial. Absence of evidence must never
+		// read as evidence of absence, so the target must not verify death.
+		const target = groupTarget(9, () => {}, () => {}, () => false, () => undefined);
+		expect(target.verifyDeath()).toBe(false);
+	});
+
+	it("an UNKNOWN membership with a refused final group SIGKILL is a survivor (never [])", async () => {
+		const calls: string[] = [];
+		const guard: SignalGuard = {
+			isOwn: () => false,
+			isGone: () => false, // alive but not ours → every signal is refused
+		};
+		const target = groupTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			() => false, // leader alive for the reachability checks
+			() => undefined, // membership UNKNOWN
+			guard,
+		);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(calls).toEqual([]);
+		expect(survivors).toEqual([target]);
+	});
+
+	it("a POSITIVELY empty group still lets the leader-liveness check decide (no over-correction)", async () => {
+		// false = a COMPLETED inspection found no member, so a dead leader is dead
+		// and the escalation may take its early exit and report clean.
+		const target = groupTarget(9, () => {}, () => {}, () => false, () => false);
+		expect(target.verifyDeath()).toBe(true);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(survivors).toEqual([]);
+	});
+
+	it("a refused final group SIGKILL over a POSITIVELY empty group is NOT a survivor", async () => {
+		const guard: SignalGuard = { isOwn: () => false, isGone: () => false };
+		const target = groupTarget(9, () => {}, () => {}, () => true, () => false, guard);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(survivors).toEqual([]);
+	});
+
+	it("a fully-observed LIVE group still blocks death and is killed after the grace", async () => {
+		const calls: string[] = [];
+		const target = groupTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			() => false, // leader already gone
+			() => true, // but a live member keeps the group non-empty
+		);
+		expect(target.verifyDeath()).toBe(false);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		// The leader is not direct-signaled (verifyProcessAlive false); the group is
+		// ended by the unconditional final group SIGKILL, and nothing survives.
+		expect(calls).toContain("group:SIGKILL");
+		expect(survivors).toEqual([]);
+	});
+
+	it("an ABSENT reader keeps the documented leader-liveness fallback", () => {
+		const target = groupTarget(9, () => {}, () => {}, () => false);
+		expect(target.verifyDeath()).toBe(true); // leader dead, no reader → dead
 	});
 });

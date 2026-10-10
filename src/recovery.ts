@@ -137,7 +137,25 @@ export async function runBootScan(options: BootScanOptions): Promise<BootScanSum
 	const allReaps = planned.flatMap(({ plan }) =>
 		plan.decision === "mark" || plan.decision === "reap" ? plan.reap : [],
 	);
-	const survived = new Set(await reapPids(allReaps, deps));
+	// #299 review Major 1: resolve each scanned pid back to the marker that
+	// verified it, so the signal-time guard can re-read that marker before every
+	// signal. First writer wins (a pid found by two records is still one identity).
+	const markerByPid = new Map<number, string>();
+	for (const { record, plan } of planned) {
+		if (plan.decision !== "mark" && plan.decision !== "reap") continue;
+		if (!record.childMarker) continue;
+		for (const pid of plan.reap) if (!markerByPid.has(pid)) markerByPid.set(pid, record.childMarker);
+	}
+	const survived = new Set(
+		await reapPids(allReaps, deps, (pid) => markerByPid.get(pid), (pid, signal, phase) =>
+			options.log?.warn("Recovery: skipped a marker signal (pid no longer carries the run marker)", {
+				pid,
+				signal,
+				phase,
+				marker: markerByPid.get(pid),
+			}),
+		),
+	);
 
 	for (const { record, plan } of planned) {
 		if (plan.decision === "mark") {
