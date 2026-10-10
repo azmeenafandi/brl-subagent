@@ -66,6 +66,13 @@ export interface RecoveryDeps {
 	 * wiring); production always provides it via `defaultRecoveryDeps`.
 	 */
 	verifyMarker?(pid: number, marker: string): boolean;
+	/**
+	 * #299 review Major 1: true when the pid is gone — reaped OR a not-yet-reaped
+	 * zombie. The signal guard uses this to separate a REUSED pid from a merely
+	 * dead/zombie one, so a zombie leader's pgid is still signaled (D5). Absent →
+	 * `!pidAlive` (no zombie distinction).
+	 */
+	pidGone?(pid: number): boolean;
 	/** Sleep between SIGTERM and SIGKILL. */
 	sleep(ms: number): Promise<void>;
 	/** Grace period in ms between SIGTERM and SIGKILL. */
@@ -255,11 +262,16 @@ export async function reapPids(
 	onSkip?: (pid: number, signal: NodeJS.Signals, phase: SignalPhase) => void,
 ): Promise<number[]> {
 	const unique = [...new Set(pids)];
+	const isGone = deps.pidGone ?? ((pid: number) => !deps.pidAlive(pid));
 	const targets = unique.map((pid) => {
 		const marker = markerOfPid?.(pid);
 		const guard: SignalGuard | undefined =
 			marker && deps.verifyMarker
-				? { isOwn: (targetPid) => deps.verifyMarker!(targetPid, marker), onSkip }
+				? {
+						isOwn: (targetPid) => deps.verifyMarker!(targetPid, marker),
+						isGone,
+						onSkip,
+					}
 				: undefined;
 		return processTarget(
 			pid,

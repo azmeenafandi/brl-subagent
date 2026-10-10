@@ -121,6 +121,12 @@ export function __setProcessGroupKillSupportedForTest(value: boolean | undefined
  * `onSkip` records a refused signal. A skipped signal is never retried
  * unverified.
  *
+ * `isGone(pid)` separates a REUSED pid from a merely GONE one: a zombie (not yet
+ * reaped) and a reaped pid are both "gone", while an alive process that no
+ * longer carries the marker is the reuse case. The group signal is skipped ONLY
+ * for the alive-foreign case — a gone/zombie leader's pgid must still be signaled
+ * so its surviving members (D5) are reached.
+ *
  * RESIDUAL (documented at the call sites too): the re-check narrows the reuse
  * window to the read→`kill` syscall boundary — the same exposure the direct
  * signals have carried since Option A. It is narrowed, not eliminated.
@@ -128,6 +134,8 @@ export function __setProcessGroupKillSupportedForTest(value: boolean | undefined
 export interface SignalGuard {
 	/** True when `pid` still carries OUR marker at this instant. */
 	isOwn(pid: number): boolean;
+	/** True when `pid` is gone: reaped OR a not-yet-reaped zombie. */
+	isGone(pid: number): boolean;
 	/** Called when a signal is refused (verification failed). */
 	onSkip?(pid: number, signal: NodeJS.Signals, phase: SignalPhase): void;
 }
@@ -161,9 +169,8 @@ export function pidTarget(
 		terminate: () => dispatch("SIGTERM", "terminate", () => kill(pid, "SIGTERM")),
 		forceKill: () => dispatch("SIGKILL", "forceKill", () => kill(pid, "SIGKILL")),
 		verifyDeath: () => {
-			if (!pidAlive(pid)) return true;
-			// Alive but no longer ours → the pid was reused; our target identity is gone.
-			return guard !== undefined && !guard.isOwn(pid);
+			if (guard) return guard.isGone(pid) || !guard.isOwn(pid);
+			return !pidAlive(pid);
 		},
 	};
 }
@@ -214,10 +221,11 @@ export function groupTarget(
 		}
 		run();
 	};
-	// A group signal is safe when the pid is still ours OR confirmed gone: a dead
-	// leader's pgid cannot be a LIVE foreign leader (see `SignalGuard`).
+	// A group signal is skipped ONLY for a live pid that is no longer ours (the
+	// reused-pid case). A gone/zombie leader's pgid can only name our surviving
+	// members, so the group signal must still land (D5).
 	const dispatchGroup = (signal: NodeJS.Signals, phase: SignalPhase, run: () => void): void => {
-		if (guard && !guard.isOwn(pid) && pidAlive(pid)) {
+		if (guard && !guard.isOwn(pid) && !guard.isGone(pid)) {
 			guard.onSkip?.(pid, signal, phase);
 			return;
 		}
@@ -232,16 +240,14 @@ export function groupTarget(
 			dispatchGroup("SIGKILL", "forceKill", () => bestEffortGroupKill(killGroup, pid, "SIGKILL"));
 			dispatchDirect("SIGKILL", "forceKill", () => kill(pid, "SIGKILL"));
 		},
-		verifyProcessAlive: () => pidAlive(pid),
+		verifyProcessAlive: () => (guard ? !guard.isGone(pid) && guard.isOwn(pid) : pidAlive(pid)),
 		verifyDeath: () => {
 			// A live member keeps the group (and so the target) alive even after the
 			// leader is gone — including a not-yet-reaped ZOMBIE leader, which
 			// `pidAlive` still reports as alive (Major 2).
 			if (groupHasMembers?.(pid)) return false;
-			if (!pidAlive(pid)) return true; // leader gone and group empty
-			// Leader still exists: dead-to-us only when it is no longer ours (reused
-			// pid). Without a guard (no marker wiring) it is simply alive.
-			return guard !== undefined && !guard.isOwn(pid);
+			if (guard) return guard.isGone(pid) || !guard.isOwn(pid);
+			return !pidAlive(pid); // no guard: leader-only fallback
 		},
 		forceKillGroup: () => {
 			dispatchGroup("SIGKILL", "forceKillGroup", () => bestEffortGroupKill(killGroup, pid, "SIGKILL"));

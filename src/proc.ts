@@ -183,6 +183,20 @@ export function pidAlive(pid: number): boolean {
 }
 
 /**
+ * #299 review Major 1: true when the pid is GONE — it no longer exists OR is a
+ * not-yet-reaped zombie (`Z`/`X`), which `pidAlive` (kill -0) still reports as
+ * alive. The signal-time guard uses this to separate a REUSED pid (alive, marker
+ * gone) from a merely dead/zombie one, so a zombie leader's pgid is still
+ * signaled to reach its surviving members (D5). Without /proc the zombie
+ * distinction is unavailable and this degrades to `!pidAlive`.
+ */
+export function pidGone(pid: number): boolean {
+	if (!pidAlive(pid)) return true;
+	const state = readStatFields(pid)?.[0];
+	return state === "Z" || state === "X";
+}
+
+/**
  * Pids whose environment carries the marker. Scans `/proc/<pid>/environ` (NUL
  * separated). Skips this process; unreadable/vanished processes are ignored.
  * Returns [] — never a kill — when /proc is unavailable.
@@ -225,6 +239,9 @@ export function defaultRecoveryDeps(): RecoveryDeps {
 		// #299 review Major 1: signal-time marker re-check for marker-derived
 		// targets (closes the scan→signal pid-reuse window).
 		verifyMarker: pidHasMarker,
+		// #299 review Major 1: the guard separates a reused pid (alive, marker
+		// gone) from a dead/zombie one, so a zombie leader's group is still killed.
+		pidGone,
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		graceMs: SIGKILL_GRACE_MS,
 		// Item 4 (#299): poll so the boot scan returns as soon as its orphans die

@@ -43,7 +43,7 @@ import {
 	type EscalationTarget,
 	type SignalGuard,
 } from "./kill-escalation";
-import { findByMarker, pidAlive, pidHasMarker, groupHasMembers } from "./proc";
+import { findByMarker, pidAlive, pidHasMarker, pidGone, groupHasMembers } from "./proc";
 import { getSafeEnv, DEPTH_ENV_KEY, CHILD_MARKER_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
@@ -261,6 +261,7 @@ function collectMarkerTargets(
 			pids.push(pid);
 			const guard: SignalGuard = {
 				isOwn: (targetPid) => pidHasMarker(targetPid, marker),
+				isGone: (targetPid) => pidGone(targetPid),
 				onSkip: (targetPid, signal, phase) =>
 					log?.warn("Skipped marker signal: pid no longer carries the run marker", {
 						pid: targetPid,

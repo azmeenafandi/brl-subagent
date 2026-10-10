@@ -210,7 +210,7 @@ describe("group-capable targets (#299 Option B)", () => {
 describe("signal-time marker guard (#299 review Major 1)", () => {
 	it("sends group + direct signals while the marker pid is still ours", () => {
 		const calls: string[] = [];
-		const guard: SignalGuard = { isOwn: () => true };
+		const guard: SignalGuard = { isOwn: () => true, isGone: () => false };
 		const target = processTarget(
 			9,
 			(_pid, signal) => calls.push(`direct:${signal}`),
@@ -238,6 +238,7 @@ describe("signal-time marker guard (#299 review Major 1)", () => {
 		const skips: string[] = [];
 		const guard: SignalGuard = {
 			isOwn: () => false,
+			isGone: () => false, // alive, marker absent → the REUSE case
 			onSkip: (_pid, signal, phase) => skips.push(`${phase}:${signal}`),
 		};
 		const target = processTarget(
@@ -265,7 +266,7 @@ describe("signal-time marker guard (#299 review Major 1)", () => {
 		// The leader exited (not reused): its pgid cannot name a live foreign
 		// leader, so the GROUP signal is safe and reaches our surviving members.
 		const calls: string[] = [];
-		const guard: SignalGuard = { isOwn: () => false };
+		const guard: SignalGuard = { isOwn: () => false, isGone: () => true };
 		const target = processTarget(
 			9,
 			(_pid, signal) => calls.push(`direct:${signal}`),
@@ -286,7 +287,7 @@ describe("signal-time marker guard (#299 review Major 1)", () => {
 			9,
 			(_pid, signal) => calls.push(signal),
 			() => true,
-			{ isOwn: () => false },
+			{ isOwn: () => false, isGone: () => false },
 		);
 		target.terminate();
 		target.forceKill();
