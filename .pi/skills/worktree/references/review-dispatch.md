@@ -10,6 +10,9 @@ find, ls`, explicitly NO `write`/`edit` so the reviewer can never touch code.
 It carries the Gate A expectation, the SOLID/DRY mirror check, and the
 verdict format — the dispatch task only adds the PR-specific focus areas.
 
+The PR body's **Door** and **Blast radius** lines (the `pr` skill) are targeting
+signal — aim the dispatch's focus areas at the risk they name.
+
 **Dispatch with `preset: "project-reviewer"` — NOT bare `tools` (the
 auto-route can override an explicit tools list; an explicit preset wins) and
 NOT `dev-agent` + `excludeTools` (the retired workaround).**

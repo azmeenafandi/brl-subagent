@@ -22,6 +22,7 @@ never re-type their logic by hand. Full design:
 - [`references/release-ritual.md`](references/release-ritual.md) — the release ritual (steps 1-10).
 - [`references/local-development.md`](references/local-development.md) — npm dogfooding + the dev toggle (`-ne -e`).
 - [`references/review-dispatch.md`](references/review-dispatch.md) — the adversarial-review brief content + calibration.
+- [`../pr/SKILL.md`](../pr/SKILL.md) — the PR-body contract (Summary / Evidence / Merge Danger / Fixes), size-thresholded.
 - [`references/friction-log-ritual.md`](references/friction-log-ritual.md) — the friction log ritual.
 - [`references/sprint-end-ritual.md`](references/sprint-end-ritual.md) — Rule 11 recurrence escalation + trust metrics.
 
@@ -225,7 +226,7 @@ never re-type their logic by hand. Full design:
 0. PRE-FLIGHT   check-repo.sh                 (cockpit checkout; stop on failure)
 1. CREATE       git worktree add <path> <branch>
 2. PREP         worktree-prep.sh <path> [--force-isolated if bump]  (symlink/install + smoke test)
-3. DELEGATE     task with cwd = <path>; subagent commits, pushes, opens PR
+3. DELEGATE     task with cwd = <path>; subagent commits, pushes, opens PR (body per the pr skill)
 4. REVIEW       adversarial review (REVIEW_*.md lives in worktree, gitignored)
 5. USER LOOP    review → revisions → approve
 6. MERGE        merge commit to `dev` (PRs target `dev`; `dev → main` is the
