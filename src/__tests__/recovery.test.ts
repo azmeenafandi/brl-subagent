@@ -843,6 +843,20 @@ describe("shutdown reap", () => {
 			const before = findByMarker(marker).sort((a, b) => a - b);
 
 			const reaped = await reapActiveChildren();
+
+			// #322: prove the SHUTDOWN reap reaped the grandchild BEFORE the run
+			// settles. Awaiting `promise` first would let the run's own terminal
+			// exit sweep kill the grandchild, masking a shutdown reap that missed
+			// it. `reapActiveChildren` returns only after its escalation window, so
+			// the PID union is already fixed; the death/marker checks take a short
+			// bounded wait because the SIGKILL may still be landing (and /proc may
+			// need a tick to drop the entry).
+			expect(reaped).toContain(grandchildPid);
+			await waitUntil(() => !pidAlive(grandchildPid), 5000);
+			expect(pidAlive(grandchildPid)).toBe(false);
+			await waitUntil(() => findByMarker(marker).length === 0, 5000);
+			expect(findByMarker(marker)).toEqual([]);
+
 			await promise;
 
 			// One escalation window ended the whole inherited tree (probe 1b).
