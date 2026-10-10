@@ -48,6 +48,7 @@ import {
 	reapActiveChildren,
 	runSubagent,
 	__setEscalationTimingForTest,
+	__registerActiveChildForTest,
 } from "../runner";
 import { listPersistedAgents, markAgentInterrupted } from "../session-manager";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
@@ -93,10 +94,17 @@ async function waitForSpawn(child: ChildProcess): Promise<number> {
 	return child.pid;
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+async function waitUntil(
+	predicate: () => boolean,
+	timeoutMs = 5000,
+	throwOnTimeout = true,
+): Promise<void> {
 	const start = Date.now();
 	while (!predicate()) {
-		if (Date.now() - start > timeoutMs) throw new Error("waitUntil timed out");
+		if (Date.now() - start > timeoutMs) {
+			if (throwOnTimeout) throw new Error("waitUntil timed out");
+			return;
+		}
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 }
@@ -643,10 +651,11 @@ async function withSleepWrapper<T>(fn: () => Promise<T>): Promise<T> {
  * The grandchild ignores SIGHUP and `exec`s, so killing the wrapper cannot kill
  * it indirectly — a survival assertion then honestly measures the MARKER
  * boundary, not shell job-control side effects. Writes the grandchild pid to
- * `<dir>/grandchild.pid`; `fn` receives that path.
+ * `<dir>/grandchild.pid`; `fn` receives that path plus the wrapper script path
+ * (so a caller can spawn the wrapper directly without `runSubagent`).
  */
 async function withGrandchildWrapper<T>(
-	fn: (pidFile: string) => Promise<T>,
+	fn: (pidFile: string, script: string) => Promise<T>,
 	stripMarker = false,
 ): Promise<T> {
 	return withTempPiBin(
@@ -666,7 +675,7 @@ async function withGrandchildWrapper<T>(
 			fs.writeFileSync(script, `#!/bin/sh\n${launcher}\nwait\n`, { mode: 0o755 });
 			return script;
 		},
-		(dir) => fn(path.join(dir, "grandchild.pid")),
+		(dir) => fn(path.join(dir, "grandchild.pid"), path.join(dir, "grandchild.sh")),
 	);
 }
 
@@ -844,13 +853,14 @@ describe("shutdown reap", () => {
 
 			const reaped = await reapActiveChildren();
 
-			// #322: prove the SHUTDOWN reap reaped the grandchild BEFORE the run
-			// settles. Awaiting `promise` first would let the run's own terminal
-			// exit sweep kill the grandchild, masking a shutdown reap that missed
-			// it. `reapActiveChildren` returns only after its escalation window, so
-			// the PID union is already fixed; the death/marker checks take a short
-			// bounded wait because the SIGKILL may still be landing (and /proc may
-			// need a tick to drop the entry).
+			// #322: this is an END-TO-END ACCOUNTING case, NOT shutdown isolation.
+			// The tracked wrapper is a real `runSubagent` child, so killing it fires
+			// the run's own exit sweep (runner.ts:955), which targets the SAME marker
+			// tree and can kill the grandchild before these pre-settle checks run. A
+			// grandchild death here is therefore NOT attributable to the shutdown
+			// reap. The attribution test is the isolated #322 case below (no
+			// `runSubagent`). These checks only pin that the shutdown result
+			// enumerates the pid and that the tree is gone by run settle.
 			expect(reaped).toContain(grandchildPid);
 			await waitUntil(() => !pidAlive(grandchildPid), 5000);
 			expect(pidAlive(grandchildPid)).toBe(false);
@@ -867,6 +877,52 @@ describe("shutdown reap", () => {
 			expect(activeChildCount()).toBe(0);
 			// Evidence: record the pids observed before/after for the PR body.
 			console.log(`#299-A reapActiveChildren pids BEFORE=${JSON.stringify(before)} REAPED=${JSON.stringify(reaped)} grandchildAliveAfter=${pidAlive(grandchildPid)}`);
+		});
+	}, 20000);
+
+	it("#322 isolation: reapActiveChildren ALONE reaps the child AND its marker grandchild", async () => {
+		if (!isProcAvailable()) return;
+		await withGrandchildWrapper(async (pidFile, script) => {
+			const marker = `isolated-reap-${crypto.randomUUID()}`;
+			// Launch the wrapper DIRECTLY — no `runSubagent`, so the run's exit sweep
+			// (runner.ts:955) is never in the picture. The only kill path in play is
+			// `reapActiveChildren`'s own tracked-child + marker union, which makes the
+			// grandchild death assertion attributable to the shutdown reap.
+			const wrapper = track(
+				spawn(script, [], {
+					stdio: "ignore",
+					env: { ...process.env, [CHILD_MARKER_ENV_KEY]: marker },
+				}),
+			);
+			const wrapperPid = await waitForSpawn(wrapper);
+			const deregister = __registerActiveChildForTest(wrapper, marker);
+			try {
+				const grandchildPid = await readGrandchildPid(pidFile);
+				await waitUntil(() => findByMarker(marker).includes(grandchildPid), 5000);
+				const before = findByMarker(marker).sort((a, b) => a - b);
+
+				const reaped = await reapActiveChildren();
+
+				// The reaped set enumerates BOTH pids: the tracked wrapper (ChildProcess
+				// target) and the marker-only grandchild (marker sweep).
+				expect(reaped).toContain(wrapperPid);
+				expect(reaped).toContain(grandchildPid);
+				// No run is awaited here, so nothing else can have killed the grandchild.
+				// The settle window below only grants /proc a tick to drop the entry; the
+				// ASSERTION is the tripwire (a no-op marker target must fail here).
+				await waitUntil(
+					() => !pidAlive(wrapperPid) && !pidAlive(grandchildPid),
+					5000,
+					false,
+				);
+				expect(pidAlive(wrapperPid)).toBe(false);
+				expect(pidAlive(grandchildPid)).toBe(false);
+				console.log(
+					`#322 isolation BEFORE=${JSON.stringify(before)} REAPED=${JSON.stringify(reaped)} wrapperPid=${wrapperPid} grandchildPid=${grandchildPid}`,
+				);
+			} finally {
+				deregister();
+			}
 		});
 	}, 20000);
 
@@ -939,6 +995,25 @@ describe("escalation timing seam is test-only (issue #306 nit 2)", () => {
 		delete process.env.VITEST;
 		try {
 			expect(() => __setEscalationTimingForTest({ graceMs: 1, pollMs: 1 })).toThrow(/test-only/);
+		} finally {
+			if (nodeEnv === undefined) delete process.env.NODE_ENV;
+			else process.env.NODE_ENV = nodeEnv;
+			if (vitestEnv === undefined) delete process.env.VITEST;
+			else process.env.VITEST = vitestEnv;
+		}
+	});
+});
+
+describe("active-child registration seam is test-only (#322)", () => {
+	it("throws instead of exposing the registry outside the test environment", () => {
+		// Mirror the escalation-timing guard: simulate production by clearing both
+		// vitest markers, then the seam must refuse before touching the registry.
+		const nodeEnv = process.env.NODE_ENV;
+		const vitestEnv = process.env.VITEST;
+		delete process.env.NODE_ENV;
+		delete process.env.VITEST;
+		try {
+			expect(() => __registerActiveChildForTest(track(spawnSleeper()))).toThrow(/test-only/);
 		} finally {
 			if (nodeEnv === undefined) delete process.env.NODE_ENV;
 			else process.env.NODE_ENV = nodeEnv;
