@@ -735,6 +735,13 @@ export interface BackgroundAgent {
 	finalOutput?: string;
 	/** @internal — session reference for live monitor polling */
 	_sessionRef?: import('@earendil-works/pi-coding-agent').AgentSession;
+	/**
+	 * @internal — Option B U2: the on-disk session file for this run, captured
+	 * from `SessionManager.getSessionFile()` at spawn. Used by the settle path to
+	 * prune the EXACT per-run directory. Live-only: stripped by `persistAgent`,
+	 * never a persisted record field (D4).
+	 */
+	_sessionFile?: string;
 	// Option B U1 (D3/D4): additive durability identity, mirroring SubagentRun.
 	// Background records carry dispatchId/owner/attempt. `childMarker` is
 	// declared for round-trip tolerance with the run-record/agent-record JSON
