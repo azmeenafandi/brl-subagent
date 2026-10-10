@@ -571,23 +571,46 @@ describe("real /proc integration", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * A wrapper that ignores pi's args and sleeps — lets runSubagent spawn a
- * long-lived child we can reap without touching a real model. Runs `fn` with
- * BRL_PI_BIN pointed at it and always restores the environment.
+ * Create a temp dir, write one executable wrapper script into it, point
+ * BRL_PI_BIN at it for the duration of `fn`, then restore the environment and
+ * remove the dir (issue #306 nit 4 — the setup/cleanup formerly duplicated by
+ * withSleepWrapper and withIgnoreTermWrapper). `writeScript` returns the script
+ * path; `fn` receives the temp dir so it can place sibling files (e.g. a
+ * readiness marker).
  */
-async function withSleepWrapper<T>(fn: () => Promise<T>): Promise<T> {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-reap-"));
-	const script = path.join(dir, "sleep.sh");
-	fs.writeFileSync(script, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+async function withTempPiBin<T>(
+	prefix: string,
+	writeScript: (dir: string) => string,
+	fn: (dir: string) => Promise<T>,
+): Promise<T> {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+	const script = writeScript(dir);
 	const previous = process.env.BRL_PI_BIN;
 	process.env.BRL_PI_BIN = script;
 	try {
-		return await fn();
+		return await fn(dir);
 	} finally {
 		if (previous === undefined) delete process.env.BRL_PI_BIN;
 		else process.env.BRL_PI_BIN = previous;
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+}
+
+/**
+ * A wrapper that ignores pi's args and sleeps — lets runSubagent spawn a
+ * long-lived child we can reap without touching a real model. Runs `fn` with
+ * BRL_PI_BIN pointed at it and always restores the environment.
+ */
+async function withSleepWrapper<T>(fn: () => Promise<T>): Promise<T> {
+	return withTempPiBin(
+		"brl-reap-",
+		(dir) => {
+			const script = path.join(dir, "sleep.sh");
+			fs.writeFileSync(script, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+			return script;
+		},
+		fn,
+	);
 }
 
 /** Launch one wrapper child with a per-run marker (and optional abort signal). */
@@ -622,27 +645,23 @@ function launchForeground(marker: string, timeout?: number, signal?: AbortSignal
  * default disposition, faking a pass/fail for the wrong reason.
  */
 async function withIgnoreTermWrapper<T>(fn: (readyFile: string) => Promise<T>): Promise<T> {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-ignore-term-"));
-	const script = path.join(dir, "ignore-term.js");
-	const readyFile = path.join(dir, "ready");
-	fs.writeFileSync(
-		script,
-		`#!/usr/bin/env node\n` +
-			`const fs = require("node:fs");\n` +
-			`process.on("SIGTERM", () => {});\n` +
-			`fs.writeFileSync(${JSON.stringify(readyFile)}, "ready");\n` +
-			`setInterval(() => {}, 1000);\n`,
-		{ mode: 0o755 },
+	return withTempPiBin(
+		"brl-ignore-term-",
+		(dir) => {
+			const script = path.join(dir, "ignore-term.js");
+			fs.writeFileSync(
+				script,
+				`#!/usr/bin/env node\n` +
+					`const fs = require("node:fs");\n` +
+					`process.on("SIGTERM", () => {});\n` +
+					`fs.writeFileSync(${JSON.stringify(path.join(dir, "ready"))}, "ready");\n` +
+					`setInterval(() => {}, 1000);\n`,
+				{ mode: 0o755 },
+			);
+			return script;
+		},
+		(dir) => fn(path.join(dir, "ready")),
 	);
-	const previous = process.env.BRL_PI_BIN;
-	process.env.BRL_PI_BIN = script;
-	try {
-		return await fn(readyFile);
-	} finally {
-		if (previous === undefined) delete process.env.BRL_PI_BIN;
-		else process.env.BRL_PI_BIN = previous;
-		fs.rmSync(dir, { recursive: true, force: true });
-	}
 }
 
 /**
@@ -651,22 +670,44 @@ async function withIgnoreTermWrapper<T>(fn: (readyFile: string) => Promise<T>): 
  * so this is an exact observation of SIGTERM/SIGKILL delivery — issue #303's
  * "force-kill spy".
  */
-function spyOnChildKill(): { calls: Array<{ signal: string; pid: number | undefined }> } {
-	const calls: Array<{ signal: string; pid: number | undefined }> = [];
+/** One recorded `kill()` call: the signal, the target pid, and when it landed. */
+interface KillCall {
+	signal: string;
+	pid: number | undefined;
+	at: number;
+}
+
+function spyOnChildKill(): { calls: KillCall[] } {
+	const calls: KillCall[] = [];
 	const original = ChildProcess.prototype.kill;
 	vi.spyOn(ChildProcess.prototype, "kill").mockImplementation(function (
 		this: ChildProcess,
 		signal?: NodeJS.Signals | number,
 	) {
-		calls.push({ signal: String(signal), pid: this.pid });
+		calls.push({ signal: String(signal), pid: this.pid, at: Date.now() });
 		return original.call(this, signal as NodeJS.Signals);
 	});
 	return { calls };
 }
 
 /** The pid carried by the first recorded SIGKILL, or undefined. */
-function sigkillPid(calls: Array<{ signal: string; pid: number | undefined }>): number | undefined {
+function sigkillPid(calls: KillCall[]): number | undefined {
 	return calls.find((c) => c.signal === "SIGKILL")?.pid;
+}
+
+/**
+ * Elapsed ms from the first SIGTERM to the first SIGKILL in a kill-spy trace.
+ * The stubborn-child tests run with a 100 ms grace; a regression back to the
+ * full 5 s `SIGKILL_GRACE_MS` would blow the upper bound asserted on this (the
+ * probe measured ~101 ms SIGTERM→SIGKILL).
+ */
+function escalationElapsedMs(calls: KillCall[]): number {
+	const sigterm = calls.find((c) => c.signal === "SIGTERM");
+	const sigkill = calls.find((c) => c.signal === "SIGKILL");
+	if (!sigterm || !sigkill) {
+		throw new Error("kill trace is missing its SIGTERM or SIGKILL");
+	}
+	return sigkill.at - sigterm.at;
 }
 
 describe("shutdown reap", () => {
@@ -728,6 +769,25 @@ describe("shutdown reap", () => {
 // 5. Abort/timeout escalation must force-kill a SIGTERM-ignoring child (#303)
 // ---------------------------------------------------------------------------
 
+describe("escalation timing seam is test-only (issue #306 nit 2)", () => {
+	it("throws instead of mutating production timing outside the test environment", () => {
+		// Simulate a production process: neither vitest marker is set. The setter
+		// must refuse rather than move the process-wide SIGTERM→SIGKILL timing.
+		const nodeEnv = process.env.NODE_ENV;
+		const vitestEnv = process.env.VITEST;
+		delete process.env.NODE_ENV;
+		delete process.env.VITEST;
+		try {
+			expect(() => __setEscalationTimingForTest({ graceMs: 1, pollMs: 1 })).toThrow(/test-only/);
+		} finally {
+			if (nodeEnv === undefined) delete process.env.NODE_ENV;
+			else process.env.NODE_ENV = nodeEnv;
+			if (vitestEnv === undefined) delete process.env.VITEST;
+			else process.env.VITEST = vitestEnv;
+		}
+	});
+});
+
 describe("abort/timeout escalation force-kill (issue #303)", () => {
 	afterEach(() => {
 		__setEscalationTimingForTest(); // restore production timing
@@ -748,6 +808,10 @@ describe("abort/timeout escalation force-kill (issue #303)", () => {
 			// The child ignored SIGTERM, so only a real SIGKILL can have ended it.
 			const pid = sigkillPid(spy.calls);
 			expect(pid).toBeDefined();
+			// Issue #306 nit 1: bound the SIGTERM→SIGKILL wait. Grace is 100 ms; 1.5 s
+			// is well under the 5 s production grace but ~15x the measured escalation,
+			// so a regression to the old full grace would fail this.
+			expect(escalationElapsedMs(spy.calls)).toBeLessThan(1500);
 			expect(result.exitCode).toBe(-1);
 			await waitUntil(() => !pidAlive(pid!), 2000);
 			expect(pidAlive(pid!)).toBe(false);
@@ -768,6 +832,9 @@ describe("abort/timeout escalation force-kill (issue #303)", () => {
 
 			const pid = sigkillPid(spy.calls);
 			expect(pid).toBeDefined();
+			// Issue #306 nit 1: same elapsed bound as the timeout path — the abort
+			// path must also force-kill at the short grace, not the full 5 s.
+			expect(escalationElapsedMs(spy.calls)).toBeLessThan(1500);
 			expect(result.errorCategory).toBe("aborted");
 			await waitUntil(() => !pidAlive(pid!), 2000);
 			expect(pidAlive(pid!)).toBe(false);

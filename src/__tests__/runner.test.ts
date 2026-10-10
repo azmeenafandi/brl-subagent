@@ -20,7 +20,7 @@ vi.mock("node:child_process", () => ({
 import { runSubagent, getPiInvocation, parseSubagentLine, toTranscriptMessage, enrichFailureDiagnostics, LIVE_TRANSCRIPT_MAX_MESSAGES, LIVE_TRANSCRIPT_MAX_BYTES } from "../runner";
 import { wrapTask } from "../prompt";
 import { finalizeRunRecord } from "../history";
-import { isSubagentError, SUBAGENT_SIGNAL_KILLED_MESSAGE } from "../types";
+import { isSubagentError, isUnsettledPartial, SUBAGENT_SIGNAL_KILLED_MESSAGE } from "../types";
 import type { SubagentResult, SubagentRun } from "../types";
 
 /** Fake child process: emits close(0) so runSubagent resolves. */
@@ -763,6 +763,9 @@ describe("runSubagent signal-death classification (issue #295)", () => {
 		expect(result.exitCode).toBe(-1); // non-zero sentinel, never a fabricated 0
 		expect(isSubagentError(result)).toBe(true);
 		expect(result.errorCategory).toBe("crash");
+		// Issue #298 invariant: the overloaded -1 is NOT an unsettled partial once
+		// finalized — the predicate keys on the errorCategory every finalize sets.
+		expect(isUnsettledPartial(result)).toBe(false);
 		expect(result.errorMessage).toContain(SUBAGENT_SIGNAL_KILLED_MESSAGE);
 		expect(result.errorMessage).toContain("SIGKILL");
 	});

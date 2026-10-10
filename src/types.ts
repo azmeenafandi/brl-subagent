@@ -811,6 +811,40 @@ export function isSubagentError(result: SubagentResult): boolean {
 }
 
 /**
+ * Issue #298 (C2): the ONE home for the partial-vs-settled renderer decision.
+ *
+ * `exitCode === -1` is overloaded. Since #206 it is the UNSETTLED streaming
+ * sentinel (`emitSubagentUpdate` in runner.ts stamps `{ ...result, exitCode: -1 }`
+ * on every live partial). Since #295 a SETTLED signal death — external kill,
+ * staged timeout, staged abort — also settles at -1, so the sentinel alone no
+ * longer means "still running":
+ *
+ *   - a live partial carries the sentinel and normally no errorCategory — the
+ *     exception is the abort stamp: `runner.ts` sets `errorCategory: "aborted"`
+ *     on the live result before close, so a post-abort partial can carry both.
+ *     The predicate then returns false and it renders the failure branch — the
+ *     same outcome as the local logic this replaces (the qualifier is comment
+ *     precision, not a behavior change; #311 review nit);
+ *   - every FINALIZED foreground result carries an errorCategory because
+ *     `runSubagent` ends with `result.errorCategory = classifyError(result)`
+ *     and classifyError is total (its `unknown` fallback means it never returns
+ *     undefined). A classified -1 is a settled FAILURE and must take the verdict
+ *     branch, never the raw running text.
+ *
+ * Encoding that (exitCode, errorCategory) invariant EXACTLY ONCE here is the
+ * point of #298: the local disambiguation it replaces (the F1 fix, PR #297) was
+ * the same defect class it fixed — inferring liveness from a correlated field
+ * in the renderer. Callers must use this predicate rather than re-deriving the
+ * pair; the terminal-status structural ratchet in
+ * `src/__tests__/terminal-status-consistency.test.ts` fails a local copy.
+ */
+export function isUnsettledPartial(
+	details: { exitCode: number; errorCategory?: ErrorCategory } | undefined,
+): boolean {
+	return !details || (details.exitCode === -1 && !details.errorCategory);
+}
+
+/**
  * Issue #179 (review ratchet): the NARROWER question — was the terminal turn a
  * provider/model error specifically?
  *

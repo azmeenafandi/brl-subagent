@@ -430,13 +430,12 @@ const STRUCTURAL_ALLOWLIST: readonly StructuralException[] = [
 			"already a failure in isSubagentError, and the success/failure split is decided by " +
 			"classifyTerminalOutcome.",
 	},
-	{
-		file: "src/tui.ts",
-		snippet: "details.exitCode === -1",
-		reason:
-			"Sentinel probe for a run that has not settled yet (exitCode is unset = -1), used to " +
-			"render the running header. It reads no stopReason and decides no verdict.",
-	},
+	// Issue #298: the `exitCode === -1` sentinel probe formerly allow-listed here
+	// moved into `isUnsettledPartial` (src/types.ts, exempt from this sweep). The
+	// allow-list entry is deliberately gone, not relocated: a local copy of the
+	// partial-vs-settled disambiguation in a rendered module would silently desync
+	// from the predicate, so the structural guard must fail it — that is the
+	// tripwire the issue asks for. types.ts owns the invariant exactly once.
 	{
 		file: "src/session-manager.ts",
 		snippet: "switch (stopReason)",
@@ -565,6 +564,16 @@ describe("scanner coverage — spellings the original regex missed (#186)", () =
 
 	it("catches a numeric sentinel exitCode comparison", () => {
 		expect(kindsOf(`if (d.exitCode === -1) return "running";`)).toContain("exit-code");
+	});
+
+	it("(#298) catches a local re-introduction of the partial-vs-settled disambiguation", () => {
+		// The F1 fix inlined exactly this expression in the renderer before #298
+		// centralized it in `isUnsettledPartial`. It must stay caught so the live
+		// tree — with no allow-list entry for src/tui.ts — fails if it is re-inlined
+		// instead of routed through the predicate.
+		const hit = scanFixture(`const running = !d || (d.exitCode === -1 && !d.errorCategory);`)[0];
+		expect(hit).toMatchObject({ kind: "exit-code", literal: "-1" });
+		expect(hit.code).toBe("d.exitCode === -1");
 	});
 
 	it("catches relational exitCode comparisons (issue #186 review)", () => {

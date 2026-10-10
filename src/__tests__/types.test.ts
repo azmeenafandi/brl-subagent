@@ -12,6 +12,7 @@ import {
 	formatUsageStats,
 	getFinalOutput,
 	isSubagentError,
+	isUnsettledPartial,
 	formatModel,
 	formatMaxParallel,
 	isSubagentStateShape,
@@ -206,6 +207,46 @@ describe("isSubagentError", () => {
 
 	it("returns false for normal stop reason", () => {
 		expect(isSubagentError(makeResult({ stopReason: "end" }))).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// isUnsettledPartial (issue #298 — the ONE partial-vs-settled predicate)
+// ---------------------------------------------------------------------------
+
+describe("isUnsettledPartial", () => {
+	function makeResult(overrides: Partial<import("../types").SubagentResult> = {}) {
+		return {
+			messages: [],
+			usage: { ...EMPTY_USAGE },
+			exitCode: 0,
+			stderr: "",
+			...overrides,
+		};
+	}
+
+	it("is unsettled when no details have arrived yet", () => {
+		expect(isUnsettledPartial(undefined)).toBe(true);
+	});
+
+	it("is unsettled for the #206 streaming sentinel (exitCode -1, no category)", () => {
+		expect(isUnsettledPartial(makeResult({ exitCode: -1 }))).toBe(true);
+	});
+
+	it("is SETTLED for a classified signal death (#295) despite exitCode -1", () => {
+		// The overloaded value: a finalized signal death settles at -1 AND carries
+		// an errorCategory. Each category must read as settled so the renderer takes
+		// the verdict branch, never the raw running text.
+		for (const errorCategory of ["crash", "timeout", "aborted"] as const) {
+			expect(isUnsettledPartial(makeResult({ exitCode: -1, errorCategory }))).toBe(false);
+		}
+	});
+
+	it("is SETTLED for any normal exit code, classified or not", () => {
+		expect(isUnsettledPartial(makeResult({ exitCode: 0 }))).toBe(false);
+		expect(isUnsettledPartial(makeResult({ exitCode: 0, errorCategory: "unknown" }))).toBe(false);
+		expect(isUnsettledPartial(makeResult({ exitCode: 1 }))).toBe(false);
+		expect(isUnsettledPartial(makeResult({ exitCode: 1, errorCategory: "exit_error" }))).toBe(false);
 	});
 });
 

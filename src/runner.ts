@@ -97,8 +97,26 @@ const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTim
  */
 const escalationTiming = { graceMs: SIGKILL_GRACE_MS, pollMs: SIGKILL_POLL_MS };
 
-/** TEST-ONLY: shorten (or reset with no argument) the abort/timeout escalation timing. */
+/**
+ * Issue #306 nit 2: the timing seam is test-only and must be UNREACHABLE in
+ * production. This package ships raw `.ts` (loaded via jiti) with no build step
+ * to strip test code, so the strongest available guarantee is a runtime gate:
+ * outside the test environment the setter THROWS instead of mutating the
+ * process-wide SIGTERM→SIGKILL timing, so a stray internal import cannot move
+ * production behavior. `vitest` sets `NODE_ENV=test` and `VITEST=true` in every
+ * worker, so the recovery escalation tests still shorten the grace.
+ */
+function isTestEnvironment(): boolean {
+	return process.env.NODE_ENV === "test" || process.env.VITEST === "true";
+}
+
+/** TEST-ONLY: shorten (or reset with no argument) the abort/timeout escalation timing. Throws outside tests. */
 export function __setEscalationTimingForTest(timing?: { graceMs?: number; pollMs?: number }): void {
+	if (!isTestEnvironment()) {
+		throw new Error(
+			"__setEscalationTimingForTest() is test-only and cannot run in production.",
+		);
+	}
 	escalationTiming.graceMs = timing?.graceMs ?? SIGKILL_GRACE_MS;
 	escalationTiming.pollMs = timing?.pollMs ?? SIGKILL_POLL_MS;
 }

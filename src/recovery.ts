@@ -93,6 +93,27 @@ export interface BootScanOptions {
 }
 
 /**
+ * The warning context shared by the two mark outcomes (issue #306 nit 3): the
+ * record identity, why it was marked, which orphan pids were reaped, and which
+ * of those survived the escalation. One construction so the "marked" and
+ * "mark failed" warnings cannot drift apart.
+ */
+function markWarningPayload(
+	record: RecoveryRecord,
+	reason: string,
+	reaped: number[],
+	survived: ReadonlySet<number>,
+): { id: string; kind: RecoveryRecord["kind"]; reason: string; reaped: number[]; survived: number[] } {
+	return {
+		id: record.id,
+		kind: record.kind,
+		reason,
+		reaped,
+		survived: reaped.filter((pid) => survived.has(pid)),
+	};
+}
+
+/**
  * Run the decision engine over every candidate, reap markers, and mark the
  * records whose conductor is dead. Every decision is logged; the UI is
  * deliberately silent (the notice/offer surface lands in U3).
@@ -126,27 +147,16 @@ export async function runBootScan(options: BootScanOptions): Promise<BootScanSum
 			record.interruptedAt = nowIso;
 			const reaped = [...new Set(plan.reap)];
 			summary.reaped += reaped.length;
+			const markWarning = markWarningPayload(record, plan.reason, reaped, survived);
 			if (durable) {
 				summary.marked++;
-				options.log?.warn("Recovery: marked interrupted record", {
-					id: record.id,
-					kind: record.kind,
-					reason: plan.reason,
-					reaped,
-					survived: reaped.filter((pid) => survived.has(pid)),
-				});
+				options.log?.warn("Recovery: marked interrupted record", markWarning);
 			} else {
 				// Issue #304: the mark did NOT land. Count the failure and warn with
 				// the id — this must be visible even when nothing was marked, so it
 				// does not hide behind the caller's `summary.marked > 0` gate.
 				summary.markFailures++;
-				options.log?.warn("Recovery: registry mark failed", {
-					id: record.id,
-					kind: record.kind,
-					reason: plan.reason,
-					reaped,
-					survived: reaped.filter((pid) => survived.has(pid)),
-				});
+				options.log?.warn("Recovery: registry mark failed", markWarning);
 			}
 		} else if (plan.decision === "reap") {
 			// B2 revisit: the record was already marked (so it is never re-marked),
