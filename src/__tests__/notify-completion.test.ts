@@ -8,7 +8,7 @@
  * (it is a one-line pi.sendMessage delegate; covered by the live probe per the
  * issue's D6 test plan).
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { createSessionState } from "../state";
@@ -23,6 +23,8 @@ import {
 	buildCompletionMessage,
 	resolveDelivery,
 	markTerminalSeen,
+	claimTerminalNotice,
+	__resetTerminalClaims,
 	normalizeCompletionStatus,
 	resolveRunEntry,
 } from "../notify-completion";
@@ -409,6 +411,42 @@ describe("markTerminalSeen", () => {
 		// Adding one more crosses the 200 cap → cleared, still returns true.
 		expect(markTerminalSeen(seen, "new-id")).toBe(true);
 		expect(seen.size).toBeLessThanOrEqual(200);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// claimTerminalNotice — the shared (module-level) claim surface (#315)
+// ---------------------------------------------------------------------------
+
+describe("claimTerminalNotice", () => {
+	afterEach(() => {
+		__resetTerminalClaims();
+	});
+
+	it("claims the first terminal notice per id and rejects every repeat", () => {
+		__resetTerminalClaims();
+		expect(claimTerminalNotice("run-1")).toBe(true);
+		expect(claimTerminalNotice("run-1")).toBe(false); // crash after wake → suppressed
+		expect(claimTerminalNotice("run-2")).toBe(true);
+	});
+
+	it("shares one claim set across callers (wake and crash sites)", () => {
+		__resetTerminalClaims();
+		// The event-bus wake claims the id; a subsequent crash-notice claim for the
+		// same id must lose, so exactly one terminal notice is ever delivered.
+		const wake = claimTerminalNotice("run-shared");
+		const crash = claimTerminalNotice("run-shared");
+		expect(wake).toBe(true);
+		expect(crash).toBe(false);
+	});
+
+	it("caps the shared set by clearing it when it exceeds the default cap", () => {
+		__resetTerminalClaims();
+		for (let i = 0; i < 200; i++) expect(claimTerminalNotice(`id-${i}`)).toBe(true);
+		// The 201st id crosses the cap → the set clears, still claims.
+		expect(claimTerminalNotice("id-overflow")).toBe(true);
+		// The reset wiped the earlier ids, so one of them claims again.
+		expect(claimTerminalNotice("id-0")).toBe(true);
 	});
 });
 

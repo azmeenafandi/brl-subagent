@@ -123,7 +123,7 @@ import {
 	buildCompletionMessage,
 	resolveDelivery,
 	sendCompletionNotification,
-	markTerminalSeen,
+	claimTerminalNotice,
 	resolveRunEntry,
 } from "./notify-completion";
 
@@ -2359,12 +2359,14 @@ export default function (pi: ExtensionAPI) {
 					}
 					state.failedSubagents++;
 					updateProgressStatus(state, ctx);
-					pi.sendMessage({
-						customType: "subagent-notification",
-						content: `Background agent "${agent.description}" crashed.`,
-						display: true,
-						details: { agentId: agent.id }
-					}, { deliverAs: "followUp" });
+					if (claimTerminalNotice(agent.id)) {
+						pi.sendMessage({
+							customType: "subagent-notification",
+							content: `Background agent "${agent.description}" crashed.`,
+							display: true,
+							details: { agentId: agent.id }
+						}, { deliverAs: "followUp" });
+					}
 					return;
 				}
 				
@@ -2411,12 +2413,10 @@ export default function (pi: ExtensionAPI) {
 					if (agent.status === 'failed') {
 						state.failedSubagents++;
 						updateProgressStatus(state, ctx);
-						pi.sendMessage({
-							customType: "subagent-notification",
-							content: `Background agent "${agent.description}" failed.`,
-							display: true,
-							details: { agentId: agent.id }
-						}, { deliverAs: "followUp" });
+						// Issue #315: the terminal wake (`subagent-completion`, emitted by
+						// the session-manager settle) is the ONE notice for a failed run.
+						// The status here was set by that settle, so the wake already
+						// delivered — this legacy poller notice would duplicate it.
 					} else if (agent.status === 'stopped') {
 						// User-initiated stop (stop_subagent) or deadline abort
 						// (timeout/deadline) — not a failure.
@@ -2444,12 +2444,14 @@ export default function (pi: ExtensionAPI) {
 					}
 					state.failedSubagents++;
 					updateProgressStatus(state, ctx);
-					pi.sendMessage({
-						customType: "subagent-notification",
-						content: `Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`,
-						display: true,
-						details: { agentId: agent.id }
-					}, { deliverAs: "followUp" });
+					if (claimTerminalNotice(agent.id)) {
+						pi.sendMessage({
+							customType: "subagent-notification",
+							content: `Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`,
+							display: true,
+							details: { agentId: agent.id }
+						}, { deliverAs: "followUp" });
+					}
 				}
 			}
 		}, 2000);
@@ -4057,9 +4059,10 @@ export default function (pi: ExtensionAPI) {
 	// subagent:failed / subagent:stopped), so the conductor is woken via
 	// pi.sendMessage + triggerTurn when a background run reaches a terminal state.
 	// Delivery is always-on (minimum nextTurn); the completionNotify knob controls
-	// the WAKE (D1+D2 — see notify-completion.ts). The dedupe set defends the
-	// pathological double-emit path (first terminal event per id wins); it is
-	// capped simply (cleared when it exceeds 200 entries).
+	// the WAKE (D1+D2 — see notify-completion.ts). The shared terminal claim
+	// (issue #315) defends the pathological double-emit path (first terminal
+	// event or crash notice per id wins); it is capped simply (cleared when it
+	// exceeds 200 entries).
 	//
 	// Stopped-run degradation — ACCEPTED BY DESIGN (review #2, adjudicated
 	// 2026-09-01): subagent:stopped fires at stop time (updateAgentStatus) BEFORE
@@ -4068,7 +4071,6 @@ export default function (pi: ExtensionAPI) {
 	// resolveRunEntry returns may be the pre-finalize spawn entry. The wake is
 	// the point; details are best-effort — the notification must never throw or
 	// block on their absence.
-	const terminalSeen = new Set<string>();
 	const terminalTypes = ["subagent:completed", "subagent:failed", "subagent:stopped"] as const;
 	for (const type of terminalTypes) {
 		eventBus.on(type, (event) => {
@@ -4078,7 +4080,7 @@ export default function (pi: ExtensionAPI) {
 
 	async function deliverCompletionAlert(event: SubagentEvent): Promise<void> {
 		const id = event.agentId;
-		if (!markTerminalSeen(terminalSeen, id)) return;
+		if (!claimTerminalNotice(id)) return;
 		const ctx = sessionCtx;
 		if (!ctx) return;
 		try {
