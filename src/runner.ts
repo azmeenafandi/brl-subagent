@@ -34,7 +34,8 @@ import {
 	SUBAGENT_ABORTED_MESSAGE,
 	SUBAGENT_SIGNAL_KILLED_MESSAGE,
 } from "./types";
-import { escalateKill, type EscalationTarget } from "./kill-escalation";
+import { escalateKill, pidTarget, type EscalationTarget } from "./kill-escalation";
+import { findByMarker, pidAlive } from "./proc";
 import { getSafeEnv, DEPTH_ENV_KEY, CHILD_MARKER_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
@@ -140,22 +141,96 @@ function childTarget(proc: ChildProcess, verifyDeath: () => boolean = () => chil
 	};
 }
 
+/** Send a signal to a pid; the ONE production kill primitive for marker sweeps. */
+const killPid = (pid: number, signal: NodeJS.Signals): void => {
+	process.kill(pid, signal);
+};
+
+/**
+ * #299 Option A: union the marker-carrying descendants of the given markers into
+ * pid-based escalation targets. A spawned child stamps its own subprocesses with
+ * the same per-run marker env, so `findByMarker` surfaces grandchildren the
+ * `ChildProcess`-based targets cannot see. `excludePids` drops anything already
+ * targeted (the tracked direct children). Markers are per-run UUIDs, so a sweep
+ * cannot reach another run's tree.
+ */
+function collectMarkerTargets(
+	markers: Iterable<string | undefined>,
+	excludePids: ReadonlySet<number>,
+): { pids: number[]; targets: EscalationTarget[] } {
+	const seen = new Set<number>();
+	const pids: number[] = [];
+	const targets: EscalationTarget[] = [];
+	for (const marker of markers) {
+		if (!marker) continue;
+		for (const pid of findByMarker(marker)) {
+			if (!Number.isInteger(pid) || pid <= 0) continue;
+			if (excludePids.has(pid) || seen.has(pid)) continue;
+			seen.add(pid);
+			pids.push(pid);
+			targets.push(pidTarget(pid, killPid, pidAlive));
+		}
+	}
+	return { pids, targets };
+}
+
+/**
+ * #299 Option A: kill every pid still carrying `marker` once the direct child has
+ * exited — the marker-inheriting descendants (grandchildren) that would
+ * otherwise survive the run in-session (probe 1c). No marker / no match is a
+ * no-op. Uses the same SIGTERM → grace → SIGKILL window (and test-only timing
+ * seam) as every other kill path; never rejects.
+ */
+async function sweepMarkerChildren(
+	marker: string | undefined,
+	excludePids: ReadonlySet<number>,
+	log?: Logger,
+): Promise<number[]> {
+	const { pids, targets } = collectMarkerTargets([marker], excludePids);
+	if (targets.length === 0) return [];
+	try {
+		await escalateKill(targets, {
+			graceMs: escalationTiming.graceMs,
+			pollMs: escalationTiming.pollMs,
+			sleep: realSleep,
+		});
+		log?.info("Swept leftover marker children after run exit", { marker, pids });
+	} catch (err) {
+		// A sweep must never block the run result from settling.
+		log?.warn("Marker sweep failed after run exit", { marker, error: String(err) });
+	}
+	return pids;
+}
+
 /**
  * Terminate every registered in-flight child: SIGTERM all, wait up to the shared
  * grace period (returning as soon as every child is dead — B4), then SIGKILL any
  * survivor. Returns the pids targeted. Safe to call when nothing is in flight.
+ *
+ * #299 Option A: each tracked entry's marker is also swept (`findByMarker`),
+ * because a marker-carrying grandchild is invisible to the `ChildProcess` handle
+ * and would otherwise survive a clean session_shutdown (probe 1b). Marker pids
+ * are deduped against the tracked pids and share the ONE escalation window, so
+ * the whole inherited tree dies together.
  */
 export async function reapActiveChildren(log?: Logger): Promise<number[]> {
 	const pids: number[] = [];
+	const trackedPids = new Set<number>();
 	const targets: EscalationTarget[] = [];
+	const markers: Array<string | undefined> = [];
 	for (const [token, entry] of activeChildren) {
 		if (entry.proc.pid === undefined) {
 			activeChildren.delete(token);
 			continue;
 		}
+		trackedPids.add(entry.proc.pid);
 		pids.push(entry.proc.pid);
 		targets.push(childTarget(entry.proc));
+		markers.push(entry.marker);
 	}
+	const swept = collectMarkerTargets(markers, trackedPids);
+	pids.push(...swept.pids);
+	targets.push(...swept.targets);
 	if (targets.length === 0) return [];
 
 	await escalateKill(targets, {
@@ -982,6 +1057,24 @@ ${msgBlock}`;
 					result.stderr += data.toString();
 				});
 
+				// #299 Option A: sweep on `exit`, not `close`. `exit` is where the direct
+				// child is confirmed dead; `close` can be delayed indefinitely when a
+				// grandchild inherited the child's stdio and keeps the pipes open. Killing
+				// the leftover marker tree here also releases those pipes so the run can
+				// settle. Success, timeout, and abort all terminate the direct child and so
+				// all funnel through this ONE exit sweep (probe 1c). The per-run marker
+				// keeps it foreign-tree-safe; already-tracked concurrent children are
+				// excluded because two children may legitimately share a marker (B5).
+				let sweepPromise: Promise<number[]> | undefined;
+				proc.on("exit", () => {
+					const excludePids = new Set<number>();
+					for (const entry of activeChildren.values()) {
+						if (entry.proc.pid !== undefined) excludePids.add(entry.proc.pid);
+					}
+					if (proc.pid !== undefined) excludePids.add(proc.pid);
+					sweepPromise = sweepMarkerChildren(childMarker, excludePids, log);
+				});
+
 				proc.on("close", (code, signal) => {
 					activeChildren.delete(registryToken);
 					if (buffer.trim()) {
@@ -1003,7 +1096,10 @@ ${msgBlock}`;
 						result.errorMessage = `${SUBAGENT_SIGNAL_KILLED_MESSAGE} (${signal ?? "unknown"})`;
 						log?.warn("Subagent killed by external signal", { signal, pid: proc.pid });
 					}
-					resolve(result.exitCode);
+					// #299 Option A: settle only AFTER the exit sweep finished, so no
+					// in-session marker tree outlives the run (probe 1c). Result semantics
+					// above are untouched.
+					void (sweepPromise ?? Promise.resolve([])).then(() => resolve(result.exitCode));
 				});
 
 				proc.on("error", (err) => {

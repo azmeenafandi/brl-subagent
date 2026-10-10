@@ -34,6 +34,28 @@ export interface EscalationTarget {
 	verifyDeath(): boolean;
 }
 
+/**
+ * Build the `EscalationTarget` for ONE pid from injected kill/liveness
+ * primitives. Shared by the boot-scan reap (`reapPids`) and the marker sweeps
+ * (`reapActiveChildren`, the run-exit sweep) so the pid-target shape —
+ * SIGTERM, SIGKILL, `verifyDeath` = pid-not-alive — cannot drift between sites.
+ */
+export function pidTarget(
+	pid: number,
+	kill: (pid: number, signal: NodeJS.Signals) => void,
+	pidAlive: (pid: number) => boolean,
+): EscalationTarget {
+	return {
+		terminate: () => {
+			kill(pid, "SIGTERM");
+		},
+		forceKill: () => {
+			kill(pid, "SIGKILL");
+		},
+		verifyDeath: () => !pidAlive(pid),
+	};
+}
+
 export interface EscalationOptions {
 	/** Grace window between SIGTERM and SIGKILL (ms). */
 	graceMs: number;

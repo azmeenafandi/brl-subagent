@@ -25,7 +25,7 @@
 
 import type { ProcessOwner, SubagentRun } from "./types";
 import { resolveTerminalRunEntry } from "./state";
-import { escalateKill, type EscalationTarget } from "./kill-escalation";
+import { escalateKill, pidTarget } from "./kill-escalation";
 
 // ---------------------------------------------------------------------------
 // Dependency injection surface
@@ -45,6 +45,12 @@ export interface RecoveryDeps {
 	sleep(ms: number): Promise<void>;
 	/** Grace period in ms between SIGTERM and SIGKILL. */
 	graceMs: number;
+	/**
+	 * Poll interval for the early-exit wait (B4/Item 4): when > 0 the reap returns
+	 * as soon as every target verifies dead, bounded by `graceMs`. Omitted/0 keeps
+	 * the historical wait-the-full-grace-once shape.
+	 */
+	pollMs?: number;
 }
 
 /** Which persisted store a candidate record came from. */
@@ -203,25 +209,19 @@ export function decideRecovery(record: RecoveryRecord, deps: RecoveryDeps): Reco
 }
 
 /**
- * Escalate a set of pids together: SIGTERM every one, wait ONE grace window,
- * then SIGKILL any survivor. Returns the pids still alive afterwards. Thin
+ * Escalate a set of pids together: SIGTERM every one, wait (with `deps.pollMs`,
+ * at most) ONE grace window returning as soon as all are dead, then SIGKILL any
+ * survivor. Returns the pids still alive afterwards. Thin
  * adapter over the shared `escalateKill` helper (src/kill-escalation.ts), which
  * `recoverRecord` (one record) and `runBootScan` (the whole scan) both call, so
  * a boot with N orphans waits one grace period total, never N.
  */
 export async function reapPids(pids: number[], deps: RecoveryDeps): Promise<number[]> {
 	const unique = [...new Set(pids)];
-	const targets: EscalationTarget[] = unique.map((pid) => ({
-		terminate: () => {
-			deps.kill(pid, "SIGTERM");
-		},
-		forceKill: () => {
-			deps.kill(pid, "SIGKILL");
-		},
-		verifyDeath: () => !deps.pidAlive(pid),
-	}));
+	const targets = unique.map((pid) => pidTarget(pid, deps.kill, deps.pidAlive));
 	const survivors = await escalateKill(targets, {
 		graceMs: deps.graceMs,
+		pollMs: deps.pollMs,
 		sleep: deps.sleep,
 	});
 	const survivedSet = new Set(survivors);

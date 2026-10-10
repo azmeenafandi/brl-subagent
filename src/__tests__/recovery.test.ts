@@ -26,6 +26,7 @@ import * as path from "node:path";
 import {
 	decideRecovery,
 	recoverRecord,
+	reapPids,
 	runBootScan,
 	classifyOwner,
 	defaultRecoveryDeps,
@@ -106,6 +107,13 @@ function track(child: ChildProcess): ChildProcess {
 	return child;
 }
 
+/**
+ * Pids launched as a GRANDCHILD of a wrapper (not a direct ChildProcess of this
+ * test process), so they need their own cleanup. A test adds the pid it reads
+ * from the readiness file; afterEach force-kills any survivor.
+ */
+const strayPids = new Set<number>();
+
 afterEach(async () => {
 	for (const child of spawned.splice(0)) {
 		try {
@@ -114,6 +122,17 @@ afterEach(async () => {
 			// already gone
 		}
 	}
+	for (const pid of strayPids) {
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch {
+			// already gone
+		}
+	}
+	strayPids.clear();
+	// Any test that shortened the escalation timing must not leak it into the
+	// next file-scoped test (idempotent reset to production timing).
+	__setEscalationTimingForTest();
 });
 
 // ---------------------------------------------------------------------------
@@ -613,6 +632,53 @@ async function withSleepWrapper<T>(fn: () => Promise<T>): Promise<T> {
 	);
 }
 
+/**
+ * A wrapper that spawns a long-lived `bash` GRANDCHILD (which inherits the
+ * per-run marker env from the wrapper) and then waits. Models the realistic
+ * child→grandchild tree the marker scan must cover (#299). By default the
+ * grandchild inherits the marker; with `stripMarker` it is launched via
+ * `env -u BRL_SUBAGENT_CHILD_MARKER`, modelling an env-scrubbing/setsid subtree
+ * the marker scan CANNOT see (the Option B boundary).
+ *
+ * The grandchild ignores SIGHUP and `exec`s, so killing the wrapper cannot kill
+ * it indirectly — a survival assertion then honestly measures the MARKER
+ * boundary, not shell job-control side effects. Writes the grandchild pid to
+ * `<dir>/grandchild.pid`; `fn` receives that path.
+ */
+async function withGrandchildWrapper<T>(
+	fn: (pidFile: string) => Promise<T>,
+	stripMarker = false,
+): Promise<T> {
+	return withTempPiBin(
+		"brl-grandchild-",
+		(dir) => {
+			const script = path.join(dir, "grandchild.sh");
+			const pidFile = path.join(dir, "grandchild.pid");
+			// The inner bash writes its OWN pid (`$$`): `$!` in the outer shell can name
+			// a subshell rather than the process carrying the (possibly stripped)
+			// environment. `exec sleep` keeps that pid. `trap "" HUP` keeps the
+			// grandchild alive when the wrapper dies, so a survival assertion measures
+			// the MARKER boundary, not shell job-control. stdio goes to /dev/null as a
+			// daemonized process would, so it does not hold the conductor's pipes open.
+			const launcher =
+				`${stripMarker ? `env -u ${CHILD_MARKER_ENV_KEY} ` : ""}` +
+				`bash -c 'echo $$ > ${JSON.stringify(pidFile)}; trap "" HUP; exec sleep 300' >/dev/null 2>&1 &`;
+			fs.writeFileSync(script, `#!/bin/sh\n${launcher}\nwait\n`, { mode: 0o755 });
+			return script;
+		},
+		(dir) => fn(path.join(dir, "grandchild.pid")),
+	);
+}
+
+/** Wait for the wrapper's readiness (grandchild pid) file and return its pid. */
+async function readGrandchildPid(pidFile: string): Promise<number> {
+	await waitUntil(() => fs.existsSync(pidFile), 5000);
+	const pid = Number(fs.readFileSync(pidFile, "utf-8").trim());
+	if (!Number.isInteger(pid) || pid <= 0) throw new Error(`bad grandchild pid in ${pidFile}`);
+	strayPids.add(pid);
+	return pid;
+}
+
 /** Launch one wrapper child with a per-run marker (and optional abort signal). */
 function launchForeground(marker: string, timeout?: number, signal?: AbortSignal) {
 	return runSubagent(
@@ -763,6 +829,86 @@ describe("shutdown reap", () => {
 			expect(activeChildCount()).toBe(0);
 		});
 	}, 20000);
+
+	it("#299 Option A: reaps a marker-carrying GRANDCHILD alongside the tracked child", async () => {
+		if (!isProcAvailable()) return;
+		await withGrandchildWrapper(async (pidFile) => {
+			const marker = `grandchild-reap-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker);
+			await waitUntil(() => activeChildCount() === 1, 5000);
+			const grandchildPid = await readGrandchildPid(pidFile);
+			// One marker now spans TWO pids: the tracked direct child and the grandchild.
+			await waitUntil(() => findByMarker(marker).includes(grandchildPid), 5000);
+			expect(findByMarker(marker).length).toBeGreaterThanOrEqual(2);
+			const before = findByMarker(marker).sort((a, b) => a - b);
+
+			const reaped = await reapActiveChildren();
+			await promise;
+
+			// One escalation window ended the whole inherited tree (probe 1b).
+			expect(reaped).toContain(grandchildPid);
+			await waitUntil(() => findByMarker(marker).length === 0, 5000);
+			expect(findByMarker(marker)).toEqual([]);
+			expect(pidAlive(grandchildPid)).toBe(false);
+			expect(activeChildCount()).toBe(0);
+			// Evidence: record the pids observed before/after for the PR body.
+			console.log(`#299-A reapActiveChildren pids BEFORE=${JSON.stringify(before)} REAPED=${JSON.stringify(reaped)} grandchildAliveAfter=${pidAlive(grandchildPid)}`);
+		});
+	}, 20000);
+
+	it("#299 Option A boundary: a marker-STRIPPED grandchild is NOT reaped (Option B)", async () => {
+		if (!isProcAvailable()) return;
+		await withGrandchildWrapper(async (pidFile) => {
+			const marker = `boundary-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker);
+			await waitUntil(() => activeChildCount() === 1, 5000);
+			const grandchildPid = await readGrandchildPid(pidFile);
+			// The tracked child carries the marker; the scrubbed grandchild does not.
+			await waitUntil(() => findByMarker(marker).length >= 1, 5000);
+			expect(findByMarker(marker)).not.toContain(grandchildPid);
+
+			const reaped = await reapActiveChildren();
+			await promise;
+
+			// Pinned boundary: Option A cannot see a grandchild that scrubbed the
+			// marker — it survives the shutdown reap. Only a process-group kill
+			// (Option B, #299) closes this residual.
+			expect(reaped).not.toContain(grandchildPid);
+			await waitUntil(() => pidAlive(grandchildPid), 2000);
+			expect(pidAlive(grandchildPid)).toBe(true);
+			console.log(`#299-A boundary grandchild=${grandchildPid} aliveAfterShutdownReap=${pidAlive(grandchildPid)} markerVisible=${findByMarker(marker).includes(grandchildPid)}`);
+		}, true);
+	}, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// #299 Option A item 4: boot-scan reap early exit
+// ---------------------------------------------------------------------------
+
+describe("#299 Option A item 4: reapPids early exit (no full-grace stall)", () => {
+	it("returns as soon as instant-dying targets are dead, well under the grace window", async () => {
+		if (!isProcAvailable()) return;
+		const a = track(spawnSleeper());
+		const b = track(spawnSleeper());
+		const pidA = await waitForSpawn(a);
+		const pidB = await waitForSpawn(b);
+		const graceMs = 5000;
+		const deps = { ...defaultRecoveryDeps(), graceMs };
+
+		const started = Date.now();
+		const survivors = await reapPids([pidA, pidB], deps);
+		const elapsed = Date.now() - started;
+
+		expect(survivors).toEqual([]);
+		await waitUntil(() => !pidAlive(pidA) && !pidAlive(pidB), 2000);
+		expect(pidAlive(pidA)).toBe(false);
+		expect(pidAlive(pidB)).toBe(false);
+		// Item 4: the old wait-once shape blocked the full SIGKILL_GRACE_MS even when
+		// both targets die on SIGTERM in ms (the observed ~5 s session_start during a
+		// boot reap). The poll exits after one interval; assert well under half grace.
+		expect(elapsed).toBeLessThan(graceMs / 2);
+		console.log(`#299-A item4 reapPids elapsedMs=${elapsed} (grace=${graceMs}) survivors=${JSON.stringify(survivors)}`);
+	}, 20000);
 });
 
 // ---------------------------------------------------------------------------
@@ -839,6 +985,48 @@ describe("abort/timeout escalation force-kill (issue #303)", () => {
 			await waitUntil(() => !pidAlive(pid!), 2000);
 			expect(pidAlive(pid!)).toBe(false);
 			expect(activeChildCount()).toBe(0);
+		});
+	}, 20000);
+
+	it("#299 Option A timeout: sweeps a marker-carrying grandchild before the run settles", async () => {
+		if (!isProcAvailable()) return;
+		__setEscalationTimingForTest({ graceMs: 1000, pollMs: 10 });
+		await withGrandchildWrapper(async (pidFile) => {
+			const marker = `timeout-grandchild-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker, 2500);
+			const grandchildPid = await readGrandchildPid(pidFile);
+			await waitUntil(() => findByMarker(marker).includes(grandchildPid), 5000);
+			const before = findByMarker(marker).sort((a, b) => a - b);
+
+			const result = await promise;
+
+			// Result semantics untouched; the grandchild is gone by the time the run settles.
+			expect(result.errorCategory).toBe("timeout");
+			expect(result.exitCode).toBe(-1);
+			expect(findByMarker(marker)).toEqual([]);
+			expect(pidAlive(grandchildPid)).toBe(false);
+			console.log(`#299-A timeout pids BEFORE=${JSON.stringify(before)} aliveAfterRun=${pidAlive(grandchildPid)}`);
+		});
+	}, 20000);
+
+	it("#299 Option A abort: sweeps a marker-carrying grandchild before the run settles", async () => {
+		if (!isProcAvailable()) return;
+		__setEscalationTimingForTest({ graceMs: 1000, pollMs: 10 });
+		await withGrandchildWrapper(async (pidFile) => {
+			const marker = `abort-grandchild-${crypto.randomUUID()}`;
+			const controller = new AbortController();
+			const promise = launchForeground(marker, undefined, controller.signal);
+			const grandchildPid = await readGrandchildPid(pidFile);
+			await waitUntil(() => findByMarker(marker).includes(grandchildPid), 5000);
+			const before = findByMarker(marker).sort((a, b) => a - b);
+
+			controller.abort();
+			const result = await promise;
+
+			expect(result.errorCategory).toBe("aborted");
+			expect(findByMarker(marker)).toEqual([]);
+			expect(pidAlive(grandchildPid)).toBe(false);
+			console.log(`#299-A abort pids BEFORE=${JSON.stringify(before)} aliveAfterRun=${pidAlive(grandchildPid)}`);
 		});
 	}, 20000);
 
