@@ -2312,6 +2312,20 @@ export default function (pi: ExtensionAPI) {
 			attempt: spawn.attempt,
 		});
 		
+		// Issue #318 (from #316 review): the two poller crash sites share one
+		// claimed notification envelope. Content is the only variable; the
+		// claim guard, display, details and deliverAs live here once.
+		const sendCrashNotice = (content: string): void => {
+			if (claimTerminalNotice(agent.id)) {
+				pi.sendMessage({
+					customType: "subagent-notification",
+					content,
+					display: true,
+					details: { agentId: agent.id }
+				}, { deliverAs: "followUp" });
+			}
+		};
+
 		// Register for live monitor
 		state.registerLiveSubagent(agent.id, {
 			id: agent.id,
@@ -2359,14 +2373,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					state.failedSubagents++;
 					updateProgressStatus(state, ctx);
-					if (claimTerminalNotice(agent.id)) {
-						pi.sendMessage({
-							customType: "subagent-notification",
-							content: `Background agent "${agent.description}" crashed.`,
-							display: true,
-							details: { agentId: agent.id }
-						}, { deliverAs: "followUp" });
-					}
+					sendCrashNotice(`Background agent "${agent.description}" crashed.`);
 					return;
 				}
 				
@@ -2444,14 +2451,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					state.failedSubagents++;
 					updateProgressStatus(state, ctx);
-					if (claimTerminalNotice(agent.id)) {
-						pi.sendMessage({
-							customType: "subagent-notification",
-							content: `Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`,
-							display: true,
-							details: { agentId: agent.id }
-						}, { deliverAs: "followUp" });
-					}
+					sendCrashNotice(`Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`);
 				}
 			}
 		}, 2000);
