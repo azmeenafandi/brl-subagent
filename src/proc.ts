@@ -277,10 +277,11 @@ export function currentProcessOwner(): ProcessOwner {
 }
 
 /**
- * #299 D4: best-effort process-group signal (`kill(-pgid, sig)`). ESRCH means
- * the group is already empty — the desired end state, so it is swallowed. On a
- * platform without process groups the caller does not wire this in at all
- * (`defaultRecoveryDeps`).
+ * #299 D4: the ONE production process-group signal (`kill(-pgid, sig)`), shared
+ * by the recovery deps and `runner.ts`'s child/marker group targets. ESRCH means
+ * the group is already empty — the desired end state, so it is swallowed; every
+ * other errno is rethrown for the caller's own tolerance. On a platform without
+ * process groups neither caller wires this in (`supportsProcessGroupKill`).
  */
 export function killProcessGroup(pgid: number, signal: NodeJS.Signals): void {
 	try {
