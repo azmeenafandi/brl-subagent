@@ -1096,8 +1096,15 @@ describe("shutdown reap", () => {
 		await withSleepWrapper(async () => {
 			const marker = `pgrp-${crypto.randomUUID()}`;
 			const promise = launchForeground(marker);
-			await waitUntil(() => findByMarker(marker).length >= 1, 5000);
-			const childPid = findByMarker(marker)[0];
+			// Capture the pid INSIDE the predicate so a transient second `/proc` read
+			// cannot observe an empty scan between readiness and the read below.
+			let childPid = 0;
+			await waitUntil(() => {
+				const found = findByMarker(marker);
+				if (found.length === 0) return false;
+				childPid = found[0];
+				return true;
+			}, 5000);
 			// Safety net: if an assertion below fails before the reap, afterEach still
 			// SIGKILLs this runSubagent child (it is not a `spawned` ChildProcess here).
 			strayPids.add(childPid);
