@@ -76,6 +76,12 @@ halves). Not in unit: resume, UI, persistence.
 
 ### U2 — A₁: file-backed background sessions + retention (C1)
 
+**STATUS (2026-10-10): SPEC APPROVED — implementation in flight.** Worktree `brl-subagent-wt-u2`,
+branch `feat/u2-file-backed-sessions` (base `05ac72c`). Approved decisions: per-run session dir
+`.pi/subagents/sessions/<id>/` (dir name = run→file mapping, no record fields); prune at every terminal
+settle path; interrupted files retained until resolved; `pruneBackgroundSession(id)` exposed for U3's
+abandon action; crash leaves a loadable session (torn-write probe).
+
 **Goal:** background subagent sessions persist to disk (enabling A₂ and post-hoc inspection) with a
 bounded, measured footprint.
 
