@@ -142,7 +142,7 @@ dates, and historical framing. The binding rules (with their numbers) live in
     commits), refresh it first. The spec includes BOTH views: the graph's
     structure + grep's exact call sites. The #114 scoping error is the
     proof-of-need: the graph already had the complete touchpoint map; the
-    conductor hand-assembled it from memory + grep instead.
+    conductor hand-assembled it from memory + grep instead. **Checkpoint added 2026-10-10:** that failure repeated — the graph was consulted before grep only intermittently for months (an intention with no artifact decays). Every C1/C2 spec now carries a `## Recon` section produced by `recon.sh`, and its absence is visible at the spec-approval gate; a graph gap is recorded as a finding, never silently worked around.
 
     CodeGraph is the SOLE structural index (ADR 0016): **structural questions
     → CodeGraph** —

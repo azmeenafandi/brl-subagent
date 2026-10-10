@@ -98,21 +98,27 @@ never re-type their logic by hand. Full design:
     currency, the session log / run entries audit trail), THEN theorize about
     code. When delegating a debugging task, instruct the subagent to check the
     environment first.
-13. **Graph-first scoping (Rule 13).** Before writing a spec for any C1/C2
-    change, the CONDUCTOR consults the knowledge graph (conductor-side only;
-    subagents never see it, rule 4) for the change's NEIGHBORHOOD —
-    relationships, seams (AMBIGUOUS edges), and blast radius — BEFORE grep. If
-    the graph is stale, refresh it first. The spec includes BOTH views: the
-    graph's structure + grep's exact call sites.
+13. **Graph-first scoping (Rule 13) — the Recon checkpoint.** Before writing a
+    spec for any C1/C2 change, the CONDUCTOR runs
+    `bash .pi/skills/worktree/recon.sh <symbol|file> [--file <src>] --grep`
+    (conductor-side only; subagents never see the index, rule 4) and PASTES its
+    output into a `## Recon` section at the top of the spec. **No C1/C2 spec
+    dispatches without that section** — the maintainer's spec approval rejects a
+    spec that lacks it. (This rule's own history: "consult before grep" was an
+    intention with no artifact for months and was skipped by default; the
+    artifact IS the fix.)
+    - The section records BOTH views: the graph's structure (callers, impact,
+      affected tests) + the **grep delta** (what grep added or the graph missed).
+    - **A graph gap is a FINDING, never a silent skip.** `recon.sh` refreshes a
+      stale index itself (1 s); if the refresh fails, or an answer is empty or
+      wrong, record that in the Recon section explicitly — never quietly fall
+      back to grep.
     - **Structural questions → CodeGraph — the SOLE structural index** (ADR
-      0016).
-      `codegraph callers <symbol>` — semantic call sites (the enclosing
-      function, or the file node for a callback); `codegraph impact <symbol>` —
-      blast radius (a file node is addressed by its basename, e.g. `runner.ts`);
-      `codegraph query <terms>` — symbol search;
-      `codegraph affected <file>` — the tests to re-run. Refresh with
-      `codegraph-refresh.sh` at every merge (lifecycle step 6); run
-      `codegraph-check.py --repo-root <path>` if freshness is in doubt. CLI-only,
+      0016). Underneath `recon.sh`: `codegraph callers <symbol>`, `codegraph
+      impact <symbol>` (file nodes by basename, e.g. `runner.ts`), `codegraph
+      query <terms>`, `codegraph affected <file>`; refresh with
+      `codegraph-refresh.sh` at every merge (lifecycle step 6);
+      `codegraph-check.py --repo-root <path>` for freshness. CLI-only,
       conductor-side, watcher off, never a hook (#230).
     - **Doc concept / cross-document questions → grep + `docs-arch` + the ADRs**
       — the deterministic fallback. graphify is retired (ADR 0016); no LLM sits
