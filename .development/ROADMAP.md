@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Updated: 2026-10-03 | Released: **v2.4.0** (2026-10-03) | Integration: `dev` @ the v2.4.0 release commit (see "Shipped (2026-10-03, v2.4.0)" below). Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
+> Updated: 2026-10-10 | Released: **v2.4.0** (2026-10-03) | Integration: `dev` @ the v2.5.0 release prep (see "Shipped (2026-10-10, v2.5.0)" below). Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -279,6 +279,22 @@ Goal: ship brl-subagent as a first-class pi package so installation and updates 
 **Outcome:** `brl-subagent@2.3.5` published to npm — installable via `pi install npm:brl-subagent`, updated via `pi update --extensions`, released through a token-free staged pipeline. 979 tests across 45 files; board clean.
 
 **Deferred → RESOLVED in v2.3.6:** pin doc version strings to `package.json` (the README ×2 and the AGENT.md header shipped stale in 2.3.5). Now enforced mechanically (#166).
+
+### Shipped (2026-10-10, v2.5.0)
+
+The durability cycle — conductor-death recovery, kill-path correctness, and the graph-tooling split.
+
+| Issue | What shipped | PR |
+|---|---|---|
+| #296 | **Conductor-death recovery (U1):** a durable `.pi/run-registry/` mirror (written before every run's effect, cleared on finalize), a registry-sourced boot scan that reaps orphaned marker children and marks interrupted runs (foreground mark in the registry; background double-marks), wait-once reap. Live-verified on the merged build (dev toggle + `/reload`). | #301 + fix rounds (#305) |
+| #303 | **Abort/timeout escalation force-kills:** the death check is the real exit (`exitCode`/`signalCode`), not `child.killed` (signal-sent); a SIGTERM-ignoring child gets SIGKILL at the grace boundary; cooperative children exit early. | #305 |
+| #304 | **Truthful recovery ledger:** registry marks cannot fail silently (warning + `markFailures`), `markInterrupted` cannot throw, unsafe-id entries are skipped fail-closed. | #305 |
+| #302 | **The suite no longer mutates the checkout:** the branch-mode e2e test runs in a temp git repo behind an invariant guard; detached worktrees stay detached after full-suite runs. | #307 |
+| #308 | **Detached auto-approve keeps the work:** the merged commit stays reachable (work branch preserved on detached starts; `fsck`-proven before/after). | #307 |
+| #306 / #298 | **Pre-release polish:** elapsed-bound assertions, a runtime-gated test-only timing seam, two DRY cleanups; the partial-vs-settled renderer predicate centralized (`isUnsettledPartial`, architecture-ratcheted). | #311 |
+| — | **Tooling:** ADR 0015 splits the knowledge layers (CodeGraph structural index vs graphify semantic layer); Phase 2 dogfood started. | #309 |
+
+Deferred by design: **#299** (process-group reaping for orphaned trees — the D6 targeted hardening destination, trigger-based, not scheduled).
 
 ### Shipped (2026-10-03, v2.4.0)
 
