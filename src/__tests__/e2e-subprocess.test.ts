@@ -494,6 +494,14 @@ describe("Tier 2: Subprocess integration tests", () => {
 				cwd: tempRepo,
 			});
 
+			// #302 invariant guard: the branch run must not move the checkout's HEAD
+			// nor leave any work branch behind. Capture-then-compare (not a hardcoded
+			// expectation) so it works equally on a branch and in CI's detached PR
+			// builds. Asserted FIRST after the call so a regression is reported here
+			// rather than masked by a downstream assertion.
+			expect(gitRun(PROJECT_ROOT, ["rev-parse", "HEAD"])).toBe(projectHeadBefore);
+			expect(gitRun(PROJECT_ROOT, ["branch", "--list", "brl-subagent-*"])).toBe(projectBranchesBefore);
+
 			expect(result.exitCode).toBe(0);
 
 			const output = parseOutput(result);
@@ -504,14 +512,6 @@ describe("Tier 2: Subprocess integration tests", () => {
 			expect(text).not.toContain("PARAMS_PARSE_FAILED");
 			// The delegation actually ran (not merely "execute didn't crash").
 			expect(output.result.isError).not.toBe(true);
-
-			// #302 invariant guard: the branch run must not move the checkout's HEAD
-			// nor leave any work branch behind. Capture-then-compare (not a hardcoded
-			// expectation) so it works equally on a branch and in CI's detached PR
-			// builds. Asserted FIRST after the call so a regression is reported here
-			// rather than masked by a downstream assertion.
-			expect(gitRun(PROJECT_ROOT, ["rev-parse", "HEAD"])).toBe(projectHeadBefore);
-			expect(gitRun(PROJECT_ROOT, ["branch", "--list", "brl-subagent-*"])).toBe(projectBranchesBefore);
 
 			if (STUB_MODE) {
 				const log = await readStubLog(tempRepo);
