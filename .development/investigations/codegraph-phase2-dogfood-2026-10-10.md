@@ -18,3 +18,12 @@ time, query parity on 5–10 real questions. Decide (retire/narrow) after a week
   `callers createWorkBranch` → `src/git.ts:108` (definitions resolve cleanly). Caller-LIST
   extraction needs the Oct-8 methodology fix (flag/JSON shape), and `impact`'s exact argument
   form needs settling — carried to data point #2.
+
+## Data point #2 — merge `924a13d` (PR #311, code: #298 + #306)
+
+- **Graphify (gate): PASS** in **71 s** — no refusal (contrast with #1's lockfile-only refusal).
+- **CodeGraph (shadow): PASS** in **2 s** — 39/39 modules, 0 missing of **380** exported
+  declarations, `indexed_at_commit == 924a13d == HEAD`.
+- Working hypothesis confirmed across two points: the gate's refusals track the
+  **docs-semantic layer's extraction variance**, not input class per se — a lockfile-only
+  merge can refuse while a code merge passes.
