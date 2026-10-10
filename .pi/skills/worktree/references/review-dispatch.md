@@ -13,6 +13,10 @@ verdict format — the dispatch task only adds the PR-specific focus areas.
 The PR body's **Door** and **Blast radius** lines (the `pr` skill) are targeting
 signal — aim the dispatch's focus areas at the risk they name.
 
+**Mutation choice decides coverage.** For path-isolation tests, mutate the ACTION while leaving the accounting
+intact (e.g. neuter the signals but keep the returned pid list) — an accounting-only mutation passes while the test
+still cannot distinguish the paths (#322: the run's own exit sweep masked the shutdown reap).
+
 **Dispatch with `preset: "project-reviewer"` — NOT bare `tools` (the
 auto-route can override an explicit tools list; an explicit preset wins) and
 NOT `dev-agent` + `excludeTools` (the retired workaround).**
