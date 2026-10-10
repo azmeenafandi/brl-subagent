@@ -152,11 +152,65 @@ export type GroupMembership = boolean | undefined;
 const PROCESS_STATE_LETTERS = new Set(["R", "S", "D", "Z", "T", "t", "X", "x", "K", "W", "P", "I"]);
 
 /**
+ * The kernel's `PID_MAX_LIMIT` on 64-bit Linux. A pgrp above this is not a real
+ * process-group id, so a record carrying one is mis-parsed — the inspection is
+ * PARTIAL, not a positive non-membership. `pid_max` can be configured lower; a
+ * value above the kernel CEILING can never be genuine at all.
+ */
+const PID_MAX_LIMIT = 4_194_304;
+
+/**
+ * #299 fix A.5 — the SINGLE source of the `/proc/<pid>/stat` PREFIX contract,
+ * shared by every group-membership read. Given the whitespace-split fields after
+ * `(comm)`, it returns `{ state, pgrp }` ONLY when the record is WELL-FORMED
+ * enough to trust, and `undefined` (malformed/truncated/shifted) otherwise.
+ *
+ * The contract is deliberately strict, because `groupHasMembers` turns a clean
+ * scan into the actionable claim "the group is POSITIVELY empty" (an escalation
+ * early-exit and a clean survivor report). Every field the prefix relies on is
+ * therefore validated by SHAPE and ALIGNMENT:
+ *
+ *   - `fields[0]` (state) must be a kernel process-state letter — numerics,
+ *     punctuation, empty and multi-char tokens are all malformed.
+ *   - `fields[1]` (ppid) must be a non-negative integer — this is the ALIGNMENT
+ *     check. A valid state followed by a non-numeric ppid (`R S 1 9999`) is a
+ *     SHIFTED record whose "pgrp" slot happens to hold a real integer; trusting
+ *     it would read a malformed record as a justified non-member.
+ *   - `fields[2]` (pgrp) must be an integer in `[0, PID_MAX_LIMIT]` — negatives
+ *     and oversized values are impossible pgrps. `0` is LEGAL: kernel threads
+ *     carry pgrp 0 and must not taint an otherwise-clean scan.
+ */
+function parseStatPrefix(fields: string[]): { state: string; pgrp: number } | undefined {
+	const state = fields[0];
+	const ppid = fields[1];
+	const pgrpField = fields[2];
+	if (state === undefined || !PROCESS_STATE_LETTERS.has(state)) return undefined;
+	// Strict decimal shape: `Number("1e3")`/`Number("0x10")`/`Number("")` would
+	// otherwise sneak through as integers, so validate the TOKEN, not the cast.
+	if (ppid === undefined || !/^\d+$/.test(ppid)) return undefined;
+	if (pgrpField === undefined || !/^\d+$/.test(pgrpField)) return undefined;
+	const pgrp = Number(pgrpField);
+	if (pgrp > PID_MAX_LIMIT) return undefined;
+	return { state, pgrp };
+}
+
+/** The states whose processes are NOT live group members (an unreaped corpse
+ * cannot hold a group non-empty): `Z` (zombie), `X`/`x` (dead). Only ever
+ * consulted for a record that `parseStatPrefix` already accepted. */
+const NON_MEMBER_STATES = new Set(["Z", "X", "x"]);
+
+/**
  * Scans `/proc` for processes whose pgrp (field 5) equals `pgid`, skipping the
- * leader itself and zombies (`Z`/`X` — an unreaped corpse is not a live member
- * and must not hold the group non-empty). A group's leader exiting does NOT
- * empty the group, so this is what lets `escalateKill` keep waiting for a
- * member's cleanup window.
+ * leader itself and non-live states (`Z`/`X`/`x` — an unreaped corpse is not a
+ * live member and must not hold the group non-empty). A group's leader exiting
+ * does NOT empty the group, so this is what lets `escalateKill` keep waiting for
+ * a member's cleanup window.
+ *
+ * The return contract is EXACT (see `GroupMembership`): `false` may be returned
+ * ONLY after a COMPLETE scan in which every record parsed as a well-formed
+ * prefix. Any unparseable record taints the scan to `undefined` (unknown) — the
+ * check lives in `parseStatPrefix`, so there is no fall-through that can turn
+ * malformed input into a positively-empty `false`.
  */
 export function groupHasMembers(pgid: number): GroupMembership {
 	// Platform boundary: no /proc at all → the caller falls back to leader
@@ -181,23 +235,15 @@ export function groupHasMembers(pgid: number): GroupMembership {
 			if (read.code === "ENOENT") continue;
 			return undefined;
 		}
-		const fields = read.fields;
-		// #299 fix A.3/A.4: never let a truncated or field-SHIFTED record count as
-		// ABSENCE. A record can carry a valid `)` while carrying too few fields
-		// (e.g. `5500 (node) S 1`) OR while missing the state token so the fields
-		// shift left (`5500 (node) 1 1 9999`): `Number(undefined)` is NaN, but a
-		// shifted pgrp slot can hold a REAL integer, so the pure numeric-pgrp check
-		// still read the record as a NON-member and returned a positively-empty
-		// `false`. That is the same "absence of evidence read as evidence of
-		// absence" class A.2 targeted. Validate the state token by SHAPE (a kernel
-		// process-state letter — numerics, punctuation, empty or multi-char tokens
-		// are malformed) alongside the integer pgrp; anything less is PARTIAL.
-		const state = fields[0];
-		const pgrp = Number(fields[2]);
-		if (state === undefined || !PROCESS_STATE_LETTERS.has(state) || !Number.isInteger(pgrp))
-			return undefined;
-		if (state === "Z" || state === "X") continue;
-		if (pgrp === pgid) return true;
+		// #299 fix A.5: ONE strict prefix validation. A truncated, shifted or
+		// otherwise malformed record (too few fields, non-letter state, non-numeric
+		// ppid, impossible pgrp) makes the inspection PARTIAL → unknown, never a
+		// positively-empty `false`. Well-formed dead states are skipped; a live
+		// member is a match.
+		const parsed = parseStatPrefix(read.fields);
+		if (parsed === undefined) return undefined;
+		if (NON_MEMBER_STATES.has(parsed.state)) continue;
+		if (parsed.pgrp === pgid) return true;
 	}
 	return false;
 }

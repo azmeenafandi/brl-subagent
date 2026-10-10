@@ -164,6 +164,58 @@ describe("groupHasMembers tri-state (#299 fix A.2)", () => {
 		expect(groupHasMembers(PGID)).toBe(false);
 	});
 
+	it("still skips a well-formed `x` (dead) record with a numeric pgrp (#299 A.5)", () => {
+		control.dirEntries = [String(MEMBER), "self"];
+		control.statContents.set(`/proc/${MEMBER}/stat`, statLine("x", PGID));
+		expect(groupHasMembers(PGID)).toBe(false);
+	});
+
+	it("returns undefined on a negative pgrp (impossible pgrp, #299 A.5)", () => {
+		control.dirEntries = [String(MEMBER), "self"];
+		control.statContents.set(`/proc/${MEMBER}/stat`, statLine("S", -1));
+		expect(groupHasMembers(PGID)).toBeUndefined();
+	});
+
+	it("returns undefined on an oversized pgrp (beyond PID_MAX_LIMIT, #299 A.5)", () => {
+		control.dirEntries = [String(MEMBER), "self"];
+		control.statContents.set(`/proc/${MEMBER}/stat`, statLine("S", 999_999_999_999));
+		expect(groupHasMembers(PGID)).toBeUndefined();
+	});
+
+	it("accepts the inclusive PID_MAX_LIMIT pgrp as well-formed (#299 A.5)", () => {
+		control.dirEntries = [String(MEMBER), "self"];
+		// 4194304 is the ceiling, so it is a REAL (if huge) pgrp: a non-member, not
+		// a malformed record. Only ABOVE the ceiling taints the scan.
+		control.statContents.set(`/proc/${MEMBER}/stat`, statLine("S", 4_194_304));
+		expect(groupHasMembers(PGID)).toBe(false);
+	});
+
+	it("returns undefined when a valid state is not field-aligned (non-numeric ppid, #299 A.5)", () => {
+		control.dirEntries = [String(MEMBER), "self"];
+		// `R S 1 9999`: the state is valid and `1` lands in the pgrp slot, but the ppid
+		// slot holds `S` — the record is SHIFTED, so the scan is partial, not empty.
+		control.statContents.set(`/proc/${MEMBER}/stat`, `${MEMBER} (node) R S 1 ${OTHER_PGID}`);
+		expect(groupHasMembers(PGID)).toBeUndefined();
+	});
+
+	it("treats pgrp 0 (kernel-thread shape) as a non-member without tainting the scan (#299 A.5)", () => {
+		control.dirEntries = [String(MEMBER), "self"];
+		// Kernel threads carry pgrp 0: a legal, well-formed non-member. It must NOT
+		// taint the inspection — the scan completes and reports the group empty.
+		control.statContents.set(`/proc/${MEMBER}/stat`, statLine("S", 0));
+		expect(groupHasMembers(PGID)).toBe(false);
+	});
+
+	it("continues scanning past a pgrp-0 kernel thread to a real member (#299 A.5)", () => {
+		const THREAD = 5600;
+		control.dirEntries = [String(MEMBER), String(THREAD), "self"];
+		// A pgrp-0 thread must not short-circuit the scan: the real same-pgid member
+		// after it is still observed.
+		control.statContents.set(`/proc/${MEMBER}/stat`, statLine("S", 0));
+		control.statContents.set(`/proc/${THREAD}/stat`, statLine("S", PGID));
+		expect(groupHasMembers(PGID)).toBe(true);
+	});
+
 	it("degrades to false on an invalid pgid (documented boundary, before any /proc read)", () => {
 		expect(groupHasMembers(0)).toBe(false);
 		expect(groupHasMembers(-1)).toBe(false);
