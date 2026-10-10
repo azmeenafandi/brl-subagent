@@ -2,6 +2,15 @@
 
 Release history for brl-subagent. Newest first. The full narrative for each release lives in the GitHub release notes.
 
+### v2.5.0
+
+- **Conductor-death recovery (issue #296):** a run that was in flight when the conductor died is now recovered at the next boot — the orphaned subagent process is reaped (identity-verified via its `/proc` marker before any signal) and the run is marked interrupted. Built on a durable `.pi/run-registry/` mirror written before every run's effect and cleared on finalize; the boot scan reads only that registry (no full agent-store parse), waits one grace window total, and skips entries it cannot verify.
+- **Abort/timeout escalation now force-kills (issue #303):** the single-child death check is the real process exit, not `child.killed` (true the moment the signal is *sent*) — a child that ignores SIGTERM is SIGKILLed at the grace boundary, and cooperative children finish early.
+- **The recovery ledger cannot lie (issue #304):** registry-mark failures are logged and counted (`markFailures`), `markInterrupted` never throws out of the scan, and entries whose ids fail the safety guard are skipped fail-closed.
+- **The test suite no longer mutates the checkout (issues #302, #308):** the branch-mode end-to-end test runs against a throwaway git repo behind an invariant guard; a detached starting checkout is restored with its work preserved instead of leaking a work branch or losing the merged commit.
+- **Renderer predicate centralization (issue #298) + review polish (issue #306):** the overloaded `exitCode === -1` partial-vs-settled decision lives in one architecture-ratcheted predicate; the escalation timing seam is unreachable outside tests.
+- **Tooling:** ADR 0015 splits the knowledge layers — CodeGraph as the structural index, graphify as the semantic layer — with a measured dogfood window in progress.
+
 ### v2.4.0
 
 - **Explicit timeouts are honored (issue #240):** the 30-minute "hard cap" silently shortened any explicit `timeout`, so a legitimate long background run could not be given one. An explicit timeout is now honored verbatim — 30 minutes is the default for a background run that passes none (the orphan protection for unattended runs), never a ceiling.
