@@ -97,11 +97,21 @@ never re-type their logic by hand. Full design:
     code. When delegating a debugging task, instruct the subagent to check the
     environment first.
 13. **Graph-first scoping (Rule 13).** Before writing a spec for any C1/C2
-    change, the CONDUCTOR consults the knowledge graph (graphify-out/ —
-    conductor-side only; subagents never see it, rule 4) for the change's
-    NEIGHBORHOOD — relationships, seams (AMBIGUOUS edges), and blast radius —
-    BEFORE grep. If the graph is stale, refresh it first. The spec includes BOTH
-    views: the graph's structure + grep's exact call sites.
+    change, the CONDUCTOR consults the knowledge graph (conductor-side only;
+    subagents never see it, rule 4) for the change's NEIGHBORHOOD —
+    relationships, seams (AMBIGUOUS edges), and blast radius — BEFORE grep. If
+    the graph is stale, refresh it first. The spec includes BOTH views: the
+    graph's structure + grep's exact call sites.
+    - **Structural questions → CodeGraph** (see "CodeGraph prototype" below).
+      `codegraph callers <symbol>` — semantic call sites (the enclosing
+      function, or the file node for a callback); `codegraph impact <symbol>` —
+      blast radius (a file node is addressed by its basename, e.g. `runner.ts`);
+      `codegraph query <terms>` — symbol search;
+      `codegraph affected <file>` — the tests to re-run. Run
+      `codegraph-check.py` if freshness is in doubt. CLI-only, conductor-side,
+      watcher off.
+    - **Concept / doc / community questions → graphify** (`graphify-out/`) — the
+      semantic layer, still the merge gate until Phase 2 (ADR 0015).
 14. **Route, don't hand-roll (Rule 14 — dispatch router).** Every dispatch goes
     through the router table — classify the task shape, then use the matching
     preset + template.
@@ -219,7 +229,12 @@ never re-type their logic by hand. Full design:
                 must survive so release notes can read them. Never merge a
                 task PR straight to `main`.) Then run graph-refresh.sh — the
                 canonical graph (cockpit/dev) is refreshed AT EVERY MERGE;
-                hooks only read/validate it, never rebuild (#230).
+                hooks only read/validate it, never rebuild (#230). **Phase 2
+                plan (ADR 0015):** the first post-dependabot merge runs BOTH
+                refreshes side by side — graph-refresh.sh (the gate) and
+                codegraph-refresh.sh (shadowing) — to measure refusal rate,
+                sync time, and query parity on 5–10 real questions. CodeGraph
+                is NOT the merge gate yet.
 7. CHECKPOINT   release checkpoint for extension-code changes — conductor
                 pauses for the user (rule #6; docs/tests/tooling: none)
 8. CLEANUP      worktree-cleanup.sh <path>   (UNCONDITIONAL — auto-derives the branch;
@@ -277,7 +292,8 @@ mechanics, verdict format: `references/review-dispatch.md`.
 
 **CodeGraph prototype (Phase 1, 2026-10-08 — NOT part of the ritual yet).** The
 canonical graph above remains graphify's until the Phase 2 dogfooding decision
-(`.development/investigations/codegraph-bakeoff-2026-10-08/findings.md`). The
+(`.development/investigations/codegraph-bakeoff-2026-10-08/findings.md`; the
+split posture and Phase 2 gate criteria are recorded in ADR 0015). The
 prototype pair mirrors the contract for anyone dogfooding it manually:
 
 - **`codegraph-refresh.sh`** — `codegraph sync` (or `--full` for a rebuild) in

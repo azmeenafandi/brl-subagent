@@ -132,17 +132,25 @@ dates, and historical framing. The binding rules (with their numbers) live in
 ## Rule 13
 
 13. **Graph-first scoping (Rule 13).** Before writing a spec for any C1/C2
-    change, the CONDUCTOR consults the knowledge graph (graphify-out/ —
-    conductor-side only; subagents never see it, rule 4) for the change's
-    NEIGHBORHOOD — relationships, seams (AMBIGUOUS edges), and blast
-    radius — BEFORE grep. The graph is the efficiency layer for scoping
-    (one query = the overview); grep remains the deterministic ground
-    truth for exact references and verification. If the graph is stale
-    (last update predates the sprint's commits), refresh it first. The
-    spec includes BOTH views: the graph's structure + grep's exact call
-    sites. The #114 scoping error is the proof-of-need: the graph already
-    had the complete touchpoint map; the conductor hand-assembled it from
-    memory + grep instead.
+    change, the CONDUCTOR consults the knowledge graph (conductor-side only;
+    subagents never see it, rule 4) for the change's NEIGHBORHOOD —
+    relationships, seams (AMBIGUOUS edges), and blast radius — BEFORE grep.
+    The graph is the efficiency layer for scoping (one query = the overview);
+    grep remains the deterministic ground truth for exact references and
+    verification. If the graph is stale (last update predates the sprint's
+    commits), refresh it first. The spec includes BOTH views: the graph's
+    structure + grep's exact call sites. The #114 scoping error is the
+    proof-of-need: the graph already had the complete touchpoint map; the
+    conductor hand-assembled it from memory + grep instead.
+
+    Two layers since ADR 0015: **structural questions → CodeGraph** —
+    `codegraph callers <symbol>` (semantic call sites),
+    `codegraph impact <symbol>` (blast radius; file nodes by basename),
+    `codegraph query <terms>` (symbol search), `codegraph affected <file>`
+    (tests to re-run); run
+    `codegraph-check.py` if freshness is in doubt. **Concept / doc /
+    community questions → graphify** (`graphify-out/`), still the merge gate
+    until Phase 2.
 
 ## Rule 14
 

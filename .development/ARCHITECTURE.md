@@ -108,6 +108,19 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 
 <!-- END GENERATED: module-map -->
 
+## Knowledge layers
+
+Two indexes answer different questions about this repo; neither replaces reading the source.
+
+| Layer | Answers | Lives in | Refreshed by |
+|---|---|---|---|
+| **CodeGraph** (structural) | callers, impact / blast radius, symbol search, affected tests — the Rule 13 scoping questions | `.pi/skills/worktree/codegraph-refresh.sh` + `codegraph-check.py`; its SQLite index is the gitignored `.codegraph/` | explicit `codegraph sync`, conductor-side (manual; Phase 2 dogfooding — **not the merge gate yet**) |
+| **graphify** (semantic / doc) | concepts, communities, cross-document relationships | `graphify-out/` (gitignored; conductor-side only — subagents never see it, rule 4) | `graph-refresh.sh` at every merge into `dev` (the current gate) |
+
+**Routing:** structural questions (who calls X, what breaks if I change Y, which tests are affected) →
+CodeGraph; concept / community / doc questions → graphify. The split posture and the Phase 2 gate criteria are
+recorded in [ADR 0015](./decisions/0015-codegraph-structural-index.md).
+
 ## Persistence and state
 
 | Where | What |
