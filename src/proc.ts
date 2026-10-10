@@ -317,6 +317,14 @@ export function pidAlive(pid: number): boolean {
  * live FOREIGN pid and refuse BOTH the group SIGTERM and the final group
  * SIGKILL while its group still had live members. Every OTHER read failure
  * (EACCES, a parse anomaly, /proc unavailable) stays conservatively not-gone.
+ *
+ * PLATFORM BOUNDARY (hidepid=2): on a `/proc` mounted with `hidepid=2` a foreign
+ * LIVE pid we do not own can read `kill -0` EPERM (alive) and then
+ * `/proc/<pid>/stat` ENOENT (hidden — it looks GONE). The signal guard may then
+ * ATTEMPT a group signal despite the marker mismatch. This is a documented
+ * platform boundary, NOT a signal-safety guarantee: the kernel's EPERM on the
+ * signal constrains the unprivileged blast radius, and the group signal still
+ * targets only the pgid we derived (it does not widen the target set).
  */
 export function pidGone(pid: number): boolean {
 	if (!pidAlive(pid)) return true;

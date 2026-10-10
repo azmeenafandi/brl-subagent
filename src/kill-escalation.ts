@@ -170,6 +170,27 @@ export interface SignalGuard {
 export type SignalPhase = "terminate" | "forceKill" | "forceKillGroup";
 
 /**
+ * The DIRECT-signal guard dispatch shared by `pidTarget` and `groupTarget`: the
+ * signal runs only while `pid` still carries OUR marker, otherwise the refusal
+ * is recorded and the signal is skipped (Major 1). `groupTarget` keeps a
+ * separate dispatch for the GROUP signal, which additionally honours a
+ * confirmed-gone leader and remembers a refused final group SIGKILL.
+ */
+function dispatchIfOwned(
+	pid: number,
+	guard: SignalGuard | undefined,
+	signal: NodeJS.Signals,
+	phase: SignalPhase,
+	run: () => void,
+): void {
+	if (guard && !guard.isOwn(pid)) {
+		guard.onSkip?.(pid, signal, phase);
+		return;
+	}
+	run();
+}
+
+/**
  * Build the `EscalationTarget` for ONE pid from injected kill/liveness
  * primitives. Shared by the boot-scan reap (`reapPids`) and the marker sweeps
  * (`reapActiveChildren`, the run-exit sweep) so the pid-target shape —
@@ -184,16 +205,9 @@ export function pidTarget(
 	pidAlive: (pid: number) => boolean,
 	guard?: SignalGuard,
 ): EscalationTarget {
-	const dispatch = (signal: NodeJS.Signals, phase: SignalPhase, run: () => void): void => {
-		if (guard && !guard.isOwn(pid)) {
-			guard.onSkip?.(pid, signal, phase);
-			return;
-		}
-		run();
-	};
 	return {
-		terminate: () => dispatch("SIGTERM", "terminate", () => kill(pid, "SIGTERM")),
-		forceKill: () => dispatch("SIGKILL", "forceKill", () => kill(pid, "SIGKILL")),
+		terminate: () => dispatchIfOwned(pid, guard, "SIGTERM", "terminate", () => kill(pid, "SIGTERM")),
+		forceKill: () => dispatchIfOwned(pid, guard, "SIGKILL", "forceKill", () => kill(pid, "SIGKILL")),
 		verifyDeath: () => {
 			if (guard) return guard.isGone(pid) || !guard.isOwn(pid);
 			return !pidAlive(pid);
@@ -243,13 +257,6 @@ export function groupTarget(
 	groupHasMembers?: (pgid: number) => boolean | undefined,
 	guard?: SignalGuard,
 ): EscalationTarget {
-	const dispatchDirect = (signal: NodeJS.Signals, phase: SignalPhase, run: () => void): void => {
-		if (guard && !guard.isOwn(pid)) {
-			guard.onSkip?.(pid, signal, phase);
-			return;
-		}
-		run();
-	};
 	// A group signal is skipped ONLY for a live pid that is no longer ours (the
 	// reused-pid case). A gone/zombie leader's pgid can only name our surviving
 	// members, so the group signal must still land (D5).
@@ -267,11 +274,11 @@ export function groupTarget(
 	return {
 		terminate: () => {
 			dispatchGroup("SIGTERM", "terminate", () => bestEffortGroupKill(killGroup, pid, "SIGTERM"));
-			dispatchDirect("SIGTERM", "terminate", () => kill(pid, "SIGTERM"));
+			dispatchIfOwned(pid, guard, "SIGTERM", "terminate", () => kill(pid, "SIGTERM"));
 		},
 		forceKill: () => {
 			dispatchGroup("SIGKILL", "forceKill", () => bestEffortGroupKill(killGroup, pid, "SIGKILL"));
-			dispatchDirect("SIGKILL", "forceKill", () => kill(pid, "SIGKILL"));
+			dispatchIfOwned(pid, guard, "SIGKILL", "forceKill", () => kill(pid, "SIGKILL"));
 		},
 		verifyProcessAlive: () => (guard ? !guard.isGone(pid) && guard.isOwn(pid) : pidAlive(pid)),
 		verifyDeath: () => {

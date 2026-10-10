@@ -43,7 +43,7 @@ import {
 	type EscalationTarget,
 	type SignalGuard,
 } from "./kill-escalation";
-import { findByMarker, pidAlive, pidHasMarker, pidGone, groupHasMembers } from "./proc";
+import { findByMarker, pidAlive, pidHasMarker, pidGone, groupHasMembers, killProcessGroup } from "./proc";
 import { getSafeEnv, DEPTH_ENV_KEY, CHILD_MARKER_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
@@ -158,17 +158,6 @@ export function __registerActiveChildForTest(proc: ChildProcess, marker?: string
 }
 
 /**
- * #299 D2: best-effort process-group signal for a spawned child's group. The
- * child is `detached` on POSIX (D1), so it leads its own group and `-pid`
- * reaches every descendant that did not `setsid`. On a non-detached `#322`
- * test-seam child `-pid` names no group (ESRCH); `groupTarget` swallows that
- * and the direct signal still lands, so integration tests stay honest.
- */
-const killGroupPid = (pgid: number, signal: NodeJS.Signals): void => {
-	process.kill(-pgid, signal);
-};
-
-/**
  * Escalation target for one spawned child. `verifyDeath` defaults to the
  * REAL-exit check (`childExited`) AND — on a group target — group emptiness, and
  * may be overridden per site. The abort and timeout paths must use the real
@@ -205,7 +194,7 @@ function childTarget(proc: ChildProcess, verifyDeath?: () => boolean): Escalatio
 	};
 	const useGroup = supportsProcessGroupKill() && proc.pid !== undefined;
 	const base = useGroup
-		? groupTarget(pid, killDirect, killGroupPid, pidAlive, groupHasMembers)
+		? groupTarget(pid, killDirect, killProcessGroup, pidAlive, groupHasMembers)
 		: pidTarget(pid, killDirect, pidAlive);
 	const defaultVerifyDeath = useGroup
 		? () => childExited(proc) && groupHasMembers(pid) === false
@@ -254,7 +243,7 @@ function collectMarkerTargets(
 	// or a descendant that `setsid`'d) `-pid` reaches its env-scrubbed
 	// descendants; when it is merely a member, `-pid` is ESRCH and the direct
 	// signal still lands.
-	const groupKill = supportsProcessGroupKill() ? killGroupPid : undefined;
+	const groupKill = supportsProcessGroupKill() ? killProcessGroup : undefined;
 	for (const marker of markers) {
 		if (!marker) continue;
 		for (const pid of findByMarker(marker)) {
