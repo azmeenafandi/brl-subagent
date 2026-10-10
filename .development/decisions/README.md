@@ -22,8 +22,9 @@ _Generated from each `.development/decisions/NNNN-*.md` record by `npm run docs:
 | 0012 | [Documentation that cannot drift: generated module map + executable architecture rules](./0012-documentation-cannot-drift.md) | Accepted | 2026-09-30 |
 | 0013 | [TypeScript 7: the AST lives behind one unstable-API adapter](./0013-typescript-7-unstable-ast.md) | Accepted | 2026-10-03 |
 | 0014 | [The TS7 AST adapter reuses one API client per worker](./0014-ts7-api-singleton.md) | Accepted | 2026-10-06 |
+| 0015 | [Two knowledge layers: CodeGraph for structure, graphify for semantics](./0015-codegraph-structural-index.md) | Accepted | 2026-10-10 |
 
-**14 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
+**15 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
 
 <!-- END GENERATED: adr-index -->
 
