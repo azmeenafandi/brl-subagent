@@ -23,6 +23,7 @@ never re-type their logic by hand. Full design:
 - [`references/local-development.md`](references/local-development.md) — npm dogfooding + the dev toggle (`-ne -e`).
 - [`references/review-dispatch.md`](references/review-dispatch.md) — the adversarial-review brief content + calibration.
 - [`../pr/SKILL.md`](../pr/SKILL.md) — the PR-body contract (Summary / Evidence / Merge Danger / Fixes), size-thresholded.
+- [`references/jev-advisory.md`](references/jev-advisory.md) — Rule 22: pre-dispatch thinking-level calibration via the Jev classifier (advisory; snippet included).
 - [`references/friction-log-ritual.md`](references/friction-log-ritual.md) — the friction log ritual.
 - [`references/sprint-end-ritual.md`](references/sprint-end-ritual.md) — Rule 11 recurrence escalation + trust metrics.
 
@@ -225,6 +226,19 @@ never re-type their logic by hand. Full design:
       The incremental `/tmp` findings file is the live artifact.
     - **State** ("nothing is in flight", "the tree is clean") → the command that
       showed it.
+
+22. **Thinking-level calibration (Rule 22 — advisory, Jev).** Before writing a spec or
+    dispatch, classify the task **blind** (task text only) with the Jev classifier and
+    record the result in the spec and the dispatch:
+    `jev: <level> (<conf>) · risk <C1|C2|C3> · worktree <y|n>`. Deviations **≥2
+    levels**, and **any level below Jev on a review**, carry a one-line reason. Clamps:
+    artifact-producing dispatches floor at `low`; reviews floor at `medium`. If
+    `codemode`/Jev is unavailable, record `jev: unavailable` and proceed — never block
+    a dispatch on the classifier. Advisory only: the conductor (and the maintainer's
+    spec approval) still decide. Snippet + the 2026-10-10 backtest (98 dispatches,
+    $0.0034: it flags over-leveling, raises reviews — `review-test-hygiene-r2`, which
+    caught the #308 regression, was called high→xhigh) live in
+    `references/jev-advisory.md`.
 
 ## Lifecycle
 

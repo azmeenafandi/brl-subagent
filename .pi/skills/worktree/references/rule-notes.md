@@ -334,3 +334,11 @@ dates, and historical framing. The binding rules (with their numbers) live in
       about a live run. The incremental `/tmp` findings file is the live artifact.
     - **State** ("nothing is in flight", "the tree is clean") → the command that showed it.
     The #204 class applied to prose: a partial or absent observation presented as complete.
+
+## Rule 22
+
+**The level I pick is a line item, and it was wrong systematically.** The maintainer asked why a docs/ADR unit and a two-site extraction both ran at `high`; the honest answer was pattern-matching from a day of C1 work. The extension's own pre-flight validator is keyword-coarse — it flagged that two-site extraction as "architectural work" — so nothing in the loop pushed back.
+
+**The backtest (2026-10-10, 98 sprint-window dispatches, $0.0034).** Blind-classified every production dispatch with TypeSafe's **Jev** classifier ("System One" — typed choice questions over JSON state, `models.classify` via `codemode`): exact agreement 47%, adjacent 87%. The disagreement is systematic, not noise — it **discounts mechanical/plumbing work** (16/40 `high` and 19/40 `medium` downgraded, including `impl-codegraph-phase1` high→low and `impl-fix315` high→minimal) and it **raises reviews** (`review-test-hygiene-r2` — the review that caught the #308 regression — high→**xhigh**; `impl-299-probe` medium→xhigh). It also ignores operational burden entirely, so its `minimal` calls would under-provision worktree/suite/PR work.
+
+**Decision: advisory, with clamps.** Rule 22 records `jev: <level> (<conf>) · risk · worktree` in every spec/dispatch; ≥2-level deviations and below-Jev reviews need a reason; artifact work floors at `low`. Same doctrine as Rule 13: an intention with no artifact decays — the recorded line is the artifact, and the maintainer's spec approval is the gate. Phase 2 (classifier inside the extension) is deliberately unscheduled; the released package is untouched.
