@@ -25,7 +25,7 @@
 
 import type { ProcessOwner, SubagentRun } from "./types";
 import { resolveTerminalRunEntry } from "./state";
-import { escalateKill, type EscalationTarget } from "./kill-escalation";
+import { escalateKill, pidTarget } from "./kill-escalation";
 
 // ---------------------------------------------------------------------------
 // Dependency injection surface
@@ -211,15 +211,7 @@ export function decideRecovery(record: RecoveryRecord, deps: RecoveryDeps): Reco
  */
 export async function reapPids(pids: number[], deps: RecoveryDeps): Promise<number[]> {
 	const unique = [...new Set(pids)];
-	const targets: EscalationTarget[] = unique.map((pid) => ({
-		terminate: () => {
-			deps.kill(pid, "SIGTERM");
-		},
-		forceKill: () => {
-			deps.kill(pid, "SIGKILL");
-		},
-		verifyDeath: () => !deps.pidAlive(pid),
-	}));
+	const targets = unique.map((pid) => pidTarget(pid, deps.kill, deps.pidAlive));
 	const survivors = await escalateKill(targets, {
 		graceMs: deps.graceMs,
 		sleep: deps.sleep,
