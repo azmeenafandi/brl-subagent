@@ -35,6 +35,7 @@ import {
 	newDispatchIdentity,
 	dedupeRunEntriesById,
 	pidAlive,
+	pidGone,
 	readStartToken,
 	findByMarker,
 	isProcAvailable,
@@ -1294,6 +1295,112 @@ describe("#299 review A1: signal-time marker verification", () => {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	}, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// #299 re-review A.1 — the pidGone two-read race and honest survivor reporting
+// ---------------------------------------------------------------------------
+
+describe("#299 re-review A.1: reaped-pid classification + honest reporting", () => {
+	it("T1: positive liveness then stat ENOENT is GONE; the live group member is still killed", async () => {
+		if (!isProcAvailable()) return;
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-reap-race-"));
+		try {
+			const memberPidFile = path.join(dir, "member.pid");
+			const readyFile = path.join(dir, "ready");
+			const marker = `race-${crypto.randomUUID()}`;
+			// A DETACHED leader that exits, leaving a TERM-stubborn member alive in its
+			// group — the reaped-leader + live-member fixture (the D5 shape).
+			const leader = track(spawnStubbornGroup(memberPidFile, readyFile));
+			const leaderPid = await waitForSpawn(leader);
+			await once(leader, "exit");
+			await waitUntil(() => !pidAlive(leaderPid), 2000);
+			await waitUntil(() => fs.existsSync(memberPidFile) && fs.existsSync(readyFile), 5000);
+			const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
+			strayPids.add(memberPid);
+			await waitUntil(() => pidAlive(memberPid), 5000);
+			expect(pidAlive(leaderPid)).toBe(false);
+			expect(readProcessGroup(memberPid)).toBe(leaderPid);
+
+			// Deterministic interleaving: the liveness sample reports the leader alive
+			// while its `/proc/<leaderPid>/stat` is gone — a leader REAPED between the
+			// two `pidGone` reads. Only the sample is forced; the stat read, the marker
+			// read and every signal are REAL.
+			const originalKill = process.kill;
+			const killSpy = vi.spyOn(process, "kill").mockImplementation(((
+				pid: number,
+				signal?: NodeJS.Signals | number,
+			) => {
+				if (pid === leaderPid && signal === 0) return true;
+				return originalKill(pid, signal as NodeJS.Signals);
+			}) as typeof process.kill);
+			try {
+				// The classification fix (M-a tripwire: reverting it fails here).
+				expect(pidGone(leaderPid)).toBe(true);
+
+				const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 300, pollMs: 20 });
+				const survivors = await reapPids([leaderPid], deps, () => marker);
+
+				// The guard ALLOWED the group dispatch: a reaped leader does not make its
+				// group foreign, so both the group SIGTERM and the final group SIGKILL were
+				// sent. The DIRECT signals are correctly skipped (the leader itself is gone).
+				expect(groupCalls).toContainEqual([leaderPid, "SIGTERM"]);
+				expect(groupCalls).toContainEqual([leaderPid, "SIGKILL"]);
+				expect(killCalls).toEqual([]);
+				// Only the unconditional final group SIGKILL can end the TERM-stubborn
+				// member; it must actually die.
+				await waitUntil(() => !pidAlive(memberPid), 5000);
+				expect(pidAlive(memberPid)).toBe(false);
+				// Empty because it was KILLED, not because it was skipped.
+				expect(survivors).toEqual([]);
+				console.log(
+					`#299-A1 T1 leader=${leaderPid} member=${memberPid} groupCalls=${JSON.stringify(groupCalls)} survivors=${JSON.stringify(survivors)}`,
+				);
+			} finally {
+				killSpy.mockRestore();
+			}
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 20000);
+
+	it("T2: a refused final group SIGKILL over a live group is reported as a survivor", async () => {
+		const pid = 4242;
+		const marker = `refused-${crypto.randomUUID()}`;
+		const killGroup = vi.fn();
+		const deps: RecoveryDeps = {
+			pidAlive: (p) => p !== DEAD_PID,
+			startTokenOf: () => "100",
+			findByMarker: () => [pid],
+			kill: vi.fn(),
+			killGroup,
+			// Alive but no longer ours (the reuse case): the guard refuses every signal.
+			verifyMarker: () => false,
+			pidGone: () => false,
+			// ...but the targeted group still has live members.
+			groupHasMembers: () => true,
+			sleep: async () => {},
+			graceMs: 0,
+		};
+		const warns: Array<{ message: string; data: Record<string, unknown> }> = [];
+		const log = {
+			warn: (message: string, data?: Record<string, unknown>) => warns.push({ message, data: data ?? {} }),
+		};
+
+		const outcome = await recoverRecord(
+			record({ id: "t2-refused", owner: { pid: DEAD_PID, start: "100" }, childMarker: marker }),
+			deps,
+			log,
+		);
+		expect(outcome.decision).toBe("mark");
+		expect(outcome.reaped).toEqual([pid]);
+		// M-b tripwire: making the report unconditionally clean fails HERE.
+		expect(outcome.survived).toEqual([pid]);
+		// The refusal is still logged, and no unverified signal was sent.
+		expect(warns.some((w) => w.data.pid === pid)).toBe(true);
+		expect(killGroup).not.toHaveBeenCalled();
+		console.log(`#299-A1 T2 refused pid=${pid} survived=${JSON.stringify(outcome.survived)}`);
+	});
 });
 
 describe("#299 review A2: group-empty grace window", () => {

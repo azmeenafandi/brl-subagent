@@ -58,6 +58,35 @@ export function isProcAvailable(): boolean {
 	return procAvailable;
 }
 
+/** The outcome of a `/proc/<pid>/stat` read: the fields, or why it failed. */
+type StatFieldsRead =
+	| { ok: true; fields: string[] }
+	| { ok: false; code: string | undefined };
+
+/**
+ * The `readStatFields` primitive WITH the failure cause preserved: `code` is the
+ * errno of a failed read (`"ENOENT"` when the pid is absent) or undefined when
+ * /proc is unavailable, the pid is invalid, or the read failed for a reason
+ * other than a missing file. `pidGone` needs the cause to separate "the pid was
+ * REAPED" (ENOENT — absence-of-process evidence) from "the read failed and we
+ * cannot tell" (everything else).
+ */
+function readStatFieldsDetailed(pid: number): StatFieldsRead {
+	if (!isProcAvailable() || !Number.isInteger(pid) || pid <= 0) {
+		return { ok: false, code: undefined };
+	}
+	try {
+		const stat = fs.readFileSync(path.join(PROC_ROOT, String(pid), "stat"), "utf-8");
+		const close = stat.lastIndexOf(")");
+		if (close < 0) return { ok: false, code: undefined };
+		const rest = stat.slice(close + 1).trim();
+		if (!rest) return { ok: false, code: undefined };
+		return { ok: true, fields: rest.split(/\s+/) };
+	} catch (err) {
+		return { ok: false, code: (err as NodeJS.ErrnoException).code };
+	}
+}
+
 /**
  * The whitespace-split `/proc/<pid>/stat` fields AFTER the `(comm)` field, or
  * undefined when /proc is unavailable, the pid is invalid, or the process
@@ -66,17 +95,8 @@ export function isProcAvailable(): boolean {
  * spaces or parens cannot shift the parse.
  */
 function readStatFields(pid: number): string[] | undefined {
-	if (!isProcAvailable() || !Number.isInteger(pid) || pid <= 0) return undefined;
-	try {
-		const stat = fs.readFileSync(path.join(PROC_ROOT, String(pid), "stat"), "utf-8");
-		const close = stat.lastIndexOf(")");
-		if (close < 0) return undefined;
-		const rest = stat.slice(close + 1).trim();
-		if (!rest) return undefined;
-		return rest.split(/\s+/);
-	} catch {
-		return undefined;
-	}
+	const read = readStatFieldsDetailed(pid);
+	return read.ok ? read.fields : undefined;
 }
 
 /**
@@ -189,10 +209,21 @@ export function pidAlive(pid: number): boolean {
  * gone) from a merely dead/zombie one, so a zombie leader's pgid is still
  * signaled to reach its surviving members (D5). Without /proc the zombie
  * distinction is unavailable and this degrades to `!pidAlive`.
+ *
+ * #299 re-review A.1: a POSITIVE liveness sample immediately followed by ENOENT
+ * on `/proc/<pid>/stat` means the pid was REAPED between the two reads — it is
+ * GONE. `/proc/<pid>/stat` is readable for any process that still exists (a
+ * not-yet-reaped zombie included), so ENOENT is absence-of-process evidence;
+ * classifying it as "not gone" made the guard treat our own reaped leader as a
+ * live FOREIGN pid and refuse BOTH the group SIGTERM and the final group
+ * SIGKILL while its group still had live members. Every OTHER read failure
+ * (EACCES, a parse anomaly, /proc unavailable) stays conservatively not-gone.
  */
 export function pidGone(pid: number): boolean {
 	if (!pidAlive(pid)) return true;
-	const state = readStatFields(pid)?.[0];
+	const read = readStatFieldsDetailed(pid);
+	if (!read.ok) return read.code === "ENOENT";
+	const state = read.fields[0];
 	return state === "Z" || state === "X";
 }
 

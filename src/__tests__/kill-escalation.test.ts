@@ -332,3 +332,47 @@ describe("group-empty verifyDeath (#299 review Major 2)", () => {
 		expect(survivors).toEqual([]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// #299 re-review A.1 — a refused group kill is reported, never a clean report
+// ---------------------------------------------------------------------------
+
+describe("refused group kill reporting (#299 re-review A.1)", () => {
+	it("counts a refused final group SIGKILL over a live group as a survivor", async () => {
+		const calls: string[] = [];
+		const skips: string[] = [];
+		const guard: SignalGuard = {
+			isOwn: () => false,
+			isGone: () => false, // alive but not ours → every signal is refused
+			onSkip: (_pid, signal, phase) => skips.push(`${phase}:${signal}`),
+		};
+		const target = groupTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			() => true, // leader alive for the reachability checks
+			() => true, // and its group still has a live member
+			guard,
+		);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		// No signal reached the foreign target, but the still-live group it names is
+		// reported — never a silent clean `[]`.
+		expect(calls).toEqual([]);
+		expect(survivors).toEqual([target]);
+		expect(skips).toContain("forceKillGroup:SIGKILL");
+	});
+
+	it("does NOT report a refused group signal when the targeted group is empty", async () => {
+		const guard: SignalGuard = { isOwn: () => false, isGone: () => false };
+		const target = groupTarget(
+			9,
+			() => {},
+			() => {},
+			() => true,
+			() => false, // no live members → nothing was left alive
+			guard,
+		);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(survivors).toEqual([]);
+	});
+});

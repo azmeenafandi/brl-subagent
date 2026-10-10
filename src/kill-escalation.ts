@@ -48,6 +48,15 @@
  *     direct `forceKill` (and the survivor report) honest for a group target
  *     whose leader already exited, so the final group SIGKILL stays the sole
  *     mechanism for that case (the D5 tripwire).
+ *
+ * #299 RE-REVIEW FIX A.1 closes one more major on `0fa2fc2`:
+ *   - A reaped pid must classify as GONE in `pidGone` (positive `kill(pid,0)`
+ *     sample + `/proc/<pid>/stat` ENOENT — see src/proc.ts), so our own reaped
+ *     leader is not mistaken for a live FOREIGN pid and refused its group kill.
+ *   - Honest reporting: a REFUSED final group SIGKILL over a group that still
+ *     has live members is counted as a survivor (`refusedForceKillGroup`), so a
+ *     guard decision can never yield a clean `survivors=[]` over a live group we
+ *     targeted. The skip log is unchanged.
  */
 
 /** A process handle the escalation helper can signal and liveness-check. */
@@ -76,6 +85,15 @@ export interface EscalationTarget {
 	 * end state). Absent on direct-only pid targets.
 	 */
 	forceKillGroup?(): void;
+	/**
+	 * #299 re-review A.1: true when the FINAL group SIGKILL above was REFUSED by
+	 * the signal guard AND the targeted group still has live members — i.e. the
+	 * escalation deliberately left a live group it could not verify as ours.
+	 * `escalateKill` counts such a target as a survivor, so a refused group kill
+	 * can never be reported as a clean `survivors=[]`. Absent on direct-only
+	 * targets (no group to leave behind).
+	 */
+	refusedForceKillGroup?(): boolean;
 }
 
 /**
@@ -224,9 +242,13 @@ export function groupTarget(
 	// A group signal is skipped ONLY for a live pid that is no longer ours (the
 	// reused-pid case). A gone/zombie leader's pgid can only name our surviving
 	// members, so the group signal must still land (D5).
+	// #299 re-review A.1: remember a REFUSED final group SIGKILL so the escalation
+	// can report the still-live group it could not end (never a clean report).
+	let finalGroupRefused = false;
 	const dispatchGroup = (signal: NodeJS.Signals, phase: SignalPhase, run: () => void): void => {
 		if (guard && !guard.isOwn(pid) && !guard.isGone(pid)) {
 			guard.onSkip?.(pid, signal, phase);
+			if (phase === "forceKillGroup") finalGroupRefused = true;
 			return;
 		}
 		run();
@@ -252,6 +274,10 @@ export function groupTarget(
 		forceKillGroup: () => {
 			dispatchGroup("SIGKILL", "forceKillGroup", () => bestEffortGroupKill(killGroup, pid, "SIGKILL"));
 		},
+		// #299 re-review A.1: a refused final group SIGKILL over a group that still
+		// has live members is a real survivor — the escalation left a live group it
+		// could not verify as ours.
+		refusedForceKillGroup: () => finalGroupRefused && (groupHasMembers?.(pid) ?? false),
 	};
 }
 
@@ -300,6 +326,11 @@ export interface EscalationOptions {
  * `forceKill` (and the survivor report) consult `verifyProcessAlive` so a group
  * whose leader already exited is not direct-signaled — its surviving member is
  * ended by the unconditional `forceKillGroup` below (the D5 mechanism).
+ *
+ * #299 re-review A.1: after the unconditional group SIGKILL loop, any target
+ * whose final group signal was REFUSED while its group still had live members is
+ * appended to the survivors (`refusedForceKillGroup`), so a refined guard
+ * decision can never report a clean result over a live group we targeted.
  */
 export async function escalateKill(
 	targets: EscalationTarget[],
@@ -353,6 +384,12 @@ export async function escalateKill(
 			target.forceKillGroup();
 		} catch {
 			// Vanished group — the desired end state.
+		}
+		// #299 re-review A.1: a REFUSED final group SIGKILL over a still-live group
+		// leaves members we targeted alive. Surface that as a survivor so a refined
+		// guard decision can never produce a dishonest `survivors=[]`.
+		if (target.refusedForceKillGroup?.() && !survivors.includes(target)) {
+			survivors.push(target);
 		}
 	}
 	return survivors;
