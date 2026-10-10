@@ -115,6 +115,29 @@ describe("groupHasMembers tri-state (#299 fix A.2)", () => {
 		expect(groupHasMembers(PGID)).toBeUndefined();
 	});
 
+	it("returns undefined on a truncated member record (valid `)` but too few fields)", () => {
+		control.dirEntries = [String(MEMBER), "self"];
+		// `5500 (node) S 1` — the pgrp field is absent; `Number(undefined)` is NaN
+		// and was silently read as a NON-member (a positively-empty `false`).
+		control.statContents.set(`/proc/${MEMBER}/stat`, `${MEMBER} (node) S 1`);
+		expect(groupHasMembers(PGID)).toBeUndefined();
+	});
+
+	it("returns undefined on a record with no state token (fields shifted)", () => {
+		control.dirEntries = [String(MEMBER), "self"];
+		// The state slot is gone, so field 2 holds no pgrp either.
+		control.statContents.set(`/proc/${MEMBER}/stat`, `${MEMBER} (node) ${PGID}`);
+		expect(groupHasMembers(PGID)).toBeUndefined();
+	});
+
+	it("returns undefined on a malformed zombie record (Z but no pgrp)", () => {
+		control.dirEntries = [String(MEMBER), "self"];
+		// A zombie skip is only honest for a WELL-FORMED record; a missing pgrp is
+		// malformed, so the inspection is partial → unknown, not a silent skip.
+		control.statContents.set(`/proc/${MEMBER}/stat`, `${MEMBER} (node) Z 1`);
+		expect(groupHasMembers(PGID)).toBeUndefined();
+	});
+
 	it("degrades to false (documented platform boundary) when /proc is unavailable", () => {
 		__setProcAvailableForTest(false);
 		expect(groupHasMembers(PGID)).toBe(false);

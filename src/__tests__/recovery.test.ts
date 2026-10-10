@@ -1504,6 +1504,62 @@ describe("#299 fix A.2: three-state group membership (unknown is never empty)", 
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	}, 20000);
+
+	it("T-new-truncated: a truncated member record is PARTIAL, never empty (no early-exit; refused group is a survivor)", async () => {
+		if (!isProcAvailable()) return;
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-truncated-members-"));
+		try {
+			const memberPidFile = path.join(dir, "member.pid");
+			const readyFile = path.join(dir, "ready");
+			const leaderCode =
+				`const {spawn}=require('node:child_process');const fs=require('node:fs');` +
+				`const m=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});` +
+				`fs.writeFileSync(${JSON.stringify(memberPidFile)}, String(m.pid));` +
+				`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
+				`setInterval(()=>{},1000)`;
+			const leader = track(spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true }));
+			const leaderPid = await waitForSpawn(leader);
+			strayPids.add(leaderPid);
+			await waitUntil(() => fs.existsSync(readyFile) && fs.existsSync(memberPidFile), 5000);
+			const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
+			strayPids.add(memberPid);
+			await waitUntil(() => pidAlive(memberPid), 5000);
+			// The fixture really has a live same-PGID member the real scan observes.
+			expect(readProcessGroup(memberPid)).toBe(leaderPid);
+			expect(groupHasMembers(leaderPid)).toBe(true);
+
+			// Force ONLY the live member's `/proc/<pid>/stat` to a truncated record:
+			// a valid `)` but too few fields. The production `groupHasMembers` must
+			// answer UNKNOWN (`undefined`), never a positively-empty `false`. Every
+			// signal and every liveness read below stays real.
+			// M-d tripwire: reverting the A.3 numericity/truncation guard fails HERE
+			// (both the graceful wait and the survivor report).
+			const marker = `truncated-${crypto.randomUUID()}`;
+			const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 200, pollMs: 20 });
+			groupScanControl.statContents.set(`/proc/${memberPid}/stat`, `${memberPid} (node) S 1`);
+			const started = Date.now();
+			const survivors = await reapPids([leaderPid], deps, () => marker).finally(() => {
+				groupScanControl.statContents.clear();
+			});
+			const elapsed = Date.now() - started;
+
+			// Half 1 — UNKNOWN is NOT dead: the escalation honours the full grace
+			// window instead of early-exiting on a false-on-truncation reading.
+			expect.soft(elapsed).toBeGreaterThanOrEqual(180);
+			// Half 2 — the refused final group SIGKILL over the still-unknown group is
+			// a survivor; never a clean `[]`.
+			expect.soft(survivors).toEqual([leaderPid]);
+			// Every guard check refused, so nothing was signaled and the member is alive.
+			expect(groupCalls).toEqual([]);
+			expect(killCalls).toEqual([]);
+			expect(pidAlive(memberPid)).toBe(true);
+			console.log(
+				`#299-A3 truncated leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
+			);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 20000);
 });
 
 describe("#299 review A2: group-empty grace window", () => {

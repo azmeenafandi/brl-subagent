@@ -171,8 +171,19 @@ export function groupHasMembers(pgid: number): GroupMembership {
 			return undefined;
 		}
 		const fields = read.fields;
-		if (fields[0] === "Z" || fields[0] === "X") continue;
-		if (Number(fields[2]) === pgid) return true;
+		// #299 fix A.3: never let a truncated/malformed record count as ABSENCE.
+		// A record that carries a valid `)` but too few fields (e.g. `5500 (node) S 1`)
+		// leaves the state token or pgrp missing; `Number(undefined)` is NaN, so the
+		// old `Number(fields[2]) === pgid` silently read it as a NON-member and, if it
+		// was the only candidate, returned a positively-empty `false`. That is the
+		// same "absence of evidence read as evidence of absence" class A.2 targeted.
+		// Require the fields the check actually needs — a present state token and a
+		// present numeric pgrp — and treat anything less as a PARTIAL inspection.
+		const state = fields[0];
+		const pgrp = Number(fields[2]);
+		if (state === undefined || !Number.isInteger(pgrp)) return undefined;
+		if (state === "Z" || state === "X") continue;
+		if (pgrp === pgid) return true;
 	}
 	return false;
 }
