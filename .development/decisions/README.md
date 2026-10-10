@@ -23,8 +23,9 @@ _Generated from each `.development/decisions/NNNN-*.md` record by `npm run docs:
 | 0013 | [TypeScript 7: the AST lives behind one unstable-API adapter](./0013-typescript-7-unstable-ast.md) | Accepted | 2026-10-03 |
 | 0014 | [The TS7 AST adapter reuses one API client per worker](./0014-ts7-api-singleton.md) | Accepted | 2026-10-06 |
 | 0015 | [Two knowledge layers: CodeGraph for structure, graphify for semantics](./0015-codegraph-structural-index.md) | Accepted | 2026-10-10 |
+| 0016 | [Retire graphify: CodeGraph is the sole structural index](./0016-retire-graphify.md) | Accepted | 2026-10-10 |
 
-**15 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
+**16 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
 
 <!-- END GENERATED: adr-index -->
 
