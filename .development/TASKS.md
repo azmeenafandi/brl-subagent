@@ -11,7 +11,7 @@
 | Integration | `dev` @ the v2.5.0 release prep — the durability cycle: #296, #302, #303, #304, #306, #308, #298 |
 | Board | **#299** (LOW hardening — the documented D6 destination, trigger-based, not scheduled) + **#230** (P0, the graph hook — parked pending the user's upstream-evidence call) |
 | Tests | **1212 across 58 files** (`npx vitest run`) · `npm run typecheck` clean |
-| Development home | the **cockpit** (`brl-subagent-dev` checkout): `.development/`, `graphify-out/`, `.pi/` tools, shared `node_modules`. Docs and tools are tracked since #247 — see `CONTRIBUTING.md` |
+| Development home | the **cockpit** (`brl-subagent-dev` checkout): `.development/`, `.codegraph/` (the structural index), `.pi/` tools, shared `node_modules`. Docs and tools are tracked since #247 — see `CONTRIBUTING.md` |
 
 ## Legend
 

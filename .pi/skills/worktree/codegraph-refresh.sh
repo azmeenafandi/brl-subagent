@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# codegraph-refresh.sh — refresh + validate the CodeGraph index (Phase 1 prototype).
+# codegraph-refresh.sh — refresh + validate the CodeGraph index (the merge gate).
 #
-# STATUS: prototype, landed by the 2026-10-08 bake-off (Phase 1). NOT part of the
-# release ritual: the canonical knowledge graph remains graphify's until the
-# Phase 2 dogfooding decision. Findings:
+# STATUS: **the gate.** CodeGraph is the sole structural index (ADR 0016); the
+# graphify layer it replaced is retired. Run at EVERY merge into `dev` (lifecycle
+# step 6) — explicit invocation, never a hook (#230). Landed by the 2026-10-08
+# bake-off (Phase 1). Findings:
 #   .development/investigations/codegraph-bakeoff-2026-10-08/findings.md
+#   .development/decisions/0016-retire-graphify.md
 #
-# Contract (mirrors graph-refresh.sh): refresh the index, then assert coverage +
-# freshness (codegraph-check.py). `sync` is incremental and deterministic;
-# docs-only changes are no-ops because markdown is not indexed — the failure
-# modes of graphify refusals #1-#5 cannot occur. Explicit invocation only, never
-# a hook (#230).
+# Contract: refresh the index, then assert coverage + freshness
+# (codegraph-check.py). `sync` is incremental and deterministic; docs-only
+# changes are no-ops because markdown is not indexed. Explicit invocation only,
+# never a hook (#230).
 #
 # Usage:
 #   ./codegraph-refresh.sh [--repo-root <path>] [--full]

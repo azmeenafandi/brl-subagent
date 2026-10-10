@@ -110,16 +110,15 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 
 ## Knowledge layers
 
-Two indexes answer different questions about this repo; neither replaces reading the source.
+**CodeGraph is the sole structural index** (ADR 0016); graphify is retired. It answers the Rule 13 scoping
+questions — who calls X, what breaks if I change Y, which tests are affected — from a gitignored SQLite index
+(`.codegraph/`), refreshed by `.pi/skills/worktree/codegraph-refresh.sh` (`codegraph sync` + `codegraph-check.py`)
+at every merge into `dev`: explicit, conductor-side, never a hook (#230). Its `codegraph-check.py` guard asserts
+module + exported-symbol coverage and declared freshness (`indexed_at_commit == HEAD`).
 
-| Layer | Answers | Lives in | Refreshed by |
-|---|---|---|---|
-| **CodeGraph** (structural) | callers, impact / blast radius, symbol search, affected tests — the Rule 13 scoping questions | `.pi/skills/worktree/codegraph-refresh.sh` + `codegraph-check.py`; its SQLite index is the gitignored `.codegraph/` | explicit `codegraph sync`, conductor-side (manual; Phase 2 dogfooding — **not the merge gate yet**) |
-| **graphify** (semantic / doc) | concepts, communities, cross-document relationships | `graphify-out/` (gitignored; conductor-side only — subagents never see it, rule 4) | `graph-refresh.sh` at every merge into `dev` (the current gate) |
-
-**Routing:** structural questions (who calls X, what breaks if I change Y, which tests are affected) →
-CodeGraph; concept / community / doc questions → graphify. The split posture and the Phase 2 gate criteria are
-recorded in [ADR 0015](./decisions/0015-codegraph-structural-index.md).
+Doc navigation is deterministic — **grep + the generated docs (`docs-arch`, `docs-decisions`) + the ADRs** — no
+LLM sits on that path. Re-adoption is possible at any time (graphify is an external tool), but the repo carries
+no gate, hook, or artifact for it.
 
 ## Persistence and state
 

@@ -1,5 +1,7 @@
 # CodeGraph Phase 2 dogfood log (opened 2026-10-10)
 
+> **RETIRED (ADR 0016, 2026-10-10)** — the window closed in graphify's retirement; CodeGraph is the sole structural index. The data points below are the evidence.
+
 Per ADR 0015: at each merge into `dev`, BOTH refreshes run side by side — `graph-refresh.sh`
 (gate) + `codegraph-refresh.sh` (shadow). Measure: graphify refusal rate, CodeGraph sync wall
 time, query parity on 5–10 real questions. Decide (retire/narrow) after a week or N merges.
