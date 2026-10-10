@@ -819,7 +819,12 @@ export function isSubagentError(result: SubagentResult): boolean {
  * staged timeout, staged abort — also settles at -1, so the sentinel alone no
  * longer means "still running":
  *
- *   - a live partial carries the sentinel and NO errorCategory;
+ *   - a live partial carries the sentinel and normally no errorCategory — the
+ *     exception is the abort stamp: `runner.ts` sets `errorCategory: "aborted"`
+ *     on the live result before close, so a post-abort partial can carry both.
+ *     The predicate then returns false and it renders the failure branch — the
+ *     same outcome as the local logic this replaces (the qualifier is comment
+ *     precision, not a behavior change; #311 review nit);
  *   - every FINALIZED foreground result carries an errorCategory because
  *     `runSubagent` ends with `result.errorCategory = classifyError(result)`
  *     and classifyError is total (its `unknown` fallback means it never returns
