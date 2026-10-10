@@ -21,7 +21,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ProcessOwner } from "./types";
-import { SIGKILL_GRACE_MS } from "./types";
+import { SIGKILL_GRACE_MS, SIGKILL_POLL_MS } from "./types";
 import { CHILD_MARKER_ENV_KEY } from "./sanitize";
 import type { RecoveryDeps } from "./recovery-engine";
 
@@ -136,5 +136,8 @@ export function defaultRecoveryDeps(): RecoveryDeps {
 		},
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		graceMs: SIGKILL_GRACE_MS,
+		// Item 4 (#299): poll so the boot scan returns as soon as its orphans die
+		// instead of always blocking the full grace window (a ~5 s session_start).
+		pollMs: SIGKILL_POLL_MS,
 	};
 }

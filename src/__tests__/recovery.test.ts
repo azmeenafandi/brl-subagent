@@ -26,6 +26,7 @@ import * as path from "node:path";
 import {
 	decideRecovery,
 	recoverRecord,
+	reapPids,
 	runBootScan,
 	classifyOwner,
 	defaultRecoveryDeps,
@@ -877,6 +878,36 @@ describe("shutdown reap", () => {
 			expect(pidAlive(grandchildPid)).toBe(true);
 			console.log(`#299-A boundary grandchild=${grandchildPid} aliveAfterShutdownReap=${pidAlive(grandchildPid)} markerVisible=${findByMarker(marker).includes(grandchildPid)}`);
 		}, true);
+	}, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// #299 Option A item 4: boot-scan reap early exit
+// ---------------------------------------------------------------------------
+
+describe("#299 Option A item 4: reapPids early exit (no full-grace stall)", () => {
+	it("returns as soon as instant-dying targets are dead, well under the grace window", async () => {
+		if (!isProcAvailable()) return;
+		const a = track(spawnSleeper());
+		const b = track(spawnSleeper());
+		const pidA = await waitForSpawn(a);
+		const pidB = await waitForSpawn(b);
+		const graceMs = 5000;
+		const deps = { ...defaultRecoveryDeps(), graceMs };
+
+		const started = Date.now();
+		const survivors = await reapPids([pidA, pidB], deps);
+		const elapsed = Date.now() - started;
+
+		expect(survivors).toEqual([]);
+		await waitUntil(() => !pidAlive(pidA) && !pidAlive(pidB), 2000);
+		expect(pidAlive(pidA)).toBe(false);
+		expect(pidAlive(pidB)).toBe(false);
+		// Item 4: the old wait-once shape blocked the full SIGKILL_GRACE_MS even when
+		// both targets die on SIGTERM in ms (the observed ~5 s session_start during a
+		// boot reap). The poll exits after one interval; assert well under half grace.
+		expect(elapsed).toBeLessThan(graceMs / 2);
+		console.log(`#299-A item4 reapPids elapsedMs=${elapsed} (grace=${graceMs}) survivors=${JSON.stringify(survivors)}`);
 	}, 20000);
 });
 
