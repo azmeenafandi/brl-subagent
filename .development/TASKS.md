@@ -7,7 +7,7 @@
 
 | | |
 |---|---|
-| Released | **v2.5.0** prepared 2026-10-10 (release PR + GitHub draft; the staged npm publish awaits the maintainer's approval); v2.4.0 remains npm's `latest` until then |
+| Released | **v2.5.0** published (GitHub release live 2026-10-10, tag `v2.5.0`); staged npm publish launched — maintainer approval pending; v2.4.0 remains npm's `latest` until then |
 | Integration | `dev` @ the v2.5.0 release prep — the durability cycle: #296, #302, #303, #304, #306, #308, #298 |
 | Board | **#299** (LOW hardening — the documented D6 destination, trigger-based, not scheduled) + **#230** (P0, the graph hook — parked pending the user's upstream-evidence call) |
 | Tests | **1212 across 58 files** (`npx vitest run`) · `npm run typecheck` clean |

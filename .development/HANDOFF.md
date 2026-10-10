@@ -1,7 +1,7 @@
 # Handoff — 2026-09-22 (night)
 
-> Updated 2026-10-10 — **v2.5.0 release prepared; publish pending.** npm `latest` is still v2.4.0 until the
-> maintainer approves the staged publish. The running extension is the **`dev` checkout** (deliberate developing
+> Updated 2026-10-10 — **v2.5.0 PUBLISHED (GitHub release live); npm staged publish launched — maintainer approval
+> pending.** npm `latest` is still v2.4.0 until that approval. The running extension is the **`dev` checkout** (deliberate developing
 > mode: `pi install <dev path>`) — ritual step 9 switches it back to the published package after the approval.
 > The **cockpit** is the `dev` checkout (`.development/`, `graphify-out/`, `.pi/` tools, shared `node_modules`);
 > `main` is the pristine release checkout (v2.4.0 tagged until the release merge).
