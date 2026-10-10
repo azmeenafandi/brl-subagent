@@ -25,7 +25,7 @@
 
 import type { ProcessOwner, SubagentRun } from "./types";
 import { resolveTerminalRunEntry } from "./state";
-import { escalateKill, pidTarget } from "./kill-escalation";
+import { escalateKill, processTarget } from "./kill-escalation";
 
 // ---------------------------------------------------------------------------
 // Dependency injection surface
@@ -41,6 +41,14 @@ export interface RecoveryDeps {
 	findByMarker(marker: string): number[];
 	/** Send a signal to a pid (may throw when the pid is already gone). */
 	kill(pid: number, signal: NodeJS.Signals): void;
+	/**
+	 * #299 D4: best-effort process-group signal (`kill(-pgid, sig)`; ESRCH
+	 * tolerated). Present only where POSIX process groups exist — the effect is
+	 * that `reapPids` targets become group-reaching (verified marker pids signal
+	 * their group as well as the pid). When absent (Windows, D6) `reapPids`
+	 * falls back to direct pid targets, exactly today's behavior.
+	 */
+	killGroup?(pgid: number, signal: NodeJS.Signals): void;
 	/** Sleep between SIGTERM and SIGKILL. */
 	sleep(ms: number): Promise<void>;
 	/** Grace period in ms between SIGTERM and SIGKILL. */
@@ -218,7 +226,9 @@ export function decideRecovery(record: RecoveryRecord, deps: RecoveryDeps): Reco
  */
 export async function reapPids(pids: number[], deps: RecoveryDeps): Promise<number[]> {
 	const unique = [...new Set(pids)];
-	const targets = unique.map((pid) => pidTarget(pid, deps.kill, deps.pidAlive));
+	const targets = unique.map((pid) =>
+		processTarget(pid, deps.kill, deps.pidAlive, deps.killGroup),
+	);
 	const survivors = await escalateKill(targets, {
 		graceMs: deps.graceMs,
 		pollMs: deps.pollMs,

@@ -8,8 +8,20 @@
  * clock so no real process is touched.
  */
 
-import { describe, it, expect, vi } from "vitest";
-import { escalateKill, type EscalationTarget } from "../kill-escalation";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import {
+	escalateKill,
+	groupTarget,
+	pidTarget,
+	processTarget,
+	supportsProcessGroupKill,
+	__setProcessGroupKillSupportedForTest,
+	type EscalationTarget,
+} from "../kill-escalation";
+
+afterEach(() => {
+	__setProcessGroupKillSupportedForTest(undefined);
+});
 
 interface FakeTarget extends EscalationTarget {
 	calls: string[];
@@ -114,5 +126,78 @@ describe("escalateKill (one SIGTERM → grace → SIGKILL sequence)", () => {
 		});
 		const result = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
 		expect(result).toEqual([target]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #299 Option B — group targets and the unconditional final group SIGKILL (D5)
+// ---------------------------------------------------------------------------
+
+describe("group-capable targets (#299 Option B)", () => {
+	it("groupTarget signals the group best-effort AND the pid directly", () => {
+		const calls: Array<[string, number, string]> = [];
+		const target = groupTarget(
+			4242,
+			(pid, signal) => calls.push(["direct", pid, signal]),
+			(pgid, signal) => calls.push(["group", pgid, signal]),
+			() => true,
+		);
+		target.terminate();
+		target.forceKill();
+		target.forceKillGroup?.();
+		expect(calls).toEqual([
+			["group", 4242, "SIGTERM"],
+			["direct", 4242, "SIGTERM"],
+			["group", 4242, "SIGKILL"],
+			["direct", 4242, "SIGKILL"],
+			["group", 4242, "SIGKILL"],
+		]);
+	});
+
+	it("a vanished group (ESRCH) never blocks the direct signal", () => {
+		const direct: string[] = [];
+		const target = groupTarget(
+			4242,
+			(_pid, signal) => direct.push(signal),
+			() => {
+				const err = new Error("no such process") as NodeJS.ErrnoException;
+				err.code = "ESRCH";
+				throw err;
+			},
+			() => false,
+		);
+		expect(() => target.terminate()).not.toThrow();
+		expect(direct).toEqual(["SIGTERM"]);
+	});
+
+	it("escalateKill sends the final group SIGKILL even when the leader verifies dead", async () => {
+		const calls: string[] = [];
+		const target: EscalationTarget = {
+			terminate: () => calls.push("TERM"),
+			forceKill: () => calls.push("KILL"),
+			verifyDeath: () => true, // leader already gone
+			forceKillGroup: () => calls.push("GROUP_KILL"),
+		};
+		const result = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(result).toEqual([]);
+		expect(calls).toEqual(["TERM", "GROUP_KILL"]);
+	});
+
+	it("processTarget picks the group shape only when a group primitive is supplied", () => {
+		const noGroup = processTarget(7, () => {}, () => true);
+		expect(noGroup.forceKillGroup).toBeUndefined();
+		expect(noGroup.verifyDeath()).toBe(false);
+		const withGroup = processTarget(7, () => {}, () => true, () => {});
+		expect(typeof withGroup.forceKillGroup).toBe("function");
+		// With no group primitive the target is exactly the direct-only `pidTarget`.
+		expect(Object.keys(noGroup).sort()).toEqual(Object.keys(pidTarget(7, () => {}, () => true)).sort());
+	});
+
+	it("supportsProcessGroupKill reflects the platform and the test override", () => {
+		expect(supportsProcessGroupKill()).toBe(process.platform !== "win32");
+		__setProcessGroupKillSupportedForTest(false);
+		expect(supportsProcessGroupKill()).toBe(false);
+		__setProcessGroupKillSupportedForTest(true);
+		expect(supportsProcessGroupKill()).toBe(true);
 	});
 });

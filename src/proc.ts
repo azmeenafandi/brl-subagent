@@ -24,6 +24,7 @@ import type { ProcessOwner } from "./types";
 import { SIGKILL_GRACE_MS, SIGKILL_POLL_MS } from "./types";
 import { CHILD_MARKER_ENV_KEY } from "./sanitize";
 import type { RecoveryDeps } from "./recovery-engine";
+import { supportsProcessGroupKill } from "./kill-escalation";
 
 const PROC_ROOT = "/proc";
 
@@ -85,6 +86,20 @@ export function currentProcessOwner(): ProcessOwner {
 	return { pid: process.pid, start: readStartToken(process.pid) ?? "" };
 }
 
+/**
+ * #299 D4: best-effort process-group signal (`kill(-pgid, sig)`). ESRCH means
+ * the group is already empty — the desired end state, so it is swallowed. On a
+ * platform without process groups the caller does not wire this in at all
+ * (`defaultRecoveryDeps`).
+ */
+export function killProcessGroup(pgid: number, signal: NodeJS.Signals): void {
+	try {
+		process.kill(-pgid, signal);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
+	}
+}
+
 /** Cross-platform pid liveness (`kill -0`). EPERM means the process exists. */
 export function pidAlive(pid: number): boolean {
 	if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -134,6 +149,11 @@ export function defaultRecoveryDeps(): RecoveryDeps {
 		kill: (pid, signal) => {
 			process.kill(pid, signal);
 		},
+		// D4 (#299): group-reaching targets on POSIX. The marker identifies the
+		// orphan tree; the process group is only the kill mechanism that reaches
+		// env-scrubbed descendants. Omitted on Windows (D6) so `reapPids` keeps
+		// today's direct pid targets.
+		killGroup: supportsProcessGroupKill() ? killProcessGroup : undefined,
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		graceMs: SIGKILL_GRACE_MS,
 		// Item 4 (#299): poll so the boot scan returns as soon as its orphans die
