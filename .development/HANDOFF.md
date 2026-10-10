@@ -23,9 +23,19 @@
 - **Evidence:** `.development/investigations/` — `jev-thinking-backtest-2026-10-10.md`, `issue-299-grandchild-reap-probe-2026-10-10.md`,
   `fix318*/fix322*-findings`, `codegraph-phase2-dogfood-*`, `u1-*`; **ADR 0016** (graphify retired — CodeGraph is the sole gate; 1 s
   post-merge runs); ADR 0015 (split posture).
-- **Next options:** (a) **#299 Option B** (pgid/setsid + leader identity + Windows); (b) **U2** from
-  `.development/PROPOSAL_PLAN-OPTION_B_DURABILITY.md` (U1 shipped in 2.5.0); (c) the **#315 live check** on the next natural failed run
-  (expect exactly one `[subagent-completion]`, no `[subagent-notification]`).
+- **UPDATE — #299 Option B MERGED (2026-10-10, PR #325 → `dev` `a3b89af`):** process-group reaping — POSIX `detached`
+  spawns, group-reaching kill paths (direct signal retained), `killGroup` through recovery deps, the **`parseStatPrefix`
+  stat-prefix CONTRACT** (tri-state membership; `false` only from a complete well-formed scan), signal-time marker
+  verification, honest survivor reporting, Windows fallback unchanged. Suite **68 files / 1429**; targeted `#299` 67;
+  CodeGraph refreshed (39/39 modules, **396** symbols). **Eight review rounds pinned:**
+  `.development/investigations/issue-299-optionb-review-findings-2026-10-10.md` (2 majors → pidGone race → unknown/empty →
+  truncated → shifted → impossible/alignment → contract → Fix B approve; friction lesson `tri-state-promotion-without-producer-audit`).
+  All 9 worktrees cleaned; no strays. `#299` stays open until the RELEASE merge (`Fixes` fires on `main` only).
+- **Next options (post-#299):** (a) **U2** from `.development/PROPOSAL_PLAN-OPTION_B_DURABILITY.md` (U1 shipped in 2.5.0);
+  (b) the release cycle whenever the maintainer calls it — the dev-dogfood install activates merged changes on `/reload`
+  (user-triggered, never automated); (c) backlog: two other tests still use the latent two-scan
+  `waitUntil`+`findByMarker` pattern (tolerated; harden opportunistically); (d) the **#315 live check** on the next
+  natural failed run (expect exactly one `[subagent-completion]`, no `[subagent-notification]`).
 
 ## Environment
 
