@@ -141,6 +141,17 @@ export function readProcessGroup(pid: number): number | undefined {
 export type GroupMembership = boolean | undefined;
 
 /**
+ * #299 fix A.4 — the kernel's process-state letters, i.e. the valid values of
+ * field 3 of `/proc/<pid>/stat`. A state token OUTSIDE this set means the
+ * record was mis-parsed (a truncated or field-shifted read), so the inspection
+ * is PARTIAL rather than a positive non-membership. The set is the union of the
+ * Linux `task_state_array`: R (running), S (sleeping), D (uninterruptible
+ * sleep), Z (zombie), T (stopped), t (tracing stop), X/x (dead), K (wakekill),
+ * W (waking, pre-3.8), P (parked), I (idle).
+ */
+const PROCESS_STATE_LETTERS = new Set(["R", "S", "D", "Z", "T", "t", "X", "x", "K", "W", "P", "I"]);
+
+/**
  * Scans `/proc` for processes whose pgrp (field 5) equals `pgid`, skipping the
  * leader itself and zombies (`Z`/`X` — an unreaped corpse is not a live member
  * and must not hold the group non-empty). A group's leader exiting does NOT
@@ -171,17 +182,20 @@ export function groupHasMembers(pgid: number): GroupMembership {
 			return undefined;
 		}
 		const fields = read.fields;
-		// #299 fix A.3: never let a truncated/malformed record count as ABSENCE.
-		// A record that carries a valid `)` but too few fields (e.g. `5500 (node) S 1`)
-		// leaves the state token or pgrp missing; `Number(undefined)` is NaN, so the
-		// old `Number(fields[2]) === pgid` silently read it as a NON-member and, if it
-		// was the only candidate, returned a positively-empty `false`. That is the
-		// same "absence of evidence read as evidence of absence" class A.2 targeted.
-		// Require the fields the check actually needs — a present state token and a
-		// present numeric pgrp — and treat anything less as a PARTIAL inspection.
+		// #299 fix A.3/A.4: never let a truncated or field-SHIFTED record count as
+		// ABSENCE. A record can carry a valid `)` while carrying too few fields
+		// (e.g. `5500 (node) S 1`) OR while missing the state token so the fields
+		// shift left (`5500 (node) 1 1 9999`): `Number(undefined)` is NaN, but a
+		// shifted pgrp slot can hold a REAL integer, so the pure numeric-pgrp check
+		// still read the record as a NON-member and returned a positively-empty
+		// `false`. That is the same "absence of evidence read as evidence of
+		// absence" class A.2 targeted. Validate the state token by SHAPE (a kernel
+		// process-state letter — numerics, punctuation, empty or multi-char tokens
+		// are malformed) alongside the integer pgrp; anything less is PARTIAL.
 		const state = fields[0];
 		const pgrp = Number(fields[2]);
-		if (state === undefined || !Number.isInteger(pgrp)) return undefined;
+		if (state === undefined || !PROCESS_STATE_LETTERS.has(state) || !Number.isInteger(pgrp))
+			return undefined;
 		if (state === "Z" || state === "X") continue;
 		if (pgrp === pgid) return true;
 	}

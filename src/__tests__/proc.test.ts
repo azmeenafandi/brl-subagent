@@ -138,6 +138,38 @@ describe("groupHasMembers tri-state (#299 fix A.2)", () => {
 		expect(groupHasMembers(PGID)).toBeUndefined();
 	});
 
+	it.each([
+		["single-space shifted record", `${MEMBER} (node) 1 1 ${OTHER_PGID} 0 0`],
+		["double-space shifted record", `${MEMBER} (node)  1 1 ${OTHER_PGID} 0 0`],
+		["numeric token in the state slot", `${MEMBER} (node) 5 1 ${OTHER_PGID} 0 0`],
+	])("#299 fix A.4: a %s is PARTIAL, never a positively-empty non-member", (_label, stat) => {
+		control.dirEntries = [String(MEMBER), "self"];
+		// The state token is missing (or not a letter), so every field shifts left:
+		// the pgrp slot now holds `9999`, a REAL integer. The A.3 numeric-pgrp guard
+		// alone accepted it as a justified non-member and reported the group empty;
+		// the state-shape check is what marks the record malformed.
+		control.statContents.set(`/proc/${MEMBER}/stat`, stat);
+		expect(groupHasMembers(PGID)).toBeUndefined();
+	});
+
+	it("still skips a well-formed `X` (dead) record with a numeric pgrp", () => {
+		control.dirEntries = [String(MEMBER), "self"];
+		control.statContents.set(`/proc/${MEMBER}/stat`, statLine("X", PGID));
+		expect(groupHasMembers(PGID)).toBe(false);
+	});
+
+	it("still returns false for a well-formed record with a valid letter and a different pgrp", () => {
+		control.dirEntries = [String(MEMBER), "self"];
+		control.statContents.set(`/proc/${MEMBER}/stat`, statLine("R", OTHER_PGID));
+		expect(groupHasMembers(PGID)).toBe(false);
+	});
+
+	it("degrades to false on an invalid pgid (documented boundary, before any /proc read)", () => {
+		expect(groupHasMembers(0)).toBe(false);
+		expect(groupHasMembers(-1)).toBe(false);
+		expect(groupHasMembers(Number.NaN)).toBe(false);
+	});
+
 	it("degrades to false (documented platform boundary) when /proc is unavailable", () => {
 		__setProcAvailableForTest(false);
 		expect(groupHasMembers(PGID)).toBe(false);
