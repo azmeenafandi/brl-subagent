@@ -45,7 +45,8 @@ dates, and historical framing. The binding rules (with their numbers) live in
    `.development/**` and the `.pi` TOOLS (`.pi/skills/**`, `.pi/extensions/**`)
    are TRACKED — they materialize in every worktree, and specs MAY ask a
    subagent to read them. Still gitignored (and absent from worktrees):
-   `graphify-out/`, `.pi` session state (`output/`, `subagents/`,
+   `.codegraph/` (the structural index — conductor-side only, ADR 0016),
+   `.pi` session state (`output/`, `subagents/`,
    `subagent-logs/`, `subagent-tmp/`, `sessions/`), local config
    (`.pi/brl-subagent/`), `REVIEW_*.md`, `.tmp/`.
    **Subagents NEVER see gitignored files**, so specs must never ask a subagent
@@ -143,14 +144,15 @@ dates, and historical framing. The binding rules (with their numbers) live in
     proof-of-need: the graph already had the complete touchpoint map; the
     conductor hand-assembled it from memory + grep instead.
 
-    Two layers since ADR 0015: **structural questions → CodeGraph** —
+    CodeGraph is the SOLE structural index (ADR 0016): **structural questions
+    → CodeGraph** —
     `codegraph callers <symbol>` (semantic call sites),
     `codegraph impact <symbol>` (blast radius; file nodes by basename),
     `codegraph query <terms>` (symbol search), `codegraph affected <file>`
-    (tests to re-run); run
-    `codegraph-check.py` if freshness is in doubt. **Concept / doc /
-    community questions → graphify** (`graphify-out/`), still the merge gate
-    until Phase 2.
+    (tests to re-run); refresh with `codegraph-refresh.sh` at every merge and
+    run `codegraph-check.py` if freshness is in doubt. **Doc concept /
+    cross-document questions → grep + `docs-arch` + the ADRs** — the
+    deterministic fallback; graphify is retired (no LLM on the doc path).
 
 ## Rule 14
 
@@ -181,7 +183,7 @@ dates, and historical framing. The binding rules (with their numbers) live in
 15. **Spec environment verification (Rule 15).** Before dispatching any
     delegation, verify that every file, directory, and resource referenced
     in the spec exists in the subagent's WORKTREE (the cockpit is a different
-    environment — gitignored files like `graphify-out/` and `.pi` session
+    environment — gitignored files like `.codegraph/` and `.pi` session
     state do NOT materialize there; since #247 `.development/` and the `.pi`
     tools DO — rule 4's ignore list is the scoping boundary). References must be
     SYMBOLIC (function names, module names, error messages), never
@@ -212,7 +214,7 @@ dates, and historical framing. The binding rules (with their numbers) live in
 ## Rule 16
 
 16. **User review gate (Rule 16).** No delegation beyond trivial ritual
-    work (sync, reload, graphify update) may be dispatched without
+    work (sync, reload, index refresh) may be dispatched without
     explicit user approval of the spec. The conductor presents the spec
     (or a batch), the user reviews, the user approves — THEN the conductor
     dispatches. "Looks solid" does not mean "dispatch now". This gate is
@@ -294,8 +296,8 @@ dates, and historical framing. The binding rules (with their numbers) live in
       fix-direction list, a ritual's steps, a reference file). Grep finds; it
       does not prove completeness.
     - **Every guard states its coverage.** "What this check does NOT see"
-      belongs in the check itself — output or docstring. `graph-check.py`
-      prints its boundaries and samples symbols; the #186 ratchet documents
+      belongs in the check itself — output or docstring. `codegraph-check.py`
+      prints its boundaries and reconciles symbol coverage; the #186 ratchet documents
       its evasion set and allow-list reasons.
     - **Coverage statements travel with the claim.** Any read/search-derived
       finding, report or verdict carries its coverage line (query, count/range,
