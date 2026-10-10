@@ -10,7 +10,7 @@
  * with a git-availability check (see git-real.test.ts `GIT_OK`) before use.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -47,10 +47,19 @@ export async function commitFile(
  * Create a fresh throwaway repo in the OS temp dir, initialized on `main`
  * with a single `base.txt` commit. Returns the repo path; the caller owns
  * cleanup (e.g. `rm(dir, { recursive: true, force: true })`).
+ *
+ * If setup fails after `mkdtemp` (git missing, init/commit error), the temp
+ * dir is removed before the error is rethrown — callers never learn the path
+ * of a half-initialized repo, so they could not clean it up themselves.
  */
 export async function createTempGitRepo(prefix = "brl-git-"): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), prefix));
-	initRepo(dir);
-	await commitFile(dir, "base.txt", "base\n", "base commit");
+	try {
+		initRepo(dir);
+		await commitFile(dir, "base.txt", "base\n", "base commit");
+	} catch (err) {
+		await rm(dir, { recursive: true, force: true });
+		throw err;
+	}
 	return dir;
 }
