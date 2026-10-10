@@ -50,6 +50,7 @@ import {
 	isSubagentError,
 	isMultiSubagentDetails,
 	isGraphDetails,
+	isUnsettledPartial,
 } from "./types";
 import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
 import { extractParamNames } from "./templates";
@@ -2930,17 +2931,19 @@ export function renderDelegateResult(
 	}
 
 	// Single subagent mode (original)
-	// Issue #206 introduced exitCode -1 as the UNSETTLED streaming sentinel, but
-	// issue #295 made a settled signal death ALSO settle at -1 (external kill,
-	// staged timeout, staged abort). The sentinel alone is therefore no longer a
-	// running marker: a settled result always carries an errorCategory
-	// (classifyError runs on every finalize), while a live partial does not. Keep
-	// the raw running text only for a genuine partial (or when no details exist);
-	// a classified -1 is a settled FAILURE and must take the verdict branch below
-	// (✗ + error line + expanded-transcript binding), never raw text.
-	const isUnsettledPartial =
-		!details || (details.exitCode === -1 && !details.errorCategory);
-	if (isUnsettledPartial) {
+	// Issue #298 (C2): the partial-vs-settled decision lives in ONE place —
+	// `isUnsettledPartial` (src/types.ts) owns the overloaded `exitCode === -1`
+	// disambiguation (the #206 streaming sentinel vs the #295 settled signal
+	// death). Do not re-derive it here; the terminal-status structural ratchet
+	// fails a local copy. A genuine partial (or a result with no details yet)
+	// renders the raw running text; a classified -1 is a settled FAILURE and
+	// takes the verdict branch below (✗ + error line + expanded-transcript
+	// binding), never raw text.
+	//
+	// The leading `!details` is a type-narrowing aid for the settled branch below
+	// (TS cannot narrow through a function call); it is NOT a second copy of the
+	// decision — the predicate owns the no-details case too.
+	if (!details || isUnsettledPartial(details)) {
 		const text = result.content[0];
 		return new Text(text?.type === "text" ? text.text : "(running\u2026)", 0, 0);
 	}
