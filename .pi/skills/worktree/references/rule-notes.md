@@ -145,8 +145,9 @@ dates, and historical framing. The binding rules (with their numbers) live in
 
     Two layers since ADR 0015: **structural questions → CodeGraph** —
     `codegraph callers <symbol>` (semantic call sites),
-    `codegraph impact <file>` (blast radius), `codegraph query <terms>` (symbol
-    search), `codegraph affected <file>` (tests to re-run); run
+    `codegraph impact <symbol>` (blast radius; file nodes by basename),
+    `codegraph query <terms>` (symbol search), `codegraph affected <file>`
+    (tests to re-run); run
     `codegraph-check.py` if freshness is in doubt. **Concept / doc /
     community questions → graphify** (`graphify-out/`), still the merge gate
     until Phase 2.

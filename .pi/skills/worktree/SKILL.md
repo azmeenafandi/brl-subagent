@@ -104,8 +104,9 @@ never re-type their logic by hand. Full design:
     graph's structure + grep's exact call sites.
     - **Structural questions → CodeGraph** (see "CodeGraph prototype" below).
       `codegraph callers <symbol>` — semantic call sites (the enclosing
-      function, or the file node for a callback); `codegraph impact <file>` —
-      blast radius; `codegraph query <terms>` — symbol search;
+      function, or the file node for a callback); `codegraph impact <symbol>` —
+      blast radius (a file node is addressed by its basename, e.g. `runner.ts`);
+      `codegraph query <terms>` — symbol search;
       `codegraph affected <file>` — the tests to re-run. Run
       `codegraph-check.py` if freshness is in doubt. CLI-only, conductor-side,
       watcher off.
