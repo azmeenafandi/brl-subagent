@@ -19,13 +19,16 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
+import { createTempGitRepo, gitRun as run } from "./fixtures/temp-git-repo";
+
 import {
 	getCurrentBranch,
+	getHeadState,
+	restoreHead,
 	hasUncommittedChanges,
 	createWorkBranch,
 	captureDiff,
@@ -48,35 +51,14 @@ function gitAvailable(): boolean {
 
 const GIT_OK = gitAvailable();
 
-const run = (cwd: string, args: string[]) =>
-	execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
-
-const gitOpts = (cwd: string) => ({ cwd, encoding: "utf-8" });
-
-function initRepo(dir: string): void {
-	run(dir, ["init", "-q"]);
-	// Portable: works on git < 2.28 where `init -b` is unavailable.
-	run(dir, ["checkout", "-q", "-b", "main"]);
-	run(dir, ["config", "user.email", "gate-a@test.local"]);
-	run(dir, ["config", "user.name", "Gate A"]);
-}
-
-async function commitFile(dir: string, name: string, content: string, msg: string): Promise<void> {
-	await writeFile(join(dir, name), content);
-	run(dir, ["add", name]);
-	run(dir, ["commit", "-q", "-m", msg]);
-}
-
 describe("git.ts real-git behavior (Gate A)", () => {
 	const scratchDirs: string[] = [];
 	let repo: string;
 
 	beforeAll(async () => {
 		if (!GIT_OK) return;
-		repo = await mkdtemp(join(tmpdir(), "brl-gate-a-"));
+		repo = await createTempGitRepo("brl-gate-a-");
 		scratchDirs.push(repo);
-		initRepo(repo);
-		await commitFile(repo, "base.txt", "base\n", "base commit");
 	});
 
 	afterAll(async () => {
@@ -275,6 +257,101 @@ describe("git.ts real-git behavior (Gate A)", () => {
 			switchToBranch(repo, "main");
 			deleteBranch(repo, branch2);
 			await rm(join(repo, "seq.txt"), { force: true });
+		});
+	});
+
+	// #302: a spawn from a DETACHED HEAD used to capture "HEAD" as the original
+	// branch, so teardown ran `git checkout HEAD` (a no-op that stays on the
+	// work branch) and `git branch -D` then failed — leaking the branch and
+	// leaving the tree moved. HeadState captures the sha + attached-ness so
+	// teardown can re-detach instead.
+	describe.skipIf(!GIT_OK)("#302 detached-HEAD teardown", () => {
+		it("getHeadState reports the branch + sha when attached", () => {
+			switchToBranch(repo, "main");
+			const state = getHeadState(repo);
+			expect(state.detached).toBe(false);
+			expect(state.branch).toBe("main");
+			expect(state.sha).toBe(run(repo, ["rev-parse", "HEAD"]));
+		});
+
+		it("getHeadState reports the sha + detached on a detached HEAD", () => {
+			const head = run(repo, ["rev-parse", "HEAD"]);
+			run(repo, ["checkout", "-q", "--detach", head]);
+
+			const state = getHeadState(repo);
+			expect(state.detached).toBe(true);
+			expect(state.sha).toBe(head);
+			// The label getCurrentBranch WOULD have captured — the pre-fix bug.
+			expect(state.branch).toBe("HEAD");
+			expect(getCurrentBranch(repo)).toBe("HEAD");
+
+			switchToBranch(repo, "main");
+		});
+
+		it("restoreHead re-detaches at the captured sha and the work branch then deletes", () => {
+			const start = run(repo, ["rev-parse", "HEAD"]);
+			run(repo, ["checkout", "-q", "--detach", start]);
+			const state = getHeadState(repo);
+
+			// The work branch is created from the detached start.
+			const created = createWorkBranch(repo, state.sha);
+			expect(created.ok).toBe(true);
+			const workBranch = created.ok ? created.branch : "";
+			expect(getCurrentBranch(repo)).toBe(workBranch);
+
+			// PRE-FIX teardown: `checkout HEAD` is a no-op that stays on the work
+			// branch, so the delete fails — the stranding mechanism.
+			expect(switchToBranch(repo, "HEAD").ok).toBe(true);
+			expect(getCurrentBranch(repo)).toBe(workBranch);
+			expect(deleteBranch(repo, workBranch).ok).toBe(false);
+
+			// FIXED teardown: re-detach at the captured sha, then delete succeeds.
+			expect(restoreHead(repo, state).ok).toBe(true);
+			const restored = getHeadState(repo);
+			expect(restored.detached).toBe(true);
+			expect(restored.sha).toBe(start);
+			expect(deleteBranch(repo, workBranch).ok).toBe(true);
+			expect(run(repo, ["branch", "--list", "brl-subagent-*"])).toBe("");
+
+			switchToBranch(repo, "main");
+		});
+
+		// #308: the detached auto-approve path must not silently lose the merged
+		// commit. Teardown re-detaches at the captured sha, the auto-approve merge
+		// fast-forwards that DETACHED HEAD, and deleting the work branch would then
+		// leave the commit reachable only from the detached HEAD. The fix keeps the
+		// branch as the durable ref, so a later checkout still finds the work.
+		it("#308 detached auto-approve preserves the merged commit via the work branch", async () => {
+			const start = run(repo, ["rev-parse", "HEAD"]);
+			run(repo, ["checkout", "-q", "--detach", start]);
+			const state = getHeadState(repo);
+
+			const created = createWorkBranch(repo, state.sha);
+			expect(created.ok).toBe(true);
+			const workBranch = created.ok ? created.branch : "";
+
+			// The agent commits its work onto the work branch.
+			await writeFile(join(repo, "detached-approve.txt"), "from detached auto-approve\n");
+			run(repo, ["add", "detached-approve.txt"]);
+			run(repo, ["commit", "-q", "-m", "agent work"]);
+			const workTip = run(repo, ["rev-parse", "HEAD"]);
+
+			// Teardown: re-detach at the captured sha, then auto-approve merges.
+			expect(restoreHead(repo, state).ok).toBe(true);
+			expect(mergeWorkBranch(repo, workBranch).ok).toBe(true);
+			const merged = run(repo, ["rev-parse", "HEAD"]);
+			expect(merged).toBe(workTip);
+
+			// FIXED: the branch survives teardown, so the merge result stays
+			// reachable after switching away from the detached HEAD.
+			switchToBranch(repo, "main");
+			expect(run(repo, ["rev-parse", workBranch])).toBe(workTip);
+			expect(run(repo, ["branch", "--contains", merged])).toContain(workBranch);
+			// The pre-fix delete left this commit unreachable; fsck would list it.
+			expect(run(repo, ["fsck", "--no-reflogs", "--unreachable"])).not.toContain(merged);
+
+			// Clean up the preserved branch so later tests see a clean base.
+			expect(deleteBranch(repo, workBranch).ok).toBe(true);
 		});
 	});
 });

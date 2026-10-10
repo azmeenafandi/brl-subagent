@@ -7,9 +7,10 @@ const mocks = vi.hoisted(() => ({
 	createAgentSession: vi.fn(),
 	git: {
 		getCurrentBranch: vi.fn(),
+		getHeadState: vi.fn(),
 		createWorkBranch: vi.fn(),
 		captureDiff: vi.fn(),
-		switchToBranch: vi.fn(),
+		restoreHead: vi.fn(),
 		deleteBranch: vi.fn(),
 		hasUncommittedChanges: vi.fn(),
 		getRepoRoot: vi.fn(),
@@ -58,9 +59,10 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 // W4: mock the git module so branch lifecycle tests never touch a real repo.
 vi.mock("../git", () => ({
 	getCurrentBranch: mocks.git.getCurrentBranch,
+	getHeadState: mocks.git.getHeadState,
 	createWorkBranch: mocks.git.createWorkBranch,
 	captureDiff: mocks.git.captureDiff,
-	switchToBranch: mocks.git.switchToBranch,
+	restoreHead: mocks.git.restoreHead,
 	deleteBranch: mocks.git.deleteBranch,
 	hasUncommittedChanges: mocks.git.hasUncommittedChanges,
 	getRepoRoot: mocks.git.getRepoRoot,
@@ -655,9 +657,10 @@ describe("spawnBackgroundSession .then abort discrimination (probe contract)", (
 
 function resetGitMocks() {
 	mocks.git.getCurrentBranch.mockReset();
+	mocks.git.getHeadState.mockReset();
 	mocks.git.createWorkBranch.mockReset();
 	mocks.git.captureDiff.mockReset();
-	mocks.git.switchToBranch.mockReset();
+	mocks.git.restoreHead.mockReset();
 	mocks.git.deleteBranch.mockReset();
 	mocks.git.hasUncommittedChanges.mockReset();
 	mocks.git.commitAll.mockReset();
@@ -665,14 +668,14 @@ function resetGitMocks() {
 	// Default: not inside a repository, so the lock falls back to the cwd key.
 	mocks.git.getRepoRoot.mockReset();
 	mocks.git.getRepoRoot.mockReturnValue(undefined);
-	// Setup reads the base branch; the cleanup concurrency guard reads the
-	// current branch and expects it to still be the work branch.
-	mocks.git.getCurrentBranch
-		.mockReturnValueOnce("main")       // setup: base
-		.mockReturnValue("brl-subagent-abc12345"); // cleanup: still on ours
+	// Setup reads the starting HEAD state (branch 'main', attached); the cleanup
+	// concurrency guard reads the current branch and expects it to still be the
+	// work branch.
+	mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
+	mocks.git.getCurrentBranch.mockReturnValue("brl-subagent-abc12345");
 	mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
 	mocks.git.captureDiff.mockReturnValue({ ok: true, diff: "diff --git a/x.ts b/x.ts" });
-	mocks.git.switchToBranch.mockReturnValue({ ok: true });
+	mocks.git.restoreHead.mockReturnValue({ ok: true });
 	mocks.git.deleteBranch.mockReturnValue({ ok: true });
 	// C1: base tree clean at setup; agent dirt exists at teardown.
 	mocks.git.hasUncommittedChanges
@@ -817,21 +820,21 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 
 	function resetGitMocks() {
 		mocks.git.getCurrentBranch.mockReset();
+		mocks.git.getHeadState.mockReset();
 		mocks.git.createWorkBranch.mockReset();
 		mocks.git.captureDiff.mockReset();
-		mocks.git.switchToBranch.mockReset();
+		mocks.git.restoreHead.mockReset();
 		mocks.git.deleteBranch.mockReset();
 		mocks.git.hasUncommittedChanges.mockReset();
 		mocks.git.commitAll.mockReset();
 		mocks.git.captureWorkingDiff.mockReset();
-		// Setup reads the base branch; the cleanup concurrency guard reads the
-		// current branch and expects it to still be the work branch.
-		mocks.git.getCurrentBranch
-			.mockReturnValueOnce("main")       // setup: base
-			.mockReturnValue("brl-subagent-abc12345"); // cleanup: still on ours
+		// Setup reads the starting HEAD state; the cleanup concurrency guard reads
+		// the current branch and expects it to still be the work branch.
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
+		mocks.git.getCurrentBranch.mockReturnValue("brl-subagent-abc12345");
 		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
 		mocks.git.captureDiff.mockReturnValue({ ok: true, diff: "diff --git a/x.ts b/x.ts" });
-		mocks.git.switchToBranch.mockReturnValue({ ok: true });
+		mocks.git.restoreHead.mockReturnValue({ ok: true });
 		mocks.git.deleteBranch.mockReturnValue({ ok: true });
 		// C1: base tree clean at setup; agent dirt exists at teardown.
 		mocks.git.hasUncommittedChanges
@@ -850,7 +853,7 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 			gitMode: "branch",
 		});
 
-		expect(mocks.git.getCurrentBranch).toHaveBeenCalledTimes(1);
+		expect(mocks.git.getHeadState).toHaveBeenCalledTimes(1);
 		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(1);
 		// The session's prompt was called with the fence-wrapped task.
 		expect(mocks.session.prompt).toHaveBeenCalledTimes(1);
@@ -864,7 +867,7 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 			task: "test no git",
 		});
 
-		expect(mocks.git.getCurrentBranch).not.toHaveBeenCalled();
+		expect(mocks.git.getHeadState).not.toHaveBeenCalled();
 		expect(mocks.git.createWorkBranch).not.toHaveBeenCalled();
 	});
 
@@ -898,7 +901,10 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		await new Promise((r) => setTimeout(r, 0));
 
 		expect(mocks.git.captureDiff).toHaveBeenCalledTimes(1);
-		expect(mocks.git.switchToBranch).toHaveBeenCalledWith(expect.anything(), "main");
+		expect(mocks.git.restoreHead).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ branch: "main", detached: false })
+		);
 		expect(mocks.git.deleteBranch).toHaveBeenCalledTimes(1);
 		const after = getAgent(agent.id);
 		expect(after?.status).toBe("completed");
@@ -922,28 +928,91 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		// Partial work before the failure is still worth capturing; the branch
 		// is discarded either way.
 		expect(mocks.git.captureDiff).toHaveBeenCalledTimes(1);
-		expect(mocks.git.switchToBranch).toHaveBeenCalledTimes(1);
+		expect(mocks.git.restoreHead).toHaveBeenCalledTimes(1);
 		expect(mocks.git.deleteBranch).toHaveBeenCalledTimes(1);
 		const after = getAgent(agent.id);
 		expect(after?.status).toBe("failed");
 		expect(after?.result?.gitDiff).toContain("diff --git");
+	});
+
+	it("#302: restores a DETACHED start and still deletes the work branch", async () => {
+		resetGitMocks();
+		// Spawn started from a detached HEAD (CI PR builds): the captured state
+		// carries the sha + detached=true, while getCurrentBranch would only ever
+		// report the "HEAD" pseudo-ref.
+		mocks.git.getHeadState.mockReturnValue({ sha: "deadbeefcafe", detached: true, branch: "HEAD" });
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test detached start",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		// The diff base is the captured sha — the branch label is uselessly "HEAD".
+		expect(mocks.git.captureDiff).toHaveBeenCalledWith(expect.anything(), "deadbeefcafe");
+		// Teardown re-detaches at the captured sha (checkout --detach <sha>)...
+		expect(mocks.git.restoreHead).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ sha: "deadbeefcafe", detached: true })
+		);
+		// ...and the work branch is deleted regardless — the pre-fix leak.
+		expect(mocks.git.deleteBranch).toHaveBeenCalledWith(expect.anything(), "brl-subagent-abc12345");
+	});
+
+	it("review C: a throwing settle still tears the work branch down (catch-all)", async () => {
+		resetGitMocks();
+		// The aborted path calls updateAgentStatus(id, 'stopped') BEFORE its own
+		// cleanupWorkBranch(). Force that emit to throw so control jumps straight
+		// to markTerminalBestEffort without the normal teardown having run — the
+		// catch-all must still restore + delete the work branch.
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "aborted" },
+		];
+		eventBusMock.emit.mockImplementation((event: { type: string }) => {
+			if (event.type === "subagent:stopped") throw new Error("emit exploded");
+		});
+
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test settle throw teardown",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 10));
+
+		// The normal cleanup never ran — only the catch-all can have restored and
+		// deleted. Pre-fix the work branch survived, stranding the repo.
+		expect(mocks.git.restoreHead).toHaveBeenCalledTimes(1);
+		expect(mocks.git.deleteBranch).toHaveBeenCalledTimes(1);
+		expect(mocks.git.deleteBranch).toHaveBeenCalledWith(
+			expect.anything(),
+			"brl-subagent-abc12345"
+		);
+		expect(getAgent(agent.id)?.status).toBe("stopped");
 	});
 });
 
 describe("W4 concurrency guard — cleanup when another spawn moved the tree", () => {
 	const VALID_UUID = "5e6f7a8b-9c0d-1e2f-3a4b-5c6d7e8f9a0b";
 
-	it("skips switch/delete when the tree is no longer on our work branch", async () => {
+	it("skips restore/delete when the tree is no longer on our work branch", async () => {
 		// Setup: base is main, work branch created.
 		mocks.git.getCurrentBranch.mockReset();
+		mocks.git.getHeadState.mockReset();
 		mocks.git.createWorkBranch.mockReset();
 		mocks.git.captureDiff.mockReset();
-		mocks.git.switchToBranch.mockReset();
+		mocks.git.restoreHead.mockReset();
 		mocks.git.deleteBranch.mockReset();
 		mocks.git.hasUncommittedChanges.mockReset();
 		mocks.git.commitAll.mockReset();
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 		mocks.git.getCurrentBranch
-			.mockReturnValueOnce("main")       // setup: base
 			.mockReturnValue("brl-subagent-other"); // cleanup: ANOTHER spawn's branch
 		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
 		mocks.git.hasUncommittedChanges.mockReturnValue(false);
@@ -961,7 +1030,7 @@ describe("W4 concurrency guard — cleanup when another spawn moved the tree", (
 		await new Promise((r) => setTimeout(r, 0));
 
 		// The tree moved — do NOT yank it back, do NOT delete the other's context.
-		expect(mocks.git.switchToBranch).not.toHaveBeenCalled();
+		expect(mocks.git.restoreHead).not.toHaveBeenCalled();
 		expect(mocks.git.deleteBranch).not.toHaveBeenCalled();
 	});
 });
@@ -975,7 +1044,8 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 		mocks.git.createWorkBranch.mockReset();
 		mocks.git.hasUncommittedChanges.mockReset();
 		mocks.git.hasUncommittedChanges.mockReturnValue(true);
-		mocks.git.getCurrentBranch.mockReturnValue("main");
+		mocks.git.getHeadState.mockReset();
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 
 		const { spawnBackgroundSession } = await import("../session-manager");
 		await expect(
@@ -1067,13 +1137,15 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 			task: "first lock holder",
 			gitMode: "branch",
 		});
-		// First spawn acquired the lock; its getCurrentBranch read 'main'.
-		expect(mocks.git.getCurrentBranch).toHaveBeenCalledTimes(1);
+		// First spawn acquired the lock; its getHeadState read 'main'.
+		expect(mocks.git.getHeadState).toHaveBeenCalledTimes(1);
 
 		// Second spawn on the SAME cwd must block until the first settles.
+		mocks.git.getHeadState.mockReset();
 		mocks.git.getCurrentBranch.mockReset();
 		mocks.git.createWorkBranch.mockReset();
 		mocks.git.hasUncommittedChanges.mockReset();
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 		mocks.git.getCurrentBranch.mockReturnValue("main");
 		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-second" });
 		mocks.git.hasUncommittedChanges.mockReturnValue(false);
@@ -1088,15 +1160,15 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 		// Give the second spawn a tick — it must NOT have acquired the lock.
 		await new Promise((r) => setTimeout(r, 50));
 		expect(secondSettled).toBe(false);
-		expect(mocks.git.getCurrentBranch).not.toHaveBeenCalled();
+		expect(mocks.git.getHeadState).not.toHaveBeenCalled();
 
 		// First settles → its .then runs cleanupWorkBranch → releases the lock.
 		resolveFirstPrompt();
 		await new Promise((r) => setTimeout(r, 0));
 
-		// Second now proceeds: getCurrentBranch (setup) is called again.
+		// Second now proceeds: getHeadState (setup) is called again.
 		await new Promise((r) => setTimeout(r, 20));
-		expect(mocks.git.getCurrentBranch).toHaveBeenCalled();
+		expect(mocks.git.getHeadState).toHaveBeenCalled();
 		await secondPromise;
 		expect(secondSettled).toBe(true);
 	});
@@ -1110,8 +1182,10 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 		resetGitMocks();
 		// One repository for all three → one shared lock key.
 		mocks.git.getRepoRoot.mockReturnValue("/repo-chain");
-		// Every spawn's setup reads a clean tree on 'main'; the teardown guard
-		// still sees our work branch.
+		// Every spawn's setup reads the starting HEAD state on 'main'; the
+		// teardown guard sees the tree already off our work branch (so it skips
+		// restore/delete and only the lock ordering is under test).
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 		mocks.git.getCurrentBranch.mockReset();
 		mocks.git.getCurrentBranch.mockReturnValue("main");
 		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-chain" });
@@ -1188,10 +1262,12 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 			gitMode: "branch",
 			cwd: "/repo/a",
 		});
-		expect(mocks.git.getCurrentBranch).toHaveBeenCalledTimes(1);
+		expect(mocks.git.getHeadState).toHaveBeenCalledTimes(1);
 
 		// Second spawn, a DIFFERENT directory of the same repository, must
 		// block on the same lock.
+		mocks.git.getHeadState.mockReset();
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 		mocks.git.getCurrentBranch.mockReset();
 		mocks.git.createWorkBranch.mockReset();
 		mocks.git.hasUncommittedChanges.mockReset();
@@ -1209,11 +1285,11 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 
 		await new Promise((r) => setTimeout(r, 50));
 		expect(secondSettled).toBe(false);
-		expect(mocks.git.getCurrentBranch).not.toHaveBeenCalled();
+		expect(mocks.git.getHeadState).not.toHaveBeenCalled();
 
 		resolveFirstPrompt();
 		await new Promise((r) => setTimeout(r, 20));
-		expect(mocks.git.getCurrentBranch).toHaveBeenCalled();
+		expect(mocks.git.getHeadState).toHaveBeenCalled();
 		await secondPromise;
 		expect(secondSettled).toBe(true);
 	});

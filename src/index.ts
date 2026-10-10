@@ -58,13 +58,14 @@ import { pkgPath } from "./paths";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage, buildCrashResult } from "./sanitize";
 import {
-	getCurrentBranch,
 	hasUncommittedChanges,
 	createWorkBranch,
 	captureDiff,
-	switchToBranch,
+	getHeadState,
+	restoreHead,
 	deleteBranch,
 	mergeWorkBranch,
+	type HeadState,
 } from "./git";
 import { preflightCheck } from "./preflight";
 import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets, formatValidationWarnings } from "./prelude";
@@ -3221,11 +3222,11 @@ export default function (pi: ExtensionAPI) {
 			registerLiveRun(state, run, ctx);
 
 			// P3: Git integration — set up work branch if gitMode is "branch"
-			let originalBranch: string | undefined;
+			let headState: HeadState | undefined;
 			let workBranchName: string | undefined;
 			if (resolvedGitMode === "branch") {
 				try {
-					originalBranch = getCurrentBranch(resolvedCwd);
+					headState = getHeadState(resolvedCwd);
 
 					if (hasUncommittedChanges(resolvedCwd)) {
 						log.warn("Uncommitted changes detected; proceeding with branch-based workflow anyway", {
@@ -3233,39 +3234,55 @@ export default function (pi: ExtensionAPI) {
 						});
 					}
 
-					const branchResult = createWorkBranch(resolvedCwd, originalBranch);
+					const branchResult = createWorkBranch(resolvedCwd, headState.sha);
 					if (branchResult.ok) {
 						workBranchName = branchResult.branch;
 						log.info("Created work branch for subagent", {
 							branch: workBranchName,
-							base: originalBranch,
+							base: headState.branch,
 						});
 					} else {
 						log.error("Failed to create work branch, falling back to 'none'", {
 							error: branchResult.error,
 						});
-						originalBranch = undefined;
+						headState = undefined;
 					}
 				} catch (err) {
 					log.warn("Not a git repository or git error; falling back to gitMode 'none'", {
 						error: (err as Error).message,
 					});
-					originalBranch = undefined;
+					headState = undefined;
 					workBranchName = undefined;
 				}
 			}
 
-			// Helper to switch back to original branch and optionally delete work branch
+			// Helper to restore the starting HEAD and delete the work branch. The
+			// delete is NOT gated on the restore succeeding: the branch must never
+			// survive teardown. A still-checked-out branch simply makes deleteBranch
+			// fail (logged) rather than silently leaking the ref.
 			const cleanupGitBranch = () => {
-				if (workBranchName && originalBranch) {
-					try {
-						switchToBranch(resolvedCwd, originalBranch);
-						log.info("Switched back to original branch", { branch: originalBranch });
-						// Attempt to delete the work branch (non-critical)
-						deleteBranch(resolvedCwd, workBranchName);
-					} catch {
-						// Non-fatal: best-effort cleanup
+				if (!workBranchName) return;
+				if (headState) {
+					const restoreResult = restoreHead(resolvedCwd, headState);
+					if (restoreResult.ok) {
+						log.info("Restored original HEAD", {
+							branch: headState.branch,
+							detached: headState.detached,
+						});
+					} else {
+						log.warn("Failed to restore original HEAD during cleanup", {
+							branch: headState.branch,
+							error: restoreResult.error,
+						});
 					}
+				}
+				// Attempt to delete the work branch (non-critical)
+				const deleteResult = deleteBranch(resolvedCwd, workBranchName);
+				if (!deleteResult.ok) {
+					log.warn("Failed to delete work branch during cleanup", {
+						branch: workBranchName,
+						error: deleteResult.error,
+					});
 				}
 			};
 
@@ -3425,17 +3442,23 @@ export default function (pi: ExtensionAPI) {
 				result.label = label;
 
 				// P3: Capture git diff if we created a work branch
-				if (workBranchName && originalBranch) {
-					const diffResult = captureDiff(resolvedCwd, originalBranch);
+				if (workBranchName && headState) {
+					// Diff against the captured starting sha rather than the branch
+					// name: a detached start's branch label is the "HEAD" pseudo-ref,
+					// for which `git diff HEAD...HEAD` is always empty.
+					const diffResult = captureDiff(resolvedCwd, headState.sha);
 					if (diffResult.ok) {
 						result.gitBranch = workBranchName;
 						result.gitDiff = diffResult.diff;
 					}
 
-					// Switch back to the original branch
-					const switchResult = switchToBranch(resolvedCwd, originalBranch);
-					if (switchResult.ok) {
-						log.info("Switched back to original branch", { branch: originalBranch });
+					// Restore the starting HEAD (branch, or detached sha)
+					const restoreResult = restoreHead(resolvedCwd, headState);
+					if (restoreResult.ok) {
+						log.info("Restored original HEAD", {
+							branch: headState.branch,
+							detached: headState.detached,
+						});
 
 						// P4: Change approval workflow — let user review the diff
 						const diffContent = (result.gitDiff ?? "").trim();
@@ -3479,13 +3502,42 @@ export default function (pi: ExtensionAPI) {
 									error: mergeResult.error,
 								});
 							}
-							deleteBranch(resolvedCwd, workBranchName);
+							// #308: a DETACHED start has no branch of its own to hold the
+							// merge result — teardown re-detached at the captured sha and
+							// the merge fast-forwarded THAT detached HEAD, so deleting the
+							// work branch would leave the committed work reachable only
+							// from the detached HEAD (silently lost on the next checkout).
+							// Keep the branch as the durable ref and log where the work
+							// lives. An ATTACHED start merged onto its own branch, which
+							// already retains the commit, so the temporary work branch is
+							// safe to drop.
+							if (headState.detached) {
+								log.info("detached checkout: work preserved on branch", {
+									branch: workBranchName,
+								});
+							} else {
+								deleteBranch(resolvedCwd, workBranchName);
+							}
 							workBranchName = undefined;
 						} else {
 							// No changes — just delete the empty branch
 							deleteBranch(resolvedCwd, workBranchName);
 							workBranchName = undefined;
 						}
+					} else {
+						log.warn("Failed to restore original HEAD after work-branch run", {
+							branch: headState.branch,
+							error: restoreResult.error,
+						});
+					}
+
+					// Nothing may leave teardown with the work branch still present: the
+					// approval flow above clears workBranchName on every terminal choice
+					// (including "apply", where keeping the branch is intentional), so a
+					// still-set name means the restore failed and the flow was skipped.
+					if (workBranchName) {
+						deleteBranch(resolvedCwd, workBranchName);
+						workBranchName = undefined;
 					}
 				}
 
