@@ -108,7 +108,7 @@ never re-type their logic by hand. Full design:
       blast radius (a file node is addressed by its basename, e.g. `runner.ts`);
       `codegraph query <terms>` — symbol search;
       `codegraph affected <file>` — the tests to re-run. Run
-      `codegraph-check.py` if freshness is in doubt. CLI-only, conductor-side,
+      `codegraph-check.py --repo-root <path>` if freshness is in doubt. CLI-only, conductor-side,
       watcher off.
     - **Concept / doc / community questions → graphify** (`graphify-out/`) — the
       semantic layer, still the merge gate until Phase 2 (ADR 0015).

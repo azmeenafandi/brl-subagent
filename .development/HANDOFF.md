@@ -176,13 +176,13 @@ off (the #230 discipline); then the switch decision and an ADR in the 0013/0014 
 **Phase 0 RUN 2026-10-08 — PASS on every bar item** (coverage 34/34 + 0/322 in 5ms; query parity incl.
 the re-export seam, both directions; byte-identical re-index; docs-only sync a no-op; adapter prototyped).
 Findings + prototype: `.development/investigations/codegraph-bakeoff-2026-10-08/` (PR #291, merged
-`bf4a628`). **Phase 2 STARTED (2026-10-08)** — CLI installed pinned via **pnpm global** (`pnpm add -g @colbymchenry/codegraph@1.6.2`; `npm i -g` targets `/usr/local` → needs root on this machine — merged docs/error text corrected in place
+`bf4a628`). **Phase 2 (dogfood) TRIAL RUN (2026-10-08)** — CLI installed pinned via **pnpm global** (`pnpm add -g @colbymchenry/codegraph@1.6.2`; `npm i -g` targets `/usr/local` → needs root on this machine — merged docs/error text corrected in place
 the same day). Cockpit indexed: 122 files → 2,272 nodes / 7,797 edges, `.codegraph/` gitignored, porcelain
 clean. First dogfood: `codegraph-refresh.sh` green (34/34 + 0/322, "index was built from HEAD"). Query-parity
 sample: **12/12** after fixing my comparison methodology (two intermediate passes each had ground-truth artifacts
 in opposite directions — the definition-line/definition-file treatment; CodeGraph was correct in all cases).
 Caveat found: `is_exported` has false positives (`displayTaskName` is unexported but flagged) — the guard matches
-by name, so it is unaffected; do not use the flag as ECMAScript-export truth. Same-day contrast: the post-#292
+by name, so it is unaffected; do not use the flag as ECMAScript-export truth. **RECONCILED (2026-10-10 — ADR 0015, PR #309 merge `84f6df1`):** the one-off trial above is NOT the formal Phase 2 window. Per ADR 0015, Phase 2 opens at the first post-dependabot merge and runs BOTH refreshes at every merge (`graph-refresh.sh` remains the gate; `codegraph-refresh.sh` shadows it), on the ADR's criteria (refusal rate, sync time, 5–10 query-parity questions; retire/narrow after a week or N merges). The cockpit `.codegraph/` (11 MB, gitignored) is already present from the trial, so the open item is per-merge usage, not adoption. Latest data point: the post-#309 refresh was refused again (#8; docs-only; both flags) — friction entry added. Same-day contrast: the post-#292
 graphify refresh **passed cleanly, no refusal** (1528/3368, ~$0.06) — same input class as #5's refusal;
 variance confirmed. Dogfood window open. **CLI pinned at 1.6.2** (decision 2026-10-08): updates are
 deliberate bumps — `pnpm add -g @colbymchenry/codegraph@<v>` → full `codegraph index` → refresh green;

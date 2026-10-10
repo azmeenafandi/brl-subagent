@@ -58,7 +58,7 @@ radius, affected tests. Doc-concept and community queries are the rarer, on-dema
 - The new dependency is a pinned, `DO_NOT_TRACK=1`, gitignored CLI (`.codegraph/`); a deliberate bump is
   `pnpm add -g @colbymchenry/codegraph@<v>` → full `codegraph index` → refresh green.
 
-## Phase 2 entry criteria (documented here; not started)
+## Phase 2 entry criteria (the formal window; an initial one-off trial ran 2026-10-08)
 
 Phase 2 is the dogfood window that decides retirement/narrowing. It begins at the first post-dependabot merge
 and runs both refreshes **side by side**:
@@ -68,5 +68,5 @@ and runs both refreshes **side by side**:
 2. **Measure** — graphify refusal rate (expect 0 for the structural layer), CodeGraph sync wall time, and query
    parity on **5–10 real questions** (not three symbols).
 3. **Decide** — retire or narrow graphify after **a week or N merges, whichever comes first**, on that evidence;
-   cockpit adoption of `.codegraph/` is decided then, not now.
+   cockpit `.codegraph/` is already present from the 2026-10-08 trial (11 MB, gitignored) — what Phase 2 decides is the per-merge usage, not adoption.
 4. **Feed the decision** — unresolved-ref sampling and the binary's supply-chain posture are Phase 2 inputs.
