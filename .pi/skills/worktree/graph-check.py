@@ -36,7 +36,7 @@ USAGE
 Exit codes: 0 = graph verified against disk; 1 = discrepancy (details printed);
             2 = cannot check (missing inputs).
 
-Called from: the release ritual (SKILL.md step 7) after `graphify . --update`.
+Called from: the release ritual (references/release-ritual.md step 7) after `graphify . --update`.
 """
 
 import argparse

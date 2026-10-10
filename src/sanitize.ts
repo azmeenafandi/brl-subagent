@@ -8,7 +8,7 @@
 
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { EMPTY_USAGE } from "./types";
+import { EMPTY_USAGE, DEFAULT_OUTPUT_CAP_BYTES } from "./types";
 
 // ---------------------------------------------------------------------------
 // F1: Input sanitization
@@ -210,13 +210,35 @@ export function stripAnsi(str: string): string {
 }
 
 /**
+ * End-anchored trailing marker `capOutput` appends when it truncates output.
+ * Exported (issue #261) so callers can detect a genuinely capped record by its
+ * notice instead of re-deriving the format; a byte-length comparison cannot
+ * tell a capped record from an uncapped one (the background/crash paths store
+ * raw `liveOutput` without calling `capOutput`).
+ *
+ * Reworded in issue #275 to point at the transcript (run-history details now
+ * show the capped text). `capOutput` writes ONLY this suffix.
+ */
+export const OUTPUT_TRUNCATION_SUFFIX =
+	"omitted. Full text in the run transcript.]";
+
+/**
+ * Pre-#275 truncation marker, retained for DETECTION ONLY. Session files
+ * written before the reword persist records capped with this suffix; matching
+ * it keeps their truncation honesty line from silently regressing. No code
+ * writes this suffix.
+ */
+export const LEGACY_OUTPUT_TRUNCATION_SUFFIX =
+	"omitted. Full output available in run history details.]";
+
+/**
  * Cap output size to prevent subagent results from overwhelming
  * the conductor's context window or TUI.
  *
  * Returns the original string if within limits, or a truncated version
  * with a clear notice about how much was omitted.
  */
-export function capOutput(output: string, maxBytes: number = 100 * 1024): string {
+export function capOutput(output: string, maxBytes: number = DEFAULT_OUTPUT_CAP_BYTES): string {
 	const byteLength = Buffer.byteLength(output, "utf8");
 	if (byteLength <= maxBytes) return output;
 
@@ -227,7 +249,24 @@ export function capOutput(output: string, maxBytes: number = 100 * 1024): string
 	}
 
 	const omitted = byteLength - Buffer.byteLength(truncated, "utf8");
-	return `${truncated}\n\n[Output truncated: ${formatBytes(omitted)} omitted. Full output available in run history details.]`;
+	return `${truncated}\n\n[Output truncated: ${formatBytes(omitted)} ${OUTPUT_TRUNCATION_SUFFIX}`;
+}
+
+/**
+ * True when `output` was truncated by `capOutput` — i.e. it carries the exact,
+ * end-anchored truncation notice. This is the authoritative "hit the cap"
+ * signal: `capOutput` returns the input unchanged while it fits, so a capped
+ * record always ends with this suffix and a non-capped one never does.
+ *
+ * Matches the legacy (#275) suffix too, so records persisted before the reword
+ * keep detecting as truncated.
+ */
+export function isOutputTruncated(output: string | undefined | null): boolean {
+	return (
+		typeof output === "string" &&
+		(output.endsWith(OUTPUT_TRUNCATION_SUFFIX) ||
+			output.endsWith(LEGACY_OUTPUT_TRUNCATION_SUFFIX))
+	);
 }
 
 function formatBytes(bytes: number): string {
@@ -353,6 +392,17 @@ export function buildCrashResult(mode: string, err: unknown, cwd: string): {
 
 /** Env var used to track subagent nesting depth. */
 export const DEPTH_ENV_KEY = "BRL_SUBAGENT_DEPTH";
+
+/**
+ * Option B U1: env var carrying the per-run child marker injected into a
+ * foreground child's environment. Boot recovery scans `/proc/<pid>/environ` for
+ * this exact `KEY=value` pair to discover an orphaned child whose conductor
+ * died. It is passed via spawn-time overrides (never inherited from the
+ * parent's environment, because it is not in SAFE_ENV_KEYS), so an unrelated
+ * process can never carry it. Linux/POSIX only; non-/proc platforms skip the
+ * scan (see recovery.ts).
+ */
+export const CHILD_MARKER_ENV_KEY = "BRL_SUBAGENT_CHILD_MARKER";
 
 /**
  * Read the current subagent depth from the environment.

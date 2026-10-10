@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { mkdtempSync, rmSync, existsSync, statSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Mocks must exist before vi.mock factory runs (hoisted).
@@ -8,9 +7,10 @@ const mocks = vi.hoisted(() => ({
 	createAgentSession: vi.fn(),
 	git: {
 		getCurrentBranch: vi.fn(),
+		getHeadState: vi.fn(),
 		createWorkBranch: vi.fn(),
 		captureDiff: vi.fn(),
-		switchToBranch: vi.fn(),
+		restoreHead: vi.fn(),
 		deleteBranch: vi.fn(),
 		hasUncommittedChanges: vi.fn(),
 		getRepoRoot: vi.fn(),
@@ -59,9 +59,10 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 // W4: mock the git module so branch lifecycle tests never touch a real repo.
 vi.mock("../git", () => ({
 	getCurrentBranch: mocks.git.getCurrentBranch,
+	getHeadState: mocks.git.getHeadState,
 	createWorkBranch: mocks.git.createWorkBranch,
 	captureDiff: mocks.git.captureDiff,
-	switchToBranch: mocks.git.switchToBranch,
+	restoreHead: mocks.git.restoreHead,
 	deleteBranch: mocks.git.deleteBranch,
 	hasUncommittedChanges: mocks.git.hasUncommittedChanges,
 	getRepoRoot: mocks.git.getRepoRoot,
@@ -90,9 +91,11 @@ vi.mock("../event-bus", () => ({
 	createEvent: eventBusMock.createEvent,
 }));
 
-import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, __setStorageDir } from "../session-manager";
-import { getTranscriptPath as transcriptGetTranscriptPath, __setOutputDir } from "../transcript";
+import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus } from "../session-manager";
+import { listInflightRuns } from "../run-registry";
+import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
 import { CUSTOM_ENTRY_TYPES } from "../types";
+import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 // Issue #98: spawnBackgroundSession persists session run entries via
 // pi.appendEntry (same store the foreground path writes to).
@@ -106,27 +109,20 @@ const fakeCtx = {
 
 // Issue #52: isolate EVERY test from the real repo .pi/ — the agent-record
 // storage dir and the transcript output dir are redirected to throwaway temp
-// dirs (fresh per test). The __set* setters reach the SAME module instance the
-// tests drive (static imports + vitest module cache), so the hanging-prompt
-// mocks can no longer leave zombie 'running' records in the repo .pi/subagents.
-let tempPiBase = ""; // <tmpdir>/brl-session-test-XXXX, fresh per test
-let tempStorageDir = ""; // <tempPiBase>/subagents — mirrors .pi/subagents
-let tempOutputDir = ""; // <tempPiBase>/output — mirrors .pi/output
+// dirs (fresh per test) by the shared lifecycle helper, which also owns the
+// log-cwd clearing + teardown ordering. Its __set* setters reach the SAME
+// module instance the tests drive (static imports + vitest module cache), so
+// the hanging-prompt mocks can no longer leave zombie 'running' records in the
+// repo .pi/subagents.
+const env = createTempEnv("brl-session-test", { withCwd: false });
 
 beforeEach(() => {
-	// Remove the PREVIOUS test's base (the last one is removed in afterAll) so
-	// temp dirs don't accumulate across the file's ~50 spawn tests.
-	if (tempPiBase) rmSync(tempPiBase, { recursive: true, force: true });
-	tempPiBase = mkdtempSync(join(tmpdir(), "brl-session-test-"));
-	tempStorageDir = join(tempPiBase, "subagents");
-	tempOutputDir = join(tempPiBase, "output");
-	__setStorageDir(tempStorageDir);
-	__setOutputDir(tempOutputDir);
+	env.setUp();
 	fakePi.appendEntry.mockClear();
 });
 
-afterAll(() => {
-	if (tempPiBase) rmSync(tempPiBase, { recursive: true, force: true });
+afterAll(async () => {
+	await env.tearDown();
 });
 
 beforeEach(() => {
@@ -391,13 +387,13 @@ describe("agent id validation (F24)", () => {
 		const path = require("node:path") as typeof import("node:path");
 		for (const id of [VALID_UUID, ATTACK_UUID]) {
 			for (const p of [
-				path.join(tempStorageDir, `${id}.json`),
-				path.join(tempOutputDir, `agent-${id}.jsonl`),
+				path.join(env.storageDir, `${id}.json`),
+				path.join(env.outputDir, `agent-${id}.jsonl`),
 			]) {
 				try { fs.unlinkSync(p); } catch { /* ok */ }
 			}
 		}
-		try { fs.unlinkSync(path.join(tempPiBase, "..", "brl-persist-bypass-test.json")); } catch { /* ok */ }
+		try { fs.unlinkSync(path.join(env.baseDir, "..", "brl-persist-bypass-test.json")); } catch { /* ok */ }
 	};
 
 	beforeEach(cleanupF24);
@@ -412,13 +408,13 @@ describe("agent id validation (F24)", () => {
 		// The sibling test ("../../etc/passwd") passes for the WRONG reason —
 		// no such file exists, so the guard is never load-bearing. Plant a REAL,
 		// parseable record that join(STORAGE_DIR, '../planted-escape.json')
-		// actually resolves to (tempStorageDir is <tempPiBase>/subagents, so
-		// one level up is <tempPiBase>), making the id guard the ONLY thing
+		// actually resolves to (env.storageDir is <env.baseDir>/subagents, so
+		// one level up is <env.baseDir>), making the id guard the ONLY thing
 		// between the traversal id and that record.
 		const fs = require("node:fs") as typeof import("node:fs");
 		const path = require("node:path");
-		fs.mkdirSync(tempStorageDir, { recursive: true });
-		const planted = path.join(tempPiBase, "planted-escape.json");
+		fs.mkdirSync(env.storageDir, { recursive: true });
+		const planted = path.join(env.baseDir, "planted-escape.json");
 		fs.writeFileSync(
 			planted,
 			JSON.stringify({
@@ -432,7 +428,7 @@ describe("agent id validation (F24)", () => {
 		try {
 			// Precondition: the escape target really is reachable from the
 			// storage dir — a regression would load and return it.
-			expect(fs.existsSync(path.join(tempStorageDir, "..", "planted-escape.json"))).toBe(true);
+			expect(fs.existsSync(path.join(env.storageDir, "..", "planted-escape.json"))).toBe(true);
 
 			const result = getAgent("../planted-escape");
 
@@ -493,14 +489,14 @@ describe("agent id validation (F24)", () => {
 		// traversal-regression intent is preserved here.
 		const fs = require("node:fs") as typeof import("node:fs");
 		const path = require("node:path") as typeof import("node:path");
-		const plantDir = tempStorageDir;
+		const plantDir = env.storageDir;
 		fs.mkdirSync(plantDir, { recursive: true });
 		const planted = path.join(plantDir, `${ATTACK_UUID}.json`);
 		// The traversal id "../../brl-persist-bypass-test" from a two-level-deep
-		// storage dir (tempPiBase/subagents) resolves to tempPiBase/.. (the OS
+		// storage dir (env.baseDir/subagents) resolves to env.baseDir/.. (the OS
 		// tmp dir) — exactly where a regression would land the file.
 		const escapeTarget = path.join(
-			tempPiBase,
+			env.baseDir,
 			"..",
 			"brl-persist-bypass-test.json",
 		);
@@ -524,7 +520,7 @@ describe("agent id validation (F24)", () => {
 	it("persistAgent still writes valid records (regression guard)", () => {
 		const fs = require("node:fs") as typeof import("node:fs");
 		const path = require("node:path") as typeof import("node:path");
-		const plantDir = tempStorageDir;
+		const plantDir = env.storageDir;
 		fs.mkdirSync(plantDir, { recursive: true });
 		const planted = path.join(plantDir, `${VALID_UUID}.json`);
 		fs.writeFileSync(
@@ -661,9 +657,10 @@ describe("spawnBackgroundSession .then abort discrimination (probe contract)", (
 
 function resetGitMocks() {
 	mocks.git.getCurrentBranch.mockReset();
+	mocks.git.getHeadState.mockReset();
 	mocks.git.createWorkBranch.mockReset();
 	mocks.git.captureDiff.mockReset();
-	mocks.git.switchToBranch.mockReset();
+	mocks.git.restoreHead.mockReset();
 	mocks.git.deleteBranch.mockReset();
 	mocks.git.hasUncommittedChanges.mockReset();
 	mocks.git.commitAll.mockReset();
@@ -671,14 +668,14 @@ function resetGitMocks() {
 	// Default: not inside a repository, so the lock falls back to the cwd key.
 	mocks.git.getRepoRoot.mockReset();
 	mocks.git.getRepoRoot.mockReturnValue(undefined);
-	// Setup reads the base branch; the cleanup concurrency guard reads the
-	// current branch and expects it to still be the work branch.
-	mocks.git.getCurrentBranch
-		.mockReturnValueOnce("main")       // setup: base
-		.mockReturnValue("brl-subagent-abc12345"); // cleanup: still on ours
+	// Setup reads the starting HEAD state (branch 'main', attached); the cleanup
+	// concurrency guard reads the current branch and expects it to still be the
+	// work branch.
+	mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
+	mocks.git.getCurrentBranch.mockReturnValue("brl-subagent-abc12345");
 	mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
 	mocks.git.captureDiff.mockReturnValue({ ok: true, diff: "diff --git a/x.ts b/x.ts" });
-	mocks.git.switchToBranch.mockReturnValue({ ok: true });
+	mocks.git.restoreHead.mockReturnValue({ ok: true });
 	mocks.git.deleteBranch.mockReturnValue({ ok: true });
 	// C1: base tree clean at setup; agent dirt exists at teardown.
 	mocks.git.hasUncommittedChanges
@@ -823,21 +820,21 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 
 	function resetGitMocks() {
 		mocks.git.getCurrentBranch.mockReset();
+		mocks.git.getHeadState.mockReset();
 		mocks.git.createWorkBranch.mockReset();
 		mocks.git.captureDiff.mockReset();
-		mocks.git.switchToBranch.mockReset();
+		mocks.git.restoreHead.mockReset();
 		mocks.git.deleteBranch.mockReset();
 		mocks.git.hasUncommittedChanges.mockReset();
 		mocks.git.commitAll.mockReset();
 		mocks.git.captureWorkingDiff.mockReset();
-		// Setup reads the base branch; the cleanup concurrency guard reads the
-		// current branch and expects it to still be the work branch.
-		mocks.git.getCurrentBranch
-			.mockReturnValueOnce("main")       // setup: base
-			.mockReturnValue("brl-subagent-abc12345"); // cleanup: still on ours
+		// Setup reads the starting HEAD state; the cleanup concurrency guard reads
+		// the current branch and expects it to still be the work branch.
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
+		mocks.git.getCurrentBranch.mockReturnValue("brl-subagent-abc12345");
 		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
 		mocks.git.captureDiff.mockReturnValue({ ok: true, diff: "diff --git a/x.ts b/x.ts" });
-		mocks.git.switchToBranch.mockReturnValue({ ok: true });
+		mocks.git.restoreHead.mockReturnValue({ ok: true });
 		mocks.git.deleteBranch.mockReturnValue({ ok: true });
 		// C1: base tree clean at setup; agent dirt exists at teardown.
 		mocks.git.hasUncommittedChanges
@@ -856,7 +853,7 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 			gitMode: "branch",
 		});
 
-		expect(mocks.git.getCurrentBranch).toHaveBeenCalledTimes(1);
+		expect(mocks.git.getHeadState).toHaveBeenCalledTimes(1);
 		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(1);
 		// The session's prompt was called with the fence-wrapped task.
 		expect(mocks.session.prompt).toHaveBeenCalledTimes(1);
@@ -870,7 +867,7 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 			task: "test no git",
 		});
 
-		expect(mocks.git.getCurrentBranch).not.toHaveBeenCalled();
+		expect(mocks.git.getHeadState).not.toHaveBeenCalled();
 		expect(mocks.git.createWorkBranch).not.toHaveBeenCalled();
 	});
 
@@ -904,7 +901,10 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		await new Promise((r) => setTimeout(r, 0));
 
 		expect(mocks.git.captureDiff).toHaveBeenCalledTimes(1);
-		expect(mocks.git.switchToBranch).toHaveBeenCalledWith(expect.anything(), "main");
+		expect(mocks.git.restoreHead).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ branch: "main", detached: false })
+		);
 		expect(mocks.git.deleteBranch).toHaveBeenCalledTimes(1);
 		const after = getAgent(agent.id);
 		expect(after?.status).toBe("completed");
@@ -928,28 +928,91 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		// Partial work before the failure is still worth capturing; the branch
 		// is discarded either way.
 		expect(mocks.git.captureDiff).toHaveBeenCalledTimes(1);
-		expect(mocks.git.switchToBranch).toHaveBeenCalledTimes(1);
+		expect(mocks.git.restoreHead).toHaveBeenCalledTimes(1);
 		expect(mocks.git.deleteBranch).toHaveBeenCalledTimes(1);
 		const after = getAgent(agent.id);
 		expect(after?.status).toBe("failed");
 		expect(after?.result?.gitDiff).toContain("diff --git");
+	});
+
+	it("#302: restores a DETACHED start and still deletes the work branch", async () => {
+		resetGitMocks();
+		// Spawn started from a detached HEAD (CI PR builds): the captured state
+		// carries the sha + detached=true, while getCurrentBranch would only ever
+		// report the "HEAD" pseudo-ref.
+		mocks.git.getHeadState.mockReturnValue({ sha: "deadbeefcafe", detached: true, branch: "HEAD" });
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test detached start",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		// The diff base is the captured sha — the branch label is uselessly "HEAD".
+		expect(mocks.git.captureDiff).toHaveBeenCalledWith(expect.anything(), "deadbeefcafe");
+		// Teardown re-detaches at the captured sha (checkout --detach <sha>)...
+		expect(mocks.git.restoreHead).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ sha: "deadbeefcafe", detached: true })
+		);
+		// ...and the work branch is deleted regardless — the pre-fix leak.
+		expect(mocks.git.deleteBranch).toHaveBeenCalledWith(expect.anything(), "brl-subagent-abc12345");
+	});
+
+	it("review C: a throwing settle still tears the work branch down (catch-all)", async () => {
+		resetGitMocks();
+		// The aborted path calls updateAgentStatus(id, 'stopped') BEFORE its own
+		// cleanupWorkBranch(). Force that emit to throw so control jumps straight
+		// to markTerminalBestEffort without the normal teardown having run — the
+		// catch-all must still restore + delete the work branch.
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "aborted" },
+		];
+		eventBusMock.emit.mockImplementation((event: { type: string }) => {
+			if (event.type === "subagent:stopped") throw new Error("emit exploded");
+		});
+
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test settle throw teardown",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 10));
+
+		// The normal cleanup never ran — only the catch-all can have restored and
+		// deleted. Pre-fix the work branch survived, stranding the repo.
+		expect(mocks.git.restoreHead).toHaveBeenCalledTimes(1);
+		expect(mocks.git.deleteBranch).toHaveBeenCalledTimes(1);
+		expect(mocks.git.deleteBranch).toHaveBeenCalledWith(
+			expect.anything(),
+			"brl-subagent-abc12345"
+		);
+		expect(getAgent(agent.id)?.status).toBe("stopped");
 	});
 });
 
 describe("W4 concurrency guard — cleanup when another spawn moved the tree", () => {
 	const VALID_UUID = "5e6f7a8b-9c0d-1e2f-3a4b-5c6d7e8f9a0b";
 
-	it("skips switch/delete when the tree is no longer on our work branch", async () => {
+	it("skips restore/delete when the tree is no longer on our work branch", async () => {
 		// Setup: base is main, work branch created.
 		mocks.git.getCurrentBranch.mockReset();
+		mocks.git.getHeadState.mockReset();
 		mocks.git.createWorkBranch.mockReset();
 		mocks.git.captureDiff.mockReset();
-		mocks.git.switchToBranch.mockReset();
+		mocks.git.restoreHead.mockReset();
 		mocks.git.deleteBranch.mockReset();
 		mocks.git.hasUncommittedChanges.mockReset();
 		mocks.git.commitAll.mockReset();
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 		mocks.git.getCurrentBranch
-			.mockReturnValueOnce("main")       // setup: base
 			.mockReturnValue("brl-subagent-other"); // cleanup: ANOTHER spawn's branch
 		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
 		mocks.git.hasUncommittedChanges.mockReturnValue(false);
@@ -967,7 +1030,7 @@ describe("W4 concurrency guard — cleanup when another spawn moved the tree", (
 		await new Promise((r) => setTimeout(r, 0));
 
 		// The tree moved — do NOT yank it back, do NOT delete the other's context.
-		expect(mocks.git.switchToBranch).not.toHaveBeenCalled();
+		expect(mocks.git.restoreHead).not.toHaveBeenCalled();
 		expect(mocks.git.deleteBranch).not.toHaveBeenCalled();
 	});
 });
@@ -981,7 +1044,8 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 		mocks.git.createWorkBranch.mockReset();
 		mocks.git.hasUncommittedChanges.mockReset();
 		mocks.git.hasUncommittedChanges.mockReturnValue(true);
-		mocks.git.getCurrentBranch.mockReturnValue("main");
+		mocks.git.getHeadState.mockReset();
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 
 		const { spawnBackgroundSession } = await import("../session-manager");
 		await expect(
@@ -1073,13 +1137,15 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 			task: "first lock holder",
 			gitMode: "branch",
 		});
-		// First spawn acquired the lock; its getCurrentBranch read 'main'.
-		expect(mocks.git.getCurrentBranch).toHaveBeenCalledTimes(1);
+		// First spawn acquired the lock; its getHeadState read 'main'.
+		expect(mocks.git.getHeadState).toHaveBeenCalledTimes(1);
 
 		// Second spawn on the SAME cwd must block until the first settles.
+		mocks.git.getHeadState.mockReset();
 		mocks.git.getCurrentBranch.mockReset();
 		mocks.git.createWorkBranch.mockReset();
 		mocks.git.hasUncommittedChanges.mockReset();
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 		mocks.git.getCurrentBranch.mockReturnValue("main");
 		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-second" });
 		mocks.git.hasUncommittedChanges.mockReturnValue(false);
@@ -1094,15 +1160,15 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 		// Give the second spawn a tick — it must NOT have acquired the lock.
 		await new Promise((r) => setTimeout(r, 50));
 		expect(secondSettled).toBe(false);
-		expect(mocks.git.getCurrentBranch).not.toHaveBeenCalled();
+		expect(mocks.git.getHeadState).not.toHaveBeenCalled();
 
 		// First settles → its .then runs cleanupWorkBranch → releases the lock.
 		resolveFirstPrompt();
 		await new Promise((r) => setTimeout(r, 0));
 
-		// Second now proceeds: getCurrentBranch (setup) is called again.
+		// Second now proceeds: getHeadState (setup) is called again.
 		await new Promise((r) => setTimeout(r, 20));
-		expect(mocks.git.getCurrentBranch).toHaveBeenCalled();
+		expect(mocks.git.getHeadState).toHaveBeenCalled();
 		await secondPromise;
 		expect(secondSettled).toBe(true);
 	});
@@ -1116,8 +1182,10 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 		resetGitMocks();
 		// One repository for all three → one shared lock key.
 		mocks.git.getRepoRoot.mockReturnValue("/repo-chain");
-		// Every spawn's setup reads a clean tree on 'main'; the teardown guard
-		// still sees our work branch.
+		// Every spawn's setup reads the starting HEAD state on 'main'; the
+		// teardown guard sees the tree already off our work branch (so it skips
+		// restore/delete and only the lock ordering is under test).
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 		mocks.git.getCurrentBranch.mockReset();
 		mocks.git.getCurrentBranch.mockReturnValue("main");
 		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-chain" });
@@ -1194,10 +1262,12 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 			gitMode: "branch",
 			cwd: "/repo/a",
 		});
-		expect(mocks.git.getCurrentBranch).toHaveBeenCalledTimes(1);
+		expect(mocks.git.getHeadState).toHaveBeenCalledTimes(1);
 
 		// Second spawn, a DIFFERENT directory of the same repository, must
 		// block on the same lock.
+		mocks.git.getHeadState.mockReset();
+		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 		mocks.git.getCurrentBranch.mockReset();
 		mocks.git.createWorkBranch.mockReset();
 		mocks.git.hasUncommittedChanges.mockReset();
@@ -1215,11 +1285,11 @@ describe("W4 review fixes — C1 dirty tree, commit-on-teardown, M1 aborted diff
 
 		await new Promise((r) => setTimeout(r, 50));
 		expect(secondSettled).toBe(false);
-		expect(mocks.git.getCurrentBranch).not.toHaveBeenCalled();
+		expect(mocks.git.getHeadState).not.toHaveBeenCalled();
 
 		resolveFirstPrompt();
 		await new Promise((r) => setTimeout(r, 20));
-		expect(mocks.git.getCurrentBranch).toHaveBeenCalled();
+		expect(mocks.git.getHeadState).toHaveBeenCalled();
 		await secondPromise;
 		expect(secondSettled).toBe(true);
 	});
@@ -1275,8 +1345,8 @@ describe("settle handlers never throw — missing transcript / throwing emit (is
 
 	const cleanupPiFiles = () => {
 		for (const id of spawnedIds) {
-			try { fs.unlinkSync(path.join(tempStorageDir, `${id}.json`)); } catch { /* ok */ }
-			try { fs.unlinkSync(path.join(tempOutputDir, `agent-${id}.jsonl`)); } catch { /* ok */ }
+			try { fs.unlinkSync(path.join(env.storageDir, `${id}.json`)); } catch { /* ok */ }
+			try { fs.unlinkSync(path.join(env.outputDir, `agent-${id}.jsonl`)); } catch { /* ok */ }
 		}
 		spawnedIds.length = 0;
 	};
@@ -1299,7 +1369,7 @@ describe("settle handlers never throw — missing transcript / throwing emit (is
 		spawnedIds.push(agent.id);
 		// startTranscript ran during spawn, so the file exists — delete it
 		// BEFORE the deferred rejection settles.
-		fs.unlinkSync(path.join(tempOutputDir, `agent-${agent.id}.jsonl`));
+		fs.unlinkSync(path.join(env.outputDir, `agent-${agent.id}.jsonl`));
 
 		// Let the deferred rejection settle.
 		await new Promise((r) => setTimeout(r, 10));
@@ -1379,7 +1449,7 @@ describe("settle handlers never throw — missing transcript / throwing emit (is
 			task: "test transcript deleted (complete)",
 		});
 		spawnedIds.push(agent.id);
-		fs.unlinkSync(path.join(tempOutputDir, `agent-${agent.id}.jsonl`));
+		fs.unlinkSync(path.join(env.outputDir, `agent-${agent.id}.jsonl`));
 
 		// Let the deferred resolve settle.
 		await new Promise((r) => setTimeout(r, 10));
@@ -1408,15 +1478,15 @@ describe("persisted file modes (F6 / issue #29)", () => {
 		// The temp storage/output dirs are freshly created per test (issue #52),
 		// so the subagents/output dirs below are guaranteed to be CREATED by
 		// this spawn — the 0o700 dir-mode assertions always apply.
-		const subagentsExisted = fs.existsSync(tempStorageDir);
-		const outputExisted = fs.existsSync(tempOutputDir);
+		const subagentsExisted = fs.existsSync(env.storageDir);
+		const outputExisted = fs.existsSync(env.outputDir);
 
 		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
 			task: "test file modes",
 		});
 
-		const recordPath = path.join(tempStorageDir, `${agent.id}.json`);
-		const transcriptPath = path.join(tempOutputDir, `agent-${agent.id}.jsonl`);
+		const recordPath = path.join(env.storageDir, `${agent.id}.json`);
+		const transcriptPath = path.join(env.outputDir, `agent-${agent.id}.jsonl`);
 		try {
 			expect(getAgent(agent.id)).not.toBeNull();
 			expect(fs.existsSync(recordPath)).toBe(true);
@@ -1425,10 +1495,10 @@ describe("persisted file modes (F6 / issue #29)", () => {
 			expect(fs.statSync(transcriptPath).mode & 0o777).toBe(0o600);
 			// Freshly-created storage/output subdirs must be 0o700 (owner-only).
 			if (!subagentsExisted) {
-				expect(fs.statSync(tempStorageDir).mode & 0o777).toBe(0o700);
+				expect(fs.statSync(env.storageDir).mode & 0o777).toBe(0o700);
 			}
 			if (!outputExisted) {
-				expect(fs.statSync(tempOutputDir).mode & 0o777).toBe(0o700);
+				expect(fs.statSync(env.outputDir).mode & 0o777).toBe(0o700);
 			}
 		} finally {
 			try { fs.unlinkSync(recordPath); } catch { /* ok */ }
@@ -1464,8 +1534,8 @@ describe("test storage isolation (issue #52)", () => {
 		expect(agent.status).toBe("running");
 
 		// The record + transcript landed in the TEMP dirs...
-		expect(fs.existsSync(path.join(tempStorageDir, `${agent.id}.json`))).toBe(true);
-		expect(fs.existsSync(path.join(tempOutputDir, `agent-${agent.id}.jsonl`))).toBe(true);
+		expect(fs.existsSync(path.join(env.storageDir, `${agent.id}.json`))).toBe(true);
+		expect(fs.existsSync(path.join(env.outputDir, `agent-${agent.id}.jsonl`))).toBe(true);
 
 		// ...and the real repo .pi/ gained nothing.
 		expect(list(realSubagents)).toEqual(subagentsBefore);
@@ -2135,7 +2205,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 
 	it("D6: writes the shared cwd log with the classified settle line", async () => {
 		const { setLogCwd } = await import("../logging");
-		setLogCwd(tempPiBase);
+		setLogCwd(env.baseDir);
 		try {
 			mocks.session.prompt.mockResolvedValue(undefined);
 			mocks.session.messages = [
@@ -2146,7 +2216,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 			});
 			await new Promise((r) => setTimeout(r, 0));
 
-			const logPath = join(tempPiBase, ".pi", "subagent-logs", "brl-subagent.log");
+			const logPath = join(env.baseDir, ".pi", "subagent-logs", "brl-subagent.log");
 			expect(existsSync(logPath)).toBe(true);
 			// mode is applied on CREATE and is not retroactive.
 			expect(statSync(logPath).mode & 0o777).toBe(0o600);
@@ -2294,5 +2364,24 @@ describe("steerAgent delivery (issue #241)", () => {
 
 		const entries = transcript.getTranscript(agent.id);
 		expect(entries.some((e) => e.content === "Steering: audit me")).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Option B U1: the background spawn mirrors its run into the durable registry
+// ---------------------------------------------------------------------------
+
+describe("Option B U1: background registry mirroring", () => {
+	it("registers an in-flight background entry (kind + owner), cleared at finalize", async () => {
+		// A never-resolving prompt keeps the run in flight so the registry entry
+		// is observable after spawn (the real registration is synchronous).
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "registry mirror",
+		});
+
+		const entry = listInflightRuns().find((e) => e.id === agent.id);
+		expect(entry?.kind).toBe("background");
+		expect(entry?.owner?.pid).toBe(process.pid);
 	});
 });

@@ -7,7 +7,9 @@
  */
 
 import type { SubagentRun, SubagentResult } from "./types";
-import { isSubagentError, getFinalOutput, isSubagentRunShape, classifyError, coherentFailureReason, CUSTOM_ENTRY_TYPES, MAX_RUN_HISTORY_ENTRIES } from "./types";
+import { isSubagentError, getFinalOutput, isSubagentRunShape, classifyError, coherentFailureReason, CUSTOM_ENTRY_TYPES, MAX_RUN_HISTORY_ENTRIES, DEFAULT_OUTPUT_CAP_BYTES } from "./types";
+import { isOutputTruncated } from "./sanitize";
+import { transcriptDisplayPath } from "./transcript-path";
 import type { ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -199,4 +201,59 @@ export function formatRunDuration(ms: number): string {
 	const min = Math.floor(ms / 60_000);
 	const secs = Math.round((ms % 60_000) / 1000);
 	return `${min}m ${secs}s`;
+}
+
+// ---------------------------------------------------------------------------
+// Full-output honesty lines (issue #261)
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable size for an output cap, e.g. `100 * 1024` → "100 KB".
+ * Byte caps are whole-KB by construction; sub-KB values (mostly tests) render
+ * as plain bytes.
+ */
+function formatCapSize(capBytes: number): string {
+	if (capBytes > 0 && capBytes % 1024 === 0) return `${capBytes / 1024} KB`;
+	return `${capBytes} B`;
+}
+
+/**
+ * Honest disclosure lines for a settled run's full-output view (issue #261).
+ *
+ * Always returns the transcript pointer. When the stored output hit the
+ * `capBytes` cap it also adds a disclosure that points at the transcript for
+ * the rest. Detection is deliberately two-signal:
+ *
+ *   1. `isOutputTruncated(run.fullOutput)` — the exact `capOutput` notice, true
+ *      only when the stored text was genuinely truncated;
+ *   2. `Buffer.byteLength` at/over `capBytes` — the length fallback, so an
+ *      UNCAPPED record (background/crash paths store raw `liveOutput`) that
+ *      already sits at or over the cap budget is still disclosed instead of
+ *      pretending the panel can show more than the cap's worth.
+ *
+ * Boundary precision: `capOutput` truncates only when the byte length is
+ * STRICTLY greater than the cap, so an output of exactly `capBytes` takes the
+ * length branch and is disclosed as "at or over" without carrying the notice.
+ * The notice branch alone is exact for "was truncated".
+ *
+ * Pure and pi-tui-free, so it is unit-testable in isolation.
+ */
+export function buildOutputHonestyLines(
+	run: Pick<SubagentRun, "id" | "fullOutput">,
+	capBytes: number = DEFAULT_OUTPUT_CAP_BYTES,
+): string[] {
+	const transcriptPath = transcriptDisplayPath(run.id);
+	const lines = [`Transcript: ${transcriptPath}`];
+	const output = run.fullOutput;
+	const size = formatCapSize(capBytes);
+	if (isOutputTruncated(output)) {
+		lines.push(
+			`Output was truncated at the ${size} cap — full text in the transcript: ${transcriptPath}`,
+		);
+	} else if (output && Buffer.byteLength(output, "utf8") >= capBytes) {
+		lines.push(
+			`Stored output is at or over the ${size} cap — full transcript: ${transcriptPath}`,
+		);
+	}
+	return lines;
 }

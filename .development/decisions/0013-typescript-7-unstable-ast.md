@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-03
 - **Issues:** #256
+- **Refined by:** ADR 0014 (one long-lived API client per worker; `fileChanges` is required by the tsgo content cache)
 
 ## Context
 

@@ -17,6 +17,11 @@ function gitOpts(cwd: string) {
 		cwd,
 		encoding: "utf-8" as const,
 		timeout: 10_000,
+		// Capture child stderr instead of inheriting it: expected git failures
+		// (e.g. deleting a checked-out branch) are caught and returned as
+		// {ok:false, error}; execFileSync still puts the captured stderr in the
+		// thrown error's message, so real failures stay diagnosable.
+		stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
 	};
 }
 
@@ -31,6 +36,46 @@ function gitOpts(cwd: string) {
 export function getCurrentBranch(cwd: string): string {
 	const output = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], gitOpts(cwd));
 	return output.trim();
+}
+
+/**
+ * The starting state of HEAD, captured at spawn so teardown can restore it.
+ *
+ * `getCurrentBranch` alone is NOT enough to restore a detached HEAD: it
+ * returns the "HEAD" pseudo-ref, so a `git checkout HEAD` teardown is a no-op
+ * that stays on the work branch (stranding it and leaking the branch in CI PR
+ * builds, which check out a detached HEAD). The sha + attached-ness must be
+ * captured together.
+ *
+ * `detached` also governs DATA SAFETY at teardown (#308): a detached start has
+ * no branch of its own to retain a merged work branch, so the auto-approve path
+ * MUST preserve the work branch as the durable ref rather than delete it.
+ */
+export interface HeadState {
+	/** Commit HEAD pointed at when captured. */
+	sha: string;
+	/** True when HEAD was detached (no symbolic ref) at capture time. */
+	detached: boolean;
+	/**
+	 * Branch name when attached; the literal "HEAD" pseudo-ref when detached.
+	 * Attached callers can pass it straight to createWorkBranch/captureDiff.
+	 */
+	branch: string;
+}
+
+/**
+ * Capture the current HEAD state (sha + attached-ness) for later restoration.
+ * Throws if the cwd is not a git repository.
+ */
+export function getHeadState(cwd: string): HeadState {
+	const sha = execFileSync("git", ["rev-parse", "HEAD"], gitOpts(cwd)).trim();
+	try {
+		// Exits non-zero when HEAD is detached — that is the discriminator.
+		const branch = execFileSync("git", ["symbolic-ref", "--short", "-q", "HEAD"], gitOpts(cwd)).trim();
+		return { sha, detached: false, branch };
+	} catch {
+		return { sha, detached: true, branch: "HEAD" };
+	}
 }
 
 /**
@@ -99,6 +144,28 @@ export function switchToBranch(
 ): { ok: true } | { ok: false; error: string } {
 	try {
 		execFileSync("git", ["checkout", branch], gitOpts(cwd));
+		return { ok: true };
+	} catch (err) {
+		return { ok: false, error: (err as Error).message };
+	}
+}
+
+/**
+ * Restore HEAD to the state captured by getHeadState.
+ * Detached starts are re-detached at the captured sha (`git checkout
+ * --detach <sha>`) instead of switching to the useless "HEAD" pseudo-ref;
+ * attached starts switch back to the original branch.
+ * Returns { ok: true } on success, { ok: false, error } on failure.
+ */
+export function restoreHead(
+	cwd: string,
+	state: HeadState,
+): { ok: true } | { ok: false; error: string } {
+	try {
+		const args = state.detached
+			? ["checkout", "--detach", state.sha]
+			: ["checkout", state.branch];
+		execFileSync("git", args, gitOpts(cwd));
 		return { ok: true };
 	} catch (err) {
 		return { ok: false, error: (err as Error).message };

@@ -41,15 +41,13 @@
  *
  * Harness cloned from dispatch-capability-guards.test.ts (hoisted ../runner
  * mock; partial ../session-manager mock stubbing ONLY spawnBackgroundSession;
- * tui module mocks; temp-dir output/storage redirect; setLogCwd cleanup;
+ * tui module mocks; temp dirs + output/storage redirects + log-cwd clearing
+ * from the shared lifecycle helper (src/__tests__/fixtures/temp-lifecycle.ts);
  * executeWithSpawn fake-timer wrapper), plus per-step-model.test.ts's
  * seed-a-run-entry retry pattern.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing the extension
@@ -72,8 +70,9 @@ vi.mock("../runner", () => ({
 	parseSubagentLine: h.parseSubagentLine,
 }));
 
-// Partial session-manager mock: stub ONLY the spawn; state/session helpers
-// and the __setStorageDir redirect stay real.
+// Partial session-manager mock: stub ONLY the spawn; state/session helpers stay
+// real (the output/storage redirects + log-cwd clearing come from the shared
+// lifecycle helper in src/__tests__/fixtures/temp-lifecycle.ts).
 vi.mock("../session-manager", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../session-manager")>()),
 	spawnBackgroundSession: h.spawnBackgroundSession,
@@ -97,11 +96,9 @@ vi.mock("@earendil-works/pi-tui", () => {
 import initExtension from "../index";
 import { snapshotOriginalParams } from "../params";
 import { resolveRetryParams } from "../history";
-import { __setOutputDir } from "../transcript";
-import { __setStorageDir } from "../session-manager";
-import { setLogCwd } from "../logging";
 import { CUSTOM_ENTRY_TYPES } from "../types";
 import type { SubagentResult, SubagentRun } from "../types";
+import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -164,8 +161,9 @@ let tool: ToolEntry;
 let sessionStartHandler:
 	| ((_event: unknown, ctx: Record<string, unknown>) => Promise<void>)
 	| undefined;
-let testCwd: string;
-let tempPiBase = "";
+/** Every `pi.appendEntry(customType, data)` the tool under test makes. */
+let capturedEntries: Array<{ customType: string; data: unknown }> = [];
+const env = createTempEnv("brl-retry-pins");
 
 function setupExtension(): ToolEntry {
 	const registeredTools = new Map<string, ToolEntry>();
@@ -176,7 +174,14 @@ function setupExtension(): ToolEntry {
 		on: (event: string, handler: (_event: unknown, ctx: Record<string, unknown>) => Promise<void>) => {
 			if (event === "session_start") sessionStartHandler = handler;
 		},
-		appendEntry: () => {},
+		appendEntry: (customType: string, data: unknown) => {
+			// Clone: the spawn run record is mutated in place at finalize, so a
+			// by-reference capture would read the terminal status, not the spawn.
+			capturedEntries.push({
+				customType,
+				data: data && typeof data === "object" ? structuredClone(data) : data,
+			});
+		},
 		sendMessage: () => {},
 		ctx: {
 			getState: () => undefined,
@@ -200,7 +205,7 @@ function makeRegistry(available: string[]) {
 
 function makeCtx(): Record<string, unknown> {
 	return {
-		cwd: testCwd,
+		cwd: env.testCwd,
 		model: GLOBAL_MODEL,
 		modelRegistry: makeRegistry([`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`]),
 		getSystemPrompt: () => "You are a helpful assistant.",
@@ -260,13 +265,17 @@ function makeRun(id: string, task: string, originalParams?: Record<string, unkno
 	};
 }
 
+/** The RUNNING run records the tool persisted (the spawn entry, not terminal). */
+function persistedRunningRuns(): SubagentRun[] {
+	return capturedEntries
+		.filter((e) => e.customType === CUSTOM_ENTRY_TYPES.run)
+		.map((e) => e.data as SubagentRun)
+		.filter((r) => r.status === "running");
+}
+
 beforeEach(() => {
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
-	tempPiBase = fs.mkdtempSync(path.join(os.tmpdir(), "brl-retry-pins-pi-"));
-	__setOutputDir(path.join(tempPiBase, "output"));
-	__setStorageDir(path.join(tempPiBase, "subagents"));
-	testCwd = fs.mkdtempSync(path.join(os.tmpdir(), "brl-retry-pins-"));
+	env.setUp();
+	capturedEntries = [];
 	h.runSubagent.mockReset();
 	h.runSubagent.mockImplementation(
 		async (_cwd: string, _prompt: string, model: { provider: string; id: string }) =>
@@ -289,10 +298,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-	setLogCwd(undefined);
-	await new Promise((resolve) => setImmediate(resolve));
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
+	await env.tearDown();
 });
 
 // ---------------------------------------------------------------------------
@@ -452,5 +458,68 @@ describe("snapshot ↔ resolve key-set drift guard (issue #229 item 3)", () => {
 		for (const [key, value] of Object.entries(SEED)) {
 			expect({ [key]: resolved[key as keyof typeof resolved] }).toEqual({ [key]: value });
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// U1 durability identity (B9) — the retry-record propagation review probe
+// proved only in /tmp. These are the durable in-repo assertions.
+// ---------------------------------------------------------------------------
+// Reference sites: src/index.ts retrySourceRun (findSpawnRunById), the
+// newDispatchIdentity calls on the foreground (:3218) and background (:2632)
+// branches, and the run fields those identities populate (:3211-3216).
+
+describe("U1 retry identity end-to-end (B9)", () => {
+	it("a retried foreground run inherits dispatchId/resumeOf/attempt with a fresh owner+childMarker", async () => {
+		const original: SubagentRun = { ...makeRun("retry-fg-9", "Retry me foreground"), dispatchId: "D-ORIG" };
+		const ctx = makeCtx();
+		seedRunEntry(ctx, original);
+
+		const result = await executeWithSpawn({ retryRunId: "retry-fg-9" }, ctx);
+		expect(result.isError).toBeFalsy();
+
+		const running = persistedRunningRuns();
+		expect(running).toHaveLength(1);
+		const run = running[0];
+		expect(run.dispatchId).toBe("D-ORIG");
+		expect(run.resumeOf).toBe("retry-fg-9");
+		expect(run.attempt).toBe(2);
+		// Fresh identity: this is a NEW child process, never the original's.
+		expect(run.owner?.pid).toBe(process.pid);
+		expect(typeof run.owner?.start).toBe("string");
+		expect(run.childMarker).toMatch(/^[0-9a-f-]{36}$/);
+	});
+
+	it("a fresh dispatch gets attempt=1 and no resumeOf", async () => {
+		const result = await executeWithSpawn({ task: "Fresh foreground" });
+		expect(result.isError).toBeFalsy();
+
+		const running = persistedRunningRuns();
+		expect(running).toHaveLength(1);
+		expect(running[0].attempt).toBe(1);
+		expect(running[0].resumeOf).toBeUndefined();
+		expect(running[0].dispatchId).toMatch(/^[0-9a-f-]{36}$/);
+	});
+
+	it("a retried background run inherits the same identity", async () => {
+		const original: SubagentRun = {
+			...makeRun("retry-bg-9", "Retry me background", { background: true }),
+			dispatchId: "D-ORIG",
+		};
+		const ctx = makeCtx();
+		seedRunEntry(ctx, original);
+
+		const result = await executeWithSpawn({ retryRunId: "retry-bg-9" }, ctx);
+		expect(result.isError).toBeFalsy();
+		expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+
+		const p = h.spawnBackgroundSession.mock.calls[0][2] as {
+			dispatchId?: string;
+			resumeOf?: string;
+			attempt?: number;
+		};
+		expect(p.dispatchId).toBe("D-ORIG");
+		expect(p.resumeOf).toBe("retry-bg-9");
+		expect(p.attempt).toBe(2);
 	});
 });

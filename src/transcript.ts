@@ -1,12 +1,17 @@
 // Purpose: JSONL transcript recording for every agent run (`.pi/output/agent-<id>.jsonl`).
-import { join } from 'path';
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'fs';
 import type { TranscriptEntry, TranscriptEntryType } from './types';
-import { assertSafeAgentId } from './sanitize';
+import { transcriptPath, TRANSCRIPT_DIR } from './transcript-path';
+import { createLogger } from './logging';
+
+// Issue #265: route the settle-path warning through the logger (file-only by
+// default) instead of a raw console.warn that corrupts the pi TUI.
+const log = createLogger('brl-subagent');
 
 // Output directory — overridable for tests (issue #52): unit tests must NOT
-// write into the real repo .pi/ dir; the setter is test-only.
-let OUTPUT_DIR = '.pi/output';
+// write into the real repo .pi/ dir; the setter is test-only. Defaults to the
+// single-sourced TRANSCRIPT_DIR (issue #276).
+let OUTPUT_DIR = TRANSCRIPT_DIR;
 
 /**
  * TEST-ONLY: point the transcript output at an alternate directory.
@@ -30,13 +35,9 @@ function ensureOutputDir(): void {
  * Get transcript file path for an agent
  */
 export function getTranscriptPath(agentId: string): string {
-  // F24: single chokepoint for every transcript file path. All internal callers
-  // (startTranscript/appendEntry/getTranscript/completeTranscript) pass
-  // generateUUID() ids, but get_agent_result feeds LLM-controlled ids in via
-  // getTranscript. path.join does not sanitize "../" or absolute segments, so
-  // throw on anything that is not a UUID before it reaches the filesystem.
-  assertSafeAgentId(agentId);
-  return join(OUTPUT_DIR, `agent-${agentId}.jsonl`);
+  // Issue #276: the format and the F24 `assertSafeAgentId` chokepoint live in
+  // transcript-path.ts; here we only forward the mutable test-only OUTPUT_DIR.
+  return transcriptPath(agentId, OUTPUT_DIR);
 }
 
 /**
@@ -118,7 +119,7 @@ export function completeTranscript(agentId: string, status: string): void {
   // appending — that invariant is load-bearing for caller validation).
   const path = getTranscriptPath(agentId);
   if (!existsSync(path)) {
-    console.warn(`[brl-subagent] completeTranscript: transcript missing for agent ${agentId} — skipping completion entry`);
+    log.warn(`completeTranscript: transcript missing for agent ${agentId} — skipping completion entry`);
     return;
   }
   appendEntry(agentId, 'system', `Transcript completed: ${status}`);

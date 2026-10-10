@@ -23,9 +23,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing the extension
@@ -90,12 +87,7 @@ vi.mock("@earendil-works/pi-tui", () => {
 });
 
 import initExtension from "../index";
-// The setters redirect the real execute handler's transcript (and
-// agent-record) writes away from the repo .pi/ — they reach the SAME module
-// instance index.ts's dynamic import('./transcript' / './session-manager')
-// resolves to (vitest module cache).
-import { __setOutputDir } from "../transcript";
-import { __setStorageDir } from "../session-manager";
+import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 // ---------------------------------------------------------------------------
 // Harness (minimal copy of the per-step-model pattern)
@@ -120,8 +112,9 @@ interface ToolEntry {
 }
 
 let tool: ToolEntry;
-let testCwd: string;
-let tempPiBase = "";
+// Redirects transcript output, session-manager storage, and the log sink into
+// per-test throwaway dirs — the order that keeps /tmp clean lives in the helper.
+const env = createTempEnv("brl-bg-extract");
 
 function setupExtension(): ToolEntry {
 	const registeredTools = new Map<string, ToolEntry>();
@@ -159,7 +152,7 @@ function makeRegistry(): {
 
 function makeCtx() {
 	return {
-		cwd: testCwd,
+		cwd: env.testCwd,
 		model: GLOBAL_MODEL,
 		modelRegistry: makeRegistry(),
 		getSystemPrompt: () => "You are a helpful assistant.",
@@ -177,13 +170,7 @@ function makeCtx() {
 }
 
 beforeEach(() => {
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
-	tempPiBase = fs.mkdtempSync(path.join(os.tmpdir(), "brl-bg-extract-pi-"));
-	// Redirect transcript/storage writes out of the repo .pi/.
-	__setOutputDir(path.join(tempPiBase, "output"));
-	__setStorageDir(path.join(tempPiBase, "subagents"));
-	testCwd = fs.mkdtempSync(path.join(os.tmpdir(), "brl-bg-extract-"));
+	env.setUp();
 
 	h.runSubagent.mockReset();
 	h.spawnBackgroundSession.mockReset().mockResolvedValue(h.fakeAgent);
@@ -196,9 +183,8 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-afterAll(() => {
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
+afterAll(async () => {
+	await env.tearDown();
 });
 
 // ---------------------------------------------------------------------------
@@ -245,7 +231,7 @@ describe("spawnBackgroundRun extraction (#198 phase 1)", () => {
 			model?: string;
 		};
 		expect(spawnParams.task).toBe(TASK);
-		expect(spawnParams.cwd).toBe(testCwd);
+		expect(spawnParams.cwd).toBe(env.testCwd);
 		expect(spawnParams.model).toBe(`${GLOBAL_MODEL.provider}/${GLOBAL_MODEL.id}`);
 
 		// (3) The foreground runner was never called.

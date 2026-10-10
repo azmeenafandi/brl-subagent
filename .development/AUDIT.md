@@ -1,6 +1,6 @@
 # brl-subagent — Audit: Strengths & Weaknesses
 
-> Generated: 2026-08-03 | Version: 2.3.9 (released 2026-09-27). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.3.9 (see the follow-up sections below).
+> Generated: 2026-08-03 | Version: 2.5.0 (release prepared 2026-10-10). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.5.0 (see the follow-up sections below).
 
 ## What's Been Fixed (since v1.3.0)
 
@@ -283,6 +283,10 @@
 Tests pass even when source files import variables/functions that don't exist, because Vitest's module resolution doesn't fail at import time for unresolved symbols. However, when pi loads the same module in production, unresolved imports cause runtime failures. This means a passing test suite does not guarantee the code will load correctly in the pi runtime.
 
 **Mitigation:** Always verify with a manual `import` test or runtime smoke test after significant refactors. Consider adding a dedicated smoke test that imports and exercises every module.
+
+## v2.5.0 Audit Follow-up (2026-10-10)
+
+The durability cycle's audit surface: **recovery** (U1 — durable run registry, registry-sourced boot scan, wait-once reap, interrupted marking; the adversarial review's critical finding was fixed in-round: foreground records are now discoverable from a default fresh boot), **kill-path correctness** (#303 real-exit death check; #308 detached auto-approve keeps the merged commit reachable), **ledger truthfulness** (#304), and **test hygiene** (#302 — the suite can no longer move the checkout's HEAD or leak work branches). Process firsts: an unfamiliar adversarial reviewer (`~openai/gpt-luna-latest`) caught the #308 reachability regression the leak fix introduced; the recovery acceptance was live-verified on the merged build (dev toggle + `/reload`) before the release. Open at release: #299 (the documented D6 destination, trigger-based).
 
 ## v2.3.9 Audit Follow-up (2026-09-27)
 

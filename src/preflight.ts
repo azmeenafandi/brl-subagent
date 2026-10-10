@@ -23,6 +23,33 @@ export type PreflightResult = { ok: true } | { ok: false; error: string };
 // ---------------------------------------------------------------------------
 
 /**
+ * Walk PATH for an executable `pi`, returning the first match.
+ *
+ * Mirrors the spawn-time fallback in `getPiInvocation` (the bare `"pi"`
+ * case). Shared with the Tier-2 e2e harness (issue #271) so the preflight
+ * check and the harness resolve the real binary identically.
+ */
+export function resolvePiOnPath(): string | undefined {
+	const pathDirs = (process.env.PATH || "").split(path.delimiter);
+	const isWindows = process.platform === "win32";
+	const piNames = isWindows ? ["pi.cmd", "pi.exe", "pi"] : ["pi"];
+
+	for (const dir of pathDirs) {
+		for (const name of piNames) {
+			const fullPath = path.join(dir, name);
+			try {
+				fs.accessSync(fullPath, fs.constants.X_OK);
+				return fullPath;
+			} catch {
+				// Not found in this directory — continue searching
+			}
+		}
+	}
+
+	return undefined;
+}
+
+/**
  * Verify the pi binary is accessible via the same resolution logic used
  * at spawn time. When `getPiInvocation` falls back to "pi" on PATH, we
  * walk PATH to confirm the binary exists. For absolute paths (e.g.
@@ -45,20 +72,8 @@ function checkPiBinary(): PreflightResult {
 	}
 
 	// "pi" fallback — search PATH
-	const pathDirs = (process.env.PATH || "").split(path.delimiter);
-	const isWindows = process.platform === "win32";
-	const piNames = isWindows ? ["pi.cmd", "pi.exe", "pi"] : ["pi"];
-
-	for (const dir of pathDirs) {
-		for (const name of piNames) {
-			const fullPath = path.join(dir, name);
-			try {
-				fs.accessSync(fullPath, fs.constants.X_OK);
-				return { ok: true };
-			} catch {
-				// Not found in this directory — continue searching
-			}
-		}
+	if (resolvePiOnPath()) {
+		return { ok: true };
 	}
 
 	return {

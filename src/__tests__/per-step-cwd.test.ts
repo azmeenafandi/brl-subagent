@@ -62,9 +62,7 @@ vi.mock("@earendil-works/pi-tui", () => {
 });
 
 import initExtension from "../index";
-import { __setOutputDir } from "../transcript";
-import { __setStorageDir } from "../session-manager";
-import { setLogCwd } from "../logging";
+import { createTempEnv } from "./fixtures/temp-lifecycle";
 import type { SubagentResult } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -92,8 +90,7 @@ let tool: ToolEntry;
 let sessionStartHandler:
 	| ((_event: unknown, ctx: Record<string, unknown>) => Promise<void>)
 	| undefined;
-let testCwd: string;
-let tempPiBase: string;
+const env = createTempEnv("brl-step-cwd");
 
 function setupExtension(): ToolEntry {
 	const registeredTools = new Map<string, ToolEntry>();
@@ -119,7 +116,7 @@ function setupExtension(): ToolEntry {
 
 function makeCtx() {
 	return {
-		cwd: testCwd,
+		cwd: env.testCwd,
 		model: GLOBAL_MODEL,
 		modelRegistry: {
 			find: (provider: string, id: string) => ({ provider, id }),
@@ -172,15 +169,7 @@ function firstText(result: { content: Array<{ type: string; text: string }> }): 
 }
 
 beforeEach(() => {
-	// Issue #195: disable the shared log sink BEFORE removing the previous
-	// testCwd — the sink still points at it until this test's session_start.
-	setLogCwd(undefined);
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
-	tempPiBase = fs.mkdtempSync(path.join(os.tmpdir(), "brl-step-cwd-pi-"));
-	__setOutputDir(path.join(tempPiBase, "output"));
-	__setStorageDir(path.join(tempPiBase, "subagents"));
-	testCwd = fs.mkdtempSync(path.join(os.tmpdir(), "brl-step-cwd-"));
+	env.setUp();
 	runnerMocks.runSubagent.mockReset();
 	runnerMocks.runSubagent.mockImplementation(
 		async (_cwd: string, _prompt: string, model: { provider: string; id: string }) =>
@@ -193,10 +182,7 @@ beforeEach(() => {
 });
 
 afterAll(async () => {
-	setLogCwd(undefined);
-	await new Promise((resolve) => setImmediate(resolve));
-	if (tempPiBase) fs.rmSync(tempPiBase, { recursive: true, force: true });
-	if (testCwd) fs.rmSync(testCwd, { recursive: true, force: true });
+	await env.tearDown();
 });
 
 // ---------------------------------------------------------------------------
@@ -205,8 +191,8 @@ afterAll(async () => {
 
 describe("per-step cwd is honoured at spawn (issue #222)", () => {
 	it("chain: each step spawns in its OWN cwd, steps without one in the mode-level cwd", async () => {
-		const stepA = path.join(testCwd, "step-a");
-		const stepB = path.join(testCwd, "step-b");
+		const stepA = path.join(env.testCwd, "step-a");
+		const stepB = path.join(env.testCwd, "step-b");
 		fs.mkdirSync(stepA);
 		fs.mkdirSync(stepB);
 
@@ -219,12 +205,12 @@ describe("per-step cwd is honoured at spawn (issue #222)", () => {
 		});
 
 		expect(result.isError).toBeFalsy();
-		expect(spawnCwds()).toEqual([stepA, testCwd, stepB]);
+		expect(spawnCwds()).toEqual([stepA, env.testCwd, stepB]);
 	});
 
 	it("parallel: each task spawns in its OWN cwd, tasks without one in the mode-level cwd", async () => {
-		const taskA = path.join(testCwd, "task-a");
-		const taskB = path.join(testCwd, "task-b");
+		const taskA = path.join(env.testCwd, "task-a");
+		const taskB = path.join(env.testCwd, "task-b");
 		fs.mkdirSync(taskA);
 		fs.mkdirSync(taskB);
 
@@ -237,12 +223,12 @@ describe("per-step cwd is honoured at spawn (issue #222)", () => {
 		});
 
 		expect(result.isError).toBeFalsy();
-		expect(spawnCwds().sort()).toEqual([taskA, taskB, testCwd].sort());
+		expect(spawnCwds().sort()).toEqual([taskA, taskB, env.testCwd].sort());
 	});
 
 	it("graph: each node spawns in its OWN cwd, nodes without one in the mode-level cwd", async () => {
-		const nodeA = path.join(testCwd, "node-a");
-		const nodeB = path.join(testCwd, "node-b");
+		const nodeA = path.join(env.testCwd, "node-a");
+		const nodeB = path.join(env.testCwd, "node-b");
 		fs.mkdirSync(nodeA);
 		fs.mkdirSync(nodeB);
 
@@ -255,17 +241,17 @@ describe("per-step cwd is honoured at spawn (issue #222)", () => {
 		});
 
 		expect(result.isError).toBeFalsy();
-		expect(spawnCwds().sort()).toEqual([nodeA, nodeB, testCwd].sort());
+		expect(spawnCwds().sort()).toEqual([nodeA, nodeB, env.testCwd].sort());
 	});
 
 	it("a step cwd is resolved relative to the session cwd", async () => {
-		fs.mkdirSync(path.join(testCwd, "nested"));
+		fs.mkdirSync(path.join(env.testCwd, "nested"));
 		await execute({ chain: [{ task: "relative cwd", cwd: "nested" }] });
-		expect(spawnCwds()).toEqual([path.join(testCwd, "nested")]);
+		expect(spawnCwds()).toEqual([path.join(env.testCwd, "nested")]);
 	});
 
 	it("regression: a mode-level cwd still applies when no step declares one", async () => {
-		const modeCwd = path.join(testCwd, "mode");
+		const modeCwd = path.join(env.testCwd, "mode");
 		fs.mkdirSync(modeCwd);
 
 		const result = await execute({
@@ -336,7 +322,7 @@ describe("an invalid per-step cwd rejects before any spawn (issue #222)", () => 
 
 describe("a step's outputFile is validated against that step's cwd (issue #222)", () => {
 	it("chain: an outputFile escaping the step's cwd is rejected, unit-prefixed", async () => {
-		const stepCwd = path.join(testCwd, "step");
+		const stepCwd = path.join(env.testCwd, "step");
 		fs.mkdirSync(stepCwd);
 
 		const result = await execute({
@@ -351,7 +337,7 @@ describe("a step's outputFile is validated against that step's cwd (issue #222)"
 	});
 
 	it("parallel: an outputFile escaping the task's cwd is rejected, unit-prefixed", async () => {
-		const taskCwd = path.join(testCwd, "task");
+		const taskCwd = path.join(env.testCwd, "task");
 		fs.mkdirSync(taskCwd);
 
 		const result = await execute({
@@ -366,7 +352,7 @@ describe("a step's outputFile is validated against that step's cwd (issue #222)"
 	});
 
 	it("graph: an outputFile escaping the node's cwd is rejected, unit-prefixed", async () => {
-		const nodeCwd = path.join(testCwd, "node");
+		const nodeCwd = path.join(env.testCwd, "node");
 		fs.mkdirSync(nodeCwd);
 
 		const result = await execute({
@@ -381,7 +367,7 @@ describe("a step's outputFile is validated against that step's cwd (issue #222)"
 	});
 
 	it("an outputFile INSIDE the step's cwd is accepted and the step still spawns there", async () => {
-		const stepCwd = path.join(testCwd, "step");
+		const stepCwd = path.join(env.testCwd, "step");
 		fs.mkdirSync(stepCwd);
 
 		const result = await execute({

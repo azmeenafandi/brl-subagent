@@ -1,9 +1,9 @@
 // Purpose: Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths.
 import { randomUUID } from 'crypto';
 import { join } from 'path';
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
-import { EMPTY_USAGE, CUSTOM_ENTRY_TYPES, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
+import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -11,8 +11,11 @@ import { createEvent } from './event-bus';
 import { assertSafeAgentId, sanitizeErrorMessage } from './sanitize';
 import { wrapTask } from './prompt';
 import { createLogger } from './logging';
-import { getCurrentBranch, createWorkBranch, captureDiff, switchToBranch, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
+import { getCurrentBranch, getHeadState, restoreHead, createWorkBranch, captureDiff, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
+import type { HeadState } from './git';
 import { normalizeTimeout, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
+import { currentProcessOwner } from './recovery';
+import { persistRunRecord } from './run-registry';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -85,7 +88,7 @@ function persistAgent(agent: BackgroundAgent): void {
   try {
     assertSafeAgentId(agent.id);
   } catch {
-    console.error(`[brl-subagent] Refusing to persist agent with invalid id: ${agent.id}`);
+    log.error(`Refusing to persist agent with invalid id: ${agent.id}`);
     return;
   }
   ensureStorageDir();
@@ -102,7 +105,7 @@ function persistAgent(agent: BackgroundAgent): void {
     writeFileSync(filePath, JSON.stringify(persistable, null, 2), { encoding: 'utf-8', mode: 0o600 });
   } catch (err) {
     // Log but never throw — persistence must not break execution
-    console.error(`[brl-subagent] Failed to persist agent ${agent.id}:`, err);
+    log.error(`Failed to persist agent ${agent.id}`, { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -134,6 +137,54 @@ export function getAgent(id: string): BackgroundAgent | null {
     return null;
   }
   return agents.get(id) || loadAgent(id);
+}
+
+/**
+ * Option B U1: every agent record persisted on disk (cross-session — the
+ * `.pi/subagents/` store survives a process death; the conductor's session run
+ * entries do not). Boot recovery does NOT use this: it sources candidates from
+ * the durable run registry and reads background records ONE at a time by id
+ * (`recoverInflightRuns`'s `readAgentRecord`), precisely to avoid parsing the
+ * whole store; production has no caller for this sweep. Unreadable/corrupt
+ * files and unsafe ids are skipped, never thrown.
+ */
+export function listPersistedAgents(): BackgroundAgent[] {
+  let files: string[];
+  try {
+    if (!existsSync(STORAGE_DIR)) return [];
+    files = readdirSync(STORAGE_DIR);
+  } catch {
+    return [];
+  }
+  const records: BackgroundAgent[] = [];
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    const id = file.slice(0, -'.json'.length);
+    try {
+      assertSafeAgentId(id);
+    } catch {
+      continue;
+    }
+    const record = loadAgent(id);
+    if (record) records.push(record);
+  }
+  return records;
+}
+
+/**
+ * Option B U1 (D3): read-modify-write the interrupted mark onto a persisted
+ * agent record. Idempotent: an already-marked record is returned unchanged.
+ * Returns null when the record does not exist.
+ */
+export function markAgentInterrupted(id: string, interruptedAt: string): BackgroundAgent | null {
+  const agent = getAgent(id);
+  if (!agent) return null;
+  if (!agent.interruptedAt) {
+    agent.interruptedAt = interruptedAt;
+    agents.set(id, agent);
+    persistAgent(agent);
+  }
+  return agent;
 }
 
 /**
@@ -320,15 +371,13 @@ export async function steerAgent(id: string, message: string): Promise<Backgroun
 }
 
 /**
- * Get transcript path for an agent
+ * Get transcript path for an agent.
+ *
+ * Issue #276: the format lives in `transcript-path.ts` (the single source).
+ * This re-export preserves the historical `session-manager.getTranscriptPath`
+ * surface for `index.ts`'s dynamic import and the existing tests.
  */
-export function getTranscriptPath(id: string): string {
-  // F24: reachable with LLM-controlled ids (get_agent_result). Throw on invalid
-  // ids — the tool caller surfaces it as an error. (Defense in depth: getAgent
-  // already validated before this is reached with a live agent.)
-  assertSafeAgentId(id);
-  return join('.pi', 'output', `agent-${id}.jsonl`);
-}
+export { transcriptPath as getTranscriptPath } from './transcript-path';
 
 /**
  * Spawn a background session using pi's session API
@@ -359,6 +408,11 @@ export async function spawnBackgroundSession(
     /** Issue #114: per-unit priority — recorded on the run entry + agent record
      *  so the drill-in header and history carry it (absent → no segment). */
     priority?: string;
+    /** Option B U1: durability identity. A retry inherits the original's
+     *  dispatchId and records resumeOf/attempt; a fresh dispatch omits them. */
+    dispatchId?: string;
+    resumeOf?: string;
+    attempt?: number;
   }
 ): Promise<BackgroundAgent> {
   // Serialize access to pi API to prevent concurrent import races
@@ -469,6 +523,13 @@ export async function spawnBackgroundSession(
   // Set session name
   session.setSessionName(`background-${id.slice(0, 8)}`);
   
+  // Option B U1: durability identity. Background runs have no child process
+  // (the session is in-process), so there is no childMarker — only the owner
+  // identity that a boot scan uses to tell a live conductor from a dead one.
+  const dispatchId = params.dispatchId ?? generateUUID();
+  const attempt = params.attempt ?? 1;
+  const owner = currentProcessOwner();
+
   // Create agent record
   const agent: BackgroundAgent = {
     id,
@@ -481,6 +542,10 @@ export async function spawnBackgroundSession(
     model: params.model || 'unknown',
     thinkingLevel: params.thinkingLevel || 'medium',
     priority: params.priority,
+    dispatchId,
+    resumeOf: params.resumeOf,
+    attempt,
+    owner,
   };
   
   agents.set(id, agent);
@@ -506,8 +571,12 @@ export async function spawnBackgroundSession(
     priority: params.priority,
     startedAt: new Date().toISOString(),
     originalParams: params.originalParams,
+    dispatchId,
+    resumeOf: params.resumeOf,
+    attempt,
+    owner,
   };
-  pi.appendEntry(CUSTOM_ENTRY_TYPES.run, run);
+  persistRunRecord(pi, run, "background");
 
   // Issue #98: keep the session run entry in lockstep with the agent record —
   // every terminal branch that flips agent.status also finalizes the run entry
@@ -576,7 +645,7 @@ export async function spawnBackgroundSession(
           ? { ...(run.originalParams ?? {}), errorCategory }
           : run.originalParams,
     };
-    pi.appendEntry(CUSTOM_ENTRY_TYPES.run, entry);
+    persistRunRecord(pi, entry);
     // Issue #179 (D6): the explicit settle line — the log's job is to record the
     // CLASSIFIED OUTCOME, which cwd alone can never convey.
     log.info("Background run settled", {
@@ -661,9 +730,14 @@ export async function spawnBackgroundSession(
   // hard failure — never spawn an unisolated background agent that was asked
   // for isolation (fail-loud, same principle as foreground's fallback but
   // background cannot warn-and-continue safely).
-  let originalBranch: string | undefined;
+  let headState: HeadState | undefined;
   let workBranchName: string | undefined;
   let releaseGitLock: (() => void) | undefined;
+  // Idempotency guard for cleanupWorkBranch: it must be safe to call from both
+  // the normal settle path and the catch-all that runs when a settle step
+  // throws FIRST (before its own cleanup call). Without this the second call
+  // would re-restore/re-delete and log spurious warnings.
+  let gitCleanupDone = false;
   const gitCwd = params.cwd ?? ctx.cwd;
   if (params.gitMode === 'branch') {
     // C2: serialize the FULL branch lifecycle per repo. The spawnQueue only
@@ -696,13 +770,13 @@ export async function spawnBackgroundSession(
           'requesting background gitMode=branch isolation'
         );
       }
-      originalBranch = getCurrentBranch(gitCwd);
-      const branchResult = createWorkBranch(gitCwd, originalBranch);
+      headState = getHeadState(gitCwd);
+      const branchResult = createWorkBranch(gitCwd, headState.sha);
       if (branchResult.ok) {
         workBranchName = branchResult.branch;
         log.info('Created work branch for background agent', {
           branch: workBranchName,
-          base: originalBranch,
+          base: headState.branch,
           agentId: id,
         });
       } else {
@@ -740,7 +814,8 @@ export async function spawnBackgroundSession(
   // uncommitted edits would leak into the base working tree on switch —
   // commitAll first makes the diff real and the switch clean.
   const cleanupWorkBranch = (): { gitBranch?: string; gitDiff?: string } => {
-    if (!workBranchName || !originalBranch) return {};
+    if (gitCleanupDone || !workBranchName || !headState) return {};
+    gitCleanupDone = true;
     const info: { gitBranch?: string; gitDiff?: string } = { gitBranch: workBranchName };
     // The lock MUST be released on every exit path — early returns included.
     try {
@@ -778,7 +853,7 @@ export async function spawnBackgroundSession(
             if (workingDiff) info.gitDiff = workingDiff;
           }
         }
-        const diffResult = captureDiff(gitCwd, originalBranch);
+        const diffResult = captureDiff(gitCwd, headState.sha);
         if (diffResult.ok && diffResult.diff.trim()) {
           // Merge committed + working diffs — either can exist alone.
           info.gitDiff = info.gitDiff
@@ -789,9 +864,12 @@ export async function spawnBackgroundSession(
         log.warn(`captureDiff failed for background agent ${id}`, { error: (err as Error).message });
       }
       try {
-        switchToBranch(gitCwd, originalBranch);
+        const restoreResult = restoreHead(gitCwd, headState);
+        if (!restoreResult.ok) {
+          log.warn(`restoreHead failed for background agent ${id}`, { error: restoreResult.error });
+        }
       } catch (err) {
-        log.warn(`switchToBranch failed for background agent ${id}`, { error: (err as Error).message });
+        log.warn(`restoreHead failed for background agent ${id}`, { error: (err as Error).message });
       }
       try {
         deleteBranch(gitCwd, workBranchName);
@@ -812,6 +890,11 @@ export async function spawnBackgroundSession(
   // terminal so no zombie 'running' record survives; never rethrow.
   const markTerminalBestEffort = (fallback: AgentStatus): void => {
     try {
+      // Issue #53 / review C: this catch-all fires when a settle handler step
+      // threw — possibly BEFORE the branch's own cleanupWorkBranch() call. Run
+      // it here too (idempotent) so a throw can never bypass branch teardown
+      // and strand the work branch in the repo working tree.
+      cleanupWorkBranch();
       // Issue #31 (PR #76 review): this catch-all fires when a settle handler
       // threw — either BEFORE the branch's own capture (ref still live: capture
       // now, it is the last chance to record the session's output) or AFTER it

@@ -58,13 +58,14 @@ import { pkgPath } from "./paths";
 
 import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage, buildCrashResult } from "./sanitize";
 import {
-	getCurrentBranch,
 	hasUncommittedChanges,
 	createWorkBranch,
 	captureDiff,
-	switchToBranch,
+	getHeadState,
+	restoreHead,
 	deleteBranch,
 	mergeWorkBranch,
+	type HeadState,
 } from "./git";
 import { preflightCheck } from "./preflight";
 import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets, formatValidationWarnings } from "./prelude";
@@ -76,8 +77,15 @@ import { delegateTaskParamsSchema } from "./schema";
 import { createSessionState } from "./state";
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
-import { runSubagent, cleanupTempDirs } from "./runner";
+import { runSubagent, cleanupTempDirs, reapActiveChildren } from "./runner";
+import {
+	recoverProduction,
+	currentProcessOwner,
+	newDispatchIdentity,
+} from "./recovery";
+import { markInterrupted } from "./run-registry";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
+import { transcriptDisplayPath } from "./transcript-path";
 import {
 	finalizeRunRecord,
 	resolveRetryParams,
@@ -700,7 +708,7 @@ export default function (pi: ExtensionAPI) {
 				// foreground live entry (the #130 invariant gap that swept
 				// graph/chain entries immediately).
 				const { runId, run } = createUnitRun(merged, stepModel, chainPriority, globalParams.resolvedPreset?.name);
-				state.persistRun(pi, run);
+				state.persistRun(pi, run, "unit");
 
 				// R2: Prune old run entries if history exceeds limit
 				pruneHistoryIfNeeded(state, ctx, log);
@@ -740,6 +748,9 @@ export default function (pi: ExtensionAPI) {
 						getFinalOutput,
 						log,
 						currentDepth + 1,
+						undefined, // intercom
+						undefined, // subagentId
+						run.childMarker,
 					);
 				} catch (err) {
 					// Issue #133 (mirrors the #119 R1/C1 discipline): finalize the
@@ -1152,7 +1163,7 @@ export default function (pi: ExtensionAPI) {
 			// monitor drill-in shows per-unit priority and a post-hoc audit
 			// trail exists per subtask (mirrors single-mode run persistence).
 			const { runId, run } = createUnitRun(merged, stepModel, parallelPriority, globalParams.resolvedPreset?.name);
-			state.persistRun(pi, run);
+			state.persistRun(pi, run, "unit");
 
 			// R2: Prune old run entries if history exceeds limit
 			pruneHistoryIfNeeded(state, ctx, log);
@@ -1210,6 +1221,7 @@ export default function (pi: ExtensionAPI) {
 					currentDepth + 1,
 					intercom,
 					subagentId,
+					run.childMarker,
 				);
 
 				// Fill SubTaskResult
@@ -1788,7 +1800,7 @@ export default function (pi: ExtensionAPI) {
 					// foreground live entry (the #130 invariant gap that swept
 					// graph/chain entries immediately).
 					const { runId, run } = createUnitRun(merged, stepModel, graphPriority, globalParams.resolvedPreset?.name);
-					state.persistRun(pi, run);
+					state.persistRun(pi, run, "unit");
 
 					// R2: Prune old run entries if history exceeds limit
 					pruneHistoryIfNeeded(state, ctx, log);
@@ -1825,6 +1837,7 @@ export default function (pi: ExtensionAPI) {
 							currentDepth + 1,
 							intercom,
 							subagentId,
+							run.childMarker,
 						);
 
 						const subTaskResult: SubTaskResult = {
@@ -2263,6 +2276,10 @@ export default function (pi: ExtensionAPI) {
 			originalParams?: SubagentRun["originalParams"];
 			/** cwd used to redact paths from crash notifications. */
 			sanitizeCwd: string;
+			// Option B U1: durability identity threaded onto the background records.
+			dispatchId?: string;
+			resumeOf?: string;
+			attempt?: number;
 		},
 	): Promise<BackgroundAgent> {
 		const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
@@ -2289,6 +2306,10 @@ export default function (pi: ExtensionAPI) {
 			// Issue #98/#108: snapshotOriginalParams is the single source of truth
 			// for the caller params a later retry restores.
 			originalParams: spawn.originalParams,
+			// Option B U1: durability identity for the agent record + run entry.
+			dispatchId: spawn.dispatchId,
+			resumeOf: spawn.resumeOf,
+			attempt: spawn.attempt,
 		});
 		
 		// Register for live monitor
@@ -2522,6 +2543,10 @@ export default function (pi: ExtensionAPI) {
 			priority?: string;
 		},
 		singleTask: string,
+		// Option B U1: the spawn entry a retryRunId resolved to, so a retried
+		// background run inherits dispatchId/resumeOf/attempt (record identity,
+		// not a delegate param — D4).
+		retrySourceRun?: SubagentRun,
 	): Promise<ToolResult<undefined>> {
 		// Phase 6.5: Background execution — spawn session and return ID immediately.
 		// Resolve the preset and its model BEFORE the background branch so the
@@ -2602,6 +2627,8 @@ export default function (pi: ExtensionAPI) {
 				bgResolvedPreset?.promptGuideline,
 			);
 
+			// Option B U1: durability identity (retry inherits the original dispatch).
+			const bgIdentity = newDispatchIdentity(retrySourceRun);
 			const agent = await startBackgroundAgent(pi, ctx, {
 				task: singleTask,
 				type: params.preset || 'general-purpose',
@@ -2616,6 +2643,9 @@ export default function (pi: ExtensionAPI) {
 				gitMode: bgResolved.resolvedGitMode,
 				originalParams: snapshotOriginalParams(params),
 				sanitizeCwd: bgResolved.effectiveCwd,
+				dispatchId: bgIdentity.dispatchId,
+				resumeOf: bgIdentity.resumeOf,
+				attempt: bgIdentity.attempt,
 			});
 
 			// B2: Surface auto-route decisions in background spawn result too —
@@ -2787,6 +2817,10 @@ export default function (pi: ExtensionAPI) {
 			onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 			ctx: ExtensionContext,
 		) {
+			// Option B U1: the run a retryRunId resolves to (spawn entry). Internal
+			// record identity — dispatchId/resumeOf/attempt are threaded onto the new
+			// record, NOT through the delegate-param surface (D4).
+			let retrySourceRun: SubagentRun | undefined;
 			// Issue #99: warn on unknown params — typebox allows additional properties
 			// by default (pi's validateToolArguments passes unknown keys through), so a
 			// typo like `thinkinglevel` or a schema-drifted param is otherwise silently
@@ -2890,6 +2924,7 @@ export default function (pi: ExtensionAPI) {
 			if (params.retryRunId) {
 				const runEntry = state.findSpawnRunById(ctx, params.retryRunId);
 				if (runEntry) {
+					retrySourceRun = runEntry;
 					params = resolveRetryParams(params, runEntry) as DelegateTaskParams;
 				} else {
 					// Issue #98: a silent no-op here made retries of background runs
@@ -3009,7 +3044,7 @@ export default function (pi: ExtensionAPI) {
 			const singleTask = params.task!; // non-empty (sanitizer guarantees; isSingle confirms)
 
 			if (params.background) {
-				return spawnBackgroundRun(pi, ctx, params, singleTask);
+				return spawnBackgroundRun(pi, ctx, params, singleTask, retrySourceRun);
 			}
 
 			// R5: Check session cost limit before spawning
@@ -3156,6 +3191,10 @@ export default function (pi: ExtensionAPI) {
 
 			// Create run record
 			const runId = crypto.randomUUID();
+			// Option B U1: durability identity — a retry inherits the original
+			// dispatchId and records resumeOf/attempt; a fresh marker keys the
+			// child process for boot-time orphan discovery.
+			const identity = newDispatchIdentity(retrySourceRun);
 			const run: SubagentRun = {
 				id: runId,
 				task,
@@ -3168,8 +3207,13 @@ export default function (pi: ExtensionAPI) {
 				priority: params.priority,
 				startedAt: new Date().toISOString(),
 				originalParams: snapshotOriginalParams(params),
+				dispatchId: identity.dispatchId,
+				resumeOf: identity.resumeOf,
+				attempt: identity.attempt,
+				owner: currentProcessOwner(),
+				childMarker: crypto.randomUUID(),
 			};
-			state.persistRun(pi, run);
+			state.persistRun(pi, run, "foreground");
 
 			// R2: Prune old run entries if history exceeds limit
 			pruneHistoryIfNeeded(state, ctx, log);
@@ -3178,11 +3222,11 @@ export default function (pi: ExtensionAPI) {
 			registerLiveRun(state, run, ctx);
 
 			// P3: Git integration — set up work branch if gitMode is "branch"
-			let originalBranch: string | undefined;
+			let headState: HeadState | undefined;
 			let workBranchName: string | undefined;
 			if (resolvedGitMode === "branch") {
 				try {
-					originalBranch = getCurrentBranch(resolvedCwd);
+					headState = getHeadState(resolvedCwd);
 
 					if (hasUncommittedChanges(resolvedCwd)) {
 						log.warn("Uncommitted changes detected; proceeding with branch-based workflow anyway", {
@@ -3190,39 +3234,55 @@ export default function (pi: ExtensionAPI) {
 						});
 					}
 
-					const branchResult = createWorkBranch(resolvedCwd, originalBranch);
+					const branchResult = createWorkBranch(resolvedCwd, headState.sha);
 					if (branchResult.ok) {
 						workBranchName = branchResult.branch;
 						log.info("Created work branch for subagent", {
 							branch: workBranchName,
-							base: originalBranch,
+							base: headState.branch,
 						});
 					} else {
 						log.error("Failed to create work branch, falling back to 'none'", {
 							error: branchResult.error,
 						});
-						originalBranch = undefined;
+						headState = undefined;
 					}
 				} catch (err) {
 					log.warn("Not a git repository or git error; falling back to gitMode 'none'", {
 						error: (err as Error).message,
 					});
-					originalBranch = undefined;
+					headState = undefined;
 					workBranchName = undefined;
 				}
 			}
 
-			// Helper to switch back to original branch and optionally delete work branch
+			// Helper to restore the starting HEAD and delete the work branch. The
+			// delete is NOT gated on the restore succeeding: the branch must never
+			// survive teardown. A still-checked-out branch simply makes deleteBranch
+			// fail (logged) rather than silently leaking the ref.
 			const cleanupGitBranch = () => {
-				if (workBranchName && originalBranch) {
-					try {
-						switchToBranch(resolvedCwd, originalBranch);
-						log.info("Switched back to original branch", { branch: originalBranch });
-						// Attempt to delete the work branch (non-critical)
-						deleteBranch(resolvedCwd, workBranchName);
-					} catch {
-						// Non-fatal: best-effort cleanup
+				if (!workBranchName) return;
+				if (headState) {
+					const restoreResult = restoreHead(resolvedCwd, headState);
+					if (restoreResult.ok) {
+						log.info("Restored original HEAD", {
+							branch: headState.branch,
+							detached: headState.detached,
+						});
+					} else {
+						log.warn("Failed to restore original HEAD during cleanup", {
+							branch: headState.branch,
+							error: restoreResult.error,
+						});
 					}
+				}
+				// Attempt to delete the work branch (non-critical)
+				const deleteResult = deleteBranch(resolvedCwd, workBranchName);
+				if (!deleteResult.ok) {
+					log.warn("Failed to delete work branch during cleanup", {
+						branch: workBranchName,
+						error: deleteResult.error,
+					});
 				}
 			};
 
@@ -3321,6 +3381,7 @@ export default function (pi: ExtensionAPI) {
 					childDepth,
 					undefined, // intercom
 					undefined, // subagentId
+					run.childMarker,
 				);
 
 				// Auto-retry on timeout
@@ -3368,6 +3429,7 @@ export default function (pi: ExtensionAPI) {
 						childDepth,
 						undefined, // intercom
 						undefined, // subagentId
+						run.childMarker,
 					);
 				}
 
@@ -3380,17 +3442,23 @@ export default function (pi: ExtensionAPI) {
 				result.label = label;
 
 				// P3: Capture git diff if we created a work branch
-				if (workBranchName && originalBranch) {
-					const diffResult = captureDiff(resolvedCwd, originalBranch);
+				if (workBranchName && headState) {
+					// Diff against the captured starting sha rather than the branch
+					// name: a detached start's branch label is the "HEAD" pseudo-ref,
+					// for which `git diff HEAD...HEAD` is always empty.
+					const diffResult = captureDiff(resolvedCwd, headState.sha);
 					if (diffResult.ok) {
 						result.gitBranch = workBranchName;
 						result.gitDiff = diffResult.diff;
 					}
 
-					// Switch back to the original branch
-					const switchResult = switchToBranch(resolvedCwd, originalBranch);
-					if (switchResult.ok) {
-						log.info("Switched back to original branch", { branch: originalBranch });
+					// Restore the starting HEAD (branch, or detached sha)
+					const restoreResult = restoreHead(resolvedCwd, headState);
+					if (restoreResult.ok) {
+						log.info("Restored original HEAD", {
+							branch: headState.branch,
+							detached: headState.detached,
+						});
 
 						// P4: Change approval workflow — let user review the diff
 						const diffContent = (result.gitDiff ?? "").trim();
@@ -3434,13 +3502,42 @@ export default function (pi: ExtensionAPI) {
 									error: mergeResult.error,
 								});
 							}
-							deleteBranch(resolvedCwd, workBranchName);
+							// #308: a DETACHED start has no branch of its own to hold the
+							// merge result — teardown re-detached at the captured sha and
+							// the merge fast-forwarded THAT detached HEAD, so deleting the
+							// work branch would leave the committed work reachable only
+							// from the detached HEAD (silently lost on the next checkout).
+							// Keep the branch as the durable ref and log where the work
+							// lives. An ATTACHED start merged onto its own branch, which
+							// already retains the commit, so the temporary work branch is
+							// safe to drop.
+							if (headState.detached) {
+								log.info("detached checkout: work preserved on branch", {
+									branch: workBranchName,
+								});
+							} else {
+								deleteBranch(resolvedCwd, workBranchName);
+							}
 							workBranchName = undefined;
 						} else {
 							// No changes — just delete the empty branch
 							deleteBranch(resolvedCwd, workBranchName);
 							workBranchName = undefined;
 						}
+					} else {
+						log.warn("Failed to restore original HEAD after work-branch run", {
+							branch: headState.branch,
+							error: restoreResult.error,
+						});
+					}
+
+					// Nothing may leave teardown with the work branch still present: the
+					// approval flow above clears workBranchName on every terminal choice
+					// (including "apply", where keeping the branch is intentional), so a
+					// still-set name means the restore failed and the flow was skipped.
+					if (workBranchName) {
+						deleteBranch(resolvedCwd, workBranchName);
+						workBranchName = undefined;
 					}
 				}
 
@@ -3704,8 +3801,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			
 			// Include transcript path
-			const { getTranscriptPath } = await import('./session-manager');
-			resultText += `\nTranscript: ${getTranscriptPath(params.agent_id)}`;
+			resultText += `\nTranscript: ${transcriptDisplayPath(params.agent_id)}`;
 			
 			return {
 				content: [{ type: "text" as const, text: resultText }],
@@ -3824,6 +3920,50 @@ export default function (pi: ExtensionAPI) {
 	// Session lifecycle — F7: Session-bound state initialization
 	// -------------------------------------------------------------------
 
+	// -------------------------------------------------------------------
+	// Option B U1: boot recovery — identity/liveness detection + child reap
+	// -------------------------------------------------------------------
+	// Runs AFTER restoreFromSession so config is ready. Candidate runs come from
+	// the DURABLE registry (`.pi/run-registry/`), NOT from this session's run
+	// entries: a crashed session's foreground/unit records are invisible to a
+	// default fresh startup, and the full `.pi/subagents/` store is too costly to
+	// parse (only the one agent record a background entry names is read). For
+	// each in-flight run whose owner is dead, its orphaned marker-verified child
+	// is reaped and the record is marked: the registry entry always, plus the
+	// agent record for background runs. SILENT in the UI — the notice/offer
+	// surface is U3. Platforms without /proc skip the whole scan (one log line):
+	// pid-only liveness cannot rule out pid reuse, so nothing is killed or
+	// marked unverified.
+	async function performBootRecovery(): Promise<void> {
+		try {
+			const { getAgent, markAgentInterrupted } = await import("./session-manager");
+			// `recoverProduction` owns the /proc platform guard (nothing is marked or
+			// killed without start-token verification) — see src/recovery.ts.
+			const summary = await recoverProduction({
+				log,
+				// Read THAT ONE agent record by id — never the whole store.
+				readAgentRecord: (id) => getAgent(id),
+				mark(record, interruptedAt) {
+					// Registry entry = the durable mark for every kind. Issue #304: its
+					// boolean is the durable-write result — do NOT drop it, or the boot
+					// summary would claim a mark that never landed. The scan counts a
+					// `false` as `markFailures` and warns with the id.
+					const durable = markInterrupted(record.id, interruptedAt);
+					if (record.kind === "agent") markAgentInterrupted(record.id, interruptedAt);
+					return durable;
+				},
+			});
+			// Report the scan whenever it did anything durable OR attempted a mark
+			// that failed — a failure-only boot must not be silent (issue #304).
+			if (summary.marked > 0 || summary.markFailures > 0) {
+				log.warn("Boot recovery marked interrupted runs", { ...summary });
+			}
+		} catch (err) {
+			// Recovery is best-effort hygiene — it must never break session start.
+			log.warn("Boot recovery scan failed", { error: (err as Error).message });
+		}
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		// Issue #147: capture the session context for the completion-push subscriber.
 		sessionCtx = ctx;
@@ -3874,6 +4014,10 @@ export default function (pi: ExtensionAPI) {
 		// F5/F9: Safe state restoration with type guards
 		state.restoreFromSession(ctx);
 
+		// Option B U1: reap a dead conductor's orphaned children and mark the
+		// records interrupted BEFORE anything else touches their worktrees.
+		await performBootRecovery();
+
 		updateStatus(state, ctx);
 	});
 
@@ -3882,6 +4026,14 @@ export default function (pi: ExtensionAPI) {
 		log.info("Session shutting down", {
 			activeSubagents: state.activeSubagents,
 		});
+
+		// Option B U1: reap in-flight foreground children first, so a clean exit
+		// never orphans a subprocess (the crash case is covered by boot recovery).
+		try {
+			await reapActiveChildren(log);
+		} catch (err) {
+			log.warn("Shutdown reap failed", { error: (err as Error).message });
+		}
 
 		// Clear all live subagent sessions
 		state.subagentSessions.clear();

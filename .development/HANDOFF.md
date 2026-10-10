@@ -1,8 +1,10 @@
 # Handoff — 2026-09-22 (night)
 
-> Updated 2026-09-30 — **the cockpit moved to the `dev` checkout** (`.development/`, `graphify-out/`,
-> `.pi/` tools, shared `node_modules`); `main` is the pristine release checkout. **v2.3.9 live on npm; the user
-> daily-drives the DEV tree** (local-path install @ the dev tree — `22a1955`; dogfooding green; pi **1.0.0** smoke-verified 2026-10-02).
+> Updated 2026-10-10 — **v2.5.0 release prepared; publish pending.** npm `latest` is still v2.4.0 until the
+> maintainer approves the staged publish. The running extension is the **`dev` checkout** (deliberate developing
+> mode: `pi install <dev path>`) — ritual step 9 switches it back to the published package after the approval.
+> The **cockpit** is the `dev` checkout (`.development/`, `graphify-out/`, `.pi/` tools, shared `node_modules`);
+> `main` is the pristine release checkout (v2.4.0 tagged until the release merge).
 > Read this first: it is the state a fresh conductor cannot infer from the repo alone.
 > Companion durable records: `.development/` (ROADMAP, AUDIT, TASKS, METRICS, FRICTION_LOG,
 > INVESTIGATION_reload_wake.md), `.pi/skills/worktree/SKILL.md` (the rituals),
@@ -12,15 +14,195 @@
 
 | | |
 |---|---|
-| pi runtime | **1.0.0** (updated 2026-10-02; boot clean + live smoke PASSED: spawn → steer → completion, guard probe blocked a cockpit `src/` write — Rule 5 still enforced under 1.0.0) — devDeps/lockfile now **1.0.0 too** (PR #257, `5827745`): **the skew is CLOSED**, check-repo's runtime line is green, and the cockpit's shared tree was refreshed with `npm ci`. **TypeScript is now 7.0.2** (PR #263, `0b1cdc3`): migrated via the single containment adapter `scripts/ts-ast.mjs` (`typescript/unstable/*`), exact pin, `target: es2024` (ADR 0013; #256 closes at release) — the cockpit tree was refreshed again and `check-repo` is green under TS 7 |
-| `main` | **`b7c52e4`** — **v2.3.9 released** (release merge `7289618`; bump commit; GitHub release published; npm live). **Pristine since 2026-09-30: no `node_modules`, no docs/graph/.pi** (all moved to the dev cockpit) |
-| `dev` | **`22a1955`** — the post-2.3.9 fix cycle merged: **#242** (#240 default-not-ceiling timeouts, `35badde`), **#243** (#239 schema-linked types, `fcb9dc2`), **#245** (#241 steer delivery, `9c9b754`), **#246** (#244 deadline wording + single-timer ownership, `f892e3f`), **#248** (#247 contributor parity, `dec5fb65`), **#250** (#249 ARCHITECTURE rewrite + module-map guard, `949be9d`), **#252** (#251 architecture rules as tests, `3e17491`), **#254** (#253 ADR backfill, `290cf9f`), **#257** (#255 SDK 1.0.0 bump + `erasableSyntaxOnly`, `5827745`) and **#263** (#256 TypeScript 7.0.2 + ES2024 via the AST adapter, `0b1cdc3`); main still at the `b7c52e4` release; **COCKPIT since 2026-09-30** (holds `.development/`, `graphify-out/`, `.pi/`, the shared `node_modules`) |
-| Running extension | **Developing mode — local-path install of the dev checkout** (`brl-subagent-dev` @ `0b1cdc3`, includes #237–#263; #249/#251/#253/#255/#256 are comments/docs/tests/deps/tooling only — no reload needed; **reloaded 2026-09-29 15:03Z — #240/#241/#244 all LIVE**; **pi updated to 1.0.0 (2026-10-02) — post-update smoke PASSED** (clean boot, zero errors; live spawn → steer → completion probe
+| pi runtime | **1.1.0** (updated 2026-10-08; changelog scan: no extension-API breaks — additive only (`durationMs` on the tool-render context + `tool_execution_end`; `outputPad`; `aborted` on `agent_settled`); one semantic change flagged — `--tools` gains `+name`/`-name` adjusters while plain lists still replace (our restricted-tools spawn path exercised by the smoke); extension hooks live under 1.1.0 (guard probe BLOCKED a cockpit `src/` write — Rule 5 enforced); live smoke PASSED `PI-110-SMOKE` (1.3 s, restricted tools); npm: all four packages at 1.1.0 in lockstep; runtime was AHEAD of lockfile SDK 1.0.4 — expected mid-cycle; **SDK parity CLOSED same-day — PR #290 (merge `3ea40f9`): the four devDeps → `^1.1.0`, lockfile +40/−40 (8 packages, no dedupe churn), isolated-worktree suite 61/1258 + `tsc` clean — re-verified by the conductor — cockpit tree refreshed with `npm ci`, `check-repo` fully green (runtime == lockfile)**). **Adoption candidates (marked, not filed):** `durationMs` (tool-render footer timing) and `agent_settled.aborted` (sharper cancelled-vs-finished settle handling). **Previous: 1.0.4** (updated 2026-10-06; changelog scan: no extension-API breaks (`*` tool patterns, `--no-mcp`, codemode images; one child-pi nuance — `--tools` keeps MCP tools unless `mcp__`-prefixed, no MCP here); guard probe BLOCKED a cockpit `src/` write; live smoke PASSED `PI-104-SMOKE` (900 ms); runtime AHEAD of lockfile SDK 1.0.3 — expected mid-cycle, all four SDK 1.0.4 packages on npm; **SDK parity CLOSED same-day — PR #273 (merge `62cf9fa`): devDeps → `^1.0.4`, cockpit tree refreshed
+with `npm ci`, check-repo fully green (runtime == lockfile)**). **Previous: 1.0.3** (updated 2026-10-05; changelog scan: no extension-API changes — the one breaking change (Azure provider renamed `azure-openai-responses` → `azure`) does not touch this setup (zero config references); boot clean 10:31:47Z on the dev-path install; live smoke PASSED `PI-103-SMOKE` (1.4 s); guard probe BLOCKED a cockpit `src/` write — Rule 5 enforced; runtime AHEAD of lockfile SDK 1.0.2 — **SDK parity CLOSED same-day: PR #270 (merge `3d601c1`): devDeps → `^1.0.3`, cockpit tree refreshed with `npm ci`, check-repo fully green (runtime == lockfile)**). **Previous: 1.0.2** (updated 2026-10-04; changelog scan clean — additive only (`registerToolRenderer` etc.), no extension-API breaks, no migration; boot clean 02:00:05Z on the **dev-path install**; live smoke PASSED `PI-102-SMOKE` — 970 ms spawn → completion; guard probe BLOCKED a cockpit `src/` write — Rule 5 enforced; **SDK parity CLOSED the same day — PR #266 (`f3c1da9`, merge `7d2acbc`): the four devDeps → `^1.0.2`, cockpit tree refreshed with `npm ci`, check-repo fully green (the lockfile diff was a legitimate npm-11 dedupe: 323→233 tree entries, no direct-spec changes)**). **Previous: 1.0.0** (updated 2026-10-02; boot clean + live smoke PASSED: spawn → steer → completion, guard probe blocked a cockpit `src/` write — Rule 5 still enforced under 1.0.0) — devDeps/lockfile were **1.0.0 too** (PR #257, `5827745`): **that skew was CLOSED**, check-repo's runtime line was green then, and the cockpit's shared tree was refreshed with `npm ci`. **TypeScript is now 7.0.2** (PR #263, `0b1cdc3`): migrated via the single containment adapter `scripts/ts-ast.mjs` (`typescript/unstable/*`), exact pin, `target: es2024` (ADR 0013; #256 closes at release) — the cockpit tree was refreshed again and `check-repo` is green under TS 7 |
+| `main` | **`8a00ee3`** — **v2.4.0 released** (release merge `d954dd6`; bump commit `8a00ee3`; GitHub release published 2026-10-03; npm `latest` = 2.4.0 with signed provenance). **Pristine since 2026-09-30: no `node_modules`, no docs/graph/.pi** (all moved to the dev cockpit) |
+| `dev` | **`92cb3da`** (the v2.4.0 release commit `8a00ee3` + post-release docs commits) — the post-2.3.9 fix cycle shipped as **v2.4.0**: all 13 issues closed (10 manually — the release PR's comma-separated keyword list did not auto-close: friction `fixes-keyword-omission`; `dev` was briefly deleted by GitHub's auto-delete-head-branches and restored). Cycle: **#242** (#240 default-not-ceiling timeouts, `35badde`), **#243** (#239 schema-linked types, `fcb9dc2`), **#245** (#241 steer delivery, `9c9b754`), **#246** (#244 deadline wording + single-timer ownership, `f892e3f`), **#248** (#247 contributor parity, `dec5fb65`), **#250** (#249 ARCHITECTURE rewrite + module-map guard, `949be9d`), **#252** (#251 architecture rules as tests, `3e17491`), **#254** (#253 ADR backfill, `290cf9f`), **#257** (#255 SDK 1.0.0 bump + `erasableSyntaxOnly`, `5827745`) and **#263** (#256 TypeScript 7.0.2 + ES2024 via the AST adapter, `0b1cdc3`); main at the `v2.4.0` tag; **COCKPIT since 2026-09-30** (holds `.development/`, `graphify-out/`, `.pi/`, the shared `node_modules`) |
+| Running extension | **DEV-INSTALL MODE — the running extension is the dev checkout** (`pi install /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` @ `a54ca6a`; includes #265 (file-only logging) and #268 (Run History UX) — both live-verified; `pi list` shows exactly one entry; npm `latest` stays 2.4.0). **History:** worktree mode `brl-subagent-wt-259` (`08f63ee`) for the #268 live verification (incl. the alt+↑/↓ paging fix); before that, worktree mode `brl-subagent-wt-265` (`e4f37cc`) for #265 — the TUI stayed clean through a dispatch emitting the exact screenshot lines; before that, published dogfooding (`npm:brl-subagent` 2.4.0, ritual step 9, 2026-10-03): **`npm:brl-subagent` 2.4.0 — the PUBLISHED artifact** (ritual step 9 done 2026-10-03: dev-path install removed → `pi install npm:brl-subagent` → `pi update --extensions` → `/reload`; `pi list` shows exactly one brl-subagent entry; **published-build probe PASSED** — `RELEASE-240-OK`, 870 ms, spawn → completion; the single boot warning is the designed `approvalMode: 'writes'` auto-approve notice). **History of the dev-install period:** **reloaded 2026-09-29 15:03Z — #240/#241/#244 all LIVE**; **pi updated to 1.0.0 (2026-10-02) — post-update smoke PASSED** (clean boot, zero errors; live spawn → steer → completion probe
 SMOKE-STEER-100; the guard extension loaded and blocked a cockpit `src/` write probe; 1.0.0's changelog has no breaking
 format, no extension-API changes and no migration doc — its defaults changed TUI mode to fullscreen): `npm:brl-subagent` was removed and the ABSOLUTE dev path installed; `pi list` shows exactly one brl-subagent entry (the dev tree, registered source displays as a relative path but resolves correctly). A user `/reload` activates it in-session — until then the session still holds the published 2.3.9. To remove later, use the ABSOLUTE path from `pi list` (friction `pi-remove-source-mismatch`). Rationale: the user is daily-driving the dev tree for a few days. |
 | npm | **2.3.9 live (latest)** — published and approved 2026-09-27; the running install was switched to it (step 8) |
 | Worktrees | main + dev only (cockpit = dev; every task worktree cleaned) |
 | Graph | **1028 nodes / 2619 edges / 62 communities** — refreshed **2026-09-30** to describe the **DEV** tree (first refresh under the new model: `graph-refresh.sh` per merge; 17 files re-extracted, ~$0.01; `graph-check.py` green: 33/33 modules, 313/313 exported symbols). Pre-refresh state archived by graphify as `graphify-out/2026-09-30/` |
+
+## Next actions (2026-10-05, post-#272)
+
+**Recently closed:**
+- **#230** (P0, Rule 11) — closed no-fix 2026-10-04: the installed graphify hook stands down in linked
+  worktrees, so the cockpit graph changes only through the check-gated `graph-refresh.sh`; the residual
+  exposure is the `main` checkout's gitignored artifact (nothing consumes it for scoping). Upstream
+  graphify#3580 stays open for them; local graphify is now 0.9.75.
+- **#265** (BUG) — fixed & closed 2026-10-04: PR #267 (merge `984a52e`) — logging is file-only by default
+  (`BRL_LOG_CONSOLE=1` opt-in), five `console.*` sites routed through loggers, 8th architecture rule
+  (AST-based). Live-verified at the point of use: the dispatch that used to corrupt the TUI produced zero
+  terminal writes while every entry landed in the file log. Reaches npm users with the next release.
+
+- **#259/#260/#261 (LOW) — Run History UX** — fixed & closed 2026-10-04: PR #268 (merge `a54ca6a`) — one
+  row per settled run (`collapseRunsForHistory`, terminal-preferred, in-flight omitted; ordering fixed to
+  newest-first after a stray `.reverse()` made it oldest-first), detail returns to the list (browse loop),
+  full-output panel with honest transcript/cap lines. Paging is **alt+↑/↓** — PgUp/PgDn are host-reserved
+  by pi's alt-screen viewport in fullscreen mode and a `ctx.ui.custom` overlay cannot claim them (live-
+  proven; terminal-encoding differences out of scope unless a user reports one). Live-verified end-to-end
+  before merge; 60 files / 1235 tests.
+- **Worktree skill progressive disclosure** (PR #269, merge `c6ec1f5`) — `SKILL.md` 642→**290 lines** + six
+  one-level `references/` files (release ritual, local development, review dispatch, friction log, sprint-end,
+  rule narratives). Reviewed honestly: the first pass overstated preservation (“nothing deleted”) — the
+  completion pass (`89f804f`) restored the full verbatim rule narratives and three dropped index details;
+  verified 18/18 narrative rule blocks verbatim, all 21 rules intact in order.
+- **Glossary started (2026-10-09)** — `.development/GLOSSARY.md`: plain-language definitions for terms that
+  earned their keep (first entries: oracle, ground truth, spec, backstop, invariant, ratchet, regression,
+  linter, ADR). Added at the maintainer's request — entries are added/refreshed whenever a term causes
+  confusion or becomes load-bearing.
+- **#295 (BUG) — fixed & closed 2026-10-09**: PR #297 (merge `aec6659`) — a SIGKILLed foreground subagent was
+  finalized as a false `done` (signal death → fabricated exit 0 → category `unknown`). Now: signal captured,
+  `exitCode -1` sentinel on `code === null`, unstaged external kills stamped `SUBAGENT_SIGNAL_KILLED_MESSAGE`
+  → existing category `crash`, staged timeout/abort reasons preserved. Adversarial review (glm-5.3-flash,
+  2 runs due to the 30m background cap): `approve-with-nits`; mutation probes 4a/4b killed (sentinel and
+  classify rule both load-bearing); review finding F1 (settled signal-death runs took the TUI raw-text branch)
+  fixed in `c445625` with a mutation-pinned test. 61 files / 1265 tests. **#298 filed** (centralize the
+  partial-vs-settled predicate — `-1` is overloaded). Probe evidence:
+  `.development/investigations/option-b-probes-2026-10-09.md`.
+
+**Hygiene done 2026-10-04:** GitHub *auto-delete head branches* is **OFF** (`delete_branch_on_merge=false`);
+`worktree-cleanup.sh` now auto-derives the branch and deletes **local + remote** heads (never `dev`/`main`)
+and skips its cockpit pull with a warning on a dirty tree — functionally tested end-to-end; the local backup
+tarball (`cockpit-backup-20260930-203530.tar.gz`, 12 MB) and `main/.tmp/` are pruned. Also fixed locally: the
+`project-docs` preset's tools list omitted `bash` despite its own “do not remove” comment (the first
+skill-restructure dispatch was stopped pre-write by the pre-flight warning), and today's three frictions are
+logged (merge-refresh miss, preservation-claim overstatement, preset drift).
+
+**Post-merge graph refreshes:** #269 (2026-10-04) → 1438 / 3195 / 160; #270 (2026-10-05) → 1458 / 3219 / 159;
+#272 (2026-10-05) → 1517 / 3339 / 161; **#273 (2026-10-06) → 1531 / 3261 / 210, coverage 33/33 modules +
+319/319 symbols**. The 10-04 flagged `SKILL.md` semantic shrink (23→10) is the restructure itself (content
+moved into the new references, extracted in the same pass).
+
+**#271 (TEST) — fixed & closed 2026-10-05: PR #272 (merge `a1b30ca`)** — Tier-2 harness spawns a
+controlled stub via `BRL_PI_BIN` (real pi opt-in via `BRL_E2E_REAL_PI=1`, loud when unavailable); no
+vacuous passes (sentinel rejected per case, order/overlap proven from a stub log, pre-spawn case asserts
+the specific conflict + empty log). Focused review PASS WITH NOTES → all accepted findings fixed; two
+notes recorded inline; `sandbox` naming purged (that system was removed in v2.1.1). **Standing instruction
+(2026-10-05): review dispatches use `deepseek/deepseek-flash`** — replaced `deepseek-v4-pro`, which
+dropped a review mid-run on a transient connection error.
+
+**#282 MERGED 2026-10-06 — BOARD EMPTY.** PR #289 (`9c7cf3b`), closed manually. One shared temp-dir +
+log-cwd lifecycle helper (`src/__tests__/fixtures/temp-lifecycle.ts`) adopted by the 8 drifted files; the
+load-bearing order is now structural: clear log cwd → drain (`setImmediate`) → rmSync (the #277 late-write
+lesson). `transcript.test.ts` (single dir in `beforeAll` + per-test unlinks) and the three non-lever `mkdtemp`
+users are documented exclusions. Conductor-run acceptance: suite 61/1258 green, `/tmp` = 0 after a full run,
+after fan-out ×3, and after session-manager alone; `cannot delete branch` 0 and `context canceled` 0 (the
+#277/#284 fixes holding). Test-only — no `/reload` needed. Delivered across EIGHT external connection drops
+with ~3 minutes of total lost work: commit-per-step cadence + short units (friction log: connection-drop-grind).
+
+**#287 MERGED 2026-10-06** — PR #288 (`b20e794`), closed manually. The transcript-path format is now
+ratcheted by an architecture rule (mirrors the runtime-vocabulary literal walk; type-position skip; scope =
+top-level `src/*.ts`). Conductor's independent mutation test confirmed it bites. `ARCHITECTURE.md`'s rule
+enumeration reconciled to nine rules (adds #239, #265, #287). Test + docs only — no `/reload` needed.
+
+**#280 MERGED 2026-10-06** — PR #286 (`aed2aa8`), closed manually. One-file fix: `get_agent_result`'s pointer
+renders via `transcriptDisplayPath`; the redundant dynamic `getTranscriptPath` import is gone. Needs one
+`/reload` to activate (extension code). Graph: the post-merge refresh was the day's third guard refusal
+(net −1, docs-semantic variance) — written with `--allow-partial` after graph-check verified 34/34 modules
+and 322/322 symbols.
+
+**#284 MERGED 2026-10-06** — PR #285 (`15f82c6`), closed manually. One long-lived TS7 `API` per worker in
+`scripts/ts-ast.mjs`; measured tsgo spawns **92 → 4**, `context canceled` **13 → 0**, suite green, no orphans.
+API gotcha for anyone making the adapter long-lived again: the tsgo server caches virtual file content **by
+path**, so a reused client must pass `updateSnapshot({ fileChanges: { changed } })` (the per-call client only
+avoided it via an empty per-child cache). Wall-clock delta negligible — the win is process churn, noise, and
+kill-race surface. Not extension code (scripts/), so no `/reload` needed.
+
+**#283 (TEST) closed 2026-10-06 as not reproducible** — filed from a second-hand side observation without
+retained raw evidence; `isolate: true` (per-file workers) killed the leakage hypothesis; 5 green low-worker
+runs (2 unloaded, 2 under 14-burner load, 1 file-alone). See the issue's closing comment.
+
+**Batch 2026-10-06, autonomous resolution** (maintainer blanket approval; specs = the issue bodies +
+pinned decisions): **#274 + #275 + #276 + #277 MERGED — batch complete.** PRs #278 (`6e837fc`), #279
+(`615d05e`), #281 (`0d068aa`); all four closed **manually** (`Fixes` keywords do NOT auto-fire: PRs here
+target `dev`, not the repo's default branch — close every merged issue by hand). **#277 outcome:** items 1+2
+fixed (git stderr capture; fan-out log-cwd teardown — root cause was a late logger write re-creating a deleted
+temp dir, not a missing `afterAll`); item 3 sourced to the **TypeScript 7 native compiler's Go runtime**
+(`context canceled` under load: stderr inherit + kill race) — record + self-contained repro at
+`.development/investigations/277-context-canceled/`; optional lever = one long-lived `API` in
+`scripts/ts-ast.mjs`. None block a release. Any reviewer dispatch uses `deepseek/deepseek-flash`.
+
+**Graph (2026-10-08/09):** the post-#290 refresh was refused a 4th time — and now required **BOTH** force flags
+(`--allow-partial`: unverified semantic shrink of `HANDOFF.md`, 25→18; `--allow-dedup-shrink`: 2 merged nodes,
+one fuzzy). Forced only after attributing the reduction to docs/reference-side variance (the merge touched
+`package.json` + lockfile, no `src/`), then `graph-check.py` re-verified 34/34 modules + 322/322 symbols — graph
+now **1490 nodes / 3273 links**. A routine docs-only merge needing manual two-flag reconciliation is the
+strongest escalation signal yet; monitoring continues (alternatives recorded: the codegraph bake-off, or an
+in-repo `ts-ast` extractor for the critical path). Then the **5th refusal arrived with the Phase 0 bake-off
+merge itself (PR #291, docs-only)**: unverified semantic shrink of `FRICTION_LOG.md` (26→12) and `HANDOFF.md`
+(16→9) — both files GREW that day, so pure LLM-extraction variance — net −20; forced with `--allow-partial`
+only, re-verified 34/34 + 0/322; graph now **1470 nodes / 3271 links**. Window tally: **5 refusals, 0 involving
+`src/` structure** — the alternative that cannot exhibit this class shipped its evidence in the merge that
+exhibited it. **#6 (2026-10-09, PR #293, docs-only — the durability assessment):** three docs shrank
+(FRICTION_LOG 22→7, HANDOFF 10→4, SKILL 30→23), net −15 (1528→1513), again **both flags**; and the mtime
+freshness check flagged STALE purely because the auto-sync probe's restored `src/paths.ts` touch bumped its
+mtime with content unchanged — the exact class `codegraph-check.py`'s `indexed_at_commit == HEAD` assertion
+removes. **Tally: 6 refusals, 0 with `src/` structure; graph now 1513 / 3323.** Post-#294 refresh (2026-10-09):
+clean pass, no refusal — variance again. **#7 (2026-10-09, PR #300 plan-doc merge):** HANDOFF 36→7, FRICTION_LOG 21→4, net −35;
+**both flags** needed again — and the single-flag force silently no-op'd (caught via `graph.json`'s unchanged
+mtime, not the check); forced → **1534 / 3382**, 34/34 + 0/323. **Tally: 7 refusals, 0 involving `src/`.** Earlier day pattern (2026-10-06): 3 refusals (post-#278
+dedup → `--allow-dedup-shrink`; post-#279 incomplete docs pass → from-scratch rebuild; post-#286 net −1 →
+`--allow-partial` + coverage check) and 4 clean passes. Pre-rebuild 1530-node graph kept at
+`graphify-out/graph.json.pre-276-rebuild`.
+
+**Other candidates (marked, not filed):** the `showSelectList` preselect nice-to-have deferred from #260,
+**the next release — user decision 2026-10-08: after dependabot's weekly visit (Saturdays; next 2026-10-10)**,
+so one release absorbs any dependabot bumps (urgent/security still interrupts). Saturday is expected to re-open
+vitest (`^5.0.0` vs latest 5.0.3) and typebox (`^1.3.34` vs 1.3.36) — triage → merge (bump worktrees +
+`npm ci` refresh) → doc cleanup → release ritual; and — **parked 2026-10-06** — the
+**codegraph evaluation** (`colbymchenry/codegraph`: MIT, Rust/tree-sitter kernel, local SQLite, MCP + CLI,
+no LLM in the extraction path). Front-runner alternative to graphify precisely because graphify's failures are
+all in its LLM semantic layer (3 guard refusals on 2026-10-06, thin doc extraction, no true rebuild path,
+~$0.2 rebuilds). Bake-off bar if/when picked up: (1) reproduce `graph-check.py`'s coverage (34/34 modules +
+322 exported symbols reachable via its JSON/DB), (2) query parity on today's real questions — the re-export
+seam (`session-manager.getTranscriptPath` → `transcript-path.ts`) and `setLogCwd`'s callers, (3) determinism
+(index twice → identical; incremental sync with no manual intervention), (4) integration cost (`graph-check` +
+`graph-refresh` rewrite; explicit `codegraph sync` in the merge ritual, not the watcher — the #230 discipline).
+Hold until graphify's monitoring window closes; telemetry off, `.codegraph/` gitignored, pinned version.
+
+**PHASED METHOD (agreed 2026-10-08; user approved Phase 0 execution).** *Phase 0 — bake-off, tool-side only:*
+CLI-only (no MCP/agent wiring), pinned install, `DO_NOT_TRACK=1`; index a **scratch clone** of the
+repo (NOT the cockpit — ADR 0011's authoritative tree must not carry exploration state; note
+`check-repo.sh` filters untracked paths, so a cockpit `.codegraph/` would NOT trip it — that earlier
+claim was wrong); run the bake-off bar above plus cost/latency/DB-size; and
+cost the **third option** — an in-repo `ts-ast` extractor for the same four queries, reusing `allEdges()`.
+Deliverable: findings file + recommendation. *Phase 1 (only if Phase 0 passes):* integration prototype in a
+worktree — `.gitignore`, a `graph-check` adapter over its SQLite/JSON, a `graph-refresh` equivalent, skill +
+ARCHITECTURE docs. *Phase 2:* side-by-side dogfooding with explicit `codegraph sync` at merges and the watcher
+off (the #230 discipline); then the switch decision and an ADR in the 0013/0014 shape.
+
+**Phase 0 RUN 2026-10-08 — PASS on every bar item** (coverage 34/34 + 0/322 in 5ms; query parity incl.
+the re-export seam, both directions; byte-identical re-index; docs-only sync a no-op; adapter prototyped).
+Findings + prototype: `.development/investigations/codegraph-bakeoff-2026-10-08/` (PR #291, merged
+`bf4a628`). **Phase 2 (dogfood) TRIAL RUN (2026-10-08)** — CLI installed pinned via **pnpm global** (`pnpm add -g @colbymchenry/codegraph@1.6.2`; `npm i -g` targets `/usr/local` → needs root on this machine — merged docs/error text corrected in place
+the same day). Cockpit indexed: 122 files → 2,272 nodes / 7,797 edges, `.codegraph/` gitignored, porcelain
+clean. First dogfood: `codegraph-refresh.sh` green (34/34 + 0/322, "index was built from HEAD"). Query-parity
+sample: **12/12** after fixing my comparison methodology (two intermediate passes each had ground-truth artifacts
+in opposite directions — the definition-line/definition-file treatment; CodeGraph was correct in all cases).
+Caveat found: `is_exported` has false positives (`displayTaskName` is unexported but flagged) — the guard matches
+by name, so it is unaffected; do not use the flag as ECMAScript-export truth. **RECONCILED (2026-10-10 — ADR 0015, PR #309 merge `84f6df1`):** the one-off trial above is NOT the formal Phase 2 window. Per ADR 0015, Phase 2 opens at the first post-dependabot merge and runs BOTH refreshes at every merge (`graph-refresh.sh` remains the gate; `codegraph-refresh.sh` shadows it), on the ADR's criteria (refusal rate, sync time, 5–10 query-parity questions; retire/narrow after a week or N merges). The cockpit `.codegraph/` (11 MB, gitignored) is already present from the trial, so the open item is per-merge usage, not adoption. Latest data point: the post-#309 refresh was refused again (#8; docs-only; both flags) — friction entry added. **PHASE 2 (formal) STARTED 2026-10-10** — first data point at the dependabot merge `bad271e`: the graphify gate REFUSED (#9; lockfile-only merge; 149 s; `--allow-partial`) while the CodeGraph shadow passed in 5 s with `indexed_at_commit == HEAD`; window tally 9 refusals / 0 `src/` structure. Phase 2 log: `.development/investigations/codegraph-phase2-dogfood-2026-10-10.md`. Data point #2 (`924a13d`, code merge): gate PASS 71 s; CodeGraph PASS 2 s (380 symbols, `== HEAD`). **PR #311 merged (`924a13d`)** — #298 (partial-vs-settled predicate) + #306 (four review nits) closed; Luna verdict APPROVED with one comment-precision nit, fixed conductor-side (`960dd00`) before merge; suite 66 files / 1349. All pre-release items are closed except **#299** (the documented D6 destination — trigger-based, not scheduled). **RELEASE CYCLE STARTED (2.5.0).** **DEPENDABOT #310 merged (`bad271e`)** — dev-deps lockfile-only bump; isolated `--force-isolated` suite + tsc + CI green; shared tree refreshed (`npm ci`, 161 packages); worktree cleaned; no strays. Same-day contrast: the post-#292
+graphify refresh **passed cleanly, no refusal** (1528/3368, ~$0.06) — same input class as #5's refusal;
+variance confirmed. Dogfood window open. **CLI pinned at 1.6.2** (decision 2026-10-08): updates are
+deliberate bumps — `pnpm add -g @colbymchenry/codegraph@<v>` → full `codegraph index` → refresh green;
+`codegraph upgrade --check` is the awareness command; never `codegraph upgrade` while pnpm-managed.
+Install layout: registry route (per-platform optional-dep carrying the vendored Node runtime; no postinstall
+script); the GitHub-releases download fallback exists but is unused here.
+
+**Durability decision (2026-10-09):** delegated design investigation (`pi-durable` fit → PR #293, merge
+`5f73608`) — the user approved **Option B (mine the patterns)**: idempotent `dispatchId` + intent-before-effect
+run records, `session_start` recovery, per-step checkpoints, a task-graph-style TUI panel (~3–5 C1/C2 PRs),
+with Option C (wait/watch) as the revisit trigger for Option A. Falsifiers that would flip to A are in the doc
+(pi-durable leaving Experimental AND the published coding-agent depending on it; a spike proving
+approval-as-hook + cheap TUI attach; or B's crash harness collapsing). Key evidence: crash → `resume()`
+confirmed on SQLite + JSONL; **`resume` ≠ `retry`** — the parked background-retries decision stays open.
+Implementation not started; the doc carries the 7-step execution sketch for a future spec. **Probe findings merged
+(#294, `75f41b8`):** intent-before-effect already true on both paths; **#295** filed (SIGKILLed foreground
+subprocess finalizes as false `done`); **#296** filed (conductor death → orphaned child keeps running, entry
+stuck `running`); SDK resume is **file-backed only** (background `inMemory`, foreground `--no-session`) — a
+session-persistence decision joins the prerequisites. Next: fix **#295**, then the six decisions → spec. **Option B decision log: D1 LOCKED (2026-10-09) — file-backed sessions, staged **A₁** (persistence + retention, no resume logic; measure) → **A₂** (resume with guards); the torn-write probe addendum resolved the discovery risk.** **D2 LOCKED (2026-10-09) — recovery posture: session-scoped config in `/brl-subagent` (`offer` default | `auto` opt-in | `off`), plus a per-run posture snapshot at dispatch so `auto` survives a session boundary; one recovery path, phased `offer`/`off` → `auto` with its guard block (cost-cap accounting, reap-first, env-exists, per-boot cap, quiet-turn, P4 dedupe).** **D3 LOCKED (2026-10-09) — interrupted state: additive `interruptedAt` metadata on BOTH records (run entry + `.pi/subagents/<id>.json` agent record), status stays `running` (non-terminal, correct for unresolved), centralized `isInterruptedRun` predicate. No new status value: old readers would drop such records (history silently, state with a `Corrupted run entry skipped` warning) and `state.ts:87/111` would misread a fourth value as *resolved*.)** **D4 LOCKED (2026-10-09) — `dispatchId`/`resumeOf`/`attempt` are INTERNAL additive record fields, NOT `delegate_task` params (avoids the schema↔`KNOWN_DELEGATE_KEYS`↔ratchet-chain choreography; exposing them later is additive with no data migration).** **D5 LOCKED (2026-10-09) — v1 scope: detection/marking for all three paths; actions differentiated — background gets resume (A₂) + re-dispatch, foreground gets re-dispatch only (no persistable session), fan-out gets mark + MANUAL re-dispatch. Linkage fields (`batchId`+index) written on units in v1 (cheap, enables Run History grouping); the batch plan record + resume engine are deferred until automatic reassembly is scheduled (≈5–6 units, plus the shared-tree-invalidation and result-semantics decisions — `gitMode: branch` is rejected for fan-out, so all units share one working tree). Auto mode stays phased (D2).** **D6 LOCKED (2026-10-09) — orphan reaping: persist pid + run-id env marker at spawn; kill in-memory pids at shutdown; at boot, verify identity (marker in `/proc/<pid>/environ`, or cmdline+start-time) before SIGTERM→SIGKILL, then mark interrupted; ordering is reap → mark → offer/resume. Grandchildren survive child-only reaping (P2a's `sleep` case) — process-group kill (setsid + persisted pgid) is the TARGETED HARDENING DESTINATION, tracked as issue #299.** **All six Option B decisions are LOCKED (D1–D6, 2026-10-09) — the spec is writable.** **U1 STATUS (2026-10-09 late): PR #301 open — adversarial review verdict `changes-requested` (critical: foreground run records are session-only, so the default fresh boot can't discover them → nothing reaped/marked; majors: unbounded agent-store parse at every session_start, N×grace boot stall). **Fix A BANKED + VERIFIED**: commit `82d6282` (durable `.pi/run-registry/` mirror via a single persist choke point, registry-sourced boot scan, wait-once reap, e2e isolation) — tsc clean, suite 63 files / 1304 tests, no real-store leaks; Fix A's drop-time audit (un-isolated persistRun tests) resolved benignly. **Fix B charter PENDING** (unify the preference rule, revisit already-marked records with live children, `owner:{}` policy, `reapActiveChildren` fixed 5s, `types.ts` doc drift, DRY refactors) → scoped re-review (deepseek-flash, 2026-10-09) **APPROVED** — all 11 dispositions fixed, P2b acceptance proven non-tautological (fails under a registry-source mutation), suite 64/1321, tsc clean, no real-store leaks; **MERGED 2026-10-09 — PR #301 merge commit `7916dad` into dev (no squash); both worktrees cleaned; graph refreshed (39/39 modules, 375/375 exported declarations — no guard refusal this time; the src-heavy merge passed where docs-only merges refused). #296 stays OPEN until the release merge: GitHub's `Fixes` auto-close fires only on the default branch (`main`) — same mechanic as the v2.4.0 batch. RULE-6 CHECKPOINT: U1 alters the extension, so it is NOT active in the running install until a release; live rule-9 verification (C1) is deferred to release time under npm dogfooding / the dev toggle. New minor to fix opportunistically: `src/session-manager.ts:144-146` comment (stale since the registry switch). **LIVE VERIFICATION (2026-10-09, dev toggle + /reload on merged dev): P2b PASSED both halves** — fabricated dead-owner registry entry + live marker child → child reaped (`reaped:[63762]`) and the entry stamped `interruptedAt` (15:14:33.484Z); observed one ~5.0s grace window awaited at session_start during a reap (designed wait-once; an early-exit there is a candidate nit). Side-finding filed #304: the registry mark silently no-ops for ids the UUID guard rejects while the boot log still claims `marked:1` (latent — all real ids are UUIDs; silent failure + decision-not-write ledger). Next per plan: **U2** (U1 → U2 → U3 → measurement gate → U4). **BUG BATCH (2026-10-10, pre-dependabot): #303 + #304 → PR #305 (merge `a10ffe7`); #302 + #308 → PR #307 (merge `aca74b0`).** Both reviewed by the maintainer-chosen `openrouter/~openai/gpt-luna-latest` (adversarial + scoped re-check; #307's review returned CHANGES-REQUESTED once and the fix round caught #308, a commit-reachability regression the leak fix introduced — re-check then APPROVED). Conductor verification on #307: tsc clean, 66 files / 1343 tests, docs-arch 39 modules, detached-worktree runs leave HEAD unchanged + zero strays, CI green. #303/#304/#302/#308 close at the release merge (Fixes keywords fire on the default branch only). Review evidence pinned: `.development/investigations/fix303-304-review-findings-2026-10-10.md`, `fix302-review-findings-2026-10-10.md`, `fix302-recheck-findings-2026-10-10.md`. Release checkpoint unchanged (no release). Next: **U2** when the maintainer is back. Verification findings pinned: `.development/investigations/u1-review-verification-findings-2026-10-09.md`. New nit for the backlog: `src/session-manager.ts:144-146` comment still says boot recovery uses `listPersistedAgents` — stale since the registry switch (comment-only). Review findings pinned: `.development/investigations/u1-review-findings-2026-10-09.md`.** **Plan doc merged: PR #300 (merge `45165a8`) — `.development/PROPOSAL_PLAN-OPTION_B_DURABILITY.md` (units U1–U4; U4 gated on the U2/U3 measurement). Next: U1 spec for approval.**
 
 ## Cockpit layout (moved 2026-09-30)
 
@@ -267,11 +449,11 @@ the first fixture also matched the text scan; see friction `spec-derived-test-ta
 dev→main release. Findings:
 `.development/investigations/deadcode-triage-2026-09-27/`.
 
-All worktrees cleaned; `main` @ `b7c52e4` (v2.3.9, **pristine**), `dev` @ `22a1955` (**the cockpit**); the running
-install is the DEV tree (daily-driving; #240 + #241 + #244 live). Board: **#230** (P0 Rule 11, graph hook —
+All worktrees cleaned; `main` @ `8a00ee3` (**v2.4.0**, pristine — the graphify hook's stray partial graph was removed),
+`dev` @ `8a00ee3` (**the cockpit**, fast-forwarded to the release). **v2.4.0 is PUBLISHED — GitHub release live, npm `latest` at 2.4.0, and the running install switched to the published package** (ritual step 9 done; published-build probe PASSED). The dev cockpit stays on disk for the next cycle — only the install changed. Board: **#230** (P0 Rule 11, graph hook —
 now also the owner of the hook-side path model, parked pending the upstream-evidence call) + **#259/#260/#261**
 (LOW, Run History UX — one row per run / list-returning navigation / full-output view; logged 2026-10-03);
-**#229/#233/#235/#239/#240/#241/#244/#247/#249/#251/#253/#255/#256** merged to `dev`, auto-close at the next dev→main release.
+**#229/#233/#235/#239/#240/#241/#244/#247/#249/#251/#253/#255/#256** are **CLOSED** (v2.4.0).
 Cockpit move **COMPLETE** (Phases 0–1b DONE 2026-09-30; pi now runs from `brl-subagent-dev`);
 Phase 2 **MERGED** (PR #248 → `dec5fb65`; contributor parity live on `dev`); docs infra **MERGED**
 (PR #250 → `949be9d` — ARCHITECTURE lean + generated-guarded) + architecture rules **MERGED**

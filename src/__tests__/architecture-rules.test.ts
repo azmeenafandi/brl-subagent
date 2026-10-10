@@ -28,9 +28,14 @@ import { describe, expect, it } from "vitest";
 import {
 	isCallExpression,
 	isExportDeclaration,
+	isIdentifier,
 	isImportDeclaration,
 	isNamedImports,
+	isNoSubstitutionTemplateLiteral,
+	isPropertyAccessExpression,
 	isStringLiteral,
+	isTemplateExpression,
+	isTypeNode,
 	parseTexts,
 	SyntaxKind,
 } from "../../scripts/ts-ast.mjs";
@@ -47,6 +52,13 @@ const PROCESS_EXECUTION_MODULES = new Set(["runner.ts", "git.ts"]);
 
 /** Modules whose whole point is to stay dependency-free so they remain unit-testable. */
 const PURE_HELPER_MODULES = new Set(["tui-format.ts", "transcript-tail.ts"]);
+
+/**
+ * The one module allowed to reference `console.*` directly: it owns the opt-in
+ * terminal mirror (issue #265). Every other module routes through its logger so
+ * extension code cannot corrupt pi's TUI renderer.
+ */
+const CONSOLE_MIRROR_MODULE = "logging.ts";
 
 /**
  * The reader API of `session-manager.ts` that non-entry modules may import. `tui.ts` reads live agent
@@ -137,6 +149,28 @@ function resolveModule(specifier: string): string | null {
 	if (!specifier.startsWith(".")) return null;
 	const candidate = specifier.replace(/^\.\//, "").replace(/\.ts$/, "") + ".ts";
 	return listModules().includes(candidate) ? candidate : null;
+}
+
+// ---------------------------------------------------------------------------
+// Literal flattening (the transcript-path format ratchet, #287)
+// ---------------------------------------------------------------------------
+
+/** Placeholder standing in for a `${…}` substitution inside a template literal. */
+const SUBSTITUTION = "\u0000";
+
+/**
+ * Flatten a string literal or template to the text its static parts produce.
+ * `${…}` substitutions become `SUBSTITUTION`, so a pattern can match across the
+ * whole literal (e.g. `.pi/output/agent-${id}.jsonl`) without knowing the value.
+ */
+function flattenLiteralText(node: Node): string {
+	if (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) return node.text;
+	if (isTemplateExpression(node)) {
+		let text = node.head.text;
+		for (const span of node.templateSpans) text += SUBSTITUTION + span.literal.text;
+		return text;
+	}
+	return SUBSTITUTION;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +272,66 @@ describe("architecture rules (issue #251)", () => {
 		expect(
 			offenders,
 			`lifecycle mutators belong to the entry point: allowed from session-manager outside index.ts — ${[...SESSION_MANAGER_READER_API].join(", ")}`,
+		).toEqual([]);
+	});
+
+	it("raw console calls are confined to logging.ts (#265)", () => {
+		const CONSOLE_METHODS = new Set(["log", "warn", "error", "info"]);
+		const offenders: string[] = [];
+		for (const [absolute, source] of moduleSourceFiles()) {
+			const file = absolute.slice(absolute.lastIndexOf("/") + 1);
+			if (file === CONSOLE_MIRROR_MODULE) continue;
+			const visit = (node: Node): void => {
+				if (
+					isCallExpression(node) &&
+					isPropertyAccessExpression(node.expression) &&
+					isIdentifier(node.expression.expression) &&
+					node.expression.expression.text === "console" &&
+					CONSOLE_METHODS.has(node.expression.name.text)
+				) {
+					offenders.push(`${file} → console.${node.expression.name.text}()`);
+				}
+				node.forEachChild(visit);
+			};
+			source.forEachChild(visit);
+		}
+		expect(
+			offenders,
+			"extension code runs inside pi's TUI process — route console output through createLogger (logging.ts); raw writes corrupt the renderer",
+		).toEqual([]);
+	});
+
+	it("the transcript-path format is single-sourced in transcript-path.ts (#287)", () => {
+		// The transcript path (`.pi/output/agent-<id>.jsonl`) has ONE declaration,
+		// `transcript-path.ts`; every other module derives it through TRANSCRIPT_DIR,
+		// transcriptPath or transcriptDisplayPath. A re-inlined copy is legal to write
+		// and drifts silently, so the format is ratcheted here. Scope is the top-level
+		// `src/*.ts` modules this suite reads (listModules reads `src/`
+		// non-recursively): the pinned literals in `src/__tests__/**` are test fixtures
+		// and stay legal.
+		const SINGLE_SOURCE = "transcript-path.ts";
+		const FORMAT_PATTERNS: readonly RegExp[] = [/\.pi\/output/, /agent-.*\.jsonl/];
+		const offenders: string[] = [];
+		for (const [absolute, source] of moduleSourceFiles()) {
+			const file = absolute.slice(absolute.lastIndexOf("/") + 1);
+			if (file === SINGLE_SOURCE) continue;
+			const visit = (node: Node): void => {
+				// Type positions (`type T = ".pi/output"`) are erased and never a
+				// re-inline; prune their subtree like the vocabulary ratchet does.
+				if (isTypeNode(node)) return;
+				if (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node) || isTemplateExpression(node)) {
+					const text = flattenLiteralText(node);
+					if (FORMAT_PATTERNS.some((pattern) => pattern.test(text))) {
+						offenders.push(`${file} → ${JSON.stringify(text)}`);
+					}
+				}
+				node.forEachChild(visit);
+			};
+			source.forEachChild(visit);
+		}
+		expect(
+			offenders,
+			`the transcript-path format lives only in ${SINGLE_SOURCE} — import TRANSCRIPT_DIR / transcriptPath / transcriptDisplayPath instead of re-inlining it`,
 		).toEqual([]);
 	});
 });

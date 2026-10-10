@@ -15,6 +15,8 @@ vi.mock("node:child_process", () => ({
 // Import after mocks are set up
 const {
 	getCurrentBranch,
+	getHeadState,
+	restoreHead,
 	hasUncommittedChanges,
 	createWorkBranch,
 	captureDiff,
@@ -166,6 +168,79 @@ describe("switchToBranch", () => {
 		});
 		const result = switchToBranch("/repo", "nope");
 		expectOk(result);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getHeadState / restoreHead (#302 detached-HEAD teardown)
+// ---------------------------------------------------------------------------
+
+describe("getHeadState", () => {
+	beforeEach(() => {
+		mockExecFileSync.mockReset();
+	});
+
+	it("reports attached state with the branch name when symbolic-ref succeeds", () => {
+		mockExecFileSync
+			.mockReturnValueOnce("abc123\n") // rev-parse HEAD
+			.mockReturnValueOnce("main\n"); // symbolic-ref --short -q HEAD
+		const state = getHeadState("/repo");
+		expect(state).toEqual({ sha: "abc123", detached: false, branch: "main" });
+		expect(mockExecFileSync).toHaveBeenCalledWith(
+			"git",
+			["rev-parse", "HEAD"],
+			expect.objectContaining({ cwd: "/repo" }),
+		);
+		expect(mockExecFileSync).toHaveBeenCalledWith(
+			"git",
+			["symbolic-ref", "--short", "-q", "HEAD"],
+			expect.objectContaining({ cwd: "/repo" }),
+		);
+	});
+
+	it("reports detached (label 'HEAD') when symbolic-ref exits non-zero", () => {
+		mockExecFileSync
+			.mockReturnValueOnce("abc123\n")
+			.mockImplementationOnce(() => {
+				throw new Error("fatal: ref HEAD is not a symbolic ref");
+			});
+		const state = getHeadState("/repo");
+		expect(state).toEqual({ sha: "abc123", detached: true, branch: "HEAD" });
+	});
+});
+
+describe("restoreHead", () => {
+	beforeEach(() => {
+		mockExecFileSync.mockReset();
+	});
+
+	it("switches back to the branch when the start was attached", () => {
+		mockExecFileSync.mockReturnValue("");
+		const result = restoreHead("/repo", { sha: "abc123", detached: false, branch: "main" });
+		expect(result.ok).toBe(true);
+		expect(mockExecFileSync).toHaveBeenCalledWith(
+			"git",
+			["checkout", "main"],
+			expect.objectContaining({ cwd: "/repo" }),
+		);
+	});
+
+	it("re-detaches at the captured sha when the start was detached", () => {
+		mockExecFileSync.mockReturnValue("");
+		const result = restoreHead("/repo", { sha: "abc123", detached: true, branch: "HEAD" });
+		expect(result.ok).toBe(true);
+		expect(mockExecFileSync).toHaveBeenCalledWith(
+			"git",
+			["checkout", "--detach", "abc123"],
+			expect.objectContaining({ cwd: "/repo" }),
+		);
+	});
+
+	it("returns { ok: false, error } on failure", () => {
+		mockExecFileSync.mockImplementation(() => {
+			throw new Error("error: pathspec 'HEAD' did not match any file(s) known to git");
+		});
+		expectOk(restoreHead("/repo", { sha: "abc123", detached: true, branch: "HEAD" }));
 	});
 });
 

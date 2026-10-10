@@ -70,6 +70,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `git.ts` | Branch-based git workflow for worktree runs: branch creation, diff capture, switch-back, cleanup. |
 | `history.ts` | Run-record store: creation, finalization, retry lookup, and history pruning. |
 | `index.ts` | Entry point: tool/command registration, the delegate_task handlers, and the execution-mode runners. |
+| `kill-escalation.ts` | The one SIGTERM → grace → SIGKILL escalation shared by foreground reap, abort/timeout, and boot recovery. |
 | `logging.ts` | Leveled structured logging with file output and rotation under `.pi/subagent-logs/`. |
 | `messaging.ts` | Inter-subagent messaging: the Intercom channel and `[TO:id]` output parsing. |
 | `metrics.ts` | SLA metrics over run history: p50/p95/p99 latency, success and cost rates, degradation detection. |
@@ -80,9 +81,13 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `preflight.ts` | Pre-spawn environment checks: pi binary, temp-dir writability, cwd readability. |
 | `prelude.ts` | Shared guard/validation prelude opening every delegation mode (cost gate, approval, H1 validation, dispatch guards). |
 | `presets.ts` | Preset loading, parsing, validation, and the file-backed custom-preset tier. |
+| `proc.ts` | Production process primitives — Linux/POSIX /proc reads, feature detection, and the default recovery deps. |
 | `prompt.ts` | Builds the subagent system prompt, including the task fence and inherited-instruction handling. |
+| `recovery-engine.ts` | Pure recovery decision engine — identity, owner liveness classification, and the boot-scan plan over injected process deps. |
+| `recovery.ts` | Boot-time recovery scan — decides whether a persisted running record is live, reaps orphaned children, and marks interrupted records. |
 | `reports.ts` | Compliance reporting: file-access records and secrets-exposure detection. |
 | `router.ts` | Auto-route: keyword classification of a task description to the best preset. |
+| `run-registry.ts` | Durable per-run in-flight registry + the single run-record persist choke point that mirrors into it. |
 | `runner.ts` | Foreground execution: spawns the `pi` subprocess, parses its JSON-line stream, and folds usage. |
 | `sanitize.ts` | Input validation, environment allowlisting, and output sanitization (task, cwd, outputFile, agent ids). |
 | `scheduler.ts` | Dependency-graph scheduler: cycle detection, topological waves, and graph validation. |
@@ -90,6 +95,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `session-manager.ts` | Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths. |
 | `state.ts` | Session-bound state container with versioned validation and migration for persisted settings. |
 | `templates.ts` | Task-template resolution: `${param}` substitution over the file-backed template tiers. |
+| `transcript-path.ts` | The single declaration of the transcript path format — filesystem (`join`) and display (POSIX) forms. |
 | `transcript-tail.ts` | Pure line-planning for the drill-in transcript overlay (no TUI imports). |
 | `transcript.ts` | JSONL transcript recording for every agent run (`.pi/output/agent-<id>.jsonl`). |
 | `tui-format.ts` | Pure TUI row formatting shared by the monitor and dashboard (no TUI imports). |
@@ -98,9 +104,22 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**33 modules** — every one is listed because a new module without a purpose fails CI.
+**39 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
+
+## Knowledge layers
+
+Two indexes answer different questions about this repo; neither replaces reading the source.
+
+| Layer | Answers | Lives in | Refreshed by |
+|---|---|---|---|
+| **CodeGraph** (structural) | callers, impact / blast radius, symbol search, affected tests — the Rule 13 scoping questions | `.pi/skills/worktree/codegraph-refresh.sh` + `codegraph-check.py`; its SQLite index is the gitignored `.codegraph/` | explicit `codegraph sync`, conductor-side (manual; Phase 2 dogfooding — **not the merge gate yet**) |
+| **graphify** (semantic / doc) | concepts, communities, cross-document relationships | `graphify-out/` (gitignored; conductor-side only — subagents never see it, rule 4) | `graph-refresh.sh` at every merge into `dev` (the current gate) |
+
+**Routing:** structural questions (who calls X, what breaks if I change Y, which tests are affected) →
+CodeGraph; concept / community / doc questions → graphify. The split posture and the Phase 2 gate criteria are
+recorded in [ADR 0015](./decisions/0015-codegraph-structural-index.md).
 
 ## Persistence and state
 
@@ -141,17 +160,21 @@ Each rule below is enforced in code and pinned by tests; the pointer is where it
 
 ## Tests
 
-- `src/__tests__/` — unit and integration suites, one per module; `e2e.test.ts` spawns a real `pi`, and
-  `*-real.test.ts` suites exercise real git / session paths.
+- `src/__tests__/` — unit and integration suites, one per module; `e2e.test.ts` is Tier-1 jiti
+  import verification (it spawns nothing), `e2e-subprocess.test.ts` spawns a controlled stub `pi`
+  (real `pi` is opt-in via `BRL_E2E_REAL_PI=1`), and `*-real.test.ts` suites exercise real git /
+  session paths.
 - CI runs `npm run typecheck` and `npx vitest run`; `.pi/skills/worktree/check-repo.sh` mirrors the gate
   locally before a worktree is created.
 - The module map's own guard is `src/__tests__/architecture-doc.test.ts`: regeneration must equal the
   checked-in block, so a new module without a purpose header — or an edit that skips `npm run docs:arch` —
   fails the suite.
-- Structural rules are executable: `src/__tests__/architecture-rules.test.ts` enforces no runtime import
-  cycles, entry-point confinement (nothing imports `index.ts`), the pure-helper boundary, process-execution
-  confinement, the runtime-dependency allowlist, and the session-manager reader API. A violation fails CI
-  with the rule's name and remedy in the message.
+- Structural rules are executable: `src/__tests__/architecture-rules.test.ts` enforces nine rules — no
+  runtime import cycles, entry-point confinement (nothing imports `index.ts`), `types.ts`→`schema.ts`
+  type-only references (#239), the pure-helper boundary, process-execution confinement, the
+  runtime-dependency allowlist, the session-manager reader API, raw-console confinement (#265), and the
+  transcript-path single-source format (#287). A violation fails CI with the rule's name and remedy in the
+  message.
 
 ## Where to go next
 

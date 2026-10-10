@@ -35,6 +35,7 @@ import {
 	CIRCUIT_DEGRADED_THINKING,
 } from "./types";
 import { cleanupRuns } from "./history";
+import { persistRunRecord, type InflightRunKind } from "./run-registry";
 import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
@@ -69,14 +70,21 @@ export const STALE_FINALIZE_GRACE_MS = POLLER_TICK_MS + 1000;
 
 /**
  * Terminal-preferring run-entry lookup — the ONE implementation of the
- * preference rule.
+ * preference rule. Recovery's `dedupeRunEntriesById` delegates here, so the
+ * boot scan and every display/retry lookup agree by construction.
  *
  * Each run writes TWO custom entries sharing its id, in append order: a spawn
  * entry (status "running", carrying `originalParams`) FIRST, then the final
  * entry (status "done"/"failed", stamped with fullOutput/cost/duration) at
- * settle. Prefer the terminal entry; when none is terminal yet, fall back to
- * the first match (the pre-finalize spawn shape). Returns undefined when no
- * entry matches.
+ * settle. Preference, in order:
+ *
+ *   1. a TERMINAL entry (status !== "running") — the run is resolved;
+ *   2. among non-terminal entries, one carrying the D3 `interruptedAt` mark —
+ *      append-only stores keep the original spawn entry forever, so the marked
+ *      clone is the authoritative RECOVERED state U3's shared lookup reads;
+ *   3. otherwise the first match (the pre-finalize spawn shape).
+ *
+ * Returns undefined when no entry matches.
  */
 export function resolveTerminalRunEntry(
 	entries: SubagentRun[],
@@ -84,7 +92,37 @@ export function resolveTerminalRunEntry(
 ): SubagentRun | undefined {
 	const matching = entries.filter((r) => r.id === id);
 	if (matching.length === 0) return undefined;
-	return matching.find((r) => r.status !== "running") ?? matching[0];
+	return (
+		matching.find((r) => r.status !== "running") ??
+		matching.find((r) => r.interruptedAt) ??
+		matching[0]
+	);
+}
+
+/**
+ * Run-history display projection (issue #259): ONE record per SETTLED run.
+ *
+ * Each run appends two entries sharing its id — a spawn entry (status
+ * "running") first, then the terminal entry at settle — so a raw entry list
+ * renders every run twice and the spawn row shows a stale "running" forever.
+ * This collapses each id to its terminal-preferred entry via the ONE shared
+ * rule (`resolveTerminalRunEntry`). Runs still in flight (spawn entry, no
+ * terminal entry yet) are omitted: live state belongs to the monitor.
+ *
+ * Ordering is preserved from `entries`; callers pass `getRunEntries` output
+ * (newest-first via `cleanupRuns`), which stays the single ordering authority —
+ * no re-sort is performed here.
+ */
+export function collapseRunsForHistory(entries: SubagentRun[]): SubagentRun[] {
+	const display: SubagentRun[] = [];
+	const seen = new Set<string>();
+	for (const entry of entries) {
+		if (seen.has(entry.id)) continue;
+		seen.add(entry.id);
+		const resolved = resolveTerminalRunEntry(entries, entry.id);
+		if (resolved && resolved.status !== "running") display.push(resolved);
+	}
+	return display;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,8 +232,14 @@ export class SessionState {
 		});
 	}
 
-	persistRun(pi: ExtensionAPI, run: SubagentRun): void {
-		pi.appendEntry(CUSTOM_ENTRY_TYPES.run, run);
+	/**
+	 * Persist a run record through the ONE choke point (`persistRunRecord`),
+	 * which appends the session entry AND mirrors the record into the durable
+	 * in-flight registry. `kind` is supplied at dispatch; terminal writes clear
+	 * the registry entry.
+	 */
+	persistRun(pi: ExtensionAPI, run: SubagentRun, kind?: InflightRunKind): void {
+		persistRunRecord(pi, run, kind);
 	}
 
 	// -------------------------------------------------------------------

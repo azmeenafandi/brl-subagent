@@ -62,6 +62,15 @@ export type ErrorCategory =
 // literal in sync with classifyError — do NOT reword one without the other.
 export const SUBAGENT_ABORTED_MESSAGE = "Subagent aborted by user";
 
+// Issue #295: external-signal kill stamp. A SIGKILL/SIGTERM that was NOT staged
+// by our own timeout/abort handler leaves no terminal event, and Node reports
+// code === null for a signal death. The foreground close handler stamps this
+// message (with the signal name) so classifyError can record the honest cause
+// instead of the false 'done' that a fabricated exit 0 produced. Matched below
+// on its distinctive "killed by external signal" substring (mirroring the
+// SUBAGENT_ABORTED_MESSAGE match) — keep the literal in sync with classifyError.
+export const SUBAGENT_SIGNAL_KILLED_MESSAGE = "Subagent killed by external signal";
+
 /**
  * Classify a subagent result into an error category based on its errorMessage,
  * stopReason, exitCode, and stderr content. Inspects patterns in priority order.
@@ -95,6 +104,15 @@ export function classifyError(result: SubagentResult): ErrorCategory {
 	// SUBAGENT_ABORTED_MESSAGE. The stamped category is preserved so it is not
 	// clobbered by the exitError/unknown fallbacks below.
 	if (msg.includes("aborted by user")) return "aborted";
+
+	// Issue #295: a signal death we did NOT stage (no timeout/abort reason) is
+	// stamped with SUBAGENT_SIGNAL_KILLED_MESSAGE + the signal name by the
+	// foreground close handler. classifyError cannot infer it from the dead
+	// process (a signal death carries no numeric code), so the stamp must survive
+	// reclassification as a genuine crash — checked before the exitCode fallback,
+	// which the -1 signal sentinel would otherwise turn into exit_error. Keep this
+	// substring in sync with the constant above.
+	if (msg.includes("killed by external signal")) return "crash";
 
 	if (msg.includes("model not found") || msg.includes("model unavailable"))
 		return "model_unavailable";
@@ -243,6 +261,21 @@ export interface SubagentState {
  */
 export type ToolResult<T = unknown> = AgentToolResult<T> & { isError?: boolean };
 
+/**
+ * Option B U1: identity of the conductor process that owns a run record.
+ *
+ * `pid` plus `start` (the process start-time token — `/proc/<pid>/stat` field
+ * 22 on Linux) lets a fresh process distinguish "a live conductor still owns
+ * this record" from "its conductor is dead", including two conductors sharing
+ * one cwd (which would otherwise be indistinguishable by pid alone after a
+ * reboot). `start` is `""` when the platform cannot supply a start token; the
+ * boot scan then treats ownership as unverifiable and never marks the record.
+ */
+export interface ProcessOwner {
+	pid: number;
+	start: string;
+}
+
 export interface SubagentRun {
 	id: string;
 	task: string;
@@ -278,6 +311,22 @@ export interface SubagentRun {
 	// Issue #114: per-unit priority (may be absent — the run's slot priority
 	// then fell back to the call-level default, which is not recorded here).
 	priority?: string;
+	// Option B U1 (D3/D4): additive durability identity — all optional, so
+	// records written before this change simply lack the keys.
+	// - dispatchId: uuid of the logical dispatch; a retry inherits it.
+	// - resumeOf: the run id a retry resumes (retries only).
+	// - attempt: 1 at first dispatch, (prior.attempt ?? 1) + 1 on a retry.
+	// - interruptedAt: D3 mark set by the boot scan when the conductor died;
+	//   status stays "running" (see isInterruptedRun).
+	// - owner: conductor process identity written at dispatch.
+	// - childMarker: uuid injected into the child process env on the foreground
+	//   path; the boot scan discovers the orphan via /proc/*/environ.
+	dispatchId?: string;
+	resumeOf?: string;
+	attempt?: number;
+	interruptedAt?: string;
+	owner?: ProcessOwner;
+	childMarker?: string;
 	startedAt: string;
 	finishedAt?: string;
 	durationMs?: number;
@@ -600,6 +649,8 @@ export const EMPTY_USAGE: UsageStats = {
 export const NAV_FOOTER = "\u2191\u2193 navigate \u2022 enter select \u2022 esc cancel";
 
 export const SIGKILL_GRACE_MS = 5000;
+/** Poll interval while waiting for a reaped child to die (B4 early exit, bounded by SIGKILL_GRACE_MS). */
+export const SIGKILL_POLL_MS = 100;
 export const STATUS_RESET_DELAY_MS = 3000;
 export const TEMP_FILE_MODE = 0o600;
 export const TASK_PREVIEW_MAX_LENGTH = 80;
@@ -684,6 +735,17 @@ export interface BackgroundAgent {
 	finalOutput?: string;
 	/** @internal — session reference for live monitor polling */
 	_sessionRef?: import('@earendil-works/pi-coding-agent').AgentSession;
+	// Option B U1 (D3/D4): additive durability identity, mirroring SubagentRun.
+	// Background records carry dispatchId/owner/attempt. `childMarker` is
+	// declared for round-trip tolerance with the run-record/agent-record JSON
+	// shape (`isSubagentRunShape`) — no background path sets it, because the
+	// session is in-process and has no child process to mark.
+	dispatchId?: string;
+	resumeOf?: string;
+	attempt?: number;
+	interruptedAt?: string;
+	owner?: ProcessOwner;
+	childMarker?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -746,6 +808,40 @@ export function isSubagentError(result: SubagentResult): boolean {
 		|| result.stopReason === "toolUse"
 		|| result.stopReason === "deferred"
 		|| result.stopReason === "pending";
+}
+
+/**
+ * Issue #298 (C2): the ONE home for the partial-vs-settled renderer decision.
+ *
+ * `exitCode === -1` is overloaded. Since #206 it is the UNSETTLED streaming
+ * sentinel (`emitSubagentUpdate` in runner.ts stamps `{ ...result, exitCode: -1 }`
+ * on every live partial). Since #295 a SETTLED signal death — external kill,
+ * staged timeout, staged abort — also settles at -1, so the sentinel alone no
+ * longer means "still running":
+ *
+ *   - a live partial carries the sentinel and normally no errorCategory — the
+ *     exception is the abort stamp: `runner.ts` sets `errorCategory: "aborted"`
+ *     on the live result before close, so a post-abort partial can carry both.
+ *     The predicate then returns false and it renders the failure branch — the
+ *     same outcome as the local logic this replaces (the qualifier is comment
+ *     precision, not a behavior change; #311 review nit);
+ *   - every FINALIZED foreground result carries an errorCategory because
+ *     `runSubagent` ends with `result.errorCategory = classifyError(result)`
+ *     and classifyError is total (its `unknown` fallback means it never returns
+ *     undefined). A classified -1 is a settled FAILURE and must take the verdict
+ *     branch, never the raw running text.
+ *
+ * Encoding that (exitCode, errorCategory) invariant EXACTLY ONCE here is the
+ * point of #298: the local disambiguation it replaces (the F1 fix, PR #297) was
+ * the same defect class it fixed — inferring liveness from a correlated field
+ * in the renderer. Callers must use this predicate rather than re-deriving the
+ * pair; the terminal-status structural ratchet in
+ * `src/__tests__/terminal-status-consistency.test.ts` fails a local copy.
+ */
+export function isUnsettledPartial(
+	details: { exitCode: number; errorCategory?: ErrorCategory } | undefined,
+): boolean {
+	return !details || (details.exitCode === -1 && !details.errorCategory);
 }
 
 /**
@@ -950,6 +1046,17 @@ export function isSubagentRunShape(value: unknown): value is SubagentRun {
 	if (typeof v.task !== "string") return false;
 	if (!["running", "done", "failed"].includes(v.status as string)) return false;
 	return true;
+}
+
+/**
+ * Option B U1 (D3): the ONE interrupted-state predicate. Status deliberately
+ * stays "running" (a new status value would be dropped by old readers and
+ * misread as resolved by the `!== "running"` guards); the additive
+ * `interruptedAt` mark is the only signal. Consumers must key on THIS helper,
+ * never on a raw status compare.
+ */
+export function isInterruptedRun(run: SubagentRun): boolean {
+	return run.status === "running" && !!run.interruptedAt;
 }
 
 /**

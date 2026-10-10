@@ -12,11 +12,13 @@ import {
 	formatUsageStats,
 	getFinalOutput,
 	isSubagentError,
+	isUnsettledPartial,
 	formatModel,
 	formatMaxParallel,
 	isSubagentStateShape,
 	isSubagentRunShape,
 	EMPTY_USAGE,
+	SUBAGENT_SIGNAL_KILLED_MESSAGE,
 } from "../types";
 import { classifyError } from "../types";
 
@@ -209,6 +211,46 @@ describe("isSubagentError", () => {
 });
 
 // ---------------------------------------------------------------------------
+// isUnsettledPartial (issue #298 — the ONE partial-vs-settled predicate)
+// ---------------------------------------------------------------------------
+
+describe("isUnsettledPartial", () => {
+	function makeResult(overrides: Partial<import("../types").SubagentResult> = {}) {
+		return {
+			messages: [],
+			usage: { ...EMPTY_USAGE },
+			exitCode: 0,
+			stderr: "",
+			...overrides,
+		};
+	}
+
+	it("is unsettled when no details have arrived yet", () => {
+		expect(isUnsettledPartial(undefined)).toBe(true);
+	});
+
+	it("is unsettled for the #206 streaming sentinel (exitCode -1, no category)", () => {
+		expect(isUnsettledPartial(makeResult({ exitCode: -1 }))).toBe(true);
+	});
+
+	it("is SETTLED for a classified signal death (#295) despite exitCode -1", () => {
+		// The overloaded value: a finalized signal death settles at -1 AND carries
+		// an errorCategory. Each category must read as settled so the renderer takes
+		// the verdict branch, never the raw running text.
+		for (const errorCategory of ["crash", "timeout", "aborted"] as const) {
+			expect(isUnsettledPartial(makeResult({ exitCode: -1, errorCategory }))).toBe(false);
+		}
+	});
+
+	it("is SETTLED for any normal exit code, classified or not", () => {
+		expect(isUnsettledPartial(makeResult({ exitCode: 0 }))).toBe(false);
+		expect(isUnsettledPartial(makeResult({ exitCode: 0, errorCategory: "unknown" }))).toBe(false);
+		expect(isUnsettledPartial(makeResult({ exitCode: 1 }))).toBe(false);
+		expect(isUnsettledPartial(makeResult({ exitCode: 1, errorCategory: "exit_error" }))).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // formatModel / formatMaxParallel
 // ---------------------------------------------------------------------------
 
@@ -374,6 +416,20 @@ describe("classifyError", () => {
 		expect(
 			classifyError(makeResult({ errorMessage: "Timed out after 5000ms — aborted by user" })),
 		).toBe("timeout");
+	});
+
+	it("returns 'crash' for the external-signal kill stamp (issue #295)", () => {
+		// The close handler stamps this BEFORE the tail classifyError runs. A signal
+		// death carries no numeric code, so the -1 sentinel would otherwise classify
+		// as 'exit_error'; the stamp must win as the honest 'crash'.
+		expect(
+			classifyError(
+				makeResult({
+					errorMessage: `${SUBAGENT_SIGNAL_KILLED_MESSAGE} (SIGKILL)`,
+					exitCode: -1,
+				}),
+			),
+		).toBe("crash");
 	});
 
 	it("returns 'permission_denied' for permission denied error", () => {

@@ -12,12 +12,16 @@ import {
 	getSafeEnv,
 	stripAnsi,
 	capOutput,
+	isOutputTruncated,
+	OUTPUT_TRUNCATION_SUFFIX,
+	LEGACY_OUTPUT_TRUNCATION_SUFFIX,
 	getCurrentDepth,
 	DEPTH_ENV_KEY,
 	assertSafeAgentId,
 	sanitizeErrorMessage,
 	buildCrashResult,
 } from "../sanitize";
+import { DEFAULT_OUTPUT_CAP_BYTES } from "../types";
 
 // ---------------------------------------------------------------------------
 // sanitizeTask (F1)
@@ -176,6 +180,16 @@ describe("getSafeEnv", () => {
 		if (process.env.HOME) expect(env.HOME).toBeDefined();
 		if (process.env.PATH) expect(env.PATH).toBeDefined();
 	});
+
+	it("does not forward BRL_PI_BIN (issue #271 — children resolve their own pi)", () => {
+		// The override is read from the PARENT process to decide the spawn command;
+		// it must not leak into the child's environment (the child would otherwise
+		// inherit a resolution decision that is not its own).
+		process.env.BRL_PI_BIN = "/opt/custom/bin/pi";
+		const env = getSafeEnv();
+		expect(env.BRL_PI_BIN).toBeUndefined();
+		delete process.env.BRL_PI_BIN;
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -234,6 +248,64 @@ describe("capOutput", () => {
 		const result = capOutput(output, 50);
 		// Should not have broken surrogate pairs
 		expect(() => Buffer.from(result, "utf8").toString("utf8")).not.toThrow();
+	});
+
+	it("writes the current suffix, never the legacy one (issue #275)", () => {
+		const result = capOutput("x".repeat(200), 100);
+		expect(result.endsWith(OUTPUT_TRUNCATION_SUFFIX)).toBe(true);
+		expect(result.endsWith(LEGACY_OUTPUT_TRUNCATION_SUFFIX)).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// capOutput default cap — drift guard (issue #274)
+// ---------------------------------------------------------------------------
+
+/**
+ * `DEFAULT_OUTPUT_CAP_BYTES` lives in types.ts and is the single source of the
+ * cap; `capOutput`'s default parameter must resolve to that same constant. If
+ * the two ever diverge, the at-cap assertion below fails loudly.
+ */
+describe("capOutput default cap (issue #274)", () => {
+	it("defaults to DEFAULT_OUTPUT_CAP_BYTES at the boundary", () => {
+		// Exactly at the shared constant: capOutput truncates only STRICTLY above
+		// the cap, so this must pass through untouched.
+		const atCap = "x".repeat(DEFAULT_OUTPUT_CAP_BYTES);
+		expect(capOutput(atCap)).toBe(atCap);
+
+		// One byte over the shared constant: truncates and carries the notice.
+		const overCap = "x".repeat(DEFAULT_OUTPUT_CAP_BYTES + 1);
+		const result = capOutput(overCap);
+		expect(result).not.toBe(overCap);
+		expect(result.startsWith(atCap)).toBe(true);
+		expect(result).toContain("[Output truncated:");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// isOutputTruncated (issue #275 — dual-suffix detection)
+// ---------------------------------------------------------------------------
+
+describe("isOutputTruncated (issue #275)", () => {
+	it("returns true for output ending with the current suffix", () => {
+		expect(isOutputTruncated(`[Output truncated: 5B ${OUTPUT_TRUNCATION_SUFFIX}`)).toBe(true);
+	});
+
+	it("returns true for output ending with the legacy suffix", () => {
+		expect(
+			isOutputTruncated(`[Output truncated: 5B ${LEGACY_OUTPUT_TRUNCATION_SUFFIX}`),
+		).toBe(true);
+	});
+
+	it("returns false for arbitrary text", () => {
+		expect(isOutputTruncated("some ordinary output")).toBe(false);
+		expect(isOutputTruncated("")).toBe(false);
+		expect(isOutputTruncated(undefined)).toBe(false);
+		expect(isOutputTruncated(null)).toBe(false);
+	});
+
+	it("is not fooled by a suffix that is not end-anchored", () => {
+		expect(isOutputTruncated(`before ${OUTPUT_TRUNCATION_SUFFIX} after`)).toBe(false);
 	});
 });
 
