@@ -963,6 +963,39 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		// ...and the work branch is deleted regardless — the pre-fix leak.
 		expect(mocks.git.deleteBranch).toHaveBeenCalledWith(expect.anything(), "brl-subagent-abc12345");
 	});
+
+	it("review C: a throwing settle still tears the work branch down (catch-all)", async () => {
+		resetGitMocks();
+		// The aborted path calls updateAgentStatus(id, 'stopped') BEFORE its own
+		// cleanupWorkBranch(). Force that emit to throw so control jumps straight
+		// to markTerminalBestEffort without the normal teardown having run — the
+		// catch-all must still restore + delete the work branch.
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "aborted" },
+		];
+		eventBusMock.emit.mockImplementation((event: { type: string }) => {
+			if (event.type === "subagent:stopped") throw new Error("emit exploded");
+		});
+
+		const { spawnBackgroundSession, getAgent } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test settle throw teardown",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 10));
+
+		// The normal cleanup never ran — only the catch-all can have restored and
+		// deleted. Pre-fix the work branch survived, stranding the repo.
+		expect(mocks.git.restoreHead).toHaveBeenCalledTimes(1);
+		expect(mocks.git.deleteBranch).toHaveBeenCalledTimes(1);
+		expect(mocks.git.deleteBranch).toHaveBeenCalledWith(
+			expect.anything(),
+			"brl-subagent-abc12345"
+		);
+		expect(getAgent(agent.id)?.status).toBe("stopped");
+	});
 });
 
 describe("W4 concurrency guard — cleanup when another spawn moved the tree", () => {

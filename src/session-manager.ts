@@ -733,6 +733,11 @@ export async function spawnBackgroundSession(
   let headState: HeadState | undefined;
   let workBranchName: string | undefined;
   let releaseGitLock: (() => void) | undefined;
+  // Idempotency guard for cleanupWorkBranch: it must be safe to call from both
+  // the normal settle path and the catch-all that runs when a settle step
+  // throws FIRST (before its own cleanup call). Without this the second call
+  // would re-restore/re-delete and log spurious warnings.
+  let gitCleanupDone = false;
   const gitCwd = params.cwd ?? ctx.cwd;
   if (params.gitMode === 'branch') {
     // C2: serialize the FULL branch lifecycle per repo. The spawnQueue only
@@ -809,7 +814,8 @@ export async function spawnBackgroundSession(
   // uncommitted edits would leak into the base working tree on switch —
   // commitAll first makes the diff real and the switch clean.
   const cleanupWorkBranch = (): { gitBranch?: string; gitDiff?: string } => {
-    if (!workBranchName || !headState) return {};
+    if (gitCleanupDone || !workBranchName || !headState) return {};
+    gitCleanupDone = true;
     const info: { gitBranch?: string; gitDiff?: string } = { gitBranch: workBranchName };
     // The lock MUST be released on every exit path — early returns included.
     try {
@@ -884,6 +890,11 @@ export async function spawnBackgroundSession(
   // terminal so no zombie 'running' record survives; never rethrow.
   const markTerminalBestEffort = (fallback: AgentStatus): void => {
     try {
+      // Issue #53 / review C: this catch-all fires when a settle handler step
+      // threw — possibly BEFORE the branch's own cleanupWorkBranch() call. Run
+      // it here too (idempotent) so a throw can never bypass branch teardown
+      // and strand the work branch in the repo working tree.
+      cleanupWorkBranch();
       // Issue #31 (PR #76 review): this catch-all fires when a settle handler
       // threw — either BEFORE the branch's own capture (ref still live: capture
       // now, it is the last chance to record the session's output) or AFTER it
