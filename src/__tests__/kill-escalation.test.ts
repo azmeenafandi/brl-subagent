@@ -376,3 +376,73 @@ describe("refused group kill reporting (#299 re-review A.1)", () => {
 		expect(survivors).toEqual([]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// #299 fix A.2 — three-state group membership (unknown is never empty)
+// ---------------------------------------------------------------------------
+
+describe("three-state group membership (#299 fix A.2)", () => {
+	it("an UNKNOWN membership (undefined) is NOT dead even when the leader is gone", () => {
+		// The inspection was unavailable or partial. Absence of evidence must never
+		// read as evidence of absence, so the target must not verify death.
+		const target = groupTarget(9, () => {}, () => {}, () => false, () => undefined);
+		expect(target.verifyDeath()).toBe(false);
+	});
+
+	it("an UNKNOWN membership with a refused final group SIGKILL is a survivor (never [])", async () => {
+		const calls: string[] = [];
+		const guard: SignalGuard = {
+			isOwn: () => false,
+			isGone: () => false, // alive but not ours → every signal is refused
+		};
+		const target = groupTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			() => false, // leader alive for the reachability checks
+			() => undefined, // membership UNKNOWN
+			guard,
+		);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(calls).toEqual([]);
+		expect(survivors).toEqual([target]);
+	});
+
+	it("a POSITIVELY empty group still lets the leader-liveness check decide (no over-correction)", async () => {
+		// false = a COMPLETED inspection found no member, so a dead leader is dead
+		// and the escalation may take its early exit and report clean.
+		const target = groupTarget(9, () => {}, () => {}, () => false, () => false);
+		expect(target.verifyDeath()).toBe(true);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(survivors).toEqual([]);
+	});
+
+	it("a refused final group SIGKILL over a POSITIVELY empty group is NOT a survivor", async () => {
+		const guard: SignalGuard = { isOwn: () => false, isGone: () => false };
+		const target = groupTarget(9, () => {}, () => {}, () => true, () => false, guard);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(survivors).toEqual([]);
+	});
+
+	it("a fully-observed LIVE group still blocks death and is killed after the grace", async () => {
+		const calls: string[] = [];
+		const target = groupTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			() => false, // leader already gone
+			() => true, // but a live member keeps the group non-empty
+		);
+		expect(target.verifyDeath()).toBe(false);
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		// The leader is not direct-signaled (verifyProcessAlive false); the group is
+		// ended by the unconditional final group SIGKILL, and nothing survives.
+		expect(calls).toContain("group:SIGKILL");
+		expect(survivors).toEqual([]);
+	});
+
+	it("an ABSENT reader keeps the documented leader-liveness fallback", () => {
+		const target = groupTarget(9, () => {}, () => {}, () => false);
+		expect(target.verifyDeath()).toBe(true); // leader dead, no reader → dead
+	});
+});

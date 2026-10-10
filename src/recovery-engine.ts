@@ -56,8 +56,13 @@ export interface RecoveryDeps {
 	 * promptly no longer reads as "group empty" — the escalation then honours the
 	 * grace window for a member's cleanup. Absent/false on a platform without
 	 * /proc → leader-only fallback (documented boundary).
+	 *
+	 * #299 fix A.2: THREE-state. `true` = live members observed; `false` =
+	 * POSITIVELY empty (a completed inspection); `undefined` = UNKNOWN (the
+	 * inspection was unavailable or partial). Callers treat `undefined` as NOT
+	 * empty — absence of evidence is never evidence of absence.
 	 */
-	groupHasMembers?(pgid: number): boolean;
+	groupHasMembers?(pgid: number): boolean | undefined;
 	/**
 	 * #299 review Major 1: signal-time marker re-check — true when the LIVE `pid`
 	 * still carries `CHILD_MARKER_ENV_KEY=<marker>`. Threaded into the marker

@@ -121,28 +121,56 @@ export function readProcessGroup(pid: number): number | undefined {
 }
 
 /**
- * #299 review Major 2 — does the process group `pgid` still have a LIVE member?
- * Scans `/proc` for processes whose pgrp (field 5) equals `pgid`, skipping the
- * leader itself and zombies (`Z`/`X` state — an unreaped corpse is not a live
- * member and must not hold the group non-empty). A group's leader exiting does
- * NOT empty the group, so this is what lets `escalateKill` keep waiting for a
- * member's cleanup window. Returns false when /proc is unavailable — callers
- * then fall back to leader liveness (the documented non-Linux boundary).
+ * #299 fix A.2 — the THREE-state answer to "does process group `pgid` still have
+ * a LIVE member?":
+ *
+ *   - `true`      — at least one live member was observed.
+ *   - `false`     — a COMPLETED inspection found no live member: POSITIVELY empty.
+ *   - `undefined` — the inspection was UNAVAILABLE or PARTIAL. Absence of
+ *     evidence is never evidence of absence, so callers must treat `undefined`
+ *     as UNKNOWN — never as empty.
+ *
+ * `/proc` host-level unavailability is the documented platform boundary, not
+ * `undefined`: with no `/proc` at all the caller degrades to leader liveness
+ * (this returns `false`). `undefined` is reserved for an inspection that FAILED
+ * on a `/proc`-capable host — a `/proc` listing failure, or a member's stat read
+ * that failed for a reason other than the process being gone (`EACCES`, `EIO`, a
+ * parse anomaly). A member that genuinely vanished during the scan is skipped
+ * (ENOENT — it cannot be a live member).
  */
-export function groupHasMembers(pgid: number): boolean {
+export type GroupMembership = boolean | undefined;
+
+/**
+ * Scans `/proc` for processes whose pgrp (field 5) equals `pgid`, skipping the
+ * leader itself and zombies (`Z`/`X` — an unreaped corpse is not a live member
+ * and must not hold the group non-empty). A group's leader exiting does NOT
+ * empty the group, so this is what lets `escalateKill` keep waiting for a
+ * member's cleanup window.
+ */
+export function groupHasMembers(pgid: number): GroupMembership {
+	// Platform boundary: no /proc at all → the caller falls back to leader
+	// liveness (documented non-Linux boundary). Same for an invalid pgid.
 	if (!Number.isInteger(pgid) || pgid <= 0 || !isProcAvailable()) return false;
 	let entries: string[];
 	try {
 		entries = fs.readdirSync(PROC_ROOT);
 	} catch {
-		return false;
+		// A listing failure on a /proc-capable host leaves the scan PARTIAL: we
+		// cannot tell whether a member exists, so the answer is unknown.
+		return undefined;
 	}
 	for (const entry of entries) {
 		if (!/^\d+$/.test(entry)) continue;
 		const pid = Number(entry);
 		if (pid === pgid) continue; // the leader (possibly a zombie) is not a member
-		const fields = readStatFields(pid);
-		if (!fields) continue;
+		const read = readStatFieldsDetailed(pid);
+		if (!read.ok) {
+			// A member gone mid-scan is skippable (it cannot be a live member); any
+			// OTHER failure makes the inspection partial → unknown.
+			if (read.code === "ENOENT") continue;
+			return undefined;
+		}
+		const fields = read.fields;
 		if (fields[0] === "Z" || fields[0] === "X") continue;
 		if (Number(fields[2]) === pgid) return true;
 	}

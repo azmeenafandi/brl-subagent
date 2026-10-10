@@ -191,8 +191,11 @@ const killGroupPid = (pgid: number, signal: NodeJS.Signals): void => {
  *     in-session and µs-class: the live handle cannot be reused by a foreign
  *     process while we hold it.
  *   - Major 2: the default death check becomes `childExited(proc) &&
- *     !groupHasMembers(pid)` so a descendant still cleaning up keeps the grace
- *     window open. When /proc is unavailable (`groupHasMembers` false) it
+ *     groupHasMembers(pid) === false` so a descendant still cleaning up keeps the
+ *     grace window open. #299 fix A.2 makes that reader THREE-state: only a
+ *     POSITIVELY empty group (`false`) permits the early exit; an UNKNOWN
+ *     inspection (`undefined`) keeps the target alive. When /proc is unavailable
+ *     as a PLATFORM (`groupHasMembers` false) it
  *     degrades to child-exited liveness — the documented platform boundary.
  */
 function childTarget(proc: ChildProcess, verifyDeath?: () => boolean): EscalationTarget {
@@ -205,7 +208,7 @@ function childTarget(proc: ChildProcess, verifyDeath?: () => boolean): Escalatio
 		? groupTarget(pid, killDirect, killGroupPid, pidAlive, groupHasMembers)
 		: pidTarget(pid, killDirect, pidAlive);
 	const defaultVerifyDeath = useGroup
-		? () => childExited(proc) && !groupHasMembers(pid)
+		? () => childExited(proc) && groupHasMembers(pid) === false
 		: () => childExited(proc);
 	return {
 		...base,

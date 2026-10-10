@@ -38,6 +38,7 @@ import {
 	pidGone,
 	readStartToken,
 	findByMarker,
+	groupHasMembers,
 	isProcAvailable,
 	type RecoveryDeps,
 	type RecoveryRecord,
@@ -59,6 +60,38 @@ import {
 } from "../runner";
 import { listPersistedAgents, markAgentInterrupted } from "../session-manager";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
+
+// ---------------------------------------------------------------------------
+// #299 fix A.2 — deterministic `/proc` inspection failure for the tri-state
+// integration test (T-new). The mock is a TRANSPARENT wrapper: with no control
+// flag set it delegates every call to the real `node:fs`, so every other test in
+// this file is unaffected.
+// ---------------------------------------------------------------------------
+
+const groupScanControl = vi.hoisted(() => ({
+	readdirError: undefined as NodeJS.ErrnoException | undefined,
+	statErrors: new Map<string, NodeJS.ErrnoException>(),
+	statContents: new Map<string, string>(),
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return {
+		...actual,
+		readdirSync: ((...args: unknown[]) => {
+			if (groupScanControl.readdirError) throw groupScanControl.readdirError;
+			return (actual.readdirSync as (...a: unknown[]) => unknown)(...args);
+		}) as typeof actual.readdirSync,
+		readFileSync: ((...args: unknown[]) => {
+			const file = String(args[0]);
+			const err = groupScanControl.statErrors.get(file);
+			if (err) throw err;
+			const contents = groupScanControl.statContents.get(file);
+			if (contents !== undefined) return contents;
+			return (actual.readFileSync as (...a: unknown[]) => unknown)(...args);
+		}) as typeof actual.readFileSync,
+	};
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -145,6 +178,11 @@ afterEach(async () => {
 		}
 	}
 	strayPids.clear();
+	// #299 fix A.2: never leak a forced `/proc` inspection failure into the next
+	// test (the node:fs mock is transparent when these are clear).
+	groupScanControl.readdirError = undefined;
+	groupScanControl.statErrors.clear();
+	groupScanControl.statContents.clear();
 	// Any test that shortened the escalation timing must not leak it into the
 	// next file-scoped test (idempotent reset to production timing).
 	__setEscalationTimingForTest();
@@ -1401,6 +1439,71 @@ describe("#299 re-review A.1: reaped-pid classification + honest reporting", () 
 		expect(killGroup).not.toHaveBeenCalled();
 		console.log(`#299-A1 T2 refused pid=${pid} survived=${JSON.stringify(outcome.survived)}`);
 	});
+});
+
+describe("#299 fix A.2: three-state group membership (unknown is never empty)", () => {
+	it("T-new: a failed membership inspection is never read as empty (no early-exit; refused group is a survivor)", async () => {
+		if (!isProcAvailable()) return;
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-unknown-members-"));
+		try {
+			const memberPidFile = path.join(dir, "member.pid");
+			const readyFile = path.join(dir, "ready");
+			// A live, DETACHED leader (its own pgid) with a live same-group member. The
+			// leader carries NO run marker, so the signal guard — which refuses a signal
+			// to a LIVE pid that is not ours — refuses every group signal, leaving a live
+			// group we targeted.
+			const leaderCode =
+				`const {spawn}=require('node:child_process');const fs=require('node:fs');` +
+				`const m=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});` +
+				`fs.writeFileSync(${JSON.stringify(memberPidFile)}, String(m.pid));` +
+				`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
+				`setInterval(()=>{},1000)`;
+			const leader = track(spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true }));
+			const leaderPid = await waitForSpawn(leader);
+			strayPids.add(leaderPid);
+			await waitUntil(() => fs.existsSync(readyFile) && fs.existsSync(memberPidFile), 5000);
+			const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
+			strayPids.add(memberPid);
+			await waitUntil(() => pidAlive(memberPid), 5000);
+			// The fixture really has a live same-PGID member the real scan observes.
+			expect(readProcessGroup(memberPid)).toBe(leaderPid);
+			expect(groupHasMembers(leaderPid)).toBe(true);
+
+			// Force the REAL `/proc` listing to fail for the duration of the reap: the
+			// production `groupHasMembers` must then answer UNKNOWN (`undefined`), never
+			// "positively empty". Every signal and every liveness read below stays real.
+			// M-c tripwire: reverting `groupHasMembers` to false-on-unknown fails HERE
+			// (both the graceful wait and the survivor report).
+			const marker = `unknown-${crypto.randomUUID()}`;
+			const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 200, pollMs: 20 });
+			const scanError = new Error("EACCES") as NodeJS.ErrnoException;
+			scanError.code = "EACCES";
+			groupScanControl.readdirError = scanError;
+			const started = Date.now();
+			const survivors = await reapPids([leaderPid], deps, () => marker).finally(() => {
+				groupScanControl.readdirError = undefined;
+			});
+			const elapsed = Date.now() - started;
+
+			// Half 1 — UNKNOWN is NOT dead: the escalation ran to at least the grace
+			// boundary instead of early-exiting. A false-on-unknown reading would have
+			// exited almost immediately. (soft: so M-c reports BOTH halves, not just the
+			// first.)
+			expect.soft(elapsed).toBeGreaterThanOrEqual(180);
+			// Half 2 — the refused final group SIGKILL over a still-unknown group is a
+			// survivor; never a clean `[]`.
+			expect.soft(survivors).toEqual([leaderPid]);
+			// Every guard check refused, so nothing was signaled and the member is alive.
+			expect(groupCalls).toEqual([]);
+			expect(killCalls).toEqual([]);
+			expect(pidAlive(memberPid)).toBe(true);
+			console.log(
+				`#299-A2 unknown leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
+			);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 20000);
 });
 
 describe("#299 review A2: group-empty grace window", () => {

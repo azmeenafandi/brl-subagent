@@ -57,6 +57,14 @@
  *     has live members is counted as a survivor (`refusedForceKillGroup`), so a
  *     guard decision can never yield a clean `survivors=[]` over a live group we
  *     targeted. The skip log is unchanged.
+ *
+ * #299 FIX A.2 closes one more major on `ae6d313`:
+ *   - Group membership is THREE-state (`true` / positively-empty `false` /
+ *     `unknown` = `undefined`). A partial or unavailable inspection must never
+ *     read as empty: `groupTarget.verifyDeath` treats `unknown` as NOT dead (no
+ *     early-exit; the unconditional final group SIGKILL still fires) and
+ *     `refusedForceKillGroup` treats `unknown` as a survivor (fail-safe
+ *     reporting). Only a POSITIVELY empty group may report clean.
  */
 
 /** A process handle the escalation helper can signal and liveness-check. */
@@ -216,7 +224,10 @@ function bestEffortGroupKill(
  * #299 review Major 2: `verifyDeath` is LEADER DEAD **AND** GROUP EMPTY — a
  * leader exiting does not empty the group, so the escalation waits out the grace
  * for a member's cleanup. `groupHasMembers` is the injected /proc reader; when
- * absent/false (no /proc) it degrades to leader liveness (documented boundary).
+ * absent (no /proc platform) it degrades to leader liveness (documented
+ * boundary). #299 fix A.2 makes that reader THREE-state: `undefined` (inspection
+ * unavailable or partial) is UNKNOWN and must never read as empty, so
+ * `verifyDeath` reports NOT dead until a COMPLETED inspection proves emptiness.
  * `verifyProcessAlive` exposes the DIRECT leader liveness so `forceKill` is never
  * sent to an already-exited leader — the unconditional `forceKillGroup` below
  * remains the sole end for a stubborn GROUP member after the leader is gone
@@ -229,7 +240,7 @@ export function groupTarget(
 	kill: (pid: number, signal: NodeJS.Signals) => void,
 	killGroup: (pgid: number, signal: NodeJS.Signals) => void,
 	pidAlive: (pid: number) => boolean,
-	groupHasMembers?: (pgid: number) => boolean,
+	groupHasMembers?: (pgid: number) => boolean | undefined,
 	guard?: SignalGuard,
 ): EscalationTarget {
 	const dispatchDirect = (signal: NodeJS.Signals, phase: SignalPhase, run: () => void): void => {
@@ -267,7 +278,14 @@ export function groupTarget(
 			// A live member keeps the group (and so the target) alive even after the
 			// leader is gone — including a not-yet-reaped ZOMBIE leader, which
 			// `pidAlive` still reports as alive (Major 2).
-			if (groupHasMembers?.(pid)) return false;
+			//
+			// #299 fix A.2: membership is THREE-state. `true` (live members) and
+			// `undefined` (inspection unavailable or partial — UNKNOWN) both mean the
+			// group is NOT confirmed empty, so the target is NOT dead and the escalation
+			// honours the full grace window. Only `false` (a COMPLETED inspection found
+			// no live member) lets the leader-liveness check decide. An ABSENT reader (no
+			// /proc platform) keeps the documented leader-only fallback.
+			if (groupHasMembers && groupHasMembers(pid) !== false) return false;
 			if (guard) return guard.isGone(pid) || !guard.isOwn(pid);
 			return !pidAlive(pid); // no guard: leader-only fallback
 		},
@@ -277,7 +295,12 @@ export function groupTarget(
 		// #299 re-review A.1: a refused final group SIGKILL over a group that still
 		// has live members is a real survivor — the escalation left a live group it
 		// could not verify as ours.
-		refusedForceKillGroup: () => finalGroupRefused && (groupHasMembers?.(pid) ?? false),
+		//
+		// #299 fix A.2: only a POSITIVELY empty group (`false`) may report clean.
+		// `undefined` (unknown inspection) and an ABSENT reader both mean emptiness
+		// could not be established, so the fail-safe is to count a survivor.
+		refusedForceKillGroup: () =>
+			finalGroupRefused && (groupHasMembers ? groupHasMembers(pid) !== false : true),
 	};
 }
 
@@ -291,7 +314,7 @@ export function processTarget(
 	kill: (pid: number, signal: NodeJS.Signals) => void,
 	pidAlive: (pid: number) => boolean,
 	killGroup?: (pgid: number, signal: NodeJS.Signals) => void,
-	groupHasMembers?: (pgid: number) => boolean,
+	groupHasMembers?: (pgid: number) => boolean | undefined,
 	guard?: SignalGuard,
 ): EscalationTarget {
 	return killGroup
