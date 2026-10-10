@@ -3502,7 +3502,22 @@ export default function (pi: ExtensionAPI) {
 									error: mergeResult.error,
 								});
 							}
-							deleteBranch(resolvedCwd, workBranchName);
+							// #308: a DETACHED start has no branch of its own to hold the
+							// merge result — teardown re-detached at the captured sha and
+							// the merge fast-forwarded THAT detached HEAD, so deleting the
+							// work branch would leave the committed work reachable only
+							// from the detached HEAD (silently lost on the next checkout).
+							// Keep the branch as the durable ref and log where the work
+							// lives. An ATTACHED start merged onto its own branch, which
+							// already retains the commit, so the temporary work branch is
+							// safe to drop.
+							if (headState.detached) {
+								log.info("detached checkout: work preserved on branch", {
+									branch: workBranchName,
+								});
+							} else {
+								deleteBranch(resolvedCwd, workBranchName);
+							}
 							workBranchName = undefined;
 						} else {
 							// No changes — just delete the empty branch

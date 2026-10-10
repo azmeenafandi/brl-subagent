@@ -46,6 +46,10 @@ export function getCurrentBranch(cwd: string): string {
  * that stays on the work branch (stranding it and leaking the branch in CI PR
  * builds, which check out a detached HEAD). The sha + attached-ness must be
  * captured together.
+ *
+ * `detached` also governs DATA SAFETY at teardown (#308): a detached start has
+ * no branch of its own to retain a merged work branch, so the auto-approve path
+ * MUST preserve the work branch as the durable ref rather than delete it.
  */
 export interface HeadState {
 	/** Commit HEAD pointed at when captured. */

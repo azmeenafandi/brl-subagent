@@ -315,5 +315,43 @@ describe("git.ts real-git behavior (Gate A)", () => {
 
 			switchToBranch(repo, "main");
 		});
+
+		// #308: the detached auto-approve path must not silently lose the merged
+		// commit. Teardown re-detaches at the captured sha, the auto-approve merge
+		// fast-forwards that DETACHED HEAD, and deleting the work branch would then
+		// leave the commit reachable only from the detached HEAD. The fix keeps the
+		// branch as the durable ref, so a later checkout still finds the work.
+		it("#308 detached auto-approve preserves the merged commit via the work branch", async () => {
+			const start = run(repo, ["rev-parse", "HEAD"]);
+			run(repo, ["checkout", "-q", "--detach", start]);
+			const state = getHeadState(repo);
+
+			const created = createWorkBranch(repo, state.sha);
+			expect(created.ok).toBe(true);
+			const workBranch = created.ok ? created.branch : "";
+
+			// The agent commits its work onto the work branch.
+			await writeFile(join(repo, "detached-approve.txt"), "from detached auto-approve\n");
+			run(repo, ["add", "detached-approve.txt"]);
+			run(repo, ["commit", "-q", "-m", "agent work"]);
+			const workTip = run(repo, ["rev-parse", "HEAD"]);
+
+			// Teardown: re-detach at the captured sha, then auto-approve merges.
+			expect(restoreHead(repo, state).ok).toBe(true);
+			expect(mergeWorkBranch(repo, workBranch).ok).toBe(true);
+			const merged = run(repo, ["rev-parse", "HEAD"]);
+			expect(merged).toBe(workTip);
+
+			// FIXED: the branch survives teardown, so the merge result stays
+			// reachable after switching away from the detached HEAD.
+			switchToBranch(repo, "main");
+			expect(run(repo, ["rev-parse", workBranch])).toBe(workTip);
+			expect(run(repo, ["branch", "--contains", merged])).toContain(workBranch);
+			// The pre-fix delete left this commit unreachable; fsck would list it.
+			expect(run(repo, ["fsck", "--no-reflogs", "--unreachable"])).not.toContain(merged);
+
+			// Clean up the preserved branch so later tests see a clean base.
+			expect(deleteBranch(repo, workBranch).ok).toBe(true);
+		});
 	});
 });
