@@ -38,7 +38,7 @@ so every guard states its **boundaries** (what it does *not* see), and an oracle
 
 ## Ground truth
 
-The reality an oracle compares against: files on disk, a live probe's output, your screen. In
+The reality an oracle compares against: files on disk, a live probe's output, your screen. In the retired
 `graph-check.py`'s words: "Ground truth is the filesystem and the graph JSON. Nothing else."
 
 ## Spec (specification)
