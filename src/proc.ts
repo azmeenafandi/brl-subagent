@@ -59,13 +59,13 @@ export function isProcAvailable(): boolean {
 }
 
 /**
- * Read a process's start-time token — `/proc/<pid>/stat` field 22 (1-indexed),
- * i.e. index 19 of the whitespace-split fields AFTER the `(comm)` field. The
- * comm field is skipped by slicing at the LAST `)` so a name containing spaces
- * or parens cannot shift the parse. Returns undefined when /proc is
- * unavailable, the pid is invalid, or the process vanished.
+ * The whitespace-split `/proc/<pid>/stat` fields AFTER the `(comm)` field, or
+ * undefined when /proc is unavailable, the pid is invalid, or the process
+ * vanished. Shared by the start-token, process-group and group-liveness readers.
+ * The comm field is skipped by slicing at the LAST `)` so a name containing
+ * spaces or parens cannot shift the parse.
  */
-export function readStartToken(pid: number): string | undefined {
+function readStatFields(pid: number): string[] | undefined {
 	if (!isProcAvailable() || !Number.isInteger(pid) || pid <= 0) return undefined;
 	try {
 		const stat = fs.readFileSync(path.join(PROC_ROOT, String(pid), "stat"), "utf-8");
@@ -73,11 +73,82 @@ export function readStartToken(pid: number): string | undefined {
 		if (close < 0) return undefined;
 		const rest = stat.slice(close + 1).trim();
 		if (!rest) return undefined;
-		const fields = rest.split(/\s+/);
-		const token = fields[19];
-		return token && /^\d+$/.test(token) ? token : undefined;
+		return rest.split(/\s+/);
 	} catch {
 		return undefined;
+	}
+}
+
+/**
+ * Read a process's start-time token — `/proc/<pid>/stat` field 22 (1-indexed),
+ * i.e. index 19 of the whitespace-split fields AFTER the `(comm)` field.
+ * Returns undefined when /proc is unavailable, the pid is invalid, or the
+ * process vanished.
+ */
+export function readStartToken(pid: number): string | undefined {
+	const token = readStatFields(pid)?.[19];
+	return token && /^\d+$/.test(token) ? token : undefined;
+}
+
+/**
+ * Read a process's process-group id — `/proc/<pid>/stat` field 5 (index 2 after
+ * `(comm)`). Returns undefined when /proc is unavailable, the pid is invalid, or
+ * the process vanished.
+ */
+export function readProcessGroup(pid: number): number | undefined {
+	const pgid = Number(readStatFields(pid)?.[2]);
+	return Number.isInteger(pgid) && pgid > 0 ? pgid : undefined;
+}
+
+/**
+ * #299 review Major 2 — does the process group `pgid` still have a LIVE member?
+ * Scans `/proc` for processes whose pgrp (field 5) equals `pgid`, skipping the
+ * leader itself and zombies (`Z`/`X` state — an unreaped corpse is not a live
+ * member and must not hold the group non-empty). A group's leader exiting does
+ * NOT empty the group, so this is what lets `escalateKill` keep waiting for a
+ * member's cleanup window. Returns false when /proc is unavailable — callers
+ * then fall back to leader liveness (the documented non-Linux boundary).
+ */
+export function groupHasMembers(pgid: number): boolean {
+	if (!Number.isInteger(pgid) || pgid <= 0 || !isProcAvailable()) return false;
+	let entries: string[];
+	try {
+		entries = fs.readdirSync(PROC_ROOT);
+	} catch {
+		return false;
+	}
+	for (const entry of entries) {
+		if (!/^\d+$/.test(entry)) continue;
+		const pid = Number(entry);
+		if (pid === pgid) continue; // the leader (possibly a zombie) is not a member
+		const fields = readStatFields(pid);
+		if (!fields) continue;
+		if (fields[0] === "Z" || fields[0] === "X") continue;
+		if (Number(fields[2]) === pgid) return true;
+	}
+	return false;
+}
+
+/**
+ * #299 review Major 1 — signal-time identity re-check. True only when the LIVE
+ * process `pid` carries `CHILD_MARKER_ENV_KEY=<marker>` in its environment.
+ * `findByMarker` proves the pid was ours at SCAN time; this proves it is ours at
+ * the SIGNAL time, closing the scan→signal pid-reuse window (a pid that exited
+ * and was reused by a foreign process no longer carries the marker). Returns
+ * false when /proc is unavailable, the pid is invalid, or the process vanished.
+ *
+ * RESIDUAL: this narrows the reuse window to the read→`kill` syscall boundary —
+ * the same exposure the direct signals have carried since Option A. It does NOT
+ * eliminate it (the kernel may reuse the pid between this read and the signal).
+ */
+export function pidHasMarker(pid: number, marker: string): boolean {
+	if (!marker || !isProcAvailable() || !Number.isInteger(pid) || pid <= 0) return false;
+	const needle = `${CHILD_MARKER_ENV_KEY}=${marker}`;
+	try {
+		const environ = fs.readFileSync(path.join(PROC_ROOT, String(pid), "environ"), "utf-8");
+		return environ.split("\0").includes(needle);
+	} catch {
+		return false;
 	}
 }
 
@@ -118,7 +189,6 @@ export function pidAlive(pid: number): boolean {
  */
 export function findByMarker(marker: string): number[] {
 	if (!marker || !isProcAvailable()) return [];
-	const needle = `${CHILD_MARKER_ENV_KEY}=${marker}`;
 	const found: number[] = [];
 	let entries: string[];
 	try {
@@ -130,12 +200,7 @@ export function findByMarker(marker: string): number[] {
 		if (!/^\d+$/.test(entry)) continue;
 		const pid = Number(entry);
 		if (pid === process.pid) continue;
-		try {
-			const environ = fs.readFileSync(path.join(PROC_ROOT, entry, "environ"), "utf-8");
-			if (environ.split("\0").includes(needle)) found.push(pid);
-		} catch {
-			// Vanished or not readable by this user — not a verified match.
-		}
+		if (pidHasMarker(pid, marker)) found.push(pid);
 	}
 	return found;
 }
@@ -154,6 +219,12 @@ export function defaultRecoveryDeps(): RecoveryDeps {
 		// env-scrubbed descendants. Omitted on Windows (D6) so `reapPids` keeps
 		// today's direct pid targets.
 		killGroup: supportsProcessGroupKill() ? killProcessGroup : undefined,
+		// #299 review Major 2: a group's leader exiting does not empty the group,
+		// so the group target's death check counts live members.
+		groupHasMembers,
+		// #299 review Major 1: signal-time marker re-check for marker-derived
+		// targets (closes the scan→signal pid-reuse window).
+		verifyMarker: pidHasMarker,
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		graceMs: SIGKILL_GRACE_MS,
 		// Item 4 (#299): poll so the boot scan returns as soon as its orphans die

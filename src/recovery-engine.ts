@@ -25,7 +25,8 @@
 
 import type { ProcessOwner, SubagentRun } from "./types";
 import { resolveTerminalRunEntry } from "./state";
-import { escalateKill, processTarget } from "./kill-escalation";
+import { escalateKill, processTarget, type SignalGuard, type SignalPhase } from "./kill-escalation";
+import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
 // Dependency injection surface
@@ -49,6 +50,22 @@ export interface RecoveryDeps {
 	 * falls back to direct pid targets, exactly today's behavior.
 	 */
 	killGroup?(pgid: number, signal: NodeJS.Signals): void;
+	/**
+	 * #299 review Major 2: true when process group `pgid` still has a LIVE member.
+	 * Threaded into the group target's `verifyDeath` so a leader that exits
+	 * promptly no longer reads as "group empty" — the escalation then honours the
+	 * grace window for a member's cleanup. Absent/false on a platform without
+	 * /proc → leader-only fallback (documented boundary).
+	 */
+	groupHasMembers?(pgid: number): boolean;
+	/**
+	 * #299 review Major 1: signal-time marker re-check — true when the LIVE `pid`
+	 * still carries `CHILD_MARKER_ENV_KEY=<marker>`. Threaded into the marker
+	 * targets' signal guard so a pid that exited and was reused by a foreign
+	 * process is never signaled. Absent → no signal-time gate (tests without /proc
+	 * wiring); production always provides it via `defaultRecoveryDeps`.
+	 */
+	verifyMarker?(pid: number, marker: string): boolean;
 	/** Sleep between SIGTERM and SIGKILL. */
 	sleep(ms: number): Promise<void>;
 	/** Grace period in ms between SIGTERM and SIGKILL. */
@@ -223,12 +240,36 @@ export function decideRecovery(record: RecoveryRecord, deps: RecoveryDeps): Reco
  * adapter over the shared `escalateKill` helper (src/kill-escalation.ts), which
  * `recoverRecord` (one record) and `runBootScan` (the whole scan) both call, so
  * a boot with N orphans waits one grace period total, never N.
+ *
+ * #299 review Major 1: `markerOfPid` resolves the marker that verified a pid at
+ * scan time; when `deps.verifyMarker` is also wired (production), every signal
+ * on that pid is gated on an immediate re-read of the live marker (`SignalGuard`),
+ * so a pid reused by a foreign process is skipped, never signaled unverified.
+ * `onSkip` records a refused signal. Both are optional so direct `reapPids`
+ * callers without /proc wiring keep the historical unconditional behavior.
  */
-export async function reapPids(pids: number[], deps: RecoveryDeps): Promise<number[]> {
+export async function reapPids(
+	pids: number[],
+	deps: RecoveryDeps,
+	markerOfPid?: (pid: number) => string | undefined,
+	onSkip?: (pid: number, signal: NodeJS.Signals, phase: SignalPhase) => void,
+): Promise<number[]> {
 	const unique = [...new Set(pids)];
-	const targets = unique.map((pid) =>
-		processTarget(pid, deps.kill, deps.pidAlive, deps.killGroup),
-	);
+	const targets = unique.map((pid) => {
+		const marker = markerOfPid?.(pid);
+		const guard: SignalGuard | undefined =
+			marker && deps.verifyMarker
+				? { isOwn: (targetPid) => deps.verifyMarker!(targetPid, marker), onSkip }
+				: undefined;
+		return processTarget(
+			pid,
+			deps.kill,
+			deps.pidAlive,
+			deps.killGroup,
+			deps.groupHasMembers,
+			guard,
+		);
+	});
 	const survivors = await escalateKill(targets, {
 		graceMs: deps.graceMs,
 		pollMs: deps.pollMs,
@@ -241,10 +282,15 @@ export async function reapPids(pids: number[], deps: RecoveryDeps): Promise<numb
 /**
  * Apply a record's plan: SIGTERM every marker-verified orphan, wait the grace
  * period, SIGKILL any survivor, then report. Never throws on a vanished pid.
+ *
+ * #299 review Major 1: every signal on this record's marker-verified pids is
+ * re-checked against the live marker at signal time; a refused signal is logged
+ * when `log` is supplied.
  */
 export async function recoverRecord(
 	record: RecoveryRecord,
 	deps: RecoveryDeps,
+	log?: Pick<Logger, "warn">,
 ): Promise<RecoveryOutcome> {
 	const plan = decideRecovery(record, deps);
 	if (plan.decision === "skip") {
@@ -259,7 +305,20 @@ export async function recoverRecord(
 	}
 
 	const reaped = [...new Set(plan.reap)];
-	const survived = await reapPids(reaped, deps);
+	const marker = record.childMarker;
+	const survived = await reapPids(
+		reaped,
+		deps,
+		marker ? () => marker : undefined,
+		(pid, signal, phase) =>
+			log?.warn("Recovery: skipped a marker signal (pid no longer carries the run marker)", {
+				id: record.id,
+				pid,
+				signal,
+				phase,
+				marker,
+			}),
+	);
 
 	return {
 		id: record.id,

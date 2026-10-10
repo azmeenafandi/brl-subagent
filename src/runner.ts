@@ -41,8 +41,9 @@ import {
 	supportsProcessGroupKill,
 	groupTarget,
 	type EscalationTarget,
+	type SignalGuard,
 } from "./kill-escalation";
-import { findByMarker, pidAlive } from "./proc";
+import { findByMarker, pidAlive, pidHasMarker, groupHasMembers } from "./proc";
 import { getSafeEnv, DEPTH_ENV_KEY, CHILD_MARKER_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
@@ -91,7 +92,10 @@ export function activeChildCount(): number {
 
 /** True once the child has really exited (a signal was delivered is not enough). */
 function childExited(proc: ChildProcess): boolean {
-	return proc.exitCode !== null || proc.signalCode !== null;
+	// `!= null` (not `!== null`): a real ChildProcess uses `null` before exit, but
+	// narrow test doubles omit the field (`undefined`), which must also read as
+	// "not exited" so the liveness re-check does not skip a live child's TERM.
+	return proc.exitCode != null || proc.signalCode != null;
 }
 
 /** Default real sleep between SIGTERM and the escalation re-check. */
@@ -166,10 +170,11 @@ const killGroupPid = (pgid: number, signal: NodeJS.Signals): void => {
 
 /**
  * Escalation target for one spawned child. `verifyDeath` defaults to the
- * REAL-exit check (`childExited`) and may be overridden per site. The abort and
- * timeout paths must use the real check (issue #303): `child.killed` flips
- * when a signal is *sent*, not when the process dies, so gating the SIGKILL on
- * it would let a SIGTERM-ignoring child survive the escalation.
+ * REAL-exit check (`childExited`) AND — on a group target — group emptiness, and
+ * may be overridden per site. The abort and timeout paths must use the real
+ * check (issue #303): `child.killed` flips when a signal is *sent*, not when the
+ * process dies, so gating the SIGKILL on it would let a SIGTERM-ignoring child
+ * survive the escalation.
  *
  * #299 Option B D2: on POSIX the target ALSO signals the child's process group
  * (best-effort) and unconditionally SIGKILLs it after the grace window
@@ -177,17 +182,40 @@ const killGroupPid = (pgid: number, signal: NodeJS.Signals): void => {
  * — dies with the child on abort/timeout/shutdown. The direct `proc.kill`
  * signal is never replaced. On Windows (`supportsProcessGroupKill()` false,
  * D6) this is exactly today's direct-only target.
+ *
+ * #299 review (Major 1 + Major 2):
+ *   - The tracked `ChildProcess` handle is its OWN identity class — it is not
+ *     marker-derived, so there is no marker guard here; terminate/forceKill stay
+ *     unconditional (D5). We add only a TERMINATE-time liveness re-check (skip
+ *     when the child is already confirmed exited). The force-kill window is
+ *     in-session and µs-class: the live handle cannot be reused by a foreign
+ *     process while we hold it.
+ *   - Major 2: the default death check becomes `childExited(proc) &&
+ *     !groupHasMembers(pid)` so a descendant still cleaning up keeps the grace
+ *     window open. When /proc is unavailable (`groupHasMembers` false) it
+ *     degrades to child-exited liveness — the documented platform boundary.
  */
-function childTarget(proc: ChildProcess, verifyDeath: () => boolean = () => childExited(proc)): EscalationTarget {
+function childTarget(proc: ChildProcess, verifyDeath?: () => boolean): EscalationTarget {
 	const pid = proc.pid ?? 0;
 	const killDirect = (_pid: number, signal: NodeJS.Signals): void => {
 		proc.kill(signal);
 	};
-	const base =
-		supportsProcessGroupKill() && proc.pid !== undefined
-			? groupTarget(pid, killDirect, killGroupPid, pidAlive)
-			: pidTarget(pid, killDirect, pidAlive);
-	return { ...base, verifyDeath };
+	const useGroup = supportsProcessGroupKill() && proc.pid !== undefined;
+	const base = useGroup
+		? groupTarget(pid, killDirect, killGroupPid, pidAlive, groupHasMembers)
+		: pidTarget(pid, killDirect, pidAlive);
+	const defaultVerifyDeath = useGroup
+		? () => childExited(proc) && !groupHasMembers(pid)
+		: () => childExited(proc);
+	return {
+		...base,
+		terminate: () => {
+			// #299 review Major 1: an already-exited child is not signaled again.
+			if (childExited(proc)) return;
+			base.terminate();
+		},
+		verifyDeath: verifyDeath ?? defaultVerifyDeath,
+	};
 }
 
 /** Send a signal to a pid; the ONE production kill primitive for marker sweeps. */
@@ -202,10 +230,18 @@ const killPid = (pid: number, signal: NodeJS.Signals): void => {
  * `ChildProcess`-based targets cannot see. `excludePids` drops anything already
  * targeted (the tracked direct children). Markers are per-run UUIDs, so a sweep
  * cannot reach another run's tree.
+ *
+ * #299 review Major 1: every pid here is marker-derived, so its targets carry a
+ * `SignalGuard` that re-reads the LIVE marker (`pidHasMarker`) immediately before
+ * each signal. A pid that exited and was reused by a foreign process no longer
+ * carries the marker, so both the group and direct signals are SKIPPED and the
+ * skip is logged — never an unverified signal. `log` is optional (the sweep and
+ * shutdown calls pass their logger).
  */
 function collectMarkerTargets(
 	markers: Iterable<string | undefined>,
 	excludePids: ReadonlySet<number>,
+	log?: Logger,
 ): { pids: number[]; targets: EscalationTarget[] } {
 	const seen = new Set<number>();
 	const pids: number[] = [];
@@ -223,7 +259,17 @@ function collectMarkerTargets(
 			if (excludePids.has(pid) || seen.has(pid)) continue;
 			seen.add(pid);
 			pids.push(pid);
-			targets.push(processTarget(pid, killPid, pidAlive, groupKill));
+			const guard: SignalGuard = {
+				isOwn: (targetPid) => pidHasMarker(targetPid, marker),
+				onSkip: (targetPid, signal, phase) =>
+					log?.warn("Skipped marker signal: pid no longer carries the run marker", {
+						pid: targetPid,
+						signal,
+						phase,
+						marker,
+					}),
+			};
+			targets.push(processTarget(pid, killPid, pidAlive, groupKill, groupHasMembers, guard));
 		}
 	}
 	return { pids, targets };
@@ -241,7 +287,7 @@ async function sweepMarkerChildren(
 	excludePids: ReadonlySet<number>,
 	log?: Logger,
 ): Promise<number[]> {
-	const { pids, targets } = collectMarkerTargets([marker], excludePids);
+	const { pids, targets } = collectMarkerTargets([marker], excludePids, log);
 	if (targets.length === 0) return [];
 	try {
 		await escalateKill(targets, {
@@ -283,7 +329,7 @@ export async function reapActiveChildren(log?: Logger): Promise<number[]> {
 		targets.push(childTarget(entry.proc));
 		markers.push(entry.marker);
 	}
-	const swept = collectMarkerTargets(markers, trackedPids);
+	const swept = collectMarkerTargets(markers, trackedPids, log);
 	pids.push(...swept.pids);
 	targets.push(...swept.targets);
 	if (targets.length === 0) return [];

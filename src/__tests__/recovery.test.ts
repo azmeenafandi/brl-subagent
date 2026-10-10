@@ -751,6 +751,62 @@ function spawnStubbornGroup(memberPidFile: string, readyFile: string): ChildProc
 	return spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true });
 }
 
+/**
+ * A DETACHED leader that spawns a member which handles SIGTERM with a
+ * `cleanupMs` delay, writes `doneFile` when finished, then exits. The leader
+ * dies on SIGTERM (default disposition). Models the #299 review Major 2 case:
+ * the leader exits fast while a same-group member is still cleaning up — a
+ * leader-only death check would SIGKILL the member mid-cleanup. `env` carries
+ * the run marker so the production signal-time verifier accepts the leader.
+ */
+function spawnGracefulGroup(
+	memberPidFile: string,
+	readyFile: string,
+	doneFile: string,
+	cleanupMs: number,
+	env: NodeJS.ProcessEnv,
+): ChildProcess {
+	const memberCode =
+		`const fs=require('node:fs');` +
+		`process.on('SIGTERM',()=>{` +
+		`setTimeout(()=>{fs.writeFileSync(${JSON.stringify(doneFile)}, String(Date.now()));process.exit(0);}, ${cleanupMs});` +
+		`});` +
+		`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
+		`setInterval(()=>{},1000)`;
+	const leaderCode =
+		`const {spawn}=require('node:child_process');const fs=require('node:fs');` +
+		`const m=spawn(process.execPath,['-e',${JSON.stringify(memberCode)}],{stdio:'ignore'});` +
+		`fs.writeFileSync(${JSON.stringify(memberPidFile)}, String(m.pid));` +
+		`setInterval(()=>{},1000)`;
+	return spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true, env });
+}
+
+/**
+ * The production recovery deps with the `kill`/`killGroup` primitives wrapped by
+ * recorders that call through — the exact observation of signal dispatch for the
+ * #299 review A1/A2 tests.
+ */
+function recordingDeps(overrides: Partial<RecoveryDeps> = {}) {
+	const base = defaultRecoveryDeps();
+	const killCalls: Array<[number, NodeJS.Signals]> = [];
+	const groupCalls: Array<[number, NodeJS.Signals]> = [];
+	const deps: RecoveryDeps = {
+		...base,
+		kill: (pid, signal) => {
+			killCalls.push([pid, signal]);
+			base.kill(pid, signal);
+		},
+		killGroup: base.killGroup
+			? (pgid, signal) => {
+					groupCalls.push([pgid, signal]);
+					base.killGroup!(pgid, signal);
+				}
+			: undefined,
+		...overrides,
+	};
+	return { deps, killCalls, groupCalls };
+}
+
 /** Launch one wrapper child with a per-run marker (and optional abort signal). */
 function launchForeground(marker: string, timeout?: number, signal?: AbortSignal) {
 	return runSubagent(
@@ -1157,6 +1213,150 @@ describe("shutdown reap", () => {
 		} finally {
 			spy.restore();
 		}
+	}, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// #299 review fix — A1 signal-time marker verification, A2 group-empty grace
+// ---------------------------------------------------------------------------
+
+describe("#299 review A1: signal-time marker verification", () => {
+	it("does NOT signal an alive pid that no longer carries the marker (reused pid)", async () => {
+		if (!isProcAvailable()) return;
+		// A detached, marker-free foreign process is exactly the state a reused pid
+		// is in. The scan-time match is stubbed via `markerOfPid`; the PRODUCTION
+		// `pidHasMarker` verifier then reads no marker at signal time. Removing the
+		// signal-time gate lets the stale SIGTERM/SIGKILL reach this process.
+		const foreign = track(
+			spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+				stdio: "ignore",
+				detached: true,
+			}),
+		);
+		const foreignPid = await waitForSpawn(foreign);
+		const marker = `reused-${crypto.randomUUID()}`;
+		const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 200, pollMs: 20 });
+
+		const survivors = await reapPids([foreignPid], deps, () => marker);
+
+		// No signal, group or direct, reaches the foreign process/group.
+		expect(killCalls).toEqual([]);
+		expect(groupCalls).toEqual([]);
+		expect(survivors).toEqual([]);
+		expect(pidAlive(foreignPid)).toBe(true);
+		console.log(
+			`#299-A1 reused foreign=${foreignPid} killCalls=${JSON.stringify(killCalls)} groupCalls=${JSON.stringify(groupCalls)} aliveAfter=${pidAlive(foreignPid)}`,
+		);
+	}, 20000);
+
+	it("still signals a live marker pid — group AND direct (positive path)", async () => {
+		if (!isProcAvailable()) return;
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-guard-"));
+		try {
+			const marker = `guarded-${crypto.randomUUID()}`;
+			const readyFile = path.join(dir, "ready");
+			// A SIGTERM-IGNORING process, spawned WITHOUT `detached` so it is NOT a
+			// group leader: `kill(-pid)` names no group (ESRCH, swallowed) and the
+			// DIRECT TERM/KILL are the effective signals. That makes the positive path
+			// deterministic — a real group leader would die on the group SIGKILL and
+			// the (redundant) direct SIGKILL would be correctly skipped by the guard.
+			const code =
+				`const fs=require('node:fs');` +
+				`process.on('SIGTERM',()=>{});` +
+				`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
+				`setInterval(()=>{},1000)`;
+			const child = track(
+				spawn(process.execPath, ["-e", code], {
+					stdio: "ignore",
+					env: { ...process.env, [CHILD_MARKER_ENV_KEY]: marker },
+				}),
+			);
+			const childPid = await waitForSpawn(child);
+			await waitUntil(() => fs.existsSync(readyFile) && findByMarker(marker).includes(childPid), 5000);
+			const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 300, pollMs: 20 });
+
+			const survivors = await reapPids([childPid], deps, () => marker);
+
+			// The guard ALLOWED the signals while the marker was present: the direct TERM
+			// was dispatched (the process survived it), and the after-grace direct KILL
+			// ended it. The group signals were dispatched too (ESRCH here).
+			expect(killCalls).toContainEqual([childPid, "SIGTERM"]);
+			expect(killCalls).toContainEqual([childPid, "SIGKILL"]);
+			expect(groupCalls).toContainEqual([childPid, "SIGTERM"]);
+			expect(groupCalls).toContainEqual([childPid, "SIGKILL"]);
+			expect(survivors).toEqual([]);
+			await waitUntil(() => !pidAlive(childPid), 2000);
+			expect(pidAlive(childPid)).toBe(false);
+			console.log(
+				`#299-A1 positive child=${childPid} killCalls=${JSON.stringify(killCalls)} groupCalls=${JSON.stringify(groupCalls)} aliveAfter=${pidAlive(childPid)}`,
+			);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 20000);
+});
+
+describe("#299 review A2: group-empty grace window", () => {
+	it("a same-group member completes its SIGTERM cleanup inside the grace window", async () => {
+		if (!isProcAvailable()) return;
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-grace-"));
+		try {
+			const memberPidFile = path.join(dir, "member.pid");
+			const readyFile = path.join(dir, "ready");
+			const doneFile = path.join(dir, "done");
+			const marker = `grace-${crypto.randomUUID()}`;
+			const leader = track(
+				spawnGracefulGroup(memberPidFile, readyFile, doneFile, 350, {
+					...process.env,
+					[CHILD_MARKER_ENV_KEY]: marker,
+				}),
+			);
+			const leaderPid = await waitForSpawn(leader);
+			strayPids.add(leaderPid);
+			await waitUntil(() => fs.existsSync(readyFile) && fs.existsSync(memberPidFile), 5000);
+			const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
+			strayPids.add(memberPid);
+			expect(readProcessGroup(memberPid)).toBe(leaderPid);
+
+			const { deps } = recordingDeps({ graceMs: 1000, pollMs: 20 });
+			const started = Date.now();
+			const survivors = await reapPids([leaderPid], deps, () => marker);
+			const elapsed = Date.now() - started;
+
+			// The member was NOT SIGKILLed mid-cleanup: it wrote its completion marker.
+			await waitUntil(() => fs.existsSync(doneFile), 1000, false);
+			expect(fs.existsSync(doneFile)).toBe(true);
+			await waitUntil(() => !pidAlive(memberPid), 2000);
+			expect(pidAlive(memberPid)).toBe(false);
+			expect(survivors).toEqual([]);
+			// Group emptied → early exit, well before the 1000 ms grace.
+			expect(elapsed).toBeLessThan(1000);
+			console.log(
+				`#299-A2 cleanup leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} done=${fs.existsSync(doneFile)}`,
+			);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 20000);
+
+	it("group-empty fast path exits early when the group is truly empty", async () => {
+		if (!isProcAvailable()) return;
+		const marker = `empty-${crypto.randomUUID()}`;
+		const leader = track(
+			spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+				stdio: "ignore",
+				detached: true,
+				env: { ...process.env, [CHILD_MARKER_ENV_KEY]: marker },
+			}),
+		);
+		const leaderPid = await waitForSpawn(leader);
+		const { deps } = recordingDeps({ graceMs: 1000, pollMs: 20 });
+		const started = Date.now();
+		const survivors = await reapPids([leaderPid], deps, () => marker);
+		const elapsed = Date.now() - started;
+		expect(survivors).toEqual([]);
+		expect(elapsed).toBeLessThan(500);
+		console.log(`#299-A2 fastpath leader=${leaderPid} elapsedMs=${elapsed}`);
 	}, 20000);
 });
 

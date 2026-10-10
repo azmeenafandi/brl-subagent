@@ -17,6 +17,7 @@ import {
 	supportsProcessGroupKill,
 	__setProcessGroupKillSupportedForTest,
 	type EscalationTarget,
+	type SignalGuard,
 } from "../kill-escalation";
 
 afterEach(() => {
@@ -199,5 +200,134 @@ describe("group-capable targets (#299 Option B)", () => {
 		expect(supportsProcessGroupKill()).toBe(false);
 		__setProcessGroupKillSupportedForTest(true);
 		expect(supportsProcessGroupKill()).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #299 review fix — signal-time marker guard (Major 1)
+// ---------------------------------------------------------------------------
+
+describe("signal-time marker guard (#299 review Major 1)", () => {
+	it("sends group + direct signals while the marker pid is still ours", () => {
+		const calls: string[] = [];
+		const guard: SignalGuard = { isOwn: () => true };
+		const target = processTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			() => true,
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			undefined,
+			guard,
+		);
+		target.terminate();
+		target.forceKill();
+		target.forceKillGroup?.();
+		expect(calls).toEqual([
+			"group:SIGTERM",
+			"direct:SIGTERM",
+			"group:SIGKILL",
+			"direct:SIGKILL",
+			"group:SIGKILL",
+		]);
+	});
+
+	it("skips BOTH signals (and records each) for a pid reused by a foreign process", () => {
+		// Alive but no longer carrying our marker is the reviewer's reuse case: the
+		// stale pid now names a foreign process, so NO signal is sent unverified.
+		const calls: string[] = [];
+		const skips: string[] = [];
+		const guard: SignalGuard = {
+			isOwn: () => false,
+			onSkip: (_pid, signal, phase) => skips.push(`${phase}:${signal}`),
+		};
+		const target = processTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			() => true,
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			undefined,
+			guard,
+		);
+		target.terminate();
+		target.forceKill();
+		target.forceKillGroup?.();
+		expect(calls).toEqual([]);
+		expect(skips).toEqual([
+			"terminate:SIGTERM",
+			"terminate:SIGTERM",
+			"forceKill:SIGKILL",
+			"forceKill:SIGKILL",
+			"forceKillGroup:SIGKILL",
+		]);
+	});
+
+	it("still groups-signals a confirmed-gone leader (D5 survival of its members)", () => {
+		// The leader exited (not reused): its pgid cannot name a live foreign
+		// leader, so the GROUP signal is safe and reaches our surviving members.
+		const calls: string[] = [];
+		const guard: SignalGuard = { isOwn: () => false };
+		const target = processTarget(
+			9,
+			(_pid, signal) => calls.push(`direct:${signal}`),
+			() => false,
+			(_pgid, signal) => calls.push(`group:${signal}`),
+			undefined,
+			guard,
+		);
+		target.terminate();
+		target.forceKill();
+		target.forceKillGroup?.();
+		expect(calls).toEqual(["group:SIGTERM", "group:SIGKILL", "group:SIGKILL"]);
+	});
+
+	it("a direct-only target with a guard skips a reused pid and reads as dead-to-us", () => {
+		const calls: string[] = [];
+		const target = pidTarget(
+			9,
+			(_pid, signal) => calls.push(signal),
+			() => true,
+			{ isOwn: () => false },
+		);
+		target.terminate();
+		target.forceKill();
+		expect(calls).toEqual([]);
+		// Alive but not ours = our target identity is gone (do not report a survivor).
+		expect(target.verifyDeath()).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #299 review fix — group-empty death check (Major 2)
+// ---------------------------------------------------------------------------
+
+describe("group-empty verifyDeath (#299 review Major 2)", () => {
+	it("a dead leader with a live member is NOT dead (grace is honoured)", () => {
+		const target = groupTarget(9, () => {}, () => {}, () => false, () => true);
+		expect(target.verifyDeath()).toBe(false);
+		expect(target.verifyProcessAlive?.()).toBe(false);
+	});
+
+	it("a dead leader with no members IS dead", () => {
+		const target = groupTarget(9, () => {}, () => {}, () => false, () => false);
+		expect(target.verifyDeath()).toBe(true);
+	});
+
+	it("degrades to leader liveness when no /proc group reader is supplied", () => {
+		const target = groupTarget(9, () => {}, () => {}, () => false);
+		expect(target.verifyDeath()).toBe(true); // leader dead → no reader → dead
+	});
+
+	it("a group whose leader exited is ended by forceKillGroup, not forceKill (D5 tripwire)", async () => {
+		const calls: string[] = [];
+		const target: EscalationTarget = {
+			terminate: () => calls.push("TERM"),
+			forceKill: () => calls.push("KILL"),
+			verifyDeath: () => false, // group still non-empty
+			verifyProcessAlive: () => false, // but the leader is gone
+			forceKillGroup: () => calls.push("GROUP_KILL"),
+		};
+		const survivors = await escalateKill([target], { graceMs: 0, sleep: async () => {} });
+		expect(calls).toEqual(["TERM", "GROUP_KILL"]);
+		expect(survivors).toEqual([]);
 	});
 });

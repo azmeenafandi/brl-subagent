@@ -33,6 +33,21 @@
  *   - after the grace window `escalateKill` calls an optional `forceKillGroup`
  *     UNCONDITIONALLY (D5), so a TERM-stubborn member survives neither the
  *     leader exiting early nor the leader-based survivor check.
+ *
+ * #299 REVIEW FIX (review round on `62e2537`) closes the two majors:
+ *   - Major 1 (pid reuse): a marker pid verified by a `/proc` scan at SCAN time
+ *     may exit and be reused before the signal. `SignalGuard` re-reads the live
+ *     marker IMMEDIATELY before every marker-derived signal; a pid that is alive
+ *     but no longer carries the marker (the reuse case) is never signaled, group
+ *     or direct. The residual read→`kill` window is documented on the guard.
+ *   - Major 2 (grace bypassed): a group target's `verifyDeath` is now LEADER DEAD
+ *     **AND** GROUP EMPTY (`groupHasMembers`), so a dead leader no longer reads
+ *     as "all dead" and the escalation honours the grace window for a member's
+ *     cleanup. The unconditional `forceKillGroup` still ends a TERM-stubborn
+ *     member, but only after the grace window. `verifyProcessAlive` keeps the
+ *     direct `forceKill` (and the survivor report) honest for a group target
+ *     whose leader already exited, so the final group SIGKILL stays the sole
+ *     mechanism for that case (the D5 tripwire).
  */
 
 /** A process handle the escalation helper can signal and liveness-check. */
@@ -41,15 +56,24 @@ export interface EscalationTarget {
 	terminate(): void;
 	/** Send SIGKILL; may throw when the target is already gone. */
 	forceKill(): void;
-	/** True when the target is confirmed dead (so no SIGKILL is needed). */
+	/** True when the target is confirmed dead (group-empty for a group target). */
 	verifyDeath(): boolean;
+	/**
+	 * #299 review Major 2: true when the DIRECT process the target names is still
+	 * alive. A group target's `verifyDeath` is group-empty (a dead leader with a
+	 * live member is NOT dead), but `forceKill` signals the leader directly; the
+	 * escalation consults this so it never force-kills an already-exited leader.
+	 * Such a group is ended by the unconditional `forceKillGroup` instead, which
+	 * keeps D5's tripwire honest. Absent = treat as alive (direct-only targets).
+	 */
+	verifyProcessAlive?(): boolean;
 	/**
 	 * #299 Option B D5: optional UNCONDITIONAL final group SIGKILL, called for
 	 * every target after the grace window even when `verifyDeath()` reports the
-	 * leader dead. A group target's `verifyDeath` is leader-based, so a
-	 * TERM-stubborn member whose group leader already exited would otherwise
-	 * never be force-killed. Must tolerate ESRCH (a vanished/empty group is the
-	 * desired end state). Absent on direct-only pid targets.
+	 * leader dead. A group target's `verifyDeath` is group-empty, so a
+	 * TERM-stubborn member whose group leader already exited would otherwise never
+	 * be force-killed. Must tolerate ESRCH (a vanished/empty group is the desired
+	 * end state). Absent on direct-only pid targets.
 	 */
 	forceKillGroup?(): void;
 }
@@ -78,24 +102,69 @@ export function __setProcessGroupKillSupportedForTest(value: boolean | undefined
 }
 
 /**
+ * #299 review Major 1 — signal-time identity guard for MARKER-DERIVED targets.
+ *
+ * A marker pid comes from a `/proc` scan at SCAN time; between that scan and the
+ * signal the pid may exit and be reused by an unrelated process. Every signal
+ * derived from a marker pid must therefore be preceded by an immediate
+ * re-verification that the pid is still OURS. `isOwn(pid)` performs that read
+ * (the LIVE `/proc/<pid>/environ` marker) and is consulted at each dispatch:
+ *
+ *   - direct pid signal — allowed only when `isOwn(pid)` is true;
+ *   - group signal — allowed when `isOwn(pid)` is true OR the pid is confirmed
+ *     GONE (`!pidAlive(pid)`). A dead leader's pgid cannot have been reused by a
+ *     LIVE foreign leader, so `kill(-pgid)` can only reach our surviving members
+ *     (this keeps D5's group SIGKILL for a TERM-stubborn member working after the
+ *     leader exits). An ALIVE pid that no longer carries the marker IS the
+ *     review's reused-pid case: EVERY signal is skipped, never unverified.
+ *
+ * `onSkip` records a refused signal. A skipped signal is never retried
+ * unverified.
+ *
+ * RESIDUAL (documented at the call sites too): the re-check narrows the reuse
+ * window to the read→`kill` syscall boundary — the same exposure the direct
+ * signals have carried since Option A. It is narrowed, not eliminated.
+ */
+export interface SignalGuard {
+	/** True when `pid` still carries OUR marker at this instant. */
+	isOwn(pid: number): boolean;
+	/** Called when a signal is refused (verification failed). */
+	onSkip?(pid: number, signal: NodeJS.Signals, phase: SignalPhase): void;
+}
+
+/** Which dispatch attempt a guard check precedes (for skip logging). */
+export type SignalPhase = "terminate" | "forceKill" | "forceKillGroup";
+
+/**
  * Build the `EscalationTarget` for ONE pid from injected kill/liveness
  * primitives. Shared by the boot-scan reap (`reapPids`) and the marker sweeps
  * (`reapActiveChildren`, the run-exit sweep) so the pid-target shape —
  * SIGTERM, SIGKILL, `verifyDeath` = pid-not-alive — cannot drift between sites.
+ *
+ * `guard` (optional) re-verifies a marker-derived pid at signal time (Major 1);
+ * an absent guard leaves the historical unconditional direct target.
  */
 export function pidTarget(
 	pid: number,
 	kill: (pid: number, signal: NodeJS.Signals) => void,
 	pidAlive: (pid: number) => boolean,
+	guard?: SignalGuard,
 ): EscalationTarget {
+	const dispatch = (signal: NodeJS.Signals, phase: SignalPhase, run: () => void): void => {
+		if (guard && !guard.isOwn(pid)) {
+			guard.onSkip?.(pid, signal, phase);
+			return;
+		}
+		run();
+	};
 	return {
-		terminate: () => {
-			kill(pid, "SIGTERM");
+		terminate: () => dispatch("SIGTERM", "terminate", () => kill(pid, "SIGTERM")),
+		forceKill: () => dispatch("SIGKILL", "forceKill", () => kill(pid, "SIGKILL")),
+		verifyDeath: () => {
+			if (!pidAlive(pid)) return true;
+			// Alive but no longer ours → the pid was reused; our target identity is gone.
+			return guard !== undefined && !guard.isOwn(pid);
 		},
-		forceKill: () => {
-			kill(pid, "SIGKILL");
-		},
-		verifyDeath: () => !pidAlive(pid),
 	};
 }
 
@@ -119,28 +188,63 @@ function bestEffortGroupKill(
  * signal is never replaced: a `#322` test-seam child may not be a group leader,
  * so `-pid` names no group (ESRCH) while the direct signal still lands.
  *
- * `verifyDeath` stays pid-based (the leader/child the caller tracks); the
- * unconditional `forceKillGroup` below is what catches a stubborn GROUP member
- * after the leader is gone (D5).
+ * #299 review Major 2: `verifyDeath` is LEADER DEAD **AND** GROUP EMPTY — a
+ * leader exiting does not empty the group, so the escalation waits out the grace
+ * for a member's cleanup. `groupHasMembers` is the injected /proc reader; when
+ * absent/false (no /proc) it degrades to leader liveness (documented boundary).
+ * `verifyProcessAlive` exposes the DIRECT leader liveness so `forceKill` is never
+ * sent to an already-exited leader — the unconditional `forceKillGroup` below
+ * remains the sole end for a stubborn GROUP member after the leader is gone
+ * (D5).
+ *
+ * `guard` (optional) re-verifies a marker-derived pid at signal time (Major 1).
  */
 export function groupTarget(
 	pid: number,
 	kill: (pid: number, signal: NodeJS.Signals) => void,
 	killGroup: (pgid: number, signal: NodeJS.Signals) => void,
 	pidAlive: (pid: number) => boolean,
+	groupHasMembers?: (pgid: number) => boolean,
+	guard?: SignalGuard,
 ): EscalationTarget {
+	const dispatchDirect = (signal: NodeJS.Signals, phase: SignalPhase, run: () => void): void => {
+		if (guard && !guard.isOwn(pid)) {
+			guard.onSkip?.(pid, signal, phase);
+			return;
+		}
+		run();
+	};
+	// A group signal is safe when the pid is still ours OR confirmed gone: a dead
+	// leader's pgid cannot be a LIVE foreign leader (see `SignalGuard`).
+	const dispatchGroup = (signal: NodeJS.Signals, phase: SignalPhase, run: () => void): void => {
+		if (guard && !guard.isOwn(pid) && pidAlive(pid)) {
+			guard.onSkip?.(pid, signal, phase);
+			return;
+		}
+		run();
+	};
 	return {
 		terminate: () => {
-			bestEffortGroupKill(killGroup, pid, "SIGTERM");
-			kill(pid, "SIGTERM");
+			dispatchGroup("SIGTERM", "terminate", () => bestEffortGroupKill(killGroup, pid, "SIGTERM"));
+			dispatchDirect("SIGTERM", "terminate", () => kill(pid, "SIGTERM"));
 		},
 		forceKill: () => {
-			bestEffortGroupKill(killGroup, pid, "SIGKILL");
-			kill(pid, "SIGKILL");
+			dispatchGroup("SIGKILL", "forceKill", () => bestEffortGroupKill(killGroup, pid, "SIGKILL"));
+			dispatchDirect("SIGKILL", "forceKill", () => kill(pid, "SIGKILL"));
 		},
-		verifyDeath: () => !pidAlive(pid),
+		verifyProcessAlive: () => pidAlive(pid),
+		verifyDeath: () => {
+			// A live member keeps the group (and so the target) alive even after the
+			// leader is gone — including a not-yet-reaped ZOMBIE leader, which
+			// `pidAlive` still reports as alive (Major 2).
+			if (groupHasMembers?.(pid)) return false;
+			if (!pidAlive(pid)) return true; // leader gone and group empty
+			// Leader still exists: dead-to-us only when it is no longer ours (reused
+			// pid). Without a guard (no marker wiring) it is simply alive.
+			return guard !== undefined && !guard.isOwn(pid);
+		},
 		forceKillGroup: () => {
-			bestEffortGroupKill(killGroup, pid, "SIGKILL");
+			dispatchGroup("SIGKILL", "forceKillGroup", () => bestEffortGroupKill(killGroup, pid, "SIGKILL"));
 		},
 	};
 }
@@ -155,8 +259,12 @@ export function processTarget(
 	kill: (pid: number, signal: NodeJS.Signals) => void,
 	pidAlive: (pid: number) => boolean,
 	killGroup?: (pgid: number, signal: NodeJS.Signals) => void,
+	groupHasMembers?: (pgid: number) => boolean,
+	guard?: SignalGuard,
 ): EscalationTarget {
-	return killGroup ? groupTarget(pid, kill, killGroup, pidAlive) : pidTarget(pid, kill, pidAlive);
+	return killGroup
+		? groupTarget(pid, kill, killGroup, pidAlive, groupHasMembers, guard)
+		: pidTarget(pid, kill, pidAlive, guard);
 }
 
 export interface EscalationOptions {
@@ -176,8 +284,16 @@ export interface EscalationOptions {
 
 /**
  * Escalate every target together: SIGTERM all, wait (at most) one grace window,
- * then SIGKILL every target that still verifies alive. Returns the survivors.
- * Never throws on a target that vanished mid-sequence.
+ * then SIGKILL every target that still verifies alive (direct), then the
+ * unconditional final group SIGKILL, then report survivors. Never throws on a
+ * target that vanished mid-sequence.
+ *
+ * #299 review Major 2: the wait uses `verifyDeath`, which for a group target is
+ * LEADER DEAD **AND** GROUP EMPTY, so a leader that dies promptly no longer
+ * short-circuits the grace window for a member still doing cleanup. The direct
+ * `forceKill` (and the survivor report) consult `verifyProcessAlive` so a group
+ * whose leader already exited is not direct-signaled — its surviving member is
+ * ended by the unconditional `forceKillGroup` below (the D5 mechanism).
  */
 export async function escalateKill(
 	targets: EscalationTarget[],
@@ -208,18 +324,23 @@ export async function escalateKill(
 	const survivors: EscalationTarget[] = [];
 	for (const target of targets) {
 		if (target.verifyDeath()) continue;
-		try {
-			target.forceKill();
-		} catch {
-			// Exited between the liveness check and the signal.
+		// Only force-kill the DIRECT process while it is still alive; a group whose
+		// leader already exited is ended by the unconditional group SIGKILL below.
+		if (target.verifyProcessAlive?.() ?? true) {
+			try {
+				target.forceKill();
+			} catch {
+				// Exited between the liveness check and the signal.
+			}
 		}
-		if (!target.verifyDeath()) survivors.push(target);
+		if (!target.verifyDeath() && (target.verifyProcessAlive?.() ?? true)) survivors.push(target);
 	}
 
-	// D5 (option b): the final GROUP SIGKILL is UNCONDITIONAL. A group target's
-	// `verifyDeath` is leader-based, so a TERM-stubborn member whose leader has
-	// already exited would otherwise never reach SIGKILL. Group targets swallow
-	// ESRCH; pid targets have no `forceKillGroup` and are untouched.
+	// D5 (option b): the final GROUP SIGKILL is UNCONDITIONAL. `verifyDeath` is
+	// group-empty (Major 2), so the escalation may reach here while a group is
+	// still non-empty; a TERM-stubborn member whose leader has already exited must
+	// still be killed, and this is the only signal that reaches it. Group targets
+	// swallow ESRCH; pid targets have no `forceKillGroup` and are untouched.
 	for (const target of targets) {
 		if (!target.forceKillGroup) continue;
 		try {
