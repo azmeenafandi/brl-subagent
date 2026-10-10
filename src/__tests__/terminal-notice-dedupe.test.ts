@@ -392,6 +392,35 @@ describe("event + crash race (#315)", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("suppresses the poller-exception crash notice when the wake already claimed the id", async () => {
+		vi.useFakeTimers();
+		try {
+			const throwingSession = {
+				get messages(): never {
+					throw new Error("extract blew up");
+				},
+				getSessionStats: () => ({ tokens: { input: 0, output: 0 } }),
+			};
+			makeAgentImpl = (p) => ({ ...makeFakeAgent(p), _sessionRef: throwingSession });
+			const agent = await spawnBackground("race-throw");
+			agent.status = "failed";
+			agent.error = "boom";
+
+			eventBus.emit(
+				eventBus.createEvent("subagent:failed", agent.id as string, { error: "boom" }),
+			);
+
+			await flushAndPoll(); // poller then throws into the exception crash path
+
+			expect(captured).toHaveLength(1);
+			expect(captured[0].message.customType).toBe("subagent-completion");
+			expect(messagesOfType("subagent-notification")).toHaveLength(0);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
