@@ -123,6 +123,30 @@ export function __setEscalationTimingForTest(timing?: { graceMs?: number; pollMs
 }
 
 /**
+ * #322: TEST-ONLY registry seam. Register an arbitrary child (and optional
+ * marker) under a fresh unique spawn token so a test can drive the shutdown reap
+ * in isolation — with no `runSubagent` in the picture, the run's own exit sweep
+ * cannot be the killer and the reap's death assertion is attributable.
+ *
+ * Returns a deregister function that deletes that token. Throws outside the
+ * test environment (same runtime gate as `__setEscalationTimingForTest`): the
+ * registry is production state, and a stray import must never be able to point
+ * a real reap at a process the runner did not spawn.
+ */
+export function __registerActiveChildForTest(proc: ChildProcess, marker?: string): () => void {
+	if (!isTestEnvironment()) {
+		throw new Error(
+			"__registerActiveChildForTest() is test-only and cannot run in production.",
+		);
+	}
+	const token = `spawn-${process.pid}-${++spawnTokenSeq}`;
+	activeChildren.set(token, { proc, marker });
+	return () => {
+		activeChildren.delete(token);
+	};
+}
+
+/**
  * Escalation target for one spawned child. `verifyDeath` defaults to the
  * REAL-exit check (`childExited`) and may be overridden per site. The abort and
  * timeout paths must use the real check (issue #303): `child.killed` flips
