@@ -26,9 +26,10 @@
  * filesystem, or the process table. NO resume/re-drive (U4), NO auto mode.
  */
 
-import type { InflightRun, InflightRunKind } from "./run-registry";
+import { listInflightRuns, type InflightRun, type InflightRunKind } from "./run-registry";
 import type { SubagentRun } from "./types";
 import { isInterruptedRun, runRecoveryPosture, type RecoveryMode } from "./types";
+import { resolveTerminalRunEntry } from "./state";
 import type { DeliveryResolution } from "./notify-completion";
 
 /** The abandon stamp recorded on the run + agent records. */
@@ -174,6 +175,30 @@ export function visibleRunEntries(
 		synthetic.push(interruptedViewToRun(view));
 	}
 	return synthetic.length === 0 ? sessionEntries : [...sessionEntries, ...synthetic];
+}
+
+/** The agent-record lookup the bridge needs (structurally the BackgroundAgent subset). */
+export type RecoveryAgentLookup = (
+	id: string,
+) => { description?: string; task?: string; model?: string; thinkingLevel?: string } | null;
+
+/**
+ * The bridge bound to its production deps: the durable registry reader and the
+ * terminal-preferred session lookup, with the same `sessionEntries` array the
+ * caller passes. ONE wiring for the TUI and the extension, so a call site
+ * cannot accidentally read the registry while resolving session entries from a
+ * different list. The pure core (`visibleRunEntries`) stays deps-injected for
+ * unit tests.
+ */
+export function visibleRunEntriesForSession(
+	sessionEntries: SubagentRun[],
+	getAgent: RecoveryAgentLookup,
+): SubagentRun[] {
+	return visibleRunEntries(sessionEntries, {
+		listInflight: () => listInflightRuns(),
+		getAgent,
+		findRun: (id) => resolveTerminalRunEntry(sessionEntries, id),
+	});
 }
 
 // ---------------------------------------------------------------------------

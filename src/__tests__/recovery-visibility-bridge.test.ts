@@ -17,7 +17,7 @@
  * (see T1/T4/T6 in recovery-surface.test.ts). This suite deliberately does the
  * OPPOSITE — it seeds the DURABLE state the way production leaves it and drives
  * a session with ZERO run entries — and asserts all four consumers through the
- * SAME `visibleRunEntries` bridge the production call sites use.
+ * SAME `visibleRunEntriesForSession` bridge the production call sites use.
  *
  * No real-store writes: the registry and the agent store are redirected into a
  * per-test throwaway dir by the shared temp-lifecycle fixture.
@@ -34,14 +34,13 @@ import {
 import { runHistoryStatus } from "../tui-format";
 import { isInterruptedRun, CUSTOM_ENTRY_TYPES, type SubagentRun } from "../types";
 import {
-	visibleRunEntries,
+	visibleRunEntriesForSession,
 	abandonInterruptedRun,
 	SUBAGENT_ABANDONED_MESSAGE,
 } from "../recovery-surface";
 import {
 	registerInflightRun,
 	markInterrupted,
-	listInflightRuns,
 	clearInflightRun,
 } from "../run-registry";
 import { getAgent } from "../session-manager";
@@ -99,12 +98,7 @@ function seedDurableInterruptedRun(task = "recover me", label = "Recoverable"): 
 
 /** The SAME bridge wiring the extension and TUI consumers use. */
 function bridgeEntries(ctx: ExtensionContext, state: ReturnType<typeof createSessionState>): SubagentRun[] {
-	const entries = state.getRunEntries(ctx);
-	return visibleRunEntries(entries, {
-		listInflight: () => listInflightRuns(),
-		getAgent: (id) => getAgent(id),
-		findRun: (id) => resolveTerminalRunEntry(entries, id),
-	});
+	return visibleRunEntriesForSession(state.getRunEntries(ctx), getAgent);
 }
 
 beforeEach(() => env.setUp());
@@ -200,11 +194,7 @@ describe("U3 Fix A — dedupe / idempotence (no stacking)", () => {
 		} as unknown as ExtensionContext;
 		const entries = state.getRunEntries(ctx);
 
-		const bridge = visibleRunEntries(entries, {
-			listInflight: () => listInflightRuns(),
-			getAgent: (id) => getAgent(id),
-			findRun: (id) => resolveTerminalRunEntry(entries, id),
-		});
+		const bridge = visibleRunEntriesForSession(entries, getAgent);
 
 		// Same reference: the bridge is a pure identity on the already-visible path.
 		expect(bridge).toBe(entries);
@@ -229,11 +219,7 @@ describe("U3 Fix A — dedupe / idempotence (no stacking)", () => {
 		} as unknown as ExtensionContext;
 		const entries = state.getRunEntries(ctx);
 
-		const bridge = visibleRunEntries(entries, {
-			listInflight: () => listInflightRuns(),
-			getAgent: (id) => getAgent(id),
-			findRun: (id) => resolveTerminalRunEntry(entries, id),
-		});
+		const bridge = visibleRunEntriesForSession(entries, getAgent);
 
 		expect(bridge).toBe(entries);
 		const rows = collapseRunsForHistory(bridge);
@@ -257,14 +243,9 @@ describe("U3 Fix A — dedupe / idempotence (no stacking)", () => {
 			sessionManager: { getEntries: () => [{ type: "custom", customType: CUSTOM_ENTRY_TYPES.run, data: spawn }] },
 		} as unknown as ExtensionContext;
 		const entries = state.getRunEntries(ctx);
-		const deps = {
-			listInflight: () => listInflightRuns(),
-			getAgent: (id: string) => getAgent(id),
-			findRun: (id: string) => resolveTerminalRunEntry(entries, id),
-		};
 
-		const bridge = visibleRunEntries(entries, deps);
-		const again = visibleRunEntries(entries, deps);
+		const bridge = visibleRunEntriesForSession(entries, getAgent);
+		const again = visibleRunEntriesForSession(entries, getAgent);
 
 		// One synthetic added over the spawn entry; repeated reads never stack.
 		expect(bridge).toHaveLength(entries.length + 1);

@@ -125,7 +125,7 @@ import {
 	buildRecoveryNotice,
 	resolveRecoveryNoticeDelivery,
 	abandonInterruptedRun,
-	visibleRunEntries,
+	visibleRunEntriesForSession,
 } from "./recovery-surface";
 import { Intercom } from "./messaging";
 import * as eventBus from "./event-bus";
@@ -4021,12 +4021,7 @@ export default function (pi: ExtensionAPI) {
 			thinkingLevel?: string;
 		} | null,
 	): SubagentRun[] {
-		const entries = state.getRunEntries(ctx);
-		return visibleRunEntries(entries, {
-			listInflight: () => listInflightRuns(),
-			getAgent: (id) => getAgent(id),
-			findRun: (id) => resolveTerminalRunEntry(entries, id),
-		});
+		return visibleRunEntriesForSession(state.getRunEntries(ctx), getAgent);
 	}
 
 	/**

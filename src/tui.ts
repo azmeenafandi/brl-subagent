@@ -62,10 +62,9 @@ import { formatPresetSummary, getPreset, loadCustomPresets } from "./presets";
 import { buildOutputHonestyLines, formatRunDuration } from "./history";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { collapseRunsForHistory, retryableRuns, resolveTerminalRunEntry, sweepStaleLiveSubagents, type SessionState } from "./state";
+import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type SessionState } from "./state";
 import { getAgent } from "./session-manager";
-import { visibleRunEntries } from "./recovery-surface";
-import { listInflightRuns } from "./run-registry";
+import { visibleRunEntriesForSession } from "./recovery-surface";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
 import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage } from "./tui-format";
 import {
@@ -1131,12 +1130,7 @@ export async function showConfigMenu(
  * run that exists only in the durable registry.
  */
 function recoverableRunEntries(ctx: ExtensionContext, state: SessionState): SubagentRun[] {
-	const entries = state.getRunEntries(ctx);
-	return visibleRunEntries(entries, {
-		listInflight: () => listInflightRuns(),
-		getAgent: (id) => getAgent(id),
-		findRun: (id) => resolveTerminalRunEntry(entries, id),
-	});
+	return visibleRunEntriesForSession(state.getRunEntries(ctx), getAgent);
 }
 
 export async function showRunHistory(
