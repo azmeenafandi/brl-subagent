@@ -2,7 +2,7 @@
 import { randomUUID } from 'crypto';
 import { basename, dirname, join, resolve } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'fs';
-import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
+import type { BackgroundAgent, AgentStatus, GitMode, RecoveryMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
 import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
@@ -147,6 +147,16 @@ function pruneSessionDir(id: string, dir: string): void {
  * is a success. Exposed for U3's abandon action to reuse; the internal settle
  * path prunes the CAPTURED directory instead so a mid-run STORAGE_DIR change
  * (tests swap it per case) can never mis-target.
+ *
+ * U3 (D5) documented boundary — abandon after a STORAGE_DIR change: this
+ * PUBLIC helper recomputes the root from the CURRENT STORAGE_DIR, so if the
+ * root moved between the spawn and the abandon it prunes the new root (a
+ * no-op when nothing lives there) and leaves the old-root session dir behind
+ * as debris. That is prod-safe today (only tests swap the root; production
+ * uses one root per process), so U3 does NOT try to track the captured dir
+ * across sessions — the run's `_sessionFile` is live-only process state and is
+ * not persisted (D4). Debris, if any, is bounded and inspectable under the old
+ * root.
  */
 export function pruneBackgroundSession(id: string): void {
   pruneSessionDir(id, backgroundSessionDir(id));
@@ -489,6 +499,10 @@ export async function spawnBackgroundSession(
     dispatchId?: string;
     resumeOf?: string;
     attempt?: number;
+    /** Option B U3 (D4): recovery posture at dispatch — snapshotted onto the
+     *  agent record + run entry so the boot notice reads the posture the run
+     *  was actually dispatched under. Absent reads as "offer". */
+    recoveryPosture?: RecoveryMode;
   }
 ): Promise<BackgroundAgent> {
   // Serialize access to pi API to prevent concurrent import races
@@ -630,6 +644,9 @@ export async function spawnBackgroundSession(
     resumeOf: params.resumeOf,
     attempt,
     owner,
+    // Option B U3 (D4): per-run recovery posture snapshot. Additive — absent
+    // reads as "offer" via `runRecoveryPosture`/the notice collector.
+    recoveryPosture: params.recoveryPosture,
     // U2: live-only pointer to this run's session file (stripped before persist).
     _sessionFile: sessionFile,
   };
@@ -661,6 +678,7 @@ export async function spawnBackgroundSession(
     resumeOf: params.resumeOf,
     attempt,
     owner,
+    recoveryPosture: params.recoveryPosture,
   };
   persistRunRecord(pi, run, "background");
 

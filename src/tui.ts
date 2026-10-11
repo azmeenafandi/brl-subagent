@@ -32,11 +32,13 @@ import type {
 	UsageStats,
 	FileDiff,
 	CompletionNotifyMode,
+	RecoveryMode,
 } from "./types";
 import {
 	THINKING_LEVELS,
 	NAV_FOOTER,
 	COMPLETION_NOTIFY_MODES,
+	RECOVERY_MODES,
 	TASK_PREVIEW_MAX_LENGTH,
 	COLLAPSED_OUTPUT_LINES,
 	COLLAPSED_DIFF_FILES_PREVIEW,
@@ -51,6 +53,7 @@ import {
 	isMultiSubagentDetails,
 	isGraphDetails,
 	isUnsettledPartial,
+	isInterruptedRun,
 } from "./types";
 import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
 import { extractParamNames } from "./templates";
@@ -59,10 +62,11 @@ import { formatPresetSummary, getPreset, loadCustomPresets } from "./presets";
 import { buildOutputHonestyLines, formatRunDuration } from "./history";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { collapseRunsForHistory, sweepStaleLiveSubagents, type SessionState } from "./state";
+import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type SessionState } from "./state";
 import { getAgent } from "./session-manager";
+import { visibleRunEntriesForSession } from "./recovery-surface";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
-import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim } from "./tui-format";
+import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName } from "./tui-format";
 import {
 	renderTranscriptMessages,
 	type TranscriptLineStyle,
@@ -334,6 +338,32 @@ export async function showCompletionNotifySelector(
 
 	state.config.completionNotify = result as CompletionNotifyMode;
 	onConfigChanged(ctx, `Completion notify mode set to ${result}`);
+}
+
+/**
+ * Option B U3 (D4): recovery posture selector. Modeled on the completionNotify
+ * selector; `RECOVERY_MODES` excludes "auto" by construction.
+ */
+export async function showRecoverySelector(
+	ctx: ExtensionContext,
+	state: SessionState,
+	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+): Promise<void> {
+	const modeDescriptions: Record<RecoveryMode, string> = {
+		offer: "Surface interrupted runs (Run History row + one boot notice) - default",
+		off: "Do not surface interrupted runs",
+	};
+	const items: SelectItem[] = RECOVERY_MODES.map((mode) => ({
+		value: mode,
+		label: mode,
+		description: modeDescriptions[mode],
+	}));
+
+	const result = await showSelectList(ctx, "Recovery Posture", items, 5);
+	if (!result) return;
+
+	state.config.recovery = result as RecoveryMode;
+	onConfigChanged(ctx, `Recovery posture set to ${result}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -938,6 +968,13 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 					? "Wake only on failed/stopped"
 					: "Never wake (passive delivery)",
 		},
+		{
+			value: "recovery",
+			label: "Set Recovery Posture",
+			description: state.config.recovery === "offer"
+				? "Surface interrupted runs (default)"
+				: "Do not surface interrupted runs",
+		},
 
 		{
 			value: "historyentries",
@@ -1085,6 +1122,17 @@ export async function showConfigMenu(
 // Run history viewer
 // ---------------------------------------------------------------------------
 
+/**
+ * U3 Fix A: the recovery visibility bridge wired for a TUI surface. Session
+ * run entries UNIONED with synthetic durable interrupted records the session
+ * has never seen (a genuine fresh boot), deduped by id. Both the history list
+ * and the retry menu read THIS, so they can never disagree about an interrupted
+ * run that exists only in the durable registry.
+ */
+function recoverableRunEntries(ctx: ExtensionContext, state: SessionState): SubagentRun[] {
+	return visibleRunEntriesForSession(state.getRunEntries(ctx), getAgent);
+}
+
 export async function showRunHistory(
 	ctx: ExtensionContext,
 	state: SessionState,
@@ -1094,6 +1142,7 @@ export async function showRunHistory(
 		running: ctx.ui.theme.fg("accent", "◉"),
 		done: ctx.ui.theme.fg("success", "✓"),
 		failed: ctx.ui.theme.fg("error", "✗"),
+		interrupted: ctx.ui.theme.fg("warning", "◌"),
 	};
 
 	// Browse loop (issue #260): list → detail → list … until the LIST is exited
@@ -1102,7 +1151,7 @@ export async function showRunHistory(
 		// One row per SETTLED run (issue #259): collapse each run's spawn+terminal
 		// entry pair to its terminal-preferred record; in-flight runs are omitted
 		// (the live monitor owns running state).
-		const runs = collapseRunsForHistory(state.getRunEntries(ctx));
+		const runs = collapseRunsForHistory(recoverableRunEntries(ctx, state));
 
 		if (runs.length === 0) {
 			ctx.ui.notify("No subagent runs recorded yet. Delegate a task to see history.", "info");
@@ -1110,10 +1159,15 @@ export async function showRunHistory(
 		}
 
 		const items: SelectItem[] = runs.map((r) => {
-			const icon = statusIcon[r.status] || "·";
-			const name = r.label || r.task.slice(0, 60);
+			const status = runHistoryStatus(r);
+			const icon = statusIcon[status] || "·";
+			const name = runDisplayName(r);
 			const model = r.model.split("/").pop() || r.model;
-			const when = r.finishedAt ? formatRunDuration(r.durationMs || 0) : "running...";
+			const when = r.finishedAt
+				? formatRunDuration(r.durationMs || 0)
+				: status === "interrupted"
+					? "interrupted"
+					: "running...";
 			const cost = r.cost ? ` $${r.cost.toFixed(4)}` : "";
 			const desc = `${r.thinkingLevel} · ${model} · ${when}${cost}`;
 			return { value: r.id, label: `${icon} ${name}`, description: desc };
@@ -1218,8 +1272,7 @@ async function showRunDetail(ctx: ExtensionContext, run: SubagentRun): Promise<v
 			const container = new Container();
 			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
-			const statusLabel =
-				run.status === "done" ? "Completed" : run.status === "failed" ? "Failed" : "Running";
+			const statusLabel = runHistoryStatusLabel(run);
 			container.addChild(
 				new Text(
 					theme.fg(
@@ -1993,32 +2046,59 @@ export async function showDashboard(
 // Retry menu
 // ---------------------------------------------------------------------------
 
-export async function showRetryMenu(ctx: ExtensionContext, state: SessionState): Promise<void> {
-	const failedRuns = state.getRunEntries(ctx).filter((r) => r.status === "failed").reverse();
+export async function showRetryMenu(
+	ctx: ExtensionContext,
+	state: SessionState,
+	// U3 (D5): the abandon action is injected by the extension entry point (it
+	// owns the session-manager/registry wiring). Omitted in read-only contexts.
+	onAbandon?: (id: string) => void | Promise<void>,
+): Promise<void> {
+	// U3 (D3): failed AND unresolved interrupted runs share this surface, one row
+	// per run, built on the same terminal-preferred collapse the history uses.
+	const candidates = retryableRuns(recoverableRunEntries(ctx, state)).reverse();
 
-	if (failedRuns.length === 0) {
-		ctx.ui.notify("No failed subagent runs to retry.", "info");
+	if (candidates.length === 0) {
+		ctx.ui.notify("No failed or interrupted subagent runs to retry.", "info");
 		return;
 	}
 
-	const items: SelectItem[] = failedRuns.map((r) => {
-		const name = r.label || r.task.slice(0, 60);
+	const items: SelectItem[] = candidates.map((r) => {
+		const interrupted = isInterruptedRun(r);
+		const name = runDisplayName(r);
 		const model = r.model.split("/").pop() || r.model;
-		const err = r.errorMessage ? r.errorMessage.slice(0, 40) : "error";
+		const err = r.errorMessage ? r.errorMessage.slice(0, 40) : interrupted ? "interrupted" : "error";
 		return {
 			value: r.id,
-			label: `✗ ${name}`,
-			description: `${model} · ${err}`,
+			label: `${interrupted ? "◌" : "✗"} ${name}`,
+			description: `${interrupted ? "interrupted · " : ""}${model} · ${err}`,
 		};
 	});
 
-	const selectedId = await showSelectList(ctx, "Retry Failed Run", items, 10);
+	const selectedId = await showSelectList(ctx, "Retry Failed or Interrupted Run", items, 10);
 	if (!selectedId) return;
 
-	ctx.ui.notify(
-		`Ask the LLM to retry: "Use delegate_task to retry failed run ${selectedId.slice(0, 8)}..."`,
-		"info",
-	);
+	const run = candidates.find((r) => r.id === selectedId);
+	if (!run) return;
+
+	if (isInterruptedRun(run) && onAbandon) {
+		const action = await showSelectList(
+			ctx,
+			"Interrupted Run",
+			[
+				{ value: "retry", label: "Retry", description: "Re-dispatch with its recorded params (retryRunId)" },
+				{ value: "abandon", label: "Abandon", description: "Finalize as stopped and prune its session file" },
+			],
+			5,
+		);
+		if (!action) return;
+		if (action === "abandon") {
+			await onAbandon(run.id);
+			ctx.ui.notify(`Abandoned interrupted run ${run.id.slice(0, 8)}.`, "info");
+			return;
+		}
+	}
+
+	ctx.ui.notify(buildRetryOfferMessage(run), "info");
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import {
 	liveRowName,
 	liveSpinner,
 	LIVE_SPINNER_FRAMES,
+	runDisplayName,
 } from "../tui-format";
 
 describe("formatElapsed", () => {
@@ -92,5 +93,20 @@ describe("formatLiveRowDim", () => {
 	it("matches the exact row shape", () => {
 		const dim = formatLiveRowDim("deadbeef00", { input: 123, output: 456 }, "1m 5s");
 		expect(dim).toBe("  [deadbeef]  ↑123 ↓456  1m 5s");
+	});
+});
+
+describe("runDisplayName", () => {
+	it("prefers an explicit label", () => {
+		expect(runDisplayName({ id: "0123456789abcdef", label: "My Label", task: "the task" })).toBe("My Label");
+	});
+
+	it("falls back to the task truncated at 60 chars", () => {
+		const name = runDisplayName({ id: "0123456789abcdef", task: "x".repeat(100) });
+		expect(name).toBe("x".repeat(60));
+	});
+
+	it("falls back to the short id for a task-less row", () => {
+		expect(runDisplayName({ id: "0123456789abcdef", task: "" })).toBe("01234567");
 	});
 });

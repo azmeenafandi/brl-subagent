@@ -27,8 +27,9 @@ import type {
 	SubagentRun,
 	SubagentToolOptions,
 	Priority,
+	RecoveryMode,
 } from "./types";
-import { getFinalOutput, classifyError } from "./types";
+import { getFinalOutput, classifyError, DEFAULT_RECOVERY } from "./types";
 import { snapshotOriginalParams } from "./params";
 import { currentProcessOwner } from "./recovery";
 import { capOutput, stripAnsi, buildCrashResult } from "./sanitize";
@@ -106,6 +107,9 @@ export function createUnitRun(
 	stepModel: { provider: string; id: string },
 	priorityFloor: Priority,
 	presetName?: string,
+	// U3 (D4): the session recovery posture at dispatch. Optional so existing
+	// callers/tests stay valid; production passes `state.config.recovery`.
+	recoveryPosture: RecoveryMode = DEFAULT_RECOVERY,
 ): { runId: string; run: SubagentRun } {
 	const runId = crypto.randomUUID();
 	const run: SubagentRun = {
@@ -131,6 +135,9 @@ export function createUnitRun(
 		attempt: 1,
 		owner: currentProcessOwner(),
 		childMarker: crypto.randomUUID(),
+		// U3 (D4): snapshot the posture so the boot notice/offer reads what was
+		// in force at dispatch.
+		recoveryPosture,
 		// The execution-shape fields (background/gitMode/approvalMode/force) are
 		// deliberately omitted: a fan-out unit retries as a SINGLE run, so it must
 		// not inherit the fan-out's background-ness. A retry that wants background
