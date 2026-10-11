@@ -64,11 +64,12 @@ delegation-heavy work.
 - Graph with `dependsOn`: subtasks declare edges; the scheduler runs them in waves.
 - Background + act on wake: spawn a background run, then act when the completion message arrives. Never poll between spawn and wake.
 - Background fan-out: `tasks: [...], background: true` — one background agent per task, one id per task in task order, one wake per agent.
-- retryRunId: pass a failed or **interrupted** run's id to re-run it with its recorded task and params; explicit parameters override the originals.
+- retryRunId: pass a failed or **interrupted** run's id to re-run it with its recorded task and params; explicit parameters override the originals. A foreground-crashed run has no recorded task — pass `task` explicitly.
 
 ## Interrupted runs and recovery
 
-- An interrupted run (its conductor died mid-run) stays visible with status **Interrupted** in `/brl-subagent history` and is listed by `/brl-subagent retry` alongside failed runs. Recover it with `retryRunId: <run-id>` (recorded params restored), or abandon it from that menu — abandon finalizes the run as stopped and drops its persisted session file.
+- An interrupted run (its conductor died mid-run) stays visible with status **Interrupted** in `/brl-subagent history` and is listed by `/brl-subagent retry` alongside failed runs — including after a crash + fresh boot, where it is reconstructed from the durable per-run registry (plus the background agent record). Recover it with `retryRunId: <run-id>` (recorded params restored), or abandon it from that menu — abandon finalizes the run as stopped, drops its persisted session file, and sends **no** completion wake.
+- **Task-less foreground rows:** a foreground run's task is not persisted in the durable registry, so after a crash + fresh boot its row carries no task (`(task unavailable)`) and `retryRunId` cannot restore one — pass `task` explicitly on the retry call. A background run keeps its task via its agent record.
 - The **recovery posture** (`/brl-subagent recovery`, default `offer`) controls whether a boot surfaces interrupted runs with one turn-boundary notice; `off` silences it. Nothing is auto-resumed today.
 
 ## Deadlines and retries
