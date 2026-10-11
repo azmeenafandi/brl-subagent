@@ -75,7 +75,7 @@ import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
 import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams, snapshotOriginalParams } from "./params";
 import { delegateTaskParamsSchema } from "./schema";
-import { createSessionState } from "./state";
+import { createSessionState, resolveTerminalRunEntry } from "./state";
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs, reapActiveChildren } from "./runner";
@@ -125,6 +125,7 @@ import {
 	buildRecoveryNotice,
 	resolveRecoveryNoticeDelivery,
 	abandonInterruptedRun,
+	visibleRunEntries,
 } from "./recovery-surface";
 import { Intercom } from "./messaging";
 import * as eventBus from "./event-bus";
@@ -2946,7 +2947,18 @@ export default function (pi: ExtensionAPI) {
 			// resolving templates first keeps a combined template + retryRunId call
 			// from silently disabling template resolution (issue #175 review).
 			if (params.retryRunId) {
-				const runEntry = state.findSpawnRunById(ctx, params.retryRunId);
+				// Fix A: prefer the session spawn entry (it carries `originalParams`);
+				// a run that exists ONLY in the durable registry after a fresh boot
+				// resolves through the visibility bridge instead of being rejected as
+				// not found — the id the boot notice names must resolve here.
+				let runEntry = state.findSpawnRunById(ctx, params.retryRunId);
+				if (!runEntry) {
+					const { getAgent } = await import("./session-manager");
+					runEntry = resolveTerminalRunEntry(
+						visibleRunsFor(ctx, getAgent),
+						params.retryRunId,
+					);
+				}
 				if (runEntry) {
 					retrySourceRun = runEntry;
 					params = resolveRetryParams(params, runEntry) as DelegateTaskParams;
@@ -3992,6 +4004,32 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	/**
+	 * Option B U3 Fix A: the recovery visibility bridge, wired for the two
+	 * extension consumers that resolve a run id (the retryRunId branch and the
+	 * abandon action). Session run entries UNIONED with synthetic durable
+	 * interrupted records the session has never seen (a genuine fresh boot), so
+	 * an id named by the boot notice resolves here instead of being rejected as
+	 * not found. `getAgent` is injected because the callers already load it
+	 * dynamically — this keeps the registry/agent reads in ONE place.
+	 */
+	function visibleRunsFor(
+		ctx: ExtensionContext,
+		getAgent: (id: string) => {
+			description?: string;
+			task?: string;
+			model?: string;
+			thinkingLevel?: string;
+		} | null,
+	): SubagentRun[] {
+		const entries = state.getRunEntries(ctx);
+		return visibleRunEntries(entries, {
+			listInflight: () => listInflightRuns(),
+			getAgent: (id) => getAgent(id),
+			findRun: (id) => resolveTerminalRunEntry(entries, id),
+		});
+	}
+
+	/**
 	 * Option B U3 (D2): after the boot scan, send ONE notice at the next turn
 	 * boundary listing every unresolved interrupted run whose dispatch snapshot
 	 * (and the session posture) says "offer". Delivery is `nextTurn` — the notice
@@ -4032,9 +4070,13 @@ export default function (pi: ExtensionAPI) {
 	 * flipped to `stopped`.
 	 */
 	async function abandonProductionRun(ctx: ExtensionContext, id: string): Promise<void> {
-		const { updateAgentStatus, pruneBackgroundSession } = await import("./session-manager");
+		const { updateAgentStatus, pruneBackgroundSession, getAgent } = await import("./session-manager");
+		// Fix A: the abandon lookup routes through the visibility bridge, so a run
+		// that exists ONLY in the durable registry after a fresh boot is
+		// abandonable instead of resolving to undefined (the silent `false`).
+		const visible = visibleRunsFor(ctx, getAgent);
 		abandonInterruptedRun(id, {
-			getRun: (runId) => state.findTerminalRunById(ctx, runId),
+			getRun: (runId) => resolveTerminalRunEntry(visible, runId),
 			writeRun: (run) => {
 				state.persistRun(pi, run);
 				pruneHistoryIfNeeded(state, ctx, log);

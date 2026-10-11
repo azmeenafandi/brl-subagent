@@ -62,8 +62,10 @@ import { formatPresetSummary, getPreset, loadCustomPresets } from "./presets";
 import { buildOutputHonestyLines, formatRunDuration } from "./history";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type SessionState } from "./state";
+import { collapseRunsForHistory, retryableRuns, resolveTerminalRunEntry, sweepStaleLiveSubagents, type SessionState } from "./state";
 import { getAgent } from "./session-manager";
+import { visibleRunEntries } from "./recovery-surface";
+import { listInflightRuns } from "./run-registry";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
 import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage } from "./tui-format";
 import {
@@ -1121,6 +1123,22 @@ export async function showConfigMenu(
 // Run history viewer
 // ---------------------------------------------------------------------------
 
+/**
+ * U3 Fix A: the recovery visibility bridge wired for a TUI surface. Session
+ * run entries UNIONED with synthetic durable interrupted records the session
+ * has never seen (a genuine fresh boot), deduped by id. Both the history list
+ * and the retry menu read THIS, so they can never disagree about an interrupted
+ * run that exists only in the durable registry.
+ */
+function recoverableRunEntries(ctx: ExtensionContext, state: SessionState): SubagentRun[] {
+	const entries = state.getRunEntries(ctx);
+	return visibleRunEntries(entries, {
+		listInflight: () => listInflightRuns(),
+		getAgent: (id) => getAgent(id),
+		findRun: (id) => resolveTerminalRunEntry(entries, id),
+	});
+}
+
 export async function showRunHistory(
 	ctx: ExtensionContext,
 	state: SessionState,
@@ -1139,7 +1157,7 @@ export async function showRunHistory(
 		// One row per SETTLED run (issue #259): collapse each run's spawn+terminal
 		// entry pair to its terminal-preferred record; in-flight runs are omitted
 		// (the live monitor owns running state).
-		const runs = collapseRunsForHistory(state.getRunEntries(ctx));
+		const runs = collapseRunsForHistory(recoverableRunEntries(ctx, state));
 
 		if (runs.length === 0) {
 			ctx.ui.notify("No subagent runs recorded yet. Delegate a task to see history.", "info");
@@ -1149,7 +1167,7 @@ export async function showRunHistory(
 		const items: SelectItem[] = runs.map((r) => {
 			const status = runHistoryStatus(r);
 			const icon = statusIcon[status] || "·";
-			const name = r.label || r.task.slice(0, 60);
+			const name = r.label || r.task.slice(0, 60) || r.id.slice(0, 8);
 			const model = r.model.split("/").pop() || r.model;
 			const when = r.finishedAt
 				? formatRunDuration(r.durationMs || 0)
@@ -2043,7 +2061,7 @@ export async function showRetryMenu(
 ): Promise<void> {
 	// U3 (D3): failed AND unresolved interrupted runs share this surface, one row
 	// per run, built on the same terminal-preferred collapse the history uses.
-	const candidates = retryableRuns(state.getRunEntries(ctx)).reverse();
+	const candidates = retryableRuns(recoverableRunEntries(ctx, state)).reverse();
 
 	if (candidates.length === 0) {
 		ctx.ui.notify("No failed or interrupted subagent runs to retry.", "info");
@@ -2052,7 +2070,7 @@ export async function showRetryMenu(
 
 	const items: SelectItem[] = candidates.map((r) => {
 		const interrupted = isInterruptedRun(r);
-		const name = r.label || r.task.slice(0, 60);
+		const name = r.label || r.task.slice(0, 60) || r.id.slice(0, 8);
 		const model = r.model.split("/").pop() || r.model;
 		const err = r.errorMessage ? r.errorMessage.slice(0, 40) : interrupted ? "interrupted" : "error";
 		return {

@@ -14,7 +14,13 @@
  *   - `abandonInterruptedRun` finalizes a marked run as the existing terminal
  *     `stopped` outcome (agent record `stopped`; run record `failed` +
  *     `errorCategory: "aborted"`, mirroring every other stop path), retires its
- *     registry entry, and prunes its U2 session dir.
+ *     registry entry, and prunes its U2 session dir;
+ *   - `visibleRunEntries` is the Fix A bridge: session run entries UNIONED with
+ *     a synthetic record for every durable interrupted run the session has
+ *     never seen (a genuine fresh boot). Every session-sourced recovery surface
+ *     routes through it, so a crashed run is listed in Run History, offered in
+ *     the retry menu, abandonable, and resolvable through `retryRunId` — the
+ *     four consumers that previously read session entries the crash left empty.
  *
  * Pure over injected deps so the matrix is unit-testable without the SDK, the
  * filesystem, or the process table. NO resume/re-drive (U4), NO auto mode.
@@ -41,6 +47,8 @@ export interface InterruptedRunView {
 	kind: InflightRunKind;
 	label?: string;
 	task?: string;
+	model?: string;
+	thinkingLevel?: string;
 	startedAt: string;
 	interruptedAt: string;
 	/** The posture snapshotted at dispatch (absent ⇒ "offer"). */
@@ -51,7 +59,12 @@ export interface CollectInterruptedDeps {
 	/** The durable in-flight registry entries. */
 	listInflight(): InflightRun[];
 	/** ONE background agent record by id, or null. */
-	getAgent(id: string): { description?: string; task?: string } | null;
+	getAgent(id: string): {
+		description?: string;
+		task?: string;
+		model?: string;
+		thinkingLevel?: string;
+	} | null;
 	/** The session run entry (terminal-preferring), or undefined. */
 	findRun(id: string): SubagentRun | undefined;
 }
@@ -74,6 +87,8 @@ export function collectInterruptedRuns(deps: CollectInterruptedDeps): Interrupte
 			kind: entry.kind,
 			label: run?.label ?? agent?.description,
 			task: run?.task ?? agent?.task,
+			model: run?.model ?? agent?.model,
+			thinkingLevel: run?.thinkingLevel ?? agent?.thinkingLevel,
 			startedAt: entry.startedAt,
 			interruptedAt: entry.interruptedAt,
 			// The registry entry is the durable dispatch snapshot; the session
@@ -89,6 +104,76 @@ export function collectInterruptedRuns(deps: CollectInterruptedDeps): Interrupte
 /** Keep only the runs whose snapshotted posture is "offer". */
 export function offeredInterruptedRuns(views: InterruptedRunView[]): InterruptedRunView[] {
 	return views.filter((v) => v.recoveryPosture === "offer");
+}
+
+// ---------------------------------------------------------------------------
+// Visibility bridge (Fix A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the synthetic session-visible record for a durable interrupted run the
+ * current session has never seen. Every field a session-sourced surface reads
+ * (`status`/`interruptedAt`/`label`/`task`/`model`/`thinkingLevel`) comes from
+ * the durable view, and `originalParams` restores the retry-settable subset
+ * that survives a crash (model/thinkingLevel, plus `background` for a
+ * background kind) so a `retryRunId` re-dispatch keeps as much recorded shape
+ * as the durable records carry. The record is NEVER persisted — it exists only
+ * inside `visibleRunEntries`' returned list.
+ */
+function interruptedViewToRun(view: InterruptedRunView): SubagentRun {
+	const originalParams: NonNullable<SubagentRun["originalParams"]> = {
+		model: view.model,
+		thinkingLevel: view.thinkingLevel,
+		...(view.kind === "background" ? { background: true } : {}),
+	};
+	return {
+		id: view.id,
+		task: view.task ?? "",
+		...(view.label ? { label: view.label } : {}),
+		status: "running",
+		model: view.model?.trim() || "unknown",
+		thinkingLevel: view.thinkingLevel?.trim() || "unknown",
+		startedAt: view.startedAt,
+		interruptedAt: view.interruptedAt,
+		recoveryPosture: view.recoveryPosture,
+		originalParams,
+	};
+}
+
+/**
+ * THE recovery visibility bridge (Fix A). Session-sourced run entries UNIONED
+ * with one synthetic record per durable interrupted run the session has no
+ * terminal or already-interrupted representation for — the genuine fresh-boot
+ * case, where the crash's record lives ONLY in the durable registry + agent
+ * record and the current session has no entry at all.
+ *
+ * Deduped by id and terminal-preferred: when the session already resolves the
+ * id to a terminal entry (a settled/abandoned run) or a marked entry (a
+ * re-loaded session's interrupted clone), NO synthetic is added, so the bridge
+ * is idempotent and cannot stack rows across reads. The session list is
+ * returned by reference when nothing is added, so callers that never hit the
+ * fresh-boot case behave byte-for-byte as before.
+ *
+ * This is the ONE bridge every session-sourced recovery surface routes
+ * through (Run History, the retry menu, the abandon lookup, `retryRunId`
+ * resolution), so all four agree by construction.
+ */
+export function visibleRunEntries(
+	sessionEntries: SubagentRun[],
+	deps: CollectInterruptedDeps,
+): SubagentRun[] {
+	const synthetic: SubagentRun[] = [];
+	const seen = new Set<string>();
+	for (const view of collectInterruptedRuns(deps)) {
+		if (seen.has(view.id)) continue;
+		seen.add(view.id);
+		const resolved = deps.findRun(view.id);
+		// A terminal or already-interrupted session entry is authoritative —
+		// never augment, or a retried-then-settled run would show a second row.
+		if (resolved && (resolved.status !== "running" || isInterruptedRun(resolved))) continue;
+		synthetic.push(interruptedViewToRun(view));
+	}
+	return synthetic.length === 0 ? sessionEntries : [...sessionEntries, ...synthetic];
 }
 
 // ---------------------------------------------------------------------------
