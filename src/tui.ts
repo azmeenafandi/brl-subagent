@@ -66,7 +66,7 @@ import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type Se
 import { getAgent } from "./session-manager";
 import { visibleRunEntriesForSession } from "./recovery-surface";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
-import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage } from "./tui-format";
+import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName } from "./tui-format";
 import {
 	renderTranscriptMessages,
 	type TranscriptLineStyle,
@@ -1161,7 +1161,7 @@ export async function showRunHistory(
 		const items: SelectItem[] = runs.map((r) => {
 			const status = runHistoryStatus(r);
 			const icon = statusIcon[status] || "·";
-			const name = r.label || r.task.slice(0, 60) || r.id.slice(0, 8);
+			const name = runDisplayName(r);
 			const model = r.model.split("/").pop() || r.model;
 			const when = r.finishedAt
 				? formatRunDuration(r.durationMs || 0)
@@ -2064,7 +2064,7 @@ export async function showRetryMenu(
 
 	const items: SelectItem[] = candidates.map((r) => {
 		const interrupted = isInterruptedRun(r);
-		const name = r.label || r.task.slice(0, 60) || r.id.slice(0, 8);
+		const name = runDisplayName(r);
 		const model = r.model.split("/").pop() || r.model;
 		const err = r.errorMessage ? r.errorMessage.slice(0, 40) : interrupted ? "interrupted" : "error";
 		return {

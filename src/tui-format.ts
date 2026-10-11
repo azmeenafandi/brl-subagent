@@ -52,6 +52,16 @@ export function formatLiveRowDim(
 	return `  [${id.slice(0, 8)}]  \u2191${formatTokens(usage.input)} \u2193${formatTokens(usage.output)}  ${elapsedStr}`;
 }
 
+/**
+ * Display name for a Run History / retry-surface row, shared by BOTH surfaces
+ * so they can never name the same run differently (Fix B item 5). Explicit
+ * label wins, else the task truncated to 60 chars, else the short id — the last
+ * case being a task-less foreground-interrupted row (no task persisted).
+ */
+export function runDisplayName(run: Pick<SubagentRun, "id" | "label" | "task">): string {
+	return run.label || run.task.slice(0, 60) || run.id.slice(0, 8);
+}
+
 // ---------------------------------------------------------------------------
 // U3 (D1/D3): Run History / retry-surface row projection
 // ---------------------------------------------------------------------------

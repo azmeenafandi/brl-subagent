@@ -14,7 +14,8 @@
  *   - `abandonInterruptedRun` finalizes a marked run as the existing terminal
  *     `stopped` outcome (agent record `stopped`; run record `failed` +
  *     `errorCategory: "aborted"`, mirroring every other stop path), retires its
- *     registry entry, and prunes its U2 session dir;
+ *     registry entry, prunes its U2 session dir, and CLAIMS the run's single
+ *     terminal notice so the abandon never wakes the conductor (Fix B item 1);
  *   - `visibleRunEntries` is the Fix A bridge: session run entries UNIONED with
  *     a synthetic record for every durable interrupted run the session has
  *     never seen (a genuine fresh boot). Every session-sourced recovery surface
@@ -30,7 +31,7 @@ import { listInflightRuns, type InflightRun, type InflightRunKind } from "./run-
 import type { SubagentRun } from "./types";
 import { isInterruptedRun, runRecoveryPosture, type RecoveryMode } from "./types";
 import { resolveTerminalRunEntry } from "./state";
-import type { DeliveryResolution } from "./notify-completion";
+import { claimTerminalNotice, type DeliveryResolution } from "./notify-completion";
 
 /** The abandon stamp recorded on the run + agent records. */
 export const SUBAGENT_ABANDONED_MESSAGE = "Subagent run abandoned by user";
@@ -82,7 +83,16 @@ export function collectInterruptedRuns(deps: CollectInterruptedDeps): Interrupte
 	for (const entry of deps.listInflight()) {
 		if (!entry.interruptedAt) continue;
 		const run = deps.findRun(entry.id);
-		const agent = deps.getAgent(entry.id);
+		// Fix B (item 8): a THROWING agent-store read degrades to the
+		// missing-agent path (null) exactly like an absent record. Enrichment is
+		// best-effort — a bad single read must not take down the whole recovery
+		// surface — and the durable registry still yields the row (id + age).
+		let agent: ReturnType<CollectInterruptedDeps["getAgent"]> = null;
+		try {
+			agent = deps.getAgent(entry.id);
+		} catch {
+			agent = null;
+		}
 		views.push({
 			id: entry.id,
 			kind: entry.kind,
@@ -263,7 +273,9 @@ export function buildRecoveryNotice(
 	const content =
 		`Interrupted subagent run${items.length === 1 ? "" : "s"} detected (${items.length}):\n\n` +
 		`${lines.join("\n")}\n\n` +
-		`Review with /brl-subagent history, re-dispatch with retryRunId, or abandon via /brl-subagent retry.`;
+		`Review with /brl-subagent history, re-dispatch with retryRunId, or abandon via /brl-subagent retry. ` +
+		`A row showing "(task unavailable)" is a foreground run whose task was not persisted — ` +
+		`pass \`task\` explicitly on the retryRunId call.`;
 	return {
 		customType: RECOVERY_NOTICE_CUSTOM_TYPE,
 		content,
@@ -323,6 +335,14 @@ export function abandonInterruptedRun(
 		...(durationMs !== undefined ? { durationMs } : {}),
 	};
 	deps.writeRun(terminal);
+	// Fix B (item 1): an abandoned run must NOT wake the conductor. The
+	// production `markAgentStopped` flips the agent record and emits
+	// `subagent:stopped` — the same terminal event a normal stop raises — and the
+	// completion wake's gate is `claimTerminalNotice`. Claim the id HERE, before
+	// the mark, so on a fresh boot (where the shared claim set is empty and
+	// #315's dedupe has nothing to suppress) the wake loses the race. Normal
+	// stops/marks never pre-claim, so they keep waking exactly as before.
+	claimTerminalNotice(id);
 	deps.markAgentStopped(id);
 	deps.retireRegistry(id);
 	deps.pruneSession(id);

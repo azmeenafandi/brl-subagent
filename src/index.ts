@@ -126,6 +126,7 @@ import {
 	resolveRecoveryNoticeDelivery,
 	abandonInterruptedRun,
 	visibleRunEntriesForSession,
+	type RecoveryAgentLookup,
 } from "./recovery-surface";
 import { Intercom } from "./messaging";
 import * as eventBus from "./event-bus";
@@ -4014,12 +4015,7 @@ export default function (pi: ExtensionAPI) {
 	 */
 	function visibleRunsFor(
 		ctx: ExtensionContext,
-		getAgent: (id: string) => {
-			description?: string;
-			task?: string;
-			model?: string;
-			thinkingLevel?: string;
-		} | null,
+		getAgent: RecoveryAgentLookup,
 	): SubagentRun[] {
 		return visibleRunEntriesForSession(state.getRunEntries(ctx), getAgent);
 	}
