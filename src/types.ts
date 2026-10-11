@@ -1106,6 +1106,25 @@ export function isInterruptedRun(run: SubagentRun): boolean {
 }
 
 /**
+ * Fix B (item 2): TRUE when a terminal run record represents an ABORT rather
+ * than a genuine failure. Abandon writes the store's ONLY stopped-outcome
+ * shape — `failed` + `stopReason`/`errorCategory` "aborted" (D5 mapping) — and
+ * a user `stop_subagent` writes the same. Failure tallies (SLA) must exclude
+ * these. The run record carries no dedicated "abandoned" marker and D5 forbids
+ * adding one, so a user-ABANDONED run and a user-STOPPED run are
+ * indistinguishable here; both are treated as non-failures.
+ */
+export function isAbortedRun(
+	run: Pick<SubagentRun, "stopReason" | "errorCategory" | "originalParams">,
+): boolean {
+	return (
+		run.stopReason === "aborted" ||
+		run.errorCategory === "aborted" ||
+		run.originalParams?.errorCategory === "aborted"
+	);
+}
+
+/**
  * Type guard: checks if a value is a valid MultiSubagentDetails shape.
  */
 export function isMultiSubagentDetails(value: unknown): value is MultiSubagentDetails {

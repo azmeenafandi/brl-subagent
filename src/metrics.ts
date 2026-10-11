@@ -6,7 +6,7 @@
  * against a baseline.
  */
 
-import type { SubagentRun, SLAMetrics, DegradationReport, ErrorCategory } from "./types";
+import { isAbortedRun, type SubagentRun, type SLAMetrics, type DegradationReport, type ErrorCategory } from "./types";
 
 // ---------------------------------------------------------------------------
 // Percentile helper
@@ -30,29 +30,6 @@ function percentile(sorted: number[], p: number): number {
 // ---------------------------------------------------------------------------
 // SLA metric computation
 // ---------------------------------------------------------------------------
-
-/**
- * Fix B (item 2): an ABORTED run is not a failure. Abandoning an interrupted
- * run writes the store's only representation of a stopped outcome — `failed` +
- * `stopReason`/`errorCategory` "aborted" (D5 mapping) — and a user
- * `stop_subagent` writes the same shape. Neither is a genuine failure, so the
- * SLA failure tally excludes both instead of letting an abandoned run drag the
- * rate down.
- *
- * GAP (backlog): the run record carries no dedicated "abandoned" marker and D5
- * forbids adding a persisted field or enum member, so this predicate cannot
- * separate a user-ABANDONED run from a user-STOPPED one — both leave the
- * failure tally. A dedicated abandon bucket needs a persisted distinguisher in
- * a follow-up unit; until then, excluding the whole aborted class is the
- * closest honest behavior.
- */
-function isAbortedRun(run: SubagentRun): boolean {
-	return (
-		run.stopReason === "aborted" ||
-		run.errorCategory === "aborted" ||
-		run.originalParams?.errorCategory === "aborted"
-	);
-}
 
 /**
  * Compute SLA metrics from a list of SubagentRun records.
