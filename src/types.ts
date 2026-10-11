@@ -22,6 +22,15 @@ export type CompletionNotifyMode = (typeof COMPLETION_NOTIFY_MODES)[number];
 
 export const DEFAULT_COMPLETION_NOTIFY: CompletionNotifyMode = "all";
 
+// Option B U3 (D4): boot recovery posture. "offer" surfaces interrupted runs
+// (Run History row + one boot notice); "off" silences the notice and marks
+// newly dispatched runs so they are never offered. "auto" is deliberately NOT
+// a member (U4 territory), enforced by RECOVERY_MODES being the shape guard.
+export const RECOVERY_MODES = ["offer", "off"] as const;
+export type RecoveryMode = (typeof RECOVERY_MODES)[number];
+
+export const DEFAULT_RECOVERY: RecoveryMode = "offer";
+
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -238,6 +247,9 @@ export interface SubagentState {
 	// state, "failed" wakes only on failed/stopped, "off" never wakes (still
 	// delivers passively at the next user prompt).
 	completionNotify: CompletionNotifyMode;
+	// Option B U3 (D4): recovery posture for the session. Applies to newly
+	// dispatched runs (snapshotted per run) and to the boot notice.
+	recovery: RecoveryMode;
 	maxHistoryEntries: number; // 0 = unlimited
 	sessionCostLimit: number; // 0 = unlimited
 	perTaskCostEstimate: number; // 0 = no estimate, use default
@@ -327,6 +339,9 @@ export interface SubagentRun {
 	interruptedAt?: string;
 	owner?: ProcessOwner;
 	childMarker?: string;
+	// Option B U3 (D4): the recovery posture in force when this run was
+	// dispatched. Additive: a pre-U3 record lacks it and reads as "offer".
+	recoveryPosture?: RecoveryMode;
 	startedAt: string;
 	finishedAt?: string;
 	durationMs?: number;
@@ -707,7 +722,7 @@ export const RESERVED_NAME_PATTERN = /^__.*__$/;
 export const RESERVED_COMMAND_NAMES = new Set([
 	"model", "thinking", "concurrency", "depth", "history", "monitor",
 	"preset", "retry", "reset", "priority", "templates", "dashboard", "approval",
- "costlimit", "historyentries", "sla", "completionnotify",
+ "costlimit", "historyentries", "sla", "completionnotify", "recovery",
 	"graph", "sla-stats", "compliance",
 ]);
 
@@ -753,6 +768,9 @@ export interface BackgroundAgent {
 	interruptedAt?: string;
 	owner?: ProcessOwner;
 	childMarker?: string;
+	// Option B U3 (D4): the recovery posture at dispatch, mirrored from the
+	// run record. Additive (absent reads as "offer").
+	recoveryPosture?: RecoveryMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,6 +1035,11 @@ export function isSubagentStateShape(value: unknown): value is SubagentState {
 		if (!COMPLETION_NOTIFY_MODES.includes(v.completionNotify as CompletionNotifyMode)) return false;
 	}
 
+	// recovery must be one of RECOVERY_MODES if present ("auto" is rejected)
+	if (v.recovery !== undefined) {
+		if (!RECOVERY_MODES.includes(v.recovery as RecoveryMode)) return false;
+	}
+
 	// maxHistoryEntries must be a non-negative number if present
 	if (v.maxHistoryEntries !== undefined) {
 		if (typeof v.maxHistoryEntries !== "number" || v.maxHistoryEntries < 0) return false;
@@ -1052,7 +1075,23 @@ export function isSubagentRunShape(value: unknown): value is SubagentRun {
 	if (typeof v.id !== "string") return false;
 	if (typeof v.task !== "string") return false;
 	if (!["running", "done", "failed"].includes(v.status as string)) return false;
+	// U3 (D4): a malformed snapshot is rejected like any other bad field; an
+	// absent one is fine (pre-U3 records) and reads as "offer" via the helper.
+	if (v.recoveryPosture !== undefined) {
+		if (!RECOVERY_MODES.includes(v.recoveryPosture as RecoveryMode)) return false;
+	}
 	return true;
+}
+
+/**
+ * Option B U3 (D4): the recovery posture recorded for a run. Absent (pre-U3
+ * records) or an unrecognized value reads as the default "offer" — the
+ * additive-field contract (no migration).
+ */
+export function runRecoveryPosture(
+	run: Pick<SubagentRun, "recoveryPosture">,
+): RecoveryMode {
+	return run.recoveryPosture === "off" ? "off" : DEFAULT_RECOVERY;
 }
 
 /**

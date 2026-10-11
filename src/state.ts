@@ -17,6 +17,7 @@ import type {
 	ThinkingLevel,
 	ApprovalMode,
 	CompletionNotifyMode,
+	RecoveryMode,
 	CircuitBreakerState,
 	Priority,
 } from "./types";
@@ -24,12 +25,15 @@ import type { TranscriptMessage } from "./transcript-tail";
 import {
 	isSubagentStateShape,
 	isSubagentRunShape,
+	isInterruptedRun,
 	CUSTOM_ENTRY_TYPES,
 	MAX_RUN_HISTORY_ENTRIES,
 	DEFAULT_MAX_SUBAGENT_DEPTH,
 	DEFAULT_SESSION_COST_LIMIT,
 	DEFAULT_COMPLETION_NOTIFY,
 	COMPLETION_NOTIFY_MODES,
+	DEFAULT_RECOVERY,
+	RECOVERY_MODES,
 	MAX_CONSECUTIVE_FAILURES,
 	CIRCUIT_BREAKER_RESET_MS,
 	CIRCUIT_DEGRADED_THINKING,
@@ -107,7 +111,10 @@ export function resolveTerminalRunEntry(
  * renders every run twice and the spawn row shows a stale "running" forever.
  * This collapses each id to its terminal-preferred entry via the ONE shared
  * rule (`resolveTerminalRunEntry`). Runs still in flight (spawn entry, no
- * terminal entry yet) are omitted: live state belongs to the monitor.
+ * terminal entry yet) are omitted: live state belongs to the monitor. U3 (D1)
+ * carves ONE exception — an INTERRUPTED run (running + `interruptedAt`, per
+ * `isInterruptedRun`) is surfaced, because the human must see it to recover or
+ * abandon it.
  *
  * Ordering is preserved from `entries`; callers pass `getRunEntries` output
  * (newest-first via `cleanupRuns`), which stays the single ordering authority —
@@ -120,9 +127,26 @@ export function collapseRunsForHistory(entries: SubagentRun[]): SubagentRun[] {
 		if (seen.has(entry.id)) continue;
 		seen.add(entry.id);
 		const resolved = resolveTerminalRunEntry(entries, entry.id);
-		if (resolved && resolved.status !== "running") display.push(resolved);
+		if (resolved && (resolved.status !== "running" || isInterruptedRun(resolved))) {
+			display.push(resolved);
+		}
 	}
 	return display;
+}
+
+/**
+ * U3 (D3): the retry surface's candidate projection — settled FAILED runs plus
+ * unresolved INTERRUPTED runs, one row per id. Built on the SAME
+ * terminal-preferred collapse the history list uses, so the two surfaces can
+ * never disagree about which record represents a run. The retry offer reuses
+ * the existing `retryRunId` machinery (recorded params restored by
+ * `resolveRetryParams`), so an interrupted run is recoverable without any new
+ * delegate_task parameter.
+ */
+export function retryableRuns(entries: SubagentRun[]): SubagentRun[] {
+	return collapseRunsForHistory(entries).filter(
+		(r) => r.status === "failed" || isInterruptedRun(r),
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +220,7 @@ export class SessionState {
 			gitMode: "none",
 			approvalMode: "writes",
 			completionNotify: DEFAULT_COMPLETION_NOTIFY,
+			recovery: DEFAULT_RECOVERY,
 			maxHistoryEntries: MAX_RUN_HISTORY_ENTRIES,
 			sessionCostLimit: DEFAULT_SESSION_COST_LIMIT,
 			perTaskCostEstimate: 0,
@@ -221,6 +246,7 @@ export class SessionState {
 			gitMode: this.config.gitMode,
 			approvalMode: this.config.approvalMode,
 			completionNotify: this.config.completionNotify,
+			recovery: this.config.recovery,
 			maxHistoryEntries: this.config.maxHistoryEntries,
 			sessionCostLimit: this.config.sessionCostLimit,
 			perTaskCostEstimate: this.config.perTaskCostEstimate,
@@ -288,6 +314,9 @@ export class SessionState {
 			COMPLETION_NOTIFY_MODES.includes(data.completionNotify as CompletionNotifyMode)
 				? data.completionNotify
 				: DEFAULT_COMPLETION_NOTIFY;
+		this.config.recovery = RECOVERY_MODES.includes(data.recovery as RecoveryMode)
+			? data.recovery
+			: DEFAULT_RECOVERY;
 		if (data.maxHistoryEntries !== undefined) this.config.maxHistoryEntries = data.maxHistoryEntries;
 		if (data.sessionCostLimit !== undefined) this.config.sessionCostLimit = data.sessionCostLimit;
 		if (data.perTaskCostEstimate !== undefined) this.config.perTaskCostEstimate = data.perTaskCostEstimate;
@@ -577,6 +606,7 @@ export class SessionState {
 		this.config.gitMode = "none";
 		this.config.approvalMode = "writes";
 		this.config.completionNotify = DEFAULT_COMPLETION_NOTIFY;
+		this.config.recovery = DEFAULT_RECOVERY;
 		this.config.maxHistoryEntries = MAX_RUN_HISTORY_ENTRIES;
 		this.config.sessionCostLimit = DEFAULT_SESSION_COST_LIMIT;
 		this.config.perTaskCostEstimate = 0;

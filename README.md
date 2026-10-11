@@ -50,6 +50,7 @@ pi remove npm:brl-subagent    # uninstall
 | `/brl-subagent depth` | Set max recursion depth |
 | `/brl-subagent approval` | Set change approval mode |
 | `/brl-subagent completionnotify` | Set completion-push wake (all/failed/off) |
+| `/brl-subagent recovery` | Set recovery posture for interrupted runs (offer/off) |
 | `/brl-subagent costlimit` | Set session cost limit |
 | `/brl-subagent historyentries` | Set max history entries |
 | `/brl-subagent sla` | Configure SLA tracking |
@@ -104,12 +105,14 @@ All settings persist across sessions.
 | `gitMode` | string | — | `'branch'` creates a work branch, captures the diff, and switches back; `'none'` does nothing. Falls back to the configured default. |
 | `approvalMode` | string | — | `auto` / `writes` / `always`. Default is user config (`/brl-subagent approval`). `always` is rejected for background runs. |
 | `force` | boolean | `false` | Dispatch anyway past a capability pre-flight block; the block is downgraded to a warning. |
-| `retryRunId` | string | — | Re-run a previously failed run with its recorded task and params. |
+| `retryRunId` | string | — | Re-run a previously failed or interrupted run with its recorded task and params. |
 | `retryOnTimeout` | boolean | `false` | Retry once if a **foreground** subagent times out. The second timeout is a final failure. Background runs are not auto-retried — re-dispatch with `retryRunId`. |
 
 **Capability pre-flight:** before spawning, the extension checks that the resolved toolset can actually do the task — a run/execute/test/compile/benchmark task with no `bash`, or an exploration task (search/grep/find/list/locate/glob) with none of `find`/`ls`/`grep`/`bash`. Such a dispatch is **rejected** by default; `force: true` downgrades the rejection to a **warning**. `force` never suppresses an `outputFile`-without-write conflict — that stays a hard error. Warnings are surfaced in the returned result in every mode.
 
 **Retries (`retryRunId`):** a retry rebuilds the parameter object from a fixed set of fields, falling back to the original run's recorded values, with explicit values on the retry call winning: `task`, `label`, `model`, `preset`, `systemPrompt`, `inheritSystemPrompt`, `thinkingLevel`, `priority`, `outputFile`, `timeout`, `cwd`, `tools`, `excludeTools`, `noBuiltinTools`, plus the four **execution-shape** fields `background`, `gitMode`, `approvalMode` and `force`.
+
+**Interrupted runs:** a run whose conductor died mid-run is marked interrupted (it keeps its persisted session file) and is surfaced as **Interrupted** in `/brl-subagent history` and in `/brl-subagent retry`. Recover one with `retryRunId: <run-id>`, or abandon it from the retry menu — abandon finalizes it as stopped and prunes its session file. The recovery posture (`/brl-subagent recovery`, default `offer`) controls whether a boot announces interrupted runs with one turn-boundary notice; `off` silences it. Recovery is never automatic — there is no `auto` mode.
 
 **The execution-shape fields are restored, so a retry keeps the original's shape:** retrying a background run re-runs it in the background (with its completion wake), a `gitMode: 'branch'` retry keeps its work branch, an `approvalMode`-constrained retry keeps that gating, and a retry that was capability-blocked keeps its `force`. Passing any of them explicitly on the retry call overrides the recorded value. One qualification on `gitMode`: when neither the record nor the call carries one, the **configured** default still applies — so a user with a global `gitMode: 'branch'` gets a work branch on every retry, and one with the default `'none'` gets none. Do not assume "no work branch" without checking the effective `gitMode`.
 

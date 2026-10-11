@@ -84,6 +84,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `proc.ts` | Production process primitives — Linux/POSIX /proc reads, feature detection, and the default recovery deps. |
 | `prompt.ts` | Builds the subagent system prompt, including the task fence and inherited-instruction handling. |
 | `recovery-engine.ts` | Pure recovery decision engine — identity, owner liveness classification, and the boot-scan plan over injected process deps. |
+| `recovery-surface.ts` | U3 recovery surface — interrupted-run projection, one-per-boot notice, and the abandon action. |
 | `recovery.ts` | Boot-time recovery scan — decides whether a persisted running record is live, reaps orphaned children, and marks interrupted records. |
 | `reports.ts` | Compliance reporting: file-access records and secrets-exposure detection. |
 | `router.ts` | Auto-route: keyword classification of a task description to the best preset. |
@@ -104,7 +105,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**39 modules** — every one is listed because a new module without a purpose fails CI.
+**40 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

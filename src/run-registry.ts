@@ -32,8 +32,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ProcessOwner, SubagentRun } from "./types";
-import { CUSTOM_ENTRY_TYPES } from "./types";
+import type { ProcessOwner, RecoveryMode, SubagentRun } from "./types";
+import { CUSTOM_ENTRY_TYPES, RECOVERY_MODES } from "./types";
 import { assertSafeAgentId } from "./sanitize";
 
 /** Which execution path owns an in-flight run (drives the boot scan's mark). */
@@ -47,6 +47,10 @@ export interface InflightRun {
 	kind: InflightRunKind;
 	owner?: ProcessOwner;
 	childMarker?: string;
+	// Option B U3 (D4): the recovery posture at dispatch, mirrored from the run
+	// record so the durable mark and the boot notice agree. Additive (absent ⇒
+	// "offer" on read).
+	recoveryPosture?: RecoveryMode;
 	startedAt: string;
 	cwd: string;
 	interruptedAt?: string;
@@ -60,6 +64,7 @@ export interface InflightRunInput {
 	kind: InflightRunKind;
 	owner?: ProcessOwner;
 	childMarker?: string;
+	recoveryPosture?: RecoveryMode;
 	startedAt: string;
 	cwd?: string;
 }
@@ -112,6 +117,9 @@ function isInflightRun(value: unknown): value is InflightRun {
 	if (!value || typeof value !== "object") return false;
 	const v = value as Record<string, unknown>;
 	if (typeof v.id !== "string" || typeof v.startedAt !== "string") return false;
+	if (v.recoveryPosture !== undefined) {
+		if (!RECOVERY_MODES.includes(v.recoveryPosture as RecoveryMode)) return false;
+	}
 	return v.kind === "foreground" || v.kind === "unit" || v.kind === "background";
 }
 
@@ -143,6 +151,7 @@ function mergeInput(base: InflightRun, input: InflightRunInput): InflightRun {
 	const next: InflightRun = { ...base, id: input.id, kind: input.kind };
 	if (input.dispatchId !== undefined) next.dispatchId = input.dispatchId;
 	if (input.attempt !== undefined) next.attempt = input.attempt;
+	if (input.recoveryPosture !== undefined) next.recoveryPosture = input.recoveryPosture;
 	if (input.owner !== undefined) next.owner = input.owner;
 	if (input.childMarker !== undefined) next.childMarker = input.childMarker;
 	if (input.startedAt) next.startedAt = input.startedAt;
@@ -243,6 +252,7 @@ function toRegistryInput(run: SubagentRun, kind: InflightRunKind): InflightRunIn
 		dispatchId: run.dispatchId,
 		attempt: run.attempt,
 		kind,
+		recoveryPosture: run.recoveryPosture,
 		owner: run.owner,
 		childMarker: run.childMarker,
 		startedAt: run.startedAt,
