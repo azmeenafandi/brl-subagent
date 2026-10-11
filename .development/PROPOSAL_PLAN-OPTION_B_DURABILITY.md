@@ -98,6 +98,10 @@ runs themselves. Not in unit: resume, re-drive, any recovery action.
 
 ### U3 — Marking surface, offer action, posture config (C2)
 
+**STATUS (2026-10-11): SPEC APPROVED — implementation in flight.** Worktree `brl-subagent-wt-u3`, branch
+`feat/u3-recovery-surface` (base `5a78822`). **Class: C1** (default-up from the plan's C2 — the delta carries a
+persisted posture-snapshot field, a terminal-status abandon write, and session pruning).
+
 **U3 notes (carried from the U2 review, 2026-10-11):** (a) document/decide the abandon-after-`STORAGE_DIR`-change
 behavior — the public `pruneBackgroundSession` recomputes the root, so an abandon after a root change no-ops at the new
 root and leaves old-root debris (prod-safe today; only tests swap the root); (b) add per-path failing-test witnesses
