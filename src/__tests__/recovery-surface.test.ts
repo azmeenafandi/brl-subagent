@@ -45,6 +45,7 @@ import {
 	persistRunRecord,
 	listInflightRuns,
 } from "../run-registry";
+import { claimTerminalNotice, __resetTerminalClaims } from "../notify-completion";
 import { createUnitRun } from "../unit-run";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 import type { Logger } from "../logging";
@@ -79,6 +80,39 @@ function view(overrides: Partial<InterruptedRunView> = {}): InterruptedRunView {
 		interruptedAt: "2026-01-01T00:00:00.000Z",
 		recoveryPosture: "offer",
 		...overrides,
+	};
+}
+
+/** Build an {@link AbandonDeps} harness over an in-memory run store. */
+function makeDeps(initial: SubagentRun[]): {
+	deps: AbandonDeps;
+	writes: SubagentRun[];
+	markStopped: ReturnType<typeof vi.fn>;
+	retire: ReturnType<typeof vi.fn>;
+	prune: ReturnType<typeof vi.fn>;
+	store: () => SubagentRun[];
+} {
+	let store = [...initial];
+	const writes: SubagentRun[] = [];
+	const markStopped = vi.fn();
+	const retire = vi.fn();
+	const prune = vi.fn();
+	return {
+		deps: {
+			getRun: (id) => resolveTerminalRunEntry(store, id),
+			writeRun: (run) => {
+				writes.push(run);
+				store = [...store, run];
+			},
+			markAgentStopped: markStopped,
+			retireRegistry: retire,
+			pruneSession: prune,
+		},
+		writes,
+		markStopped,
+		retire,
+		prune,
+		store: () => store,
 	};
 }
 
@@ -150,6 +184,59 @@ describe("T2 — boot notice (D2)", () => {
 		expect(views[0].task).toBe("BG task");
 	});
 
+	// Fix B item 3: the durable registry snapshot is the authoritative posture.
+	// The session run entry is only a fallback for pre-U3 registry entries that
+	// never wrote the snapshot — a swap of this precedence must fail these cases.
+	it("registry posture wins over the session run snapshot (off beats run offer)", () => {
+		const views = collectInterruptedRuns({
+			listInflight: () => [
+				{ id: ID_A, kind: "background", startedAt: "2026-01-01T00:00:00.000Z", cwd: "/x", interruptedAt: "2026-01-01T00:00:00.000Z", recoveryPosture: "off" },
+			],
+			getAgent: () => null,
+			findRun: () => makeRun({ id: ID_A, recoveryPosture: "offer" }),
+		});
+		expect(views[0].recoveryPosture).toBe("off");
+	});
+
+	it("registry posture wins over the session run snapshot (offer beats run off)", () => {
+		const views = collectInterruptedRuns({
+			listInflight: () => [
+				{ id: ID_A, kind: "background", startedAt: "2026-01-01T00:00:00.000Z", cwd: "/x", interruptedAt: "2026-01-01T00:00:00.000Z", recoveryPosture: "offer" },
+			],
+			getAgent: () => null,
+			findRun: () => makeRun({ id: ID_A, recoveryPosture: "off" }),
+		});
+		expect(views[0].recoveryPosture).toBe("offer");
+	});
+
+	it("falls back to the session run snapshot when the registry carries none", () => {
+		const views = collectInterruptedRuns({
+			listInflight: () => [
+				{ id: ID_A, kind: "background", startedAt: "2026-01-01T00:00:00.000Z", cwd: "/x", interruptedAt: "2026-01-01T00:00:00.000Z" },
+			],
+			getAgent: () => null,
+			findRun: () => makeRun({ id: ID_A, recoveryPosture: "off" }),
+		});
+		expect(views[0].recoveryPosture).toBe("off");
+	});
+
+	// Fix B item 8: enrichment reads are best-effort — a throwing agent-store
+	// read must degrade to the missing-agent path, never abort the whole surface.
+	it("a throwing agent-store read degrades to the missing-agent path", () => {
+		const views = collectInterruptedRuns({
+			listInflight: () => [
+				{ id: ID_A, kind: "foreground", startedAt: "2026-01-01T00:00:00.000Z", cwd: "/x", interruptedAt: "2026-01-01T00:05:00.000Z" },
+			],
+			getAgent: () => {
+				throw new Error("agent store exploded");
+			},
+			findRun: () => undefined,
+		});
+		expect(views).toHaveLength(1);
+		expect(views[0].id).toBe(ID_A);
+		expect(views[0].task).toBeUndefined();
+	});
+
 	it("builds ONE notice listing id8 · label · task excerpt · age", () => {
 		const notice = buildRecoveryNotice(
 			[view({ id: ID_A, label: "Alpha", task: "Summarize the incident report" })],
@@ -161,6 +248,12 @@ describe("T2 — boot notice (D2)", () => {
 		expect(notice.content).toContain("Summarize the incident report");
 		expect(notice.content).toContain("interrupted 5m ago");
 		expect(notice.details).toEqual({ count: 1, ids: [ID_A] });
+	});
+
+	it("hints that a task-less (foreground) row needs the task supplied to retry (Fix B item 7)", () => {
+		const notice = buildRecoveryNotice([view({ task: undefined })], new Date("2026-01-01T00:05:00.000Z"));
+		expect(notice.content).toContain("(task unavailable)");
+		expect(notice.content).toContain("pass `task` explicitly");
 	});
 
 	it("delivers at a turn boundary — nextTurn, never steer", () => {
@@ -320,38 +413,6 @@ describe("T5 — per-run recovery posture snapshot (D4)", () => {
 // ---------------------------------------------------------------------------
 
 describe("T6 — abandon action (D5)", () => {
-	function makeDeps(initial: SubagentRun[]): {
-		deps: AbandonDeps;
-		writes: SubagentRun[];
-		markStopped: ReturnType<typeof vi.fn>;
-		retire: ReturnType<typeof vi.fn>;
-		prune: ReturnType<typeof vi.fn>;
-		store: () => SubagentRun[];
-	} {
-		let store = [...initial];
-		const writes: SubagentRun[] = [];
-		const markStopped = vi.fn();
-		const retire = vi.fn();
-		const prune = vi.fn();
-		return {
-			deps: {
-				getRun: (id) => resolveTerminalRunEntry(store, id),
-				writeRun: (run) => {
-					writes.push(run);
-					store = [...store, run];
-				},
-				markAgentStopped: markStopped,
-				retireRegistry: retire,
-				pruneSession: prune,
-			},
-			writes,
-			markStopped,
-			retire,
-			prune,
-			store: () => store,
-		};
-	}
-
 	it("finalizes the run as the terminal stopped outcome and prunes its session", () => {
 		const interrupted = makeRun({
 			id: ID_A,
@@ -396,5 +457,46 @@ describe("T6 — abandon action (D5)", () => {
 		const missing = makeDeps([]);
 		expect(abandonInterruptedRun(ID_C, missing.deps)).toBe(false);
 		expect(missing.prune).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Fix B (item 1) — abandon suppresses the completion wake
+// ---------------------------------------------------------------------------
+
+describe("Fix B — abandon suppresses the completion wake (item 1)", () => {
+	// Mirrors index.ts's terminal-event subscriber (`deliverCompletionAlert`):
+	// the FIRST terminal path to claim an id is the one that wakes the conductor.
+	const wakes: string[] = [];
+	const onTerminalEvent = (id: string): void => {
+		if (claimTerminalNotice(id)) wakes.push(id);
+	};
+
+	beforeEach(() => {
+		__resetTerminalClaims();
+		wakes.length = 0;
+	});
+	afterEach(() => __resetTerminalClaims());
+
+	it("an abandoned run does not wake the conductor", () => {
+		const interrupted = makeRun({ id: ID_A, status: "running", interruptedAt: "iso" });
+		const h = makeDeps([interrupted]);
+
+		expect(abandonInterruptedRun(ID_A, h.deps)).toBe(true);
+		// The production `markAgentStopped` emits `subagent:stopped` after this.
+		onTerminalEvent(ID_A);
+		expect(wakes).toEqual([]);
+	});
+
+	it("a normal stop still wakes (no pre-claim on the normal path)", () => {
+		onTerminalEvent(ID_B);
+		expect(wakes).toEqual([ID_B]);
+	});
+
+	it("a no-op abandon leaves the wake path untouched", () => {
+		const plain = makeDeps([makeRun({ id: ID_B, status: "running" })]);
+		expect(abandonInterruptedRun(ID_B, plain.deps)).toBe(false);
+		onTerminalEvent(ID_B);
+		expect(wakes).toEqual([ID_B]);
 	});
 });

@@ -114,6 +114,23 @@ describe("computeSLAMetrics", () => {
 		expect(metrics.errorCategoryBreakdown).toEqual({ timeout: 2, crash: 1 });
 	});
 
+	it("excludes aborted (abandoned/user-stopped) runs from the failure tally (Fix B item 2)", () => {
+		const runs = [
+			makeRun({ id: "done", status: "done" }),
+			// Abandoned run: top-level errorCategory from the D5 mapping.
+			makeRun({ id: "abandoned", status: "failed", errorCategory: "aborted" }),
+			// Legacy/user-stop representation on originalParams.
+			makeRun({ id: "stopped-legacy", status: "failed", originalParams: { errorCategory: "aborted" } }),
+			// stopReason-only representation.
+			makeRun({ id: "stopped-reason", status: "failed", stopReason: "aborted" }),
+			// One GENUINE failure that must keep counting.
+			makeRun({ id: "crash", status: "failed", errorCategory: "crash" }),
+		];
+		const metrics = computeSLAMetrics(runs);
+		expect(metrics.failureRate).toBeCloseTo(0.5); // 1 failure / (1 done + 1 failure)
+		expect(metrics.successRate).toBeCloseTo(0.5);
+	});
+
 
 
 	it("excludes running-status runs from duration stats but counts in totalRuns", () => {
