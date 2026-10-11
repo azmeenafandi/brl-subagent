@@ -183,10 +183,13 @@ never re-type their logic by hand. Full design:
     a surfaced connection error: triage question first, then delay or fallback
     model. **Dispatch-parameter clause:** NEVER set a timeout in the sense of a tight clock — completion time is
     unknowable, and a time-limited agent risks losing all its work. FOREGROUND dispatches: omit the timeout
-    (no default cap). BACKGROUND dispatches: pass an explicit generous timeout (e.g. `86400000` = 24h) instead
+    (no default cap). BACKGROUND dispatches: pass an explicit timeout of `7200000` (**2h — maintainer cap,
+    2026-10-11**) instead
     of omitting — background runs default to a 30-minute deadline (`DEFAULT_BACKGROUND_DEADLINE_MS`, applied as
     `spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS`), which cut the #295 review's mutation probes on
-    2026-10-09. The bound is the user's monitor + the worktree oracle, never a clock.
+    2026-10-09. The 2h cap is ~8–10× the observed p90 of successful dispatches; the banking convention
+    (`/tmp` findings files) makes a cap-hit cheap to resume. The bound is the user's monitor + the worktree
+    oracle, never a tight clock.
 19. **Coverage assertion (Rule 19 — the partial-read class).** A search or read
     whose silent truncation or filter boundary is read as completeness is this
     project's most recurrent defect class. Whenever a search, read or filter
