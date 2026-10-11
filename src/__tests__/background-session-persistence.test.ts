@@ -22,9 +22,12 @@ import {
 	appendFileSync,
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
 	readdirSync,
+	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 
@@ -96,7 +99,9 @@ beforeEach(() => {
 	mocks.session.prompt.mockReset();
 	mocks.session.abort.mockReset();
 	mocks.session.steer.mockReset();
-	mocks.session.messages = [];
+	// A data-property define (not `= []`) so a prior witness's throwing getter is
+	// always replaced and later direct `messages = [...]` assignments work.
+	Object.defineProperty(mocks.session, "messages", { configurable: true, writable: true, value: [] });
 	mocks.session.abort.mockResolvedValue(undefined);
 	mocks.createAgentSession.mockReset();
 	// Simulate the SDK: constructing the agent session appends the first user
@@ -306,5 +311,85 @@ describe("U2 T5 — prune helper safety", () => {
 		writeFileSync(join(sibling, "keep.txt"), "keep");
 		pruneBackgroundSession(UUID_B);
 		expect(existsSync(join(sibling, "keep.txt"))).toBe(true);
+	});
+});
+
+describe("U3 T5 — background recovery posture snapshot", () => {
+	it("writes the posture onto the agent record and the run entry", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		fakePi.appendEntry.mockClear();
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "bg posture",
+			recoveryPosture: "off",
+		});
+		expect(getAgent(agent.id)?.recoveryPosture).toBe("off");
+		const runEntry = fakePi.appendEntry.mock.calls
+			.map((c) => c[1] as { id?: string; status?: string; recoveryPosture?: string })
+			.find((d) => d?.id === agent.id && d?.status === "running");
+		expect(runEntry?.recoveryPosture).toBe("off");
+	});
+});
+
+/** for the three settle paths that
+ * reach `finalizeRunEntry` by a route the U2 `.then`/`.catch` matrix does not
+ * cover: the git-setup refusal, a synchronous `prompt()` throw, and the
+ * `markTerminalBestEffort` catch-all. Each test proves the run's session dir is
+ * pruned, so a future bypass of `finalizeRunEntry` on that route fails here.
+ */
+describe("U3 T7 — prune on the remaining settle paths", () => {
+	/** The per-run session dirs still present under the sandboxed sessions root. */
+	const remainingSessionDirs = (): string[] => {
+		const root = join(env.storageDir, "sessions");
+		return existsSync(root) ? readdirSync(root) : [];
+	};
+
+	it("git-refusal: prunes the dir when gitMode=branch setup fails", async () => {
+		const nonRepo = mkdtempSync(join(tmpdir(), "brl-u3-nonrepo-"));
+		try {
+			mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+					task: "branch run",
+					cwd: nonRepo,
+					gitMode: "branch",
+				}),
+			).rejects.toThrow(/work branch setup failed/);
+			await tick();
+			expect(remainingSessionDirs()).toEqual([]);
+		} finally {
+			rmSync(nonRepo, { recursive: true, force: true });
+		}
+	});
+
+	it("sync prompt() throw: prunes the dir when prompt throws synchronously", async () => {
+		mocks.session.prompt.mockImplementation(() => {
+			throw new Error("sync boom");
+		});
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync throw run" }),
+		).rejects.toThrow(/sync boom/);
+		expect(remainingSessionDirs()).toEqual([]);
+	});
+
+	it("markTerminalBestEffort: prunes the dir when a settle step throws", async () => {
+		const d = deferred();
+		mocks.session.prompt.mockReturnValue(d.promise);
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "catch-all run",
+		});
+		const dir = backgroundSessionDir(agent.id);
+		expect(existsSync(dir)).toBe(true);
+		// Make a settle-handler step throw (the top-of-handler reads messages),
+		// forcing the `markTerminalBestEffort` catch-all to own the finalize.
+		Object.defineProperty(mocks.session, "messages", {
+			configurable: true,
+			get() {
+				throw new Error("settle boom");
+			},
+		});
+		d.resolve();
+		await tick();
+		expect(getAgent(agent.id)?.status).toBe("completed");
+		expect(existsSync(dir)).toBe(false);
 	});
 });
