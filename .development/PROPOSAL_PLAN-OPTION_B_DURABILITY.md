@@ -76,11 +76,12 @@ halves). Not in unit: resume, UI, persistence.
 
 ### U2 — A₁: file-backed background sessions + retention (C1)
 
-**STATUS (2026-10-10): SPEC APPROVED — implementation in flight.** Worktree `brl-subagent-wt-u2`,
-branch `feat/u2-file-backed-sessions` (base `05ac72c`). Approved decisions: per-run session dir
-`.pi/subagents/sessions/<id>/` (dir name = run→file mapping, no record fields); prune at every terminal
-settle path; interrupted files retained until resolved; `pruneBackgroundSession(id)` exposed for U3's
-abandon action; crash leaves a loadable session (torn-write probe).
+**STATUS (2026-10-11): MERGED** — PR #326 (`e05dfce`; commits `cb22e27` feat + `a8c15d6` tests).
+Review: adversarial C1 (`meta/muse-spark-1.3-contributor`) **approve-with-nits** — 0 majors; findings pinned
+`.development/investigations/u2-review-findings-2026-10-11.md`. Delivered: `SessionManager.create(cwd,
+.pi/subagents/sessions/<id>/)`; prune-first single choke point `finalizeRunEntry`; interrupted files retained;
+helpers `backgroundSessionDir`/`pruneBackgroundSession`; crash loadability proven (torn-tail + `open()` reload);
+suite 69/1439. Two minor nits carried into U3 (below).
 
 **Goal:** background subagent sessions persist to disk (enabling A₂ and post-hoc inspection) with a
 bounded, measured footprint.
@@ -96,6 +97,13 @@ week of use.
 runs themselves. Not in unit: resume, re-drive, any recovery action.
 
 ### U3 — Marking surface, offer action, posture config (C2)
+
+**U3 notes (carried from the U2 review, 2026-10-11):** (a) document/decide the abandon-after-`STORAGE_DIR`-change
+behavior — the public `pruneBackgroundSession` recomputes the root, so an abandon after a root change no-ops at the new
+root and leaves old-root debris (prod-safe today; only tests swap the root); (b) add per-path failing-test witnesses
+for the git-refusal, sync-`prompt()`-throw, and `markTerminalBestEffort` prune paths when this unit touches the
+retention surface (the choke point covers them by construction; the U2 mutation witnesses only the four
+`.then`/`.catch` paths).
 
 **Goal:** interrupted runs are visible and recoverable by a human.
 

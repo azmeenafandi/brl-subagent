@@ -31,10 +31,15 @@
   `.development/investigations/issue-299-optionb-review-findings-2026-10-10.md` (2 majors → pidGone race → unknown/empty →
   truncated → shifted → impossible/alignment → contract → Fix B approve; friction lesson `tri-state-promotion-without-producer-audit`).
   All 9 worktrees cleaned; no strays. `#299` stays open until the RELEASE merge (`Fixes` fires on `main` only).
-- **Next options (post-#299):** (a) **U2** from `.development/PROPOSAL_PLAN-OPTION_B_DURABILITY.md` (U1 shipped in 2.5.0);
-  (b) the release cycle whenever the maintainer calls it — the dev-dogfood install activates merged changes on `/reload`
-  (user-triggered, never automated); (c) backlog: two other tests still use the latent two-scan
-  `waitUntil`+`findByMarker` pattern (tolerated; harden opportunistically); (d) the **#315 live check** on the next
+- **UPDATE — U2 (A₁) MERGED (2026-10-11, PR #326 → `dev` `e05dfce`):** background sessions are file-backed
+  (`.pi/subagents/sessions/<id>/`), pruned at the single `finalizeRunEntry` choke point; interrupted files retained
+  until resolved; crash loadability proven (torn-tail + `open()` reload); adversarial review **approve-with-nits**
+  (0 majors; 2 minors carried into U3 — findings pinned `.development/investigations/u2-review-findings-2026-10-11.md`);
+  suite **69 files / 1439**; CodeGraph refreshed (**398** symbols).
+- **Next options (post-U2):** (a) **U3** from `.development/PROPOSAL_PLAN-OPTION_B_DURABILITY.md` (C2; spec needs
+  approval; the two U2-review nits ride along); (b) the release cycle whenever the maintainer calls it — the
+  dev-dogfood install activates merged changes on `/reload` (user-triggered, never automated); (c) backlog: two tests
+  still use the latent two-scan `waitUntil`+`findByMarker` pattern (tolerated); (d) the **#315 live check** on the next
   natural failed run (expect exactly one `[subagent-completion]`, no `[subagent-notification]`).
 
 ## Environment
