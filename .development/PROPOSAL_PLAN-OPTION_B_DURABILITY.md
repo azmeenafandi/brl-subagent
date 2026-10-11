@@ -98,9 +98,12 @@ runs themselves. Not in unit: resume, re-drive, any recovery action.
 
 ### U3 — Marking surface, offer action, posture config (C2)
 
-**STATUS (2026-10-11): SPEC APPROVED — implementation in flight.** Worktree `brl-subagent-wt-u3`, branch
-`feat/u3-recovery-surface` (base `5a78822`). **Class: C1** (default-up from the plan's C2 — the delta carries a
-persisted posture-snapshot field, a terminal-status abandon write, and session pruning).
+**STATUS (2026-10-11): MERGED** — PR #327 (`f9d8613`; base commits `eef1487`/`74f1be4`, Fix A
+`a146fa7`/`89d17be`/`21e243c`, Fix B `113b701`/`6d39e09`/`539b45f`/`e2b4195`). **Class: C1** (default-up from the
+plan's C2). Review: 3 rounds with `meta/muse-spark-1.3-contributor` — round 1 `changes-requested` (3 criticals:
+the surfaces were blind to a real crash + an abandon-wake major), Fix A (on-demand registry-union **visibility
+bridge**) `approve-with-nits`, Fix B `approve-with-nits`. Findings + 4 carried nits pinned
+`.development/investigations/issue-u3-review-findings-2026-10-11.md`. Suite **73/1488**.
 
 **U3 notes (carried from the U2 review, 2026-10-11):** (a) document/decide the abandon-after-`STORAGE_DIR`-change
 behavior — the public `pruneBackgroundSession` recomputes the root, so an abandon after a root change no-ops at the new

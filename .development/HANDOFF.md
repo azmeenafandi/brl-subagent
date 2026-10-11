@@ -36,11 +36,18 @@
   until resolved; crash loadability proven (torn-tail + `open()` reload); adversarial review **approve-with-nits**
   (0 majors; 2 minors carried into U3 — findings pinned `.development/investigations/u2-review-findings-2026-10-11.md`);
   suite **69 files / 1439**; CodeGraph refreshed (**398** symbols).
-- **Next options (post-U2):** (a) **U3** from `.development/PROPOSAL_PLAN-OPTION_B_DURABILITY.md` (C2; spec needs
-  approval; the two U2-review nits ride along); (b) the release cycle whenever the maintainer calls it — the
-  dev-dogfood install activates merged changes on `/reload` (user-triggered, never automated); (c) backlog: two tests
-  still use the latent two-scan `waitUntil`+`findByMarker` pattern (tolerated); (d) the **#315 live check** on the next
-  natural failed run (expect exactly one `[subagent-completion]`, no `[subagent-notification]`).
+- **UPDATE — U3 MERGED (2026-10-11, PR #327 → `dev` `f9d8613`):** interrupted runs are visible/recoverable —
+  `Interrupted` rendering keyed on `isInterruptedRun`, one turn-boundary boot notice, retry-menu offer via
+  `retryRunId`, `recovery: offer|off` + per-run posture snapshot, abandon (no wake; session pruned), and the
+  **on-demand registry-union visibility bridge** so every surface works after a genuine crash (the round-1 critical).
+  3 review rounds (muse-spark): 3 criticals → fix → `approve-with-nits` ×2; records pinned
+  `issue-u3-review-findings-2026-10-11.md` (4 carried nits). Suite **73/1488**; CodeGraph refreshed.
+- **Next options (post-U3):** (a) **the U4 gate** — the U2/U3 measurement (session sizes/debris after a week,
+  interruptions actually observed, re-work meaningful) before U4's resume is scheduled; (b) the release cycle whenever
+  the maintainer calls it — the dev-dogfood install activates merged changes on `/reload` (user-triggered, never
+  automated; U2+U3 both wait for a reload); (c) backlog: the 4 carried U3 nits (pinned record) + two tests still
+  using the latent two-scan `waitUntil`+`findByMarker` pattern; (d) the **#315 live check** on the next natural
+  failed run (expect exactly one `[subagent-completion]`, no `[subagent-notification]`).
 
 ## Environment
 
