@@ -15,9 +15,12 @@
  */
 import { describe, expect, it } from "vitest";
 import { collapseRunsForHistory } from "../state";
+import { visibleRunEntries } from "../recovery-surface";
 import type { SubagentRun } from "../types";
 
+const T_NEWEST = "2026-01-03T00:00:00.000Z";
 const T_NEW = "2026-01-02T00:00:00.000Z";
+const T_MID = "2026-01-01T12:00:00.000Z";
 const T_OLD = "2026-01-01T00:00:00.000Z";
 
 function run(
@@ -102,5 +105,65 @@ describe("collapseRunsForHistory (issue #259)", () => {
 		collapseRunsForHistory(entries);
 
 		expect(entries).toEqual([spawn, terminal]);
+	});
+});
+
+describe("visibleRunEntries newest-first union (issue #330)", () => {
+	it("place a synthetic row with a NEWER startedAt FIRST, ahead of the session rows", () => {
+		// Session entries arrive newest-first from getRunEntries (cleanupRuns).
+		const newest = run("run-new", "done", { startedAt: T_NEW, finishedAt: T_NEW });
+		const oldest = run("run-old", "done", { startedAt: T_OLD, finishedAt: T_OLD });
+
+		const visible = visibleRunEntries([newest, oldest], {
+			listInflight: () => [
+				{
+					id: "run-bridged",
+					kind: "background",
+					startedAt: T_NEWEST,
+					cwd: "/x",
+					interruptedAt: T_NEWEST,
+					task: "recover me",
+					model: "provider/model",
+					thinkingLevel: "medium",
+				},
+			],
+			getAgent: () => null,
+			findRun: () => undefined,
+		});
+
+		const rows = collapseRunsForHistory(visible);
+
+		// Newest by startedAt → FIRST (an append would have forced it last).
+		expect(rows.map((r) => r.id)).toEqual(["run-bridged", "run-new", "run-old"]);
+		expect(rows[0].interruptedAt).toBeDefined();
+	});
+
+	it("positions a synthetic row with an OLDER startedAt by recency, not forced last", () => {
+		const newest = run("run-new", "done", { startedAt: T_NEW, finishedAt: T_NEW });
+		const oldest = run("run-old", "done", { startedAt: T_OLD, finishedAt: T_OLD });
+
+		const visible = visibleRunEntries([newest, oldest], {
+			listInflight: () => [
+				{
+					id: "run-bridged",
+					kind: "background",
+					// Older than run-new, newer than run-old: recency puts it BETWEEN.
+					startedAt: T_MID,
+					cwd: "/x",
+					interruptedAt: T_NEWEST,
+					task: "recover me",
+					model: "provider/model",
+					thinkingLevel: "medium",
+				},
+			],
+			getAgent: () => null,
+			findRun: () => undefined,
+		});
+
+		const rows = collapseRunsForHistory(visible);
+
+		expect(rows.map((r) => r.id)).toEqual(["run-new", "run-bridged", "run-old"]);
+		// Explicitly NOT appended to the end.
+		expect(rows[rows.length - 1].id).toBe("run-old");
 	});
 });

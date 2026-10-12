@@ -17,22 +17,32 @@ import type { ExtensionContext, SessionManager } from "@earendil-works/pi-coding
 // ---------------------------------------------------------------------------
 
 /**
+ * Order run records NEWEST-FIRST by `startedAt`, without mutating the input.
+ *
+ * The ONE ordering authority for run records (issue #330): sorts by
+ * `startedAt` descending using `Date.parse` comparisons and returns a new
+ * array. `Array.prototype.sort` is stable, so records sharing a `startedAt`
+ * keep their relative order (spawn-before-terminal for a finalized run).
+ */
+export function sortNewestFirst(runs: SubagentRun[]): SubagentRun[] {
+	return [...runs].sort(
+		(a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt),
+	);
+}
+
+/**
  * Prune a SubagentRun array to keep only the newest entries up to maxEntries.
- * Uses startedAt timestamp for ordering (newest first). If maxEntries is 0,
- * returns all entries (no limit). Returns a new array; does not mutate input.
+ * The result is always ordered NEWEST-FIRST by `startedAt` — including the
+ * `maxEntries === 0` unlimited path, which keeps every entry but still sorts.
+ * Returns a new array; does not mutate the input.
  */
 export function cleanupRuns(
 	runs: SubagentRun[],
 	maxEntries: number = MAX_RUN_HISTORY_ENTRIES,
 ): SubagentRun[] {
 	if (runs.length === 0) return [];
-	if (maxEntries === 0) return runs;
-
-	// Always sort newest-first for consistency, even when not truncating
-	const sorted = [...runs].sort(
-		(a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
-	);
-
+	const sorted = sortNewestFirst(runs);
+	if (maxEntries === 0) return sorted;
 	if (sorted.length <= maxEntries) return sorted;
 	return sorted.slice(0, maxEntries);
 }

@@ -2055,7 +2055,7 @@ export async function showRetryMenu(
 ): Promise<void> {
 	// U3 (D3): failed AND unresolved interrupted runs share this surface, one row
 	// per run, built on the same terminal-preferred collapse the history uses.
-	const candidates = retryableRuns(recoverableRunEntries(ctx, state)).reverse();
+	const candidates = retryableRuns(recoverableRunEntries(ctx, state));
 
 	if (candidates.length === 0) {
 		ctx.ui.notify("No failed or interrupted subagent runs to retry.", "info");
