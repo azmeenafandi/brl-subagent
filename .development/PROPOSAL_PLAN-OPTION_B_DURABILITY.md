@@ -129,6 +129,13 @@ resume, auto mode, reassembly.
 
 ### U4 — A₂: resume for background runs (C1)
 
+**STATUS (2026-10-11): SPEC APPROVED — parked behind the gate.** Full spec pinned:
+`.development/investigations/u4-resume-spec-2026-10-11.md`. Approved decisions: auto-resume via `retryRunId` for
+interrupted background runs with an intact session (no new delegate param); the session is **COPIED** into the new
+run's dir; ordered guards reap-first → worktree-exists → schema-version → notify-once, each falling back cold;
+foreground stays cold (no session). **Dispatch fires when the measurement observes a real interruption (or the
+maintainer waives the gate).**
+
 **Goal:** a marked background run can continue from its persisted session instead of restarting cold.
 
 **Scope:** load via `SessionManager.open(sessionFile)` + `createAgentSession({ sessionManager })`;
