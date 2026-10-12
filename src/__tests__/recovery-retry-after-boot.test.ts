@@ -60,8 +60,8 @@ vi.mock("@earendil-works/pi-tui", () => {
 });
 
 import initExtension from "../index";
-import { registerInflightRun, markInterrupted } from "../run-registry";
-import type { SubagentRun } from "../types";
+import { registerInflightRun, listInflightRuns, markInterrupted } from "../run-registry";
+import type { SubagentResult, SubagentRun } from "../types";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -160,6 +160,50 @@ function seedDurableInterruptedRun(): void {
 	);
 }
 
+/**
+ * A foreground/unit run's ONLY durable record after a crash + fresh boot: the
+ * registry entry (no session run entry, no background agent record). The O3
+ * enrichment fields are what make it recoverable.
+ */
+function seedDurableForegroundRun(): void {
+	registerInflightRun({
+		id: ID,
+		kind: "foreground",
+		startedAt: "2026-01-01T00:00:00.000Z",
+		cwd: env.testCwd,
+		recoveryPosture: "offer",
+		task: TASK,
+		label: "Recoverable FG",
+		model: "test/test-model",
+		thinkingLevel: "medium",
+		originalParams: {
+			gitMode: "none",
+			approvalMode: "writes",
+			force: true,
+			timeout: 4242,
+		},
+	});
+	markInterrupted(ID, "2026-01-01T00:05:00.000Z");
+}
+
+function makeResult(modelStr: string): SubagentResult {
+	return {
+		messages: [
+			{ role: "assistant", content: [{ type: "text", text: "done" }], model: modelStr },
+		],
+		usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.001, contextTokens: 0, turns: 1 },
+		exitCode: 0,
+		stderr: "",
+		model: modelStr,
+		stopReason: "end_turn",
+		errorCategory: "unknown",
+	};
+}
+
+function sourceEntryPresent(): boolean {
+	return listInflightRuns().some((e) => e.id === ID);
+}
+
 function noticeIds(): string[] {
 	const notice = sent.find((s) => s.message.customType === "subagent-recovery");
 	return ((notice?.message.details as { ids?: string[] } | undefined)?.ids) ?? [];
@@ -174,6 +218,12 @@ beforeEach(() => {
 	sent = [];
 	spawnSeq = 0;
 	h.runSubagent.mockReset();
+	h.runSubagent.mockImplementation(
+		async (_cwd: string, _prompt: string, model: { provider: string; id: string }) =>
+			makeResult(`${model.provider}/${model.id}`),
+	);
+	h.getPiInvocation.mockReset();
+	h.getPiInvocation.mockReturnValue({ command: process.execPath, args: [] });
 	h.spawnBackgroundSession.mockReset();
 	h.spawnBackgroundSession.mockImplementation(
 		async (_pi: unknown, _ctx: unknown, p: { task?: string; description?: string }) => {
@@ -228,6 +278,62 @@ describe("U3 Fix A — boot notice id → retryRunId (fresh session, durable-onl
 		const spawnArg = h.spawnBackgroundSession.mock.calls[0][2] as { task?: string };
 		expect(spawnArg.task).toBe(TASK);
 		expect(result.content[0].text).toContain("Background agent started");
+
+		// Retire-on-retry: the source entry is cleared, so the next boot has
+		// nothing to re-offer.
+		expect(sourceEntryPresent()).toBe(false);
+		sent = [];
+		await sessionStartHandler!({}, makeCtx());
+		expect(noticeIds()).toEqual([]);
+	});
+
+	it("a durable-only FOREGROUND run re-dispatches with the recorded task + dispatch shape", async () => {
+		seedDurableForegroundRun();
+
+		// Fresh boot: no session run entries, no agent record — the registry
+		// entry is the ONLY durable record.
+		await sessionStartHandler!({}, makeCtx());
+		expect(noticeIds()).toEqual([ID]);
+		const notice = sent.find((s) => s.message.customType === "subagent-recovery");
+		expect(String(notice?.message.content)).toContain(TASK);
+		expect(String(notice?.message.content)).not.toContain("(task unavailable) \u00b7");
+		expect(sourceEntryPresent()).toBe(true);
+
+		// The retry resolves through the bridge and re-dispatches FOREGROUND with
+		// the recorded task and the recorded originalParams shape.
+		const result = await tool.execute("call-fg", { retryRunId: ID }, undefined, undefined, makeCtx());
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).not.toContain("Retry run ID not found");
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(0);
+		const call = h.runSubagent.mock.calls[0] as unknown[];
+		expect(call[4]).toBe(TASK);
+		expect(call[8]).toBe(4242); // timeout restored from the durable snapshot
+
+		// Retire-on-retry: the superseded source entry is gone.
+		expect(sourceEntryPresent()).toBe(false);
+	});
+
+	it("a failed retry start leaves the source entry intact and retryable", async () => {
+		seedDurableInterruptedRun();
+		h.spawnBackgroundSession.mockImplementationOnce(async () => {
+			throw new Error("spawn boom");
+		});
+		await sessionStartHandler!({}, makeCtx());
+		expect(noticeIds()).toEqual([ID]);
+
+		vi.useFakeTimers();
+		let result: Awaited<ReturnType<ToolEntry["execute"]>>;
+		try {
+			result = await tool.execute("call-fail", { retryRunId: ID }, undefined, undefined, makeCtx());
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("Failed to spawn background agent");
+		// The source is untouched — it can be retried again.
+		expect(sourceEntryPresent()).toBe(true);
 	});
 
 	it("without the durable mark the same call is still rejected (control)", async () => {

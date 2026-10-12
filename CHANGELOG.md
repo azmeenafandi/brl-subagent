@@ -2,6 +2,11 @@
 
 Release history for brl-subagent. Newest first. The full narrative for each release lives in the GitHub release notes.
 
+### Unreleased
+
+- **A crashed foreground run keeps its task and dispatch shape (O3):** after a conductor crash + fresh boot a FOREGROUND/unit run's durable registry entry carried only identity, so the recovery notice showed `(task unavailable)` and `retryRunId` could neither restore the task nor the execution shape (it silently defaulted to the current session config). The registry now persists the run summary — `task`, `label`, `model`, `thinkingLevel` and the full `originalParams` snapshot — at the single write choke point, and the U3 bridge consumes it: a post-crash retry restores the same 17 fields a same-session retry restores (including `force`, per the 2026-10-11 decision), with explicit caller values still winning. Reads are lenient — a tampered enrichment field degrades to absent rather than dropping the entry and losing the interruption mark. Additive/optional, so old entries read as before.
+- **A successful retry retires the source entry:** an interrupted run that has been successfully retried is no longer re-offered at every subsequent boot (a failed retry start leaves it intact and retryable). The background agent record's own resolution remains U4's work; this fold clears the registry entry only.
+
 ### v2.5.0
 
 - **Conductor-death recovery (issue #296):** a run that was in flight when the conductor died is now recovered at the next boot — the orphaned subagent process is reaped (identity-verified via its `/proc` marker before any signal) and the run is marked interrupted. Built on a durable `.pi/run-registry/` mirror written before every run's effect and cleared on finalize; the boot scan reads only that registry (no full agent-store parse), waits one grace window total, and skips entries it cannot verify.

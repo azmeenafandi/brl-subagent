@@ -51,6 +51,8 @@ export interface InterruptedRunView {
 	task?: string;
 	model?: string;
 	thinkingLevel?: string;
+	/** The durable `originalParams` snapshot (absent for pre-enrichment entries). */
+	originalParams?: SubagentRun["originalParams"];
 	startedAt: string;
 	interruptedAt: string;
 	/** The posture snapshotted at dispatch (absent ⇒ "offer"). */
@@ -74,9 +76,9 @@ export interface CollectInterruptedDeps {
 /**
  * Project every registry entry carrying an `interruptedAt` mark into a display
  * view. Label/task prefer the session run entry (present on a same-session
- * reload) and fall back to the background agent record; when neither exists
- * (a fresh process after a foreground crash) the row still surfaces id + age,
- * which is enough to act on.
+ * reload), then the background agent record; when neither exists (a fresh
+ * process after a foreground crash) the entry's own durable summary is the
+ * fallback, and only a pre-enrichment entry lacks one entirely.
  */
 export function collectInterruptedRuns(deps: CollectInterruptedDeps): InterruptedRunView[] {
 	const views: InterruptedRunView[] = [];
@@ -96,10 +98,11 @@ export function collectInterruptedRuns(deps: CollectInterruptedDeps): Interrupte
 		views.push({
 			id: entry.id,
 			kind: entry.kind,
-			label: run?.label ?? agent?.description,
-			task: run?.task ?? agent?.task,
-			model: run?.model ?? agent?.model,
-			thinkingLevel: run?.thinkingLevel ?? agent?.thinkingLevel,
+			label: run?.label ?? agent?.description ?? entry.label,
+			task: run?.task ?? agent?.task ?? entry.task,
+			model: run?.model ?? agent?.model ?? entry.model,
+			thinkingLevel: run?.thinkingLevel ?? agent?.thinkingLevel ?? entry.thinkingLevel,
+			originalParams: entry.originalParams,
 			startedAt: entry.startedAt,
 			interruptedAt: entry.interruptedAt,
 			// The registry entry is the durable dispatch snapshot; the session
@@ -125,18 +128,20 @@ export function offeredInterruptedRuns(views: InterruptedRunView[]): Interrupted
  * Build the synthetic session-visible record for a durable interrupted run the
  * current session has never seen. Every field a session-sourced surface reads
  * (`status`/`interruptedAt`/`label`/`task`/`model`/`thinkingLevel`) comes from
- * the durable view, and `originalParams` restores the retry-settable subset
- * that survives a crash (model/thinkingLevel, plus `background` for a
- * background kind) so a `retryRunId` re-dispatch keeps as much recorded shape
- * as the durable records carry. The record is NEVER persisted — it exists only
- * inside `visibleRunEntries`' returned list.
+ * the durable view, and `originalParams` restores the dispatch snapshot the
+ * registry persisted at dispatch (falling back to the pre-enrichment subset
+ * `{model, thinkingLevel, background?}` for old entries) so a `retryRunId`
+ * re-dispatch keeps the recorded shape — including `force` (decision
+ * 2026-10-11: full parity with a same-session retry). The record is NEVER
+ * persisted — it exists only inside `visibleRunEntries`' returned list.
  */
 function interruptedViewToRun(view: InterruptedRunView): SubagentRun {
-	const originalParams: NonNullable<SubagentRun["originalParams"]> = {
-		model: view.model,
-		thinkingLevel: view.thinkingLevel,
-		...(view.kind === "background" ? { background: true } : {}),
-	};
+	const originalParams: NonNullable<SubagentRun["originalParams"]> =
+		view.originalParams ?? {
+			model: view.model,
+			thinkingLevel: view.thinkingLevel,
+			...(view.kind === "background" ? { background: true } : {}),
+		};
 	return {
 		id: view.id,
 		task: view.task ?? "",
@@ -274,7 +279,7 @@ export function buildRecoveryNotice(
 		`Interrupted subagent run${items.length === 1 ? "" : "s"} detected (${items.length}):\n\n` +
 		`${lines.join("\n")}\n\n` +
 		`Review with /brl-subagent history, re-dispatch with retryRunId, or abandon via /brl-subagent retry. ` +
-		`A row showing "(task unavailable)" is a foreground run whose task was not persisted — ` +
+		`A row showing "(task unavailable)" is a registry entry written before durable task capture — ` +
 		`pass \`task\` explicitly on the retryRunId call.`;
 	return {
 		customType: RECOVERY_NOTICE_CUSTOM_TYPE,
