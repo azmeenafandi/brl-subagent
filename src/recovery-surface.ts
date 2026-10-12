@@ -31,6 +31,7 @@ import { listInflightRuns, type InflightRun, type InflightRunKind } from "./run-
 import type { SubagentRun } from "./types";
 import { isInterruptedRun, runRecoveryPosture, type RecoveryMode } from "./types";
 import { resolveTerminalRunEntry } from "./state";
+import { sortNewestFirst } from "./history";
 import { claimTerminalNotice, type DeliveryResolution } from "./notify-completion";
 
 /** The abandon stamp recorded on the run + agent records. */
@@ -170,6 +171,10 @@ function interruptedViewToRun(view: InterruptedRunView): SubagentRun {
  * returned by reference when nothing is added, so callers that never hit the
  * fresh-boot case behave byte-for-byte as before.
  *
+ * When synthetics ARE added (issue #330) the union is returned ordered
+ * NEWEST-FIRST by `startedAt` (the shared `sortNewestFirst` helper), so a
+ * bridged row lands in its RECENCY position rather than being appended last.
+ *
  * This is the ONE bridge every session-sourced recovery surface routes
  * through (Run History, the retry menu, the abandon lookup, `retryRunId`
  * resolution), so all four agree by construction.
@@ -189,7 +194,9 @@ export function visibleRunEntries(
 		if (resolved && (resolved.status !== "running" || isInterruptedRun(resolved))) continue;
 		synthetic.push(interruptedViewToRun(view));
 	}
-	return synthetic.length === 0 ? sessionEntries : [...sessionEntries, ...synthetic];
+	return synthetic.length === 0
+		? sessionEntries
+		: sortNewestFirst([...sessionEntries, ...synthetic]);
 }
 
 /** The agent-record lookup the bridge needs (structurally the BackgroundAgent subset). */

@@ -62,7 +62,7 @@ import { formatPresetSummary, getPreset, loadCustomPresets } from "./presets";
 import { buildOutputHonestyLines, formatRunDuration } from "./history";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { collapseRunsForHistory, newestFirst, retryableRuns, sweepStaleLiveSubagents, type SessionState } from "./state";
+import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type SessionState } from "./state";
 import { getAgent } from "./session-manager";
 import { visibleRunEntriesForSession } from "./recovery-surface";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
@@ -1151,7 +1151,7 @@ export async function showRunHistory(
 		// One row per SETTLED run (issue #259): collapse each run's spawn+terminal
 		// entry pair to its terminal-preferred record; in-flight runs are omitted
 		// (the live monitor owns running state).
-		const runs = newestFirst(collapseRunsForHistory(recoverableRunEntries(ctx, state)));
+		const runs = collapseRunsForHistory(recoverableRunEntries(ctx, state));
 
 		if (runs.length === 0) {
 			ctx.ui.notify("No subagent runs recorded yet. Delegate a task to see history.", "info");
@@ -2055,7 +2055,7 @@ export async function showRetryMenu(
 ): Promise<void> {
 	// U3 (D3): failed AND unresolved interrupted runs share this surface, one row
 	// per run, built on the same terminal-preferred collapse the history uses.
-	const candidates = newestFirst(retryableRuns(recoverableRunEntries(ctx, state)));
+	const candidates = retryableRuns(recoverableRunEntries(ctx, state));
 
 	if (candidates.length === 0) {
 		ctx.ui.notify("No failed or interrupted subagent runs to retry.", "info");

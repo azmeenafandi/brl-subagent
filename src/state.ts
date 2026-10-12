@@ -135,25 +135,6 @@ export function collapseRunsForHistory(entries: SubagentRun[]): SubagentRun[] {
 }
 
 /**
- * Ordering helper for the run-history and retry lists (issue #330).
- *
- * Takes the caller's source order — session-file/append order, oldest first —
- * and returns a NEWEST-FIRST copy so both run lists render with one shared
- * ordering convention.
- *
- * The U3 recovery bridge (`visibleRunEntries`) APPENDS its bridged interrupted
- * rows last, so reversing ALSO rides those unresolved rows to the top. That
- * placement is DELIBERATE: an unresolved interrupted row is the actionable one
- * and should be the first thing the human sees. Do not silently "fix" the
- * position — it is pinned by a test.
- *
- * Returns a reversed COPY; the input array is never mutated.
- */
-export function newestFirst(runs: SubagentRun[]): SubagentRun[] {
-	return [...runs].reverse();
-}
-
-/**
  * U3 (D3): the retry surface's candidate projection — settled FAILED runs plus
  * unresolved INTERRUPTED runs, one row per id. Built on the SAME
  * terminal-preferred collapse the history list uses, so the two surfaces can
