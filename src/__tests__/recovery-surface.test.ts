@@ -30,12 +30,13 @@ import {
 	buildRetryOfferMessage,
 } from "../tui-format";
 import {
-	collectInterruptedRuns,
+		collectInterruptedRuns,
 	offeredInterruptedRuns,
 	buildRecoveryNotice,
 	resolveRecoveryNoticeDelivery,
 	formatRecoveryAge,
 	abandonInterruptedRun,
+	visibleRunEntries,
 	SUBAGENT_ABANDONED_MESSAGE,
 	RECOVERY_NOTICE_CUSTOM_TYPE,
 	type InterruptedRunView,
@@ -182,6 +183,121 @@ describe("T2 — boot notice (D2)", () => {
 		});
 		expect(views[0].label).toBe("BG label");
 		expect(views[0].task).toBe("BG task");
+	});
+
+	it("falls back to the durable registry entry when neither session nor agent exists (fresh boot)", () => {
+		const originalParams = { gitMode: "branch", approvalMode: "always", force: true, timeout: 77 };
+		const views = collectInterruptedRuns({
+			listInflight: () => [
+				{
+					id: ID_A,
+					kind: "foreground",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					cwd: "/x",
+					interruptedAt: "2026-01-01T00:00:00.000Z",
+					task: "registry task",
+					label: "registry label",
+					model: "p/m",
+					thinkingLevel: "high",
+					originalParams,
+				},
+			],
+			getAgent: () => null,
+			findRun: () => undefined,
+		});
+		expect(views[0].task).toBe("registry task");
+		expect(views[0].label).toBe("registry label");
+		expect(views[0].model).toBe("p/m");
+		expect(views[0].thinkingLevel).toBe("high");
+		expect(views[0].originalParams).toEqual(originalParams);
+
+		// Precedence: session > agent > registry.
+		const sessionWins = collectInterruptedRuns({
+			listInflight: () => [
+				{ id: ID_A, kind: "foreground", startedAt: "2026-01-01T00:00:00.000Z", cwd: "/x", interruptedAt: "2026-01-01T00:00:00.000Z", task: "registry task" },
+			],
+			getAgent: () => ({ task: "agent task" }),
+			findRun: () => makeRun({ id: ID_A, task: "session task" }),
+		});
+		expect(sessionWins[0].task).toBe("session task");
+
+		const agentWins = collectInterruptedRuns({
+			listInflight: () => [
+				{ id: ID_A, kind: "background", startedAt: "2026-01-01T00:00:00.000Z", cwd: "/x", interruptedAt: "2026-01-01T00:00:00.000Z", task: "registry task" },
+			],
+			getAgent: () => ({ task: "agent task" }),
+			findRun: () => undefined,
+		});
+		expect(agentWins[0].task).toBe("agent task");
+	});
+
+	it("the notice shows the durable task a fresh-boot foreground entry carries", () => {
+		const views = collectInterruptedRuns({
+			listInflight: () => [
+				{ id: ID_A, kind: "foreground", startedAt: "2026-01-01T00:00:00.000Z", cwd: "/x", interruptedAt: "2026-01-01T00:00:00.000Z", label: "Recoverable", task: "recover the crashed migration" },
+			],
+			getAgent: () => null,
+			findRun: () => undefined,
+		});
+		const notice = buildRecoveryNotice(views, new Date("2026-01-01T00:05:00.000Z"));
+		expect(notice.content).toContain("Recoverable");
+		expect(notice.content).toContain("recover the crashed migration");
+		// The row excerpt is the task, not the legacy placeholder (the hint line
+		// below still names the placeholder for legacy entries).
+		expect(notice.content).not.toContain("(task unavailable) \u00b7");
+	});
+
+	it("an old-shape registry entry (no enrichment) still yields (task unavailable) and needs an explicit task", () => {
+		const views = collectInterruptedRuns({
+			listInflight: () => [
+				{ id: ID_A, kind: "foreground", startedAt: "2026-01-01T00:00:00.000Z", cwd: "/x", interruptedAt: "2026-01-01T00:00:00.000Z" },
+			],
+			getAgent: () => null,
+			findRun: () => undefined,
+		});
+		expect(views[0].task).toBeUndefined();
+		const notice = buildRecoveryNotice(views, new Date("2026-01-01T00:05:00.000Z"));
+		expect(notice.content).toContain("(task unavailable)");
+		expect(notice.content).toContain("pass `task` explicitly");
+	});
+
+	it("the synthetic retry record carries the durable task + full originalParams (force preserved)", () => {
+		const originalParams = { force: true, gitMode: "branch", approvalMode: "writes", timeout: 9, cwd: "/gone" };
+		const synthetic = visibleRunEntries([], {
+			listInflight: () => [
+				{
+					id: ID_A,
+					kind: "foreground",
+					startedAt: "2026-01-01T00:00:00.000Z",
+					cwd: "/x",
+					interruptedAt: "2026-01-01T00:00:00.000Z",
+					task: "recover me",
+					label: "LBL",
+					model: "p/m",
+					thinkingLevel: "high",
+					originalParams,
+				},
+			],
+			getAgent: () => null,
+			findRun: () => undefined,
+		});
+		expect(synthetic).toHaveLength(1);
+		expect(synthetic[0].task).toBe("recover me");
+		expect(synthetic[0].label).toBe("LBL");
+		expect(synthetic[0].originalParams).toEqual(originalParams);
+		// The decision pin: force survives the durable round-trip.
+		expect(synthetic[0].originalParams?.force).toBe(true);
+	});
+
+	it("an old-shape entry keeps the pre-enrichment {model, thinkingLevel, background?} fallback", () => {
+		const synthetic = visibleRunEntries([], {
+			listInflight: () => [
+				{ id: ID_A, kind: "background", startedAt: "2026-01-01T00:00:00.000Z", cwd: "/x", interruptedAt: "2026-01-01T00:00:00.000Z", model: "p/m", thinkingLevel: "low" },
+			],
+			getAgent: () => null,
+			findRun: () => undefined,
+		});
+		expect(synthetic[0].originalParams).toEqual({ model: "p/m", thinkingLevel: "low", background: true });
 	});
 
 	// Fix B item 3: the durable registry snapshot is the authoritative posture.
