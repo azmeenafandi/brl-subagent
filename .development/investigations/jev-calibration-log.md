@@ -17,8 +17,9 @@ part of what this log will measure).
 | 2026-10-11 | `impl-u3-fixA` | fix | high (0.78) · C1 (0.95) | high | 0 | approve-with-nits (4 minors); survived 2 connection drops + 1 continuation | consistent |
 | 2026-10-11 | `impl-u3-fixB` | fix | medium (0.64) · C2 (0.28) | medium | 0 | approve-with-nits (1 docstring nit) | consistent |
 | 2026-10-11 | `design-fgpersist` | design | high (0.87) · C1 (0.95) | high | 0 | decision-ready proposal; probes A–E executed; 0 fix rounds | consistent |
-| 2026-10-12 | `impl-fgp` | impl | medium (0.93) · C1 (0.76) | high | +1, C1 convention | review pending (PR #328) | pending |
-| 2026-10-12 | `review-fgp` | review | high (0.89) · C1 (1.0) | high | 0 | pending | pending |
+| 2026-10-12 | `impl-fgp` | impl | medium (0.93) · C1 (0.76) | high | +1, C1 convention | review approve-with-nits (2 minors: array leniency, comment accuracy); both fixed in `be9a4a0`; merge #328 | **consistent — but the +1 override finds no support**: the review's minors were cosmetic; Jev's confident medium looks sufficient |
+| 2026-10-12 | `review-fgp` | review | high (0.89) · C1 (1.0) | high | 0 | approve-with-nits: 2 real minors (array leniency proven empirically; comment accuracy); no majors | consistent (caught real, if minor, issues) |
+| 2026-10-12 | `impl-fgp-nit` | fix | medium (0.42) · C2 (0.73) | medium | 0 (first template-era call) | 1-minute fix; mutation verified (guard revert → test fails); suite 73/1500; CI green; merged | consistent |
 
 ## Notes
 
