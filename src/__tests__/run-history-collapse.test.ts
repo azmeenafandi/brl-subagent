@@ -14,7 +14,8 @@
  * nothing.
  */
 import { describe, expect, it } from "vitest";
-import { collapseRunsForHistory } from "../state";
+import { collapseRunsForHistory, newestFirst } from "../state";
+import { visibleRunEntries } from "../recovery-surface";
 import type { SubagentRun } from "../types";
 
 const T_NEW = "2026-01-02T00:00:00.000Z";
@@ -102,5 +103,48 @@ describe("collapseRunsForHistory (issue #259)", () => {
 		collapseRunsForHistory(entries);
 
 		expect(entries).toEqual([spawn, terminal]);
+	});
+});
+
+describe("newestFirst (issue #330)", () => {
+	it("returns a reversed COPY and never mutates the input", () => {
+		const oldest = run("run-old", "done", { startedAt: T_OLD });
+		const newest = run("run-new", "done", { startedAt: T_NEW });
+		const input = [oldest, newest];
+
+		const result = newestFirst(input);
+
+		expect(result).toEqual([newest, oldest]);
+		expect(result).not.toBe(input);
+		// The source array (oldest-first append order) must be untouched.
+		expect(input).toEqual([oldest, newest]);
+	});
+
+	it("composes with the bridge so an appended interrupted row lands FIRST", () => {
+		// Session-file/append order: oldest first.
+		const oldest = run("run-old", "done", { startedAt: T_OLD, finishedAt: T_OLD });
+		const newest = run("run-new", "done", { startedAt: T_NEW, finishedAt: T_NEW });
+		// The U3 bridge appends its synthetic interrupted row last.
+		const visible = visibleRunEntries([oldest, newest], {
+			listInflight: () => [
+				{
+					id: "run-interrupted",
+					kind: "background",
+					startedAt: T_OLD,
+					cwd: "/x",
+					interruptedAt: T_NEW,
+					task: "recover me",
+					model: "provider/model",
+					thinkingLevel: "medium",
+				},
+			],
+			getAgent: () => null,
+			findRun: () => undefined,
+		});
+
+		const rows = newestFirst(collapseRunsForHistory(visible));
+
+		expect(rows.map((r) => r.id)).toEqual(["run-interrupted", "run-new", "run-old"]);
+		expect(rows[0].interruptedAt).toBeDefined();
 	});
 });
