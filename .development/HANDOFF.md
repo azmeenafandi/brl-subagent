@@ -12,8 +12,10 @@
 
 ## STATE (2026-10-12, post-compaction)
 
-- **dev** @ `be89f6a`; only `main` + `dev` remain — no worktrees, no strays. Suite **73 files / 1500**; CodeGraph fresh
-  (**40 modules / 425** exported declarations).
+- **dev** at the post-FGP tip `be89f6a` — this handoff is a doc commit on top; **the tip moves with doc commits, so
+  check `git log -1` rather than trusting this line**. Only `main` + `dev` remain — no worktrees, no strays. Suite
+  **73 files / 1500**; CodeGraph **40 modules / 425** exported declarations (fresh at the last refresh; doc-only commits
+  can read as stale until the next merge refresh — expected).
 - **Running install:** the dev checkout (dogfood), RELOADED 2026-10-12 → U2 + U3 + FGP are live. npm `latest` = 2.5.0; `main` @ `355ed53`.
 - **Board: `#299` only** (process-group hardening; merged to dev, closes at the RELEASE merge — `Fixes` fires on `main` only).
 - **Durability arc (Option B plan):** U1 merged in 2.5.0 · **U2** file-backed background sessions · **U3** recovery surface
