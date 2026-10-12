@@ -44,9 +44,9 @@
   `runDisplayName` docstring overclaim · #329/#330 fixed on dev (PRs #331/#332; close at the RELEASE merge).
 - **Open live checks (user-triggered):** (a) the **interrupted-run probe PASSED 2026-10-12** — scan → mark → one notice →
   bridged retry restored task/label/model/thinkingLevel/priority/gitMode/approvalMode/background/force → retire-on-retry
-  (registry empty); findings fixed by PRs #331/#332 (both merged); **round 2 pending `/reload`** — verifies the #329
-  lineage fix, the recorded-`timeout` cell (attempt 1 passed an explicit 120000 that by design won), and the
-  newest-first ordering (row at its recency position); (b) **#315** on the next natural failed run (exactly one `[subagent-completion]`, no duplicate);
+  (registry empty); findings fixed by PRs #331/#332 (both merged); **round 2 PASSED (2026-10-12, post-`/reload`)** —
+  bridged retry inherited `dispatchId 6ce19226…`, `attempt: 2`, and restored `timeout: 45000` with NO override
+  (closing round 1's open cell); source retired; evidence table pinned in the 329/330 spec; (b) **#315** on the next natural failed run (exactly one `[subagent-completion]`, no duplicate);
   (c) the U4 measurement snapshots.
 - **Release:** v2.5.0 live; `#299` + U2/U3/FGP wait for the next release (main merge) whenever the maintainer calls it.
 
