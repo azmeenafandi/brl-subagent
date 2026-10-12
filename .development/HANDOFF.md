@@ -1,62 +1,41 @@
 # Handoff — 2026-09-22 (night)
 
-> Updated 2026-10-10 (evening) — **v2.5.0 PUBLISHED and LIVE on npm (`latest` = 2.5.0).** The running install is back on the
-> **DEV checkout for dogfooding** (`pi install <dev path>`; `+codemode` enabled project-locally in `.pi/settings.json`), reloaded at
-> dev tip `472d298`. The published-build probe PASSED at publish time (tarball byte-identical to the tag). **`main` @ `355ed53` = v2.5.0**
-> (tag `v2.5.0`); roll back to npm with the local-development toggle when the dogfood ends.
+> Updated 2026-10-12 — **v2.5.0 live on npm; the running install is the DEV checkout (dogfood), RELOADED at dev tip `be89f6a`.**
+> Since v2.5.0, four units are merged to `dev` and ACTIVE in the running session: **#299 Option B** (PR #325), **U2**
+> file-backed background sessions (#326), **U3** recovery surface (#327), **FGP** registry task-persistence (#328).
+> **`main` @ `355ed53` = v2.5.0** (tag `v2.5.0`); roll back to npm with the local-development toggle when the dogfood ends.
 > The **cockpit** is the `dev` checkout (`.development/`, `.codegraph/` (the structural index), `.pi/` tools, shared `node_modules`).
 > Read this first: it is the state a fresh conductor cannot infer from the repo alone.
 > Companion durable records: `.development/` (ROADMAP, AUDIT, TASKS, METRICS, FRICTION_LOG,
 > INVESTIGATION_reload_wake.md), `.pi/skills/worktree/SKILL.md` (the rituals),
 > `.codegraph/` (the structural index — now describes DEV).
 
-## STATE (2026-10-10, pre-compaction)
+## STATE (2026-10-12, post-compaction)
 
-- **dev** @ `472d298` (v2.5.0 + #318/#322 + Rule 22 docs); all worktrees cleaned; no strays.
-- **Running install:** the dev checkout (dogfood); npm `latest` = 2.5.0; `main` @ `355ed53` (tag `v2.5.0`).
-- **Board: #299 only** (LOW — Option B: non-inheriting trees, PID-reuse identity verification at kill time, Windows fallback).
-- **Adopted practices (2026-10-10):** **Rule 13 Recon checkpoint** — every C1/C2 spec carries a `## Recon` block from
-  `bash .pi/skills/worktree/recon.sh <symbol|file>` (CodeGraph; #319 closed on two filled blocks); **Rule 22 Jev advisory** —
-  every spec carries `jev: <level> (<conf>) · risk <C1|C2|C3> · worktree <y|n>` (backtest: 98 dispatches, $0.0034; first uses:
-  it overrode its own `worktree` cell for `src/__tests__`, and raised a seam fix C2→C1); **2026-10-12:
-  input template + outcome calibration log added** (`references/jev-advisory.md`,
-  `.development/investigations/jev-calibration-log.md` — every `state.task` built from the template,
-  outcomes logged at close); the **`pr` skill**
-  (`.pi/skills/pr/SKILL.md`: Summary/Evidence/Merge Danger/Fixes).
-- **Evidence:** `.development/investigations/` — `jev-thinking-backtest-2026-10-10.md`, `issue-299-grandchild-reap-probe-2026-10-10.md`,
-  `fix318*/fix322*-findings`, `codegraph-phase2-dogfood-*`, `u1-*`; **ADR 0016** (graphify retired — CodeGraph is the sole gate; 1 s
-  post-merge runs); ADR 0015 (split posture).
-- **UPDATE — #299 Option B MERGED (2026-10-10, PR #325 → `dev` `a3b89af`):** process-group reaping — POSIX `detached`
-  spawns, group-reaching kill paths (direct signal retained), `killGroup` through recovery deps, the **`parseStatPrefix`
-  stat-prefix CONTRACT** (tri-state membership; `false` only from a complete well-formed scan), signal-time marker
-  verification, honest survivor reporting, Windows fallback unchanged. Suite **68 files / 1429**; targeted `#299` 67;
-  CodeGraph refreshed (39/39 modules, **396** symbols). **Eight review rounds pinned:**
-  `.development/investigations/issue-299-optionb-review-findings-2026-10-10.md` (2 majors → pidGone race → unknown/empty →
-  truncated → shifted → impossible/alignment → contract → Fix B approve; friction lesson `tri-state-promotion-without-producer-audit`).
-  All 9 worktrees cleaned; no strays. `#299` stays open until the RELEASE merge (`Fixes` fires on `main` only).
-- **UPDATE — U2 (A₁) MERGED (2026-10-11, PR #326 → `dev` `e05dfce`):** background sessions are file-backed
-  (`.pi/subagents/sessions/<id>/`), pruned at the single `finalizeRunEntry` choke point; interrupted files retained
-  until resolved; crash loadability proven (torn-tail + `open()` reload); adversarial review **approve-with-nits**
-  (0 majors; 2 minors carried into U3 — findings pinned `.development/investigations/u2-review-findings-2026-10-11.md`);
-  suite **69 files / 1439**; CodeGraph refreshed (**398** symbols).
-- **UPDATE — U3 MERGED (2026-10-11, PR #327 → `dev` `f9d8613`):** interrupted runs are visible/recoverable —
-  `Interrupted` rendering keyed on `isInterruptedRun`, one turn-boundary boot notice, retry-menu offer via
-  `retryRunId`, `recovery: offer|off` + per-run posture snapshot, abandon (no wake; session pruned), and the
-  **on-demand registry-union visibility bridge** so every surface works after a genuine crash (the round-1 critical).
-  3 review rounds (muse-spark): 3 criticals → fix → `approve-with-nits` ×2; records pinned
-  `issue-u3-review-findings-2026-10-11.md` (4 carried nits). Suite **73/1488**; CodeGraph refreshed.
-- **UPDATE — FGP MERGED (2026-10-12, PR #328 → `dev` `70b6a53`):** the durable registry now persists
-  task/label/model/thinkingLevel + the full `originalParams` snapshot (lenient reads); the U3 bridge restores them, so a
-  post-crash FOREGROUND retry gets full parity — incl. `force`, per the §7 decision; a successful retry retires the source
-  entry (stale re-offers stop). Review `approve-with-nits` (2 minors fixed in `be9a4a0` pre-merge). **Backlog: dangling-row bug** —
-  the circuit-open/slot-cancelled early returns after `persistRun` leave `running` rows (predates FGP). First Jev calibration-log
-  entries recorded (the convention override finds no support in the outcome — see the log).
-- **Next options (post-FGP):** (a) **the U4 gate** — the U2/U3 measurement (session sizes/debris after a week,
-  interruptions actually observed, re-work meaningful) before U4's resume is scheduled; (b) the release cycle whenever
-  the maintainer calls it — the dev-dogfood install activates merged changes on `/reload` (user-triggered, never
-  automated; U2+U3+FGP all wait for a reload); (c) backlog: the 4 carried U3 nits (pinned record) + two tests still
-  using the latent two-scan `waitUntil`+`findByMarker` pattern + the FGP dangling-row bug; (d) the **#315 live check** on the next natural
-  failed run (expect exactly one `[subagent-completion]`, no `[subagent-notification]`).
+- **dev** @ `be89f6a`; only `main` + `dev` remain — no worktrees, no strays. Suite **73 files / 1500**; CodeGraph fresh
+  (**40 modules / 425** exported declarations).
+- **Running install:** the dev checkout (dogfood), RELOADED 2026-10-12 → U2 + U3 + FGP are live. npm `latest` = 2.5.0; `main` @ `355ed53`.
+- **Board: `#299` only** (process-group hardening; merged to dev, closes at the RELEASE merge — `Fixes` fires on `main` only).
+- **Durability arc (Option B plan):** U1 merged in 2.5.0 · **U2** file-backed background sessions · **U3** recovery surface
+  (interrupted rendering, boot notice, retry offer, abandon, posture) · **FGP** durable task/label/model/`originalParams`
+  in the registry + retire-on-retry. All on `dev`, all reviewed (records pinned per unit). **U4 (A₂ resume):** spec APPROVED +
+  pinned (`u4-resume-spec-2026-10-11.md`) and **parked behind the measurement gate**.
+- **Measurement (the U4 gate):** `u2-u3-measurement-2026-10-11.md` — multi-project scope (dev + spelling_bee +
+  deep-research-agent + ephemeral-rp), enumeration command, baseline zero; **zero interruptions observed so far**;
+  next snapshot at the first real interruption or ~2026-10-18.
+- **Jev ritual (Rule 22):** input template + calibration log + **strict-Jev ratified 2026-10-12** — use Jev's level; ANY
+  deviation (either direction) carries a one-line reason; the C1⇒high convention is retired; single carve-out: confidence
+  `< 0.5` on a C1 justifies +1 (citing the confidence). Log: `jev-calibration-log.md` (template-built inputs; outcomes at close).
+- **Other adopted practices:** Rule 13 Recon checkpoint (`recon.sh`; `## Recon` mandatory in C1/C2 specs) · the `pr` skill ·
+  review records pinned under `.development/investigations/`.
+- **Backlog (pinned, none urgent):** the 4 carried U3 nits (`issue-u3-review-findings-2026-10-11.md`) · two tests using the
+  latent two-scan `waitUntil`+`findByMarker` pattern · **FGP dangling-row bug** (circuit-open/slot-cancelled early returns
+  after `persistRun` leave `running` rows; own fix) · `errorCategoryBreakdown` legacy `originalParams` field ·
+  `runDisplayName` docstring overclaim.
+- **Open live checks (user-triggered):** (a) the optional **interrupted-run probe** (fabricate a durable interrupted record +
+  reload → watch the notice/history/retry in the real session; then clean up); (b) **#315** on the next natural failed run
+  (exactly one `[subagent-completion]`, no duplicate); (c) the U4 measurement snapshots.
+- **Release:** v2.5.0 live; `#299` + U2/U3/FGP wait for the next release (main merge) whenever the maintainer calls it.
 
 ## Environment
 
