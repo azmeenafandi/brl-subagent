@@ -2673,6 +2673,12 @@ export default function (pi: ExtensionAPI) {
 				recoveryPosture: state.config.recovery,
 			});
 
+			// Retire-on-retry (O3 fold, decision 2026-10-11): the source interrupted
+			// registry entry is superseded once the new background run is actually
+			// spawned (a throwing spawn is caught below and leaves the source intact
+			// and retryable).
+			if (retrySourceRun) clearInflightRun(retrySourceRun.id);
+
 			// B2: Surface auto-route decisions in background spawn result too —
 			// preset name + matched-keyword evidence + restriction, derived from
 			// the RESOLVED toolOptions (reflects per-call overrides).
@@ -3360,6 +3366,14 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			let success = false;
+
+			// Retire-on-retry (O3 fold, decision 2026-10-11): the retry has passed
+			// every pre-spawn gate and is about to start, so the SOURCE interrupted
+			// registry entry is superseded — clear it here so the old run is not
+			// re-offered at every subsequent boot. A failed pre-start (circuit open,
+			// slot cancelled) returns ABOVE this point and leaves the source intact
+			// and retryable. `retrySourceRun` is set only on a `retryRunId` call.
+			if (retrySourceRun) clearInflightRun(retrySourceRun.id);
 
 			// F7 (issue #65): import BEFORE the try — the crash-path catch calls
 			// completeTranscript, and block-scoped consts declared inside the try
