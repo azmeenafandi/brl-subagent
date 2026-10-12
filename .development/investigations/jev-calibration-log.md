@@ -20,6 +20,10 @@ part of what this log will measure).
 | 2026-10-12 | `impl-fgp` | impl | medium (0.93) · C1 (0.76) | high | +1, C1 convention | review approve-with-nits (2 minors: array leniency, comment accuracy); both fixed in `be9a4a0`; merge #328 | **consistent — but the +1 override finds no support**: the review's minors were cosmetic; Jev's confident medium looks sufficient |
 | 2026-10-12 | `review-fgp` | review | high (0.89) · C1 (1.0) | high | 0 | approve-with-nits: 2 real minors (array leniency proven empirically; comment accuracy); no majors | consistent (caught real, if minor, issues) |
 | 2026-10-12 | `impl-fgp-nit` | fix | medium (0.42) · C2 (0.73) | medium | 0 (first template-era call) | 1-minute fix; mutation verified (guard revert → test fails); suite 73/1500; CI green; merged | consistent |
+| 2026-10-12 | `impl-329` | impl | medium (0.42) · C2 | medium | 0 | review approve-with-nits (1 style nit — view-level undefined keys, **carried by design**); 0 fix rounds; suite 73/1503; merge #331 | consistent |
+| 2026-10-12 | `review-329` | review | **not classified — ritual gap** (review floor `medium` used) | medium | n/a | approve-with-nits: 1 nit (view-level undefined-valued keys; carried — matches the view's existing house style); 0 majors; 1 transport retry before success | consistent — but **classify reviews pre-dispatch** (gap recorded) |
+| 2026-10-12 | `impl-330` | impl | medium (0.58) · C2 | medium | 0 | implemented exactly as specced; the IMPLEMENTER surfaced a **premise error in the spec** (history was already newest-first via `cleanupRuns`) → direction corrected before review; code was correct to the spec | **design-gap** (spec premise — partial read of `getRunEntries`; the level was not the causal variable) |
+| 2026-10-12 | `impl-330-fix` | fix | medium (0.98) · C2 | medium | 0 | transport failure at 1m52s (connection error) — worktree pristine, no work lost; re-dispatch pending confirmation | n/a (transport; no level signal) |
 
 ## Notes
 
