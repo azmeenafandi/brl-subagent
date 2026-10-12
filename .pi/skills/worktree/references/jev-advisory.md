@@ -89,8 +89,12 @@ the dispatch **closes** (merge / rejection), not at dispatch time:
 ## The rules (Rule 22)
 
 - **Advisory only.** The conductor decides; the maintainer's spec approval is the gate.
-- **Record the line** in the spec and the dispatch. Deviations **≥2 levels**, and **any
-  level below Jev on a review**, carry a one-line reason.
+- **Record the line** in the spec and the dispatch. **Strict Jev (ratified 2026-10-12):** use Jev's
+  level. **ANY deviation (either direction) carries a one-line reason**; the former C1⇒high convention
+  is retired.
+- **Low-confidence carve-out (the one standing exception):** on a C1, when Jev's confidence is
+  `< 0.5`, a +1 raise is justified — the reason must cite the low confidence. The calibration log tests
+  whether the carve-out earns its keep (delete it if raised runs show no outcome difference).
 - **Clamps:** artifact-producing dispatches (worktree / PR / verification) floor at
   `low`; reviews floor at `medium`.
 - **Input + log:** build `state.task` from the input template; when the dispatch closes,
