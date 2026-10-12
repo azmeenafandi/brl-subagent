@@ -17,7 +17,8 @@
   **73 files / 1500**; CodeGraph **40 modules / 425** exported declarations (fresh at the last refresh; doc-only commits
   can read as stale until the next merge refresh — expected).
 - **Running install:** the dev checkout (dogfood), RELOADED 2026-10-12 → U2 + U3 + FGP are live. npm `latest` = 2.5.0; `main` @ `355ed53`.
-- **Board: `#299` only** (process-group hardening; merged to dev, closes at the RELEASE merge — `Fixes` fires on `main` only).
+- **Board: `#299`** (merged to dev; closes at the RELEASE merge — `Fixes` fires on `main` only) · **`#329`** (bridged retries
+  lose `dispatchId` lineage — live-probe finding) · **`#330`** (run-history renders oldest-first — UX).
 - **Durability arc (Option B plan):** U1 merged in 2.5.0 · **U2** file-backed background sessions · **U3** recovery surface
   (interrupted rendering, boot notice, retry offer, abandon, posture) · **FGP** durable task/label/model/`originalParams`
   in the registry + retire-on-retry. All on `dev`, all reviewed (records pinned per unit). **U4 (A₂ resume):** spec APPROVED +
@@ -33,10 +34,12 @@
 - **Backlog (pinned, none urgent):** the 4 carried U3 nits (`issue-u3-review-findings-2026-10-11.md`) · two tests using the
   latent two-scan `waitUntil`+`findByMarker` pattern · **FGP dangling-row bug** (circuit-open/slot-cancelled early returns
   after `persistRun` leave `running` rows; own fix) · `errorCategoryBreakdown` legacy `originalParams` field ·
-  `runDisplayName` docstring overclaim.
-- **Open live checks (user-triggered):** (a) the optional **interrupted-run probe** (fabricate a durable interrupted record +
-  reload → watch the notice/history/retry in the real session; then clean up); (b) **#315** on the next natural failed run
-  (exactly one `[subagent-completion]`, no duplicate); (c) the U4 measurement snapshots.
+  `runDisplayName` docstring overclaim · **#329** + **#330** (both from the 2026-10-12 interrupted-run probe).
+- **Open live checks (user-triggered):** (a) the **interrupted-run probe PASSED 2026-10-12** — scan → mark → one notice →
+  bridged retry restored task/label/model/thinkingLevel/priority/gitMode/approvalMode/background/force → retire-on-retry
+  (registry empty); findings filed as **#329** + **#330**; the recorded-`timeout` cell awaits a clean retry (probe round 2,
+  first call passed an explicit 120000 that by design won); (b) **#315** on the next natural failed run (exactly one
+  `[subagent-completion]`, no duplicate); (c) the U4 measurement snapshots.
 - **Release:** v2.5.0 live; `#299` + U2/U3/FGP wait for the next release (main merge) whenever the maintainer calls it.
 
 ## Environment
