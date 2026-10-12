@@ -449,3 +449,22 @@ with the O3 change applied were typechecked with the repo's `tsc`.
   1 call). `grep -rn "clearInflightRun(" src/*.ts` → 2 non-test sites. `grep -n "retrySourceRun"
   src/index.ts` → 6 sites, none clearing the source entry.
 
+
+
+---
+
+## 7. Decision (2026-10-11, maintainer)
+
+**APPROVED: O3 — full snapshot, `force` RESTORED.** The maintainer ruled for parity with same-session retries
+over the O3-minus-`force` carve-out. For the record: the Jev classifier, run on the decision out of curiosity,
+chose **O3m** (`force` carved out; guard-boundary driver, prob 0.95/conf 0.94) — i.e. the proposal's falsifier #2
+— and the maintainer consciously overrode it, reasoning that a documented silent divergence from the advertised
+retry contract is the class #227/#229 fought, and that the caller explicitly invokes `retryRunId` with explicit
+values winning. Jev is a task-calibration classifier, not a security reviewer; its output is advisory context,
+not authority.
+
+**Also approved (folded in, per the conductor's proposal):** fix the stale-entry lifetime (§1.8) in the same
+change — a successful retry retires the source registry entry so the old interrupted run is not re-offered at
+every subsequent boot; a FAILED retry start must leave the source interrupted and retryable.
+
+**Implementation spec:** to be drafted by the conductor from §4 plus the fold.
