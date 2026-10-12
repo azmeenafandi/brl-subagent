@@ -38,6 +38,7 @@ import {
 	abandonInterruptedRun,
 	SUBAGENT_ABANDONED_MESSAGE,
 } from "../recovery-surface";
+import { newDispatchIdentity } from "../recovery-engine";
 import {
 	registerInflightRun,
 	markInterrupted,
@@ -70,13 +71,18 @@ function freshSession(): ExtensionContext {
  * agent record that gives the run a label/task. The current session is NEVER
  * given an entry for this id.
  */
-function seedDurableInterruptedRun(task = "recover me", label = "Recoverable"): void {
+function seedDurableInterruptedRun(
+	task = "recover me",
+	label = "Recoverable",
+	identity?: { dispatchId?: string; attempt?: number },
+): void {
 	registerInflightRun({
 		id: ID,
 		kind: "background",
 		startedAt: "2026-01-01T00:00:00.000Z",
 		cwd: env.testCwd,
 		recoveryPosture: "offer",
+		...identity,
 	});
 	markInterrupted(ID, "2026-01-01T00:05:00.000Z");
 	fs.mkdirSync(env.storageDir, { recursive: true });
@@ -255,5 +261,57 @@ describe("U3 Fix A — dedupe / idempotence (no stacking)", () => {
 		expect(isInterruptedRun(collapsed[0])).toBe(true);
 		// The session spawn entry is still the spawn lookup's source (originalParams).
 		expect(state.findSpawnRunById(ctx, ID)).toBe(spawn);
+	});
+});
+
+describe("U3 Fix A — dispatchId/attempt lineage through the bridge (#329)", () => {
+	const RECORDED_DISPATCH_ID = "99999999-8888-7777-6666-555555555555";
+
+	it("synthetic run from an entry with identity carries both values", () => {
+		seedDurableInterruptedRun("recover me", "Recoverable", {
+			dispatchId: RECORDED_DISPATCH_ID,
+			attempt: 3,
+		});
+		const state = createSessionState(makeLog());
+		const ctx = freshSession();
+
+		const synthetic = bridgeEntries(ctx, state).find((r) => r.id === ID);
+
+		expect(synthetic).toBeDefined();
+		expect(synthetic?.dispatchId).toBe(RECORDED_DISPATCH_ID);
+		expect(synthetic?.attempt).toBe(3);
+	});
+
+	it("newDispatchIdentity inherits the recorded identity, bumps attempt, resumes the entry", () => {
+		seedDurableInterruptedRun("recover me", "Recoverable", {
+			dispatchId: RECORDED_DISPATCH_ID,
+			attempt: 3,
+		});
+		const state = createSessionState(makeLog());
+		const ctx = freshSession();
+
+		const synthetic = bridgeEntries(ctx, state).find((r) => r.id === ID)!;
+		const identity = newDispatchIdentity(synthetic);
+
+		expect(identity.dispatchId).toBe(RECORDED_DISPATCH_ID);
+		expect(identity.attempt).toBe(4);
+		expect(identity.resumeOf).toBe(ID);
+	});
+
+	it("an entry without identity omits both and still mints a fresh dispatchId", () => {
+		seedDurableInterruptedRun();
+		const state = createSessionState(makeLog());
+		const ctx = freshSession();
+
+		const synthetic = bridgeEntries(ctx, state).find((r) => r.id === ID)!;
+
+		expect(Object.prototype.hasOwnProperty.call(synthetic, "dispatchId")).toBe(false);
+		expect(Object.prototype.hasOwnProperty.call(synthetic, "attempt")).toBe(false);
+
+		const identity = newDispatchIdentity(synthetic);
+		expect(identity.dispatchId).not.toBe(RECORDED_DISPATCH_ID);
+		expect(identity.dispatchId).toMatch(/^[0-9a-f-]{36}$/);
+		expect(identity.attempt).toBe(2); // (undefined ?? 1) + 1
+		expect(identity.resumeOf).toBe(ID);
 	});
 });

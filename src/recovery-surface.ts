@@ -47,6 +47,11 @@ export const RECOVERY_NOTICE_CUSTOM_TYPE = "subagent-recovery";
 export interface InterruptedRunView {
 	id: string;
 	kind: InflightRunKind;
+	// Issue #329: the durable dispatch identity, projected so a bridged
+	// (post-crash) retry inherits the recorded lineage instead of minting a
+	// fresh `dispatchId`. Optional: pre-enrichment entries lack both.
+	dispatchId?: string;
+	attempt?: number;
 	label?: string;
 	task?: string;
 	model?: string;
@@ -98,6 +103,8 @@ export function collectInterruptedRuns(deps: CollectInterruptedDeps): Interrupte
 		views.push({
 			id: entry.id,
 			kind: entry.kind,
+			dispatchId: entry.dispatchId,
+			attempt: entry.attempt,
 			label: run?.label ?? agent?.description ?? entry.label,
 			task: run?.task ?? agent?.task ?? entry.task,
 			model: run?.model ?? agent?.model ?? entry.model,
@@ -146,6 +153,11 @@ function interruptedViewToRun(view: InterruptedRunView): SubagentRun {
 		id: view.id,
 		task: view.task ?? "",
 		...(view.label ? { label: view.label } : {}),
+		// Issue #329: carry the recorded identity only when present — never an
+		// `undefined`-valued property, so a pre-enrichment entry stays identical
+		// to the pre-fix synthetic and `newDispatchIdentity` still mints fresh.
+		...(view.dispatchId !== undefined ? { dispatchId: view.dispatchId } : {}),
+		...(view.attempt !== undefined ? { attempt: view.attempt } : {}),
 		status: "running",
 		model: view.model?.trim() || "unknown",
 		thinkingLevel: view.thinkingLevel?.trim() || "unknown",
