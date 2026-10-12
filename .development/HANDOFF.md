@@ -18,7 +18,10 @@
 - **Adopted practices (2026-10-10):** **Rule 13 Recon checkpoint** — every C1/C2 spec carries a `## Recon` block from
   `bash .pi/skills/worktree/recon.sh <symbol|file>` (CodeGraph; #319 closed on two filled blocks); **Rule 22 Jev advisory** —
   every spec carries `jev: <level> (<conf>) · risk <C1|C2|C3> · worktree <y|n>` (backtest: 98 dispatches, $0.0034; first uses:
-  it overrode its own `worktree` cell for `src/__tests__`, and raised a seam fix C2→C1); the **`pr` skill**
+  it overrode its own `worktree` cell for `src/__tests__`, and raised a seam fix C2→C1); **2026-10-12:
+  input template + outcome calibration log added** (`references/jev-advisory.md`,
+  `.development/investigations/jev-calibration-log.md` — every `state.task` built from the template,
+  outcomes logged at close); the **`pr` skill**
   (`.pi/skills/pr/SKILL.md`: Summary/Evidence/Merge Danger/Fixes).
 - **Evidence:** `.development/investigations/` — `jev-thinking-backtest-2026-10-10.md`, `issue-299-grandchild-reap-probe-2026-10-10.md`,
   `fix318*/fix322*-findings`, `codegraph-phase2-dogfood-*`, `u1-*`; **ADR 0016** (graphify retired — CodeGraph is the sole gate; 1 s

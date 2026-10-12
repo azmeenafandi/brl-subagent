@@ -241,7 +241,8 @@ never re-type their logic by hand. Full design:
     spec approval) still decide. Snippet + the 2026-10-10 backtest (98 dispatches,
     $0.0034: it flags over-leveling, raises reviews — `review-test-hygiene-r2`, which
     caught the #308 regression, was called high→xhigh) live in
-    `references/jev-advisory.md`.
+    `references/jev-advisory.md` — **build the task text from its input template and record
+    the outcome in its calibration log** (`.development/investigations/jev-calibration-log.md`).
 
 ## Lifecycle
 
