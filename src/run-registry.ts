@@ -153,7 +153,7 @@ function normalizeEnrichment(value: InflightRun, raw: Record<string, unknown>): 
 		if (typeof raw[field] === "string") entry[field] = raw[field] as string;
 		else delete entry[field];
 	}
-	if (raw.originalParams && typeof raw.originalParams === "object") {
+	if (raw.originalParams && typeof raw.originalParams === "object" && !Array.isArray(raw.originalParams)) {
 		entry.originalParams = raw.originalParams as SubagentRun["originalParams"];
 	} else {
 		delete entry.originalParams;

@@ -281,6 +281,28 @@ describe("registry enrichment round-trip (O3)", () => {
 		expect(listed.thinkingLevel).toBe("high");
 		expect(listed.originalParams).toBeUndefined();
 	});
+
+	it("an array-valued originalParams degrades to absent without dropping the entry", () => {
+		const id = crypto.randomUUID();
+		const file = entryFile(id);
+		fs.mkdirSync(registryDir(), { recursive: true });
+		fs.writeFileSync(
+			file,
+			JSON.stringify({
+				id,
+				kind: "foreground",
+				startedAt: ISO,
+				cwd: "/x",
+				interruptedAt: ISO,
+				originalParams: ["gitMode", "branch"],
+			}),
+		);
+		const listed = listInflightRuns().find((e) => e.id === id)!;
+		// The entry (and its interruption mark) survives; only the array field drops.
+		expect(listed).toBeDefined();
+		expect(listed.interruptedAt).toBe(ISO);
+		expect(listed.originalParams).toBeUndefined();
+	});
 });
 
 // ---------------------------------------------------------------------------

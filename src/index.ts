@@ -3372,7 +3372,10 @@ export default function (pi: ExtensionAPI) {
 			// registry entry is superseded — clear it here so the old run is not
 			// re-offered at every subsequent boot. A failed pre-start (circuit open,
 			// slot cancelled) returns ABOVE this point and leaves the source intact
-			// and retryable. `retrySourceRun` is set only on a `retryRunId` call.
+			// and retryable — but note it is NOT "one row only": the pre-existing
+			// pre-start path (`persistRun`, which precedes the circuit/slot gates)
+			// still leaves a dangling `running` NEW row behind until the backlogged
+			// dangling-row fix. `retrySourceRun` is set only on a `retryRunId` call.
 			if (retrySourceRun) clearInflightRun(retrySourceRun.id);
 
 			// F7 (issue #65): import BEFORE the try — the crash-path catch calls
