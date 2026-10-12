@@ -45,11 +45,17 @@
   **on-demand registry-union visibility bridge** so every surface works after a genuine crash (the round-1 critical).
   3 review rounds (muse-spark): 3 criticals → fix → `approve-with-nits` ×2; records pinned
   `issue-u3-review-findings-2026-10-11.md` (4 carried nits). Suite **73/1488**; CodeGraph refreshed.
-- **Next options (post-U3):** (a) **the U4 gate** — the U2/U3 measurement (session sizes/debris after a week,
+- **UPDATE — FGP MERGED (2026-10-12, PR #328 → `dev` `70b6a53`):** the durable registry now persists
+  task/label/model/thinkingLevel + the full `originalParams` snapshot (lenient reads); the U3 bridge restores them, so a
+  post-crash FOREGROUND retry gets full parity — incl. `force`, per the §7 decision; a successful retry retires the source
+  entry (stale re-offers stop). Review `approve-with-nits` (2 minors fixed in `be9a4a0` pre-merge). **Backlog: dangling-row bug** —
+  the circuit-open/slot-cancelled early returns after `persistRun` leave `running` rows (predates FGP). First Jev calibration-log
+  entries recorded (the convention override finds no support in the outcome — see the log).
+- **Next options (post-FGP):** (a) **the U4 gate** — the U2/U3 measurement (session sizes/debris after a week,
   interruptions actually observed, re-work meaningful) before U4's resume is scheduled; (b) the release cycle whenever
   the maintainer calls it — the dev-dogfood install activates merged changes on `/reload` (user-triggered, never
-  automated; U2+U3 both wait for a reload); (c) backlog: the 4 carried U3 nits (pinned record) + two tests still
-  using the latent two-scan `waitUntil`+`findByMarker` pattern; (d) the **#315 live check** on the next natural
+  automated; U2+U3+FGP all wait for a reload); (c) backlog: the 4 carried U3 nits (pinned record) + two tests still
+  using the latent two-scan `waitUntil`+`findByMarker` pattern + the FGP dangling-row bug; (d) the **#315 live check** on the next natural
   failed run (expect exactly one `[subagent-completion]`, no `[subagent-notification]`).
 
 ## Environment
