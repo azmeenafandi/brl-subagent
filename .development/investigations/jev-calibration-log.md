@@ -23,7 +23,7 @@ part of what this log will measure).
 | 2026-10-12 | `impl-329` | impl | medium (0.42) · C2 | medium | 0 | review approve-with-nits (1 style nit — view-level undefined keys, **carried by design**); 0 fix rounds; suite 73/1503; merge #331 | consistent |
 | 2026-10-12 | `review-329` | review | **not classified — ritual gap** (review floor `medium` used) | medium | n/a | approve-with-nits: 1 nit (view-level undefined-valued keys; carried — matches the view's existing house style); 0 majors; 1 transport retry before success | consistent — but **classify reviews pre-dispatch** (gap recorded) |
 | 2026-10-12 | `impl-330` | impl | medium (0.58) · C2 | medium | 0 | implemented exactly as specced; the IMPLEMENTER surfaced a **premise error in the spec** (history was already newest-first via `cleanupRuns`) → direction corrected before review; code was correct to the spec | **design-gap** (spec premise — partial read of `getRunEntries`; the level was not the causal variable) |
-| 2026-10-12 | `impl-330-fix` | fix | medium (0.98) · C2 | medium | 0 | transport failure at 1m52s (connection error) — worktree pristine, no work lost; re-dispatch pending confirmation | n/a (transport; no level signal) |
+| 2026-10-12 | `impl-330-fix` | fix | medium (0.98) · C2 | medium | 0 | transport failure on attempt 1 (worktree pristine, no work lost); retry succeeded — corrected ordering implemented on `205927c`; 0 fix rounds; review approve (0 findings); suite 73/1503; merge #332 | consistent |
 
 ## Notes
 
@@ -36,3 +36,5 @@ part of what this log will measure).
   *design*. That class is controlled by the spec's Recon/design review, not by the level.
 - **Filling this log:** at each dispatch's close (merge/rejection), append one row. At ~20 rows,
   re-run the backtest against this log and revisit every override.
+
+| 2026-10-12 | `review-330` | review | medium (1.0) · C2 | medium | 0 (gap closed — classified pre-dispatch) | approve, ZERO findings; both mutation probes failed exactly as predicted (bridge sort removal / unlimited-sort removal); coverage reconciled | consistent |
