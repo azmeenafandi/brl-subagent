@@ -2,10 +2,15 @@
 
 Release history for brl-subagent. Newest first. The full narrative for each release lives in the GitHub release notes.
 
-### Unreleased
+### v2.5.1
 
+- **Interrupted runs are recoverable (issue #296 — U2 + U3):** after a conductor crash the next boot names what was lost — one notice lists every unresolved interrupted run with its task and age, Run History shows an `Interrupted` row, and the retry menu offers a one-key re-dispatch through `retryRunId` (or an abandon). Background sessions are file-backed (per-run `.pi/subagents/sessions/<id>/`, pruned at the single finalize choke point; interrupted files retained until resolved), and a registry-union visibility bridge makes all four surfaces agree even on a genuine fresh boot.
 - **A crashed foreground run keeps its task and dispatch shape (O3):** after a conductor crash + fresh boot a FOREGROUND/unit run's durable registry entry carried only identity, so the recovery notice showed `(task unavailable)` and `retryRunId` could neither restore the task nor the execution shape (it silently defaulted to the current session config). The registry now persists the run summary — `task`, `label`, `model`, `thinkingLevel` and the full `originalParams` snapshot — at the single write choke point, and the U3 bridge consumes it: a post-crash retry restores the same 17 fields a same-session retry restores (including `force`, per the 2026-10-11 decision), with explicit caller values still winning. Reads are lenient — a tampered enrichment field degrades to absent rather than dropping the entry and losing the interruption mark. Additive/optional, so old entries read as before.
 - **A successful retry retires the source entry:** an interrupted run that has been successfully retried is no longer re-offered at every subsequent boot (a failed retry start leaves it intact and retryable). The background agent record's own resolution remains U4's work; this fold clears the registry entry only.
+- **Bridged retries inherit the recorded dispatch identity (issue #329):** the visibility bridge now projects `dispatchId`/`attempt` from the durable entry, so a post-crash retry continues the original logical dispatch instead of minting a fresh id — found by the live end-to-end probe.
+- **Run lists render newest-first (issue #330):** Run History and the retry menu share one `sortNewestFirst` ordering, and the recovery bridge merges its rows by recency instead of appending them to the bottom — also a probe finding.
+- **Orphan-tree reaping reaches the process group (issue #299):** POSIX runs spawn detached and the kill paths signal the whole group (stat-prefix membership contract, signal-time marker verification, honest survivor reporting); Windows keeps the child-only fallback.
+- **Toolchain — Pi 1.2.0 parity (issue #333):** the `@earendil-works/*` devDependencies move to `^1.2.0` and `typebox` is pinned to the host's 1.3.27; the 1.2.0 breaking changes were checked one-by-one and none touch the extension.
 
 ### v2.5.0
 
