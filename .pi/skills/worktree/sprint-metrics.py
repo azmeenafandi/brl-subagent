@@ -45,11 +45,17 @@ def iso_ts(ts) -> str:
 
 
 def in_range(ts: str, since: str, until: str) -> bool:
-    """True if ts falls in [since, until] (ISO date strings, inclusive)."""
+    """True if ts falls in [since, until] (inclusive, DAY granularity).
+
+    Bounds are normalized to their date part: a time-suffixed bound (e.g.
+    '2026-10-10T02:00:00') would otherwise compare lexicographically against a
+    date-only stamp and SILENTLY exclude that whole day (found at the v2.5.1
+    sprint end: a '--since 2026-10-10T02:00:00' run dropped Oct 10 entirely).
+    """
     if not ts:
         return False
     day = ts[:10]
-    return since <= day <= until
+    return str(since)[:10] <= day <= str(until)[:10]
 
 
 def load_events(log_paths, since, until):
@@ -175,15 +181,19 @@ def compute(events):
     retry_ok = retry_fail = retry_missing = 0
     for r in retries:
         label = r.get("label")
-        if not label:
-            retry_missing += 1
-            continue
-        # Find the run entry spawned by THIS retry dispatch (same label,
-        # id != retryRunId). If multiple, take the settled one.
+        # Match the RETRY's own resulting run entry. Preferred key: `resumeOf`
+        # (set on every retry's spawned record since U1 — including bridged
+        # retries resolved from the registry, which carry NO label when the
+        # caller passes only `retryRunId`); label is the legacy fallback.
         candidates = [
             rid for rid, run in finalized.items()
-            if run.get("label") == label and rid != r.get("retryRunId")
+            if run.get("resumeOf") == r.get("retryRunId")
         ]
+        if not candidates and label:
+            candidates = [
+                rid for rid, run in finalized.items()
+                if run.get("label") == label and rid != r.get("retryRunId")
+            ]
         settled_retry = [
             rid for rid in candidates if finalized[rid].get("status") != "running"
         ]
