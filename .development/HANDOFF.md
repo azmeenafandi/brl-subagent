@@ -1,14 +1,59 @@
 # Handoff — 2026-09-22 (night)
 
-> Updated 2026-10-10 — **v2.5.0 release prepared; publish pending.** npm `latest` is still v2.4.0 until the
-> maintainer approves the staged publish. The running extension is the **`dev` checkout** (deliberate developing
-> mode: `pi install <dev path>`) — ritual step 9 switches it back to the published package after the approval.
-> The **cockpit** is the `dev` checkout (`.development/`, `graphify-out/`, `.pi/` tools, shared `node_modules`);
-> `main` is the pristine release checkout (v2.4.0 tagged until the release merge).
+> Updated 2026-10-12 — **v2.5.0 live on npm; the running install is the DEV checkout (dogfood), RELOADED at dev tip `be89f6a`.**
+> Since v2.5.0, four units are merged to `dev` and ACTIVE in the running session: **#299 Option B** (PR #325), **U2**
+> file-backed background sessions (#326), **U3** recovery surface (#327), **FGP** registry task-persistence (#328).
+> **`main` @ `355ed53` = v2.5.0** (tag `v2.5.0`); roll back to npm with the local-development toggle when the dogfood ends.
+> The **cockpit** is the `dev` checkout (`.development/`, `.codegraph/` (the structural index), `.pi/` tools, shared `node_modules`).
 > Read this first: it is the state a fresh conductor cannot infer from the repo alone.
 > Companion durable records: `.development/` (ROADMAP, AUDIT, TASKS, METRICS, FRICTION_LOG,
 > INVESTIGATION_reload_wake.md), `.pi/skills/worktree/SKILL.md` (the rituals),
-> `graphify-out/` (the knowledge graph — now describes DEV).
+> `.codegraph/` (the structural index — now describes DEV).
+
+## STATE (2026-10-12, post-compaction)
+
+- **dev** at the post-FGP tip `be89f6a` — this handoff is a doc commit on top; **the tip moves with doc commits, so
+  check `git log -1` rather than trusting this line**. Only `main` + `dev` remain — no worktrees, no strays. Suite
+  **73 files / 1506**; CodeGraph **40 modules / 425** exported declarations (fresh at the last refresh; doc-only commits
+  can read as stale until the next merge refresh — expected).
+- **Running install:** the dev checkout (dogfood), RELOADED 2026-10-12 → U2 + U3 + FGP are live. npm `latest` = 2.5.0; `main` @ `355ed53`.
+- **Board: `#299`** (merged to dev; closes at the RELEASE merge — `Fixes` fires on `main` only) · **`#329`** (fixed —
+  PR #331 merged `e5f6e6b`) · **`#330`** (fixed — PR #332 merged `60ad7e7`) · **`#333`** (fixed — PR #334 merged
+  `7619817`). All three close at the RELEASE merge. No other open issues.
+- **UPDATE — #333 MERGED (2026-10-13, PR #334 → `dev` `7619817`):** dependency parity with the pi **1.2.0** host —
+  the four `@earendil-works/*` devDeps → `^1.2.0`, `typebox` pinned `1.3.27`, lockfile refreshed (the chord/esbuild
+  tree removed upstream); review approve (0 findings, lockfile fully reconciled; `npm ci --dry-run` green). The
+  cockpit shared tree was refreshed with `npm ci` (rule 2); the `/reload` (2026-10-13) activated BOTH the merged
+  code (#329/#330) and the 1.2.0 dependency line — **TUI smoke PASSED** (history menu clean on the new line).
+- **UPDATE — #329 + #330 MERGED (2026-10-12, PRs #331/#332 → `dev` `e5f6e6b` / `60ad7e7`):** bridged retries inherit
+  `dispatchId`/`attempt` (#329; focused review approve-with-nits — 1 style nit carried by design). Run surfaces render
+  newest-first via a shared `sortNewestFirst`, the bridge merges synthetic rows by RECENCY (no more append), and the
+  retry menu's `.reverse()` is gone (#330; review approve, ZERO findings — the direction was corrected mid-flight
+  after the implementer exposed the wrong premise: history was already newest-first via `cleanupRuns`). Review records:
+  `issue-329-review-findings-2026-10-12.md`, `issue-330-review-findings-2026-10-12.md`; spec errata pinned.
+- **Durability arc (Option B plan):** U1 merged in 2.5.0 · **U2** file-backed background sessions · **U3** recovery surface
+  (interrupted rendering, boot notice, retry offer, abandon, posture) · **FGP** durable task/label/model/`originalParams`
+  in the registry + retire-on-retry. All on `dev`, all reviewed (records pinned per unit). **U4 (A₂ resume):** spec APPROVED +
+  pinned (`u4-resume-spec-2026-10-11.md`) and **parked behind the measurement gate**.
+- **Measurement (the U4 gate):** `u2-u3-measurement-2026-10-11.md` — multi-project scope (dev + spelling_bee +
+  deep-research-agent + ephemeral-rp), enumeration command, baseline zero; **zero interruptions observed so far**;
+  next snapshot at the first real interruption or ~2026-10-18.
+- **Jev ritual (Rule 22):** input template + calibration log + **strict-Jev ratified 2026-10-12** — use Jev's level; ANY
+  deviation (either direction) carries a one-line reason; the C1⇒high convention is retired; single carve-out: confidence
+  `< 0.5` on a C1 justifies +1 (citing the confidence). Log: `jev-calibration-log.md` (template-built inputs; outcomes at close).
+- **Other adopted practices:** Rule 13 Recon checkpoint (`recon.sh`; `## Recon` mandatory in C1/C2 specs) · the `pr` skill ·
+  review records pinned under `.development/investigations/`.
+- **Backlog (pinned, none urgent):** the 4 carried U3 nits (`issue-u3-review-findings-2026-10-11.md`) · two tests using the
+  latent two-scan `waitUntil`+`findByMarker` pattern · **FGP dangling-row bug** (circuit-open/slot-cancelled early returns
+  after `persistRun` leave `running` rows; own fix) · `errorCategoryBreakdown` legacy `originalParams` field ·
+  `runDisplayName` docstring overclaim · #329/#330 fixed on dev (PRs #331/#332; close at the RELEASE merge).
+- **Open live checks (user-triggered):** (a) the **interrupted-run probe PASSED 2026-10-12** — scan → mark → one notice →
+  bridged retry restored task/label/model/thinkingLevel/priority/gitMode/approvalMode/background/force → retire-on-retry
+  (registry empty); findings fixed by PRs #331/#332 (both merged); **round 2 PASSED (2026-10-12, post-`/reload`)** —
+  bridged retry inherited `dispatchId 6ce19226…`, `attempt: 2`, and restored `timeout: 45000` with NO override
+  (closing round 1's open cell); source retired; evidence table pinned in the 329/330 spec; (b) **#315 — PASSED 2026-10-13** on pi 1.2.0 (a deliberate 2s-timeout failed run `d73a6710`): exactly ONE completion notice, nothing re-surfaced;
+  (c) the U4 measurement snapshots.
+- **Release:** v2.5.0 live; `#299` + U2/U3/FGP wait for the next release (main merge) whenever the maintainer calls it.
 
 ## Environment
 
@@ -16,14 +61,14 @@
 |---|---|
 | pi runtime | **1.1.0** (updated 2026-10-08; changelog scan: no extension-API breaks — additive only (`durationMs` on the tool-render context + `tool_execution_end`; `outputPad`; `aborted` on `agent_settled`); one semantic change flagged — `--tools` gains `+name`/`-name` adjusters while plain lists still replace (our restricted-tools spawn path exercised by the smoke); extension hooks live under 1.1.0 (guard probe BLOCKED a cockpit `src/` write — Rule 5 enforced); live smoke PASSED `PI-110-SMOKE` (1.3 s, restricted tools); npm: all four packages at 1.1.0 in lockstep; runtime was AHEAD of lockfile SDK 1.0.4 — expected mid-cycle; **SDK parity CLOSED same-day — PR #290 (merge `3ea40f9`): the four devDeps → `^1.1.0`, lockfile +40/−40 (8 packages, no dedupe churn), isolated-worktree suite 61/1258 + `tsc` clean — re-verified by the conductor — cockpit tree refreshed with `npm ci`, `check-repo` fully green (runtime == lockfile)**). **Adoption candidates (marked, not filed):** `durationMs` (tool-render footer timing) and `agent_settled.aborted` (sharper cancelled-vs-finished settle handling). **Previous: 1.0.4** (updated 2026-10-06; changelog scan: no extension-API breaks (`*` tool patterns, `--no-mcp`, codemode images; one child-pi nuance — `--tools` keeps MCP tools unless `mcp__`-prefixed, no MCP here); guard probe BLOCKED a cockpit `src/` write; live smoke PASSED `PI-104-SMOKE` (900 ms); runtime AHEAD of lockfile SDK 1.0.3 — expected mid-cycle, all four SDK 1.0.4 packages on npm; **SDK parity CLOSED same-day — PR #273 (merge `62cf9fa`): devDeps → `^1.0.4`, cockpit tree refreshed
 with `npm ci`, check-repo fully green (runtime == lockfile)**). **Previous: 1.0.3** (updated 2026-10-05; changelog scan: no extension-API changes — the one breaking change (Azure provider renamed `azure-openai-responses` → `azure`) does not touch this setup (zero config references); boot clean 10:31:47Z on the dev-path install; live smoke PASSED `PI-103-SMOKE` (1.4 s); guard probe BLOCKED a cockpit `src/` write — Rule 5 enforced; runtime AHEAD of lockfile SDK 1.0.2 — **SDK parity CLOSED same-day: PR #270 (merge `3d601c1`): devDeps → `^1.0.3`, cockpit tree refreshed with `npm ci`, check-repo fully green (runtime == lockfile)**). **Previous: 1.0.2** (updated 2026-10-04; changelog scan clean — additive only (`registerToolRenderer` etc.), no extension-API breaks, no migration; boot clean 02:00:05Z on the **dev-path install**; live smoke PASSED `PI-102-SMOKE` — 970 ms spawn → completion; guard probe BLOCKED a cockpit `src/` write — Rule 5 enforced; **SDK parity CLOSED the same day — PR #266 (`f3c1da9`, merge `7d2acbc`): the four devDeps → `^1.0.2`, cockpit tree refreshed with `npm ci`, check-repo fully green (the lockfile diff was a legitimate npm-11 dedupe: 323→233 tree entries, no direct-spec changes)**). **Previous: 1.0.0** (updated 2026-10-02; boot clean + live smoke PASSED: spawn → steer → completion, guard probe blocked a cockpit `src/` write — Rule 5 still enforced under 1.0.0) — devDeps/lockfile were **1.0.0 too** (PR #257, `5827745`): **that skew was CLOSED**, check-repo's runtime line was green then, and the cockpit's shared tree was refreshed with `npm ci`. **TypeScript is now 7.0.2** (PR #263, `0b1cdc3`): migrated via the single containment adapter `scripts/ts-ast.mjs` (`typescript/unstable/*`), exact pin, `target: es2024` (ADR 0013; #256 closes at release) — the cockpit tree was refreshed again and `check-repo` is green under TS 7 |
-| `main` | **`8a00ee3`** — **v2.4.0 released** (release merge `d954dd6`; bump commit `8a00ee3`; GitHub release published 2026-10-03; npm `latest` = 2.4.0 with signed provenance). **Pristine since 2026-09-30: no `node_modules`, no docs/graph/.pi** (all moved to the dev cockpit) |
-| `dev` | **`92cb3da`** (the v2.4.0 release commit `8a00ee3` + post-release docs commits) — the post-2.3.9 fix cycle shipped as **v2.4.0**: all 13 issues closed (10 manually — the release PR's comma-separated keyword list did not auto-close: friction `fixes-keyword-omission`; `dev` was briefly deleted by GitHub's auto-delete-head-branches and restored). Cycle: **#242** (#240 default-not-ceiling timeouts, `35badde`), **#243** (#239 schema-linked types, `fcb9dc2`), **#245** (#241 steer delivery, `9c9b754`), **#246** (#244 deadline wording + single-timer ownership, `f892e3f`), **#248** (#247 contributor parity, `dec5fb65`), **#250** (#249 ARCHITECTURE rewrite + module-map guard, `949be9d`), **#252** (#251 architecture rules as tests, `3e17491`), **#254** (#253 ADR backfill, `290cf9f`), **#257** (#255 SDK 1.0.0 bump + `erasableSyntaxOnly`, `5827745`) and **#263** (#256 TypeScript 7.0.2 + ES2024 via the AST adapter, `0b1cdc3`); main at the `v2.4.0` tag; **COCKPIT since 2026-09-30** (holds `.development/`, `graphify-out/`, `.pi/`, the shared `node_modules`) |
+| `main` | **`355ed53`** — **v2.5.0** (tag `v2.5.0`, 2026-10-10; GitHub release live, npm `latest` = 2.5.0). Earlier: **`8a00ee3`** — **v2.4.0 released** (release merge `d954dd6`; bump commit `8a00ee3`; GitHub release published 2026-10-03; npm `latest` = 2.4.0 with signed provenance). **Pristine since 2026-09-30: no `node_modules`, no docs/graph/.pi** (all moved to the dev cockpit) |
+| `dev` | **`472d298`** — v2.5.0 live (2026-10-10; see the STATE block above). Earlier: **`92cb3da`** (the v2.4.0 release commit `8a00ee3` + post-release docs commits) — the post-2.3.9 fix cycle shipped as **v2.4.0**: all 13 issues closed (10 manually — the release PR's comma-separated keyword list did not auto-close: friction `fixes-keyword-omission`; `dev` was briefly deleted by GitHub's auto-delete-head-branches and restored). Cycle: **#242** (#240 default-not-ceiling timeouts, `35badde`), **#243** (#239 schema-linked types, `fcb9dc2`), **#245** (#241 steer delivery, `9c9b754`), **#246** (#244 deadline wording + single-timer ownership, `f892e3f`), **#248** (#247 contributor parity, `dec5fb65`), **#250** (#249 ARCHITECTURE rewrite + module-map guard, `949be9d`), **#252** (#251 architecture rules as tests, `3e17491`), **#254** (#253 ADR backfill, `290cf9f`), **#257** (#255 SDK 1.0.0 bump + `erasableSyntaxOnly`, `5827745`) and **#263** (#256 TypeScript 7.0.2 + ES2024 via the AST adapter, `0b1cdc3`); main at the `v2.4.0` tag; **COCKPIT since 2026-09-30** (holds `.development/`, `.codegraph/`, `.pi/`, the shared `node_modules`) |
 | Running extension | **DEV-INSTALL MODE — the running extension is the dev checkout** (`pi install /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` @ `a54ca6a`; includes #265 (file-only logging) and #268 (Run History UX) — both live-verified; `pi list` shows exactly one entry; npm `latest` stays 2.4.0). **History:** worktree mode `brl-subagent-wt-259` (`08f63ee`) for the #268 live verification (incl. the alt+↑/↓ paging fix); before that, worktree mode `brl-subagent-wt-265` (`e4f37cc`) for #265 — the TUI stayed clean through a dispatch emitting the exact screenshot lines; before that, published dogfooding (`npm:brl-subagent` 2.4.0, ritual step 9, 2026-10-03): **`npm:brl-subagent` 2.4.0 — the PUBLISHED artifact** (ritual step 9 done 2026-10-03: dev-path install removed → `pi install npm:brl-subagent` → `pi update --extensions` → `/reload`; `pi list` shows exactly one brl-subagent entry; **published-build probe PASSED** — `RELEASE-240-OK`, 870 ms, spawn → completion; the single boot warning is the designed `approvalMode: 'writes'` auto-approve notice). **History of the dev-install period:** **reloaded 2026-09-29 15:03Z — #240/#241/#244 all LIVE**; **pi updated to 1.0.0 (2026-10-02) — post-update smoke PASSED** (clean boot, zero errors; live spawn → steer → completion probe
 SMOKE-STEER-100; the guard extension loaded and blocked a cockpit `src/` write probe; 1.0.0's changelog has no breaking
 format, no extension-API changes and no migration doc — its defaults changed TUI mode to fullscreen): `npm:brl-subagent` was removed and the ABSOLUTE dev path installed; `pi list` shows exactly one brl-subagent entry (the dev tree, registered source displays as a relative path but resolves correctly). A user `/reload` activates it in-session — until then the session still holds the published 2.3.9. To remove later, use the ABSOLUTE path from `pi list` (friction `pi-remove-source-mismatch`). Rationale: the user is daily-driving the dev tree for a few days. |
 | npm | **2.3.9 live (latest)** — published and approved 2026-09-27; the running install was switched to it (step 8) |
 | Worktrees | main + dev only (cockpit = dev; every task worktree cleaned) |
-| Graph | **1028 nodes / 2619 edges / 62 communities** — refreshed **2026-09-30** to describe the **DEV** tree (first refresh under the new model: `graph-refresh.sh` per merge; 17 files re-extracted, ~$0.01; `graph-check.py` green: 33/33 modules, 313/313 exported symbols). Pre-refresh state archived by graphify as `graphify-out/2026-09-30/` |
+| Index | **CodeGraph — the sole structural index** (ADR 0016): `.codegraph/` (gitignored), refreshed at every merge into `dev` by `.pi/skills/worktree/codegraph-refresh.sh` (+ `codegraph-check.py`: coverage + `indexed_at_commit == HEAD`). The retired graphify tree is gone; its final report is archived at `.development/investigations/graphify-retirement-2026-10-10/` |
 
 ## Next actions (2026-10-05, post-#272)
 
@@ -148,6 +193,9 @@ dedup → `--allow-dedup-shrink`; post-#279 incomplete docs pass → from-scratc
 `--allow-partial` + coverage check) and 4 clean passes. Pre-rebuild 1530-node graph kept at
 `graphify-out/graph.json.pre-276-rebuild`.
 
+**[SUPERSEDED 2026-10-10 — ADR 0016: graphify is RETIRED and CodeGraph is the sole structural index. The
+codegraph-evaluation + Phase 2 material below is historical; the Phase 2 criteria are moot.]**
+
 **Other candidates (marked, not filed):** the `showSelectList` preselect nice-to-have deferred from #260,
 **the next release — user decision 2026-10-08: after dependabot's weekly visit (Saturdays; next 2026-10-10)**,
 so one release absorbs any dependabot bumps (urgent/security still interrupts). Saturday is expected to re-open
@@ -183,13 +231,17 @@ clean. First dogfood: `codegraph-refresh.sh` green (34/34 + 0/322, "index was bu
 sample: **12/12** after fixing my comparison methodology (two intermediate passes each had ground-truth artifacts
 in opposite directions — the definition-line/definition-file treatment; CodeGraph was correct in all cases).
 Caveat found: `is_exported` has false positives (`displayTaskName` is unexported but flagged) — the guard matches
-by name, so it is unaffected; do not use the flag as ECMAScript-export truth. **RECONCILED (2026-10-10 — ADR 0015, PR #309 merge `84f6df1`):** the one-off trial above is NOT the formal Phase 2 window. Per ADR 0015, Phase 2 opens at the first post-dependabot merge and runs BOTH refreshes at every merge (`graph-refresh.sh` remains the gate; `codegraph-refresh.sh` shadows it), on the ADR's criteria (refusal rate, sync time, 5–10 query-parity questions; retire/narrow after a week or N merges). The cockpit `.codegraph/` (11 MB, gitignored) is already present from the trial, so the open item is per-merge usage, not adoption. Latest data point: the post-#309 refresh was refused again (#8; docs-only; both flags) — friction entry added. **PHASE 2 (formal) STARTED 2026-10-10** — first data point at the dependabot merge `bad271e`: the graphify gate REFUSED (#9; lockfile-only merge; 149 s; `--allow-partial`) while the CodeGraph shadow passed in 5 s with `indexed_at_commit == HEAD`; window tally 9 refusals / 0 `src/` structure. Phase 2 log: `.development/investigations/codegraph-phase2-dogfood-2026-10-10.md`. Data point #2 (`924a13d`, code merge): gate PASS 71 s; CodeGraph PASS 2 s (380 symbols, `== HEAD`). **PR #311 merged (`924a13d`)** — #298 (partial-vs-settled predicate) + #306 (four review nits) closed; Luna verdict APPROVED with one comment-precision nit, fixed conductor-side (`960dd00`) before merge; suite 66 files / 1349. All pre-release items are closed except **#299** (the documented D6 destination — trigger-based, not scheduled). **RELEASE CYCLE STARTED (2.5.0).** **DEPENDABOT #310 merged (`bad271e`)** — dev-deps lockfile-only bump; isolated `--force-isolated` suite + tsc + CI green; shared tree refreshed (`npm ci`, 161 packages); worktree cleaned; no strays. Same-day contrast: the post-#292
+by name, so it is unaffected; do not use the flag as ECMAScript-export truth. **RECONCILED (2026-10-10 — ADR 0015, PR #309 merge `84f6df1`):** the one-off trial above is NOT the formal Phase 2 window. Per ADR 0015, Phase 2 opens at the first post-dependabot merge and runs BOTH refreshes at every merge (`graph-refresh.sh` remains the gate; `codegraph-refresh.sh` shadows it), on the ADR's criteria (refusal rate, sync time, 5–10 query-parity questions; retire/narrow after a week or N merges). The cockpit `.codegraph/` (11 MB, gitignored) is already present from the trial, so the open item is per-merge usage, not adoption. Latest data point: the post-#309 refresh was refused again (#8; docs-only; both flags) — friction entry added. **PHASE 2 (formal) STARTED 2026-10-10** — first data point at the dependabot merge `bad271e`: the graphify gate REFUSED (#9; lockfile-only merge; 149 s; `--allow-partial`) while the CodeGraph shadow passed in 5 s with `indexed_at_commit == HEAD`; window tally 9 refusals / 0 `src/` structure. Phase 2 log: `.development/investigations/codegraph-phase2-dogfood-2026-10-10.md`. Data point #2 (`924a13d`, code merge): gate PASS 71 s; CodeGraph PASS 2 s (380 symbols, `== HEAD`). **PR #311 merged (`924a13d`)** — #298 (partial-vs-settled predicate) + #306 (four review nits) closed; Luna verdict APPROVED with one comment-precision nit, fixed conductor-side (`960dd00`) before merge; suite 66 files / 1349. All pre-release items are closed except **#299** (the documented D6 destination — trigger-based, not scheduled). **RELEASE CYCLE STARTED (2.5.0).** **Graphify RETIRED (2026-10-10)** — ADR 0016 (PR #317, merge `810b444`): hooks, merge driver, CLI, caches and the 41 MB `graphify-out/` removed; the CodeGraph pair is the sole gate, and the first CodeGraph-only post-merge run took **1 s** (39/39 modules, 380 symbols, `indexed_at_commit == HEAD`). #313/#314 closed. **#315 fixed** — PR #316 (merge `42fbb61`; Luna APPROVED at medium thinking, $0.024): one terminal notice per run; crash paths share the claim. Board: **#299** (LOW, trigger-based) + the #316 DRY nit (crash-notice envelope). **#299 Option A merged** (PR #321, `1745c66`; C1 review APPROVED at high — all three mutations caught): marker sweep on the kill paths (`reapActiveChildren` unions `findByMarker` pids; `runSubagent` terminal sweeps) + the `reapPids` early-exit (101 ms vs the 5 s grace). #299 stays open for Option B (non-inheriting gap + the PID-reuse TOCTOU, which B must close with leader identity verification + a Windows fallback). New polish nit filed #322 (test-strength). Board now: **#299** (LOW) + #318 + #322. **#318 fixed + merged** (PR #323, `480eb2a`; review CHANGES-REQUESTED on one test-strength nit → fixed conductor-side in `9a647fc`, mutation verified: dropping the sanitizer now fails the exception-content test). Board: **#299** (LOW) + #322 (recovery.test.ts test-strength nit). **#322 fixed + merged** (PR #324, `9341f93`): the first review's sharper Mutation 2 (`reapActiveChildren` pid list intact, signals neutered) proved the reordering didn't isolate the shutdown reap → fix round added the gated `__registerActiveChildForTest` seam + an isolated test; C1 re-review APPROVED (Mutation A fails at the death assertion). Suite 67 files / 1367. **Rule 22 first uses:** Jev flagged its own `worktree` cell misreading `src/__tests__` (overridden), and upgraded the seam fix to **C1** (I'd assumed C2) — advisory earning its keep. Board: **#299** only. **DEPENDABOT #310 merged (`bad271e`)** — dev-deps lockfile-only bump; isolated `--force-isolated` suite + tsc + CI green; shared tree refreshed (`npm ci`, 161 packages); worktree cleaned; no strays. Same-day contrast: the post-#292
 graphify refresh **passed cleanly, no refusal** (1528/3368, ~$0.06) — same input class as #5's refusal;
 variance confirmed. Dogfood window open. **CLI pinned at 1.6.2** (decision 2026-10-08): updates are
 deliberate bumps — `pnpm add -g @colbymchenry/codegraph@<v>` → full `codegraph index` → refresh green;
 `codegraph upgrade --check` is the awareness command; never `codegraph upgrade` while pnpm-managed.
 Install layout: registry route (per-platform optional-dep carrying the vendored Node runtime; no postinstall
 script); the GitHub-releases download fallback exists but is unused here.
+
+**[CLOSED 2026-10-10 — ADR 0016: the dogfood window ended in retirement, not narrowing. The Phase 2 log
+(`.development/investigations/codegraph-phase2-dogfood-2026-10-10.md`) carries the RETIRED note; the final
+report is archived at `.development/investigations/graphify-retirement-2026-10-10/`.]**
 
 **Durability decision (2026-10-09):** delegated design investigation (`pi-durable` fit → PR #293, merge
 `5f73608`) — the user approved **Option B (mine the patterns)**: idempotent `dispatchId` + intent-before-effect
@@ -206,13 +258,13 @@ session-persistence decision joins the prerequisites. Next: fix **#295**, then t
 
 ## Cockpit layout (moved 2026-09-30)
 
-- **The cockpit is the `brl-subagent-dev` checkout** (branch `dev`): `.development/`, `graphify-out/`,
-  `.pi/` (skills incl. the worktree framework + `graph-refresh.sh`, guard extension, delegation config)
+- **The cockpit is the `brl-subagent-dev` checkout** (branch `dev`): `.development/`,
+  `.codegraph/` (the structural index), `.pi/` (skills incl. the worktree framework +
+  `codegraph-refresh.sh`, guard extension, delegation config)
   and the REAL `node_modules` — the symlink direction is inverted (worktrees symlink to dev now).
 - **`main` is the pristine release checkout**: only tracked release files; no deps until a release needs them.
-- **The graph is a dev artifact**: `graph-refresh.sh` runs `graphify . --update` + `graph-check.py` at every
-  merge into `dev` — never as a hook side effect (#230 designs the hook against this). graphify backs up the
-  pre-refresh state as a dated snapshot dir per refresh day.
+- **The structural index is a dev artifact**: `codegraph-refresh.sh` runs `codegraph sync` + `codegraph-check.py` at every
+  merge into `dev` — never as a hook side effect (#230; graphify's hook class retired with the tool, ADR 0016).
 - **Tooling updated in the same sweep**: check-repo §4 now checks the COCKPIT is on `dev` and current with
   origin/dev (previously it demanded `main`); cleanup syncs the cockpit; the guard's messages and its worktree
   reminder now name `dev`; SKILL.md rules/lifecycle/scripts re-phrased for the cockpit. Guard suite 13/13.
@@ -359,9 +411,9 @@ All auto-close at the next dev→main release.
 and any dogfooding findings are in. The seven merged issues above auto-close at that `dev → main` merge; the
 running dev install already carries all of them (reloaded 15:03Z).
 
-**Cockpit-move note (2026-09-30):** the release ritual's graphify-update step is **retired** —
-`graph-refresh.sh` keeps the dev graph current at every merge, so release-time only VERIFIES
-(`graph-check.py`). Release work now runs from the cockpit; `main` stays pristine.
+**Cockpit-move note (2026-09-30; updated 2026-10-10 — ADR 0016):** the release ritual's graph-update step is
+**retired** — `codegraph-refresh.sh` keeps the dev structural index current at every merge, so release-time only
+VERIFIES (`codegraph-check.py`). Release work now runs from the cockpit; `main` stays pristine.
 
 **Update prep (2026-09-30):** pi is now **0.99.1** (smoke-verified above). devDependencies still resolve to
 **0.87.1** — the runtime SDK surface we bind (`createAgentSession`, in-memory `SessionManager`,

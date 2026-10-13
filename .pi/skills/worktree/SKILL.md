@@ -22,6 +22,8 @@ never re-type their logic by hand. Full design:
 - [`references/release-ritual.md`](references/release-ritual.md) — the release ritual (steps 1-10).
 - [`references/local-development.md`](references/local-development.md) — npm dogfooding + the dev toggle (`-ne -e`).
 - [`references/review-dispatch.md`](references/review-dispatch.md) — the adversarial-review brief content + calibration.
+- [`../pr/SKILL.md`](../pr/SKILL.md) — the PR-body contract (Summary / Evidence / Merge Danger / Fixes), size-thresholded.
+- [`references/jev-advisory.md`](references/jev-advisory.md) — Rule 22: pre-dispatch thinking-level calibration via the Jev classifier (advisory; snippet included).
 - [`references/friction-log-ritual.md`](references/friction-log-ritual.md) — the friction log ritual.
 - [`references/sprint-end-ritual.md`](references/sprint-end-ritual.md) — Rule 11 recurrence escalation + trust metrics.
 
@@ -44,10 +46,11 @@ never re-type their logic by hand. Full design:
 4. **Tracked docs/tools materialize; state does not.** Since #247,
    `.development/**` and the `.pi` TOOLS (`.pi/skills/**`, `.pi/extensions/**`)
    are TRACKED — they materialize in every worktree; specs MAY ask a subagent to
-   read them. Still gitignored (and absent from worktrees): `graphify-out/`,
-   `.pi` session state (`output/`, `subagents/`, `subagent-logs/`,
-   `subagent-tmp/`, `sessions/`), local config (`.pi/brl-subagent/`),
-   `REVIEW_*.md`, `.tmp/`. **Subagents NEVER see gitignored files** — specs must
+   read them. Still gitignored (and absent from worktrees): `.codegraph/`
+   (the structural index — conductor-side only, ADR 0016), `.pi` session state
+   (`output/`, `subagents/`, `subagent-logs/`, `subagent-tmp/`, `sessions/`),
+   local config (`.pi/brl-subagent/`), `REVIEW_*.md`, `.tmp/`. **Subagents
+   NEVER see gitignored files** — specs must
    never ask them to read or edit those; environment-dependent instructions get
    an escape clause: "if X is not available in your worktree, report and skip —
    do not seek it elsewhere."
@@ -96,22 +99,31 @@ never re-type their logic by hand. Full design:
     currency, the session log / run entries audit trail), THEN theorize about
     code. When delegating a debugging task, instruct the subagent to check the
     environment first.
-13. **Graph-first scoping (Rule 13).** Before writing a spec for any C1/C2
-    change, the CONDUCTOR consults the knowledge graph (conductor-side only;
-    subagents never see it, rule 4) for the change's NEIGHBORHOOD —
-    relationships, seams (AMBIGUOUS edges), and blast radius — BEFORE grep. If
-    the graph is stale, refresh it first. The spec includes BOTH views: the
-    graph's structure + grep's exact call sites.
-    - **Structural questions → CodeGraph** (see "CodeGraph prototype" below).
-      `codegraph callers <symbol>` — semantic call sites (the enclosing
-      function, or the file node for a callback); `codegraph impact <symbol>` —
-      blast radius (a file node is addressed by its basename, e.g. `runner.ts`);
-      `codegraph query <terms>` — symbol search;
-      `codegraph affected <file>` — the tests to re-run. Run
-      `codegraph-check.py --repo-root <path>` if freshness is in doubt. CLI-only, conductor-side,
-      watcher off.
-    - **Concept / doc / community questions → graphify** (`graphify-out/`) — the
-      semantic layer, still the merge gate until Phase 2 (ADR 0015).
+13. **Graph-first scoping (Rule 13) — the Recon checkpoint.** Before writing a
+    spec for any C1/C2 change, the CONDUCTOR runs
+    `bash .pi/skills/worktree/recon.sh <symbol|file> [--file <src>] --grep`
+    (conductor-side only; subagents never see the index, rule 4) and PASTES its
+    output into a `## Recon` section at the top of the spec. **No C1/C2 spec
+    dispatches without that section** — the maintainer's spec approval rejects a
+    spec that lacks it. (This rule's own history: "consult before grep" was an
+    intention with no artifact for months and was skipped by default; the
+    artifact IS the fix.)
+    - The section records BOTH views: the graph's structure (callers, impact,
+      affected tests) + the **grep delta** (what grep added or the graph missed).
+    - **A graph gap is a FINDING, never a silent skip.** `recon.sh` refreshes a
+      stale index itself (1 s); if the refresh fails, or an answer is empty or
+      wrong, record that in the Recon section explicitly — never quietly fall
+      back to grep.
+    - **Structural questions → CodeGraph — the SOLE structural index** (ADR
+      0016). Underneath `recon.sh`: `codegraph callers <symbol>`, `codegraph
+      impact <symbol>` (file nodes by basename, e.g. `runner.ts`), `codegraph
+      query <terms>`, `codegraph affected <file>`; refresh with
+      `codegraph-refresh.sh` at every merge (lifecycle step 6);
+      `codegraph-check.py --repo-root <path>` for freshness. CLI-only,
+      conductor-side, watcher off, never a hook (#230).
+    - **Doc concept / cross-document questions → grep + `docs-arch` + the ADRs**
+      — the deterministic fallback. graphify is retired (ADR 0016); no LLM sits
+      on the doc-navigation path.
 14. **Route, don't hand-roll (Rule 14 — dispatch router).** Every dispatch goes
     through the router table — classify the task shape, then use the matching
     preset + template.
@@ -130,7 +142,7 @@ never re-type their logic by hand. Full design:
 15. **Spec environment verification (Rule 15).** Before dispatching any
     delegation, verify that every file, directory, and resource referenced in
     the spec exists in the subagent's WORKTREE (the cockpit is a different
-    environment — gitignored files like `graphify-out/` and `.pi` session state
+    environment — gitignored files like `.codegraph/` and `.pi` session state
     do NOT materialize there; since #247 `.development/` and the `.pi` tools do
     — rule 4's ignore list is the scoping boundary). References must be SYMBOLIC
     (function names, module names, error messages), never absolute (line
@@ -145,7 +157,7 @@ never re-type their logic by hand. Full design:
     lists, and string dispatch. Confirmed by the tests, never by the map — the
     suite is the backstop, not the oracle.
 16. **User review gate (Rule 16).** No delegation beyond trivial ritual work
-    (sync, reload, graphify update) may be dispatched without explicit user
+    (sync, reload, index refresh) may be dispatched without explicit user
     approval of the spec. The conductor presents the spec (or a batch), the user
     reviews, the user approves — THEN the conductor dispatches. "Looks solid"
     does not mean "dispatch now". This gate is non-negotiable.
@@ -171,10 +183,13 @@ never re-type their logic by hand. Full design:
     a surfaced connection error: triage question first, then delay or fallback
     model. **Dispatch-parameter clause:** NEVER set a timeout in the sense of a tight clock — completion time is
     unknowable, and a time-limited agent risks losing all its work. FOREGROUND dispatches: omit the timeout
-    (no default cap). BACKGROUND dispatches: pass an explicit generous timeout (e.g. `86400000` = 24h) instead
+    (no default cap). BACKGROUND dispatches: pass an explicit timeout of `7200000` (**2h — maintainer cap,
+    2026-10-11**) instead
     of omitting — background runs default to a 30-minute deadline (`DEFAULT_BACKGROUND_DEADLINE_MS`, applied as
     `spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS`), which cut the #295 review's mutation probes on
-    2026-10-09. The bound is the user's monitor + the worktree oracle, never a clock.
+    2026-10-09. The 2h cap is ~8–10× the observed p90 of successful dispatches; the banking convention
+    (`/tmp` findings files) makes a cap-hit cheap to resume. The bound is the user's monitor + the worktree
+    oracle, never a tight clock.
 19. **Coverage assertion (Rule 19 — the partial-read class).** A search or read
     whose silent truncation or filter boundary is read as completeness is this
     project's most recurrent defect class. Whenever a search, read or filter
@@ -215,26 +230,39 @@ never re-type their logic by hand. Full design:
     - **State** ("nothing is in flight", "the tree is clean") → the command that
       showed it.
 
+22. **Thinking-level calibration (Rule 22 — advisory, Jev).** Before writing a spec or
+    dispatch, classify the task **blind** (task text only) with the Jev classifier and
+    record the result in the spec and the dispatch:
+    `jev: <level> (<conf>) · risk <C1|C2|C3> · worktree <y|n>`. Deviations **≥2
+    levels**, and **any level below Jev on a review**, carry a one-line reason. Clamps:
+    artifact-producing dispatches floor at `low`; reviews floor at `medium`. If
+    `codemode`/Jev is unavailable, record `jev: unavailable` and proceed — never block
+    a dispatch on the classifier. Advisory only: the conductor (and the maintainer's
+    spec approval) still decide. Snippet + the 2026-10-10 backtest (98 dispatches,
+    $0.0034: it flags over-leveling, raises reviews — `review-test-hygiene-r2`, which
+    caught the #308 regression, was called high→xhigh) live in
+    `references/jev-advisory.md` — **build the task text from its input template and record
+    the outcome in its calibration log** (`.development/investigations/jev-calibration-log.md`).
+
 ## Lifecycle
 
 ```
 0. PRE-FLIGHT   check-repo.sh                 (cockpit checkout; stop on failure)
 1. CREATE       git worktree add <path> <branch>
 2. PREP         worktree-prep.sh <path> [--force-isolated if bump]  (symlink/install + smoke test)
-3. DELEGATE     task with cwd = <path>; subagent commits, pushes, opens PR
+3. DELEGATE     task with cwd = <path>; subagent commits, pushes, opens PR (body per the pr skill)
 4. REVIEW       adversarial review (REVIEW_*.md lives in worktree, gitignored)
 5. USER LOOP    review → revisions → approve
 6. MERGE        merge commit to `dev` (PRs target `dev`; `dev → main` is the
                 release-time merge commit. Never squash — per-issue commits
                 must survive so release notes can read them. Never merge a
-                task PR straight to `main`.) Then run graph-refresh.sh — the
-                canonical graph (cockpit/dev) is refreshed AT EVERY MERGE;
-                hooks only read/validate it, never rebuild (#230). **Phase 2
-                plan (ADR 0015):** the first post-dependabot merge runs BOTH
-                refreshes side by side — graph-refresh.sh (the gate) and
-                codegraph-refresh.sh (shadowing) — to measure refusal rate,
-                sync time, and query parity on 5–10 real questions. CodeGraph
-                is NOT the merge gate yet.
+                task PR straight to `main`.) Then run
+                `codegraph-refresh.sh` — the canonical structural index
+                (cockpit/dev) is refreshed AT EVERY MERGE; explicit invocation
+                only, never a hook (#230). The refresh asserts coverage AND
+                freshness (`indexed_at_commit == HEAD`, `index_state =
+                complete`). CodeGraph is the SOLE structural index (ADR 0016);
+                graphify is retired.
 7. CHECKPOINT   release checkpoint for extension-code changes — conductor
                 pauses for the user (rule #6; docs/tests/tooling: none)
 8. CLEANUP      worktree-cleanup.sh <path>   (UNCONDITIONAL — auto-derives the branch;
@@ -279,45 +307,32 @@ mechanics, verdict format: `references/review-dispatch.md`.
   is omitted) from local and `origin` (never `dev`/`main`); then syncs the
   cockpit. The pull is skipped with a warning when the cockpit has uncommitted
   changes. Unconditional; warns if the shared tree is stale.
-- **`graph-refresh.sh`** — after EVERY merge into `dev` (lifecycle step 6): runs
-  `graphify . --update` in the cockpit, then `graph-check.py`. Refreshed by this
-  explicit step, never by a hook (#230). Add `graphify cluster-only <cockpit>`
-  manually when a fresh `GRAPH_REPORT.md`/community naming is wanted (the extract
-  keeps `graph.json` — nodes, edges, communities — current on its own).
-- **`graph-check.py`** — after a refresh, and on demand. Verifies module AND
-  exported-symbol coverage against `src/*.ts`, prints its coverage boundaries
-  (what it does NOT check), and exits non-zero on any discrepancy — catching the
-  silent refresh failures that issues #173 (missing module) and #189 (missing
-  symbols / stale-content rewrite) record. Run from the cockpit.
-
-**CodeGraph prototype (Phase 1, 2026-10-08 — NOT part of the ritual yet).** The
-canonical graph above remains graphify's until the Phase 2 dogfooding decision
-(`.development/investigations/codegraph-bakeoff-2026-10-08/findings.md`; the
-split posture and Phase 2 gate criteria are recorded in ADR 0015). The
-prototype pair mirrors the contract for anyone dogfooding it manually:
-
-- **`codegraph-refresh.sh`** — `codegraph sync` (or `--full` for a rebuild) in
-  the cockpit, then `codegraph-check.py`. Needs the pinned CLI
-  (`pnpm add -g @colbymchenry/codegraph@1.6.2` — npm's global prefix needs root
-  here; `CODEGRAPH_BIN` overrides the path);
+- **`codegraph-refresh.sh [--repo-root <path>] [--full]`** — after EVERY merge
+  into `dev` (lifecycle step 6): runs `codegraph sync` (or `--full` for a
+  rebuild) in the cockpit, then `codegraph-check.py`. CodeGraph is the sole
+  structural index (ADR 0016); refreshed by this explicit step, never by a hook
+  (#230). Needs the pinned CLI (`pnpm add -g @colbymchenry/codegraph@1.6.2` —
+  npm's global prefix needs root here; `CODEGRAPH_BIN` overrides the path);
   run `codegraph telemetry off` once (the script also sets `DO_NOT_TRACK=1`).
   Refuses cleanly when the project has no `.codegraph/` yet (init instructions).
-  **Version policy:** pinned at **1.6.2** for the dogfood window (2026-10-08).
-  Awareness: `codegraph upgrade --check`. Deliberate bump: `pnpm add -g
+  **Version policy:** pinned at **1.6.2**. Awareness: `codegraph upgrade
+  --check`. Deliberate bump: `pnpm add -g
   @colbymchenry/codegraph@<v>` → full `codegraph index` → this refresh green →
   update the version here. Never `codegraph upgrade` while pnpm-managed (one
   writer per install; the npm route ships a vendored runtime with no postinstall).
-- **`codegraph-check.py`** — the CodeGraph analogue of `graph-check.py`: module +
-  exported-symbol coverage from `codegraph.db`, plus a freshness assertion
-  (`indexed_at_commit` equals HEAD, `index_state = complete`) that is stronger
-  than the mtime check, plus a dirty-paths advisory (indexed files not in HEAD).
-  Boundaries stated in the script, same as its analogue.
+- **`codegraph-check.py`** — after a refresh, and on demand. Verifies module AND
+  exported-symbol coverage against `src/*.ts`, asserts freshness
+  (`indexed_at_commit` equals HEAD, `index_state = complete` — stronger than the
+  retired mtime check), prints a dirty-paths advisory, and states its coverage
+  boundaries (what it does NOT check). Exits non-zero on any discrepancy —
+  catching the silent refresh failures that issues #173 (missing module) and
+  #189 (missing symbols) record. Run from the cockpit.
 
 ## Notes
 
 - **The cockpit is the `dev` checkout** (`brl-subagent-dev`): it holds
-  `.development/`, `graphify-out/`, the `.pi/` tools and the SHARED
-  `node_modules`. `main` is the pristine release checkout.
+  `.development/`, `.codegraph/` (the structural index), the `.pi/` tools and
+  the SHARED `node_modules`. `main` is the pristine release checkout.
 - Scripts are bash and run from the cockpit checkout (they resolve the repo root
   from their own location; `--repo-root` overrides); `worktree-prep.sh` runs
   from the cockpit, not the worktree. `sprint-metrics.py` is python3 and derives

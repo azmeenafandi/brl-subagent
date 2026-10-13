@@ -51,6 +51,7 @@ import {
 	DEFAULT_PRIORITY,
 	type GitMode,
 	type BackgroundAgent,
+	type RecoveryMode,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
 import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates, validateTemplatePresetRefs, extractParamNames } from "./templates";
@@ -74,7 +75,7 @@ import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
 import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams, snapshotOriginalParams } from "./params";
 import { delegateTaskParamsSchema } from "./schema";
-import { createSessionState } from "./state";
+import { createSessionState, resolveTerminalRunEntry } from "./state";
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs, reapActiveChildren } from "./runner";
@@ -83,7 +84,7 @@ import {
 	currentProcessOwner,
 	newDispatchIdentity,
 } from "./recovery";
-import { markInterrupted } from "./run-registry";
+import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
 import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
 import {
@@ -103,6 +104,7 @@ import {
 	showApprovalModeSelector,
 	showApprovalDialog,
 	showCompletionNotifySelector,
+	showRecoverySelector,
 	showPresetManager,
 	showTemplateManager,
 	showSLAConfig,
@@ -117,13 +119,22 @@ import {
 	renderDelegateResult,
 } from "./tui";
 import { createLogger, setLogCwd, type Logger } from "./logging";
+import {
+	collectInterruptedRuns,
+	offeredInterruptedRuns,
+	buildRecoveryNotice,
+	resolveRecoveryNoticeDelivery,
+	abandonInterruptedRun,
+	visibleRunEntriesForSession,
+	type RecoveryAgentLookup,
+} from "./recovery-surface";
 import { Intercom } from "./messaging";
 import * as eventBus from "./event-bus";
 import {
 	buildCompletionMessage,
 	resolveDelivery,
 	sendCompletionNotification,
-	markTerminalSeen,
+	claimTerminalNotice,
 	resolveRunEntry,
 } from "./notify-completion";
 
@@ -196,6 +207,12 @@ export default function (pi: ExtensionAPI) {
 	// resolve the run entry (state.getRunEntries(ctx)). The event-bus listener
 	// receives no ctx, so capture it in session_start where it is available.
 	let sessionCtx: ExtensionContext | undefined;
+
+	// Option B U3 (D2): "one recovery notice per boot". The boot scan may be
+	// followed by more session_starts in the same process (reload); without this
+	// guard every one would re-list the same interrupted runs. Reset on shutdown
+	// so a genuinely new session notifies again.
+	let recoveryNoticeDelivered = false;
 
 	// -------------------------------------------------------------------
 	// Config change callback
@@ -707,7 +724,7 @@ export default function (pi: ExtensionAPI) {
 				// so sweepStaleLiveSubagents finds a 'running' record for every
 				// foreground live entry (the #130 invariant gap that swept
 				// graph/chain entries immediately).
-				const { runId, run } = createUnitRun(merged, stepModel, chainPriority, globalParams.resolvedPreset?.name);
+				const { runId, run } = createUnitRun(merged, stepModel, chainPriority, globalParams.resolvedPreset?.name, state.config.recovery);
 				state.persistRun(pi, run, "unit");
 
 				// R2: Prune old run entries if history exceeds limit
@@ -1162,7 +1179,7 @@ export default function (pi: ExtensionAPI) {
 			// Issue #119: per-subtask run entry — created at spawn so the
 			// monitor drill-in shows per-unit priority and a post-hoc audit
 			// trail exists per subtask (mirrors single-mode run persistence).
-			const { runId, run } = createUnitRun(merged, stepModel, parallelPriority, globalParams.resolvedPreset?.name);
+			const { runId, run } = createUnitRun(merged, stepModel, parallelPriority, globalParams.resolvedPreset?.name, state.config.recovery);
 			state.persistRun(pi, run, "unit");
 
 			// R2: Prune old run entries if history exceeds limit
@@ -1799,7 +1816,7 @@ export default function (pi: ExtensionAPI) {
 					// so sweepStaleLiveSubagents finds a 'running' record for every
 					// foreground live entry (the #130 invariant gap that swept
 					// graph/chain entries immediately).
-					const { runId, run } = createUnitRun(merged, stepModel, graphPriority, globalParams.resolvedPreset?.name);
+					const { runId, run } = createUnitRun(merged, stepModel, graphPriority, globalParams.resolvedPreset?.name, state.config.recovery);
 					state.persistRun(pi, run, "unit");
 
 					// R2: Prune old run entries if history exceeds limit
@@ -2210,6 +2227,7 @@ export default function (pi: ExtensionAPI) {
 						preset: globalParams.resolvedPreset?.name,
 					}),
 					sanitizeCwd: merged.effectiveCwd,
+					recoveryPosture: state.config.recovery,
 				});
 			} catch (err) {
 				const message = sanitizeErrorMessage(
@@ -2280,6 +2298,8 @@ export default function (pi: ExtensionAPI) {
 			dispatchId?: string;
 			resumeOf?: string;
 			attempt?: number;
+			// Option B U3 (D4): recovery posture snapshot for the background run.
+			recoveryPosture?: RecoveryMode;
 		},
 	): Promise<BackgroundAgent> {
 		const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
@@ -2310,8 +2330,24 @@ export default function (pi: ExtensionAPI) {
 			dispatchId: spawn.dispatchId,
 			resumeOf: spawn.resumeOf,
 			attempt: spawn.attempt,
+			// Option B U3 (D4): recovery posture snapshot for the background run.
+			recoveryPosture: spawn.recoveryPosture,
 		});
 		
+		// Issue #318 (from #316 review): the two poller crash sites share one
+		// claimed notification envelope. Content is the only variable; the
+		// claim guard, display, details and deliverAs live here once.
+		const sendCrashNotice = (content: string): void => {
+			if (claimTerminalNotice(agent.id)) {
+				pi.sendMessage({
+					customType: "subagent-notification",
+					content,
+					display: true,
+					details: { agentId: agent.id }
+				}, { deliverAs: "followUp" });
+			}
+		};
+
 		// Register for live monitor
 		state.registerLiveSubagent(agent.id, {
 			id: agent.id,
@@ -2359,12 +2395,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					state.failedSubagents++;
 					updateProgressStatus(state, ctx);
-					pi.sendMessage({
-						customType: "subagent-notification",
-						content: `Background agent "${agent.description}" crashed.`,
-						display: true,
-						details: { agentId: agent.id }
-					}, { deliverAs: "followUp" });
+					sendCrashNotice(`Background agent "${agent.description}" crashed.`);
 					return;
 				}
 				
@@ -2411,12 +2442,10 @@ export default function (pi: ExtensionAPI) {
 					if (agent.status === 'failed') {
 						state.failedSubagents++;
 						updateProgressStatus(state, ctx);
-						pi.sendMessage({
-							customType: "subagent-notification",
-							content: `Background agent "${agent.description}" failed.`,
-							display: true,
-							details: { agentId: agent.id }
-						}, { deliverAs: "followUp" });
+						// Issue #315: the terminal wake (`subagent-completion`, emitted by
+						// the session-manager settle) is the ONE notice for a failed run.
+						// The status here was set by that settle, so the wake already
+						// delivered — this legacy poller notice would duplicate it.
 					} else if (agent.status === 'stopped') {
 						// User-initiated stop (stop_subagent) or deadline abort
 						// (timeout/deadline) — not a failure.
@@ -2444,12 +2473,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					state.failedSubagents++;
 					updateProgressStatus(state, ctx);
-					pi.sendMessage({
-						customType: "subagent-notification",
-						content: `Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`,
-						display: true,
-						details: { agentId: agent.id }
-					}, { deliverAs: "followUp" });
+					sendCrashNotice(`Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`);
 				}
 			}
 		}, 2000);
@@ -2646,7 +2670,14 @@ export default function (pi: ExtensionAPI) {
 				dispatchId: bgIdentity.dispatchId,
 				resumeOf: bgIdentity.resumeOf,
 				attempt: bgIdentity.attempt,
+				recoveryPosture: state.config.recovery,
 			});
+
+			// Retire-on-retry (O3 fold, decision 2026-10-11): the source interrupted
+			// registry entry is superseded once the new background run is actually
+			// spawned (a throwing spawn is caught below and leaves the source intact
+			// and retryable).
+			if (retrySourceRun) clearInflightRun(retrySourceRun.id);
 
 			// B2: Surface auto-route decisions in background spawn result too —
 			// preset name + matched-keyword evidence + restriction, derived from
@@ -2692,7 +2723,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure subagent model and thinking level",
 		getArgumentCompletions: (prefix: string) => {
 			const options = [
-				"history", "historyentries", "monitor", "dashboard", "preset", "templates", "retry", "completionnotify",
+				"history", "historyentries", "monitor", "dashboard", "preset", "templates", "retry", "completionnotify", "recovery",
 			];
 			const filtered = options.filter((o) => o.startsWith(prefix));
 			return filtered.length > 0
@@ -2709,6 +2740,7 @@ export default function (pi: ExtensionAPI) {
 				depth: () => showDepthInput(ctx, state, applyConfig),
 				approval: () => showApprovalModeSelector(ctx, state, applyConfig),
 				completionnotify: () => showCompletionNotifySelector(ctx, state, applyConfig),
+				recovery: () => showRecoverySelector(ctx, state, applyConfig),
 				costlimit: () => showCostLimitInput(ctx, state, applyConfig),
 				reset: () => resetState(ctx),
 				history: () => showRunHistory(ctx, state, () => state.persistState(pi)),
@@ -2717,7 +2749,7 @@ export default function (pi: ExtensionAPI) {
 				dashboard: () => showDashboard(ctx, state),
 				preset: () => showPresetManager(ctx, state),
 				templates: () => showTemplateManager(ctx, state),
-				retry: () => showRetryMenu(ctx, state),
+				retry: () => showRetryMenu(ctx, state, (id) => abandonProductionRun(ctx, id)),
 			sla: () => showSLAConfig(ctx, state, applyConfig),
 			"sla-stats": () => showSLAStats(ctx, state),
 			// E5: the compliance report menu (file access / secrets exposure /
@@ -2922,7 +2954,18 @@ export default function (pi: ExtensionAPI) {
 			// resolving templates first keeps a combined template + retryRunId call
 			// from silently disabling template resolution (issue #175 review).
 			if (params.retryRunId) {
-				const runEntry = state.findSpawnRunById(ctx, params.retryRunId);
+				// Fix A: prefer the session spawn entry (it carries `originalParams`);
+				// a run that exists ONLY in the durable registry after a fresh boot
+				// resolves through the visibility bridge instead of being rejected as
+				// not found — the id the boot notice names must resolve here.
+				let runEntry = state.findSpawnRunById(ctx, params.retryRunId);
+				if (!runEntry) {
+					const { getAgent } = await import("./session-manager");
+					runEntry = resolveTerminalRunEntry(
+						visibleRunsFor(ctx, getAgent),
+						params.retryRunId,
+					);
+				}
 				if (runEntry) {
 					retrySourceRun = runEntry;
 					params = resolveRetryParams(params, runEntry) as DelegateTaskParams;
@@ -3212,6 +3255,8 @@ export default function (pi: ExtensionAPI) {
 				attempt: identity.attempt,
 				owner: currentProcessOwner(),
 				childMarker: crypto.randomUUID(),
+				// U3 (D4): the session recovery posture at dispatch.
+				recoveryPosture: state.config.recovery,
 			};
 			state.persistRun(pi, run, "foreground");
 
@@ -3321,6 +3366,17 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			let success = false;
+
+			// Retire-on-retry (O3 fold, decision 2026-10-11): the retry has passed
+			// every pre-spawn gate and is about to start, so the SOURCE interrupted
+			// registry entry is superseded — clear it here so the old run is not
+			// re-offered at every subsequent boot. A failed pre-start (circuit open,
+			// slot cancelled) returns ABOVE this point and leaves the source intact
+			// and retryable — but note it is NOT "one row only": the pre-existing
+			// pre-start path (`persistRun`, which precedes the circuit/slot gates)
+			// still leaves a dangling `running` NEW row behind until the backlogged
+			// dangling-row fix. `retrySourceRun` is set only on a `retryRunId` call.
+			if (retrySourceRun) clearInflightRun(retrySourceRun.id);
 
 			// F7 (issue #65): import BEFORE the try — the crash-path catch calls
 			// completeTranscript, and block-scoped consts declared inside the try
@@ -3930,8 +3986,9 @@ export default function (pi: ExtensionAPI) {
 	// parse (only the one agent record a background entry names is read). For
 	// each in-flight run whose owner is dead, its orphaned marker-verified child
 	// is reaped and the record is marked: the registry entry always, plus the
-	// agent record for background runs. SILENT in the UI — the notice/offer
-	// surface is U3. Platforms without /proc skip the whole scan (one log line):
+	// agent record for background runs. The scan itself is SILENT in the UI —
+	// U3's `maybeSendRecoveryNotice` (below) is the one notice surface.
+	// Platforms without /proc skip the whole scan (one log line):
 	// pid-only liveness cannot rule out pid reuse, so nothing is killed or
 	// marked unverified.
 	async function performBootRecovery(): Promise<void> {
@@ -3962,6 +4019,83 @@ export default function (pi: ExtensionAPI) {
 			// Recovery is best-effort hygiene — it must never break session start.
 			log.warn("Boot recovery scan failed", { error: (err as Error).message });
 		}
+	}
+
+	/**
+	 * Option B U3 Fix A: the recovery visibility bridge, wired for the two
+	 * extension consumers that resolve a run id (the retryRunId branch and the
+	 * abandon action). Session run entries UNIONED with synthetic durable
+	 * interrupted records the session has never seen (a genuine fresh boot), so
+	 * an id named by the boot notice resolves here instead of being rejected as
+	 * not found. `getAgent` is injected because the callers already load it
+	 * dynamically — this keeps the registry/agent reads in ONE place.
+	 */
+	function visibleRunsFor(
+		ctx: ExtensionContext,
+		getAgent: RecoveryAgentLookup,
+	): SubagentRun[] {
+		return visibleRunEntriesForSession(state.getRunEntries(ctx), getAgent);
+	}
+
+	/**
+	 * Option B U3 (D2): after the boot scan, send ONE notice at the next turn
+	 * boundary listing every unresolved interrupted run whose dispatch snapshot
+	 * (and the session posture) says "offer". Delivery is `nextTurn` — the notice
+	 * can never steer or arrive mid-turn (see `resolveRecoveryNoticeDelivery`).
+	 * Silent when there is nothing to offer; at most once per session start.
+	 */
+	async function maybeSendRecoveryNotice(ctx: ExtensionContext): Promise<void> {
+		if (recoveryNoticeDelivered) return;
+		recoveryNoticeDelivered = true;
+		// Session posture off silences the whole surface, regardless of per-run
+		// snapshots (a user opting out expects quiet).
+		if (state.config.recovery === "off") return;
+		try {
+			const { getAgent } = await import("./session-manager");
+			const offered = offeredInterruptedRuns(
+				collectInterruptedRuns({
+					listInflight: () => listInflightRuns(),
+					getAgent: (id) => getAgent(id),
+					findRun: (id) => state.findTerminalRunById(ctx, id),
+				}),
+			);
+			if (offered.length === 0) return;
+			pi.sendMessage(buildRecoveryNotice(offered), resolveRecoveryNoticeDelivery());
+			log.info("Recovery notice delivered", { count: offered.length });
+		} catch (err) {
+			// The notice is best-effort — it must never break session start.
+			log.warn("Recovery notice failed", { error: (err as Error).message });
+		}
+	}
+
+	/**
+	 * Option B U3 (D5): finalize ONE interrupted run as the existing terminal
+	 * `stopped` outcome and prune its U2 session dir. Wired through injected deps
+	 * so the pure core (`recovery-surface.ts`) stays testable; the run record is
+	 * written terminal (the run store's `status` union has no `stopped` — a
+	 * stopped outcome is represented as `failed` + `errorCategory: "aborted"`,
+	 * exactly as every other stop path does) and the background agent record is
+	 * flipped to `stopped`.
+	 */
+	async function abandonProductionRun(ctx: ExtensionContext, id: string): Promise<void> {
+		const { updateAgentStatus, pruneBackgroundSession, getAgent } = await import("./session-manager");
+		// Fix A: the abandon lookup routes through the visibility bridge, so a run
+		// that exists ONLY in the durable registry after a fresh boot is
+		// abandonable instead of resolving to undefined (the silent `false`).
+		const visible = visibleRunsFor(ctx, getAgent);
+		abandonInterruptedRun(id, {
+			getRun: (runId) => resolveTerminalRunEntry(visible, runId),
+			writeRun: (run) => {
+				state.persistRun(pi, run);
+				pruneHistoryIfNeeded(state, ctx, log);
+			},
+			markAgentStopped: (agentId) => {
+				const agent = updateAgentStatus(agentId, "stopped");
+				if (agent) log.info("Abandoned background agent record", { agentId });
+			},
+			retireRegistry: (runId) => clearInflightRun(runId),
+			pruneSession: (runId) => pruneBackgroundSession(runId),
+		});
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -4018,6 +4152,10 @@ export default function (pi: ExtensionAPI) {
 		// records interrupted BEFORE anything else touches their worktrees.
 		await performBootRecovery();
 
+		// Option B U3 (D2): after the scan, surface every unresolved interrupted
+		// run ONCE, at the next turn boundary (never mid-turn).
+		await maybeSendRecoveryNotice(ctx);
+
 		updateStatus(state, ctx);
 	});
 
@@ -4048,6 +4186,8 @@ export default function (pi: ExtensionAPI) {
 		state.unseenSubagents = 0;
 		// Clear pending queue
 		state.pendingQueue.length = 0;
+		// U3: a new session boot may notify again.
+		recoveryNoticeDelivered = false;
 	});
 
 	// -------------------------------------------------------------------
@@ -4057,9 +4197,10 @@ export default function (pi: ExtensionAPI) {
 	// subagent:failed / subagent:stopped), so the conductor is woken via
 	// pi.sendMessage + triggerTurn when a background run reaches a terminal state.
 	// Delivery is always-on (minimum nextTurn); the completionNotify knob controls
-	// the WAKE (D1+D2 — see notify-completion.ts). The dedupe set defends the
-	// pathological double-emit path (first terminal event per id wins); it is
-	// capped simply (cleared when it exceeds 200 entries).
+	// the WAKE (D1+D2 — see notify-completion.ts). The shared terminal claim
+	// (issue #315) defends the pathological double-emit path (first terminal
+	// event or crash notice per id wins); it is capped simply (cleared when it
+	// exceeds 200 entries).
 	//
 	// Stopped-run degradation — ACCEPTED BY DESIGN (review #2, adjudicated
 	// 2026-09-01): subagent:stopped fires at stop time (updateAgentStatus) BEFORE
@@ -4068,7 +4209,6 @@ export default function (pi: ExtensionAPI) {
 	// resolveRunEntry returns may be the pre-finalize spawn entry. The wake is
 	// the point; details are best-effort — the notification must never throw or
 	// block on their absence.
-	const terminalSeen = new Set<string>();
 	const terminalTypes = ["subagent:completed", "subagent:failed", "subagent:stopped"] as const;
 	for (const type of terminalTypes) {
 		eventBus.on(type, (event) => {
@@ -4078,7 +4218,7 @@ export default function (pi: ExtensionAPI) {
 
 	async function deliverCompletionAlert(event: SubagentEvent): Promise<void> {
 		const id = event.agentId;
-		if (!markTerminalSeen(terminalSeen, id)) return;
+		if (!claimTerminalNotice(id)) return;
 		const ctx = sessionCtx;
 		if (!ctx) return;
 		try {

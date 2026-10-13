@@ -45,7 +45,8 @@ dates, and historical framing. The binding rules (with their numbers) live in
    `.development/**` and the `.pi` TOOLS (`.pi/skills/**`, `.pi/extensions/**`)
    are TRACKED — they materialize in every worktree, and specs MAY ask a
    subagent to read them. Still gitignored (and absent from worktrees):
-   `graphify-out/`, `.pi` session state (`output/`, `subagents/`,
+   `.codegraph/` (the structural index — conductor-side only, ADR 0016),
+   `.pi` session state (`output/`, `subagents/`,
    `subagent-logs/`, `subagent-tmp/`, `sessions/`), local config
    (`.pi/brl-subagent/`), `REVIEW_*.md`, `.tmp/`.
    **Subagents NEVER see gitignored files**, so specs must never ask a subagent
@@ -141,16 +142,17 @@ dates, and historical framing. The binding rules (with their numbers) live in
     commits), refresh it first. The spec includes BOTH views: the graph's
     structure + grep's exact call sites. The #114 scoping error is the
     proof-of-need: the graph already had the complete touchpoint map; the
-    conductor hand-assembled it from memory + grep instead.
+    conductor hand-assembled it from memory + grep instead. **Checkpoint added 2026-10-10:** that failure repeated — the graph was consulted before grep only intermittently for months (an intention with no artifact decays). Every C1/C2 spec now carries a `## Recon` section produced by `recon.sh`, and its absence is visible at the spec-approval gate; a graph gap is recorded as a finding, never silently worked around.
 
-    Two layers since ADR 0015: **structural questions → CodeGraph** —
+    CodeGraph is the SOLE structural index (ADR 0016): **structural questions
+    → CodeGraph** —
     `codegraph callers <symbol>` (semantic call sites),
     `codegraph impact <symbol>` (blast radius; file nodes by basename),
     `codegraph query <terms>` (symbol search), `codegraph affected <file>`
-    (tests to re-run); run
-    `codegraph-check.py` if freshness is in doubt. **Concept / doc /
-    community questions → graphify** (`graphify-out/`), still the merge gate
-    until Phase 2.
+    (tests to re-run); refresh with `codegraph-refresh.sh` at every merge and
+    run `codegraph-check.py` if freshness is in doubt. **Doc concept /
+    cross-document questions → grep + `docs-arch` + the ADRs** — the
+    deterministic fallback; graphify is retired (no LLM on the doc path).
 
 ## Rule 14
 
@@ -181,7 +183,7 @@ dates, and historical framing. The binding rules (with their numbers) live in
 15. **Spec environment verification (Rule 15).** Before dispatching any
     delegation, verify that every file, directory, and resource referenced
     in the spec exists in the subagent's WORKTREE (the cockpit is a different
-    environment — gitignored files like `graphify-out/` and `.pi` session
+    environment — gitignored files like `.codegraph/` and `.pi` session
     state do NOT materialize there; since #247 `.development/` and the `.pi`
     tools DO — rule 4's ignore list is the scoping boundary). References must be
     SYMBOLIC (function names, module names, error messages), never
@@ -212,7 +214,7 @@ dates, and historical framing. The binding rules (with their numbers) live in
 ## Rule 16
 
 16. **User review gate (Rule 16).** No delegation beyond trivial ritual
-    work (sync, reload, graphify update) may be dispatched without
+    work (sync, reload, index refresh) may be dispatched without
     explicit user approval of the spec. The conductor presents the spec
     (or a batch), the user reviews, the user approves — THEN the conductor
     dispatches. "Looks solid" does not mean "dispatch now". This gate is
@@ -294,8 +296,8 @@ dates, and historical framing. The binding rules (with their numbers) live in
       fix-direction list, a ritual's steps, a reference file). Grep finds; it
       does not prove completeness.
     - **Every guard states its coverage.** "What this check does NOT see"
-      belongs in the check itself — output or docstring. `graph-check.py`
-      prints its boundaries and samples symbols; the #186 ratchet documents
+      belongs in the check itself — output or docstring. `codegraph-check.py`
+      prints its boundaries and reconciles symbol coverage; the #186 ratchet documents
       its evasion set and allow-list reasons.
     - **Coverage statements travel with the claim.** Any read/search-derived
       finding, report or verdict carries its coverage line (query, count/range,
@@ -332,3 +334,11 @@ dates, and historical framing. The binding rules (with their numbers) live in
       about a live run. The incremental `/tmp` findings file is the live artifact.
     - **State** ("nothing is in flight", "the tree is clean") → the command that showed it.
     The #204 class applied to prose: a partial or absent observation presented as complete.
+
+## Rule 22
+
+**The level I pick is a line item, and it was wrong systematically.** The maintainer asked why a docs/ADR unit and a two-site extraction both ran at `high`; the honest answer was pattern-matching from a day of C1 work. The extension's own pre-flight validator is keyword-coarse — it flagged that two-site extraction as "architectural work" — so nothing in the loop pushed back.
+
+**The backtest (2026-10-10, 98 sprint-window dispatches, $0.0034).** Blind-classified every production dispatch with TypeSafe's **Jev** classifier ("System One" — typed choice questions over JSON state, `models.classify` via `codemode`): exact agreement 47%, adjacent 87%. The disagreement is systematic, not noise — it **discounts mechanical/plumbing work** (16/40 `high` and 19/40 `medium` downgraded, including `impl-codegraph-phase1` high→low and `impl-fix315` high→minimal) and it **raises reviews** (`review-test-hygiene-r2` — the review that caught the #308 regression — high→**xhigh**; `impl-299-probe` medium→xhigh). It also ignores operational burden entirely, so its `minimal` calls would under-provision worktree/suite/PR work.
+
+**Decision: advisory, with clamps.** Rule 22 records `jev: <level> (<conf>) · risk · worktree` in every spec/dispatch; ≥2-level deviations and below-Jev reviews need a reason; artifact work floors at `low`. Same doctrine as Rule 13: an intention with no artifact decays — the recorded line is the artifact, and the maintainer's spec approval is the gate. Phase 2 (classifier inside the extension) is deliberately unscheduled; the released package is untouched.

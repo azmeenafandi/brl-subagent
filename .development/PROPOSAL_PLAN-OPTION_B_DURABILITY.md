@@ -76,6 +76,13 @@ halves). Not in unit: resume, UI, persistence.
 
 ### U2 — A₁: file-backed background sessions + retention (C1)
 
+**STATUS (2026-10-11): MERGED** — PR #326 (`e05dfce`; commits `cb22e27` feat + `a8c15d6` tests).
+Review: adversarial C1 (`meta/muse-spark-1.3-contributor`) **approve-with-nits** — 0 majors; findings pinned
+`.development/investigations/u2-review-findings-2026-10-11.md`. Delivered: `SessionManager.create(cwd,
+.pi/subagents/sessions/<id>/)`; prune-first single choke point `finalizeRunEntry`; interrupted files retained;
+helpers `backgroundSessionDir`/`pruneBackgroundSession`; crash loadability proven (torn-tail + `open()` reload);
+suite 69/1439. Two minor nits carried into U3 (below).
+
 **Goal:** background subagent sessions persist to disk (enabling A₂ and post-hoc inspection) with a
 bounded, measured footprint.
 
@@ -90,6 +97,20 @@ week of use.
 runs themselves. Not in unit: resume, re-drive, any recovery action.
 
 ### U3 — Marking surface, offer action, posture config (C2)
+
+**STATUS (2026-10-11): MERGED** — PR #327 (`f9d8613`; base commits `eef1487`/`74f1be4`, Fix A
+`a146fa7`/`89d17be`/`21e243c`, Fix B `113b701`/`6d39e09`/`539b45f`/`e2b4195`). **Class: C1** (default-up from the
+plan's C2). Review: 3 rounds with `meta/muse-spark-1.3-contributor` — round 1 `changes-requested` (3 criticals:
+the surfaces were blind to a real crash + an abandon-wake major), Fix A (on-demand registry-union **visibility
+bridge**) `approve-with-nits`, Fix B `approve-with-nits`. Findings + 4 carried nits pinned
+`.development/investigations/issue-u3-review-findings-2026-10-11.md`. Suite **73/1488**.
+
+**U3 notes (carried from the U2 review, 2026-10-11):** (a) document/decide the abandon-after-`STORAGE_DIR`-change
+behavior — the public `pruneBackgroundSession` recomputes the root, so an abandon after a root change no-ops at the new
+root and leaves old-root debris (prod-safe today; only tests swap the root); (b) add per-path failing-test witnesses
+for the git-refusal, sync-`prompt()`-throw, and `markTerminalBestEffort` prune paths when this unit touches the
+retention surface (the choke point covers them by construction; the U2 mutation witnesses only the four
+`.then`/`.catch` paths).
 
 **Goal:** interrupted runs are visible and recoverable by a human.
 
@@ -107,6 +128,13 @@ config persists per session and restores at boot; the boot notice respects turn 
 resume, auto mode, reassembly.
 
 ### U4 — A₂: resume for background runs (C1)
+
+**STATUS (2026-10-11): SPEC APPROVED — parked behind the gate.** Full spec pinned:
+`.development/investigations/u4-resume-spec-2026-10-11.md`. Approved decisions: auto-resume via `retryRunId` for
+interrupted background runs with an intact session (no new delegate param); the session is **COPIED** into the new
+run's dir; ordered guards reap-first → worktree-exists → schema-version → notify-once, each falling back cold;
+foreground stays cold (no session). **Dispatch fires when the measurement observes a real interruption (or the
+maintainer waives the gate).**
 
 **Goal:** a marked background run can continue from its persisted session instead of restarting cold.
 

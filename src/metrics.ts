@@ -6,7 +6,7 @@
  * against a baseline.
  */
 
-import type { SubagentRun, SLAMetrics, DegradationReport, ErrorCategory } from "./types";
+import { isAbortedRun, type SubagentRun, type SLAMetrics, type DegradationReport, type ErrorCategory } from "./types";
 
 // ---------------------------------------------------------------------------
 // Percentile helper
@@ -58,9 +58,11 @@ export function computeSLAMetrics(runs: SubagentRun[]): SLAMetrics {
 		};
 	}
 
-	// Count successes and failures (running runs are neither)
+	// Count successes and failures (running runs are neither). Aborted runs
+	// (abandoned or user-stopped) are excluded from the failure tally — see
+	// `isAbortedRun`; they are also not successes, so they leave the denominator.
 	const succeeded = runs.filter((r) => r.status === "done").length;
-	const failed = runs.filter((r) => r.status === "failed").length;
+	const failed = runs.filter((r) => r.status === "failed" && !isAbortedRun(r)).length;
 	const finishedRuns = succeeded + failed;
 
 	const successRate = finishedRuns > 0 ? succeeded / finishedRuns : 0;

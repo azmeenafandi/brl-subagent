@@ -1,8 +1,8 @@
 // Purpose: Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths.
 import { randomUUID } from 'crypto';
-import { join } from 'path';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'fs';
-import type { BackgroundAgent, AgentStatus, GitMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
+import { basename, dirname, join, resolve } from 'path';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'fs';
+import type { BackgroundAgent, AgentStatus, GitMode, RecoveryMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
 import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
@@ -78,6 +78,90 @@ function ensureStorageDir(): void {
   mkdirSync(STORAGE_DIR, { recursive: true, mode: 0o700 });
 }
 
+// ---------------------------------------------------------------------------
+// Option B U2 (D1/D2): file-backed background sessions + retention.
+//
+// Background runs are persisted by the SDK's SessionManager-created files, one
+// per-run directory BESIDE the agent records (`.pi/subagents/sessions/<id>/`).
+// The directory NAME is the run→file mapping — no new record field is needed,
+// and no resume/re-drive/UI logic lives here (that is U3/U4). The per-run dir is
+// removed when the run reaches a TERMINAL state; a run marked interrupted (U1's
+// boot scan, D3) KEEPS its file until it is resolved by a later unit.
+//
+// Boundaries (stated once, referenced by the PR): no resume (U4); no UI/notice/
+// abandon (U3); background is in-process only; a session file has a single
+// writer (the settled run's own process).
+//
+// D5 measurement (one week of use):
+//   du -sh .pi/subagents/sessions
+//   find .pi/subagents/sessions -name '*.jsonl' | wc -l
+// The expected steady state is EMPTY between runs (terminal runs prune their
+// dir) plus one dir per currently-interrupted run — a non-empty count of
+// settled runs means a prune path regressed. There is no runtime metric.
+// ---------------------------------------------------------------------------
+
+/** Subdirectory of the agent-record store that holds per-run session dirs. */
+const SESSIONS_SUBDIR = 'sessions';
+
+/**
+ * The per-run session directory for `id`: `<STORAGE_DIR>/sessions/<id>`.
+ * The id is validated first — this path is fed to SessionManager.create() and
+ * to rmSync(), so a traversal id must never reach either.
+ */
+export function backgroundSessionDir(id: string): string {
+  assertSafeAgentId(id);
+  return join(STORAGE_DIR, SESSIONS_SUBDIR, id);
+}
+
+/**
+ * Remove ONE per-run session directory. Defensive by construction: the target
+ * must look like `<...>/sessions/<id>` (basename === id, parent basename ===
+ * 'sessions') before rmSync runs, so a caller can never delete a path outside
+ * the sessions tree. Idempotent (force: true); best-effort (never throws).
+ */
+function pruneSessionDir(id: string, dir: string): void {
+  try {
+    assertSafeAgentId(id);
+  } catch {
+    log.error(`Refusing to prune session dir for invalid id: ${id}`);
+    return;
+  }
+  const target = resolve(dir);
+  if (basename(target) !== id || basename(dirname(target)) !== SESSIONS_SUBDIR) {
+    log.error(`Refusing to prune session dir outside ${SESSIONS_SUBDIR}/: ${target}`);
+    return;
+  }
+  try {
+    rmSync(target, { recursive: true, force: true });
+  } catch (err) {
+    // Pruning is hygiene — it must never break execution or a settle path.
+    log.warn(`Failed to prune session dir for ${id}`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * U2 (D2): remove the persisted session for a finalized/abandoned background
+ * run. Validated (throws on an unsafe id) and idempotent — a missing directory
+ * is a success. Exposed for U3's abandon action to reuse; the internal settle
+ * path prunes the CAPTURED directory instead so a mid-run STORAGE_DIR change
+ * (tests swap it per case) can never mis-target.
+ *
+ * U3 (D5) documented boundary — abandon after a STORAGE_DIR change: this
+ * PUBLIC helper recomputes the root from the CURRENT STORAGE_DIR, so if the
+ * root moved between the spawn and the abandon it prunes the new root (a
+ * no-op when nothing lives there) and leaves the old-root session dir behind
+ * as debris. That is prod-safe today (only tests swap the root; production
+ * uses one root per process), so U3 does NOT try to track the captured dir
+ * across sessions — the run's `_sessionFile` is live-only process state and is
+ * not persisted (D4). Debris, if any, is bounded and inspectable under the old
+ * root.
+ */
+export function pruneBackgroundSession(id: string): void {
+  pruneSessionDir(id, backgroundSessionDir(id));
+}
+
 /**
  * Persist agent record to disk
  */
@@ -95,8 +179,10 @@ function persistAgent(agent: BackgroundAgent): void {
   const filePath = join(STORAGE_DIR, `${agent.id}.json`);
   // Strip live/non-serializable fields before stringify — `_sessionRef` holds the
   // ENTIRE live pi session graph (1.4MB+ for an empty session, and uninitialized
-  // getters like Theme can make JSON.stringify throw).
-  const { _sessionRef, ...persistable } = agent;
+  // getters like Theme can make JSON.stringify throw). `_sessionFile` (U2) is the
+  // on-disk session path — live-only bookkeeping for precise pruning, never a
+  // persisted record field (D4).
+  const { _sessionRef, _sessionFile, ...persistable } = agent;
   try {
     // F6 (issue #29): records contain task, error, result.messages (full
     // conversation) and finalOutput — write owner-only (0o600) so other local
@@ -413,6 +499,10 @@ export async function spawnBackgroundSession(
     dispatchId?: string;
     resumeOf?: string;
     attempt?: number;
+    /** Option B U3 (D4): recovery posture at dispatch — snapshotted onto the
+     *  agent record + run entry so the boot notice reads the posture the run
+     *  was actually dispatched under. Absent reads as "offer". */
+    recoveryPosture?: RecoveryMode;
   }
 ): Promise<BackgroundAgent> {
   // Serialize access to pi API to prevent concurrent import races
@@ -442,8 +532,16 @@ export async function spawnBackgroundSession(
     }
   }
   
-  // Create session manager for this background agent
-  const sessionManager = SessionManager.inMemory(effectiveCwd);
+  // Create the session manager for this background agent. U2 (D1): an explicit
+  // per-run sessionDir is REQUIRED — `inMemory` persists nothing (no post-hoc
+  // inspection, no U4 resume) and the SDK default (`~/.pi/agent/sessions/<cwd-key>/`,
+  // passed as `undefined`) would scatter our runs into the global store. The
+  // directory lives beside the agent record: `.pi/subagents/sessions/<id>/`.
+  const sessionManager = SessionManager.create(effectiveCwd, backgroundSessionDir(id));
+  // Capture the exact path the SDK will write. The settle path derives the
+  // prune target from THIS (not from a freshly-computed STORAGE_DIR path) so a
+  // change of STORAGE_DIR between spawn and settle cannot mis-target the delete.
+  const sessionFile: string | undefined = sessionManager.getSessionFile();
   const settingsManager = SettingsManager.create(effectiveCwd);
 
   // E20: Inject the subagent prompt into the session's system prompt.
@@ -546,6 +644,11 @@ export async function spawnBackgroundSession(
     resumeOf: params.resumeOf,
     attempt,
     owner,
+    // Option B U3 (D4): per-run recovery posture snapshot. Additive — absent
+    // reads as "offer" via `runRecoveryPosture`/the notice collector.
+    recoveryPosture: params.recoveryPosture,
+    // U2: live-only pointer to this run's session file (stripped before persist).
+    _sessionFile: sessionFile,
   };
   
   agents.set(id, agent);
@@ -575,6 +678,7 @@ export async function spawnBackgroundSession(
     resumeOf: params.resumeOf,
     attempt,
     owner,
+    recoveryPosture: params.recoveryPosture,
   };
   persistRunRecord(pi, run, "background");
 
@@ -582,6 +686,15 @@ export async function spawnBackgroundSession(
   // every terminal branch that flips agent.status also finalizes the run entry
   // ("done"/"failed"). The guard keeps the entry single-finalized even when a
   // settle handler throws after finalizing (markTerminalBestEffort catch-all).
+  //
+  // U2 (D2) retention: this is the SINGLE terminal choke point for a background
+  // run — git-setup refusal, a synchronous prompt throw, the .then completed /
+  // provider-failed / aborted branches, the .catch stopped / failed branches and
+  // the markTerminalBestEffort catch-all ALL land here exactly once (the
+  // runFinalized guard). Pruning here therefore covers every settle path. The
+  // index.ts poller crash notices are NOT settlements (they flip only the live
+  // UI state and leave the run/agent record to this settle); an interrupted run
+  // (U1 boot-scan mark) never reaches this function and KEEPS its file (D3).
   let runFinalized = false;
   const finalizeRunEntry = (
     status: "done" | "failed",
@@ -590,6 +703,15 @@ export async function spawnBackgroundSession(
   ): void => {
     if (runFinalized) return;
     runFinalized = true;
+    // U2 (D2): drop the persisted session now that the run is terminal. Done
+    // FIRST (before the run-entry write below) so a persist throw cannot leave
+    // a terminal run's session file behind. Interrupted runs keep theirs.
+    if (!agent.interruptedAt) {
+      pruneSessionDir(
+        id,
+        agent._sessionFile ? dirname(agent._sessionFile) : backgroundSessionDir(id),
+      );
+    }
     const usage = agent.result?.usage ?? EMPTY_USAGE;
     const finalOutput = agent.finalOutput ?? "";
     // Issue #179 (D1/D2): the classifier's explicit category wins (it knows the

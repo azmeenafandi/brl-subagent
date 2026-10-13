@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-10
 - **Issues:** #230
+- **Amended by:** ADR 0016 — graphify is retired; CodeGraph is the sole structural index. The two-layer split and the Phase 2 criteria below are superseded (the structural half of this decision stands).
 
 ## Context
 

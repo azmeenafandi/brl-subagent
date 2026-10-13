@@ -32,8 +32,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ProcessOwner, SubagentRun } from "./types";
-import { CUSTOM_ENTRY_TYPES } from "./types";
+import type { ProcessOwner, RecoveryMode, SubagentRun } from "./types";
+import { CUSTOM_ENTRY_TYPES, RECOVERY_MODES } from "./types";
 import { assertSafeAgentId } from "./sanitize";
 
 /** Which execution path owns an in-flight run (drives the boot scan's mark). */
@@ -47,6 +47,22 @@ export interface InflightRun {
 	kind: InflightRunKind;
 	owner?: ProcessOwner;
 	childMarker?: string;
+	// Option B U3 (D4): the recovery posture at dispatch, mirrored from the run
+	// record so the durable mark and the boot notice agree. Additive (absent ⇒
+	// "offer" on read).
+	recoveryPosture?: RecoveryMode;
+	// Foreground task persistence (O3): the run summary the U3 bridge restores
+	// after a crash + fresh boot, when neither a session run entry nor a
+	// background agent record exists. Additive — an entry written before this
+	// lacks them and reads as absent (the notice's "(task unavailable)" path).
+	task?: string;
+	label?: string;
+	model?: string;
+	thinkingLevel?: string;
+	// The exact `originalParams` snapshot `snapshotOriginalParams` put on the
+	// run record, so a post-crash retry restores the same 17-field shape a
+	// same-session retry does (including `force`; decision 2026-10-11).
+	originalParams?: SubagentRun["originalParams"];
 	startedAt: string;
 	cwd: string;
 	interruptedAt?: string;
@@ -60,6 +76,12 @@ export interface InflightRunInput {
 	kind: InflightRunKind;
 	owner?: ProcessOwner;
 	childMarker?: string;
+	recoveryPosture?: RecoveryMode;
+	task?: string;
+	label?: string;
+	model?: string;
+	thinkingLevel?: string;
+	originalParams?: SubagentRun["originalParams"];
 	startedAt: string;
 	cwd?: string;
 }
@@ -112,14 +134,41 @@ function isInflightRun(value: unknown): value is InflightRun {
 	if (!value || typeof value !== "object") return false;
 	const v = value as Record<string, unknown>;
 	if (typeof v.id !== "string" || typeof v.startedAt !== "string") return false;
+	if (v.recoveryPosture !== undefined) {
+		if (!RECOVERY_MODES.includes(v.recoveryPosture as RecoveryMode)) return false;
+	}
 	return v.kind === "foreground" || v.kind === "unit" || v.kind === "background";
+}
+
+/**
+ * Normalize the additive enrichment fields leniently. A wrong-typed field
+ * degrades to ABSENT on the parsed entry; the entry itself is never rejected
+ * wholesale — dropping it would lose the interruption mark. This is the
+ * deliberate opposite trade from the strict `recoveryPosture` check above
+ * (a bad posture is semantically safe to drop; a bad task is not).
+ */
+function normalizeEnrichment(value: InflightRun, raw: Record<string, unknown>): InflightRun {
+	const entry: InflightRun = { ...value };
+	for (const field of ["task", "label", "model", "thinkingLevel"] as const) {
+		if (typeof raw[field] === "string") entry[field] = raw[field] as string;
+		else delete entry[field];
+	}
+	if (raw.originalParams && typeof raw.originalParams === "object" && !Array.isArray(raw.originalParams)) {
+		entry.originalParams = raw.originalParams as SubagentRun["originalParams"];
+	} else {
+		delete entry.originalParams;
+	}
+	return entry;
 }
 
 /** Parse one entry file; null on missing/corrupt/malformed. */
 function readEntry(file: string): InflightRun | null {
 	try {
 		const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
-		return isInflightRun(parsed) ? parsed : null;
+		if (!isInflightRun(parsed)) return null;
+		// `isInflightRun` narrows to InflightRun, but the raw object may carry
+		// extra/mistyped additive fields — read them through a record view.
+		return normalizeEnrichment(parsed, parsed as unknown as Record<string, unknown>);
 	} catch {
 		return null;
 	}
@@ -143,10 +192,16 @@ function mergeInput(base: InflightRun, input: InflightRunInput): InflightRun {
 	const next: InflightRun = { ...base, id: input.id, kind: input.kind };
 	if (input.dispatchId !== undefined) next.dispatchId = input.dispatchId;
 	if (input.attempt !== undefined) next.attempt = input.attempt;
+	if (input.recoveryPosture !== undefined) next.recoveryPosture = input.recoveryPosture;
 	if (input.owner !== undefined) next.owner = input.owner;
 	if (input.childMarker !== undefined) next.childMarker = input.childMarker;
 	if (input.startedAt) next.startedAt = input.startedAt;
 	if (input.cwd !== undefined) next.cwd = input.cwd;
+	if (input.task !== undefined) next.task = input.task;
+	if (input.label !== undefined) next.label = input.label;
+	if (input.model !== undefined) next.model = input.model;
+	if (input.thinkingLevel !== undefined) next.thinkingLevel = input.thinkingLevel;
+	if (input.originalParams !== undefined) next.originalParams = input.originalParams;
 	return next;
 }
 
@@ -243,8 +298,14 @@ function toRegistryInput(run: SubagentRun, kind: InflightRunKind): InflightRunIn
 		dispatchId: run.dispatchId,
 		attempt: run.attempt,
 		kind,
+		recoveryPosture: run.recoveryPosture,
 		owner: run.owner,
 		childMarker: run.childMarker,
+		task: run.task,
+		label: run.label,
+		model: run.model,
+		thinkingLevel: run.thinkingLevel,
+		originalParams: run.originalParams,
 		startedAt: run.startedAt,
 		cwd: process.cwd(),
 	};

@@ -202,6 +202,110 @@ describe("registry lifecycle", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2a. O3 enrichment: the run summary round-trips, the mark preserves it, and
+//     old/mistyped entries degrade leniently (never dropping the interruption
+//     mark).
+// ---------------------------------------------------------------------------
+
+describe("registry enrichment round-trip (O3)", () => {
+	const ENRICH = {
+		task: "recover the crashed migration",
+		label: "Recoverable FG",
+		model: "provider/model",
+		thinkingLevel: "high",
+		originalParams: { gitMode: "branch", approvalMode: "writes", force: true, timeout: 4242 },
+	} as const;
+
+	it("round-trips every enrichment field through register → list", () => {
+		const id = crypto.randomUUID();
+		expect(registerInflightRun({ id, kind: "foreground", startedAt: ISO, ...ENRICH })).toBe(true);
+		const listed = listInflightRuns().find((e) => e.id === id)!;
+		expect(listed.task).toBe(ENRICH.task);
+		expect(listed.label).toBe(ENRICH.label);
+		expect(listed.model).toBe(ENRICH.model);
+		expect(listed.thinkingLevel).toBe(ENRICH.thinkingLevel);
+		expect(listed.originalParams).toEqual(ENRICH.originalParams);
+	});
+
+	it("markInterrupted preserves the enrichment fields", () => {
+		const id = crypto.randomUUID();
+		registerInflightRun({ id, kind: "unit", startedAt: ISO, ...ENRICH });
+		expect(markInterrupted(id, "2026-10-09T01:00:00.000Z")).toBe(true);
+		const marked = readEntry(id)!;
+		expect(marked.interruptedAt).toBe("2026-10-09T01:00:00.000Z");
+		expect(marked.task).toBe(ENRICH.task);
+		expect(marked.originalParams).toEqual(ENRICH.originalParams);
+	});
+
+	it("an old-shape entry (no enrichment fields) still parses with them absent", () => {
+		const id = crypto.randomUUID();
+		const file = entryFile(id);
+		fs.mkdirSync(registryDir(), { recursive: true });
+		fs.writeFileSync(
+			file,
+			JSON.stringify({ id, kind: "foreground", startedAt: ISO, cwd: "/x" }),
+		);
+		const listed = listInflightRuns().find((e) => e.id === id)!;
+		expect(listed.task).toBeUndefined();
+		expect(listed.label).toBeUndefined();
+		expect(listed.model).toBeUndefined();
+		expect(listed.thinkingLevel).toBeUndefined();
+		expect(listed.originalParams).toBeUndefined();
+	});
+
+	it("a mistyped enrichment field degrades to absent without dropping the entry", () => {
+		const id = crypto.randomUUID();
+		const file = entryFile(id);
+		fs.mkdirSync(registryDir(), { recursive: true });
+		fs.writeFileSync(
+			file,
+			JSON.stringify({
+				id,
+				kind: "foreground",
+				startedAt: ISO,
+				cwd: "/x",
+				interruptedAt: ISO,
+				task: 123,
+				label: { not: "a string" },
+				model: null,
+				thinkingLevel: "high",
+				originalParams: "not an object",
+			}),
+		);
+		const listed = listInflightRuns().find((e) => e.id === id)!;
+		expect(listed).toBeDefined();
+		expect(listed.interruptedAt).toBe(ISO);
+		expect(listed.task).toBeUndefined();
+		expect(listed.label).toBeUndefined();
+		expect(listed.model).toBeUndefined();
+		expect(listed.thinkingLevel).toBe("high");
+		expect(listed.originalParams).toBeUndefined();
+	});
+
+	it("an array-valued originalParams degrades to absent without dropping the entry", () => {
+		const id = crypto.randomUUID();
+		const file = entryFile(id);
+		fs.mkdirSync(registryDir(), { recursive: true });
+		fs.writeFileSync(
+			file,
+			JSON.stringify({
+				id,
+				kind: "foreground",
+				startedAt: ISO,
+				cwd: "/x",
+				interruptedAt: ISO,
+				originalParams: ["gitMode", "branch"],
+			}),
+		);
+		const listed = listInflightRuns().find((e) => e.id === id)!;
+		// The entry (and its interruption mark) survives; only the array field drops.
+		expect(listed).toBeDefined();
+		expect(listed.interruptedAt).toBe(ISO);
+		expect(listed.originalParams).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
 // 2b. Three-kind wiring: the real persist paths each mirror into the registry
 // ---------------------------------------------------------------------------
 

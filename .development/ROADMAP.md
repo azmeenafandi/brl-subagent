@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Updated: 2026-10-10 | Released: **v2.4.0** (2026-10-03) | Integration: `dev` @ the v2.5.0 release prep (see "Shipped (2026-10-10, v2.5.0)" below). Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
+> Updated: 2026-10-13 | Released: **v2.5.0** (2026-10-10) | Integration: `dev` @ the v2.5.1 release prep (see "Shipped (2026-10-13, v2.5.1)" below). Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -279,6 +279,23 @@ Goal: ship brl-subagent as a first-class pi package so installation and updates 
 **Outcome:** `brl-subagent@2.3.5` published to npm — installable via `pi install npm:brl-subagent`, updated via `pi update --extensions`, released through a token-free staged pipeline. 979 tests across 45 files; board clean.
 
 **Deferred → RESOLVED in v2.3.6:** pin doc version strings to `package.json` (the README ×2 and the AGENT.md header shipped stale in 2.3.5). Now enforced mechanically (#166).
+
+### Shipped (2026-10-13, v2.5.1)
+
+The durability cycle completed — recovery surface, durable task persistence, and the kill-path destination.
+
+| Issue | What shipped | PR |
+|---|---|---|
+| #299 | **Process-group reaping for orphaned subagent trees (Option B):** POSIX detached spawns + group-reaching kills, tri-state stat-prefix membership contract, signal-time marker verification, honest survivor reporting, Windows fallback. Eight review rounds. | #325 |
+| #296 (U2) | **File-backed background sessions:** per-run `.pi/subagents/sessions/<id>/`, pruned at the single finalize choke point; interrupted files retained until resolved; crash loadability proven (torn tail). | #326 |
+| #296 (U3) | **Interrupted-run recovery surface:** `Interrupted` rendering, one-per-boot notice (next-turn delivery), retry-menu offer via `retryRunId`, per-run recovery posture, abandon action, and the registry-union visibility bridge that works after a genuine crash. | #327 |
+| #296 (FGP) | **Durable task/params:** the registry persists task/label/model/thinkingLevel + the full `originalParams` snapshot (lenient reads); bridged retries restore the dispatch shape (incl. `force`); retire-on-retry. | #328 |
+| #329 | **Bridged-retry dispatchId lineage:** the visibility bridge projects `dispatchId`/`attempt`, so post-crash retries inherit the recorded dispatch identity. Live-probe finding, fixed same day. | #331 |
+| #330 | **Run surfaces newest-first:** shared `sortNewestFirst`; the bridge merges synthetic rows by recency (no more append); the retry menu's reverse removed. Live-probe finding. | #332 |
+| #333 | **Dependency parity with pi 1.2.0:** four `@earendil-works/*` devDeps → `^1.2.0`, `typebox` pinned 1.3.27, lockfile refreshed (upstream chord/esbuild tree removed). | #334 |
+| — | **Polish:** crash-notice dedupe helper (#318, PR #323); shutdown isolation (#322, PR #324). | #323/#324 |
+
+Live verification: the interrupted-run probe passed both rounds on the merged build (scan → notice → bridged retry restoring `dispatchId`/`timeout` → retire-on-retry), the #315 dedupe check passed on pi 1.2.0, and the pi 1.2.0 TUI smoke passed after reload.
 
 ### Shipped (2026-10-10, v2.5.0)
 
@@ -635,7 +652,7 @@ The user no longer relays completions; the conductor receives them as events (M1
 - **10** — Risk-calibrated review (C1 adversarial / C2 focused / C3 diff-read; reversibility tiebreaker; mid-flight reclassification)
 - **11** — Recurrence escalation (≥2 occurrences AND unresolved → P0 with fix direction; count over mitigation labels)
 - **12** — Environment before theory (check the environment first — versions, sync, reload, audit trail; ordering, not exclusivity)
-- **13** — Graph-first scoping (conductor consults graphify-out/ for the neighborhood BEFORE grep; refresh-if-stale)
+- **13** — Graph-first scoping (conductor consults CodeGraph for the neighborhood BEFORE grep; refresh-if-stale — ADR 0016)
 - **14** — Route, don't hand-roll (dispatch router: task-shape → preset+template lookup; dev-agent safe default; templates = contract + free-form target)
 
 ### The rituals
@@ -648,8 +665,8 @@ The user no longer relays completions; the conductor receives them as events (M1
 
 - **Templates** (`.pi/brl-subagent/templates/`): adversarial-review (C1 contract), focused-review (C2 contract), debug-task (Rule 12 contract) — all CONTRACT + free-form TARGET since the 2026-08-22 redesign
 - **Presets** (`.pi/brl-subagent/presets/`): project-reviewer (read-only, Gate A, SOLID/DRY), project-implementer (full access, quality bar), project-docs (surgical, fact-verified — bash restored 2026-08-22)
-- **Scripts** (`.pi/skills/worktree/`): check-repo.sh (pre-flight), worktree-prep.sh (provision + `--force-isolated`), worktree-cleanup.sh (teardown + staleness WARN), sprint-metrics.py (derived metrics), graph-refresh.sh (graphify `--update` + `graph-check.py` after every merge)
-- **Development home** — the **cockpit**: the `brl-subagent-dev` checkout (branch `dev`) holds `.development/`, `graphify-out/`, the `.pi` tools and the shared `node_modules`; `main` is the pristine release checkout. Since #247 the docs and tools are TRACKED, so a contributor checking out `dev` gets them (see `CONTRIBUTING.md`).
+- **Scripts** (`.pi/skills/worktree/`): check-repo.sh (pre-flight), worktree-prep.sh (provision + `--force-isolated`), worktree-cleanup.sh (teardown + staleness WARN), sprint-metrics.py (derived metrics), codegraph-refresh.sh (`codegraph sync` + `codegraph-check.py` after every merge)
+- **Development home** — the **cockpit**: the `brl-subagent-dev` checkout (branch `dev`) holds `.development/`, `.codegraph/` (the structural index), the `.pi` tools and the shared `node_modules`; `main` is the pristine release checkout. Since #247 the docs and tools are TRACKED, so a contributor checking out `dev` gets them (see `CONTRIBUTING.md`).
 - **Extension** (`.pi/extensions/worktree-guard/`): rule #5 + #100/#106 enforcement (blocks src/presets writes outside worktrees; blocks npm install through symlinked node_modules)
 - **Metrics store** (`.development/METRICS.md`): sprint rows, derived never vibed
 

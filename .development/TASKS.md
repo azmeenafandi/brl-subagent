@@ -7,11 +7,11 @@
 
 | | |
 |---|---|
-| Released | **v2.5.0** prepared 2026-10-10 (release PR + GitHub draft; the staged npm publish awaits the maintainer's approval); v2.4.0 remains npm's `latest` until then |
-| Integration | `dev` @ the v2.5.0 release prep — the durability cycle: #296, #302, #303, #304, #306, #308, #298 |
-| Board | **#299** (LOW hardening — the documented D6 destination, trigger-based, not scheduled) + **#230** (P0, the graph hook — parked pending the user's upstream-evidence call) |
+| Released | **v2.5.0 LIVE** (2026-10-10); **v2.5.1 release prepared 2026-10-13** — draft release pending the maintainer's publish |
+| Integration | `dev` @ the v2.5.1 release prep — the durability cycle completed: #299 (#325), U2 (#326), U3 (#327), FGP (#328), #329 (#331), #330 (#332), #333 (#334) |
+| Board | **#299, #329, #330, #333** — all fixed on `dev`, closing at this release merge; no other open issues |
 | Tests | **1212 across 58 files** (`npx vitest run`) · `npm run typecheck` clean |
-| Development home | the **cockpit** (`brl-subagent-dev` checkout): `.development/`, `graphify-out/`, `.pi/` tools, shared `node_modules`. Docs and tools are tracked since #247 — see `CONTRIBUTING.md` |
+| Development home | the **cockpit** (`brl-subagent-dev` checkout): `.development/`, `.codegraph/` (the structural index), `.pi/` tools, shared `node_modules`. Docs and tools are tracked since #247 — see `CONTRIBUTING.md` |
 
 ## Legend
 
@@ -253,3 +253,4 @@
 | 2026-09-30 | **Post-2.3.9 fix cycle merged to `dev` (8 issues → v2.4.0)**: #229 retry pins (PR #238), #233 dead `setAgentResult` removed (`773c110`), #235 dead-code triage (PR #236), #239 schema-linked types (PR #243), #240 explicit timeouts honored — 30m is a default, not a ceiling (PR #242), #241 steer delivery (PR #245), #244 deadline follow-ups (PR #246), #247 contributor parity (PR #248). 1201 tests / 55 files. Board: #230 the only open work item (parked). |
 | 2026-10-03 | **Version 2.4.0 released — the thirteen-issue cycle**: user-visible — #240 (explicit timeouts honored; 30 minutes is a default, not a ceiling), #241 (`steer_subagent` delivers to the live session), #244 (honest "deadline" wording, one deadline timer per run, `retryOnTimeout` foreground-only); toolchain — #255 (`@earendil-works/*` 1.0.0, closing the type/runtime skew) and #256 (TypeScript 7.0.2 + ES2024 via the `scripts/ts-ast.mjs` containment adapter, ADR 0013); contributor-facing — #247 (docs + tooling tracked on `dev`), #249 (lean `ARCHITECTURE.md` + generated module map), #251 (seven executable architecture rules, mutation-proven), #253 (ADR backfill, 13 records); hardening — #229 (retry pins), #239 (schema-linked types), #233/#235 (dead-code removals). Infrastructure: the cockpit move, Dependabot pinned to `dev`, and the README test-count claim now CI-pinned. 1212 tests / 58 files. |
 | 2026-10-10 | **v2.5.0 release prepared — the durability cycle**: recovery (#296, PR #301 + adversarial fix rounds), kill-path (#303/#308, PRs #305/#307), ledger truthfulness (#304, PR #305), test hygiene (#302, PR #307), polish (#306/#298, PR #311), ADR 0015 + Phase 2 CodeGraph dogfood (#309). 1349 tests / 66 files. 9 graphify refusals, 0 involving `src/` structure (friction-class P0 evidence). Board: #299 (the documented D6 destination). |
+| 2026-10-13 | **v2.5.1 release prepared — the durability cycle completed**: recovery surface (#296 U2/U3/FGP — PRs #326/#327/#328: file-backed sessions, interrupted-run recovery with the visibility bridge, durable task/params + retire-on-retry), kill-path destination (#299 Option B, PR #325), probe-driven fixes (#329 lineage, PR #331; #330 ordering, PR #332), dependency parity with pi 1.2.0 (#333, PR #334), polish (#318 PR #323; #322 PR #324). Live verification: interrupted-run probe PASSED ×2 (round 2: `dispatchId` inherited, `timeout` restored, retire-on-retry), #315 dedupe PASSED on pi 1.2.0, TUI smoke PASSED. 1506 tests / 73 files. Board: the four release issues close at this merge; backlog pinned in HANDOFF. Process: strict-Jev ratified + calibration log live; the #330 premise error surfaced by the implementer and corrected pre-merge (design-gap row). |

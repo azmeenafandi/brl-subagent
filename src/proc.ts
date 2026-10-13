@@ -21,9 +21,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ProcessOwner } from "./types";
-import { SIGKILL_GRACE_MS } from "./types";
+import { SIGKILL_GRACE_MS, SIGKILL_POLL_MS } from "./types";
 import { CHILD_MARKER_ENV_KEY } from "./sanitize";
 import type { RecoveryDeps } from "./recovery-engine";
+import { supportsProcessGroupKill } from "./kill-escalation";
 
 const PROC_ROOT = "/proc";
 
@@ -57,32 +58,237 @@ export function isProcAvailable(): boolean {
 	return procAvailable;
 }
 
+/** The outcome of a `/proc/<pid>/stat` read: the fields, or why it failed. */
+type StatFieldsRead =
+	| { ok: true; fields: string[] }
+	| { ok: false; code: string | undefined };
+
 /**
- * Read a process's start-time token — `/proc/<pid>/stat` field 22 (1-indexed),
- * i.e. index 19 of the whitespace-split fields AFTER the `(comm)` field. The
- * comm field is skipped by slicing at the LAST `)` so a name containing spaces
- * or parens cannot shift the parse. Returns undefined when /proc is
- * unavailable, the pid is invalid, or the process vanished.
+ * The `readStatFields` primitive WITH the failure cause preserved: `code` is the
+ * errno of a failed read (`"ENOENT"` when the pid is absent) or undefined when
+ * /proc is unavailable, the pid is invalid, or the read failed for a reason
+ * other than a missing file. `pidGone` needs the cause to separate "the pid was
+ * REAPED" (ENOENT — absence-of-process evidence) from "the read failed and we
+ * cannot tell" (everything else).
  */
-export function readStartToken(pid: number): string | undefined {
-	if (!isProcAvailable() || !Number.isInteger(pid) || pid <= 0) return undefined;
+function readStatFieldsDetailed(pid: number): StatFieldsRead {
+	if (!isProcAvailable() || !Number.isInteger(pid) || pid <= 0) {
+		return { ok: false, code: undefined };
+	}
 	try {
 		const stat = fs.readFileSync(path.join(PROC_ROOT, String(pid), "stat"), "utf-8");
 		const close = stat.lastIndexOf(")");
-		if (close < 0) return undefined;
+		if (close < 0) return { ok: false, code: undefined };
 		const rest = stat.slice(close + 1).trim();
-		if (!rest) return undefined;
-		const fields = rest.split(/\s+/);
-		const token = fields[19];
-		return token && /^\d+$/.test(token) ? token : undefined;
+		if (!rest) return { ok: false, code: undefined };
+		return { ok: true, fields: rest.split(/\s+/) };
+	} catch (err) {
+		return { ok: false, code: (err as NodeJS.ErrnoException).code };
+	}
+}
+
+/**
+ * The whitespace-split `/proc/<pid>/stat` fields AFTER the `(comm)` field, or
+ * undefined when /proc is unavailable, the pid is invalid, or the process
+ * vanished. Shared by the start-token, process-group and group-liveness readers.
+ * The comm field is skipped by slicing at the LAST `)` so a name containing
+ * spaces or parens cannot shift the parse.
+ */
+function readStatFields(pid: number): string[] | undefined {
+	const read = readStatFieldsDetailed(pid);
+	return read.ok ? read.fields : undefined;
+}
+
+/**
+ * Read a process's start-time token — `/proc/<pid>/stat` field 22 (1-indexed),
+ * i.e. index 19 of the whitespace-split fields AFTER the `(comm)` field.
+ * Returns undefined when /proc is unavailable, the pid is invalid, or the
+ * process vanished.
+ */
+export function readStartToken(pid: number): string | undefined {
+	const token = readStatFields(pid)?.[19];
+	return token && /^\d+$/.test(token) ? token : undefined;
+}
+
+/**
+ * Read a process's process-group id — `/proc/<pid>/stat` field 5 (index 2 after
+ * `(comm)`). Returns undefined when /proc is unavailable, the pid is invalid, or
+ * the process vanished.
+ */
+export function readProcessGroup(pid: number): number | undefined {
+	const pgid = Number(readStatFields(pid)?.[2]);
+	return Number.isInteger(pgid) && pgid > 0 ? pgid : undefined;
+}
+
+/**
+ * #299 fix A.2 — the THREE-state answer to "does process group `pgid` still have
+ * a LIVE member?":
+ *
+ *   - `true`      — at least one live member was observed.
+ *   - `false`     — a COMPLETED inspection found no live member: POSITIVELY empty.
+ *   - `undefined` — the inspection was UNAVAILABLE or PARTIAL. Absence of
+ *     evidence is never evidence of absence, so callers must treat `undefined`
+ *     as UNKNOWN — never as empty.
+ *
+ * `/proc` host-level unavailability is the documented platform boundary, not
+ * `undefined`: with no `/proc` at all the caller degrades to leader liveness
+ * (this returns `false`). `undefined` is reserved for an inspection that FAILED
+ * on a `/proc`-capable host — a `/proc` listing failure, or a member's stat read
+ * that failed for a reason other than the process being gone (`EACCES`, `EIO`, a
+ * parse anomaly). A member that genuinely vanished during the scan is skipped
+ * (ENOENT — it cannot be a live member).
+ */
+export type GroupMembership = boolean | undefined;
+
+/**
+ * #299 fix A.4 — the kernel's process-state letters, i.e. the valid values of
+ * field 3 of `/proc/<pid>/stat`. A state token OUTSIDE this set means the
+ * record was mis-parsed (a truncated or field-shifted read), so the inspection
+ * is PARTIAL rather than a positive non-membership. The set is the union of the
+ * Linux `task_state_array`: R (running), S (sleeping), D (uninterruptible
+ * sleep), Z (zombie), T (stopped), t (tracing stop), X/x (dead), K (wakekill),
+ * W (waking, pre-3.8), P (parked), I (idle).
+ */
+const PROCESS_STATE_LETTERS = new Set(["R", "S", "D", "Z", "T", "t", "X", "x", "K", "W", "P", "I"]);
+
+/**
+ * The kernel's `PID_MAX_LIMIT` on 64-bit Linux. A pgrp above this is not a real
+ * process-group id, so a record carrying one is mis-parsed — the inspection is
+ * PARTIAL, not a positive non-membership. `pid_max` can be configured lower; a
+ * value above the kernel CEILING can never be genuine at all.
+ */
+const PID_MAX_LIMIT = 4_194_304;
+
+/**
+ * #299 fix A.5 — the SINGLE source of the `/proc/<pid>/stat` PREFIX contract,
+ * shared by every group-membership read. Given the whitespace-split fields after
+ * `(comm)`, it returns `{ state, pgrp }` ONLY when the record is WELL-FORMED
+ * enough to trust, and `undefined` (malformed/truncated/shifted) otherwise.
+ *
+ * The contract is deliberately strict, because `groupHasMembers` turns a clean
+ * scan into the actionable claim "the group is POSITIVELY empty" (an escalation
+ * early-exit and a clean survivor report). Every field the prefix relies on is
+ * therefore validated by SHAPE and ALIGNMENT:
+ *
+ *   - `fields[0]` (state) must be a kernel process-state letter — numerics,
+ *     punctuation, empty and multi-char tokens are all malformed.
+ *   - `fields[1]` (ppid) must be a non-negative integer — this is the ALIGNMENT
+ *     check. A valid state followed by a non-numeric ppid (`R S 1 9999`) is a
+ *     SHIFTED record whose "pgrp" slot happens to hold a real integer; trusting
+ *     it would read a malformed record as a justified non-member.
+ *   - `fields[2]` (pgrp) must be an integer in `[0, PID_MAX_LIMIT]` — negatives
+ *     and oversized values are impossible pgrps. `0` is LEGAL: kernel threads
+ *     carry pgrp 0 and must not taint an otherwise-clean scan.
+ */
+function parseStatPrefix(fields: string[]): { state: string; pgrp: number } | undefined {
+	const state = fields[0];
+	const ppid = fields[1];
+	const pgrpField = fields[2];
+	if (state === undefined || !PROCESS_STATE_LETTERS.has(state)) return undefined;
+	// Strict decimal shape: `Number("1e3")`/`Number("0x10")`/`Number("")` would
+	// otherwise sneak through as integers, so validate the TOKEN, not the cast.
+	if (ppid === undefined || !/^\d+$/.test(ppid)) return undefined;
+	if (pgrpField === undefined || !/^\d+$/.test(pgrpField)) return undefined;
+	const pgrp = Number(pgrpField);
+	if (pgrp > PID_MAX_LIMIT) return undefined;
+	return { state, pgrp };
+}
+
+/** The states whose processes are NOT live group members (an unreaped corpse
+ * cannot hold a group non-empty): `Z` (zombie), `X`/`x` (dead). Only ever
+ * consulted for a record that `parseStatPrefix` already accepted. */
+const NON_MEMBER_STATES = new Set(["Z", "X", "x"]);
+
+/**
+ * Scans `/proc` for processes whose pgrp (field 5) equals `pgid`, skipping the
+ * leader itself and non-live states (`Z`/`X`/`x` — an unreaped corpse is not a
+ * live member and must not hold the group non-empty). A group's leader exiting
+ * does NOT empty the group, so this is what lets `escalateKill` keep waiting for
+ * a member's cleanup window.
+ *
+ * The return contract is EXACT (see `GroupMembership`): `false` may be returned
+ * ONLY after a COMPLETE scan in which every record parsed as a well-formed
+ * prefix. Any unparseable record taints the scan to `undefined` (unknown) — the
+ * check lives in `parseStatPrefix`, so there is no fall-through that can turn
+ * malformed input into a positively-empty `false`.
+ */
+export function groupHasMembers(pgid: number): GroupMembership {
+	// Platform boundary: no /proc at all → the caller falls back to leader
+	// liveness (documented non-Linux boundary). Same for an invalid pgid.
+	if (!Number.isInteger(pgid) || pgid <= 0 || !isProcAvailable()) return false;
+	let entries: string[];
+	try {
+		entries = fs.readdirSync(PROC_ROOT);
 	} catch {
+		// A listing failure on a /proc-capable host leaves the scan PARTIAL: we
+		// cannot tell whether a member exists, so the answer is unknown.
 		return undefined;
+	}
+	for (const entry of entries) {
+		if (!/^\d+$/.test(entry)) continue;
+		const pid = Number(entry);
+		if (pid === pgid) continue; // the leader (possibly a zombie) is not a member
+		const read = readStatFieldsDetailed(pid);
+		if (!read.ok) {
+			// A member gone mid-scan is skippable (it cannot be a live member); any
+			// OTHER failure makes the inspection partial → unknown.
+			if (read.code === "ENOENT") continue;
+			return undefined;
+		}
+		// #299 fix A.5: ONE strict prefix validation. A truncated, shifted or
+		// otherwise malformed record (too few fields, non-letter state, non-numeric
+		// ppid, impossible pgrp) makes the inspection PARTIAL → unknown, never a
+		// positively-empty `false`. Well-formed dead states are skipped; a live
+		// member is a match.
+		const parsed = parseStatPrefix(read.fields);
+		if (parsed === undefined) return undefined;
+		if (NON_MEMBER_STATES.has(parsed.state)) continue;
+		if (parsed.pgrp === pgid) return true;
+	}
+	return false;
+}
+
+/**
+ * #299 review Major 1 — signal-time identity re-check. True only when the LIVE
+ * process `pid` carries `CHILD_MARKER_ENV_KEY=<marker>` in its environment.
+ * `findByMarker` proves the pid was ours at SCAN time; this proves it is ours at
+ * the SIGNAL time, closing the scan→signal pid-reuse window (a pid that exited
+ * and was reused by a foreign process no longer carries the marker). Returns
+ * false when /proc is unavailable, the pid is invalid, or the process vanished.
+ *
+ * RESIDUAL: this narrows the reuse window to the read→`kill` syscall boundary —
+ * the same exposure the direct signals have carried since Option A. It does NOT
+ * eliminate it (the kernel may reuse the pid between this read and the signal).
+ */
+export function pidHasMarker(pid: number, marker: string): boolean {
+	if (!marker || !isProcAvailable() || !Number.isInteger(pid) || pid <= 0) return false;
+	const needle = `${CHILD_MARKER_ENV_KEY}=${marker}`;
+	try {
+		const environ = fs.readFileSync(path.join(PROC_ROOT, String(pid), "environ"), "utf-8");
+		return environ.split("\0").includes(needle);
+	} catch {
+		return false;
 	}
 }
 
 /** The CURRENT process's owner identity (pid + start token; empty string when unavailable). */
 export function currentProcessOwner(): ProcessOwner {
 	return { pid: process.pid, start: readStartToken(process.pid) ?? "" };
+}
+
+/**
+ * #299 D4: the ONE production process-group signal (`kill(-pgid, sig)`), shared
+ * by the recovery deps and `runner.ts`'s child/marker group targets. ESRCH means
+ * the group is already empty — the desired end state, so it is swallowed; every
+ * other errno is rethrown for the caller's own tolerance. On a platform without
+ * process groups neither caller wires this in (`supportsProcessGroupKill`).
+ */
+export function killProcessGroup(pgid: number, signal: NodeJS.Signals): void {
+	try {
+		process.kill(-pgid, signal);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
+	}
 }
 
 /** Cross-platform pid liveness (`kill -0`). EPERM means the process exists. */
@@ -97,13 +303,45 @@ export function pidAlive(pid: number): boolean {
 }
 
 /**
+ * #299 review Major 1: true when the pid is GONE — it no longer exists OR is a
+ * not-yet-reaped zombie (`Z`/`X`), which `pidAlive` (kill -0) still reports as
+ * alive. The signal-time guard uses this to separate a REUSED pid (alive, marker
+ * gone) from a merely dead/zombie one, so a zombie leader's pgid is still
+ * signaled to reach its surviving members (D5). Without /proc the zombie
+ * distinction is unavailable and this degrades to `!pidAlive`.
+ *
+ * #299 re-review A.1: a POSITIVE liveness sample immediately followed by ENOENT
+ * on `/proc/<pid>/stat` means the pid was REAPED between the two reads — it is
+ * GONE. `/proc/<pid>/stat` is readable for any process that still exists (a
+ * not-yet-reaped zombie included), so ENOENT is absence-of-process evidence;
+ * classifying it as "not gone" made the guard treat our own reaped leader as a
+ * live FOREIGN pid and refuse BOTH the group SIGTERM and the final group
+ * SIGKILL while its group still had live members. Every OTHER read failure
+ * (EACCES, a parse anomaly, /proc unavailable) stays conservatively not-gone.
+ *
+ * PLATFORM BOUNDARY (hidepid=2): on a `/proc` mounted with `hidepid=2` a foreign
+ * LIVE pid we do not own can read `kill -0` EPERM (alive) and then
+ * `/proc/<pid>/stat` ENOENT (hidden — it looks GONE). The signal guard may then
+ * ATTEMPT a group signal despite the marker mismatch. This is a documented
+ * platform boundary, NOT a signal-safety guarantee: the kernel's EPERM on the
+ * signal constrains the unprivileged blast radius, and the group signal still
+ * targets only the pgid we derived (it does not widen the target set).
+ */
+export function pidGone(pid: number): boolean {
+	if (!pidAlive(pid)) return true;
+	const read = readStatFieldsDetailed(pid);
+	if (!read.ok) return read.code === "ENOENT";
+	const state = read.fields[0];
+	return state === "Z" || state === "X";
+}
+
+/**
  * Pids whose environment carries the marker. Scans `/proc/<pid>/environ` (NUL
  * separated). Skips this process; unreadable/vanished processes are ignored.
  * Returns [] — never a kill — when /proc is unavailable.
  */
 export function findByMarker(marker: string): number[] {
 	if (!marker || !isProcAvailable()) return [];
-	const needle = `${CHILD_MARKER_ENV_KEY}=${marker}`;
 	const found: number[] = [];
 	let entries: string[];
 	try {
@@ -115,12 +353,7 @@ export function findByMarker(marker: string): number[] {
 		if (!/^\d+$/.test(entry)) continue;
 		const pid = Number(entry);
 		if (pid === process.pid) continue;
-		try {
-			const environ = fs.readFileSync(path.join(PROC_ROOT, entry, "environ"), "utf-8");
-			if (environ.split("\0").includes(needle)) found.push(pid);
-		} catch {
-			// Vanished or not readable by this user — not a verified match.
-		}
+		if (pidHasMarker(pid, marker)) found.push(pid);
 	}
 	return found;
 }
@@ -134,7 +367,24 @@ export function defaultRecoveryDeps(): RecoveryDeps {
 		kill: (pid, signal) => {
 			process.kill(pid, signal);
 		},
+		// D4 (#299): group-reaching targets on POSIX. The marker identifies the
+		// orphan tree; the process group is only the kill mechanism that reaches
+		// env-scrubbed descendants. Omitted on Windows (D6) so `reapPids` keeps
+		// today's direct pid targets.
+		killGroup: supportsProcessGroupKill() ? killProcessGroup : undefined,
+		// #299 review Major 2: a group's leader exiting does not empty the group,
+		// so the group target's death check counts live members.
+		groupHasMembers,
+		// #299 review Major 1: signal-time marker re-check for marker-derived
+		// targets (closes the scan→signal pid-reuse window).
+		verifyMarker: pidHasMarker,
+		// #299 review Major 1: the guard separates a reused pid (alive, marker
+		// gone) from a dead/zombie one, so a zombie leader's group is still killed.
+		pidGone,
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		graceMs: SIGKILL_GRACE_MS,
+		// Item 4 (#299): poll so the boot scan returns as soon as its orphans die
+		// instead of always blocking the full grace window (a ~5 s session_start).
+		pollMs: SIGKILL_POLL_MS,
 	};
 }

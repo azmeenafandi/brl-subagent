@@ -64,12 +64,19 @@ delegation-heavy work.
 - Graph with `dependsOn`: subtasks declare edges; the scheduler runs them in waves.
 - Background + act on wake: spawn a background run, then act when the completion message arrives. Never poll between spawn and wake.
 - Background fan-out: `tasks: [...], background: true` — one background agent per task, one id per task in task order, one wake per agent.
-- retryRunId: pass a failed run's id to re-run it with its recorded task and params; explicit parameters override the originals.
+- retryRunId: pass a failed or **interrupted** run's id to re-run it with its recorded task and params; explicit parameters override the originals. A run interrupted before durable task capture (a pre-enrichment registry entry) has no recorded task — pass `task` explicitly for those.
+
+## Interrupted runs and recovery
+
+- An interrupted run (its conductor died mid-run) stays visible with status **Interrupted** in `/brl-subagent history` and is listed by `/brl-subagent retry` alongside failed runs — including after a crash + fresh boot, where it is reconstructed from the durable per-run registry (plus the background agent record). Recover it with `retryRunId: <run-id>` (recorded params restored), or abandon it from that menu — abandon finalizes the run as stopped, drops its persisted session file, and sends **no** completion wake.
+- **Task persistence (O3):** a foreground/unit run persists its task, label, model, thinking level and full `originalParams` snapshot in the durable registry at dispatch, so after a crash + fresh boot its row shows the real task and `retryRunId` restores the recorded shape — the same 17 fields a same-session retry restores (including `force`; explicit caller values still win). A successful retry retires the source entry so the superseded run is not re-offered at the next boot; a failed retry start leaves it intact and retryable.
+- **Legacy rows:** an entry written before task persistence lacks those fields, so its row carries `(task unavailable)` and `retryRunId` cannot restore a task — pass `task` explicitly on the retry call. A background run keeps its task via its agent record.
+- The **recovery posture** (`/brl-subagent recovery`, default `offer`) controls whether a boot surfaces interrupted runs with one turn-boundary notice; `off` silences it. Nothing is auto-resumed today.
 
 ## Deadlines and retries
 
 - `timeout` (ms) is a **deadline, not a ceiling** — an explicit value is honored as given; 30 minutes is only the default for a background run that passes none. Background expiry aborts the session (the run ends `stopped`); foreground expiry kills the process.
-- `retryOnTimeout` applies to **foreground runs only**. A timed-out background run is not auto-retried: re-dispatch it with `retryRunId` if that is the right call.
+- `retryOnTimeout` applies to **foreground runs only**. A timed-out background run is not auto-retried: re-dispatch it with `retryRunId` if that is the right call. The same applies to an interrupted run — recovery is always an explicit `retryRunId` call, never automatic (auto mode is not yet accepted).
 
 ## Mechanics pointer
 

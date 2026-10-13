@@ -57,40 +57,26 @@ because nothing checked them and no test pins them.
    `gh release create vX --draft --title "…" --notes-file <file>`, then tell the
    user where to review it. **The user publishes it** — and that publish is what
    triggers `publish.yml`.
-8. **Graph — no release-time step** (ADR 0011/0012). The canonical graph describes the **cockpit (`dev`)**
-   and is refreshed at every merge into `dev` by `graph-refresh.sh` (lifecycle step 6). A release changes
-   `main`, which the graph does not describe — and the graphify post-commit hook will fire on the bump
-   commit, writing an incomplete graph wherever the commit ran (observed in `main`, 2026-10-03; #230).
+8. **Graph — no release-time step** (ADR 0011/0012/0016). The canonical structural index describes the
+   **cockpit (`dev`)** and is refreshed at every merge into `dev` by `codegraph-refresh.sh` (lifecycle
+   step 6). A release changes `main`, which the index does not describe — and there is no hook to fire on
+   the bump commit (#230, #314).
 
-   The refresh discipline below still applies **at merge time**:
-
-   Never trust that a refresh succeeded —
+   The refresh discipline still applies **at merge time** — never trust that a refresh succeeded:
 
    ```bash
-   python3 .pi/skills/worktree/graph-check.py
+   python3 .pi/skills/worktree/codegraph-check.py
    ```
 
-   The check verifies module coverage AND exported-symbol coverage against
-   `src/*.ts` on disk, prints its coverage boundaries, and exits non-zero on
-   any discrepancy. It is mechanical because **this failure is silent**: the
-   2026-09-12 refresh produced a graph missing `src/paths.ts` (added the day
-   before) and reported success — issue #173, occurrence 2; the 2026-09-20
-   `cluster-only` rewrite kept every module and lost the day's symbols — issue
-   #189. Refresh ONLY when stale (`built_at_commit` vs HEAD, source mtimes) —
-   a 2026-09-22 refresh on an unchanged tree still rewrote the graph
-   (821→816 nodes, semantic names→fallbacks) with the guard green.
+   The check verifies module coverage AND exported-symbol coverage against `src/*.ts` on disk, asserts
+   declared freshness (`indexed_at_commit == HEAD`, `index_state = complete` — stronger than the retired
+   mtime comparison), prints its coverage boundaries, and exits non-zero on any discrepancy. It is
+   mechanical because the old failure was silent (a refresh missing `src/paths.ts`, issue #173; a rewrite
+   that lost the day's symbols, issue #189) — and that whole failure class left with the LLM layer: a
+   `codegraph sync` on a docs-only tree is a no-op.
 
-   **Shrink guard (graphify #479):** if the export *refuses* because the new
-   graph has fewer nodes, do NOT force reflexively. The guard cannot distinguish
-   a legitimate deletion from data loss, so:
-   1. confirm the shrink is real (modules/tests actually deleted, docs trimmed),
-   2. **state the reasoning**,
-   3. only then re-run with `--force`.
-
-   The 2026-09-12 release legitimately shrank the graph — a module and a test
-   were deleted and two shipped docs trimmed, so forcing was correct. That
-   reasoning is recorded here **so it is not re-derived or assumed**; record the
-   equivalent reasoning each time the guard fires.
+   The graphify shrink-guard procedure is retired with the tool; see ADR 0016 and the friction log
+   (`graphify-completeness-guard-refusals`).
 9. **Switch the running install back to the published package** — *only after the
    staged publish is approved*, never before.
 

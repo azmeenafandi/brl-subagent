@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """codegraph-check.py — verify the CodeGraph index against ground truth.
 
-STATUS: **prototype (Phase 1, 2026-10-08)** — the CodeGraph analogue of
-graph-check.py, landing the 2026-10-08 bake-off (Phase 0) as a working guard.
-The canonical knowledge graph remains graphify's until the Phase 2 dogfooding
-decision; this script changes nothing about the current ritual. Findings:
+STATUS: **the merge gate's guard.** CodeGraph is the sole structural index
+(ADR 0016); the graphify layer and its `graph-check.py` are retired. Run at every
+merge into `dev` after `codegraph-refresh.sh`, and on demand; this script changes
+nothing about the release ritual beyond that gate. Findings:
 .development/investigations/codegraph-bakeoff-2026-10-08/findings.md
 
 WHY THIS EXISTS
-Same failure family as graph-check.py, different tool: a refresh can leave the
-index missing a module (#173-class) or describing something other than the tree
-on disk (#189-class). CodeGraph's index is deterministic, but a guard still
-belongs at the point of use — and its metadata makes the freshness check
-STRONGER than graph-check.py's mtime comparison: the index declares the commit
-it was built from.
+Same failure family as the retired graph-check.py, different tool: a refresh can
+leave the index missing a module (#173-class) or describing something other than
+the tree on disk (#189-class). CodeGraph's index is deterministic, but a guard
+still belongs at the point of use — and its metadata makes the freshness check
+STRONGER than the retired mtime comparison: the index declares the commit it was
+built from.
 
 WHAT IT CHECKS (mechanical; no LLM, no network)
   1. MODULE COVERAGE — every `src/*.ts` on disk appears as a `kind='file'` node,
      and every such node still exists on disk.
-  2. SYMBOL COVERAGE — every exported declaration (the same regex graph-check.py
-     uses) in `src/*.ts` appears as a node whose name / qualified_name / id
-     matches, in the node's `file_path`.
+  2. SYMBOL COVERAGE — every exported declaration (the exported-declaration
+     regex below) in `src/*.ts` appears as a node whose name / qualified_name /
+     id matches, in the node's `file_path`.
   3. FRESHNESS — `project_metadata.indexed_at_commit` equals git HEAD and
      `index_state = 'complete'`. If HEAD is unavailable (not a checkout), the
      commit assertion is reported as unverified, not silently skipped.
@@ -29,7 +29,7 @@ WHAT IT CHECKS (mechanical; no LLM, no network)
      failure: an ad-hoc sync on a dirty tree is legitimate, but a query result
      derived from it should say so.
 
-WHAT IT DOES NOT CHECK — boundaries (mirrors graph-check.py, plus CodeGraph's)
+WHAT IT DOES NOT CHECK — boundaries (the retired graph-check.py's, plus CodeGraph's)
   - Re-exports and aliases (`export { a } …`), non-exported symbols, nested paths
     (`src/__tests__/**` and any subdirectories) — module and symbol coverage
     cover direct children of `src/` only.
@@ -37,8 +37,7 @@ WHAT IT DOES NOT CHECK — boundaries (mirrors graph-check.py, plus CodeGraph's)
   - Markdown/docs — CodeGraph does not index them at all (docs-only changes are
     no-ops; see the bake-off findings).
   - Nodes match by NAME, not by (name, kind): a same-named non-exported node in
-    the right file satisfies the symbol check (graph-check.py has the same
-    semantics).
+    the right file satisfies the symbol check.
 
 USAGE
     python3 codegraph-check.py [--repo-root <path>] [--db <path>] [--quiet]
@@ -55,8 +54,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Exported declaration forms — deliberately identical to graph-check.py, so the
-# two guards answer exactly the same question about the same corpus.
+# Exported declaration forms — carried over verbatim from the retired
+# graph-check.py, so the guard asks exactly the same question about the corpus.
 EXPORT_RE = re.compile(
     r"^\s*export\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?"
     r"(?:function\s*\*?|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][\w$]*)",

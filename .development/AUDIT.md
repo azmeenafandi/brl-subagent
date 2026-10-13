@@ -1,6 +1,6 @@
 # brl-subagent — Audit: Strengths & Weaknesses
 
-> Generated: 2026-08-03 | Version: 2.5.0 (release prepared 2026-10-10). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.5.0 (see the follow-up sections below).
+> Generated: 2026-08-03 | Version: 2.5.1 (release prepared 2026-10-13). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.5.1 (see the follow-up sections below).
 
 ## What's Been Fixed (since v1.3.0)
 
@@ -283,6 +283,12 @@
 Tests pass even when source files import variables/functions that don't exist, because Vitest's module resolution doesn't fail at import time for unresolved symbols. However, when pi loads the same module in production, unresolved imports cause runtime failures. This means a passing test suite does not guarantee the code will load correctly in the pi runtime.
 
 **Mitigation:** Always verify with a manual `import` test or runtime smoke test after significant refactors. Consider adding a dedicated smoke test that imports and exercises every module.
+
+## v2.5.1 Audit Follow-up (2026-10-13)
+
+The durability cycle completed. **Recovery surface** (U3): interrupted runs are visible and recoverable — an `Interrupted` row, a one-per-boot notice delivered at a turn boundary, a retry offer through the existing `retryRunId` machinery, an abandon action, and the registry-union **visibility bridge** that makes all four surfaces agree after a genuine crash (the review's round-1 critical: the first design was blind on a fresh boot). **File-backed sessions** (U2) prune at the single finalize choke point and survive torn tails. **Durable task/params** (FGP) restore the full dispatch shape on a bridged retry — including `force` — and retire the superseded entry. **Kill-path destination** (#299 Option B): process-group reaping with a tri-state membership contract and signal-time marker verification (eight review rounds; the parser contract was strengthened until `false` could only come from a complete well-formed scan).
+
+Process notes: a **live end-to-end probe** (2026-10-12/13) exercised the whole chain on the merged build and surfaced two real findings — bridged retries dropped the `dispatchId` lineage (#329) and the run surfaces disagreed on ordering (#330) — both fixed and re-verified in probe round 2; the probe also disproved its own spec's premise (history was already newest-first — a partial-read error caught by the implementer and recorded as a design-gap calibration row). **pi 1.2.0 compatibility** was checked break-by-break before the dependency bump (#333/#334): no breaking change touches the extension. Open at release: none (the four issues close with this merge).
 
 ## v2.5.0 Audit Follow-up (2026-10-10)
 

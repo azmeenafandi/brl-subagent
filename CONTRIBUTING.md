@@ -64,10 +64,11 @@ new modules a `// Purpose:` first line and run `npm run docs:arch` (CI fails oth
 are recorded as ADRs in `.development/decisions/` (index generated, CI-guarded); read them before proposing a
 structural change — supersede, never edit an accepted record. Regenerate with `npm run docs:decisions`.
 
-## The knowledge graph (optional)
+## The structural index (optional)
 
-Maintainers keep a code knowledge graph in `graphify-out/` — not tracked, because it is generated. If you have
-the `graphify` tool, `.pi/skills/worktree/graph-refresh.sh` builds it locally. Nothing else depends on it.
+Maintainers keep a code knowledge graph in the gitignored `.codegraph/` (CodeGraph — ADR 0016). If you have
+the `codegraph` tool, `.pi/skills/worktree/codegraph-refresh.sh` builds and verifies it locally. Nothing else
+depends on it.
 
 ## Reporting issues
 

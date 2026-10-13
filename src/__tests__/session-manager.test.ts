@@ -50,7 +50,10 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 	return {
 		getAgentDir: () => "/tmp/brl-test-agentdir",
 		createAgentSession: mocks.createAgentSession,
-		SessionManager: { inMemory: () => ({}) },
+		// U2 (D1): spawnBackgroundSession now switches to SessionManager.create(cwd,
+		// <explicit per-run dir>) and reads getSessionFile() for precise pruning.
+		// These tests never touch the real SDK, so the session file is a stub path.
+		SessionManager: { create: () => ({ getSessionFile: () => undefined }) },
 		SettingsManager: { create: () => ({}) },
 		DefaultResourceLoader: MockDefaultResourceLoader,
 	};

@@ -34,7 +34,16 @@ import {
 	SUBAGENT_ABORTED_MESSAGE,
 	SUBAGENT_SIGNAL_KILLED_MESSAGE,
 } from "./types";
-import { escalateKill, type EscalationTarget } from "./kill-escalation";
+import {
+	escalateKill,
+	pidTarget,
+	processTarget,
+	supportsProcessGroupKill,
+	groupTarget,
+	type EscalationTarget,
+	type SignalGuard,
+} from "./kill-escalation";
+import { findByMarker, pidAlive, pidHasMarker, pidGone, groupHasMembers, killProcessGroup } from "./proc";
 import { getSafeEnv, DEPTH_ENV_KEY, CHILD_MARKER_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
 import type { Logger } from "./logging";
 import type { Intercom } from "./messaging";
@@ -83,7 +92,10 @@ export function activeChildCount(): number {
 
 /** True once the child has really exited (a signal was delivered is not enough). */
 function childExited(proc: ChildProcess): boolean {
-	return proc.exitCode !== null || proc.signalCode !== null;
+	// `!= null` (not `!== null`): a real ChildProcess uses `null` before exit, but
+	// narrow test doubles omit the field (`undefined`), which must also read as
+	// "not exited" so the liveness re-check does not skip a live child's TERM.
+	return proc.exitCode != null || proc.signalCode != null;
 }
 
 /** Default real sleep between SIGTERM and the escalation re-check. */
@@ -122,40 +134,197 @@ export function __setEscalationTimingForTest(timing?: { graceMs?: number; pollMs
 }
 
 /**
- * Escalation target for one spawned child. `verifyDeath` defaults to the
- * REAL-exit check (`childExited`) and may be overridden per site. The abort and
- * timeout paths must use the real check (issue #303): `child.killed` flips
- * when a signal is *sent*, not when the process dies, so gating the SIGKILL on
- * it would let a SIGTERM-ignoring child survive the escalation.
+ * #322: TEST-ONLY registry seam. Register an arbitrary child (and optional
+ * marker) under a fresh unique spawn token so a test can drive the shutdown reap
+ * in isolation — with no `runSubagent` in the picture, the run's own exit sweep
+ * cannot be the killer and the reap's death assertion is attributable.
+ *
+ * Returns a deregister function that deletes that token. Throws outside the
+ * test environment (same runtime gate as `__setEscalationTimingForTest`): the
+ * registry is production state, and a stray import must never be able to point
+ * a real reap at a process the runner did not spawn.
  */
-function childTarget(proc: ChildProcess, verifyDeath: () => boolean = () => childExited(proc)): EscalationTarget {
-	return {
-		terminate: () => {
-			proc.kill("SIGTERM");
-		},
-		forceKill: () => {
-			proc.kill("SIGKILL");
-		},
-		verifyDeath,
+export function __registerActiveChildForTest(proc: ChildProcess, marker?: string): () => void {
+	if (!isTestEnvironment()) {
+		throw new Error(
+			"__registerActiveChildForTest() is test-only and cannot run in production.",
+		);
+	}
+	const token = `spawn-${process.pid}-${++spawnTokenSeq}`;
+	activeChildren.set(token, { proc, marker });
+	return () => {
+		activeChildren.delete(token);
 	};
+}
+
+/**
+ * Escalation target for one spawned child. `verifyDeath` defaults to the
+ * REAL-exit check (`childExited`) AND — on a group target — group emptiness, and
+ * may be overridden per site. The abort and timeout paths must use the real
+ * check (issue #303): `child.killed` flips when a signal is *sent*, not when the
+ * process dies, so gating the SIGKILL on it would let a SIGTERM-ignoring child
+ * survive the escalation.
+ *
+ * #299 Option B D2: on POSIX the target ALSO signals the child's process group
+ * (best-effort) and unconditionally SIGKILLs it after the grace window
+ * (`groupTarget`), so an env-scrubbed grandchild — invisible to the marker scan
+ * — dies with the child on abort/timeout/shutdown. The direct `proc.kill`
+ * signal is never replaced. On Windows (`supportsProcessGroupKill()` false,
+ * D6) this is exactly today's direct-only target.
+ *
+ * #299 review (Major 1 + Major 2):
+ *   - The tracked `ChildProcess` handle is its OWN identity class — it is not
+ *     marker-derived, so there is no marker guard here; terminate/forceKill stay
+ *     unconditional (D5). We add only a TERMINATE-time liveness re-check (skip
+ *     when the child is already confirmed exited). The force-kill window is
+ *     in-session and µs-class: the live handle cannot be reused by a foreign
+ *     process while we hold it.
+ *   - Major 2: the default death check becomes `childExited(proc) &&
+ *     groupHasMembers(pid) === false` so a descendant still cleaning up keeps the
+ *     grace window open. #299 fix A.2 makes that reader THREE-state: only a
+ *     POSITIVELY empty group (`false`) permits the early exit; an UNKNOWN
+ *     inspection (`undefined`) keeps the target alive. When /proc is unavailable
+ *     as a PLATFORM (`groupHasMembers` false) it
+ *     degrades to child-exited liveness — the documented platform boundary.
+ */
+function childTarget(proc: ChildProcess, verifyDeath?: () => boolean): EscalationTarget {
+	const pid = proc.pid ?? 0;
+	const killDirect = (_pid: number, signal: NodeJS.Signals): void => {
+		proc.kill(signal);
+	};
+	const useGroup = supportsProcessGroupKill() && proc.pid !== undefined;
+	const base = useGroup
+		? groupTarget(pid, killDirect, killProcessGroup, pidAlive, groupHasMembers)
+		: pidTarget(pid, killDirect, pidAlive);
+	const defaultVerifyDeath = useGroup
+		? () => childExited(proc) && groupHasMembers(pid) === false
+		: () => childExited(proc);
+	return {
+		...base,
+		terminate: () => {
+			// #299 review Major 1: an already-exited child is not signaled again.
+			if (childExited(proc)) return;
+			base.terminate();
+		},
+		verifyDeath: verifyDeath ?? defaultVerifyDeath,
+	};
+}
+
+/** Send a signal to a pid; the ONE production kill primitive for marker sweeps. */
+const killPid = (pid: number, signal: NodeJS.Signals): void => {
+	process.kill(pid, signal);
+};
+
+/**
+ * #299 Option A: union the marker-carrying descendants of the given markers into
+ * pid-based escalation targets. A spawned child stamps its own subprocesses with
+ * the same per-run marker env, so `findByMarker` surfaces grandchildren the
+ * `ChildProcess`-based targets cannot see. `excludePids` drops anything already
+ * targeted (the tracked direct children). Markers are per-run UUIDs, so a sweep
+ * cannot reach another run's tree.
+ *
+ * #299 review Major 1: every pid here is marker-derived, so its targets carry a
+ * `SignalGuard` that re-reads the LIVE marker (`pidHasMarker`) immediately before
+ * each signal. A pid that exited and was reused by a foreign process no longer
+ * carries the marker, so both the group and direct signals are SKIPPED and the
+ * skip is logged — never an unverified signal. `log` is optional (the sweep and
+ * shutdown calls pass their logger).
+ */
+function collectMarkerTargets(
+	markers: Iterable<string | undefined>,
+	excludePids: ReadonlySet<number>,
+	log?: Logger,
+): { pids: number[]; targets: EscalationTarget[] } {
+	const seen = new Set<number>();
+	const pids: number[] = [];
+	const targets: EscalationTarget[] = [];
+	// D3 (#299): a marker-verified pid is identity proof, so its group is also
+	// signaled best-effort. When the carrier is a group leader (the spawned child
+	// or a descendant that `setsid`'d) `-pid` reaches its env-scrubbed
+	// descendants; when it is merely a member, `-pid` is ESRCH and the direct
+	// signal still lands.
+	const groupKill = supportsProcessGroupKill() ? killProcessGroup : undefined;
+	for (const marker of markers) {
+		if (!marker) continue;
+		for (const pid of findByMarker(marker)) {
+			if (!Number.isInteger(pid) || pid <= 0) continue;
+			if (excludePids.has(pid) || seen.has(pid)) continue;
+			seen.add(pid);
+			pids.push(pid);
+			const guard: SignalGuard = {
+				isOwn: (targetPid) => pidHasMarker(targetPid, marker),
+				isGone: (targetPid) => pidGone(targetPid),
+				onSkip: (targetPid, signal, phase) =>
+					log?.warn("Skipped marker signal: pid no longer carries the run marker", {
+						pid: targetPid,
+						signal,
+						phase,
+						marker,
+					}),
+			};
+			targets.push(processTarget(pid, killPid, pidAlive, groupKill, groupHasMembers, guard));
+		}
+	}
+	return { pids, targets };
+}
+
+/**
+ * #299 Option A: kill every pid still carrying `marker` once the direct child has
+ * exited — the marker-inheriting descendants (grandchildren) that would
+ * otherwise survive the run in-session (probe 1c). No marker / no match is a
+ * no-op. Uses the same SIGTERM → grace → SIGKILL window (and test-only timing
+ * seam) as every other kill path; never rejects.
+ */
+async function sweepMarkerChildren(
+	marker: string | undefined,
+	excludePids: ReadonlySet<number>,
+	log?: Logger,
+): Promise<number[]> {
+	const { pids, targets } = collectMarkerTargets([marker], excludePids, log);
+	if (targets.length === 0) return [];
+	try {
+		await escalateKill(targets, {
+			graceMs: escalationTiming.graceMs,
+			pollMs: escalationTiming.pollMs,
+			sleep: realSleep,
+		});
+		log?.info("Swept leftover marker children after run exit", { marker, pids });
+	} catch (err) {
+		// A sweep must never block the run result from settling.
+		log?.warn("Marker sweep failed after run exit", { marker, error: String(err) });
+	}
+	return pids;
 }
 
 /**
  * Terminate every registered in-flight child: SIGTERM all, wait up to the shared
  * grace period (returning as soon as every child is dead — B4), then SIGKILL any
  * survivor. Returns the pids targeted. Safe to call when nothing is in flight.
+ *
+ * #299 Option A: each tracked entry's marker is also swept (`findByMarker`),
+ * because a marker-carrying grandchild is invisible to the `ChildProcess` handle
+ * and would otherwise survive a clean session_shutdown (probe 1b). Marker pids
+ * are deduped against the tracked pids and share the ONE escalation window, so
+ * the whole inherited tree dies together.
  */
 export async function reapActiveChildren(log?: Logger): Promise<number[]> {
 	const pids: number[] = [];
+	const trackedPids = new Set<number>();
 	const targets: EscalationTarget[] = [];
+	const markers: Array<string | undefined> = [];
 	for (const [token, entry] of activeChildren) {
 		if (entry.proc.pid === undefined) {
 			activeChildren.delete(token);
 			continue;
 		}
+		trackedPids.add(entry.proc.pid);
 		pids.push(entry.proc.pid);
 		targets.push(childTarget(entry.proc));
+		markers.push(entry.marker);
 	}
+	const swept = collectMarkerTargets(markers, trackedPids, log);
+	pids.push(...swept.pids);
+	targets.push(...swept.targets);
 	if (targets.length === 0) return [];
 
 	await escalateKill(targets, {
@@ -955,6 +1124,19 @@ ${msgBlock}`;
 					shell: false,
 					stdio: ["ignore", "pipe", "pipe"],
 					env: getSafeEnv(hasEnvOverrides ? envOverrides : undefined), // F2: Environment isolation + depth tracking
+					// #299 Option B D1: POSIX only — the child becomes its OWN session and
+					// process-group leader (`pgid == pid`), so every kill path can signal
+					// the whole tree (including env-scrubbed descendants) with
+					// `process.kill(-pid, sig)`. No `unref()`: we track the child, and the
+					// boot scan is its recovery path if the conductor crashes. Boundaries:
+					// (a) an env-scrubbed subtree whose leader is already dead before any
+					// sweep stays unreachable safely (only a surviving marker carrier is
+					// swept); (b) a descendant that calls `setsid` leaves the group by
+					// definition; (c) macOS has no /proc, so the boot scan is unchanged
+					// while the in-session group kill still works; (d) detached children no
+					// longer receive terminal-generated signals — the boot reap is their
+					// recovery path. Windows passes `false` (D6), exactly today's behavior.
+					detached: supportsProcessGroupKill(),
 				});
 
 				// Option B U1: register the child for shutdown reap. Keyed by the
@@ -982,6 +1164,24 @@ ${msgBlock}`;
 					result.stderr += data.toString();
 				});
 
+				// #299 Option A: sweep on `exit`, not `close`. `exit` is where the direct
+				// child is confirmed dead; `close` can be delayed indefinitely when a
+				// grandchild inherited the child's stdio and keeps the pipes open. Killing
+				// the leftover marker tree here also releases those pipes so the run can
+				// settle. Success, timeout, and abort all terminate the direct child and so
+				// all funnel through this ONE exit sweep (probe 1c). The per-run marker
+				// keeps it foreign-tree-safe; already-tracked concurrent children are
+				// excluded because two children may legitimately share a marker (B5).
+				let sweepPromise: Promise<number[]> | undefined;
+				proc.on("exit", () => {
+					const excludePids = new Set<number>();
+					for (const entry of activeChildren.values()) {
+						if (entry.proc.pid !== undefined) excludePids.add(entry.proc.pid);
+					}
+					if (proc.pid !== undefined) excludePids.add(proc.pid);
+					sweepPromise = sweepMarkerChildren(childMarker, excludePids, log);
+				});
+
 				proc.on("close", (code, signal) => {
 					activeChildren.delete(registryToken);
 					if (buffer.trim()) {
@@ -1003,7 +1203,10 @@ ${msgBlock}`;
 						result.errorMessage = `${SUBAGENT_SIGNAL_KILLED_MESSAGE} (${signal ?? "unknown"})`;
 						log?.warn("Subagent killed by external signal", { signal, pid: proc.pid });
 					}
-					resolve(result.exitCode);
+					// #299 Option A: settle only AFTER the exit sweep finished, so no
+					// in-session marker tree outlives the run (probe 1c). Result semantics
+					// above are untouched.
+					void (sweepPromise ?? Promise.resolve([])).then(() => resolve(result.exitCode));
 				});
 
 				proc.on("error", (err) => {

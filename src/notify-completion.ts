@@ -220,6 +220,29 @@ export function markTerminalSeen(seen: Set<string>, id: string, cap = DEDUPE_CAP
 }
 
 /**
+ * Shared terminal-notice claim set (issue #315). ONE module-level surface so
+ * the event-bus wake (`subagent-completion`) and the poller's crash notices
+ * (`subagent-notification`) can never both fire for the same run id. Wraps
+ * `markTerminalSeen`, so the dedupe + cap rule lives in exactly one place.
+ */
+const terminalClaims = new Set<string>();
+
+/**
+ * Claim the single terminal notice for `id`. Returns true when THIS caller
+ * wins the claim (and must deliver), false when another terminal path already
+ * claimed the id. The wake is canonical: its subscriber claims synchronously
+ * on the terminal event, so a later crash notice is suppressed.
+ */
+export function claimTerminalNotice(id: string): boolean {
+	return markTerminalSeen(terminalClaims, id);
+}
+
+/** TEST-ONLY: clear the shared terminal-claim set between test cases. */
+export function __resetTerminalClaims(): void {
+	terminalClaims.clear();
+}
+
+/**
  * THIN sender — the only `pi.sendMessage` call site. One call, no logic.
  * The `delivery` is the resolved output of `resolveDelivery` (D1+D2); it
  * carries both `deliverAs` and `triggerTurn` so the matrix is honored.

@@ -84,6 +84,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `proc.ts` | Production process primitives — Linux/POSIX /proc reads, feature detection, and the default recovery deps. |
 | `prompt.ts` | Builds the subagent system prompt, including the task fence and inherited-instruction handling. |
 | `recovery-engine.ts` | Pure recovery decision engine — identity, owner liveness classification, and the boot-scan plan over injected process deps. |
+| `recovery-surface.ts` | U3 recovery surface — interrupted-run projection, one-per-boot notice, and the abandon action. |
 | `recovery.ts` | Boot-time recovery scan — decides whether a persisted running record is live, reaps orphaned children, and marks interrupted records. |
 | `reports.ts` | Compliance reporting: file-access records and secrets-exposure detection. |
 | `router.ts` | Auto-route: keyword classification of a task description to the best preset. |
@@ -104,22 +105,21 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**39 modules** — every one is listed because a new module without a purpose fails CI.
+**40 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
 ## Knowledge layers
 
-Two indexes answer different questions about this repo; neither replaces reading the source.
+**CodeGraph is the sole structural index** (ADR 0016); graphify is retired. It answers the Rule 13 scoping
+questions — who calls X, what breaks if I change Y, which tests are affected — from a gitignored SQLite index
+(`.codegraph/`), refreshed by `.pi/skills/worktree/codegraph-refresh.sh` (`codegraph sync` + `codegraph-check.py`)
+at every merge into `dev`: explicit, conductor-side, never a hook (#230). Its `codegraph-check.py` guard asserts
+module + exported-symbol coverage and declared freshness (`indexed_at_commit == HEAD`).
 
-| Layer | Answers | Lives in | Refreshed by |
-|---|---|---|---|
-| **CodeGraph** (structural) | callers, impact / blast radius, symbol search, affected tests — the Rule 13 scoping questions | `.pi/skills/worktree/codegraph-refresh.sh` + `codegraph-check.py`; its SQLite index is the gitignored `.codegraph/` | explicit `codegraph sync`, conductor-side (manual; Phase 2 dogfooding — **not the merge gate yet**) |
-| **graphify** (semantic / doc) | concepts, communities, cross-document relationships | `graphify-out/` (gitignored; conductor-side only — subagents never see it, rule 4) | `graph-refresh.sh` at every merge into `dev` (the current gate) |
-
-**Routing:** structural questions (who calls X, what breaks if I change Y, which tests are affected) →
-CodeGraph; concept / community / doc questions → graphify. The split posture and the Phase 2 gate criteria are
-recorded in [ADR 0015](./decisions/0015-codegraph-structural-index.md).
+Doc navigation is deterministic — **grep + the generated docs (`docs-arch`, `docs-decisions`) + the ADRs** — no
+LLM sits on that path. Re-adoption is possible at any time (graphify is an external tool), but the repo carries
+no gate, hook, or artifact for it.
 
 ## Persistence and state
 

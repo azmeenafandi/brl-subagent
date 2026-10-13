@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { createEmptyResult, cleanupRuns, finalizeRunRecord } from "../history";
+import { createEmptyResult, cleanupRuns, sortNewestFirst, finalizeRunRecord } from "../history";
 import type { SubagentRun, SubagentResult } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -22,10 +22,16 @@ function makeRun(id: string, startedAt: string): SubagentRun {
 }
 
 describe("cleanupRuns", () => {
-	it("returns all runs when maxEntries is 0 (unlimited)", () => {
-		const runs = [makeRun("1", "2024-01-01T00:00:00Z"), makeRun("2", "2024-01-02T00:00:00Z")];
+	it("returns all runs when maxEntries is 0 (unlimited), sorted newest-first", () => {
+		const runs = [
+			makeRun("old", "2024-01-01T00:00:00Z"),
+			makeRun("newest", "2024-01-03T00:00:00Z"),
+			makeRun("mid", "2024-01-02T00:00:00Z"),
+		];
 		const result = cleanupRuns(runs, 0);
-		expect(result).toHaveLength(2);
+		expect(result).toHaveLength(3);
+		// The unlimited path keeps every entry but is still newest-first.
+		expect(result.map((r) => r.id)).toEqual(["newest", "mid", "old"]);
 	});
 
 	it("returns all runs when count is <= maxEntries", () => {
@@ -93,6 +99,27 @@ describe("cleanupRuns", () => {
 		];
 		const result = cleanupRuns(runs, 2);
 		expect(result).toHaveLength(2);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// sortNewestFirst — shared non-mutating ordering helper (issue #330)
+// ---------------------------------------------------------------------------
+
+describe("sortNewestFirst", () => {
+	it("returns a newest-first COPY and never mutates the input", () => {
+		const input = [
+			makeRun("old", "2024-01-01T00:00:00Z"),
+			makeRun("newest", "2024-01-03T00:00:00Z"),
+			makeRun("mid", "2024-01-02T00:00:00Z"),
+		];
+		const snapshot = [...input];
+
+		const result = sortNewestFirst(input);
+
+		expect(result.map((r) => r.id)).toEqual(["newest", "mid", "old"]);
+		expect(result).not.toBe(input);
+		expect(input).toEqual(snapshot);
 	});
 });
 

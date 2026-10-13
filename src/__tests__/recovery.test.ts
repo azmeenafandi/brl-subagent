@@ -26,19 +26,28 @@ import * as path from "node:path";
 import {
 	decideRecovery,
 	recoverRecord,
+	reapPids,
 	runBootScan,
+	recoverProduction,
 	classifyOwner,
 	defaultRecoveryDeps,
 	currentProcessOwner,
 	newDispatchIdentity,
 	dedupeRunEntriesById,
 	pidAlive,
+	pidGone,
 	readStartToken,
 	findByMarker,
+	groupHasMembers,
 	isProcAvailable,
 	type RecoveryDeps,
 	type RecoveryRecord,
 } from "../recovery";
+import {
+	__setProcessGroupKillSupportedForTest,
+	supportsProcessGroupKill,
+} from "../kill-escalation";
+import { registerInflightRun, registryDir, __setRegistryDir } from "../run-registry";
 import { isInterruptedRun, isSubagentRunShape, type ProcessOwner, type SubagentRun } from "../types";
 import { resolveTerminalRunEntry } from "../state";
 import { CHILD_MARKER_ENV_KEY } from "../sanitize";
@@ -47,9 +56,25 @@ import {
 	reapActiveChildren,
 	runSubagent,
 	__setEscalationTimingForTest,
+	__registerActiveChildForTest,
 } from "../runner";
 import { listPersistedAgents, markAgentInterrupted } from "../session-manager";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
+import { fsMockControl, resetFsMock } from "./fixtures/fs-mock";
+
+// ---------------------------------------------------------------------------
+// #299 fix A.2 — deterministic `/proc` inspection failure for the tri-state
+// integration test (T-new). The mock is a TRANSPARENT wrapper (shared with
+// proc.test.ts via `./fixtures/fs-mock`): with no control flag set it delegates
+// every call to the real `node:fs`, so every other test in this file is
+// unaffected.
+// ---------------------------------------------------------------------------
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	const { buildFsMock } = await import("./fixtures/fs-mock");
+	return buildFsMock(actual);
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -92,10 +117,17 @@ async function waitForSpawn(child: ChildProcess): Promise<number> {
 	return child.pid;
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+async function waitUntil(
+	predicate: () => boolean,
+	timeoutMs = 5000,
+	throwOnTimeout = true,
+): Promise<void> {
 	const start = Date.now();
 	while (!predicate()) {
-		if (Date.now() - start > timeoutMs) throw new Error("waitUntil timed out");
+		if (Date.now() - start > timeoutMs) {
+			if (throwOnTimeout) throw new Error("waitUntil timed out");
+			return;
+		}
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 }
@@ -106,6 +138,13 @@ function track(child: ChildProcess): ChildProcess {
 	return child;
 }
 
+/**
+ * Pids launched as a GRANDCHILD of a wrapper (not a direct ChildProcess of this
+ * test process), so they need their own cleanup. A test adds the pid it reads
+ * from the readiness file; afterEach force-kills any survivor.
+ */
+const strayPids = new Set<number>();
+
 afterEach(async () => {
 	for (const child of spawned.splice(0)) {
 		try {
@@ -114,6 +153,22 @@ afterEach(async () => {
 			// already gone
 		}
 	}
+	for (const pid of strayPids) {
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch {
+			// already gone
+		}
+	}
+	strayPids.clear();
+	// #299 fix A.2: never leak a forced `/proc` inspection failure into the next
+	// test (the node:fs mock is transparent when these are clear).
+	resetFsMock();
+	// Any test that shortened the escalation timing must not leak it into the
+	// next file-scoped test (idempotent reset to production timing).
+	__setEscalationTimingForTest();
+	// Likewise restore real process-group capability detection after T5.
+	__setProcessGroupKillSupportedForTest(undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -613,6 +668,165 @@ async function withSleepWrapper<T>(fn: () => Promise<T>): Promise<T> {
 	);
 }
 
+/**
+ * A wrapper that spawns a long-lived `bash` GRANDCHILD (which inherits the
+ * per-run marker env from the wrapper) and then waits. Models the realistic
+ * child→grandchild tree the marker scan must cover (#299). By default the
+ * grandchild inherits the marker; with `stripMarker` it is launched via
+ * `env -u BRL_SUBAGENT_CHILD_MARKER`, modelling an env-scrubbing/setsid subtree
+ * the marker scan CANNOT see (the Option B boundary).
+ *
+ * The grandchild ignores SIGHUP and `exec`s, so killing the wrapper cannot kill
+ * it indirectly — a survival assertion then honestly measures the MARKER
+ * boundary, not shell job-control side effects. Writes the grandchild pid to
+ * `<dir>/grandchild.pid`; `fn` receives that path plus the wrapper script path
+ * (so a caller can spawn the wrapper directly without `runSubagent`).
+ */
+async function withGrandchildWrapper<T>(
+	fn: (pidFile: string, script: string) => Promise<T>,
+	stripMarker = false,
+): Promise<T> {
+	return withTempPiBin(
+		"brl-grandchild-",
+		(dir) => {
+			const script = path.join(dir, "grandchild.sh");
+			const pidFile = path.join(dir, "grandchild.pid");
+			// The inner bash writes its OWN pid (`$$`): `$!` in the outer shell can name
+			// a subshell rather than the process carrying the (possibly stripped)
+			// environment. `exec sleep` keeps that pid. `trap "" HUP` keeps the
+			// grandchild alive when the wrapper dies, so a survival assertion measures
+			// the MARKER boundary, not shell job-control. stdio goes to /dev/null as a
+			// daemonized process would, so it does not hold the conductor's pipes open.
+			const launcher =
+				`${stripMarker ? `env -u ${CHILD_MARKER_ENV_KEY} ` : ""}` +
+				`bash -c 'echo $$ > ${JSON.stringify(pidFile)}; trap "" HUP; exec sleep 300' >/dev/null 2>&1 &`;
+			fs.writeFileSync(script, `#!/bin/sh\n${launcher}\nwait\n`, { mode: 0o755 });
+			return script;
+		},
+		(dir) => fn(path.join(dir, "grandchild.pid"), path.join(dir, "grandchild.sh")),
+	);
+}
+
+/** Wait for the wrapper's readiness (grandchild pid) file and return its pid. */
+async function readGrandchildPid(pidFile: string): Promise<number> {
+	await waitUntil(() => fs.existsSync(pidFile), 5000);
+	const pid = Number(fs.readFileSync(pidFile, "utf-8").trim());
+	if (!Number.isInteger(pid) || pid <= 0) throw new Error(`bad grandchild pid in ${pidFile}`);
+	strayPids.add(pid);
+	return pid;
+}
+
+/**
+ * Field 5 of `/proc/<pid>/stat` — the process group id. Parsed after the LAST
+ * `)` so a `(comm)` containing spaces or parens cannot shift the fields.
+ */
+function readProcessGroup(pid: number): number {
+	const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf-8");
+	const rest = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/);
+	return Number(rest[2]);
+}
+
+/**
+ * Spy on `process.kill`, recording every PROCESS-GROUP dispatch (negative pid).
+ * `groupTarget`/`killProcessGroup` reach groups via `kill(-pgid)`, so this is
+ * the exact observation of group signaling; direct pid signals stay positive.
+ * The mock calls through, so direct signals and `kill -0` liveness still work.
+ */
+function spyOnProcessKillGroups(): { groupPids: number[]; restore: () => void } {
+	const groupPids: number[] = [];
+	const original = process.kill;
+	const spy = vi.spyOn(process, "kill").mockImplementation(((
+		pid: number,
+		signal?: NodeJS.Signals | number,
+	) => {
+		if (typeof pid === "number" && pid < 0) groupPids.push(pid);
+		return original(pid, signal as NodeJS.Signals);
+	}) as typeof process.kill);
+	return { groupPids, restore: () => spy.mockRestore() };
+}
+
+/**
+ * A DETACHED leader that spawns a member IGNORING SIGTERM and then EXITS, while
+ * the member stays alive in the leader's group. The member writes `readyFile`
+ * AFTER installing its SIGTERM handler (the #303 handshake), so a group SIGTERM
+ * cannot kill it by Node's default disposition before it is actually stubborn.
+ *
+ * Leader already dead + TERM-stubborn member still alive is exactly the D5
+ * case: `verifyDeath()` is true from the start, so the survivor `forceKill` can
+ * never run — only the UNCONDITIONAL final group SIGKILL can end the member.
+ */
+function spawnStubbornGroup(memberPidFile: string, readyFile: string): ChildProcess {
+	const memberCode =
+		`const fs=require('node:fs');` +
+		`process.on('SIGTERM',()=>{});` +
+		`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
+		`setInterval(()=>{},1000)`;
+	const leaderCode =
+		`const {spawn}=require('node:child_process');const fs=require('node:fs');` +
+		`const m=spawn(process.execPath,['-e',${JSON.stringify(memberCode)}],{stdio:'ignore'});` +
+		`fs.writeFileSync(${JSON.stringify(memberPidFile)}, String(m.pid));` +
+		// The member refs the leader's event loop; exit explicitly so the leader is
+		// gone while the member keeps the group alive.
+		`process.exit(0);`;
+	return spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true });
+}
+
+/**
+ * A DETACHED leader that spawns a member which handles SIGTERM with a
+ * `cleanupMs` delay, writes `doneFile` when finished, then exits. The leader
+ * dies on SIGTERM (default disposition). Models the #299 review Major 2 case:
+ * the leader exits fast while a same-group member is still cleaning up — a
+ * leader-only death check would SIGKILL the member mid-cleanup. `env` carries
+ * the run marker so the production signal-time verifier accepts the leader.
+ */
+function spawnGracefulGroup(
+	memberPidFile: string,
+	readyFile: string,
+	doneFile: string,
+	cleanupMs: number,
+	env: NodeJS.ProcessEnv,
+): ChildProcess {
+	const memberCode =
+		`const fs=require('node:fs');` +
+		`process.on('SIGTERM',()=>{` +
+		`setTimeout(()=>{fs.writeFileSync(${JSON.stringify(doneFile)}, String(Date.now()));process.exit(0);}, ${cleanupMs});` +
+		`});` +
+		`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
+		`setInterval(()=>{},1000)`;
+	const leaderCode =
+		`const {spawn}=require('node:child_process');const fs=require('node:fs');` +
+		`const m=spawn(process.execPath,['-e',${JSON.stringify(memberCode)}],{stdio:'ignore'});` +
+		`fs.writeFileSync(${JSON.stringify(memberPidFile)}, String(m.pid));` +
+		`setInterval(()=>{},1000)`;
+	return spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true, env });
+}
+
+/**
+ * The production recovery deps with the `kill`/`killGroup` primitives wrapped by
+ * recorders that call through — the exact observation of signal dispatch for the
+ * #299 review A1/A2 tests.
+ */
+function recordingDeps(overrides: Partial<RecoveryDeps> = {}) {
+	const base = defaultRecoveryDeps();
+	const killCalls: Array<[number, NodeJS.Signals]> = [];
+	const groupCalls: Array<[number, NodeJS.Signals]> = [];
+	const deps: RecoveryDeps = {
+		...base,
+		kill: (pid, signal) => {
+			killCalls.push([pid, signal]);
+			base.kill(pid, signal);
+		},
+		killGroup: base.killGroup
+			? (pgid, signal) => {
+					groupCalls.push([pgid, signal]);
+					base.killGroup!(pgid, signal);
+				}
+			: undefined,
+		...overrides,
+	};
+	return { deps, killCalls, groupCalls };
+}
+
 /** Launch one wrapper child with a per-run marker (and optional abort signal). */
 function launchForeground(marker: string, timeout?: number, signal?: AbortSignal) {
 	return runSubagent(
@@ -763,6 +977,835 @@ describe("shutdown reap", () => {
 			expect(activeChildCount()).toBe(0);
 		});
 	}, 20000);
+
+	it("#299 Option A: reaps a marker-carrying GRANDCHILD alongside the tracked child", async () => {
+		if (!isProcAvailable()) return;
+		await withGrandchildWrapper(async (pidFile) => {
+			const marker = `grandchild-reap-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker);
+			await waitUntil(() => activeChildCount() === 1, 5000);
+			const grandchildPid = await readGrandchildPid(pidFile);
+			// One marker now spans TWO pids: the tracked direct child and the grandchild.
+			await waitUntil(() => findByMarker(marker).includes(grandchildPid), 5000);
+			expect(findByMarker(marker).length).toBeGreaterThanOrEqual(2);
+			const before = findByMarker(marker).sort((a, b) => a - b);
+
+			const reaped = await reapActiveChildren();
+
+			// #322: this is an END-TO-END ACCOUNTING case, NOT shutdown isolation.
+			// The tracked wrapper is a real `runSubagent` child, so killing it fires
+			// the run's own exit sweep (runner.ts:955), which targets the SAME marker
+			// tree and can kill the grandchild before these pre-settle checks run. A
+			// grandchild death here is therefore NOT attributable to the shutdown
+			// reap. The attribution test is the isolated #322 case below (no
+			// `runSubagent`). These checks only pin that the shutdown result
+			// enumerates the pid and that the tree is gone by run settle.
+			expect(reaped).toContain(grandchildPid);
+			await waitUntil(() => !pidAlive(grandchildPid), 5000);
+			expect(pidAlive(grandchildPid)).toBe(false);
+			await waitUntil(() => findByMarker(marker).length === 0, 5000);
+			expect(findByMarker(marker)).toEqual([]);
+
+			await promise;
+
+			// One escalation window ended the whole inherited tree (probe 1b).
+			expect(reaped).toContain(grandchildPid);
+			await waitUntil(() => findByMarker(marker).length === 0, 5000);
+			expect(findByMarker(marker)).toEqual([]);
+			expect(pidAlive(grandchildPid)).toBe(false);
+			expect(activeChildCount()).toBe(0);
+			// Evidence: record the pids observed before/after for the PR body.
+			console.log(`#299-A reapActiveChildren pids BEFORE=${JSON.stringify(before)} REAPED=${JSON.stringify(reaped)} grandchildAliveAfter=${pidAlive(grandchildPid)}`);
+		});
+	}, 20000);
+
+	it("#322 isolation: reapActiveChildren ALONE reaps the child AND its marker grandchild", async () => {
+		if (!isProcAvailable()) return;
+		await withGrandchildWrapper(async (pidFile, script) => {
+			const marker = `isolated-reap-${crypto.randomUUID()}`;
+			// Launch the wrapper DIRECTLY — no `runSubagent`, so the run's exit sweep
+			// (runner.ts:955) is never in the picture. The only kill path in play is
+			// `reapActiveChildren`'s own tracked-child + marker union, which makes the
+			// grandchild death assertion attributable to the shutdown reap.
+			const wrapper = track(
+				spawn(script, [], {
+					stdio: "ignore",
+					env: { ...process.env, [CHILD_MARKER_ENV_KEY]: marker },
+				}),
+			);
+			const wrapperPid = await waitForSpawn(wrapper);
+			const deregister = __registerActiveChildForTest(wrapper, marker);
+			try {
+				const grandchildPid = await readGrandchildPid(pidFile);
+				await waitUntil(() => findByMarker(marker).includes(grandchildPid), 5000);
+				const before = findByMarker(marker).sort((a, b) => a - b);
+
+				const reaped = await reapActiveChildren();
+
+				// The reaped set enumerates BOTH pids: the tracked wrapper (ChildProcess
+				// target) and the marker-only grandchild (marker sweep).
+				expect(reaped).toContain(wrapperPid);
+				expect(reaped).toContain(grandchildPid);
+				// No run is awaited here, so nothing else can have killed the grandchild.
+				// The settle window below only grants /proc a tick to drop the entry; the
+				// ASSERTION is the tripwire (a no-op marker target must fail here).
+				await waitUntil(
+					() => !pidAlive(wrapperPid) && !pidAlive(grandchildPid),
+					5000,
+					false,
+				);
+				expect(pidAlive(wrapperPid)).toBe(false);
+				expect(pidAlive(grandchildPid)).toBe(false);
+				console.log(
+					`#322 isolation BEFORE=${JSON.stringify(before)} REAPED=${JSON.stringify(reaped)} wrapperPid=${wrapperPid} grandchildPid=${grandchildPid}`,
+				);
+			} finally {
+				deregister();
+			}
+		});
+	}, 20000);
+
+	it("#299 Option B: reapActiveChildren group-kills a marker-STRIPPED grandchild", async () => {
+		if (!isProcAvailable()) return;
+		await withGrandchildWrapper(async (pidFile) => {
+			const marker = `boundary-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker);
+			await waitUntil(() => activeChildCount() === 1, 5000);
+			const grandchildPid = await readGrandchildPid(pidFile);
+			// The tracked child carries the marker; the scrubbed grandchild does not.
+			await waitUntil(() => findByMarker(marker).length >= 1, 5000);
+			expect(findByMarker(marker)).not.toContain(grandchildPid);
+
+			const reaped = await reapActiveChildren();
+			await promise;
+
+			// Option A could not see a grandchild that scrubbed the marker. Under
+			// Option B the tracked child is its own group leader (detached, D1), so the
+			// group signal reaches that scrubbed descendant anyway — the residual is
+			// closed. This is an END-TO-END case (the run's own exit sweep may share
+			// the kill); T2 is the seam-isolated, attributable version.
+			expect(reaped).not.toContain(grandchildPid); // accounting is still pid/marker-based
+			await waitUntil(() => !pidAlive(grandchildPid), 5000);
+			expect(pidAlive(grandchildPid)).toBe(false);
+			console.log(`#299-B boundary grandchild=${grandchildPid} aliveAfterShutdownReap=${pidAlive(grandchildPid)} markerVisible=${findByMarker(marker).includes(grandchildPid)}`);
+		}, true);
+	}, 20000);
+
+	it("#299 T1: a runSubagent child is its own process-group leader (detached)", async () => {
+		if (!isProcAvailable()) return;
+		await withSleepWrapper(async () => {
+			const marker = `pgrp-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker);
+			// Capture the pid INSIDE the predicate so a transient second `/proc` read
+			// cannot observe an empty scan between readiness and the read below.
+			let childPid = 0;
+			await waitUntil(() => {
+				const found = findByMarker(marker);
+				if (found.length === 0) return false;
+				childPid = found[0];
+				return true;
+			}, 5000);
+			// Safety net: if an assertion below fails before the reap, afterEach still
+			// SIGKILLs this runSubagent child (it is not a `spawned` ChildProcess here).
+			strayPids.add(childPid);
+			// `detached: true` made the child a session/group leader — the invariant
+			// every group kill path (`kill(-pid)`) depends on.
+			expect(readProcessGroup(childPid)).toBe(childPid);
+			await reapActiveChildren();
+			await promise;
+			expect(pidAlive(childPid)).toBe(false);
+		});
+	}, 20000);
+
+	it("#299 T1-false: the spawn gate leaves the child in the parent's group when the capability is off", async () => {
+		if (!isProcAvailable()) return;
+		// The capability gate is consulted at the SPAWN SITE, not only at the kill
+		// sites. Forcing it FALSE must make `runSubagent` spawn a NON-detached child,
+		// so the child inherits the conductor's process group instead of leading its
+		// own. T1 covers the TRUE branch (`pgrp === pid`); this covers the false one.
+		// M-g tripwire: forcing `detached: true` unconditionally at the spawn site
+		// fails HERE — the child would then be its own group leader.
+		__setProcessGroupKillSupportedForTest(false);
+		await withSleepWrapper(async () => {
+			const marker = `pgrp-gate-off-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker);
+			// Capture the pid INSIDE the predicate so a transient second `/proc` read
+			// cannot observe an empty scan between readiness and the read below.
+			let childPid = 0;
+			await waitUntil(() => {
+				const found = findByMarker(marker);
+				if (found.length === 0) return false;
+				childPid = found[0];
+				return true;
+			}, 5000);
+			// Safety net: if an assertion below fails before the reap, afterEach still
+			// SIGKILLs this runSubagent child (it is not a `spawned` ChildProcess here).
+			strayPids.add(childPid);
+			const childGroup = readProcessGroup(childPid);
+			// NOT its own group leader...
+			expect(childGroup).not.toBe(childPid);
+			// ...it inherits the conductor's process group (the vitest worker).
+			expect(childGroup).toBe(readProcessGroup(process.pid));
+			// The run still works and terminates through the direct-only fallback reap.
+			await reapActiveChildren();
+			await promise;
+			expect(pidAlive(childPid)).toBe(false);
+		});
+	}, 20000);
+
+	it("#299 T2: reapActiveChildren group-kills an env-SCRUBBED grandchild (seam-isolated)", async () => {
+		if (!isProcAvailable()) return;
+		await withGrandchildWrapper(async (pidFile, script) => {
+			const marker = `scrub-reap-${crypto.randomUUID()}`;
+			// Spawn the wrapper DETACHED — models a real runSubagent child (D1) so its
+			// group id is its own pid — then register it via the #322 seam. No
+			// `runSubagent` is awaited, so only `reapActiveChildren` can have killed the
+			// scrubbed grandchild: the death assertion is attributable.
+			const wrapper = track(
+				spawn(script, [], {
+					stdio: "ignore",
+					env: { ...process.env, [CHILD_MARKER_ENV_KEY]: marker },
+					detached: true,
+				}),
+			);
+			const wrapperPid = await waitForSpawn(wrapper);
+			const deregister = __registerActiveChildForTest(wrapper, marker);
+			try {
+				const grandchildPid = await readGrandchildPid(pidFile);
+				// Same group as the wrapper, but NO marker: invisible to the scan.
+				expect(readProcessGroup(grandchildPid)).toBe(wrapperPid);
+				expect(findByMarker(marker)).not.toContain(grandchildPid);
+
+				const reaped = await reapActiveChildren();
+				expect(reaped).toContain(wrapperPid);
+				await waitUntil(() => !pidAlive(wrapperPid) && !pidAlive(grandchildPid), 5000);
+				expect(pidAlive(wrapperPid)).toBe(false);
+				expect(pidAlive(grandchildPid)).toBe(false);
+				console.log(`#299-B T2 wrapper=${wrapperPid} scrubbedGrandchild=${grandchildPid} aliveAfter=${pidAlive(grandchildPid)}`);
+			} finally {
+				deregister();
+			}
+		}, true);
+	}, 20000);
+
+	it("#299 T4: a TERM-stubborn group member is SIGKILLed after its leader exits (D5)", async () => {
+		if (!isProcAvailable()) return;
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-stubborn-"));
+		try {
+			const memberPidFile = path.join(dir, "member.pid");
+			const readyFile = path.join(dir, "ready");
+			const leader = track(spawnStubbornGroup(memberPidFile, readyFile));
+			const leaderPid = await waitForSpawn(leader);
+			await once(leader, "exit"); // leader gone; the group persists via the member
+			await waitUntil(() => !pidAlive(leaderPid), 2000);
+			await waitUntil(() => fs.existsSync(memberPidFile) && fs.existsSync(readyFile), 5000);
+			const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
+			strayPids.add(memberPid);
+			await waitUntil(() => pidAlive(memberPid), 5000);
+			expect(pidAlive(leaderPid)).toBe(false); // verifyDeath is already true
+
+			// The leader is already dead (so the leader-based survivor `forceKill` is
+			// skipped) and the member ignores SIGTERM. Only the UNCONDITIONAL final
+			// group SIGKILL (D5) can end it.
+			const deps = { ...defaultRecoveryDeps(), graceMs: 1000, pollMs: 20 };
+			const survivors = await reapPids([leaderPid], deps);
+			await waitUntil(() => !pidAlive(memberPid), 5000);
+			expect(pidAlive(memberPid)).toBe(false);
+			expect(survivors).toEqual([]);
+			console.log(`#299-B T4 leader=${leaderPid} stubbornMember=${memberPid} aliveAfter=${pidAlive(memberPid)}`);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 20000);
+
+	it("#299 T5: the platform gate disables group dispatch (Windows fallback)", async () => {
+		if (!isProcAvailable()) return;
+		const spy = spyOnProcessKillGroups();
+		try {
+			__setProcessGroupKillSupportedForTest(false);
+			expect(supportsProcessGroupKill()).toBe(false);
+			const deps = defaultRecoveryDeps();
+			// The capability gate is the presence of the group primitive: on win32 it
+			// is simply not wired, so `reapPids` selects direct-only pid targets.
+			expect(deps.killGroup).toBeUndefined();
+			const sleeper = track(spawnSleeper());
+			const pid = await waitForSpawn(sleeper);
+			await reapPids([pid], { ...deps, graceMs: 100, pollMs: 10 });
+			await waitUntil(() => !pidAlive(pid), 2000);
+			expect(pidAlive(pid)).toBe(false);
+			expect(spy.groupPids).toEqual([]);
+			console.log(`#299-B T5 platformGate=false directReap=true groupPids=${JSON.stringify(spy.groupPids)}`);
+		} finally {
+			spy.restore();
+			__setProcessGroupKillSupportedForTest(undefined);
+		}
+	}, 20000);
+
+	it("#299 T6: a pid with no marker is never group-signaled", async () => {
+		if (!isProcAvailable()) return;
+		// A detached process that carries NO run marker: it belongs to no run tree.
+		const foreign = track(
+			spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+				stdio: "ignore",
+				detached: true,
+			}),
+		);
+		const foreignPid = await waitForSpawn(foreign);
+		const spy = spyOnProcessKillGroups();
+		try {
+			const marker = `absent-${crypto.randomUUID()}`;
+			const deps = { ...defaultRecoveryDeps(), graceMs: 100, pollMs: 10 };
+			const summary = await runBootScan({
+				records: [
+					record({
+						id: "t6-no-marker",
+						owner: { pid: DEAD_PID, start: "100" },
+						childMarker: marker,
+					}),
+				],
+				deps,
+				mark: () => true,
+			});
+			expect(summary.reaped).toBe(0);
+			// Identity is enforced by the marker: no match → no target → no signal,
+			// group or direct, for the foreign leader.
+			expect(spy.groupPids).toEqual([]);
+			await waitUntil(() => pidAlive(foreignPid), 500);
+			expect(pidAlive(foreignPid)).toBe(true);
+			console.log(`#299-B T6 foreign=${foreignPid} groupPids=${JSON.stringify(spy.groupPids)}`);
+		} finally {
+			spy.restore();
+		}
+	}, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// #299 review fix — A1 signal-time marker verification, A2 group-empty grace
+// ---------------------------------------------------------------------------
+
+describe("#299 review A1: signal-time marker verification", () => {
+	it("does NOT signal an alive pid that no longer carries the marker (reused pid)", async () => {
+		if (!isProcAvailable()) return;
+		// A detached, marker-free foreign process is exactly the state a reused pid
+		// is in. The scan-time match is stubbed via `markerOfPid`; the PRODUCTION
+		// `pidHasMarker` verifier then reads no marker at signal time. Removing the
+		// signal-time gate lets the stale SIGTERM/SIGKILL reach this process.
+		const foreign = track(
+			spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+				stdio: "ignore",
+				detached: true,
+			}),
+		);
+		const foreignPid = await waitForSpawn(foreign);
+		const marker = `reused-${crypto.randomUUID()}`;
+		const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 200, pollMs: 20 });
+
+		const survivors = await reapPids([foreignPid], deps, () => marker);
+
+		// No signal, group or direct, reaches the foreign process/group.
+		expect(killCalls).toEqual([]);
+		expect(groupCalls).toEqual([]);
+		expect(survivors).toEqual([]);
+		expect(pidAlive(foreignPid)).toBe(true);
+		console.log(
+			`#299-A1 reused foreign=${foreignPid} killCalls=${JSON.stringify(killCalls)} groupCalls=${JSON.stringify(groupCalls)} aliveAfter=${pidAlive(foreignPid)}`,
+		);
+	}, 20000);
+
+	it("still signals a live marker pid — group AND direct (positive path)", async () => {
+		if (!isProcAvailable()) return;
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-guard-"));
+		try {
+			const marker = `guarded-${crypto.randomUUID()}`;
+			const readyFile = path.join(dir, "ready");
+			// A SIGTERM-IGNORING process, spawned WITHOUT `detached` so it is NOT a
+			// group leader: `kill(-pid)` names no group (ESRCH, swallowed) and the
+			// DIRECT TERM/KILL are the effective signals. That makes the positive path
+			// deterministic — a real group leader would die on the group SIGKILL and
+			// the (redundant) direct SIGKILL would be correctly skipped by the guard.
+			const code =
+				`const fs=require('node:fs');` +
+				`process.on('SIGTERM',()=>{});` +
+				`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
+				`setInterval(()=>{},1000)`;
+			const child = track(
+				spawn(process.execPath, ["-e", code], {
+					stdio: "ignore",
+					env: { ...process.env, [CHILD_MARKER_ENV_KEY]: marker },
+				}),
+			);
+			const childPid = await waitForSpawn(child);
+			await waitUntil(() => fs.existsSync(readyFile) && findByMarker(marker).includes(childPid), 5000);
+			const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 300, pollMs: 20 });
+
+			const survivors = await reapPids([childPid], deps, () => marker);
+
+			// The guard ALLOWED the signals while the marker was present: the direct TERM
+			// was dispatched (the process survived it), and the after-grace direct KILL
+			// ended it. The group signals were dispatched too (ESRCH here).
+			expect(killCalls).toContainEqual([childPid, "SIGTERM"]);
+			expect(killCalls).toContainEqual([childPid, "SIGKILL"]);
+			expect(groupCalls).toContainEqual([childPid, "SIGTERM"]);
+			expect(groupCalls).toContainEqual([childPid, "SIGKILL"]);
+			expect(survivors).toEqual([]);
+			await waitUntil(() => !pidAlive(childPid), 2000);
+			expect(pidAlive(childPid)).toBe(false);
+			console.log(
+				`#299-A1 positive child=${childPid} killCalls=${JSON.stringify(killCalls)} groupCalls=${JSON.stringify(groupCalls)} aliveAfter=${pidAlive(childPid)}`,
+			);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// #299 re-review A.1 — the pidGone two-read race and honest survivor reporting
+// ---------------------------------------------------------------------------
+
+describe("#299 re-review A.1: reaped-pid classification + honest reporting", () => {
+	it("T1: positive liveness then stat ENOENT is GONE; the live group member is still killed", async () => {
+		if (!isProcAvailable()) return;
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-reap-race-"));
+		try {
+			const memberPidFile = path.join(dir, "member.pid");
+			const readyFile = path.join(dir, "ready");
+			const marker = `race-${crypto.randomUUID()}`;
+			// A DETACHED leader that exits, leaving a TERM-stubborn member alive in its
+			// group — the reaped-leader + live-member fixture (the D5 shape).
+			const leader = track(spawnStubbornGroup(memberPidFile, readyFile));
+			const leaderPid = await waitForSpawn(leader);
+			await once(leader, "exit");
+			await waitUntil(() => !pidAlive(leaderPid), 2000);
+			await waitUntil(() => fs.existsSync(memberPidFile) && fs.existsSync(readyFile), 5000);
+			const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
+			strayPids.add(memberPid);
+			await waitUntil(() => pidAlive(memberPid), 5000);
+			expect(pidAlive(leaderPid)).toBe(false);
+			expect(readProcessGroup(memberPid)).toBe(leaderPid);
+
+			// Deterministic interleaving: the liveness sample reports the leader alive
+			// while its `/proc/<leaderPid>/stat` is gone — a leader REAPED between the
+			// two `pidGone` reads. Only the sample is forced; the stat read, the marker
+			// read and every signal are REAL.
+			const originalKill = process.kill;
+			const killSpy = vi.spyOn(process, "kill").mockImplementation(((
+				pid: number,
+				signal?: NodeJS.Signals | number,
+			) => {
+				if (pid === leaderPid && signal === 0) return true;
+				return originalKill(pid, signal as NodeJS.Signals);
+			}) as typeof process.kill);
+			try {
+				// The classification fix (M-a tripwire: reverting it fails here).
+				expect(pidGone(leaderPid)).toBe(true);
+
+				const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 300, pollMs: 20 });
+				const survivors = await reapPids([leaderPid], deps, () => marker);
+
+				// The guard ALLOWED the group dispatch: a reaped leader does not make its
+				// group foreign, so both the group SIGTERM and the final group SIGKILL were
+				// sent. The DIRECT signals are correctly skipped (the leader itself is gone).
+				expect(groupCalls).toContainEqual([leaderPid, "SIGTERM"]);
+				expect(groupCalls).toContainEqual([leaderPid, "SIGKILL"]);
+				expect(killCalls).toEqual([]);
+				// Only the unconditional final group SIGKILL can end the TERM-stubborn
+				// member; it must actually die.
+				await waitUntil(() => !pidAlive(memberPid), 5000);
+				expect(pidAlive(memberPid)).toBe(false);
+				// Empty because it was KILLED, not because it was skipped.
+				expect(survivors).toEqual([]);
+				console.log(
+					`#299-A1 T1 leader=${leaderPid} member=${memberPid} groupCalls=${JSON.stringify(groupCalls)} survivors=${JSON.stringify(survivors)}`,
+				);
+			} finally {
+				killSpy.mockRestore();
+			}
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 20000);
+
+	it("T2: a refused final group SIGKILL over a live group is reported as a survivor", async () => {
+		const pid = 4242;
+		const marker = `refused-${crypto.randomUUID()}`;
+		const killGroup = vi.fn();
+		const deps: RecoveryDeps = {
+			pidAlive: (p) => p !== DEAD_PID,
+			startTokenOf: () => "100",
+			findByMarker: () => [pid],
+			kill: vi.fn(),
+			killGroup,
+			// Alive but no longer ours (the reuse case): the guard refuses every signal.
+			verifyMarker: () => false,
+			pidGone: () => false,
+			// ...but the targeted group still has live members.
+			groupHasMembers: () => true,
+			sleep: async () => {},
+			graceMs: 0,
+		};
+		const warns: Array<{ message: string; data: Record<string, unknown> }> = [];
+		const log = {
+			warn: (message: string, data?: Record<string, unknown>) => warns.push({ message, data: data ?? {} }),
+		};
+
+		const outcome = await recoverRecord(
+			record({ id: "t2-refused", owner: { pid: DEAD_PID, start: "100" }, childMarker: marker }),
+			deps,
+			log,
+		);
+		expect(outcome.decision).toBe("mark");
+		expect(outcome.reaped).toEqual([pid]);
+		// M-b tripwire: making the report unconditionally clean fails HERE.
+		expect(outcome.survived).toEqual([pid]);
+		// The refusal is still logged, and no unverified signal was sent.
+		expect(warns.some((w) => w.data.pid === pid)).toBe(true);
+		expect(killGroup).not.toHaveBeenCalled();
+		console.log(`#299-A1 T2 refused pid=${pid} survived=${JSON.stringify(outcome.survived)}`);
+	});
+});
+
+/**
+ * #299 fix A.2/A.3/A.4/A.5 — the SHARED fixture behind the four three-state
+ * cases: a live DETACHED leader (its own pgid) with a live same-group member and
+ * a readiness handshake, reaped through the real production deps with a `/proc`
+ * fault injected AFTER readiness. The helper owns the temp dir, the process
+ * cleanup and the fault teardown; `assert` receives the observation so each case
+ * keeps its DISTINGUISHING assertions (the two halves) at the same strictness.
+ */
+interface MembershipObservation {
+	leaderPid: number;
+	memberPid: number;
+	survivors: number[];
+	elapsed: number;
+	killCalls: Array<[number, NodeJS.Signals]>;
+	groupCalls: Array<[number, NodeJS.Signals]>;
+}
+
+async function withMembershipCase(
+	tag: string,
+	installFault: (memberPid: number) => () => void,
+	assert: (observation: MembershipObservation) => void | Promise<void>,
+): Promise<void> {
+	if (!isProcAvailable()) return;
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), `brl-${tag}-`));
+	try {
+		const memberPidFile = path.join(dir, "member.pid");
+		const readyFile = path.join(dir, "ready");
+		// A live, DETACHED leader (its own pgid) with a live same-group member. The
+		// leader carries NO run marker, so the signal guard — which refuses a signal
+		// to a LIVE pid that is not ours — refuses every group signal, leaving a live
+		// group we targeted.
+		const leaderCode =
+			`const {spawn}=require('node:child_process');const fs=require('node:fs');` +
+			`const m=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});` +
+			`fs.writeFileSync(${JSON.stringify(memberPidFile)}, String(m.pid));` +
+			`fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` +
+			`setInterval(()=>{},1000)`;
+		const leader = track(spawn(process.execPath, ["-e", leaderCode], { stdio: "ignore", detached: true }));
+		const leaderPid = await waitForSpawn(leader);
+		strayPids.add(leaderPid);
+		await waitUntil(() => fs.existsSync(readyFile) && fs.existsSync(memberPidFile), 5000);
+		const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
+		strayPids.add(memberPid);
+		await waitUntil(() => pidAlive(memberPid), 5000);
+		// The fixture really has a live same-PGID member the real scan observes.
+		expect(readProcessGroup(memberPid)).toBe(leaderPid);
+		expect(groupHasMembers(leaderPid)).toBe(true);
+
+		const marker = `${tag}-${crypto.randomUUID()}`;
+		const { deps, killCalls, groupCalls } = recordingDeps({ graceMs: 200, pollMs: 20 });
+		const clearFault = installFault(memberPid);
+		const started = Date.now();
+		const survivors = await reapPids([leaderPid], deps, () => marker).finally(clearFault);
+		const elapsed = Date.now() - started;
+		await assert({ leaderPid, memberPid, survivors, elapsed, killCalls, groupCalls });
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+describe("#299 fix A.2: three-state group membership (unknown is never empty)", () => {
+	it("T-new: a failed membership inspection is never read as empty (no early-exit; refused group is a survivor)", async () => {
+		await withMembershipCase(
+			"unknown-members",
+			() => {
+				// Force the REAL `/proc` listing to fail for the duration of the reap: the
+				// production `groupHasMembers` must then answer UNKNOWN (`undefined`), never
+				// "positively empty". Every signal and every liveness read below stays real.
+				// M-c tripwire: reverting `groupHasMembers` to false-on-unknown fails HERE
+				// (both the graceful wait and the survivor report).
+				const scanError = new Error("EACCES") as NodeJS.ErrnoException;
+				scanError.code = "EACCES";
+				fsMockControl.readdirError = scanError;
+				return () => {
+					fsMockControl.readdirError = undefined;
+				};
+			},
+			({ leaderPid, memberPid, survivors, elapsed, killCalls, groupCalls }) => {
+				// Half 1 — UNKNOWN is NOT dead: the escalation ran to at least the grace
+				// boundary instead of early-exiting. A false-on-unknown reading would have
+				// exited almost immediately. (soft: so M-c reports BOTH halves, not just the
+				// first.)
+				expect.soft(elapsed).toBeGreaterThanOrEqual(180);
+				// Half 2 — the refused final group SIGKILL over a still-unknown group is a
+				// survivor; never a clean `[]`.
+				expect.soft(survivors).toEqual([leaderPid]);
+				// Every guard check refused, so nothing was signaled and the member is alive.
+				expect(groupCalls).toEqual([]);
+				expect(killCalls).toEqual([]);
+				expect(pidAlive(memberPid)).toBe(true);
+				console.log(
+					`#299-A2 unknown leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
+				);
+			},
+		);
+	}, 20000);
+
+	it("T-new-truncated: a truncated member record is PARTIAL, never empty (no early-exit; refused group is a survivor)", async () => {
+		await withMembershipCase(
+			"truncated-members",
+			(memberPid) => {
+				// Force ONLY the live member's `/proc/<pid>/stat` to a truncated record:
+				// a valid `)` but too few fields. The production `groupHasMembers` must
+				// answer UNKNOWN (`undefined`), never a positively-empty `false`. Every
+				// signal and every liveness read below stays real.
+				// M-d tripwire: reverting the A.3 numericity/truncation guard fails HERE
+				// (both the graceful wait and the survivor report).
+				fsMockControl.statContents.set(`/proc/${memberPid}/stat`, `${memberPid} (node) S 1`);
+				return () => {
+					fsMockControl.statContents.clear();
+				};
+			},
+			({ leaderPid, memberPid, survivors, elapsed, killCalls, groupCalls }) => {
+				// Half 1 — UNKNOWN is NOT dead: the escalation honours the full grace
+				// window instead of early-exiting on a false-on-truncation reading.
+				expect.soft(elapsed).toBeGreaterThanOrEqual(180);
+				// Half 2 — the refused final group SIGKILL over the still-unknown group is
+				// a survivor; never a clean `[]`.
+				expect.soft(survivors).toEqual([leaderPid]);
+				// Every guard check refused, so nothing was signaled and the member is alive.
+				expect(groupCalls).toEqual([]);
+				expect(killCalls).toEqual([]);
+				expect(pidAlive(memberPid)).toBe(true);
+				console.log(
+					`#299-A3 truncated leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
+				);
+			},
+		);
+	}, 20000);
+
+	it("T-new-shifted: a shifted member record (real integer in the pgrp slot) is PARTIAL, never empty", async () => {
+		await withMembershipCase(
+			"shifted-members",
+			(memberPid) => {
+				// Force ONLY the live member's `/proc/<pid>/stat` to a SHIFTED record: the
+				// state token is gone, so `9999` lands in the pgrp slot. It IS an integer,
+				// so the A.3 numeric guard alone read a positively-empty non-member; the A.4
+				// state-shape check must answer UNKNOWN (`undefined`). Every signal and every
+				// liveness read below stays real.
+				// M-e tripwire: reverting the state-shape check fails HERE (both halves).
+				fsMockControl.statContents.set(`/proc/${memberPid}/stat`, `${memberPid} (node) 1 1 9999 0 0`);
+				return () => {
+					fsMockControl.statContents.clear();
+				};
+			},
+			({ leaderPid, memberPid, survivors, elapsed, killCalls, groupCalls }) => {
+				// Half 1 — UNKNOWN is NOT dead: no early-exit; the escalation honours the
+				// full grace window instead of reading the shifted record as empty.
+				expect.soft(elapsed).toBeGreaterThanOrEqual(180);
+				// Half 2 — the refused final group SIGKILL over the still-unknown group is
+				// a survivor; never a clean `[]`.
+				expect.soft(survivors).toEqual([leaderPid]);
+				// Every guard check refused, so nothing was signaled and the member is alive.
+				expect(groupCalls).toEqual([]);
+				expect(killCalls).toEqual([]);
+				expect(pidAlive(memberPid)).toBe(true);
+				console.log(
+					`#299-A4 shifted leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
+				);
+			},
+		);
+	}, 20000);
+
+	it("T-new-aligned: a valid-state-but-misaligned member record is PARTIAL, never empty", async () => {
+		await withMembershipCase(
+			"aligned-members",
+			(memberPid) => {
+				// Force ONLY the live member's `/proc/<pid>/stat` to a MISALIGNED record: the
+				// state token `R` is valid and `1` lands in the pgrp slot, but the ppid slot
+				// holds a non-numeric `S`. The A.4 shape check alone accepted the state; the
+				// A.5 prefix contract must reject the alignment and answer UNKNOWN. Every
+				// signal and every liveness read below stays real.
+				// M-f tripwire: removing the ppid-alignment check fails HERE (both halves).
+				fsMockControl.statContents.set(`/proc/${memberPid}/stat`, `${memberPid} (node) R S 1 9999`);
+				return () => {
+					fsMockControl.statContents.clear();
+				};
+			},
+			({ leaderPid, memberPid, survivors, elapsed, killCalls, groupCalls }) => {
+				// Half 1 — UNKNOWN is NOT dead: no early-exit; the escalation honours the
+				// full grace window instead of reading the misaligned record as empty.
+				expect.soft(elapsed).toBeGreaterThanOrEqual(180);
+				// Half 2 — the refused final group SIGKILL over the still-unknown group is
+				// a survivor; never a clean `[]`.
+				expect.soft(survivors).toEqual([leaderPid]);
+				// Every guard check refused, so nothing was signaled and the member is alive.
+				expect(groupCalls).toEqual([]);
+				expect(killCalls).toEqual([]);
+				expect(pidAlive(memberPid)).toBe(true);
+				console.log(
+					`#299-A5 aligned leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} survivors=${JSON.stringify(survivors)}`,
+				);
+			},
+		);
+	}, 20000);
+});
+
+describe("#299 review A2: group-empty grace window", () => {
+	it("a same-group member completes its SIGTERM cleanup inside the grace window", async () => {
+		if (!isProcAvailable()) return;
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-grace-"));
+		try {
+			const memberPidFile = path.join(dir, "member.pid");
+			const readyFile = path.join(dir, "ready");
+			const doneFile = path.join(dir, "done");
+			const marker = `grace-${crypto.randomUUID()}`;
+			const leader = track(
+				spawnGracefulGroup(memberPidFile, readyFile, doneFile, 350, {
+					...process.env,
+					[CHILD_MARKER_ENV_KEY]: marker,
+				}),
+			);
+			const leaderPid = await waitForSpawn(leader);
+			strayPids.add(leaderPid);
+			await waitUntil(() => fs.existsSync(readyFile) && fs.existsSync(memberPidFile), 5000);
+			const memberPid = Number(fs.readFileSync(memberPidFile, "utf-8").trim());
+			strayPids.add(memberPid);
+			expect(readProcessGroup(memberPid)).toBe(leaderPid);
+
+			const { deps } = recordingDeps({ graceMs: 1000, pollMs: 20 });
+			const started = Date.now();
+			const survivors = await reapPids([leaderPid], deps, () => marker);
+			const elapsed = Date.now() - started;
+
+			// The member was NOT SIGKILLed mid-cleanup: it wrote its completion marker.
+			await waitUntil(() => fs.existsSync(doneFile), 1000, false);
+			expect(fs.existsSync(doneFile)).toBe(true);
+			await waitUntil(() => !pidAlive(memberPid), 2000);
+			expect(pidAlive(memberPid)).toBe(false);
+			expect(survivors).toEqual([]);
+			// Group emptied → early exit, well before the 1000 ms grace.
+			expect(elapsed).toBeLessThan(1000);
+			console.log(
+				`#299-A2 cleanup leader=${leaderPid} member=${memberPid} elapsedMs=${elapsed} done=${fs.existsSync(doneFile)}`,
+			);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 20000);
+
+	it("group-empty fast path exits early when the group is truly empty", async () => {
+		if (!isProcAvailable()) return;
+		const marker = `empty-${crypto.randomUUID()}`;
+		const leader = track(
+			spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+				stdio: "ignore",
+				detached: true,
+				env: { ...process.env, [CHILD_MARKER_ENV_KEY]: marker },
+			}),
+		);
+		const leaderPid = await waitForSpawn(leader);
+		const { deps } = recordingDeps({ graceMs: 1000, pollMs: 20 });
+		const started = Date.now();
+		const survivors = await reapPids([leaderPid], deps, () => marker);
+		const elapsed = Date.now() - started;
+		expect(survivors).toEqual([]);
+		expect(elapsed).toBeLessThan(500);
+		console.log(`#299-A2 fastpath leader=${leaderPid} elapsedMs=${elapsed}`);
+	}, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// #299 Option B T3: boot scan group reap via the real production entry
+// ---------------------------------------------------------------------------
+
+describe("#299 Option B boot group reap (recoverProduction)", () => {
+	it("T3: boot scan group-kills an env-scrubbed grandchild", async () => {
+		if (!isProcAvailable()) return;
+		await withGrandchildWrapper(async (pidFile, script) => {
+			const marker = `boot-scrub-${crypto.randomUUID()}`;
+			// A live, DETACHED wrapper (group leader) + a marker-STRIPPED grandchild in
+			// its group: exactly the probe's non-inheriting tree. The marker scan finds
+			// the wrapper; the boot reap's group target reaches the grandchild.
+			const wrapper = track(
+				spawn(script, [], {
+					stdio: "ignore",
+					env: { ...process.env, [CHILD_MARKER_ENV_KEY]: marker },
+					detached: true,
+				}),
+			);
+			const wrapperPid = await waitForSpawn(wrapper);
+			const grandchildPid = await readGrandchildPid(pidFile);
+			expect(readProcessGroup(grandchildPid)).toBe(wrapperPid);
+			expect(findByMarker(marker)).not.toContain(grandchildPid);
+
+			const registryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "brl-bootreg-"));
+			const previousRegistry = registryDir();
+			__setRegistryDir(registryRoot);
+			try {
+				// Fabricated registry entry: dead owner, live marker child — the fresh
+				// conductor's crash-recovery candidate.
+				registerInflightRun({
+					id: crypto.randomUUID(),
+					kind: "foreground",
+					owner: { pid: DEAD_PID, start: "100" },
+					childMarker: marker,
+					startedAt: new Date().toISOString(),
+				});
+				const deps = { ...defaultRecoveryDeps(), graceMs: 1000, pollMs: 20 };
+				const summary = await recoverProduction({ deps, mark: () => true });
+				expect(summary.reaped).toBeGreaterThanOrEqual(1);
+				await waitUntil(() => !pidAlive(wrapperPid) && !pidAlive(grandchildPid), 5000);
+				expect(pidAlive(wrapperPid)).toBe(false);
+				expect(pidAlive(grandchildPid)).toBe(false);
+				console.log(`#299-B T3 summary=${JSON.stringify(summary)} wrapper=${wrapperPid} scrubbedGrandchild=${grandchildPid} aliveAfter=${pidAlive(grandchildPid)}`);
+			} finally {
+				__setRegistryDir(previousRegistry);
+				fs.rmSync(registryRoot, { recursive: true, force: true });
+			}
+		}, true);
+	}, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// #299 Option A item 4: boot-scan reap early exit
+// ---------------------------------------------------------------------------
+
+describe("#299 Option A item 4: reapPids early exit (no full-grace stall)", () => {
+	it("returns as soon as instant-dying targets are dead, well under the grace window", async () => {
+		if (!isProcAvailable()) return;
+		const a = track(spawnSleeper());
+		const b = track(spawnSleeper());
+		const pidA = await waitForSpawn(a);
+		const pidB = await waitForSpawn(b);
+		const graceMs = 5000;
+		const deps = { ...defaultRecoveryDeps(), graceMs };
+
+		const started = Date.now();
+		const survivors = await reapPids([pidA, pidB], deps);
+		const elapsed = Date.now() - started;
+
+		expect(survivors).toEqual([]);
+		await waitUntil(() => !pidAlive(pidA) && !pidAlive(pidB), 2000);
+		expect(pidAlive(pidA)).toBe(false);
+		expect(pidAlive(pidB)).toBe(false);
+		// Item 4: the old wait-once shape blocked the full SIGKILL_GRACE_MS even when
+		// both targets die on SIGTERM in ms (the observed ~5 s session_start during a
+		// boot reap). The poll exits after one interval; assert well under half grace.
+		expect(elapsed).toBeLessThan(graceMs / 2);
+		console.log(`#299-A item4 reapPids elapsedMs=${elapsed} (grace=${graceMs}) survivors=${JSON.stringify(survivors)}`);
+	}, 20000);
 });
 
 // ---------------------------------------------------------------------------
@@ -779,6 +1822,25 @@ describe("escalation timing seam is test-only (issue #306 nit 2)", () => {
 		delete process.env.VITEST;
 		try {
 			expect(() => __setEscalationTimingForTest({ graceMs: 1, pollMs: 1 })).toThrow(/test-only/);
+		} finally {
+			if (nodeEnv === undefined) delete process.env.NODE_ENV;
+			else process.env.NODE_ENV = nodeEnv;
+			if (vitestEnv === undefined) delete process.env.VITEST;
+			else process.env.VITEST = vitestEnv;
+		}
+	});
+});
+
+describe("active-child registration seam is test-only (#322)", () => {
+	it("throws instead of exposing the registry outside the test environment", () => {
+		// Mirror the escalation-timing guard: simulate production by clearing both
+		// vitest markers, then the seam must refuse before touching the registry.
+		const nodeEnv = process.env.NODE_ENV;
+		const vitestEnv = process.env.VITEST;
+		delete process.env.NODE_ENV;
+		delete process.env.VITEST;
+		try {
+			expect(() => __registerActiveChildForTest(track(spawnSleeper()))).toThrow(/test-only/);
 		} finally {
 			if (nodeEnv === undefined) delete process.env.NODE_ENV;
 			else process.env.NODE_ENV = nodeEnv;
@@ -839,6 +1901,48 @@ describe("abort/timeout escalation force-kill (issue #303)", () => {
 			await waitUntil(() => !pidAlive(pid!), 2000);
 			expect(pidAlive(pid!)).toBe(false);
 			expect(activeChildCount()).toBe(0);
+		});
+	}, 20000);
+
+	it("#299 Option A timeout: sweeps a marker-carrying grandchild before the run settles", async () => {
+		if (!isProcAvailable()) return;
+		__setEscalationTimingForTest({ graceMs: 1000, pollMs: 10 });
+		await withGrandchildWrapper(async (pidFile) => {
+			const marker = `timeout-grandchild-${crypto.randomUUID()}`;
+			const promise = launchForeground(marker, 2500);
+			const grandchildPid = await readGrandchildPid(pidFile);
+			await waitUntil(() => findByMarker(marker).includes(grandchildPid), 5000);
+			const before = findByMarker(marker).sort((a, b) => a - b);
+
+			const result = await promise;
+
+			// Result semantics untouched; the grandchild is gone by the time the run settles.
+			expect(result.errorCategory).toBe("timeout");
+			expect(result.exitCode).toBe(-1);
+			expect(findByMarker(marker)).toEqual([]);
+			expect(pidAlive(grandchildPid)).toBe(false);
+			console.log(`#299-A timeout pids BEFORE=${JSON.stringify(before)} aliveAfterRun=${pidAlive(grandchildPid)}`);
+		});
+	}, 20000);
+
+	it("#299 Option A abort: sweeps a marker-carrying grandchild before the run settles", async () => {
+		if (!isProcAvailable()) return;
+		__setEscalationTimingForTest({ graceMs: 1000, pollMs: 10 });
+		await withGrandchildWrapper(async (pidFile) => {
+			const marker = `abort-grandchild-${crypto.randomUUID()}`;
+			const controller = new AbortController();
+			const promise = launchForeground(marker, undefined, controller.signal);
+			const grandchildPid = await readGrandchildPid(pidFile);
+			await waitUntil(() => findByMarker(marker).includes(grandchildPid), 5000);
+			const before = findByMarker(marker).sort((a, b) => a - b);
+
+			controller.abort();
+			const result = await promise;
+
+			expect(result.errorCategory).toBe("aborted");
+			expect(findByMarker(marker)).toEqual([]);
+			expect(pidAlive(grandchildPid)).toBe(false);
+			console.log(`#299-A abort pids BEFORE=${JSON.stringify(before)} aliveAfterRun=${pidAlive(grandchildPid)}`);
 		});
 	}, 20000);
 
