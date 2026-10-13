@@ -1,6 +1,6 @@
 # brl-subagent — Audit: Strengths & Weaknesses
 
-> Generated: 2026-08-03 | Version: 2.5.1 (release prepared 2026-10-13). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.5.1 (see the follow-up sections below).
+> Generated: 2026-08-03 | Version: 2.5.1 (released 2026-10-13). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.5.1 (see the follow-up sections below).
 
 ## What's Been Fixed (since v1.3.0)
 

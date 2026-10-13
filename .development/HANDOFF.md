@@ -16,15 +16,17 @@
   check `git log -1` rather than trusting this line**. Only `main` + `dev` remain — no worktrees, no strays. Suite
   **73 files / 1506**; CodeGraph **40 modules / 425** exported declarations (fresh at the last refresh; doc-only commits
   can read as stale until the next merge refresh — expected).
-- **Running install:** the dev checkout (dogfood), RELOADED 2026-10-12 → U2 + U3 + FGP are live. npm `latest` = 2.5.0; `main` @ `355ed53`.
-- **Board: `#299`** (merged to dev; closes at the RELEASE merge — `Fixes` fires on `main` only) · **`#329`** (fixed —
-  PR #331 merged `e5f6e6b`) · **`#330`** (fixed — PR #332 merged `60ad7e7`) · **`#333`** (fixed — PR #334 merged
-  `7619817`). All three close at the RELEASE merge. No other open issues.
+- **Running install:** **npm `brl-subagent` 2.5.1** — the published artifact (switched back 2026-10-13, reloaded; the dev dogfood has ENDED). npm `latest` = 2.5.1; `main` = `dev` = the v2.5.1 release commit (tag `v2.5.1`).
+- **Board: no open issues.** `#299`/`#329`/`#330`/`#333` all CLOSED at the v2.5.1 release merge (`Fixes` fired on `main`).
 - **UPDATE — #333 MERGED (2026-10-13, PR #334 → `dev` `7619817`):** dependency parity with the pi **1.2.0** host —
   the four `@earendil-works/*` devDeps → `^1.2.0`, `typebox` pinned `1.3.27`, lockfile refreshed (the chord/esbuild
   tree removed upstream); review approve (0 findings, lockfile fully reconciled; `npm ci --dry-run` green). The
   cockpit shared tree was refreshed with `npm ci` (rule 2); the `/reload` (2026-10-13) activated BOTH the merged
   code (#329/#330) and the 1.2.0 dependency line — **TUI smoke PASSED** (history menu clean on the new line).
+- **UPDATE — v2.5.1 RELEASED (2026-10-13):** release PR #335 merged `950b2bb` (auto-closed `#299`/`#329`/`#330`/`#333`);
+  bump `7fa210c` tagged `v2.5.1`; npm staged → approved → `latest` = 2.5.1; install switched back to
+  `npm:brl-subagent` + reloaded; published-build probe PASSED (extracted tree identical to the tag). **The dev
+  dogfood has ended**; the cockpit stays on disk for the next cycle. `dev` = `main` = the release commit.
 - **UPDATE — #329 + #330 MERGED (2026-10-12, PRs #331/#332 → `dev` `e5f6e6b` / `60ad7e7`):** bridged retries inherit
   `dispatchId`/`attempt` (#329; focused review approve-with-nits — 1 style nit carried by design). Run surfaces render
   newest-first via a shared `sortNewestFirst`, the bridge merges synthetic rows by RECENCY (no more append), and the
@@ -53,7 +55,7 @@
   bridged retry inherited `dispatchId 6ce19226…`, `attempt: 2`, and restored `timeout: 45000` with NO override
   (closing round 1's open cell); source retired; evidence table pinned in the 329/330 spec; (b) **#315 — PASSED 2026-10-13** on pi 1.2.0 (a deliberate 2s-timeout failed run `d73a6710`): exactly ONE completion notice, nothing re-surfaced;
   (c) the U4 measurement snapshots.
-- **Release:** v2.5.0 live; `#299` + U2/U3/FGP wait for the next release (main merge) whenever the maintainer calls it.
+- **Release:** **v2.5.1 LIVE (2026-10-13)** — release PR #335 merged `950b2bb`, bump `7fa210c` tagged `v2.5.1`, npm staged → approved → `latest` = 2.5.1, install switched back to `npm:brl-subagent` + reloaded; published-build probe PASSED (extracted tree identical to the tag; the byte diff is packer envelope only).
 
 ## Environment
 
