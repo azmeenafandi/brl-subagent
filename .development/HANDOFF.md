@@ -14,12 +14,17 @@
 
 - **dev** at the post-FGP tip `be89f6a` — this handoff is a doc commit on top; **the tip moves with doc commits, so
   check `git log -1` rather than trusting this line**. Only `main` + `dev` remain — no worktrees, no strays. Suite
-  **73 files / 1500**; CodeGraph **40 modules / 425** exported declarations (fresh at the last refresh; doc-only commits
+  **73 files / 1506**; CodeGraph **40 modules / 425** exported declarations (fresh at the last refresh; doc-only commits
   can read as stale until the next merge refresh — expected).
 - **Running install:** the dev checkout (dogfood), RELOADED 2026-10-12 → U2 + U3 + FGP are live. npm `latest` = 2.5.0; `main` @ `355ed53`.
 - **Board: `#299`** (merged to dev; closes at the RELEASE merge — `Fixes` fires on `main` only) · **`#329`** (fixed —
-  PR #331 merged `e5f6e6b`; closes at the RELEASE merge) · **`#330`** (fixed — PR #332 merged `60ad7e7`; closes at the
-  RELEASE merge). No other open issues.
+  PR #331 merged `e5f6e6b`) · **`#330`** (fixed — PR #332 merged `60ad7e7`) · **`#333`** (fixed — PR #334 merged
+  `7619817`). All three close at the RELEASE merge. No other open issues.
+- **UPDATE — #333 MERGED (2026-10-13, PR #334 → `dev` `7619817`):** dependency parity with the pi **1.2.0** host —
+  the four `@earendil-works/*` devDeps → `^1.2.0`, `typebox` pinned `1.3.27`, lockfile refreshed (the chord/esbuild
+  tree removed upstream); review approve (0 findings, lockfile fully reconciled; `npm ci --dry-run` green). The
+  cockpit shared tree was refreshed with `npm ci` (rule 2); **the next `/reload` activates BOTH the merged code
+  (#329/#330) and the 1.2.0 dependency line — TUI smoke pending** (history/retry/notice rendering).
 - **UPDATE — #329 + #330 MERGED (2026-10-12, PRs #331/#332 → `dev` `e5f6e6b` / `60ad7e7`):** bridged retries inherit
   `dispatchId`/`attempt` (#329; focused review approve-with-nits — 1 style nit carried by design). Run surfaces render
   newest-first via a shared `sortNewestFirst`, the bridge merges synthetic rows by RECENCY (no more append), and the
