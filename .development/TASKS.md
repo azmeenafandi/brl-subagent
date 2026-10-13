@@ -9,7 +9,7 @@
 |---|---|
 | Released | **v2.5.1 LIVE** (2026-10-13) — GitHub release published + npm `latest` = 2.5.1; install switched back to `npm:brl-subagent` (2.5.1 in `~/.pi/agent/npm`), reloaded; published-build probe: extracted tree identical to tag `v2.5.1` |
 | Integration | `dev` @ the v2.5.1 release prep — the durability cycle completed: #299 (#325), U2 (#326), U3 (#327), FGP (#328), #329 (#331), #330 (#332), #333 (#334) |
-| Board | **#299, #329, #330, #333** — all fixed on `dev`, closing at this release merge; no other open issues |
+| Board | **#336** (P0, Rule 11 — silent boundary/partial-read class ×2: #330 spec premise + sprint-metrics window; guards in progress) |
 | Tests | **1212 across 58 files** (`npx vitest run`) · `npm run typecheck` clean |
 | Development home | the **cockpit** (`brl-subagent-dev` checkout): `.development/`, `.codegraph/` (the structural index), `.pi/` tools, shared `node_modules`. Docs and tools are tracked since #247 — see `CONTRIBUTING.md` |
 

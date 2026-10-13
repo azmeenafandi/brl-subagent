@@ -17,7 +17,7 @@
   **73 files / 1506**; CodeGraph **40 modules / 425** exported declarations (fresh at the last refresh; doc-only commits
   can read as stale until the next merge refresh — expected).
 - **Running install:** **npm `brl-subagent` 2.5.1** — the published artifact (switched back 2026-10-13, reloaded; the dev dogfood has ENDED). npm `latest` = 2.5.1; `main` = `dev` = the v2.5.1 release commit (tag `v2.5.1`).
-- **Board: no open issues.** `#299`/`#329`/`#330`/`#333` all CLOSED at the v2.5.1 release merge (`Fixes` fired on `main`).
+- **Board: `#336`** — **P0 (Rule 11)**: the silent boundary/partial-read class recurred ×2 this sprint (the #330 spec premise + the sprint-metrics window; both fixed same-day, mechanical guards open). No other open issues.
 - **UPDATE — #333 MERGED (2026-10-13, PR #334 → `dev` `7619817`):** dependency parity with the pi **1.2.0** host —
   the four `@earendil-works/*` devDeps → `^1.2.0`, `typebox` pinned `1.3.27`, lockfile refreshed (the chord/esbuild
   tree removed upstream); review approve (0 findings, lockfile fully reconciled; `npm ci --dry-run` green). The
