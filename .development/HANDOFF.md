@@ -23,8 +23,8 @@
 - **UPDATE — #333 MERGED (2026-10-13, PR #334 → `dev` `7619817`):** dependency parity with the pi **1.2.0** host —
   the four `@earendil-works/*` devDeps → `^1.2.0`, `typebox` pinned `1.3.27`, lockfile refreshed (the chord/esbuild
   tree removed upstream); review approve (0 findings, lockfile fully reconciled; `npm ci --dry-run` green). The
-  cockpit shared tree was refreshed with `npm ci` (rule 2); **the next `/reload` activates BOTH the merged code
-  (#329/#330) and the 1.2.0 dependency line — TUI smoke pending** (history/retry/notice rendering).
+  cockpit shared tree was refreshed with `npm ci` (rule 2); the `/reload` (2026-10-13) activated BOTH the merged
+  code (#329/#330) and the 1.2.0 dependency line — **TUI smoke PASSED** (history menu clean on the new line).
 - **UPDATE — #329 + #330 MERGED (2026-10-12, PRs #331/#332 → `dev` `e5f6e6b` / `60ad7e7`):** bridged retries inherit
   `dispatchId`/`attempt` (#329; focused review approve-with-nits — 1 style nit carried by design). Run surfaces render
   newest-first via a shared `sortNewestFirst`, the bridge merges synthetic rows by RECENCY (no more append), and the
@@ -51,7 +51,7 @@
   bridged retry restored task/label/model/thinkingLevel/priority/gitMode/approvalMode/background/force → retire-on-retry
   (registry empty); findings fixed by PRs #331/#332 (both merged); **round 2 PASSED (2026-10-12, post-`/reload`)** —
   bridged retry inherited `dispatchId 6ce19226…`, `attempt: 2`, and restored `timeout: 45000` with NO override
-  (closing round 1's open cell); source retired; evidence table pinned in the 329/330 spec; (b) **#315** on the next natural failed run (exactly one `[subagent-completion]`, no duplicate);
+  (closing round 1's open cell); source retired; evidence table pinned in the 329/330 spec; (b) **#315 — PASSED 2026-10-13** on pi 1.2.0 (a deliberate 2s-timeout failed run `d73a6710`): exactly ONE completion notice, nothing re-surfaced;
   (c) the U4 measurement snapshots.
 - **Release:** v2.5.0 live; `#299` + U2/U3/FGP wait for the next release (main merge) whenever the maintainer calls it.
 
