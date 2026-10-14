@@ -2,6 +2,7 @@
 
 **Contents:**
 
+0. Cycle close (conditional — when the maintainer declared this release as the cycle end)
 1. Inventory version references
 2. `.development/` docs
 3. Release merge (`dev` → `main`)
@@ -11,10 +12,13 @@
 7. Release note as a GitHub DRAFT
 8. Graph — no release-time step
 9. Switch the running install back to the published package
-9. Sprint-end ritual
 10. Friction log
 
-Run this on every release. **Step 1 exists because it was skipped once** — the
+Run this on every release. **Step 0 is conditional:** at release planning the maintainer
+declares whether this release closes the cycle; if yes, run the **cycle-end ritual**
+(`references/sprint-end-ritual.md`) BEFORE any release doc is written — its outputs (metrics
+row, board state, candidates) are final inputs to step 2 and to the next cycle's opening.
+If no close was declared, skip step 0. **Step 1 exists because it was skipped once** — the
 v2.3.5 bump shipped three stale version strings (README `Version: 2.3.4`, the
 README git-install example `@v2.3.4`, and the AGENT.md header `(v2.3.4+)`)
 because nothing checked them and no test pins them.
@@ -39,8 +43,9 @@ because nothing checked them and no test pins them.
      module map is generated + CI-checked (`npm run docs:arch`, issue #249)
    - `TASKS.md` — a changelog row: items, issues closed, process changes, test
      count, board state, friction
-   - `METRICS.md` — the sprint's row (run the metrics script; see the
-     sprint-end ritual — `references/sprint-end-ritual.md`)
+   - `METRICS.md` — the cycle's row, already final from step 0 (see the
+     cycle-end ritual — `references/sprint-end-ritual.md`); if no close was
+     declared, run the metrics script now for the release record
 3. **Release merge (`dev` → `main`)** — merge commit, never squash; a release PR is preferred for the record. Two post-merge checks, both learned the hard way (2026-10-03, v2.4.0):
    - **Auto-close fired?** The PR body must list **one `Fixes #N` per line** — a comma-separated list does NOT close (friction `fixes-keyword-omission`, recurrence: v2.4.0 auto-closed 3 of 13). Verify after the merge and close stragglers with a status comment naming the release commit.
    - **`dev` still exists?** GitHub's *auto-delete head branches* deletes the PR head — and the release PR's head is `dev`. Restore with `git push origin dev` at the release commit if it is gone. After the bump + tag, fast-forward `dev` to the release commit (`git fetch origin main && git merge --ff-only origin/main && git push origin dev`) so both branches sit on the release.
@@ -101,9 +106,11 @@ because nothing checked them and no test pins them.
    The dev checkout itself can stay on disk for the next cycle — it is the
    *install* that changes, not the directory.
 
-9. **Sprint-end ritual** — Rule 11 recurrence escalation + trust metrics (see `references/sprint-end-ritual.md`).
 10. **Friction log** — one line per unexpected or inefficient outcome, logged as
-   it happens, not deferred to the end.
+   it happens, not deferred to the end. The release ceremony's own friction
+   (staging approvals, packager surprises, protection bypasses) belongs to the
+   NEXT cycle; a defect the release surfaces in the closed cycle's work is a
+   **post-close finding** on the closed cycle.
 
 **Current release channel (v2.3.5+):** `.github/workflows/publish.yml` — OIDC
 trusted publishing, **staged** (a maintainer approves with 2FA at npmjs.com →

@@ -18,6 +18,7 @@
   can read as stale until the next merge refresh — expected).
 - **Running install:** **npm `brl-subagent` 2.5.1** — the published artifact (switched back 2026-10-13, reloaded; the dev dogfood has ENDED). npm `latest` = 2.5.1; `main` = `dev` = the v2.5.1 release commit (tag `v2.5.1`).
 - **Board: `#336`** — **P0 (Rule 11)**: the silent boundary/partial-read class recurred ×2 this sprint (the #330 spec premise + the sprint-metrics window; both fixed same-day, mechanical guards open). No other open issues.
+- **Cycle:** no cycle open — the last closed at **v2.5.1** (2026-10-13). Convention ratified 2026-10-14: a cycle opens with one line — `Cycle: <theme>` — and closes on the maintainer's declaration (prompted at release planning); the **cycle-end ritual runs BEFORE the release docs**, and the release is the first act of the next cycle (`references/sprint-end-ritual.md`).
 - **UPDATE — #333 MERGED (2026-10-13, PR #334 → `dev` `7619817`):** dependency parity with the pi **1.2.0** host —
   the four `@earendil-works/*` devDeps → `^1.2.0`, `typebox` pinned `1.3.27`, lockfile refreshed (the chord/esbuild
   tree removed upstream); review approve (0 findings, lockfile fully reconciled; `npm ci --dry-run` green). The
@@ -39,7 +40,7 @@
   pinned (`u4-resume-spec-2026-10-11.md`) and **parked behind the measurement gate**.
 - **Measurement (the U4 gate):** `u2-u3-measurement-2026-10-11.md` — multi-project scope (dev + spelling_bee +
   deep-research-agent + ephemeral-rp), enumeration command, baseline zero; **zero interruptions observed so far**;
-  next snapshot at the first real interruption or ~2026-10-18.
+  next snapshot at the first real interruption or ~2026-10-18. **Extension policy (2026-10-14): if the Oct 18 snapshot still reads zero across all projects, EXTEND the window rather than force a verdict — zero observed = insufficient exposure, not absence of risk.**
 - **Jev ritual (Rule 22):** input template + calibration log + **strict-Jev ratified 2026-10-12** — use Jev's level; ANY
   deviation (either direction) carries a one-line reason; the C1⇒high convention is retired; single carve-out: confidence
   `< 0.5` on a C1 justifies +1 (citing the confidence). Log: `jev-calibration-log.md` (template-built inputs; outcomes at close).

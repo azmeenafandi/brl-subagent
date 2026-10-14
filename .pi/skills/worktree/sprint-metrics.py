@@ -2,10 +2,13 @@
 """
 sprint-metrics.py — the Trust Protocol / Rule 11 extractor (sprint_process_improvements.md).
 
-Derives sprint metrics mechanically from the pi session log — figures are computed,
-never vibed. One run produces BOTH outputs:
-  1. Trust metrics (dispatch/success/retry/zero-work/polling rates)
-  2. Recurrence counts (Rule 11 escalation input — friction classes by tag)
+Derives metrics mechanically from the pi session log — figures are computed, never
+vibed. Terminology: cycles were historically called "sprints" in this tool and its
+artifacts (`--sprint`, the "Sprint" column) — read every "sprint" as cycle.
+
+Windows are TRUE timestamps: a time-suffixed --since/--until filters to the instant
+(so a window can end exactly at a cycle's declaration); a date-only bound is
+inclusive of its whole day; naive bounds are read as UTC.
 
 Usage:
   python3 sprint-metrics.py [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--log <path>]
@@ -44,18 +47,45 @@ def iso_ts(ts) -> str:
     return str(ts or "")
 
 
-def in_range(ts: str, since: str, until: str) -> bool:
-    """True if ts falls in [since, until] (inclusive, DAY granularity).
+def _parse_ts(value):
+    """Parse an ISO date/date-time defensively; None when unparseable.
 
-    Bounds are normalized to their date part: a time-suffixed bound (e.g.
-    '2026-10-10T02:00:00') would otherwise compare lexicographically against a
-    date-only stamp and SILENTLY exclude that whole day (found at the v2.5.1
-    sprint end: a '--since 2026-10-10T02:00:00' run dropped Oct 10 entirely).
+    A 'Z' suffix is normalized; a naive value is treated as UTC.
     """
-    if not ts:
+    t = str(value or "").strip()
+    if not t:
+        return None
+    if t.endswith("Z"):
+        t = t[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(t)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def in_range(ts: str, since: str, until: str) -> bool:
+    """True if ts falls in [since, until] — TRUE timestamp comparison.
+
+    Bounds accept an ISO date or date-time: a date-only bound is inclusive of its
+    whole day (since → 00:00:00, until → 23:59:59.999999); a time-suffixed bound
+    filters to the instant. Naive bounds are read as UTC.
+
+    History: the original compared `ts[:10]` against the raw bound STRING, so a
+    time-suffixed bound silently excluded its whole day (v2.5.1: 22 dispatches
+    counted vs 68 spawns). Bounds were first normalized to dates, then upgraded
+    to true timestamps (2026-10-14).
+    """
+    t = _parse_ts(ts)
+    s = _parse_ts(since)
+    u = _parse_ts(until)
+    if t is None or s is None or u is None:
         return False
-    day = ts[:10]
-    return str(since)[:10] <= day <= str(until)[:10]
+    if len(str(since).strip()) <= 10:
+        s = s.replace(hour=0, minute=0, second=0, microsecond=0)
+    if len(str(until).strip()) <= 10:
+        u = u.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return s <= t <= u
 
 
 def load_events(log_paths, since, until):
@@ -255,7 +285,7 @@ def main():
     ap.add_argument("--since", default=(datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d"))
     ap.add_argument("--until", default=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     ap.add_argument("--log", action="append", help="explicit session log path (repeatable)")
-    ap.add_argument("--sprint", default=None, help="sprint label for the METRICS.md row (default: since)")
+    ap.add_argument("--sprint", default=None, help='cycle label for the METRICS.md row (historically "sprint"; default: since)')
     ap.add_argument("--out", default=None, help="append the row to this file (e.g. .development/METRICS.md)")
     args = ap.parse_args()
 
@@ -268,7 +298,7 @@ def main():
     m = compute(events)
     sprint = args.sprint or args.since
 
-    print(f"Sprint metrics [{args.since} .. {args.until}] — source: {len(log_paths)} session log(s)")
+    print(f"Cycle metrics [{args.since} .. {args.until}] — source: {len(log_paths)} session log(s)")
     print(f"  dispatches:      {m['total_dispatches']} (fg {m['foreground']} / bg {m['background']})")
     print(f"  runs:            {m['runs_total']} total, {m['runs_settled']} settled "
           f"({m['done']} done, {m['failed']} failed, {m['running']} still running)")

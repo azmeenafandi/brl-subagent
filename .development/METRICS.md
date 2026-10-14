@@ -1,4 +1,4 @@
-# Sprint Metrics (Trust Protocol — derived from session logs, never vibed)
+# Cycle Metrics (Trust Protocol — derived from session logs, never vibed; historically "Sprint Metrics" — read the "Sprint" column as the cycle label)
 
 | Sprint | Dispatches | FG/BG | Success | Failed | Retries | Retry succ | Zero-work | Poll/dispatch | Steer | Stop |
 |--------|-----------|-------|---------|--------|---------|------------|----------|--------------|-------|------|

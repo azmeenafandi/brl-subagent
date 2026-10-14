@@ -4,7 +4,7 @@ description: >
   Worktree lifecycle management for brl-subagent development. Use when creating
   a git worktree for a delegation task, preparing it for a subagent, cleaning up
   after a PR merge, checking the cockpit (dev) checkout's health, running the
-  sprint-end ritual (recurrence escalation + trust metrics — a SPRINT boundary,
+  cycle-end ritual (recurrence escalation + trust metrics + environment sweep — a CYCLE boundary,
   NOT a worktree close), cutting a release, OR before implementing any change to
   src/ or presets/ (all code changes go through a worktree).
 ---
@@ -25,7 +25,7 @@ never re-type their logic by hand. Full design:
 - [`../pr/SKILL.md`](../pr/SKILL.md) — the PR-body contract (Summary / Evidence / Merge Danger / Fixes), size-thresholded.
 - [`references/jev-advisory.md`](references/jev-advisory.md) — Rule 22: pre-dispatch thinking-level calibration via the Jev classifier (advisory; snippet included).
 - [`references/friction-log-ritual.md`](references/friction-log-ritual.md) — the friction log ritual.
-- [`references/sprint-end-ritual.md`](references/sprint-end-ritual.md) — Rule 11 recurrence escalation + trust metrics.
+- [`references/sprint-end-ritual.md`](references/sprint-end-ritual.md) — the cycle-end ritual: Rule 11 recurrence escalation + trust metrics + the bounded environment sweep.
 
 ## Team Agreement (invariants)
 
@@ -90,10 +90,11 @@ never re-type their logic by hand. Full design:
     (display/docs/config) → conductor diff read. No ritual without a
     classification. Reversibility is the tiebreaker; new evidence during review
     can reclassify.
-11. **Recurrence escalation (Rule 11).** At sprint end, count friction classes.
-    Any class with ≥2 occurrences AND not resolved → P0 for the next sprint,
-    with a fix direction. The count is the truth; a "mitigated" label is a
-    hypothesis — recurrence evidence overrides it.
+11. **Recurrence escalation (Rule 11).** At cycle end, count friction classes.
+    Any class with ≥2 occurrences AND not resolved → P0 for the next cycle,
+    with a fix direction (`fix: mechanical | judgement`, default mechanical —
+    build the check, not the prose). The count is the truth; a "mitigated"
+    label is a hypothesis — recurrence evidence overrides it.
 12. **Environment before theory (Rule 12).** When something breaks, check the
     environment FIRST (installed SDK version vs lockfile, extension sync, reload
     currency, the session log / run entries audit trail), THEN theorize about
