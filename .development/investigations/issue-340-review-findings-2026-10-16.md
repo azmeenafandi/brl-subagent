@@ -36,3 +36,12 @@ SOLID/DRY violations flagged: 0
 **Coverage:** dangling-row tests 3/3 pass; mutation probes M1/M2/M3 in a `/tmp` scratch copy; terminal-record probe
 dump; full suite 74 files / 1509 tests; `tsc --noEmit`; `git diff --check`. Findings banked to
 `/tmp/review-340-findings.md`.
+
+## Disposition (2026-10-16)
+
+- **Minor finding (zero-shape assertions): ACCEPTED** — fixed in `166ccb3` (`cost`/`tokensIn`/`tokensOut`/`outputSummary`
+  pinned in all three terminal-assertion blocks); CI pass; merged `eb3dd06`. Test-only (C3): conductor diff read +
+  targeted 3/3, no re-review.
+- **Implementer-flagged out-of-scope observation** (parallel/graph slot-cancel `stopReason` coherence):
+  **dismissed** — those paths persist no run to finalize (slot acquisition precedes `persistRun`), and
+  `coherentFailureReason(undefined, "aborted")` returns `"aborted"`, not `"error"`. No action.

@@ -12,18 +12,17 @@
 
 ## STATE (2026-10-16, post-compaction)
 
-- **dev** @ `267e7d4` + this handover commit — **check `git log -1`; the tip moves with doc commits**. Only `main` +
+- **dev** @ `eb3dd06` + records commits — **check `git log -1`; the tip moves with doc commits**. Only `main` +
   `dev` — no worktrees, no strays. Suite **73 files / 1506**; CodeGraph **40 modules / 425** exported declarations.
 - **Running install:** the **dev checkout** (dogfood) — switched from npm 2.5.1 on 2026-10-16 + `/reload`; the cockpit
   resolves **pi 1.3.0** (`@earendil-works/*` 1.3.0, `typebox` 1.3.27). npm `latest` = **2.5.1**; `main` @ `7fa210c`.
-- **Board:** **`#336`** (fixed — PR #339 `911a013`) · **`#337`** (fixed — PR #338 `7061999`) — both close at the next
-  release merge. No other open issues.
+- **Board:** **`#336`** (fixed — PR #339 `911a013`) · **`#337`** (fixed — PR #338 `7061999`) · **`#340`** (fixed —
+  PR #341 `eb3dd06`) — all three close at the next release merge. No other open issues.
 - **Cycle (OPEN) — `vendor parity + boundary guards`:** unit 1 ✅ pi **1.3.0** parity bump (PR #338; review approve,
   0 findings) · unit 2 ✅ **#336** boundary guards (PR #339; review approve-with-nits — 2 nits fixed in `777ce2d`,
-  1 declined with rationale; the selftest's discrimination was proven by mutation). **Next (stretch, chosen by the
-  maintainer 2026-10-16): the FGP dangling-row bug** — the circuit-open / slot-cancelled early returns after
-  `persistRun` leave `running` rows (predates FGP; see `fgp-review-findings-2026-10-12.md`; **no issue filed yet —
-  file one when the unit specs**). The cycle closes at the next release planning (likely **v2.5.2**).
+  1 declined with rationale) · unit 3 ✅ **#340** FGP dangling-row fix (PR #341 `eb3dd06`; review approve — 1 nit,
+  test zero-shape lock-in fixed in `166ccb3`; mutation-verified M1–M4). **All units complete** — the cycle closes at
+  the next release planning (likely **v2.5.2**); the #340 live rejection probe is queued below.
 - **Process ratified 2026-10-14/16:** **cycle model** — `Cycle: <theme>` opens, the maintainer declares the close
   (normally at release planning), the **cycle-end ritual runs BEFORE the release docs**, and the release is the first
   act of the next cycle (`references/sprint-end-ritual.md`). Cycle-end now includes the **bounded environment sweep**
@@ -42,10 +41,14 @@
 - **Jev (Rule 22):** strict-Jev ratified — any deviation carries a one-line reason; the C1⇒high convention is retired;
   the low-confidence carve-out (C1 < 0.5 ⇒ +1) stands. Template + calibration log: `jev-calibration-log.md`.
 - **Backlog (pinned, none urgent):** 4 carried U3 nits (`issue-u3-review-findings-2026-10-11.md`) · two tests using the
-  two-scan `waitUntil`+`findByMarker` pattern · **FGP dangling-row bug — the cycle's NEXT unit** ·
-  `errorCategoryBreakdown` legacy `originalParams` field · `runDisplayName` docstring overclaim.
+  two-scan `waitUntil`+`findByMarker` pattern · `errorCategoryBreakdown` legacy `originalParams` field ·
+  `runDisplayName` docstring overclaim. **Dismissed 2026-10-16:** the implementer-flagged parallel/graph slot-cancel
+  `stopReason` coherence observation — does not hold as stated (those paths persist no run to finalize;
+  `coherentFailureReason(undefined, "aborted")` returns `"aborted"`).
 - **Open live checks:** (a) interrupted-run probe — PASSED both rounds (evidence in the 329/330 spec); (b) **#315
-  dedupe — PASSED 2026-10-13** (one notice, no re-surface); (c) U4 snapshots (next ~Oct 18).
+  dedupe — PASSED 2026-10-13** (one notice, no re-surface); (c) U4 snapshots (next ~Oct 18); (d) **#340 rejection
+  probe — queued for the next dogfood `/reload`**: open the circuit, dispatch → rejection message + a terminal
+  **failed** entry (no interrupted row, no live remnant).
 - **Release:** v2.5.1 live; the next release (likely **v2.5.2** — #336/#337 are fixes + tooling) closes the cycle and
   auto-closes both issues — timing is the maintainer's call (dependabot's weekly visit ~Oct 17).
 
