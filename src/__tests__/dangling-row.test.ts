@@ -243,6 +243,11 @@ describe("#340 circuit-open dispatch", () => {
 		expect(terminal!.errorMessage).toBe(circuitMessage);
 		expect(terminal!.stopReason).toBe("aborted");
 		expect(terminal!.originalParams?.errorCategory).toBe("aborted");
+		// Pre-start rejection: empty output and EMPTY_USAGE zero-shape.
+		expect(terminal!.cost).toBe(0);
+		expect(terminal!.tokensIn).toBe(0);
+		expect(terminal!.tokensOut).toBe(0);
+		expect(terminal!.outputSummary).toBe("");
 
 		// Inflight registry row cleared (no dangling phantom).
 		expect(listInflightRuns().some((r) => r.id === runId)).toBe(false);
@@ -297,6 +302,11 @@ describe("#340 slot-cancel dispatch", () => {
 		);
 		expect(terminal!.stopReason).toBe("aborted");
 		expect(terminal!.originalParams?.errorCategory).toBe("aborted");
+		// Pre-start rejection: empty output and EMPTY_USAGE zero-shape.
+		expect(terminal!.cost).toBe(0);
+		expect(terminal!.tokensIn).toBe(0);
+		expect(terminal!.tokensOut).toBe(0);
+		expect(terminal!.outputSummary).toBe("");
 
 		expect(listInflightRuns().some((r) => r.id === runId)).toBe(false);
 		expect(state.isLiveEntryFinalized(runId)).toBe(true);
@@ -353,6 +363,11 @@ describe("#340 retry + circuit-open", () => {
 		expect(twinTerminal!.status).toBe("failed");
 		expect(twinTerminal!.stopReason).toBe("aborted");
 		expect(twinTerminal!.originalParams?.errorCategory).toBe("aborted");
+		// Pre-start rejection: empty output and EMPTY_USAGE zero-shape.
+		expect(twinTerminal!.cost).toBe(0);
+		expect(twinTerminal!.tokensIn).toBe(0);
+		expect(twinTerminal!.tokensOut).toBe(0);
+		expect(twinTerminal!.outputSummary).toBe("");
 
 		// Source row intact and retryable; no dangling twin row.
 		const rows = listInflightRuns();
