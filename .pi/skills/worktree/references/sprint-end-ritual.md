@@ -34,7 +34,8 @@ At cycle end, ALL FOUR run — they share one cadence:
    answer HOW MANY.
 
    **Count reconciliation (do not trust the row blind).** Reconcile the row's `dispatches`
-   against the extension log's spawn count over the SAME window:
+   against the extension log's spawn count over the SAME window. Run this from the cockpit
+   (the dev checkout): the log lives where the extension runs, so a worktree lacks it.
 
    ```bash
    rg '"Background agent spawned"|"Background fan-out spawned"' \
