@@ -47,8 +47,9 @@
   `coherentFailureReason(undefined, "aborted")` returns `"aborted"`).
 - **Open live checks:** (a) interrupted-run probe — PASSED both rounds (evidence in the 329/330 spec); (b) **#315
   dedupe — PASSED 2026-10-13** (one notice, no re-surface); (c) U4 snapshots (next ~Oct 18); (d) **#340 rejection
-  probe — queued for the next dogfood `/reload`**: open the circuit, dispatch → rejection message + a terminal
-  **failed** entry (no interrupted row, no live remnant).
+  probe — PASSED 2026-10-16** (dev dogfood, post-`/reload`): 5 induced timeout failures opened the circuit; the next
+  dispatch was gate-rejected in 5 ms → recorded entry terminal `failed`/`aborted`, `errorMessage` byte-identical to
+  the returned message, registry **0 rows** (no interrupted row at boot).
 - **Release:** v2.5.1 live; the next release (likely **v2.5.2** — #336/#337 are fixes + tooling) closes the cycle and
   auto-closes both issues — timing is the maintainer's call (dependabot's weekly visit ~Oct 17).
 
