@@ -1,62 +1,53 @@
 # Handoff — 2026-09-22 (night)
 
-> Updated 2026-10-12 — **v2.5.0 live on npm; the running install is the DEV checkout (dogfood), RELOADED at dev tip `be89f6a`.**
-> Since v2.5.0, four units are merged to `dev` and ACTIVE in the running session: **#299 Option B** (PR #325), **U2**
-> file-backed background sessions (#326), **U3** recovery surface (#327), **FGP** registry task-persistence (#328).
-> **`main` @ `355ed53` = v2.5.0** (tag `v2.5.0`); roll back to npm with the local-development toggle when the dogfood ends.
+> Updated 2026-10-16 — **v2.5.1 live on npm; the running install is the DEV checkout (dogfood), cockpit + reload on pi 1.3.0.**
+> The cycle `vendor parity + boundary guards` is OPEN with both units merged: the pi **1.3.0** dependency parity bump
+> (PR #338) and **#336**'s boundary guards (PR #339). Next per the maintainer: the **FGP dangling-row bug** (stretch).
+> **`main` @ `7fa210c` = v2.5.1** (tag `v2.5.1`); roll back to npm with the local-development toggle when the dogfood ends.
 > The **cockpit** is the `dev` checkout (`.development/`, `.codegraph/` (the structural index), `.pi/` tools, shared `node_modules`).
 > Read this first: it is the state a fresh conductor cannot infer from the repo alone.
 > Companion durable records: `.development/` (ROADMAP, AUDIT, TASKS, METRICS, FRICTION_LOG,
 > INVESTIGATION_reload_wake.md), `.pi/skills/worktree/SKILL.md` (the rituals),
 > `.codegraph/` (the structural index — now describes DEV).
 
-## STATE (2026-10-12, post-compaction)
+## STATE (2026-10-16, post-compaction)
 
-- **dev** at the post-FGP tip `be89f6a` — this handoff is a doc commit on top; **the tip moves with doc commits, so
-  check `git log -1` rather than trusting this line**. Only `main` + `dev` remain — no worktrees, no strays. Suite
-  **73 files / 1506**; CodeGraph **40 modules / 425** exported declarations (fresh at the last refresh; doc-only commits
-  can read as stale until the next merge refresh — expected).
-- **Running install:** **npm `brl-subagent` 2.5.1** — the published artifact (switched back 2026-10-13, reloaded; the dev dogfood has ENDED). npm `latest` = 2.5.1; `main` = `dev` = the v2.5.1 release commit (tag `v2.5.1`).
-- **Board: `#336`** (fixed — PR #339 `911a013`) · **`#337`** (fixed — PR #338 `7061999`) — both close at the next release merge. No other open issues.
-- **Cycle:** **OPEN — `vendor parity + boundary guards` (2026-10-16)**: unit 1 **✅ merged** — pi **1.3.0** parity bump (PR #338, `7061999`; review approve, 0 findings; cockpit tree refreshed to 1.3.0 via `npm ci` — the **install switch to the dev dogfood is PENDING**). unit 2 **✅ merged** — **#336**'s boundary guards (PR #339, `911a013`; review approve-with-nits — 2 nits fixed in `777ce2d`, 1 declined with rationale). **The cycle's two units are complete** — the next release planning closes the cycle; the pinned backlog remains an optional stretch. The previous cycle closed at **v2.5.1** (2026-10-13). Convention: closes on the maintainer's declaration (prompted at release planning); the **cycle-end ritual runs BEFORE the release docs**; the release is the first act of the next cycle (`references/sprint-end-ritual.md`).
-- **UPDATE — #333 MERGED (2026-10-13, PR #334 → `dev` `7619817`):** dependency parity with the pi **1.2.0** host —
-  the four `@earendil-works/*` devDeps → `^1.2.0`, `typebox` pinned `1.3.27`, lockfile refreshed (the chord/esbuild
-  tree removed upstream); review approve (0 findings, lockfile fully reconciled; `npm ci --dry-run` green). The
-  cockpit shared tree was refreshed with `npm ci` (rule 2); the `/reload` (2026-10-13) activated BOTH the merged
-  code (#329/#330) and the 1.2.0 dependency line — **TUI smoke PASSED** (history menu clean on the new line).
-- **UPDATE — v2.5.1 RELEASED (2026-10-13):** release PR #335 merged `950b2bb` (auto-closed `#299`/`#329`/`#330`/`#333`);
-  bump `7fa210c` tagged `v2.5.1`; npm staged → approved → `latest` = 2.5.1; install switched back to
-  `npm:brl-subagent` + reloaded; published-build probe PASSED (extracted tree identical to the tag). **The dev
-  dogfood has ended**; the cockpit stays on disk for the next cycle. `dev` = `main` = the release commit.
-- **UPDATE — #329 + #330 MERGED (2026-10-12, PRs #331/#332 → `dev` `e5f6e6b` / `60ad7e7`):** bridged retries inherit
-  `dispatchId`/`attempt` (#329; focused review approve-with-nits — 1 style nit carried by design). Run surfaces render
-  newest-first via a shared `sortNewestFirst`, the bridge merges synthetic rows by RECENCY (no more append), and the
-  retry menu's `.reverse()` is gone (#330; review approve, ZERO findings — the direction was corrected mid-flight
-  after the implementer exposed the wrong premise: history was already newest-first via `cleanupRuns`). Review records:
-  `issue-329-review-findings-2026-10-12.md`, `issue-330-review-findings-2026-10-12.md`; spec errata pinned.
-- **Durability arc (Option B plan):** U1 merged in 2.5.0 · **U2** file-backed background sessions · **U3** recovery surface
-  (interrupted rendering, boot notice, retry offer, abandon, posture) · **FGP** durable task/label/model/`originalParams`
-  in the registry + retire-on-retry. All on `dev`, all reviewed (records pinned per unit). **U4 (A₂ resume):** spec APPROVED +
-  pinned (`u4-resume-spec-2026-10-11.md`) and **parked behind the measurement gate**.
-- **Measurement (the U4 gate):** `u2-u3-measurement-2026-10-11.md` — multi-project scope (dev + spelling_bee +
-  deep-research-agent + ephemeral-rp), enumeration command, baseline zero; **zero interruptions observed so far**;
-  next snapshot at the first real interruption or ~2026-10-18. **Extension policy (2026-10-14): if the Oct 18 snapshot still reads zero across all projects, EXTEND the window rather than force a verdict — zero observed = insufficient exposure, not absence of risk.**
-- **Jev ritual (Rule 22):** input template + calibration log + **strict-Jev ratified 2026-10-12** — use Jev's level; ANY
-  deviation (either direction) carries a one-line reason; the C1⇒high convention is retired; single carve-out: confidence
-  `< 0.5` on a C1 justifies +1 (citing the confidence). Log: `jev-calibration-log.md` (template-built inputs; outcomes at close).
-- **Other adopted practices:** Rule 13 Recon checkpoint (`recon.sh`; `## Recon` mandatory in C1/C2 specs) · the `pr` skill ·
-  review records pinned under `.development/investigations/`.
-- **Backlog (pinned, none urgent):** the 4 carried U3 nits (`issue-u3-review-findings-2026-10-11.md`) · two tests using the
-  latent two-scan `waitUntil`+`findByMarker` pattern · **FGP dangling-row bug** (circuit-open/slot-cancelled early returns
-  after `persistRun` leave `running` rows; own fix) · `errorCategoryBreakdown` legacy `originalParams` field ·
-  `runDisplayName` docstring overclaim · #329/#330 fixed on dev (PRs #331/#332; close at the RELEASE merge).
-- **Open live checks (user-triggered):** (a) the **interrupted-run probe PASSED 2026-10-12** — scan → mark → one notice →
-  bridged retry restored task/label/model/thinkingLevel/priority/gitMode/approvalMode/background/force → retire-on-retry
-  (registry empty); findings fixed by PRs #331/#332 (both merged); **round 2 PASSED (2026-10-12, post-`/reload`)** —
-  bridged retry inherited `dispatchId 6ce19226…`, `attempt: 2`, and restored `timeout: 45000` with NO override
-  (closing round 1's open cell); source retired; evidence table pinned in the 329/330 spec; (b) **#315 — PASSED 2026-10-13** on pi 1.2.0 (a deliberate 2s-timeout failed run `d73a6710`): exactly ONE completion notice, nothing re-surfaced;
-  (c) the U4 measurement snapshots.
-- **Release:** **v2.5.1 LIVE (2026-10-13)** — release PR #335 merged `950b2bb`, bump `7fa210c` tagged `v2.5.1`, npm staged → approved → `latest` = 2.5.1, install switched back to `npm:brl-subagent` + reloaded; published-build probe PASSED (extracted tree identical to the tag; the byte diff is packer envelope only).
+- **dev** @ `267e7d4` + this handover commit — **check `git log -1`; the tip moves with doc commits**. Only `main` +
+  `dev` — no worktrees, no strays. Suite **73 files / 1506**; CodeGraph **40 modules / 425** exported declarations.
+- **Running install:** the **dev checkout** (dogfood) — switched from npm 2.5.1 on 2026-10-16 + `/reload`; the cockpit
+  resolves **pi 1.3.0** (`@earendil-works/*` 1.3.0, `typebox` 1.3.27). npm `latest` = **2.5.1**; `main` @ `7fa210c`.
+- **Board:** **`#336`** (fixed — PR #339 `911a013`) · **`#337`** (fixed — PR #338 `7061999`) — both close at the next
+  release merge. No other open issues.
+- **Cycle (OPEN) — `vendor parity + boundary guards`:** unit 1 ✅ pi **1.3.0** parity bump (PR #338; review approve,
+  0 findings) · unit 2 ✅ **#336** boundary guards (PR #339; review approve-with-nits — 2 nits fixed in `777ce2d`,
+  1 declined with rationale; the selftest's discrimination was proven by mutation). **Next (stretch, chosen by the
+  maintainer 2026-10-16): the FGP dangling-row bug** — the circuit-open / slot-cancelled early returns after
+  `persistRun` leave `running` rows (predates FGP; see `fgp-review-findings-2026-10-12.md`; **no issue filed yet —
+  file one when the unit specs**). The cycle closes at the next release planning (likely **v2.5.2**).
+- **Process ratified 2026-10-14/16:** **cycle model** — `Cycle: <theme>` opens, the maintainer declares the close
+  (normally at release planning), the **cycle-end ritual runs BEFORE the release docs**, and the release is the first
+  act of the next cycle (`references/sprint-end-ritual.md`). Cycle-end now includes the **bounded environment sweep**
+  (7 categories, ≤5 candidates, advisory) + **retro candidates** below the Rule 11 threshold; every escalation and
+  candidate carries `fix: mechanical | judgement` (default mechanical); `sprint-metrics.py` has **true timestamp
+  windows** + `--selftest` (wired into CI); Rule 13 gained the **terminal-call-boundary** bullet.
+- **pi 1.3.0 compatibility (2026-10-16): NO breaking changes** — the notes have no Breaking/Removed section; all value
+  imports + pi-tui symbols survive; two fixes land in our paths (the `ctx.ui.custom({overlay:true})` `done()` fix and
+  the transient-provider retries). Evidence: `deps-pi-1.3.0-spec-2026-10-16.md`.
+- **v2.5.1 RELEASED (2026-10-13):** PR #335 merged `950b2bb` (auto-closed `#299`/`#329`/`#330`/`#333`), bump `7fa210c`
+  tagged; npm staged → approved → `latest`; published-build probe PASSED (tree-identical). The durability cycle
+  (U1–U3 + FGP + #299 Option B) is COMPLETE.
+- **Measurement (the U4 gate):** `u2-u3-measurement-2026-10-11.md` — scope: dev + spelling_bee + deep-research-agent +
+  ephemeral-rp; **zero interruptions observed so far**; snapshot due **~2026-10-18**. **Extension policy: a zero
+  reading EXTENDS the window** (zero observed = insufficient exposure, not absence of risk).
+- **Jev (Rule 22):** strict-Jev ratified — any deviation carries a one-line reason; the C1⇒high convention is retired;
+  the low-confidence carve-out (C1 < 0.5 ⇒ +1) stands. Template + calibration log: `jev-calibration-log.md`.
+- **Backlog (pinned, none urgent):** 4 carried U3 nits (`issue-u3-review-findings-2026-10-11.md`) · two tests using the
+  two-scan `waitUntil`+`findByMarker` pattern · **FGP dangling-row bug — the cycle's NEXT unit** ·
+  `errorCategoryBreakdown` legacy `originalParams` field · `runDisplayName` docstring overclaim.
+- **Open live checks:** (a) interrupted-run probe — PASSED both rounds (evidence in the 329/330 spec); (b) **#315
+  dedupe — PASSED 2026-10-13** (one notice, no re-surface); (c) U4 snapshots (next ~Oct 18).
+- **Release:** v2.5.1 live; the next release (likely **v2.5.2** — #336/#337 are fixes + tooling) closes the cycle and
+  auto-closes both issues — timing is the maintainer's call (dependabot's weekly visit ~Oct 17).
 
 ## Environment
 
