@@ -50,8 +50,9 @@
   probe — PASSED 2026-10-16** (dev dogfood, post-`/reload`): 5 induced timeout failures opened the circuit; the next
   dispatch was gate-rejected in 5 ms → recorded entry terminal `failed`/`aborted`, `errorMessage` byte-identical to
   the returned message, registry **0 rows** (no interrupted row at boot).
-- **Release:** v2.5.1 live; the next release (likely **v2.5.2** — #336/#337 are fixes + tooling) closes the cycle and
-  auto-closes both issues — timing is the maintainer's call (dependabot's weekly visit ~Oct 17).
+- **Release:** v2.5.1 live; the next release (**v2.5.2** — three fixes: #336/#337/#340) closes the cycle and
+  auto-closes all three issues. **Decision 2026-10-16: run the release planning after dependabot's weekly visit
+  (~Oct 17)** — fold any bump PR in, then cut v2.5.2.
 
 ## Environment
 
