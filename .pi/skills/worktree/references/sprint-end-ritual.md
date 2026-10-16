@@ -32,6 +32,24 @@ At cycle end, ALL FOUR run — they share one cadence:
    filters to the instant; naive bounds are read as UTC), so the window can end exactly at the
    declaration. Review the row alongside the friction log: the log answers WHY, the metrics
    answer HOW MANY.
+
+   **Count reconciliation (do not trust the row blind).** Reconcile the row's `dispatches`
+   against the extension log's spawn count over the SAME window:
+
+   ```bash
+   rg '"Background agent spawned"|"Background fan-out spawned"' \
+      .pi/subagent-logs/brl-subagent.log \
+      | rg '"timestamp":"2026-10-1[0-3]'      # ← narrow the date class to the cycle window
+   ```
+
+   A **>20% delta ⇒ suspect the window / the counting** before trusting the row — a
+   bound that silently excludes a day is indistinguishable from a quiet cycle. The
+   #336 incident: a time-suffixed bound counted **22 dispatches against 68 logged
+   spawns**. The parser is itself guarded — run `python3
+   .pi/skills/worktree/sprint-metrics.py --selftest` (wired into CI) to prove
+   date-only vs time-suffixed bounds, inclusive ends, naive=UTC, and invalid values.
+   (Fan-out legitimately inflates spawns over dispatches — N agents per call — so treat
+   the delta as a signal to check the window, not as a hard failure.)
 3. **Environment sweep (bounded, advisory):** walk the cycle's record once against these
    categories — (1) **Navigation** (did finding files cost time? hidden dependencies?) ·
    (2) **Automated checks** (any guardrail missing, unwired, or silently broken — *"a check that

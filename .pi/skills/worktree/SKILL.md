@@ -115,6 +115,14 @@ never re-type their logic by hand. Full design:
       stale index itself (1 s); if the refresh fails, or an answer is empty or
       wrong, record that in the Recon section explicitly — never quietly fall
       back to grep.
+    - **Terminal-call-boundary verification (issue #330).** A spec claim that
+      rests on a function's **ordering, filtering, or return shape** is verified
+      through the **terminal call boundary** — the actual `return`/`await` that
+      produces the value — not just the symbol. The #330 shape: `getRunEntries`
+      reads its store then `return cleanupRuns(...)`, so a spec built on the
+      symbol alone described a partial read the function never returns. Resolve
+      the value's real producer before trusting the claim; if you cannot, record
+      it as a graph gap.
     - **Structural questions → CodeGraph — the SOLE structural index** (ADR
       0016). Underneath `recon.sh`: `codegraph callers <symbol>`, `codegraph
       impact <symbol>` (file nodes by basename, e.g. `runner.ts`), `codegraph

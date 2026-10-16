@@ -13,6 +13,7 @@ inclusive of its whole day; naive bounds are read as UTC.
 Usage:
   python3 sprint-metrics.py [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--log <path>]
                             [--out .development/METRICS.md] [--sprint "2026-08-16"]
+  python3 sprint-metrics.py --selftest   # window-boundary guard (CI-wired)
 
 Defaults: --since = today-1 day (covers the current sprint's work), --log = the most
 recent session log for this project, --out = none (print only).
@@ -86,6 +87,54 @@ def in_range(ts: str, since: str, until: str) -> bool:
     if len(str(until).strip()) <= 10:
         u = u.replace(hour=23, minute=59, second=59, microsecond=999999)
     return s <= t <= u
+
+
+# Boundary self-test (issue #336, Rule 11 mechanical guard).
+#
+# Each case is (name, ts, since, until, expected). The corpus pins the window
+# parser's boundary behavior so a future refactor cannot silently re-introduce
+# the v2.5.1 regression — a time-suffixed bound compared as a raw string and so
+# dropping its whole day (22 dispatches counted vs 68 logged spawns).
+SELFTEST_CASES = [
+    # Date-only bounds are inclusive of the WHOLE day.
+    ("date-only since includes day start", "2026-10-10T00:00:00Z", "2026-10-10", "2026-10-10", True),
+    ("date-only until includes end of day", "2026-10-10T23:59:59.999999Z", "2026-10-10", "2026-10-10", True),
+    ("date-only until excludes next day", "2026-10-11T00:00:00Z", "2026-10-10", "2026-10-10", False),
+    # PRE-FIX REGRESSION SHAPE: a time-suffixed --since must NOT drop its own day.
+    # Old code compared the raw bound "2026-10-10T02:00:00" against the stamp's
+    # date prefix "2026-10-10" (lexicographically GREATER), excluding the day.
+    ("time-suffixed since keeps its day (pre-fix regression)", "2026-10-10T05:00:00.000Z", "2026-10-10T02:00:00", "2026-10-13T12:00:00", True),
+    ("time-suffixed since filters to the instant", "2026-10-10T01:59:59Z", "2026-10-10T02:00:00", "2026-10-13T12:00:00", False),
+    # Inclusive ends: an instant exactly on a bound is inside the window.
+    ("time-suffixed since inclusive of exact instant", "2026-10-10T02:00:00Z", "2026-10-10T02:00:00", "2026-10-13T12:00:00", True),
+    ("time-suffixed until inclusive of exact instant", "2026-10-13T12:00:00Z", "2026-10-10T02:00:00", "2026-10-13T12:00:00", True),
+    ("time-suffixed until excludes later instant", "2026-10-13T12:00:01Z", "2026-10-10T02:00:00", "2026-10-13T12:00:00", False),
+    # Naive timestamps/bounds are read as UTC (not local time).
+    ("naive timestamp read as UTC", "2026-10-10T05:00:00", "2026-10-10T04:00:00Z", "2026-10-10T06:00:00Z", True),
+    ("naive bounds read as UTC", "2026-10-10T05:00:00Z", "2026-10-10T04:00:00", "2026-10-10T06:00:00", True),
+    # Invalid / missing values never match (no silent default-to-include).
+    ("invalid timestamp excluded", "not-a-timestamp", "2026-10-10", "2026-10-13", False),
+    ("missing timestamp excluded", "", "2026-10-10", "2026-10-13", False),
+    ("None timestamp excluded", None, "2026-10-10", "2026-10-13", False),
+    ("invalid since bound excluded", "2026-10-10T05:00:00Z", "not-a-date", "2026-10-13", False),
+    ("missing until bound excluded", "2026-10-10T05:00:00Z", "2026-10-10", "", False),
+]
+
+
+def run_selftest() -> int:
+    """Exercise the window parser's boundaries; print each case; 1 on failure."""
+    print(f"sprint-metrics --selftest: {len(SELFTEST_CASES)} boundary cases")
+    failures = 0
+    for name, ts, since, until, expected in SELFTEST_CASES:
+        got = in_range(ts, since, until)
+        ok = got == expected
+        mark = "✓" if ok else "✗"
+        print(f"  {mark} {name}: in_range({ts!r}, {since!r}, {until!r}) = {got} (expected {expected})")
+        if not ok:
+            failures += 1
+    status = "PASS" if failures == 0 else "FAIL"
+    print(f"sprint-metrics --selftest: {len(SELFTEST_CASES) - failures}/{len(SELFTEST_CASES)} passed — {status}")
+    return 1 if failures else 0
 
 
 def load_events(log_paths, since, until):
@@ -287,7 +336,12 @@ def main():
     ap.add_argument("--log", action="append", help="explicit session log path (repeatable)")
     ap.add_argument("--sprint", default=None, help='cycle label for the METRICS.md row (historically "sprint"; default: since)')
     ap.add_argument("--out", default=None, help="append the row to this file (e.g. .development/METRICS.md)")
+    ap.add_argument("--selftest", action="store_true",
+                    help="run the window-boundary self-test and exit (no session logs needed)")
     args = ap.parse_args()
+
+    if args.selftest:
+        sys.exit(run_selftest())
 
     log_paths = args.log or sorted(glob.glob(SESSION_GLOB))
     if not log_paths:
