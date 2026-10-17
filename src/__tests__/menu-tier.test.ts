@@ -1,7 +1,7 @@
 // Purpose: Pins the menu-polish U4 (umbrella #345) tier classifier — the A1 regression: a custom
 // template written by our own `writeTemplateFile` ("My Checklist.md") must classify as custom, not
-// `builtin`. Also pins the accepted residual (a builtin-NAME override stored under a non-canonical
-// filename classifies by membership → `builtin`) and the finder wiring that feeds the managers.
+// `builtin`. Also pins the project-over-global precedence and the accepted residual (a builtin-NAME
+// override stored under a non-canonical filename classifies by the surface fallback).
 import { describe, expect, it, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -83,25 +83,17 @@ function withHome<T>(home: string, fn: () => T): T {
 	}
 }
 
-const SHIPPED_TEMPLATE_NAMES = ["Review Changes", "Write Tests"];
-const SHIPPED_PRESET_NAMES = ["code-reviewer", "dev-agent"];
-
 function template(name: string): TaskTemplate {
 	return { name, task: `Do the thing for \${target}.` };
 }
 
 /** classifyTier against a fixture with real fs, builtin-tier terminal fallback. */
-function classifyInFixture(
-	fixture: Fixture,
-	name: string,
-	builtinNames: readonly string[] = SHIPPED_TEMPLATE_NAMES,
-	fallback: Tier = "builtin",
-): Tier {
-	return classifyTier(name, fixture.dirs, builtinNames, { fallback, exists: fs.existsSync });
+function classifyInFixture(fixture: Fixture, name: string, fallback: Tier = "builtin"): Tier {
+	return classifyTier(name, fixture.dirs, { fallback, exists: fs.existsSync });
 }
 
 // ---------------------------------------------------------------------------
-// The five classifier cases
+// The classifier cases
 // ---------------------------------------------------------------------------
 
 describe("classifyTier (menu U4 tier classifier)", () => {
@@ -145,20 +137,40 @@ describe("classifyTier (menu U4 tier classifier)", () => {
 		expect(classifyInFixture(fixture, "Global Only")).toBe("global");
 	});
 
-	it("shipped built-in name with no file → builtin", () => {
+	it("no canonical file → the surface fallback (templates: builtin, presets: project)", () => {
 		const fixture = makeFixture();
+		// A shipped built-in name has no file on disk: the template fallback decides.
 		expect(classifyInFixture(fixture, "Review Changes")).toBe("builtin");
-		// Not a shipped name and no file: falls through to the injected fallback.
-		expect(classifyInFixture(fixture, "Unknown Name", SHIPPED_TEMPLATE_NAMES, "project")).toBe(
-			"project",
-		);
+		// Any name with no file follows the same path — the name itself is irrelevant.
+		expect(classifyInFixture(fixture, "Unknown Name")).toBe("builtin");
+		// The preset surface's fallback is `project`.
+		expect(classifyInFixture(fixture, "Unknown Name", "project")).toBe("project");
 	});
 
-	it("documented residual — builtin NAME at a non-canonical filename → builtin (by membership)", () => {
+	it("priority — canonical file in BOTH tiers → project (project dirs are scanned first)", () => {
+		const fixture = makeFixture();
+		writeTemplateFile(template("Both Tiers"), fixture.projectTemplatesDir);
+		writeTemplateFile(template("Both Tiers"), fixture.globalTemplatesDir);
+		expect(fs.existsSync(path.join(fixture.projectTemplatesDir, "Both Tiers.md"))).toBe(true);
+		expect(fs.existsSync(path.join(fixture.globalTemplatesDir, "Both Tiers.md"))).toBe(true);
+		expect(classifyInFixture(fixture, "Both Tiers")).toBe("project");
+
+		// Same precedence for the preset surface's dir list.
+		const projectPresetsDir = path.join(fixture.cwd, ".pi", "brl-subagent", "presets");
+		const globalPresetsDir = path.join(fixture.home, ".pi", "agent", "brl-subagent", "presets");
+		for (const dir of [projectPresetsDir, globalPresetsDir]) {
+			writePresetFile({ name: "Both Tiers", systemPrompt: "Be brief." }, dir);
+		}
+		expect(fs.existsSync(path.join(projectPresetsDir, "Both Tiers.md"))).toBe(true);
+		expect(fs.existsSync(path.join(globalPresetsDir, "Both Tiers.md"))).toBe(true);
+		expect(classifyInFixture(fixture, "Both Tiers", "project")).toBe("project");
+	});
+
+	it("documented residual — builtin NAME at a non-canonical filename → surface fallback", () => {
 		const fixture = makeFixture();
 		// A hand-written file that intentionally overrides the shipped
 		// "Review Changes" template, stored under the OLD (pre-U4) filename
-		// convention — no canonical path match, so membership decides.
+		// convention — no canonical path match, so the fallback decides.
 		fs.mkdirSync(fixture.projectTemplatesDir, { recursive: true });
 		fs.writeFileSync(
 			path.join(fixture.projectTemplatesDir, "review_changes.md"),
@@ -168,7 +180,7 @@ describe("classifyTier (menu U4 tier classifier)", () => {
 		expect(fs.existsSync(path.join(fixture.projectTemplatesDir, "Review Changes.md"))).toBe(false);
 
 		// Accepted this cycle (the additive `source` field would fix it): the
-		// membership fallback labels it builtin. Asserted so it stays a decision.
+		// template fallback labels it builtin. Asserted so it stays a decision.
 		expect(classifyInFixture(fixture, "Review Changes")).toBe("builtin");
 	});
 });
@@ -186,9 +198,7 @@ describe("tier finders (manager wiring)", () => {
 		writeTemplateFile(template("My Checklist"), fixture.projectTemplatesDir);
 
 		expect(
-			withHome(fixture.home, () =>
-				findTemplateSource("My Checklist", ctxFor(fixture.cwd), SHIPPED_TEMPLATE_NAMES),
-			),
+			withHome(fixture.home, () => findTemplateSource("My Checklist", ctxFor(fixture.cwd))),
 		).toBe("project");
 	});
 
@@ -197,12 +207,9 @@ describe("tier finders (manager wiring)", () => {
 		writeTemplateFile(template("Global Only"), fixture.globalTemplatesDir);
 
 		withHome(fixture.home, () => {
-			expect(
-				findTemplateSource("Global Only", ctxFor(fixture.cwd), SHIPPED_TEMPLATE_NAMES),
-			).toBe("global");
-			expect(
-				findTemplateSource("Review Changes", ctxFor(fixture.cwd), SHIPPED_TEMPLATE_NAMES),
-			).toBe("builtin");
+			expect(findTemplateSource("Global Only", ctxFor(fixture.cwd))).toBe("global");
+			// No file on disk → the template surface fallback.
+			expect(findTemplateSource("Review Changes", ctxFor(fixture.cwd))).toBe("builtin");
 		});
 	});
 
@@ -215,14 +222,11 @@ describe("tier finders (manager wiring)", () => {
 		);
 
 		withHome(fixture.home, () => {
-			expect(
-				findPresetSource("My Preset", ctxFor(fixture.cwd), SHIPPED_PRESET_NAMES),
-			).toBe("project");
+			expect(findPresetSource("My Preset", ctxFor(fixture.cwd))).toBe("project");
 			// Pre-U4 behavior preserved: a custom preset that shadows a builtin
-			// name still renders as project (the manager has no [B] slot here).
-			expect(
-				findPresetSource("code-reviewer", ctxFor(fixture.cwd), SHIPPED_PRESET_NAMES),
-			).toBe("project");
+			// name still renders as project (the preset fallback is `project`;
+			// the manager has no [B] slot here).
+			expect(findPresetSource("code-reviewer", ctxFor(fixture.cwd))).toBe("project");
 		});
 	});
 });

@@ -739,10 +739,9 @@ export async function showPresetManager(
 	}));
 
 	// Custom presets from state (loaded from files on session start)
-	const builtinPresetNames = state.builtinPresets.map((p) => p.name);
 	const customItems: SelectItem[] = state.customPresets.map((p) => ({
 		value: `__custom__:${p.name}`,
-		label: `[${findPresetSource(p.name, ctx, builtinPresetNames) === "project" ? "P" : "G"}] ${p.name}`,
+		label: `[${findPresetSource(p.name, ctx) === "project" ? "P" : "G"}] ${p.name}`,
 		description: p.description || formatPresetSummary(p),
 	}));
 
@@ -862,28 +861,29 @@ export interface TierClassifierIo {
  *      filename via the same `sanitizeFileName`, so a file we wrote by name is
  *      always resolved by path (#345 A1: the pre-U4 finders re-derived a
  *      different, lowercased/underscored filename convention and missed it).
- *   2. `name ∈ builtinNames` → `builtin`.
- *   3. `io.fallback` — the pre-U4 terminal value for that surface.
+ *   2. `io.fallback` — the surface's terminal value: `builtin` for templates,
+ *      `project` for presets (the preset manager only has [P]/[G] labels, so it
+ *      maps the non-global answer to `project`).
  *
  * Both the filesystem and the fallback are injected, so the result is a pure
  * function of its arguments and testable against temp dirs or stubs.
  *
  * Documented residual (accepted this cycle): a hand-written file that overrides
  * a builtin NAME but is stored under a non-canonical filename matches no path
- * and is therefore classified by membership → `builtin`. The additive `source`
- * field (out of scope for U4) is what would fix it.
+ * and is therefore classified by the surface fallback (templates → `builtin`,
+ * presets → `project`). The additive `source` field (out of scope for U4) is
+ * what would fix it.
  */
 export function classifyTier(
 	name: string,
 	dirs: readonly TierDir[],
-	builtinNames: readonly string[],
 	io: TierClassifierIo,
 ): Tier {
 	const fileName = sanitizeFileName(name) + ".md";
 	for (const { tier, dir } of dirs) {
 		if (io.exists(path.join(dir, fileName))) return tier;
 	}
-	return builtinNames.includes(name) ? "builtin" : io.fallback;
+	return io.fallback;
 }
 
 /**
@@ -902,15 +902,12 @@ function tierDirs(ctx: ExtensionContext, kind: "presets" | "templates"): TierDir
 /**
  * Determine whether a custom preset comes from the project or global directory.
  * Delegates the decision to classifyTier; the preset manager only ever labels
- * custom entries ([P]/[G]), so a builtin-tier answer (a builtin-named custom
- * preset stored under a non-canonical filename) keeps the pre-U4 project label.
+ * custom entries ([P]/[G]), and the preset surface fallback is already
+ * `project`, so a builtin-named custom preset stored under a non-canonical
+ * filename keeps the pre-U4 project label.
  */
-export function findPresetSource(
-	name: string,
-	ctx: ExtensionContext,
-	builtinNames: readonly string[],
-): "project" | "global" {
-	const tier = classifyTier(name, tierDirs(ctx, "presets"), builtinNames, {
+export function findPresetSource(name: string, ctx: ExtensionContext): "project" | "global" {
+	const tier = classifyTier(name, tierDirs(ctx, "presets"), {
 		fallback: "project",
 		exists: fs.existsSync,
 	});
@@ -919,15 +916,11 @@ export function findPresetSource(
 
 /**
  * Determine which tier a template comes from: project, global, or builtin.
- * Mirrors findPresetSource. The `builtin` terminal value is preserved for every
- * name that is neither on disk at its canonical filename nor a shipped builtin.
+ * Mirrors findPresetSource. The `builtin` terminal value is the template
+ * surface fallback: any name with no canonical file on disk is `builtin`.
  */
-export function findTemplateSource(
-	name: string,
-	ctx: ExtensionContext,
-	builtinNames: readonly string[],
-): Tier {
-	return classifyTier(name, tierDirs(ctx, "templates"), builtinNames, {
+export function findTemplateSource(name: string, ctx: ExtensionContext): Tier {
+	return classifyTier(name, tierDirs(ctx, "templates"), {
 		fallback: "builtin",
 		exists: fs.existsSync,
 	});
@@ -954,11 +947,7 @@ export async function showViewTemplate(
 
 	// Tier suffix mirrors the preset view's dim "(built-in)" treatment, extended
 	// to project/global so the detail view matches the manager's tier labels.
-	const templateTier = findTemplateSource(
-		template.name,
-		ctx,
-		state.builtinTemplates.map((t) => t.name),
-	);
+	const templateTier = findTemplateSource(template.name, ctx);
 	const tierSuffix =
 		templateTier === "builtin"
 			? " (built-in)"
@@ -1032,9 +1021,8 @@ export async function showTemplateManager(
 	}
 
 	// Tier-prefixed labels mirror showPresetManager: [P]roject / [G]lobal / [B]uiltin.
-	const builtinTemplateNames = state.builtinTemplates.map((t) => t.name);
 	const templateItems: SelectItem[] = state.config.templates.map((t) => {
-		const source = findTemplateSource(t.name, ctx, builtinTemplateNames);
+		const source = findTemplateSource(t.name, ctx);
 		const tierLabel = source === "project" ? "P" : source === "global" ? "G" : "B";
 		return {
 			value: t.name,
