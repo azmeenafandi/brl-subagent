@@ -128,6 +128,9 @@ Same `value` strings, actions, keys, and row order. **No** dividers/header/viewp
 
 ## Constraints
 
+- **Exception (anticipated by U1):** `src/__tests__/tui-format.test.ts` may — and must — flip the U1 anticipation
+  pin (`formatMaxParallel(0)` exact equality) from `unlimited` to `Unlimited`; the U1 test's comment names U2 as the
+  canonicalizer.
 - `src/tui.ts`, `src/types.ts`, `src/__tests__/types.test.ts`, and the new test file only. **No `tui-format.ts` edits**
   (the U1 contract is frozen); no `.development/**` edits.
 - Commit + push; PR body per the `pr` skill with **"Part of #345"**.
