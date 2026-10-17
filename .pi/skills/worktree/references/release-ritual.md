@@ -64,7 +64,7 @@ because nothing checked them and no test pins them.
    triggers `publish.yml`.
 8. **Graph — no release-time step** (ADR 0011/0012/0016). The canonical structural index describes the
    **cockpit (`dev`)** and is refreshed at every merge into `dev` by `codegraph-refresh.sh` (lifecycle
-   step 6). A release changes `main`, which the index does not describe — and there is no hook to fire on
+   step 7). A release changes `main`, which the index does not describe — and there is no hook to fire on
    the bump commit (#230, #314).
 
    The refresh discipline still applies **at merge time** — never trust that a refresh succeeded:

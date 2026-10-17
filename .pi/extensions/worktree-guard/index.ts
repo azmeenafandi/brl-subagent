@@ -3,8 +3,9 @@
  * "ALL code changes through a branch+worktree."
  *
  * INTERNAL dev-process tooling for the brl-subagent repo (issue #83).
- * Lives in .pi/extensions/ (gitignored, pi project-local auto-discovery),
- * NOT part of the shipped extension — zero public-facing surface.
+ * Lives in .pi/extensions/ (TRACKED since #247 — not gitignored; pi project-local
+ * auto-discovery, so it materializes in every worktree), NOT part of the shipped
+ * extension — zero public-facing surface.
  *
  * What it does:
  *  1. tool_call block: intercepts write-tool calls (write/edit/bash) that
