@@ -230,11 +230,12 @@ export function formatMenuValue(kind: MenuValueKind, input: MenuValueInput = {})
 			return enumToken(kind, input.completionNotify);
 		case "recovery":
 			return enumToken(kind, input.recovery);
-		case "historyentries":
-			if (input.maxHistoryEntries === undefined) return formatUnset(kind);
-			return input.maxHistoryEntries === 0
-				? formatUnset(kind)
-				: `${input.maxHistoryEntries} entries`;
+		case "historyentries": {
+			const entries = input.maxHistoryEntries;
+			if (entries === undefined) return formatUnset(kind);
+			if (entries === 0) return formatUnset(kind);
+			return entries === 1 ? "1 entry" : `${entries} entries`;
+		}
 		case "costlimit":
 			if (input.sessionCostLimit === undefined) return formatUnset(kind);
 			return input.sessionCostLimit === 0

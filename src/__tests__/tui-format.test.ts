@@ -263,7 +263,8 @@ describe("formatMenuValue", () => {
 	it("historyentries: unset / zero / normal / boundary", () => {
 		expect(formatMenuValue("historyentries", {})).toBe("Unlimited");
 		expect(formatMenuValue("historyentries", { maxHistoryEntries: 0 })).toBe("Unlimited");
-		expect(formatMenuValue("historyentries", { maxHistoryEntries: 1 })).toBe("1 entries");
+		expect(formatMenuValue("historyentries", { maxHistoryEntries: 1 })).toBe("1 entry");
+		expect(formatMenuValue("historyentries", { maxHistoryEntries: 25 })).toBe("25 entries");
 		expect(formatMenuValue("historyentries", { maxHistoryEntries: 250 })).toBe("250 entries");
 		expect(formatMenuValue("historyentries", { maxHistoryEntries: 99_999 })).toBe("99999 entries");
 	});
