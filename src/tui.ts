@@ -66,7 +66,7 @@ import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type Se
 import { getAgent } from "./session-manager";
 import { visibleRunEntriesForSession } from "./recovery-surface";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
-import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName } from "./tui-format";
+import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName, formatMenuValue } from "./tui-format";
 import {
 	renderTranscriptMessages,
 	type TranscriptLineStyle,
@@ -122,6 +122,103 @@ export async function showSelectList(
 }
 
 // ---------------------------------------------------------------------------
+// Choice-list rows (menu polish U2): one `(current)` marker syntax
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply the single canonical current-value marker to a choice label. Every
+ * in-scope choice list marks exactly the row whose value equals the current
+ * setting, and marks nothing when no current value exists.
+ */
+export function withCurrentMarker(label: string, isCurrent: boolean): string {
+	return isCurrent ? `${label} (current)` : label;
+}
+
+/** Model choice rows; the current `provider/id` carries the `(current)` marker. */
+export function getModelSelectorItems(
+	models: ReadonlyArray<Pick<Model<Api>, "provider" | "id" | "name" | "contextWindow">>,
+	state: SessionState,
+): SelectItem[] {
+	const current = state.config.model
+		? `${state.config.model.provider}/${state.config.model.id}`
+		: undefined;
+	return models.map((m) => {
+		const value = `${m.provider}/${m.id}`;
+		return {
+			value,
+			label: withCurrentMarker(value, value === current),
+			description: m.name ?? `context: ${(m.contextWindow ?? 0) / 1000}K`,
+		};
+	});
+}
+
+/** Thinking-level choice rows; the configured ceiling carries the marker. */
+export function getThinkingSelectorItems(state: SessionState): SelectItem[] {
+	return THINKING_LEVELS.map((level) => ({
+		value: level,
+		label: withCurrentMarker(level, level === state.config.maxThinkingLevel),
+	}));
+}
+
+/** Change-approval choice rows; the active mode carries the marker. */
+export function getApprovalModeItems(state: SessionState): SelectItem[] {
+	const descriptions: Record<string, string> = {
+		auto: "Never ask - auto-approve",
+		writes: "Ask when files changed - default",
+		always: "Ask every time",
+	};
+	return (["auto", "writes", "always"] as const).map((mode) => ({
+		value: mode,
+		label: withCurrentMarker(mode, mode === state.config.approvalMode),
+		description: descriptions[mode],
+	}));
+}
+
+/** Completion-notify choice rows; the active mode carries the marker. */
+export function getCompletionNotifyItems(state: SessionState): SelectItem[] {
+	const modeDescriptions: Record<CompletionNotifyMode, string> = {
+		all: "Wake on every terminal state (completed, failed, stopped) - default",
+		failed: "Wake only on failed / stopped runs",
+		off: "Never wake (still delivered passively at the next user prompt)",
+	};
+	return COMPLETION_NOTIFY_MODES.map((mode) => ({
+		value: mode,
+		label: withCurrentMarker(mode, mode === state.config.completionNotify),
+		description: modeDescriptions[mode],
+	}));
+}
+
+/** Recovery-posture choice rows; the active posture carries the marker. */
+export function getRecoveryItems(state: SessionState): SelectItem[] {
+	const modeDescriptions: Record<RecoveryMode, string> = {
+		offer: "Surface interrupted runs (Run History row + one boot notice) - default",
+		off: "Do not surface interrupted runs",
+	};
+	return RECOVERY_MODES.map((mode) => ({
+		value: mode,
+		label: withCurrentMarker(mode, mode === state.config.recovery),
+		description: modeDescriptions[mode],
+	}));
+}
+
+/** SLA enable→window step 1; exactly one of Enabled/Disabled carries the marker. */
+export function getSLAEnableItems(state: SessionState): SelectItem[] {
+	const enabled = state.config.slaTrackingEnabled;
+	return [
+		{
+			value: "disabled",
+			label: withCurrentMarker("Disabled", !enabled),
+			description: "No SLA tracking",
+		},
+		{
+			value: "enabled",
+			label: withCurrentMarker("Enabled", enabled),
+			description: "Track performance metrics and detect degradation",
+		},
+	];
+}
+
+// ---------------------------------------------------------------------------
 // Model selector
 // ---------------------------------------------------------------------------
 
@@ -140,11 +237,7 @@ export async function showModelSelector(
 		return;
 	}
 
-	const items: SelectItem[] = availableModels.map((m: Model<Api>) => ({
-		value: `${m.provider}/${m.id}`,
-		label: `${m.provider}/${m.id}`,
-		description: m.name ?? `context: ${(m.contextWindow ?? 0) / 1000}K`,
-	}));
+	const items: SelectItem[] = getModelSelectorItems(availableModels, state);
 
 	const result = await showSelectList(ctx, "Select Subagent Model", items, 15);
 	if (!result) return;
@@ -163,10 +256,7 @@ export async function showThinkingSelector(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const items: SelectItem[] = THINKING_LEVELS.map((level) => ({
-		value: level,
-		label: level === state.config.maxThinkingLevel ? `${level} (current - ceiling)` : level,
-	}));
+	const items: SelectItem[] = getThinkingSelectorItems(state);
 
 	const result = await showSelectList(ctx, "Select Max Thinking Level", items, 10);
 	if (!result) return;
@@ -187,7 +277,9 @@ export async function showConcurrencyInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const result = await ctx.ui.input(`Max parallel subagents (0 = unlimited, current ${formatMaxParallel(state.config.maxParallel)}):`);
+	const result = await ctx.ui.input(
+		`Max parallel subagents (0 = Unlimited \u00b7 current: ${formatMenuValue("parallel", { maxParallel: state.config.maxParallel })}):`,
+	);
 	if (result == null) return;
 	const num = parseInt(result, 10);
 	if (isNaN(num) || num < 0) {
@@ -207,7 +299,9 @@ export async function showDepthInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const result = await ctx.ui.input(`Max subagent recursion depth (0 = cannot delegate, 1 = one level, current ${state.config.maxSubagentDepth}):`);
+	const result = await ctx.ui.input(
+		`Max subagent recursion depth (0 = cannot delegate, 1 = one level \u00b7 current: ${formatMenuValue("depth", { maxSubagentDepth: state.config.maxSubagentDepth })}):`,
+	);
 	if (result == null) return;
 	const num = parseInt(result, 10);
 	if (isNaN(num) || num < 0) {
@@ -230,11 +324,12 @@ export async function showHistoryEntriesInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const current =
-		state.config.maxHistoryEntries === 0
-			? "unlimited"
-			: String(state.config.maxHistoryEntries);
-	const result = await ctx.ui.input(`Max run history entries (0 = unlimited, default 500, current ${current}):`);
+	const current = formatMenuValue("historyentries", {
+		maxHistoryEntries: state.config.maxHistoryEntries,
+	});
+	const result = await ctx.ui.input(
+		`Max run history entries (0 = Unlimited, default 500 \u00b7 current: ${current}):`,
+	);
 	if (result == null) return;
 	const num = parseInt(result, 10);
 	if (isNaN(num) || num < 0) {
@@ -259,11 +354,12 @@ export async function showCostLimitInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const current =
-		state.config.sessionCostLimit === 0
-			? "0 (unlimited)"
-			: String(state.config.sessionCostLimit);
-	const result = await ctx.ui.input(`Session cost limit in USD (0 = unlimited, e.g. 1.00 for $1, current ${current}):`);
+	const current = formatMenuValue("costlimit", {
+		sessionCostLimit: state.config.sessionCostLimit,
+	});
+	const result = await ctx.ui.input(
+		`Session cost limit in USD (0 = Unlimited, e.g. 1.00 for $1 \u00b7 current: ${current}):`,
+	);
 	if (result == null) return;
 	const num = parseFloat(result);
 	if (isNaN(num) || num < 0) {
@@ -288,23 +384,7 @@ export async function showApprovalModeSelector(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const items: SelectItem[] = [
-		{
-			value: "auto",
-			label: "auto",
-			description: "Never ask - auto-approve",
-		},
-		{
-			value: "writes",
-			label: "writes",
-			description: "Ask when files changed - default",
-		},
-		{
-			value: "always",
-			label: "always",
-			description: "Ask every time",
-		},
-	];
+	const items: SelectItem[] = getApprovalModeItems(state);
 
 	const result = await showSelectList(ctx, "Select Change Approval Mode", items, 5);
 	if (!result) return;
@@ -322,18 +402,9 @@ export async function showCompletionNotifySelector(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const modeDescriptions: Record<CompletionNotifyMode, string> = {
-		all: "Wake on every terminal state (completed, failed, stopped) - default",
-		failed: "Wake only on failed / stopped runs",
-		off: "Never wake (still delivered passively at the next user prompt)",
-	};
-	const items: SelectItem[] = COMPLETION_NOTIFY_MODES.map((mode) => ({
-		value: mode,
-		label: mode,
-		description: modeDescriptions[mode],
-	}));
+	const items: SelectItem[] = getCompletionNotifyItems(state);
 
-	const result = await showSelectList(ctx, "Completion Notify Mode", items, 5);
+	const result = await showSelectList(ctx, "Select Completion Notify Mode", items, 5);
 	if (!result) return;
 
 	state.config.completionNotify = result as CompletionNotifyMode;
@@ -349,17 +420,9 @@ export async function showRecoverySelector(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const modeDescriptions: Record<RecoveryMode, string> = {
-		offer: "Surface interrupted runs (Run History row + one boot notice) - default",
-		off: "Do not surface interrupted runs",
-	};
-	const items: SelectItem[] = RECOVERY_MODES.map((mode) => ({
-		value: mode,
-		label: mode,
-		description: modeDescriptions[mode],
-	}));
+	const items: SelectItem[] = getRecoveryItems(state);
 
-	const result = await showSelectList(ctx, "Recovery Posture", items, 5);
+	const result = await showSelectList(ctx, "Select Recovery Posture", items, 5);
 	if (!result) return;
 
 	state.config.recovery = result as RecoveryMode;
@@ -376,11 +439,8 @@ export async function showSLAConfig(
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
 	// Step 1: Enable/disable toggle
-	const enableItems: SelectItem[] = [
-		{ value: "disabled", label: "Disabled", description: "No SLA tracking" },
-		{ value: "enabled", label: "Enabled", description: "Track performance metrics and detect degradation" },
-	];
-	const enableResult = await showSelectList(ctx, "SLA Tracking", enableItems, 5);
+	const enableItems: SelectItem[] = getSLAEnableItems(state);
+	const enableResult = await showSelectList(ctx, "Configure SLA Tracking", enableItems, 5);
 	if (!enableResult) return;
 
 	const enabled = enableResult === "enabled";
@@ -392,7 +452,9 @@ export async function showSLAConfig(
 	}
 
 	// Step 2: Window size input
-	const sizeResult = await ctx.ui.input(`Window size (10-500, current ${state.config.slaWindowSize}):`);
+	const sizeResult = await ctx.ui.input(
+		`Window size (10-500 \u00b7 current: ${state.config.slaWindowSize}):`,
+	);
 	if (sizeResult == null) return;
 	const size = parseInt(sizeResult, 10);
 	if (isNaN(size) || size < 10 || size > 500) {
@@ -925,74 +987,76 @@ export async function showTemplateManager(
 // ---------------------------------------------------------------------------
 
 export function getConfigMenuItems(state: SessionState): SelectItem[] {
+	// Menu polish U2: every value row renders the canonical token from
+	// `formatMenuValue` (tui-format.ts) instead of hand-rolled prose. Templates
+	// have no `customTemplates` field on state; the merged stack keeps the
+	// BUILTIN objects by reference (getAllTemplates), so an identity partition
+	// is the state-side equivalent of the manager's builtin/custom split.
+	const builtinTemplateObjects = new Set<TaskTemplate>(state.builtinTemplates);
+	const builtinTemplateCount = state.config.templates.filter((t) =>
+		builtinTemplateObjects.has(t),
+	).length;
+
 	return [
 		{
 			value: "model",
-			label: "Select Model",
-			description: state.config.model
-				? `${state.config.model.provider}/${state.config.model.id}`
-				: "Not set (will use main agent\u2019s model by default)",
+			label: "Set Model",
+			description: formatMenuValue("model", { model: state.config.model }),
 		},
 		{
 			value: "thinking",
-			label: "Select Max Thinking Level",
-			description: state.config.maxThinkingLevel,
+			label: "Set Max Thinking Level",
+			description: formatMenuValue("thinking", {
+				maxThinkingLevel: state.config.maxThinkingLevel,
+			}),
 		},
 		{
 			value: "concurrency",
 			label: "Set Max Parallel Subagents",
-			description: formatMaxParallel(state.config.maxParallel),
+			description: formatMenuValue("parallel", { maxParallel: state.config.maxParallel }),
 		},
 		{
 			value: "depth",
 			label: "Set Max Recursion Depth",
-			description: state.config.maxSubagentDepth === 0
-				? "No delegation from subagents"
-				: `Subagents can delegate up to ${state.config.maxSubagentDepth} level${state.config.maxSubagentDepth > 1 ? "s" : ""} deep`,
+			description: formatMenuValue("depth", {
+				maxSubagentDepth: state.config.maxSubagentDepth,
+			}),
 		},
 		{
 			value: "approval",
 			label: "Set Change Approval Mode",
-			description: state.config.approvalMode === "auto"
-				? "Never ask"
-				: state.config.approvalMode === "writes"
-					? "Ask when files changed"
-					: "Ask every time",
+			description: formatMenuValue("approval", { approvalMode: state.config.approvalMode }),
 		},
 		{
 			value: "completionnotify",
 			label: "Set Completion Notify Mode",
-			description: state.config.completionNotify === "all"
-				? "Wake on every terminal state"
-				: state.config.completionNotify === "failed"
-					? "Wake only on failed/stopped"
-					: "Never wake (passive delivery)",
+			description: formatMenuValue("completionnotify", {
+				completionNotify: state.config.completionNotify,
+			}),
 		},
 		{
 			value: "recovery",
 			label: "Set Recovery Posture",
-			description: state.config.recovery === "offer"
-				? "Surface interrupted runs (default)"
-				: "Do not surface interrupted runs",
+			description: formatMenuValue("recovery", { recovery: state.config.recovery }),
 		},
 
 		{
 			value: "historyentries",
 			label: "Set Max History Entries",
-			description: state.config.maxHistoryEntries === 0
-				? "Unlimited (no pruning)"
-				: `${state.config.maxHistoryEntries} entries kept`,
+			description: formatMenuValue("historyentries", {
+				maxHistoryEntries: state.config.maxHistoryEntries,
+			}),
 		},
 		{
 			value: "costlimit",
 			label: "Set Session Cost Limit",
-			description: state.config.sessionCostLimit === 0
-				? "Unlimited"
-				: `$${state.config.sessionCostLimit.toFixed(2)}`,
+			description: formatMenuValue("costlimit", {
+				sessionCostLimit: state.config.sessionCostLimit,
+			}),
 		},
 		{
 			value: "reset",
-			label: "Reset to Default",
+			label: "Reset Configuration",
 			description: "Clear subagent configuration",
 		},
 		{
@@ -1002,25 +1066,29 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 		},
 		{
 			value: "monitor",
-			label: "Live Monitor",
+			label: "View Live Monitor",
 			description: "Watch running subagents in real-time",
 		},
 		{
 			value: "dashboard",
-			label: "Observability Dashboard",
+			label: "View Observability Dashboard",
 			description: "Real-time metrics, SLA, errors, and cost trends",
 		},
 		{
 			value: "preset",
-			label: "Manage Presets",
-			description: `${state.builtinPresets.length} built-in, ${state.customPresets.length} custom`,
+			label: "Browse Presets",
+			description: formatMenuValue("presetCounts", {
+				builtinCount: state.builtinPresets.length,
+				customCount: state.customPresets.length,
+			}),
 		},
 		{
 			value: "templates",
-			label: "Manage Templates",
-			description: state.config.templates.length === 0
-				? "None saved"
-				: `${state.config.templates.length} saved`,
+			label: "Browse Templates",
+			description: formatMenuValue("templateCounts", {
+				builtinCount: builtinTemplateCount,
+				customCount: state.config.templates.length - builtinTemplateCount,
+			}),
 		},
 		{
 			value: "retry",
@@ -1029,10 +1097,11 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 		},
 		{
 			value: "sla",
-			label: "SLA Tracking",
-			description: state.config.slaTrackingEnabled
-				? `Enabled (window: ${state.config.slaWindowSize})`
-				: "Disabled",
+			label: "Set SLA Tracking",
+			description: formatMenuValue("sla", {
+				slaTrackingEnabled: state.config.slaTrackingEnabled,
+				slaWindowSize: state.config.slaWindowSize,
+			}),
 		},
 	];
 }
