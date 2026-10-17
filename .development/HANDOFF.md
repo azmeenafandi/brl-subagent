@@ -32,8 +32,9 @@
   dashboard, retry menu, tool-call rendering. No navigation or keybinding changes.
   **Progress: U1 ✅** (PR #346 `acca96d` — vocabulary + divider factory) · **U2 ✅** (PR #347 `7670d33` — verb-led
   rows, canonical values, titles, one `(current)` marker, prompts) · **U3 ✅** (PR #348 `b1e7820` — divider sections,
-  duplicated header deleted, viewport 15; suite 75/1575). **Next: U4** (tier classifier); the two remaining legacy
-  confirmation toasts are parked for U7.
+  duplicated header deleted, viewport 15; suite 75/1575). · **U4 ✅** (PR #349 `6811413` — writer-normalizer tier classifier; review
+  approve-with-nits: F1 inert-branch removal + F2 priority pin; suite 76/1584). **Next: U5** (Templates onto the
+  Presets shell). Parked for U7: the two legacy confirmation toasts + one stale `TierClassifierIo.fallback` comment.
 - **Process ratified 2026-10-14/16:** **cycle model** — `Cycle: <theme>` opens, the maintainer declares the close
   (normally at release planning), the **cycle-end ritual runs BEFORE the release docs**, and the release is the first
   act of the next cycle (`references/sprint-end-ritual.md`). Cycle-end now includes the **bounded environment sweep**
