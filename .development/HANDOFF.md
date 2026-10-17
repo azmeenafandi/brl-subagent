@@ -6,7 +6,7 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: f4e518b (2026-10-17)
+Verified: ca73803 (2026-10-17)
 
 - **dev** @ `f4e518b` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
 - **Released:** v2.5.2 is LIVE — `main` @ `ae7c488` (tag `v2.5.2`), npm `latest` = 2.5.2 —
@@ -22,24 +22,29 @@ Verified: f4e518b (2026-10-17)
 - **Cycle `/brl-subagent` menu polish: OPEN** — all units U1–U7 merged (PRs #346–#352, last
   `e397be4`); awaits the maintainer's close/release decision (the release is the cycle's first act —
   `references/sprint-end-ritual.md`). Presentation-only, no navigation/keybinding changes.
-- **In flight:** the handoff mechanism unit — `.pi/extensions/handoff/` (session_start +
-  session_compact injection, `/handoff`, `/handoff mark`), `.pi/skills/handoff/`, this restructure;
-  branch `feat/handoff-mechanism`; C2 focused review next. Live checks 1–5 (spec §Verification) are
-  conductor-run post-merge.
+- **Handoff mechanism: MERGED** (PR #353 `ca73803`) — `.pi/extensions/handoff/` (session_start +
+  session_compact injection, guards, `/handoff`, `/handoff mark`), `.pi/skills/handoff/`, this
+  restructure + archive. **Live checks 1–5 pending a `/reload`** (spec §Verification).
+- **PRs:** none open (issue tracker) · **#344 open deliberately** — typebox 1.3.37 held at the host
+  pin 1.3.27 (the standalone awareness signal; no `ignore` by policy).
 - **Suite:** 78 files / 1625 tests — `npx vitest run`; `npx tsc --noEmit` clean.
 
 ### Since the last handover
 - U5–U7 merged (Templates onto the Presets shell, presets parity, final sweep) — PRs #350–#352.
-- Handoff mechanism spec pinned: `.development/investigations/handoff-mechanism-spec-2026-10-17.md`.
-- HANDOFF restructured; the old file moved verbatim to the archive.
+- Handoff mechanism built, reviewed (approve-with-nits → 2 minors fixed), merged `ca73803`; HANDOFF
+  restructured + archived; lifecycle step 0 added (step 6→7 renumbered).
 
 ### Next actions
-1. C2 review → merge the handoff unit → run live checks 1–5 (injection, RECONCILE, post-compaction,
-   subagent inertness, worktree inertness).
-2. Maintainer: decide the menu-polish cycle close + the next release version.
+1. `/reload` → run the handoff live checks 1–5 (injection, RECONCILE, `/pi-vcc` post-compaction,
+   subagent inertness, worktree inertness); reconcile this STATE thereafter (the `Verified:` lag
+   after its own commit is a known design observation, review record §Design observations).
+2. Maintainer: decide the menu-polish cycle close + the next release version (v2.6.0 suggested).
 
 ## Open items
 - **Handoff live checks 1–5** — post-merge, conductor-run (spec §Verification).
+- **Handoff follow-ups (design observations from the review):** the `Verified:` self-commit lag (the
+  hook could ignore the handoff's own commit in the staleness delta); `.pi/extensions/**` is not
+  typechecked by `tsc --noEmit` (`tsconfig.include` = `src/**`).
 - **U4 tier-classifier measurement** — snapshot due ~2026-10-18; a zero reading EXTENDS the window
   (`.development/investigations/u2-u3-measurement-2026-10-11.md`).
 - **Dependabot policy:** `typebox` is held at the pi host pin; future bumps are held until the host
