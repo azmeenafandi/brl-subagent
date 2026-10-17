@@ -34,6 +34,7 @@ Interruption evidence = registry entries carrying `interruptedAt`, agent records
 
 - **Baseline:** captured above.
 - **Rolling:** append a snapshot after each observed interruption AND at least weekly (next due ~2026-10-18), same enumeration command.
+- **Extension policy (2026-10-14):** if a snapshot still reads zero interruptions across all projects, EXTEND the window rather than conclude (zero observed = insufficient exposure); record the new due date here.
 - **Assess per interruption:** would resume have avoided meaningful re-work? (task size, how far the run got, whether a cold re-dispatch repeated it). Record the judgment — this is the "re-work meaningful" criterion.
 - **Debris check:** session dirs left behind by terminal/abandoned runs (should be none; U2 prunes), registry entries for settled runs (should be retired).
 

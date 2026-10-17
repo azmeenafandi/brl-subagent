@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Updated: 2026-10-13 | Released: **v2.5.0** (2026-10-10) | Integration: `dev` @ the v2.5.1 release prep (see "Shipped (2026-10-13, v2.5.1)" below). Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
+> Updated: 2026-10-17 | Released: **v2.5.2** (2026-10-17) | Integration: `dev` @ the v2.5.2 release commit (tag `v2.5.2`); see "Shipped (2026-10-17, v2.5.2)" below. Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -279,6 +279,19 @@ Goal: ship brl-subagent as a first-class pi package so installation and updates 
 **Outcome:** `brl-subagent@2.3.5` published to npm — installable via `pi install npm:brl-subagent`, updated via `pi update --extensions`, released through a token-free staged pipeline. 979 tests across 45 files; board clean.
 
 **Deferred → RESOLVED in v2.3.6:** pin doc version strings to `package.json` (the README ×2 and the AGENT.md header shipped stale in 2.3.5). Now enforced mechanically (#166).
+
+### Shipped (2026-10-17, v2.5.2)
+
+Vendor parity and boundary guards — the tooling-truth cycle.
+
+| Issue | What shipped | PR |
+|---|---|---|
+| #337 | **pi 1.3.0 parity:** the four `@earendil-works/*` devDeps → `^1.3.0` (`typebox` already at the host pin 1.3.27); lockfile fully reconciled; no breaking changes touch the extension (the overlay `done()` fix and the transient-provider retries land in our paths). | #338 |
+| #336 | **Boundary/partial-read guards (P0, Rule 11):** the cycle-end count reconciliation (documented command; >20% delta ⇒ suspect the window), an 11-file window/parser audit, the Recon terminal-call-boundary rule, and a permanent `sprint-metrics.py --selftest` wired into CI. | #339 |
+| #340 | **FGP dangling-row fix:** both foreground pre-start gate rejections (circuit open, slot cancelled) now finalize the persisted run before returning — terminal `failed`/`aborted` record with the exact gate message, registry row cleared, live entry released; retry-source retention unchanged. Found by the FGP review; mutation-verified (3/3 pre-fix) and live-probed. | #341 |
+| — | **Dependabot:** the vitest 5.0.4 chain adopted; `typebox` held at the host pin 1.3.27 and split out of the `other` group (awareness preserved; the decision stays per-PR). | #342 |
+
+Live verification: the #340 rejection probe passed on the dev dogfood — five induced failures opened the circuit, the gate rejected in 5 ms, and the recorded entry was terminal `failed`/`aborted` with the message byte-identical to the returned text and **zero** registry rows (no phantom interrupted row at the next boot).
 
 ### Shipped (2026-10-13, v2.5.1)
 

@@ -52,7 +52,7 @@ elif [[ -z "${LOCKED_SDK}" ]]; then
     echo "  ~ runtime ${RUNTIME}, lockfile SDK unknown — lockfile out of sync?"
 elif [[ "${RUNTIME}" == "${LOCKED_SDK}" ]]; then
     pass "pi runtime ${RUNTIME} matches lockfile SDK"
-elif [[ "${RUNTIME}" > "${LOCKED_SDK}" ]]; then
+elif [[ "$(printf '%s\n%s\n' "${LOCKED_SDK}" "${RUNTIME}" | sort -V | tail -1)" == "${RUNTIME}" ]]; then
     echo "  ~ pi runtime ${RUNTIME} is AHEAD of lockfile SDK ${LOCKED_SDK} — expected mid-cycle; the pi-sdk group bump will align (probe before trusting)"
 else
     fail "pi runtime ${RUNTIME} is BEHIND lockfile SDK ${LOCKED_SDK} — tests exercise a newer SDK than the extension runs; upgrade pi or pin devDeps"

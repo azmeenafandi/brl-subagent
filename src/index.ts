@@ -3331,9 +3331,40 @@ export default function (pi: ExtensionAPI) {
 				}
 			};
 
+			// #340: both pre-start gate rejections below must finalize the
+			// `running` record persisted just above. Without this the session entry
+			// stays non-terminal, the inflight registry row (written by
+			// `persistRun(..., "foreground")`) is never cleared, and the live
+			// registration is never released — a phantom interrupted run at the
+			// next boot (and, on a retry, a dangling twin beside the source).
+			// The fabricated result drives `finalizeRunRecord` to terminal
+			// `failed`; `stopReason: "aborted"` makes `coherentFailureReason` keep
+			// the D1 `aborted` category coherent. The exact gate message the caller
+			// receives is recorded as `errorMessage`; the terminal
+			// `state.persistRun` (no kind) clears the registry row via its
+			// terminal-clear rule. Returned content/isError and the retry-source
+			// retention below are unchanged.
+			const SLOT_CANCEL_MESSAGE = "Subagent cancelled while waiting for concurrency slot.";
+			const finalizePreStartRejection = (errorMessage: string): void => {
+				const rejection: SubagentResult = {
+					messages: [],
+					usage: { ...EMPTY_USAGE },
+					exitCode: 1,
+					stderr: "",
+					stopReason: "aborted",
+					errorMessage,
+					errorCategory: "aborted",
+				};
+				finalizeRunRecord(run, rejection, "", new Date(run.startedAt).getTime());
+				run.originalParams = { ...run.originalParams, errorCategory: rejection.errorCategory };
+				state.persistRun(pi, run);
+				state.finalizeLiveSubagent(run.id);
+			};
+
 			// R1: Circuit breaker check — reject if circuit is open
 			const circuitCheck = state.checkCircuit();
 			if (circuitCheck.isOpen) {
+				finalizePreStartRejection(circuitCheck.message!);
 				cleanupGitBranch();
 				return {
 					content: [{ type: "text" as const, text: circuitCheck.message! }],
@@ -3352,12 +3383,13 @@ export default function (pi: ExtensionAPI) {
 			// Acquire concurrency slot
 			const acquired = await acquireSlot(state, ctx, signal, singlePriority);
 			if (!acquired) {
+				finalizePreStartRejection(SLOT_CANCEL_MESSAGE);
 				cleanupGitBranch();
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: "Subagent cancelled while waiting for concurrency slot.",
+							text: SLOT_CANCEL_MESSAGE,
 						},
 					],
 					details: undefined,
@@ -3371,11 +3403,10 @@ export default function (pi: ExtensionAPI) {
 			// every pre-spawn gate and is about to start, so the SOURCE interrupted
 			// registry entry is superseded — clear it here so the old run is not
 			// re-offered at every subsequent boot. A failed pre-start (circuit open,
-			// slot cancelled) returns ABOVE this point and leaves the source intact
-			// and retryable — but note it is NOT "one row only": the pre-existing
-			// pre-start path (`persistRun`, which precedes the circuit/slot gates)
-			// still leaves a dangling `running` NEW row behind until the backlogged
-			// dangling-row fix. `retrySourceRun` is set only on a `retryRunId` call.
+			// slot cancelled) returns ABOVE this point: the source is left intact
+			// and retryable, while the NEW twin has already been finalized terminal
+			// by the gate (#340) — nothing dangles. `retrySourceRun` is set only on
+			// a `retryRunId` call.
 			if (retrySourceRun) clearInflightRun(retrySourceRun.id);
 
 			// F7 (issue #65): import BEFORE the try — the crash-path catch calls
