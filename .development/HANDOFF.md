@@ -12,7 +12,7 @@
 
 ## STATE (2026-10-16, post-compaction)
 
-- **dev** @ `eb3dd06` + records commits — **check `git log -1`; the tip moves with doc commits**. Only `main` +
+- **dev** @ `27dd953` + records commits — **check `git log -1`; the tip moves with doc commits**. Only `main` +
   `dev` — no worktrees, no strays. Suite **73 files / 1506**; CodeGraph **40 modules / 425** exported declarations.
 - **Running install:** the **dev checkout** (dogfood) — switched from npm 2.5.1 on 2026-10-16 + `/reload`; the cockpit
   resolves **pi 1.3.0** (`@earendil-works/*` 1.3.0, `typebox` 1.3.27). npm `latest` = **2.5.1**; `main` @ `7fa210c`.
@@ -32,6 +32,9 @@
 - **pi 1.3.0 compatibility (2026-10-16): NO breaking changes** — the notes have no Breaking/Removed section; all value
   imports + pi-tui symbols survive; two fixes land in our paths (the `ctx.ui.custom({overlay:true})` `done()` fix and
   the transient-provider retries). Evidence: `deps-pi-1.3.0-spec-2026-10-16.md`.
+- **Dependabot policy (2026-10-17):** `typebox` is held at the **pi host pin** (`1.3.27`, exact) and was split out of
+  the `other` group — future typebox bumps arrive as their own PR and are held until the host pin moves; **no
+  `ignore` entries** (awareness preserved). The vitest chain flows normally (5.0.4 adopted, PR #342 `27dd953`).
 - **v2.5.1 RELEASED (2026-10-13):** PR #335 merged `950b2bb` (auto-closed `#299`/`#329`/`#330`/`#333`), bump `7fa210c`
   tagged; npm staged → approved → `latest`; published-build probe PASSED (tree-identical). The durability cycle
   (U1–U3 + FGP + #299 Option B) is COMPLETE.
@@ -50,9 +53,9 @@
   probe — PASSED 2026-10-16** (dev dogfood, post-`/reload`): 5 induced timeout failures opened the circuit; the next
   dispatch was gate-rejected in 5 ms → recorded entry terminal `failed`/`aborted`, `errorMessage` byte-identical to
   the returned message, registry **0 rows** (no interrupted row at boot).
-- **Release:** v2.5.1 live; the next release (**v2.5.2** — three fixes: #336/#337/#340) closes the cycle and
-  auto-closes all three issues. **Decision 2026-10-16: run the release planning after dependabot's weekly visit
-  (~Oct 17)** — fold any bump PR in, then cut v2.5.2.
+- **Release:** v2.5.1 live; the next release (**v2.5.2** — three fixes: #336/#337/#340, plus the dependabot vitest
+  5.0.4 bump in #342) closes the cycle and auto-closes the three issues. **The dependabot visit landed 2026-10-17
+  and is folded in** (`27dd953`) — cut v2.5.2 at the next release planning.
 
 ## Environment
 
