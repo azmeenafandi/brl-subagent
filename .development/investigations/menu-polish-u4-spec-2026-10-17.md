@@ -86,6 +86,14 @@ are called only from the two managers + the template detail view.
 - `npx tsc --noEmit`; full `npx vitest run` (baseline **75 files / 1575 tests**); `git diff --check`.
 - Coverage line: the 5 classifier cases + temp-dir counts enumerated.
 
+## Review outcome (amendment at close)
+
+Focused C2 review: **approve-with-nits**. F1 — the membership fallback was **inert in both finders** and is now
+**removed** (`classifyTier` = filename match → `io.fallback`; the `builtinNames` parameter and its call-site
+arguments dropped), with the docstring corrected to the real mechanism; behavior is identical. F2 — the
+project-wins priority gained a same-name-in-both-tiers pin. The stale `TierClassifierIo.fallback` doc comment is
+parked for U7. Merged `6811413`.
+
 ## Constraints
 
 - `src/tui.ts` + the new test file (plus imports only). `sanitizeFileName` must remain the writers' own function —
