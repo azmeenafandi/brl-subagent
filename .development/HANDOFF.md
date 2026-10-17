@@ -12,17 +12,18 @@
 
 ## STATE (2026-10-16, post-compaction)
 
-- **dev** @ `27dd953` + records commits — **check `git log -1`; the tip moves with doc commits**. Only `main` +
+- **dev** @ `ae7c488` + records commits — **check `git log -1`; the tip moves with doc commits**. Only `main` +
   `dev` — no worktrees, no strays. Suite **73 files / 1506**; CodeGraph **40 modules / 425** exported declarations.
-- **Running install:** the **dev checkout** (dogfood) — switched from npm 2.5.1 on 2026-10-16 + `/reload`; the cockpit
-  resolves **pi 1.3.0** (`@earendil-works/*` 1.3.0, `typebox` 1.3.27). npm `latest` = **2.5.1**; `main` @ `7fa210c`.
-- **Board:** **`#336`** (fixed — PR #339 `911a013`) · **`#337`** (fixed — PR #338 `7061999`) · **`#340`** (fixed —
-  PR #341 `eb3dd06`) — all three close at the next release merge. No other open issues.
-- **Cycle (OPEN) — `vendor parity + boundary guards`:** unit 1 ✅ pi **1.3.0** parity bump (PR #338; review approve,
-  0 findings) · unit 2 ✅ **#336** boundary guards (PR #339; review approve-with-nits — 2 nits fixed in `777ce2d`,
-  1 declined with rationale) · unit 3 ✅ **#340** FGP dangling-row fix (PR #341 `eb3dd06`; review approve — 1 nit,
-  test zero-shape lock-in fixed in `166ccb3`; mutation-verified M1–M4). **All units complete** — the cycle closes at
-  the next release planning (likely **v2.5.2**); the #340 live rejection probe is queued below.
+- **Running install:** **npm `brl-subagent` 2.5.2** — switched back 2026-10-17 (dogfood ended; the dev checkout stays on
+  disk for the next cycle). npm `latest` = **2.5.2**; `main` = `dev` = `ae7c488` (tag `v2.5.2`). Cockpit deps on
+  pi 1.3.0 (`@earendil-works/*` 1.3.0, `typebox` 1.3.27).
+- **Board:** **zero open issues** — `#336`/`#337`/`#340` auto-closed at the v2.5.2 release merge (PR #343, `50217ad`).
+- **Cycle — `vendor parity + boundary guards`: CLOSED 2026-10-17 (v2.5.2).** unit 1 ✅ pi **1.3.0** parity (PR #338) ·
+  unit 2 ✅ **#336** boundary guards (PR #339; 2 review nits fixed, 1 declined with rationale) · unit 3 ✅ **#340**
+  dangling-row fix (PR #341; review approve, 1 nit fixed; mutation-verified M1–M4; live-probed) · + dependabot
+  **vitest 5.0.4** with `typebox` held at the host pin (#342). Cycle-end ritual ran before the release docs: metrics
+  row appended, **Rule 11 = 0 escalations**, 3 advisory sweep candidates pinned in the friction log. **Next cycle:
+  not yet opened — the maintainer's call** (the release is its first act).
 - **Process ratified 2026-10-14/16:** **cycle model** — `Cycle: <theme>` opens, the maintainer declares the close
   (normally at release planning), the **cycle-end ritual runs BEFORE the release docs**, and the release is the first
   act of the next cycle (`references/sprint-end-ritual.md`). Cycle-end now includes the **bounded environment sweep**
@@ -35,9 +36,9 @@
 - **Dependabot policy (2026-10-17):** `typebox` is held at the **pi host pin** (`1.3.27`, exact) and was split out of
   the `other` group — future typebox bumps arrive as their own PR and are held until the host pin moves; **no
   `ignore` entries** (awareness preserved). The vitest chain flows normally (5.0.4 adopted, PR #342 `27dd953`).
-- **v2.5.1 RELEASED (2026-10-13):** PR #335 merged `950b2bb` (auto-closed `#299`/`#329`/`#330`/`#333`), bump `7fa210c`
-  tagged; npm staged → approved → `latest`; published-build probe PASSED (tree-identical). The durability cycle
-  (U1–U3 + FGP + #299 Option B) is COMPLETE.
+- **v2.5.2 RELEASED (2026-10-17):** release PR #343 merged `50217ad` (auto-closed `#336`/`#337`/`#340`); bump
+  `ae7c488` tagged `v2.5.2`; npm staged → approved → `latest` = 2.5.2; install switched back to `npm:brl-subagent`;
+  published-build probe PASSED (62 packed files byte-identical to the tag, zero missing).
 - **Measurement (the U4 gate):** `u2-u3-measurement-2026-10-11.md` — scope: dev + spelling_bee + deep-research-agent +
   ephemeral-rp; **zero interruptions observed so far**; snapshot due **~2026-10-18**. **Extension policy: a zero
   reading EXTENDS the window** (zero observed = insufficient exposure, not absence of risk).
@@ -53,9 +54,8 @@
   probe — PASSED 2026-10-16** (dev dogfood, post-`/reload`): 5 induced timeout failures opened the circuit; the next
   dispatch was gate-rejected in 5 ms → recorded entry terminal `failed`/`aborted`, `errorMessage` byte-identical to
   the returned message, registry **0 rows** (no interrupted row at boot).
-- **Release:** v2.5.1 live; the next release (**v2.5.2** — three fixes: #336/#337/#340, plus the dependabot vitest
-  5.0.4 bump in #342) closes the cycle and auto-closes the three issues. **The dependabot visit landed 2026-10-17
-  and is folded in** (`27dd953`) — cut v2.5.2 at the next release planning.
+- **Release:** **v2.5.2 LIVE (2026-10-17)** — see the release bullet above. The next release coincides with the next
+  cycle's close; nothing is queued.
 
 ## Environment
 

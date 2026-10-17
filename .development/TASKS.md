@@ -7,7 +7,7 @@
 
 | | |
 |---|---|
-| Release | **v2.5.2** (2026-10-17) — the cycle `vendor parity + boundary guards` closed; npm staging/publish and the install switch are the ceremony's remaining steps |
+| Release | **v2.5.2 LIVE** (2026-10-17) — GitHub release published + npm `latest` = 2.5.2 (approved); install switched back to `npm:brl-subagent` (2.5.2 in `~/.pi/agent/npm`); published-build probe: 62 packed files byte-identical to tag `v2.5.2`, zero missing |
 | Integration | `dev` @ the v2.5.2 release prep — #337 (#338), #336 (#339), #340 (#341), dependabot vitest 5.0.4 (#342) |
 | Board | **zero open issues** (#336/#337/#340 close at the release merge) |
 | Tests | **1509 across 74 files** (`npx vitest run`) · `npm run typecheck` clean |
