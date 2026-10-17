@@ -50,3 +50,22 @@ SOLID/DRY violations flagged: 1 (the `findStateRange` duplication; fixed)
 2. **Untyped extensions:** `tsconfig.json` includes only `src/**`, so `.pi/extensions/**/*.ts` never passes
    `tsc --noEmit` — a type error there surfaces only at runtime via jiti. Candidate: a second tsconfig include or a
    dedicated check.
+
+## Live verification (2026-10-17, post-merge, dev dogfood)
+
+- **Check 1 — injection ✅:** on `/reload`, the `handoff-state` message appeared with `## STATE` and the staleness line.
+- **Check 2 — RECONCILE ✅:** `Handoff verified at ca73803 but HEAD is d6b3b61 — RECONCILE before trusting §STATE.`
+  (the expected one-commit lag; design observation #1).
+- **Check 4 — subagent inertness ✅ (with a path nuance):**
+  - *Foreground child* (spawned `pi`, `runner.ts`): `printenv BRL_SUBAGENT_DEPTH` → **`1`** — the guard's input is set;
+    `shouldInject` blocks (mutation-proven in the suite).
+  - *Background agent* (in-process SDK session via `createAgentSession`): `BRL_SUBAGENT_DEPTH` → `unset` (same
+    process), **and zero `handoff-state` entries in its transcript** — these sessions do not emit the host's
+    `session_start`, so the hook never runs. Inert by construction, not by the guard. (The first probe used a
+    background dispatch and read `unset`; re-run on the foreground path confirmed the guard's input.)
+- **Check 5 — worktree inertness ✅:** unit-covered (branch guard + six no-op cases in the mutation suite).
+- **Check 3 — `/pi-vcc` post-compaction:** pending the maintainer's run.
+
+Nuance worth keeping: the `BRL_SUBAGENT_DEPTH` guard covers **foreground children**; background agents are inert for a
+different reason (no host extension events on their SDK sessions). Documented here so a future change to the background
+hosting model re-opens the check.
