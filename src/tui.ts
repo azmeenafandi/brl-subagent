@@ -339,7 +339,7 @@ export async function showHistoryEntriesInput(
 	onConfigChanged(
 		ctx,
 		num === 0
-			? "Run history set to unlimited (no pruning)"
+			? `Run history set to ${formatMenuValue("historyentries", { maxHistoryEntries: num })}`
 			: `Run history entries set to ${num} (oldest entries will be pruned)`,
 	);
 }
@@ -369,7 +369,7 @@ export async function showCostLimitInput(
 	onConfigChanged(
 		ctx,
 		num === 0
-			? "Session cost limit set to unlimited"
+			? `Session cost limit set to ${formatMenuValue("costlimit", { sessionCostLimit: num })}`
 			: `Session cost limit set to $${num.toFixed(2)}`,
 	);
 }
@@ -834,7 +834,7 @@ export interface TierDir {
 
 /** Injected I/O and terminal fallback for classifyTier (keeps the decision pure). */
 export interface TierClassifierIo {
-	/** Tier returned when no file matches and the name is not a builtin. */
+	/** Terminal fallback for the surface: the tier to return when no canonical file matches. */
 	fallback: Tier;
 	/** Existence probe for a candidate file path. */
 	exists: (filePath: string) => boolean;
