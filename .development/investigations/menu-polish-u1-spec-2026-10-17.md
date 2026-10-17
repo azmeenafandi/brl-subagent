@@ -63,7 +63,7 @@ future adoption order and the not-yet-visible blast radius.
    | `approval` | — | `Never ask` / `Ask on writes` / `Ask every time` |
    | `completionnotify` | — | `Every run` / `Failed only` / `Off` |
    | `recovery` | — | `On` / `Off` |
-   | `historyentries` | `Unlimited` (0) | `N entries` |
+   | `historyentries` | `Unlimited` (0) | `1 entry` / `N entries` |
    | `costlimit` | `Unlimited` (0) | `$N.NN` |
    | `sla` | — | `On (window N)` / `Off` |
    | `presetCounts` | — | `N built-in, M custom` |
