@@ -35,8 +35,9 @@
   duplicated header deleted, viewport 15; suite 75/1575). · **U4 ✅** (PR #349 `6811413` — writer-normalizer tier classifier; review
   approve-with-nits: F1 inert-branch removal + F2 priority pin; suite 76/1584). · **U5 ✅** (PR #350 — the headline: Templates onto the Presets
   shell; review approve-with-nits, 2 no-action minors; suite 77/1604). · **U6 ✅** (PR #351 `a9e4121` — presets parity + shared detail shell; review
-  changes-requested → the empty-state copy restored byte-identically; suite 78/1623). **Next: U7** (final sweep +
-  umbrella close).
+  changes-requested → the empty-state copy restored byte-identically; suite 78/1623). · **U7 ✅** (PR #352 `e397be4` — the two legacy toasts → `Unlimited`, the stale
+  `TierClassifierIo.fallback` comment, README check; suite 78/1625). **All units U1–U7 complete** — the cycle
+  remains OPEN pending the maintainer's release/close decision; the release version is the maintainer's call.
 - **Process ratified 2026-10-14/16:** **cycle model** — `Cycle: <theme>` opens, the maintainer declares the close
   (normally at release planning), the **cycle-end ritual runs BEFORE the release docs**, and the release is the first
   act of the next cycle (`references/sprint-end-ritual.md`). Cycle-end now includes the **bounded environment sweep**
