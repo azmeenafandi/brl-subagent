@@ -756,7 +756,7 @@ export async function showPresetManager(
 	// Defensive zero-item case, mirroring the Templates manager: never open an
 	// empty SelectList — say so instead.
 	if (items.length === 0) {
-		ctx.ui.notify(emptyManagerNotice("presets", "presets"), "info");
+		ctx.ui.notify(emptyManagerNotice("presets", "presets", "presets"), "info");
 		return;
 	}
 
@@ -923,9 +923,13 @@ export function findTemplateSource(name: string, ctx: ExtensionContext): Tier {
  * places to add files. A manager whose row list is empty notifies with this
  * instead of opening a SelectList with nothing to select.
  */
-export function emptyManagerNotice(noun: string, dir: string): string {
+export function emptyManagerNotice(
+	loadedNoun: string,
+	builtinNoun: string,
+	dir: string,
+): string {
 	return (
-		`No ${noun} loaded — built-in ${noun} ship with the extension and ` +
+		`No ${loadedNoun} loaded — built-in ${builtinNoun} ship with the extension and ` +
 		"should always be present. Add custom .md files in " +
 		`~/.pi/agent/brl-subagent/${dir}/ or <project>/.pi/brl-subagent/${dir}/.`
 	);
@@ -1108,7 +1112,7 @@ export async function showTemplateManager(
 	state: SessionState,
 ): Promise<void> {
 	if (state.config.templates.length === 0) {
-		ctx.ui.notify(emptyManagerNotice("task templates", "templates"), "info");
+		ctx.ui.notify(emptyManagerNotice("task templates", "templates", "templates"), "info");
 		return;
 	}
 

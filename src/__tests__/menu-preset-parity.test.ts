@@ -189,6 +189,28 @@ describe("Presets manager empty state", () => {
 		}
 		expect(presets.notify.mock.calls[0][1]).toBe("info");
 	});
+
+	it("keeps the empty-state copy byte-identical (no drift)", async () => {
+		// Templates: the exact string shipped by U5 (`git show HEAD~1:src/tui.ts`).
+		// Presets: the empty state is NEW in U6, so there is no parent-commit preset
+		// string; its canonical copy is pinned here from the same template shape.
+		const EXPECTED_TEMPLATES =
+			"No task templates loaded — built-in templates ship with the extension and " +
+			"should always be present. Add custom .md files in " +
+			"~/.pi/agent/brl-subagent/templates/ or <project>/.pi/brl-subagent/templates/.";
+		const EXPECTED_PRESETS =
+			"No presets loaded — built-in presets ship with the extension and " +
+			"should always be present. Add custom .md files in " +
+			"~/.pi/agent/brl-subagent/presets/ or <project>/.pi/brl-subagent/presets/.";
+
+		const templates = makeCtx("/tmp/project", () => {});
+		await showTemplateManager(templates.ctx, new SessionState());
+		expect(templates.notify.mock.calls[0][0]).toBe(EXPECTED_TEMPLATES);
+
+		const presets = makeCtx("/tmp/project", () => {});
+		await showPresetManager(presets.ctx, new SessionState());
+		expect(presets.notify.mock.calls[0][0]).toBe(EXPECTED_PRESETS);
+	});
 });
 
 // ---------------------------------------------------------------------------
