@@ -65,7 +65,7 @@ import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type Se
 import { getAgent } from "./session-manager";
 import { visibleRunEntriesForSession } from "./recovery-surface";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
-import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName, formatMenuValue, menuSection } from "./tui-format";
+import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName, formatMenuValue, formatTemplateSummary, menuSection } from "./tui-format";
 import {
 	renderTranscriptMessages,
 	type TranscriptLineStyle,
@@ -930,6 +930,62 @@ export function findTemplateSource(name: string, ctx: ExtensionContext): Tier {
 // Template management UI
 // ---------------------------------------------------------------------------
 
+/** True for a select-list divider row (`menuSection` shape), never a template. */
+function isDividerValue(value: string): boolean {
+	return value.startsWith("__divider__");
+}
+
+/**
+ * Split the merged template stack by membership in the shipped built-ins: a
+ * built-in OBJECT is `builtin`, everything else is `custom`. Object identity —
+ * not the name, not the filename — is the partition key, so a custom template
+ * that overrides a built-in name (the merged stack then holds only the custom
+ * object) still counts as custom. Both the manager and the parent config row
+ * read this, so their counts can never disagree.
+ */
+export function partitionTemplates(
+	templates: readonly TaskTemplate[],
+	builtinTemplates: readonly TaskTemplate[],
+): { builtin: TaskTemplate[]; custom: TaskTemplate[] } {
+	const shipped = new Set<TaskTemplate>(builtinTemplates);
+	const builtin: TaskTemplate[] = [];
+	const custom: TaskTemplate[] = [];
+	for (const t of templates) (shipped.has(t) ? builtin : custom).push(t);
+	return { builtin, custom };
+}
+
+/**
+ * Build the Templates manager's rows: built-ins first (shipped order), then —
+ * only when customs exist — a `─── Custom Templates ───` divider, then customs
+ * in current order. Pure: the tier lookup for the `[P]`/`[G]` prefix is injected
+ * (`findTemplateSource` in production), so ordering/partition is testable with
+ * no TUI and no filesystem.
+ *
+ * @param templates - the FULL merged stack (`state.config.templates`)
+ * @param sourceOf - tier lookup for a custom row's prefix
+ * @param builtinTemplates - the shipped built-ins (`state.builtinTemplates`)
+ */
+export function buildTemplateMenuItems(
+	templates: readonly TaskTemplate[],
+	sourceOf: (name: string) => Tier,
+	builtinTemplates: readonly TaskTemplate[],
+): SelectItem[] {
+	const { builtin, custom } = partitionTemplates(templates, builtinTemplates);
+
+	const rows = (list: TaskTemplate[], prefix: (t: TaskTemplate) => string): SelectItem[] =>
+		list.map((t) => ({
+			value: t.name,
+			label: `[${prefix(t)}] ${t.name}`,
+			description: t.description || formatTemplateSummary(t),
+		}));
+
+	return [
+		...rows(builtin, () => "B"),
+		...(custom.length > 0 ? [menuSection("Custom Templates")] : []),
+		...rows(custom, (t) => (sourceOf(t.name) === "project" ? "P" : "G")),
+	];
+}
+
 export function getTemplate(
 	name: string,
 	templates: TaskTemplate[],
@@ -1020,26 +1076,26 @@ export async function showTemplateManager(
 		return;
 	}
 
-	// Tier-prefixed labels mirror showPresetManager: [P]roject / [G]lobal / [B]uiltin.
-	const templateItems: SelectItem[] = state.config.templates.map((t) => {
-		const source = findTemplateSource(t.name, ctx);
-		const tierLabel = source === "project" ? "P" : source === "global" ? "G" : "B";
-		return {
-			value: t.name,
-			label: `[${tierLabel}] ${t.name}`,
-			description: t.description || t.task.slice(0, 60),
-		};
-	});
-
-	const result = await showSelectList(
-		ctx,
-		`Templates (${state.config.templates.length})`,
-		templateItems,
-		15,
+	// The FULL merged stack plus the shipped built-ins: the builder partitions by
+	// membership, so custom-overrides-builtin still classifies as custom.
+	const items = buildTemplateMenuItems(
+		state.config.templates,
+		(name) => findTemplateSource(name, ctx),
+		state.builtinTemplates,
 	);
-	if (!result) return;
+	const { builtin, custom } = partitionTemplates(state.config.templates, state.builtinTemplates);
+	const title = `Templates (${builtin.length} built-in, ${custom.length} custom)`;
 
-	await showViewTemplate(ctx, state, result);
+	// Browse loop: selecting the divider is a no-op re-render (the list comes
+	// back), never a close — mirrors the config menu's divider semantics.
+	while (true) {
+		const result = await showSelectList(ctx, title, items, 15);
+		if (!result) return;
+		if (isDividerValue(result)) continue;
+
+		await showViewTemplate(ctx, state, result);
+		return;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,10 +1111,7 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 	// have no `customTemplates` field on state; the merged stack keeps the
 	// BUILTIN objects by reference (getAllTemplates), so an identity partition
 	// is the state-side equivalent of the manager's builtin/custom split.
-	const builtinTemplateObjects = new Set<TaskTemplate>(state.builtinTemplates);
-	const builtinTemplateCount = state.config.templates.filter((t) =>
-		builtinTemplateObjects.has(t),
-	).length;
+	const templateCounts = partitionTemplates(state.config.templates, state.builtinTemplates);
 
 	return [
 		{
@@ -1159,8 +1212,8 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			value: "templates",
 			label: "Browse Templates",
 			description: formatMenuValue("templateCounts", {
-				builtinCount: builtinTemplateCount,
-				customCount: state.config.templates.length - builtinTemplateCount,
+				builtinCount: templateCounts.builtin.length,
+				customCount: templateCounts.custom.length,
 			}),
 		},
 		{
