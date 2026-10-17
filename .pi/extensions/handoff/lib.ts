@@ -1,0 +1,210 @@
+/**
+ * Pure helpers for the handoff extension — no fs, no git, no pi API.
+ *
+ * The extension injects the `.development/HANDOFF.md` §STATE snapshot at session
+ * start and after every compaction. Everything that decides WHAT the snapshot
+ * says lives here so it can be tested from a plain `node` script
+ * (`handoff.test.cjs`, the worktree-guard pattern); reads, git calls and
+ * `pi.sendMessage` stay in `index.ts`.
+ *
+ * Contract: `.pi/skills/handoff/references/handoff.md`.
+ */
+
+/** Custom message type for an injected snapshot — also the dedupe key. */
+export const HANDOFF_CUSTOM_TYPE = "handoff-state";
+
+export type StalenessStatus = "current" | "stale" | "unverified";
+
+export interface Staleness {
+	status: StalenessStatus;
+	/** One-line banner prepended to the injected snapshot. */
+	line: string;
+}
+
+/** §STATE heading — tolerates a trailing qualifier (`## STATE (2026-10-16, post-compaction)`). */
+const STATE_HEADING = /^\s*##\s+STATE(?=[\s(]|$)/i;
+
+/** Any other level-2 heading: the §STATE section ends here. */
+const ANY_H2_HEADING = /^\s*##\s+\S/;
+
+/** The `Verified:` marker line inside §STATE. */
+const VERIFIED_MARKER = /^\s*Verified:\s*(.+)$/i;
+
+/** A git sha: 7–40 hex chars, optionally backticked, followed by a word boundary. */
+const SHA = /^(`?)([0-9a-f]{7,40})\1(?=$|\s)/i;
+
+/** Short-sha length used in the staleness line. */
+const SHORT_SHA = 7;
+
+/**
+ * True when the process is a delegated subagent (pi's depth marker is set).
+ *
+ * Subagent children load project extensions (the runner passes no
+ * `--no-extensions`), so this guard is the inertness boundary — the extension
+ * must do nothing in a child, not even read a file.
+ */
+export function isSubagent(env: Record<string, string | undefined>): boolean {
+	const depth = env.BRL_SUBAGENT_DEPTH;
+	return typeof depth === "string" && depth.trim() !== "";
+}
+
+/**
+ * The injection gate: the cockpit on `dev`, with the handoff file present, in a
+ * normal (non-subagent) process. All three must pass; anything else is inert.
+ */
+export function shouldInject(
+	env: Record<string, string | undefined>,
+	branch: string | null,
+	hasFile: boolean,
+): boolean {
+	if (isSubagent(env)) return false;
+	if (branch !== "dev") return false;
+	return hasFile;
+}
+
+/**
+ * The §STATE section: from the `## STATE` heading to the next `## ` heading (or
+ * EOF when the file is truncated). Returns null when no §STATE heading exists.
+ * Trailing blank lines are dropped; the heading itself is kept.
+ */
+export function extractStateSection(raw: string): string | null {
+	const lines = raw.split(/\r?\n/);
+	const start = lines.findIndex((line) => STATE_HEADING.test(line));
+	if (start === -1) return null;
+	let end = lines.length;
+	for (let i = start + 1; i < lines.length; i += 1) {
+		if (ANY_H2_HEADING.test(lines[i])) {
+			end = i;
+			break;
+		}
+	}
+	const section = lines.slice(start, end);
+	while (section.length > 1 && section[section.length - 1].trim() === "") section.pop();
+	return section.join("\n");
+}
+
+/**
+ * The sha from the first `Verified: <sha>` line, lowercased; null when the line
+ * is absent or malformed. Accepts a date suffix (`Verified: abc1234 (2026-10-17)`)
+ * and backticks. The first marker line decides — a malformed line is NOT
+ * skipped in favour of a later one, so a typo cannot silently pass.
+ */
+export function parseVerified(raw: string): string | null {
+	for (const line of raw.split(/\r?\n/)) {
+		const marker = VERIFIED_MARKER.exec(line);
+		if (!marker) continue;
+		const sha = SHA.exec(marker[1].trim());
+		return sha ? sha[2].toLowerCase() : null;
+	}
+	return null;
+}
+
+/** First `SHORT_SHA` chars of a sha (unchanged when already shorter). */
+export function shortSha(sha: string): string {
+	return sha.length > SHORT_SHA ? sha.slice(0, SHORT_SHA) : sha;
+}
+
+/**
+ * The staleness verdict, compared against the cockpit's HEAD.
+ *
+ * - `current` — the recorded sha is a prefix of HEAD (or vice versa).
+ * - `stale` — both known, and they disagree: §STATE may describe another tree.
+ * - `unverified` — no `Verified:` line, or HEAD could not be read.
+ */
+export function buildStaleness(verified: string | null, head: string | null): Staleness {
+	if (verified === null || verified === "") {
+		return {
+			status: "unverified",
+			line: "Handoff has no Verified: line — verify §STATE against the repo before trusting it.",
+		};
+	}
+	const recorded = verified.toLowerCase();
+	const current = (head ?? "").toLowerCase();
+	if (current === "") {
+		return {
+			status: "unverified",
+			line: `Handoff verified at ${shortSha(recorded)} but HEAD could not be read — verify §STATE against the repo before trusting it.`,
+		};
+	}
+	if (current.startsWith(recorded) || recorded.startsWith(current)) {
+		return { status: "current", line: `Handoff verified at ${shortSha(recorded)} — matches HEAD.` };
+	}
+	return {
+		status: "stale",
+		line: `Handoff verified at ${shortSha(recorded)} but HEAD is ${shortSha(current)} — RECONCILE before trusting §STATE.`,
+	};
+}
+
+/** The injected content: the staleness banner, a blank line, then §STATE. */
+export function buildInjection(staleness: Staleness, state: string): string {
+	return `${staleness.line}\n\n${state}`;
+}
+
+/** The dedupe key for injected snapshots (one source of truth for send + scan). */
+export function dedupeKey(): string {
+	return HANDOFF_CUSTOM_TYPE;
+}
+
+/** Text of a session entry's content (string, or the text parts of an array). */
+export function messageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const part of content) {
+		if (part && typeof part === "object") {
+			const block = part as { type?: unknown; text?: unknown };
+			if (block.type === "text" && typeof block.text === "string") parts.push(block.text);
+		}
+	}
+	return parts.join("\n");
+}
+
+/**
+ * Dedupe against the current branch.
+ *
+ * Without `content`: true when any `handoff-state` message exists. With
+ * `content`: true only when the MOST RECENT injected snapshot is byte-identical
+ * to what would be injected now. Content comparison is deliberate — a reload
+ * after a doc commit must surface the new staleness line (live check 2), while
+ * a reload with nothing changed must not duplicate the snapshot in context.
+ */
+export function hasInjected(branchEntries: ReadonlyArray<unknown>, content?: string): boolean {
+	let last: string | null = null;
+	for (const entry of branchEntries) {
+		if (!entry || typeof entry !== "object") continue;
+		const candidate = entry as { type?: unknown; customType?: unknown; content?: unknown };
+		if (candidate.type !== "custom_message" || candidate.customType !== dedupeKey()) continue;
+		if (content === undefined) return true;
+		last = messageText(candidate.content);
+	}
+	return last !== null && last === content;
+}
+
+/**
+ * Rewrite the `Verified:` line inside §STATE to `Verified: <sha> (<date>)`.
+ * When §STATE has no such line yet, insert one directly under the heading.
+ * Returns null when the document has no §STATE section — the caller reports,
+ * never guesses. A `Verified:` line OUTSIDE §STATE is left untouched.
+ */
+export function replaceVerified(raw: string, sha: string, date: string): string | null {
+	const lines = raw.split(/\r?\n/);
+	const start = lines.findIndex((line) => STATE_HEADING.test(line));
+	if (start === -1) return null;
+	let end = lines.length;
+	for (let i = start + 1; i < lines.length; i += 1) {
+		if (ANY_H2_HEADING.test(lines[i])) {
+			end = i;
+			break;
+		}
+	}
+	const replacement = `Verified: ${sha.toLowerCase()} (${date})`;
+	for (let i = start + 1; i < end; i += 1) {
+		if (VERIFIED_MARKER.test(lines[i])) {
+			lines[i] = replacement;
+			return lines.join("\n");
+		}
+	}
+	const insertAt = start + 1;
+	lines.splice(insertAt, 0, replacement);
+	return lines.join("\n");
+}
