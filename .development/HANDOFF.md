@@ -6,9 +6,9 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: ca73803 (2026-10-17)
+Verified: d6b3b61 (2026-10-17)
 
-- **dev** @ `f4e518b` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
+- **dev** @ `d6b3b61` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
 - **Released:** v2.5.2 is LIVE — `main` @ `ae7c488` (tag `v2.5.2`), npm `latest` = 2.5.2 —
   `gh release list`, `git log -1 --oneline main`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path).
@@ -24,7 +24,7 @@ Verified: ca73803 (2026-10-17)
   `references/sprint-end-ritual.md`). Presentation-only, no navigation/keybinding changes.
 - **Handoff mechanism: MERGED** (PR #353 `ca73803`) — `.pi/extensions/handoff/` (session_start +
   session_compact injection, guards, `/handoff`, `/handoff mark`), `.pi/skills/handoff/`, this
-  restructure + archive. **Live checks 1–5 pending a `/reload`** (spec §Verification).
+  restructure + archive. **Live checks: 1 ✅ injection · 2 ✅ RECONCILE line (the expected one-commit lag) · 3 `/pi-vcc` post-compaction — awaiting the maintainer · 4 subagent inertness — probe running · 5 worktree — unit-covered.**
 - **PRs:** none open (issue tracker) · **#344 open deliberately** — typebox 1.3.37 held at the host
   pin 1.3.27 (the standalone awareness signal; no `ignore` by policy).
 - **Suite:** 78 files / 1625 tests — `npx vitest run`; `npx tsc --noEmit` clean.
@@ -35,9 +35,8 @@ Verified: ca73803 (2026-10-17)
   restructured + archived; lifecycle step 0 added (step 6→7 renumbered).
 
 ### Next actions
-1. `/reload` → run the handoff live checks 1–5 (injection, RECONCILE, `/pi-vcc` post-compaction,
-   subagent inertness, worktree inertness); reconcile this STATE thereafter (the `Verified:` lag
-   after its own commit is a known design observation, review record §Design observations).
+1. Finish handoff live checks 3–5 (3 needs a `/pi-vcc` run; 4 is probing; 5 is unit-covered) and
+   schedule the two design-observation follow-ups (self-commit lag; extension typechecking).
 2. Maintainer: decide the menu-polish cycle close + the next release version (v2.6.0 suggested).
 
 ## Open items
