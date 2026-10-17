@@ -64,7 +64,8 @@ SOLID/DRY violations flagged: 1 (the `findStateRange` duplication; fixed)
     `session_start`, so the hook never runs. Inert by construction, not by the guard. (The first probe used a
     background dispatch and read `unset`; re-run on the foreground path confirmed the guard's input.)
 - **Check 5 — worktree inertness ✅:** unit-covered (branch guard + six no-op cases in the mutation suite).
-- **Check 3 — `/pi-vcc` post-compaction:** pending the maintainer's run.
+- **Check 3 — `/pi-vcc` post-compaction ✅:** after a compaction (3/40 turns kept), the STATE was re-injected
+  immediately after the summary — the `session_compact` handler fires on the rebuilt context as designed.
 
 Nuance worth keeping: the `BRL_SUBAGENT_DEPTH` guard covers **foreground children**; background agents are inert for a
 different reason (no host extension events on their SDK sessions). Documented here so a future change to the background
