@@ -31,8 +31,9 @@
   unification (bidirectional — Presets also gains the empty state + tier suffix). Excluded: run history, monitor,
   dashboard, retry menu, tool-call rendering. No navigation or keybinding changes.
   **Progress: U1 ✅** (PR #346 `acca96d` — vocabulary + divider factory) · **U2 ✅** (PR #347 `7670d33` — verb-led
-  rows, canonical values, titles, one `(current)` marker, prompts; suite 75/1569). **Next: U3** (dividers + header +
-  viewport); the two remaining legacy confirmation toasts are parked for U7.
+  rows, canonical values, titles, one `(current)` marker, prompts) · **U3 ✅** (PR #348 `b1e7820` — divider sections,
+  duplicated header deleted, viewport 15; suite 75/1575). **Next: U4** (tier classifier); the two remaining legacy
+  confirmation toasts are parked for U7.
 - **Process ratified 2026-10-14/16:** **cycle model** — `Cycle: <theme>` opens, the maintainer declares the close
   (normally at release planning), the **cycle-end ritual runs BEFORE the release docs**, and the release is the first
   act of the next cycle (`references/sprint-end-ritual.md`). Cycle-end now includes the **bounded environment sweep**

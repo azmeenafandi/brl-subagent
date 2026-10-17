@@ -50,7 +50,7 @@ immediately before the `preset` row; move the `reset` row to **after** `template
 `Done`). Resulting order:
 
 ```
-[model, thinking, concurrency, depth, approval, completionnotify, recovery, historyentries, costlimit]
+[model, thinking, concurrency, depth, approval, completionnotify, recovery, historyentries, costlimit, sla]
 ─── Run Activity ───
 [history, monitor, dashboard, retry]
 ─── Presets & Templates ───
@@ -60,6 +60,10 @@ reset
 ```
 
 Every handler `value` string is unchanged, and the relative order **within** each section is unchanged.
+
+**Amendment at close:** the original block omitted `sla` (a brief error — a `Set …` row belongs in the settings
+group). The merged order places it immediately after `costlimit`; the 15-row viewport pin was adjusted accordingly (the
+`Presets & Templates` divider sits just below the fold).
 
 ### 2. Header cleanup (`showConfigMenu`)
 
