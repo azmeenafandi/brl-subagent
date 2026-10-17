@@ -46,7 +46,6 @@ import {
 	DEFAULT_OUTPUT_CAP_BYTES,
 	formatTokens,
 	formatUsageStats,
-	formatModel,
 	formatMaxParallel,
 	getFinalOutput,
 	isSubagentError,
@@ -66,7 +65,7 @@ import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type Se
 import { getAgent } from "./session-manager";
 import { visibleRunEntriesForSession } from "./recovery-surface";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
-import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName, formatMenuValue } from "./tui-format";
+import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName, formatMenuValue, menuSection } from "./tui-format";
 import {
 	renderTranscriptMessages,
 	type TranscriptLineStyle,
@@ -986,6 +985,9 @@ export async function showTemplateManager(
 // Configuration menu
 // ---------------------------------------------------------------------------
 
+/** Maximum config rows visible before the list scrolls (U3: 10 → 15). */
+export const CONFIG_MENU_VIEWPORT = 15;
+
 export function getConfigMenuItems(state: SessionState): SelectItem[] {
 	// Menu polish U2: every value row renders the canonical token from
 	// `formatMenuValue` (tui-format.ts) instead of hand-rolled prose. Templates
@@ -1054,11 +1056,7 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 				sessionCostLimit: state.config.sessionCostLimit,
 			}),
 		},
-		{
-			value: "reset",
-			label: "Reset Configuration",
-			description: "Clear subagent configuration",
-		},
+		menuSection("Run Activity"),
 		{
 			value: "history",
 			label: "View Run History",
@@ -1074,6 +1072,12 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			label: "View Observability Dashboard",
 			description: "Real-time metrics, SLA, errors, and cost trends",
 		},
+		{
+			value: "retry",
+			label: "Retry Failed Run",
+			description: "Select a failed subagent to retry",
+		},
+		menuSection("Presets & Templates"),
 		{
 			value: "preset",
 			label: "Browse Presets",
@@ -1091,9 +1095,9 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			}),
 		},
 		{
-			value: "retry",
-			label: "Retry Failed Run",
-			description: "Select a failed subagent to retry",
+			value: "reset",
+			label: "Reset Configuration",
+			description: "Clear subagent configuration",
 		},
 		{
 			value: "sla",
@@ -1129,37 +1133,9 @@ export async function showConfigMenu(
 				new Text(theme.fg("accent", theme.bold("brl-subagent Configuration")), 1, 0),
 			);
 
-			container.addChild(
-				new Text(theme.fg("dim", `Model: ${formatModel(state.config.model)}`), 1, 0),
-			);
-			container.addChild(
-				new Text(
-					theme.fg("dim", `Max Thinking: ${state.config.maxThinkingLevel}`),
-					1,
-					0,
-				),
-			);
-			container.addChild(
-				new Text(
-					theme.fg("dim", `Max parallel: ${formatMaxParallel(state.config.maxParallel)}`),
-					1,
-					0,
-				),
-			);
-			if (state.config.sessionCostLimit > 0) {
-				container.addChild(
-					new Text(
-						theme.fg("dim", `Cost limit: $${state.config.sessionCostLimit.toFixed(2)}`),
-						1,
-						0,
-					),
-				);
-			}
-			container.addChild(new Text("", 0, 0));
-
 			const selectList = new SelectList(
 				items,
-				Math.min(items.length, 10),
+				Math.min(items.length, CONFIG_MENU_VIEWPORT),
 				makeSelectListTheme(theme),
 			);
 			selectList.onSelect = (item) => done(item.value);

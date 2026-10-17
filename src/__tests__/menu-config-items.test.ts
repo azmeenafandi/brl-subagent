@@ -3,8 +3,10 @@
 // prompts. Presentation-only: nothing here asserts behavior, keys, actions, or row order.
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { SessionState } from "../state";
 import {
+	CONFIG_MENU_VIEWPORT,
 	getApprovalModeItems,
 	getCompletionNotifyItems,
 	getConfigMenuItems,
@@ -15,6 +17,7 @@ import {
 	showApprovalModeSelector,
 	showCompletionNotifySelector,
 	showConcurrencyInput,
+	showConfigMenu,
 	showCostLimitInput,
 	showDepthInput,
 	showHistoryEntriesInput,
@@ -31,7 +34,7 @@ import type { SubagentPreset, TaskTemplate } from "../types";
 // (same shape the other state-driven tests use), then mutated per scenario.
 // ---------------------------------------------------------------------------
 
-/** The pinned row order / value set of the config menu (U2 contract). */
+/** The pinned row order / value set of the config menu (U2/U3 contract). */
 const CONFIG_VALUES = [
 	"model",
 	"thinking",
@@ -42,15 +45,25 @@ const CONFIG_VALUES = [
 	"recovery",
 	"historyentries",
 	"costlimit",
-	"reset",
 	"history",
 	"monitor",
 	"dashboard",
+	"retry",
 	"preset",
 	"templates",
-	"retry",
+	"reset",
 	"sla",
 ] as const;
+
+/** The two U3 section headers, in order, with their expected divider values. */
+const DIVIDERS = [
+	{ label: "Run Activity", value: "__divider__:run-activity" },
+	{ label: "Presets & Templates", value: "__divider__:presets-templates" },
+] as const;
+
+function configValues(items: Array<{ value: string }>): string[] {
+	return items.filter((i) => !i.value.startsWith("__divider__:")).map((i) => i.value);
+}
 
 /** Fixture 1: untouched SessionState defaults. */
 function defaultsState(): SessionState {
@@ -108,7 +121,10 @@ function template(name: string): TaskTemplate {
 /** value → description map for one state (order-independent assertions). */
 function descriptions(state: SessionState): Record<string, string> {
 	const map: Record<string, string> = {};
-	for (const item of getConfigMenuItems(state)) map[item.value] = item.description ?? "";
+	for (const item of getConfigMenuItems(state)) {
+		if (item.value.startsWith("__divider__:")) continue;
+		map[item.value] = item.description ?? "";
+	}
 	return map;
 }
 
@@ -182,15 +198,111 @@ describe("getConfigMenuItems — value-set pin", () => {
 	];
 
 	for (const [name, build] of states) {
-		it(`pins the 17 value strings and their order (${name})`, () => {
-			expect(getConfigMenuItems(build()).map((i) => i.value)).toEqual([...CONFIG_VALUES]);
+		it(`pins the 17 handler values and their order (${name})`, () => {
+			expect(configValues(getConfigMenuItems(build()))).toEqual([...CONFIG_VALUES]);
 		});
 	}
 
-	it("pins exactly 17 rows and no dividers", () => {
+	it("pins exactly 17 handler values plus 2 dividers", () => {
 		const items = getConfigMenuItems(defaultsState());
-		expect(items).toHaveLength(17);
-		expect(items.some((i) => i.value.startsWith("__divider__"))).toBe(false);
+		expect(items).toHaveLength(19);
+		expect(configValues(items)).toHaveLength(17);
+		expect(items.filter((i) => i.value.startsWith("__divider__:"))).toHaveLength(2);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 1b. U3 divider invariants + positions
+// ---------------------------------------------------------------------------
+
+describe("config menu section dividers", () => {
+	it("emits exactly 2 dividers with the pinned shape and labels", () => {
+		const dividers = getConfigMenuItems(defaultsState()).filter((i) =>
+			i.value.startsWith("__divider__:"),
+		);
+		expect(dividers).toHaveLength(2);
+		expect(dividers.map((d) => d.value)).toEqual(DIVIDERS.map((d) => d.value));
+		for (const [index, divider] of dividers.entries()) {
+			expect(divider.value.startsWith("__divider__:")).toBe(true);
+			expect(divider.label).toMatch(/^─── .+ ───$/);
+			expect(divider.label).toBe(`─── ${DIVIDERS[index].label} ───`);
+			expect(divider.description).toBe("");
+		}
+	});
+
+	it("positions the dividers before history and preset, with reset after templates", () => {
+		const items = getConfigMenuItems(defaultsState());
+		const values = items.map((i) => i.value);
+
+		const historyDivider = values.indexOf(DIVIDERS[0].value);
+		expect(values[historyDivider + 1]).toBe("history");
+
+		const presetDivider = values.indexOf(DIVIDERS[1].value);
+		expect(values[presetDivider + 1]).toBe("preset");
+
+		expect(values.indexOf("reset")).toBeGreaterThan(values.indexOf("templates"));
+	});
+
+	it("never dispatches: divider values are absent from the 17 handler values", () => {
+		const dividers = getConfigMenuItems(defaultsState()).filter((i) =>
+			i.value.startsWith("__divider__:"),
+		);
+		for (const divider of dividers) {
+			expect(CONFIG_VALUES).not.toContain(divider.value);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 1c. U3 render structure + viewport
+// ---------------------------------------------------------------------------
+
+/** Render the real config menu (heading + list + footer) headlessly at a width. */
+async function renderConfigMenu(width: number, state = defaultsState()): Promise<string[]> {
+	const lines: string[] = [];
+	const ctx = {
+		ui: {
+			theme,
+			notify: vi.fn(),
+			setStatus: vi.fn(),
+			input: vi.fn(async () => null),
+			custom: vi.fn((factory: (...args: unknown[]) => { render: (w: number) => string[] }) => {
+				const component = factory({ requestRender: () => {} }, theme, {}, () => {});
+				lines.push(...component.render(width));
+				return Promise.resolve("__done__");
+			}),
+		},
+		modelRegistry: { getAvailable: async () => availableModels },
+		cwd: "/tmp/project",
+	} as unknown as ExtensionContext;
+	await showConfigMenu(ctx, state, {});
+	return lines;
+}
+
+describe("showConfigMenu render structure", () => {
+	it("uses the exported 15-row viewport cap", async () => {
+		expect(CONFIG_MENU_VIEWPORT).toBe(15);
+		const text = (await renderConfigMenu(120)).join("\n");
+		// Item 15 (index 14) is the second divider; item 16 ("Browse Presets")
+		// stays off-screen at selected index 0, pinning the exact cap.
+		expect(text).toContain("─── Presets & Templates ───");
+		expect(text).not.toContain("Browse Presets");
+	});
+
+	it("deletes the duplicated summary header", async () => {
+		const text = (await renderConfigMenu(120)).join("\n");
+		expect(text).toContain("brl-subagent Configuration");
+		expect(text).not.toMatch(/Model: |Max Thinking: |Max parallel: |Cost limit: /);
+	});
+
+	it("fits every rendered line at 60/80/120 columns", async () => {
+		for (const width of [60, 80, 120]) {
+			const lines = await renderConfigMenu(width);
+			expect(lines.length, `width ${width}: lines rendered`).toBeGreaterThan(0);
+			for (const line of lines) {
+				expect(visibleWidth(line), `width ${width}: "${line}"`).toBeLessThanOrEqual(width);
+			}
+		}
 	});
 });
 
@@ -221,7 +333,10 @@ const PINNED_LABELS: Record<string, string> = {
 describe("config row labels", () => {
 	it("uses the pinned label table", () => {
 		const labels: Record<string, string> = {};
-		for (const item of getConfigMenuItems(defaultsState())) labels[item.value] = item.label;
+		for (const item of getConfigMenuItems(defaultsState())) {
+			if (item.value.startsWith("__divider__:")) continue;
+			labels[item.value] = item.label;
+		}
 		expect(labels).toEqual(PINNED_LABELS);
 	});
 
@@ -229,6 +344,7 @@ describe("config row labels", () => {
 		const grammar = /^(Set|View|Browse|Retry|Reset) [A-Z]/;
 		for (const build of [defaultsState, fullyConfiguredState, zeroUnlimitedState]) {
 			for (const item of getConfigMenuItems(build())) {
+				if (item.value.startsWith("__divider__:")) continue;
 				expect(item.label, `label "${item.label}"`).toMatch(grammar);
 				expect([...item.label].length, `label "${item.label}" length`).toBeLessThanOrEqual(30);
 			}
