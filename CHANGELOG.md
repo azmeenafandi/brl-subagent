@@ -2,6 +2,14 @@
 
 Release history for brl-subagent. Newest first. The full narrative for each release lives in the GitHub release notes.
 
+### v2.5.2
+
+- **Gate rejections no longer leave phantom runs (issue #340):** a foreground dispatch rejected by the circuit breaker — or cancelled while waiting for a concurrency slot — used to leave a `running` record behind, surfacing at the next boot as an interrupted run that never started (and, on a retry, as a dangling twin beside the source). Both pre-start paths now finalize the persisted record before returning: terminal `failed`/`aborted` with the exact gate message, the inflight registry row cleared, and the live entry released; the retry-source retention is unchanged. Found by the FGP review, mutation-verified and live-probed.
+- **Toolchain — Pi 1.3.0 parity (issue #337):** the `@earendil-works/*` devDependencies move to `^1.3.0` (`typebox` stays at the host pin 1.3.27); the 1.3.0 changes were checked against our paths — no breaking changes, and two upstream fixes (the overlay `done()` fix, transient-provider retries) land in them.
+- **Boundary guards (issue #336):** the silent partial-read class now has mechanical checks — a documented cycle-end count reconciliation (>20% delta ⇒ suspect the window), an 11-file window/parser audit, a terminal-call-boundary rule in the Recon checkpoint, and a permanent `sprint-metrics.py --selftest` in CI.
+- **Dependency hygiene:** vitest 5.0.4 adopted (dev tooling); `typebox` is held at the pi host pin (1.3.27) and was split out of dependabot's combined group — a held version never rides along with an adopted one, and no `ignore` entries are used (every proposal stays visible).
+- 1509 tests across 74 files.
+
 ### v2.5.1
 
 - **Interrupted runs are recoverable (issue #296 — U2 + U3):** after a conductor crash the next boot names what was lost — one notice lists every unresolved interrupted run with its task and age, Run History shows an `Interrupted` row, and the retry menu offers a one-key re-dispatch through `retryRunId` (or an abandon). Background sessions are file-backed (per-run `.pi/subagents/sessions/<id>/`, pruned at the single finalize choke point; interrupted files retained until resolved), and a registry-union visibility bridge makes all four surfaces agree even on a genuine fresh boot.

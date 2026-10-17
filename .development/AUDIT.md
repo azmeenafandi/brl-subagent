@@ -1,6 +1,6 @@
 # brl-subagent — Audit: Strengths & Weaknesses
 
-> Generated: 2026-08-03 | Version: 2.5.1 (released 2026-10-13). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.5.1 (see the follow-up sections below).
+> Generated: 2026-08-03 | Version: 2.5.2 (released 2026-10-17). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.5.2 (see the follow-up sections below).
 
 ## What's Been Fixed (since v1.3.0)
 
@@ -283,6 +283,10 @@
 Tests pass even when source files import variables/functions that don't exist, because Vitest's module resolution doesn't fail at import time for unresolved symbols. However, when pi loads the same module in production, unresolved imports cause runtime failures. This means a passing test suite does not guarantee the code will load correctly in the pi runtime.
 
 **Mitigation:** Always verify with a manual `import` test or runtime smoke test after significant refactors. Consider adding a dedicated smoke test that imports and exercises every module.
+
+## v2.5.2 Audit Follow-up (2026-10-17)
+
+The vendor-parity + boundary-guards cycle. **pi 1.3.0** was adopted after a break-by-break check of the release notes (no Breaking/Removed section; every value import and pi-tui symbol survives; two upstream fixes land in our paths). **The Rule 11 boundary class closed mechanically:** the cycle-end count reconciliation, the 11-file window/parser audit, the Recon terminal-call-boundary rule, and a permanent timestamps/bounds selftest now wired into CI — the class's two recorded occurrences (#330's partial read and the sprint-metrics window) each got a check rather than prose. **The FGP dangling-row defect** (found by the FGP review; pre-existing) was fixed at both foreground pre-start gates and proven by mutation (the new tests fail 3/3 pre-fix) plus a live probe on the dogfood. **Dependency hygiene:** vitest 5.0.4 adopted; `typebox` deliberately held at the host pin (1.3.27) and split out of dependabot's combined group, so a held version never couples to an adopted one — no `ignore` entries; every proposal stays visible and the decision stays per-PR. Open at release: none (all three issues close with this merge).
 
 ## v2.5.1 Audit Follow-up (2026-10-13)
 
