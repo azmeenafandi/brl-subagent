@@ -14,9 +14,10 @@
 
 - **dev** @ `ae7c488` + records commits — **check `git log -1`; the tip moves with doc commits**. Only `main` +
   `dev` — no worktrees, no strays. Suite **73 files / 1506**; CodeGraph **40 modules / 425** exported declarations.
-- **Running install:** **npm `brl-subagent` 2.5.2** — switched back 2026-10-17 (dogfood ended; the dev checkout stays on
-  disk for the next cycle). npm `latest` = **2.5.2**; `main` = `dev` = `ae7c488` (tag `v2.5.2`). Cockpit deps on
-  pi 1.3.0 (`@earendil-works/*` 1.3.0, `typebox` 1.3.27).
+- **Running install:** the **dev checkout** (dogfood) — the maintainer loaded `brl-subagent-dev` + reloaded 2026-10-17
+  to review the menu-polish cycle (`/brl-subagent menu`). npm `latest` = **2.5.2** (the published line predates the
+  cycle); `main` = `ae7c488` (tag `v2.5.2`), `dev` ahead with the cycle. Cockpit deps on pi 1.3.0
+  (`@earendil-works/*` 1.3.0, `typebox` 1.3.27).
 - **Board:** **zero open issues** — `#336`/`#337`/`#340` auto-closed at the v2.5.2 release merge (PR #343, `50217ad`).
 - **Cycle — `vendor parity + boundary guards`: CLOSED 2026-10-17 (v2.5.2).** unit 1 ✅ pi **1.3.0** parity (PR #338) ·
   unit 2 ✅ **#336** boundary guards (PR #339; 2 review nits fixed, 1 declined with rationale) · unit 3 ✅ **#340**
