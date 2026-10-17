@@ -705,3 +705,39 @@ describe("banned legacy phrases", () => {
 		}
 	});
 });
+
+// ---------------------------------------------------------------------------
+// 8. Legacy confirmation toasts — the zero branch carries the canonical token
+// ---------------------------------------------------------------------------
+
+describe("confirmation toasts", () => {
+	const cases: Array<
+		[
+			string,
+			(
+				ctx: ExtensionContext,
+				state: SessionState,
+				onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
+			) => Promise<void>,
+		]
+	> = [
+		["history entries", showHistoryEntriesInput],
+		["cost limit", showCostLimitInput],
+	];
+
+	for (const [name, run] of cases) {
+		it(`${name}: the Unlimited toast uses the canonical token`, async () => {
+			const ui = makeUi({ input: "0" });
+			const messages: string[] = [];
+			await run(ui.ctx, defaultsState(), (_ctx, msg) => messages.push(msg));
+
+			expect(messages).toHaveLength(1);
+			const [message] = messages;
+			expect(message).toContain("Unlimited");
+			// The legacy spellings this unit replaces must never come back.
+			expect(message).not.toMatch(/unlimited/);
+			expect(message.toLowerCase()).not.toContain("no pruning");
+			expect(message.toLowerCase()).not.toContain("passive delivery");
+		});
+	}
+});
