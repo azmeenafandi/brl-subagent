@@ -57,7 +57,7 @@ import {
 import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
 import { extractParamNames } from "./templates";
 import { parseDiff } from "./diff";
-import { formatPresetSummary, getPreset, loadCustomPresets } from "./presets";
+import { formatPresetSummary, getPreset, loadCustomPresets, sanitizeFileName } from "./presets";
 import { buildOutputHonestyLines, formatRunDuration } from "./history";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -831,38 +831,99 @@ export async function showPresetManager(
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Tier classification (menu polish U4, umbrella #345)
+// ---------------------------------------------------------------------------
+
+/** Tier vocabulary shared by presets and templates: shipped, project-local, user-global. */
+export type Tier = "builtin" | "project" | "global";
+
+/** One candidate directory for classifyTier, tagged with the tier it represents. */
+export interface TierDir {
+	tier: "project" | "global";
+	dir: string;
+}
+
+/** Injected I/O and terminal fallback for classifyTier (keeps the decision pure). */
+export interface TierClassifierIo {
+	/** Tier returned when no file matches and the name is not a builtin. */
+	fallback: Tier;
+	/** Existence probe for a candidate file path. */
+	exists: (filePath: string) => boolean;
+}
+
+/**
+ * Pure tier classifier: decide which tier a preset or template name comes from.
+ *
+ * Order of decision:
+ *   1. `<sanitizeFileName(name)>.md` in each `dirs` entry, in order — the real
+ *      writers (`writePresetFile` / `writeTemplateFile`) emit exactly that
+ *      filename via the same `sanitizeFileName`, so a file we wrote by name is
+ *      always resolved by path (#345 A1: the pre-U4 finders re-derived a
+ *      different, lowercased/underscored filename convention and missed it).
+ *   2. `io.fallback` — the surface's terminal value: `builtin` for templates,
+ *      `project` for presets (the preset manager only has [P]/[G] labels, so it
+ *      maps the non-global answer to `project`).
+ *
+ * Both the filesystem and the fallback are injected, so the result is a pure
+ * function of its arguments and testable against temp dirs or stubs.
+ *
+ * Documented residual (accepted this cycle): a hand-written file that overrides
+ * a builtin NAME but is stored under a non-canonical filename matches no path
+ * and is therefore classified by the surface fallback (templates → `builtin`,
+ * presets → `project`). The additive `source` field (out of scope for U4) is
+ * what would fix it.
+ */
+export function classifyTier(
+	name: string,
+	dirs: readonly TierDir[],
+	io: TierClassifierIo,
+): Tier {
+	const fileName = sanitizeFileName(name) + ".md";
+	for (const { tier, dir } of dirs) {
+		if (io.exists(path.join(dir, fileName))) return tier;
+	}
+	return io.fallback;
+}
+
+/**
+ * The two on-disk tiers for a preset or template surface, highest priority
+ * first. Mirrors the order loadCustomPresets/loadCustomTemplates scan: the
+ * project-local dir wins over the user-global dir.
+ */
+function tierDirs(ctx: ExtensionContext, kind: "presets" | "templates"): TierDir[] {
+	const homedir = process.env.HOME || process.env.USERPROFILE || "";
+	return [
+		{ tier: "project", dir: path.join(ctx.cwd, ".pi", "brl-subagent", kind) },
+		{ tier: "global", dir: path.join(homedir, ".pi", "agent", "brl-subagent", kind) },
+	];
+}
+
 /**
  * Determine whether a custom preset comes from the project or global directory.
- * Checks state.customPresets source by scanning file directories.
+ * Delegates the decision to classifyTier; the preset manager only ever labels
+ * custom entries ([P]/[G]), and the preset surface fallback is already
+ * `project`, so a builtin-named custom preset stored under a non-canonical
+ * filename keeps the pre-U4 project label.
  */
-function findPresetSource(name: string, ctx: ExtensionContext): "project" | "global" {
-	const homedir = process.env.HOME || process.env.USERPROFILE || "";
-	const projectDir = path.join(ctx.cwd, ".pi", "brl-subagent", "presets");
-	const globalDir = path.join(homedir, ".pi", "agent", "brl-subagent", "presets");
-	// Prefer project over global (project has higher priority in loadCustomPresets)
-	const sanitizedName = name.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
-	if (fs.existsSync(path.join(projectDir, sanitizedName + ".md"))) return "project";
-	if (fs.existsSync(path.join(globalDir, sanitizedName + ".md"))) return "global";
-	return "project";
+export function findPresetSource(name: string, ctx: ExtensionContext): "project" | "global" {
+	const tier = classifyTier(name, tierDirs(ctx, "presets"), {
+		fallback: "project",
+		exists: fs.existsSync,
+	});
+	return tier === "global" ? "global" : "project";
 }
 
 /**
  * Determine which tier a template comes from: project, global, or builtin.
- * Scans the project templates dir first, then the user-global dir; a name
- * found in neither is a builtin. Mirrors findPresetSource.
+ * Mirrors findPresetSource. The `builtin` terminal value is the template
+ * surface fallback: any name with no canonical file on disk is `builtin`.
  */
-function findTemplateSource(
-	name: string,
-	ctx: ExtensionContext,
-): "project" | "global" | "builtin" {
-	const homedir = process.env.HOME || process.env.USERPROFILE || "";
-	const projectDir = path.join(ctx.cwd, ".pi", "brl-subagent", "templates");
-	const globalDir = path.join(homedir, ".pi", "agent", "brl-subagent", "templates");
-	// Prefer project over global (project has higher priority in loadCustomTemplates)
-	const sanitizedName = name.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
-	if (fs.existsSync(path.join(projectDir, sanitizedName + ".md"))) return "project";
-	if (fs.existsSync(path.join(globalDir, sanitizedName + ".md"))) return "global";
-	return "builtin";
+export function findTemplateSource(name: string, ctx: ExtensionContext): Tier {
+	return classifyTier(name, tierDirs(ctx, "templates"), {
+		fallback: "builtin",
+		exists: fs.existsSync,
+	});
 }
 
 // ---------------------------------------------------------------------------
