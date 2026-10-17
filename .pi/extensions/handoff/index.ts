@@ -37,6 +37,7 @@ import {
 	replaceVerified,
 	shouldInject,
 	shortSha,
+	VERIFY_COMMANDS,
 	type Staleness,
 } from "./lib";
 
@@ -44,19 +45,6 @@ const HANDOFF_REL = join(".development", "HANDOFF.md");
 
 /** Session-log entry type for the shutdown staleness line (not model context). */
 const SHUTDOWN_LOG_TYPE = "handoff-state-shutdown";
-
-/**
- * Verify commands, mirrored from `.pi/skills/handoff/references/handoff.md`.
- * Every §STATE claim names one of these (or is marked unverified).
- */
-const VERIFY_COMMANDS = [
-	"tips     git log -1 --oneline dev",
-	"install  pi list",
-	"board    gh issue list",
-	"release  gh release list",
-	"deps     cat package.json   (pi/* + typebox pins)",
-	"suite    npx vitest run",
-];
 
 interface Snapshot {
 	path: string;

@@ -21,6 +21,21 @@ export interface Staleness {
 	line: string;
 }
 
+/**
+ * Verify commands, mirrored from `.pi/skills/handoff/references/handoff.md`
+ * (the reference is the source of truth; `handoff.test.cjs` pins the two in
+ * sync). Every §STATE claim names one of these (or is marked unverified).
+ */
+export const VERIFY_COMMANDS = [
+	"tips     git log -1 --oneline dev",
+	"install  pi list",
+	"board    gh issue list",
+	"release  gh release list",
+	"deps     cat package.json   (pi/* + typebox pins)",
+	"suite    npx vitest run",
+	"hygiene  npx tsc --noEmit · node scripts/docs-arch.mjs · node scripts/docs-decisions.mjs",
+];
+
 /** §STATE heading — tolerates a trailing qualifier (`## STATE (2026-10-16, post-compaction)`). */
 const STATE_HEADING = /^\s*##\s+STATE(?=[\s(]|$)/i;
 
@@ -62,12 +77,22 @@ export function shouldInject(
 	return hasFile;
 }
 
+/** The §STATE line span of a document, or null when it has no §STATE heading. */
+interface StateRange {
+	/** The document, split on CRLF or LF. */
+	lines: string[];
+	/** Index of the `## STATE` heading line (always included in the section). */
+	start: number;
+	/** Index one past the section: the next `## ` heading, or EOF. */
+	end: number;
+}
+
 /**
- * The §STATE section: from the `## STATE` heading to the next `## ` heading (or
- * EOF when the file is truncated). Returns null when no §STATE heading exists.
- * Trailing blank lines are dropped; the heading itself is kept.
+ * Locate §STATE: from the `## STATE` heading to the next `## ` heading (or EOF
+ * when the file is truncated). Single source of truth for the range scan — the
+ * extraction and the `Verified:` rewrite must agree on what §STATE is.
  */
-export function extractStateSection(raw: string): string | null {
+function findStateRange(raw: string): StateRange | null {
 	const lines = raw.split(/\r?\n/);
 	const start = lines.findIndex((line) => STATE_HEADING.test(line));
 	if (start === -1) return null;
@@ -78,6 +103,17 @@ export function extractStateSection(raw: string): string | null {
 			break;
 		}
 	}
+	return { lines, start, end };
+}
+
+/**
+ * The §STATE section text. Returns null when no §STATE heading exists. Trailing
+ * blank lines are dropped; the heading itself is kept.
+ */
+export function extractStateSection(raw: string): string | null {
+	const range = findStateRange(raw);
+	if (range === null) return null;
+	const { lines, start, end } = range;
 	const section = lines.slice(start, end);
 	while (section.length > 1 && section[section.length - 1].trim() === "") section.pop();
 	return section.join("\n");
@@ -187,16 +223,9 @@ export function hasInjected(branchEntries: ReadonlyArray<unknown>, content?: str
  * never guesses. A `Verified:` line OUTSIDE §STATE is left untouched.
  */
 export function replaceVerified(raw: string, sha: string, date: string): string | null {
-	const lines = raw.split(/\r?\n/);
-	const start = lines.findIndex((line) => STATE_HEADING.test(line));
-	if (start === -1) return null;
-	let end = lines.length;
-	for (let i = start + 1; i < lines.length; i += 1) {
-		if (ANY_H2_HEADING.test(lines[i])) {
-			end = i;
-			break;
-		}
-	}
+	const range = findStateRange(raw);
+	if (range === null) return null;
+	const { lines, start, end } = range;
 	const replacement = `Verified: ${sha.toLowerCase()} (${date})`;
 	for (let i = start + 1; i < end; i += 1) {
 		if (VERIFIED_MARKER.test(lines[i])) {

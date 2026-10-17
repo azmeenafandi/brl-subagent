@@ -10,6 +10,8 @@
  * same mechanism the worktree-guard test uses).
  */
 const jiti = require("jiti")(__filename);
+const { readFileSync } = require("node:fs");
+const { join } = require("node:path");
 const lib = jiti("./lib.ts");
 const {
 	buildInjection,
@@ -23,6 +25,7 @@ const {
 	replaceVerified,
 	shouldInject,
 	shortSha,
+	VERIFY_COMMANDS,
 } = lib;
 
 let failures = 0;
@@ -157,6 +160,31 @@ check("leaves the rest of the document intact", marked.includes("## STATE\nVerif
 const inserted = replaceVerified("## STATE\n- dev @ f4e518b\n\n## Pointers\n", "f4e518b", "2026-10-17");
 check("inserts a Verified line when §STATE has none", inserted, "## STATE\nVerified: f4e518b (2026-10-17)\n- dev @ f4e518b\n\n## Pointers\n");
 check("no §STATE → null (never a guessed rewrite)", replaceVerified("# Handoff\n\n## Pointers\n", "f4e518b", "2026-10-17"), null);
+
+console.log("-- verify table: mirrors the reference (handoff.md)");
+
+// The reference table is the source of truth; the constant must not drift from
+// it silently. Parse the reference's rows after its own heading (other tables in
+// the file have lowercase first cells too, e.g. `| preamble |`).
+const reference = readFileSync(join(__dirname, "..", "..", "skills", "handoff", "references", "handoff.md"), "utf8");
+const referenceTable = reference.slice(reference.indexOf("## Verify-command table"));
+const referenceLabels = referenceTable
+	.split("\n")
+	.map((line) => /^\|\s*([a-z]+)\s*\|/.exec(line))
+	.filter((match) => match !== null)
+	.map((match) => match[1]);
+const constantLabels = VERIFY_COMMANDS.map((row) => row.split(/\s+/)[0]);
+
+check("the reference table still has 7 claims", referenceLabels.length, 7);
+check("one constant row per claim", VERIFY_COMMANDS.length, referenceLabels.length);
+check("labels match the reference table, in order", constantLabels, referenceLabels);
+const hygiene = VERIFY_COMMANDS.find((row) => row.startsWith("hygiene ")) ?? "";
+check(
+	"the hygiene row names all three commands",
+	["npx tsc --noEmit", "node scripts/docs-arch.mjs", "node scripts/docs-decisions.mjs"].filter((command) => hygiene.includes(command))
+		.length,
+	3,
+);
 
 console.log(failures === 0 ? "\nAll handoff checks passed." : `\n${failures} check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);
