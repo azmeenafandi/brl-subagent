@@ -24,6 +24,12 @@
   **vitest 5.0.4** with `typebox` held at the host pin (#342). Cycle-end ritual ran before the release docs: metrics
   row appended, **Rule 11 = 0 escalations**, 3 advisory sweep candidates pinned in the friction log. **Next cycle:
   not yet opened — the maintainer's call** (the release is its first act).
+- **Cycle — `/brl-subagent` menu polish: OPEN 2026-10-17 (presentation-only).** Ease of use + consistent rendering of
+  similar items across the config menu tree. Direction: **Option B** from `menu-polish-proposal-2026-10-17.md`
+  (normalize labels/values/titles → divider grouping → header cleanup → Templates onto the Presets shell + the
+  tier-classifier fix). Units U1–U7 per the proposal's execution sketch; the headline is Templates↔Presets
+  unification (bidirectional — Presets also gains the empty state + tier suffix). Excluded: run history, monitor,
+  dashboard, retry menu, tool-call rendering. No navigation or keybinding changes.
 - **Process ratified 2026-10-14/16:** **cycle model** — `Cycle: <theme>` opens, the maintainer declares the close
   (normally at release planning), the **cycle-end ritual runs BEFORE the release docs**, and the release is the first
   act of the next cycle (`references/sprint-end-ritual.md`). Cycle-end now includes the **bounded environment sweep**
