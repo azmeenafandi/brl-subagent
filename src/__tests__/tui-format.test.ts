@@ -310,14 +310,14 @@ describe("formatMenuValue", () => {
 	});
 });
 
-describe("semantic equivalence (future-divergence pin)", () => {
-	it("parallel zero matches formatMaxParallel case-insensitively", () => {
+describe("semantic equivalence (U2 canonicalized casing)", () => {
+	it("parallel zero matches formatMaxParallel exactly", () => {
 		const menu = formatMenuValue("parallel", { maxParallel: 0 });
 		const legacy = formatMaxParallel(0);
 		expect(menu.toLowerCase()).toBe(legacy.toLowerCase());
-		// U2 will canonicalize casing; until then the tokens may differ in case only.
+		// U2 canonicalized the casing: both spellings are now "Unlimited".
 		expect(menu).toBe("Unlimited");
-		expect(legacy).toBe("unlimited");
+		expect(legacy).toBe("Unlimited");
 	});
 
 	it("parallel positive values match formatMaxParallel exactly (and case-insensitively)", () => {

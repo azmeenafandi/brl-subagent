@@ -983,11 +983,11 @@ export function coherentFailureReason(
 }
 
 export function formatModel(m: { provider: string; id: string } | undefined): string {
-	return m ? `${m.provider}/${m.id}` : "Not set (will use main agent\u2019s model)";
+	return m ? `${m.provider}/${m.id}` : "Not set";
 }
 
 export function formatMaxParallel(n: number): string {
-	return n === 0 ? "unlimited" : String(n);
+	return n === 0 ? "Unlimited" : String(n);
 }
 
 /**
