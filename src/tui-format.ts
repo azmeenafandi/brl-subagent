@@ -7,8 +7,13 @@
  * without a TUI harness.
  */
 
-import { DEFAULT_SLA_WINDOW_SIZE, formatTokens, isInterruptedRun } from "./types";
-import type { SubagentRun } from "./types";
+import {
+	DEFAULT_SLA_WINDOW_SIZE,
+	TEMPLATE_PARAM_RE,
+	formatTokens,
+	isInterruptedRun,
+} from "./types";
+import type { SubagentRun, TaskTemplate } from "./types";
 
 /** Braille spinner frames, indexed by Math.floor(now / 150) % 10. */
 export const LIVE_SPINNER_FRAMES: readonly string[] = [
@@ -270,6 +275,40 @@ function slugify(label: string): string {
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "");
+}
+
+// ---------------------------------------------------------------------------
+// Menu polish U5: template manager row summary (umbrella #345)
+// ---------------------------------------------------------------------------
+
+/**
+ * `${param}` slot names declared by a template, sorted and deduped. Mirrors
+ * `templates.ts:extractParamNames` over the same `task + outputFile` text; the
+ * loop is local because this module's architecture ratchet permits `./types`
+ * only (the shared pattern lives there).
+ */
+function templateSlotNames(t: TaskTemplate): string[] {
+	const names = new Set<string>();
+	for (const match of (t.task + (t.outputFile ?? "")).matchAll(TEMPLATE_PARAM_RE)) {
+		names.add(match[1]);
+	}
+	return [...names].sort();
+}
+
+/**
+ * One-line summary of what a template WILL run with, used as the manager row's
+ * description when the template declares no `description`:
+ * `preset:<name> · thinking:<level> · slots <a>, <b>` — absent parts omitted.
+ * A template declaring none of these falls back to the first 60 characters of
+ * its task, which is what every row showed before U5.
+ */
+export function formatTemplateSummary(t: TaskTemplate): string {
+	const parts: string[] = [];
+	if (t.preset) parts.push(`preset:${t.preset}`);
+	if (t.thinkingLevel) parts.push(`thinking:${t.thinkingLevel}`);
+	const slots = templateSlotNames(t);
+	if (slots.length > 0) parts.push(`slots ${slots.join(", ")}`);
+	return parts.join(" \u00b7 ") || t.task.slice(0, 60);
 }
 
 /** Build a select-list section divider, e.g. `─── Model ───`. Pure. */
