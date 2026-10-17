@@ -45,6 +45,7 @@ const CONFIG_VALUES = [
 	"recovery",
 	"historyentries",
 	"costlimit",
+	"sla",
 	"history",
 	"monitor",
 	"dashboard",
@@ -52,7 +53,6 @@ const CONFIG_VALUES = [
 	"preset",
 	"templates",
 	"reset",
-	"sla",
 ] as const;
 
 /** The two U3 section headers, in order, with their expected divider values. */
@@ -283,9 +283,11 @@ describe("showConfigMenu render structure", () => {
 	it("uses the exported 15-row viewport cap", async () => {
 		expect(CONFIG_MENU_VIEWPORT).toBe(15);
 		const text = (await renderConfigMenu(120)).join("\n");
-		// Item 15 (index 14) is the second divider; item 16 ("Browse Presets")
-		// stays off-screen at selected index 0, pinning the exact cap.
-		expect(text).toContain("─── Presets & Templates ───");
+		// Item 16 (index 15) is the second divider; item 17 ("Browse Presets")
+		// stays off-screen at selected index 0, pinning the exact cap. The last
+		// visible row is item 15 (index 14, "Retry Failed Run").
+		expect(text).toContain("Retry Failed Run");
+		expect(text).not.toContain("─── Presets & Templates ───");
 		expect(text).not.toContain("Browse Presets");
 	});
 

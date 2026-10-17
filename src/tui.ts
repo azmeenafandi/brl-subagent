@@ -1056,6 +1056,14 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 				sessionCostLimit: state.config.sessionCostLimit,
 			}),
 		},
+		{
+			value: "sla",
+			label: "Set SLA Tracking",
+			description: formatMenuValue("sla", {
+				slaTrackingEnabled: state.config.slaTrackingEnabled,
+				slaWindowSize: state.config.slaWindowSize,
+			}),
+		},
 		menuSection("Run Activity"),
 		{
 			value: "history",
@@ -1098,14 +1106,6 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 			value: "reset",
 			label: "Reset Configuration",
 			description: "Clear subagent configuration",
-		},
-		{
-			value: "sla",
-			label: "Set SLA Tracking",
-			description: formatMenuValue("sla", {
-				slaTrackingEnabled: state.config.slaTrackingEnabled,
-				slaWindowSize: state.config.slaWindowSize,
-			}),
 		},
 	];
 }
