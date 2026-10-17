@@ -747,88 +747,76 @@ export async function showPresetManager(
 
 	const items: SelectItem[] = [
 		...builtinItems,
-		...(customItems.length > 0
-			? [
-					{
-						value: "__divider__",
-						label: "\u2500\u2500\u2500 Custom Presets \u2500\u2500\u2500",
-						description: "",
-					},
-				]
-			: []),
+		// Shared factory (U1) rather than a literal: same value shape
+		// (`__divider__:<slug>`) and label grammar as every other section row.
+		...(customItems.length > 0 ? [menuSection("Custom Presets")] : []),
 		...customItems,
 	];
 
-	const result = await showSelectList(
-		ctx,
-		`Presets (${state.builtinPresets.length} built-in, ${state.customPresets.length} custom)`,
-		items,
-		15,
-	);
-	if (!result || result === "__divider__") return;
+	// Defensive zero-item case, mirroring the Templates manager: never open an
+	// empty SelectList — say so instead.
+	if (items.length === 0) {
+		ctx.ui.notify(emptyManagerNotice("presets", "presets", "presets"), "info");
+		return;
+	}
 
-	{
-		// Extract preset name from value
-		const isBuiltin = result.startsWith("__builtin__:");
-		const isCustom = result.startsWith("__custom__:");
-		const presetName = isBuiltin
+	const title = `Presets (${state.builtinPresets.length} built-in, ${state.customPresets.length} custom)`;
+
+	// Browse loop: selecting the divider is a no-op re-render (the list comes
+	// back), never a close — the same semantics as the Templates manager and
+	// the config menu's dividers.
+	while (true) {
+		const result = await showSelectList(ctx, title, items, 15);
+		if (!result) return;
+		if (isDividerValue(result)) continue;
+
+		// Row values carry the tier prefix; the detail view takes the bare name.
+		const presetName = result.startsWith("__builtin__:")
 			? result.slice("__builtin__:".length)
-			: isCustom
+			: result.startsWith("__custom__:")
 				? result.slice("__custom__:".length)
 				: result;
-
-		const preset = getPreset(presetName, state.builtinPresets, state.customPresets);
-		if (preset) {
-			await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-				const container = new Container();
-				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-				container.addChild(
-					new Text(
-						theme.fg("accent", theme.bold(`Preset: ${preset.name}`)) +
-							(isBuiltin ? theme.fg("dim", " (built-in)") : ""),
-						1,
-						0,
-					),
-				);
-				if (preset.description)
-					container.addChild(new Text(theme.fg("dim", preset.description), 1, 0));
-				container.addChild(new Text("", 0, 0));
-				container.addChild(
-					new Text(theme.fg("dim", `Thinking: ${preset.thinkingLevel || "(not set)"}`), 1, 0),
-				);
-				container.addChild(
-					new Text(
-						theme.fg(
-							"dim",
-							`Inherit: ${preset.inheritSystemPrompt === false ? "no" : "yes (default)"}`,
-						),
-						1,
-						0,
-					),
-				);
-				if (preset.tools)
-					container.addChild(
-						new Text(theme.fg("dim", `Tools: ${preset.tools.join(", ")}`), 1, 0),
-					);
-				if (preset.excludeTools)
-					container.addChild(
-						new Text(theme.fg("dim", `Exclude: ${preset.excludeTools.join(", ")}`), 1, 0),
-					);
-				if (preset.systemPrompt)
-					container.addChild(
-						new Text(theme.fg("dim", `System prompt: ${preset.systemPrompt.slice(0, 100)}`), 1, 0),
-					);
-				container.addChild(new Text("", 0, 0));
-				container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
-				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-				return {
-					render: (w: number) => container.render(w),
-					invalidate: () => container.invalidate(),
-					handleInput: (_data: string) => done(),
-				};
-			});
-		}
+		await showViewPreset(ctx, state, presetName);
+		return;
 	}
+}
+
+/**
+ * Preset detail view. Mirrors `showViewTemplate` exactly (U6): same tier suffix
+ * vocabulary, same `Label: value` field grammar, and the same unset-field policy
+ * — unset optional fields are omitted, `Inherit:` always renders because it is a
+ * real default (`yes (default)`), not an absent value.
+ */
+export async function showViewPreset(
+	ctx: ExtensionContext,
+	state: SessionState,
+	name: string,
+): Promise<void> {
+	const preset = getPreset(name, state.builtinPresets, state.customPresets);
+	if (!preset) return;
+
+	// A custom preset that shadows a built-in name wins in getPreset, so only a
+	// name with no custom entry is `builtin`; the rest split project/global.
+	const tier: Tier = state.customPresets.some((p) => p.name === preset.name)
+		? findPresetSource(preset.name, ctx)
+		: "builtin";
+
+	await showDetailView(ctx, {
+		title: `Preset: ${preset.name}`,
+		tier,
+		description: preset.description,
+		content: (theme) =>
+			detailFieldLines(theme, [
+				{ label: "Thinking", value: preset.thinkingLevel },
+				{
+					label: "Inherit",
+					value: preset.inheritSystemPrompt === false ? "no" : "yes (default)",
+				},
+				{ label: "Tools", value: preset.tools?.join(", ") },
+				{ label: "Exclude", value: preset.excludeTools?.join(", ") },
+				{ label: "System prompt", value: preset.systemPrompt?.slice(0, 100) },
+			]),
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -927,6 +915,100 @@ export function findTemplateSource(name: string, ctx: ExtensionContext): Tier {
 }
 
 // ---------------------------------------------------------------------------
+// Shared manager/detail helpers (menu polish U6, umbrella #345)
+// ---------------------------------------------------------------------------
+
+/**
+ * The empty-state notice every manager surface uses: one shape, one set of
+ * places to add files. A manager whose row list is empty notifies with this
+ * instead of opening a SelectList with nothing to select.
+ */
+export function emptyManagerNotice(
+	loadedNoun: string,
+	builtinNoun: string,
+	dir: string,
+): string {
+	return (
+		`No ${loadedNoun} loaded — built-in ${builtinNoun} ship with the extension and ` +
+		"should always be present. Add custom .md files in " +
+		`~/.pi/agent/brl-subagent/${dir}/ or <project>/.pi/brl-subagent/${dir}/.`
+	);
+}
+
+/**
+ * Tier suffix for a detail-view title: `(built-in)`, `(project)`, or `(global)`.
+ * One vocabulary for both detail views, so the title always names the same tier
+ * the manager row's `[B]`/`[P]`/`[G]` prefix came from.
+ */
+export function tierDetailSuffix(tier: Tier): string {
+	return tier === "builtin" ? " (built-in)" : tier === "project" ? " (project)" : " (global)";
+}
+
+/**
+ * One `Label: value` row in a detail view. `value === undefined` means "unset"
+ * and the row is omitted (the U6 unset-field policy).
+ */
+export interface DetailField {
+	label: string;
+	value: string | undefined;
+}
+
+/**
+ * Render a detail view's field block: dim `Label: value` lines, in the order
+ * given, with unset fields omitted. A field that has a real DEFAULT (such as
+ * `Inherit: yes (default)`) passes its resolved value and therefore always
+ * renders — the policy drops absent data, not defaults.
+ */
+export function detailFieldLines(theme: Theme, fields: readonly DetailField[]): string[] {
+	return fields
+		.filter((f) => f.value !== undefined && f.value !== "")
+		.map((f) => theme.fg("dim", `${f.label}: ${f.value}`));
+}
+
+/** What a detail view shows: a titled, tier-suffixed header plus body lines. */
+export interface DetailView {
+	/** Bold accent title, e.g. `Preset: code-review`. */
+	title: string;
+	/** Tier vocabulary from `tierDetailSuffix`. */
+	tier: Tier;
+	/** Optional dim subtitle under the title. */
+	description?: string;
+	/** Body lines (a lead row first, then the field block). */
+	content: (theme: Theme) => string[];
+}
+
+/**
+ * The one detail-view shell both `showViewPreset` and `showViewTemplate` use:
+ * accent border, title + tier suffix, optional description, body, close hint.
+ * Sharing it keeps the grammar and suffix vocabulary from drifting apart.
+ */
+async function showDetailView(ctx: ExtensionContext, view: DetailView): Promise<void> {
+	await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(
+			new Text(
+				theme.fg("accent", theme.bold(view.title)) + theme.fg("dim", tierDetailSuffix(view.tier)),
+				1,
+				0,
+			),
+		);
+		if (view.description)
+			container.addChild(new Text(theme.fg("dim", view.description), 1, 0));
+		container.addChild(new Text("", 0, 0));
+		for (const line of view.content(theme)) container.addChild(new Text(line, 1, 0));
+		container.addChild(new Text("", 0, 0));
+		container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (_data: string) => done(),
+		};
+	});
+}
+
+// ---------------------------------------------------------------------------
 // Template management UI
 // ---------------------------------------------------------------------------
 
@@ -1001,64 +1083,27 @@ export async function showViewTemplate(
 	const template = getTemplate(name, state.config.templates);
 	if (!template) return;
 
-	// Tier suffix mirrors the preset view's dim "(built-in)" treatment, extended
-	// to project/global so the detail view matches the manager's tier labels.
-	const templateTier = findTemplateSource(template.name, ctx);
-	const tierSuffix =
-		templateTier === "builtin"
-			? " (built-in)"
-			: templateTier === "project"
-				? " (project)"
-				: " (global)";
-
 	const paramNames = extractParamNames(template.task + (template.outputFile || ""));
 
-	await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-		const container = new Container();
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		container.addChild(
-			new Text(
-				theme.fg("accent", theme.bold(`Template: ${template.name}`)) +
-					theme.fg("dim", tierSuffix),
-				1,
-				0,
-			),
-		);
-		if (template.description)
-			container.addChild(new Text(theme.fg("dim", template.description), 1, 0));
-		container.addChild(new Text("", 0, 0));
-		container.addChild(
-			new Text(theme.fg("toolTitle", "Task:") + " " + theme.fg("toolOutput", template.task), 1, 0),
-		);
-		if (paramNames.length > 0) {
-			container.addChild(
-				new Text(theme.fg("dim", `Parameters: ${paramNames.join(", ")}`), 1, 0),
-			);
-		}
-		if (template.preset)
-			container.addChild(
-				new Text(theme.fg("dim", `Preset: ${template.preset}`), 1, 0),
-			);
-		if (template.thinkingLevel)
-			container.addChild(
-				new Text(theme.fg("dim", `Thinking: ${template.thinkingLevel}`), 1, 0),
-			);
-		if (template.outputFile)
-			container.addChild(
-				new Text(theme.fg("dim", `Output file: ${template.outputFile}`), 1, 0),
-			);
-		if (template.timeout)
-			container.addChild(
-				new Text(theme.fg("dim", `Timeout: ${template.timeout}ms`), 1, 0),
-			);
-		container.addChild(new Text("", 0, 0));
-		container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		return {
-			render: (w: number) => container.render(w),
-			invalidate: () => container.invalidate(),
-			handleInput: (_data: string) => done(),
-		};
+	await showDetailView(ctx, {
+		title: `Template: ${template.name}`,
+		tier: findTemplateSource(template.name, ctx),
+		description: template.description,
+		// The task IS the template, so it leads the body; every other concept is
+		// an optional field and follows the shared omit-when-unset policy.
+		content: (theme) => [
+			theme.fg("toolTitle", "Task:") + " " + theme.fg("toolOutput", template.task),
+			...detailFieldLines(theme, [
+				{
+					label: "Parameters",
+					value: paramNames.length > 0 ? paramNames.join(", ") : undefined,
+				},
+				{ label: "Preset", value: template.preset },
+				{ label: "Thinking", value: template.thinkingLevel },
+				{ label: "Output file", value: template.outputFile },
+				{ label: "Timeout", value: template.timeout ? `${template.timeout}ms` : undefined },
+			]),
+		],
 	});
 }
 
@@ -1067,12 +1112,7 @@ export async function showTemplateManager(
 	state: SessionState,
 ): Promise<void> {
 	if (state.config.templates.length === 0) {
-		ctx.ui.notify(
-			"No task templates loaded — built-in templates ship with the extension and " +
-			"should always be present. Add custom .md files in " +
-			"~/.pi/agent/brl-subagent/templates/ or <project>/.pi/brl-subagent/templates/.",
-			"info",
-		);
+		ctx.ui.notify(emptyManagerNotice("task templates", "templates", "templates"), "info");
 		return;
 	}
 
