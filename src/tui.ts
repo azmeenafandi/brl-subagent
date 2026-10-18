@@ -1381,8 +1381,8 @@ export async function showRunHistory(
 		// Mark as seen
 		if (state.markRunSeen(run.id)) {
 			persistState();
-			import("./concurrency").then(({ updateProgressStatus }) => {
-				updateProgressStatus(state, ctx);
+			import("./concurrency").then(({ repaintStatus }) => {
+				repaintStatus(state, ctx);
 			});
 		}
 

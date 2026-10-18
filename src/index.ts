@@ -85,7 +85,7 @@ import {
 	newDispatchIdentity,
 } from "./recovery";
 import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
-import { acquireSlot, clearProgressLinger, releaseSlot, updateStatus, updateProgressStatus, stopProgressTicker } from "./concurrency";
+import { acquireSlot, clearProgressLinger, releaseSlot, repaintStatus, stopProgressTicker } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
 import {
 	finalizeRunRecord,
@@ -248,9 +248,9 @@ export default function (pi: ExtensionAPI) {
 
 	function applyConfig(ctx: ExtensionContext, message: string) {
 		// Issue #354: a config change mid-run must not blank the footer —
-		// updateProgressStatus renders the activity line while runs are active and
+		// repaintStatus renders the activity line while runs are active and
 		// falls back to the idle config line when none are.
-		updateProgressStatus(state, ctx);
+		repaintStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify(message, "info");
 	}
@@ -270,7 +270,7 @@ export default function (pi: ExtensionAPI) {
 			getAllPresets(state.builtinPresets, state.customPresets),
 			log,
 		);
-		updateProgressStatus(state, ctx);
+		repaintStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify("Subagent configuration reset", "info");
 	}
@@ -725,10 +725,10 @@ export default function (pi: ExtensionAPI) {
 				};
 				// Issue #133: render the breakdown — the chain holds ONE mode-level
 				// slot (acquired at mode start, released in the finally), so no
-				// per-step acquire/release calls updateProgressStatus while the
+				// per-step acquire/release calls repaintStatus while the
 				// mode context is set. Call it directly here (mirrors how the
 				// graph path's per-node slot operations trigger the render).
-				updateProgressStatus(state, ctx);
+				repaintStatus(state, ctx);
 
 				// Emit initial progress for this step
 				const modeInfo = describePromptMode(
@@ -2393,7 +2393,7 @@ export default function (pi: ExtensionAPI) {
 		
 		// Update footer counters
 		state.activeSubagents++;
-		updateProgressStatus(state, ctx);
+		repaintStatus(state, ctx);
 
 		let completed = false;
 		
@@ -2425,7 +2425,7 @@ export default function (pi: ExtensionAPI) {
 						if (state.activeSubagents < 0) state.activeSubagents = 0;
 					}
 					state.failedSubagents++;
-					updateProgressStatus(state, ctx);
+					repaintStatus(state, ctx);
 					sendCrashNotice(`Background agent "${agent.description}" crashed.`);
 					return;
 				}
@@ -2472,7 +2472,7 @@ export default function (pi: ExtensionAPI) {
 					
 					if (agent.status === 'failed') {
 						state.failedSubagents++;
-						updateProgressStatus(state, ctx);
+						repaintStatus(state, ctx);
 						// Issue #315: the terminal wake (`subagent-completion`, emitted by
 						// the session-manager settle) is the ONE notice for a failed run.
 						// The status here was set by that settle, so the wake already
@@ -2480,11 +2480,11 @@ export default function (pi: ExtensionAPI) {
 					} else if (agent.status === 'stopped') {
 						// User-initiated stop (stop_subagent) or deadline abort
 						// (timeout/deadline) — not a failure.
-						updateProgressStatus(state, ctx);
+						repaintStatus(state, ctx);
 					} else {
 						state.completedSubagents++;
 						state.unseenSubagents++;
-						updateProgressStatus(state, ctx);
+						repaintStatus(state, ctx);
 					}
 				}
 			} catch (err) {
@@ -2503,7 +2503,7 @@ export default function (pi: ExtensionAPI) {
 						if (state.activeSubagents < 0) state.activeSubagents = 0;
 					}
 					state.failedSubagents++;
-					updateProgressStatus(state, ctx);
+					repaintStatus(state, ctx);
 					sendCrashNotice(`Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`);
 				}
 			}
@@ -2548,7 +2548,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					// m6: deadline abort is a stop, not a completion — mirror the
 					// W3/poller stopped path (no completedSubagents increment).
-					updateProgressStatus(state, ctx);
+					repaintStatus(state, ctx);
 				} catch (err) {
 					// Defensive: never let the deadline timer throw uncaught — that would
 					// skip finalizeLiveSubagent, the counter decrement, and the notification.
@@ -2574,7 +2574,7 @@ export default function (pi: ExtensionAPI) {
 						if (state.activeSubagents < 0) state.activeSubagents = 0;
 					}
 					state.failedSubagents++;
-					updateProgressStatus(state, ctx);
+					repaintStatus(state, ctx);
 				}
 			}
 		}, hardCapMs);
@@ -4218,7 +4218,10 @@ export default function (pi: ExtensionAPI) {
 		// run ONCE, at the next turn boundary (never mid-turn).
 		await maybeSendRecoveryNotice(ctx);
 
-		updateStatus(state, ctx);
+		// Issue #356: boot is a config-paint edge — route it through the same
+		// chokepoint as every other footer repaint. With no runs in flight the
+		// chokepoint draws the idle config line the old direct call painted.
+		repaintStatus(state, ctx);
 	});
 
 	// F7: Clean up session-bound state on shutdown

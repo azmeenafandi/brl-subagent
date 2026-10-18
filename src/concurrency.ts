@@ -53,7 +53,7 @@ export async function acquireSlot(
 
 	if (maxParallel === 0 || state.activeSubagents < maxParallel) {
 		state.activeSubagents++;
-		updateProgressStatus(state, ctx);
+		repaintStatus(state, ctx);
 		return true;
 	}
 
@@ -61,7 +61,7 @@ export async function acquireSlot(
 		const entry = {
 			run: () => {
 				state.activeSubagents++;
-				updateProgressStatus(state, ctx);
+				repaintStatus(state, ctx);
 				resolve(true);
 			},
 			signal,
@@ -104,7 +104,7 @@ export function releaseSlot(state: SessionState, success: boolean, ctx: Extensio
 		state.failedSubagents++;
 	}
 
-	updateProgressStatus(state, ctx);
+	repaintStatus(state, ctx);
 
 	// Dequeue next waiting task
 	const next = state.pendingQueue.shift();
@@ -153,7 +153,7 @@ function syncProgressTicker(state: SessionState, ctx: ExtensionContext): void {
 	}
 	if (state.statusTicker === undefined) {
 		state.statusTicker = setInterval(
-			() => renderProgressStatus(state, ctx),
+			() => repaintStatus(state, ctx),
 			LIVE_SPINNER_FRAME_MS,
 		);
 	}
@@ -212,10 +212,51 @@ export function syncProgressLinger(state: SessionState, ctx: ExtensionContext): 
 		state.completedSubagents = 0;
 		state.failedSubagents = 0;
 		state.unseenSubagents = 0;
-		updateStatus(state, ctx);
+		repaintStatus(state, ctx);
 	}, STATUS_RESET_DELAY_MS);
 }
 
+/**
+ * The ONE production entry point for painting the footer status (issue #356).
+ *
+ * Every lifecycle edge calls this and nothing else:
+ *  - dispatch — `acquireSlot` (slot taken or queued run started) and the
+ *    background spawn's counter bump in `src/index.ts`;
+ *  - settle — `releaseSlot`, the background poller's terminal branches, the
+ *    deadline/crash paths;
+ *  - dequeue — `releaseSlot` hands the slot to the next queued run, which
+ *    repaints through `acquireSlot`;
+ *  - config change — `applyConfig`, `resetState`, and the boot paint;
+ *  - poller tick — the 2 s background poll and the live spinner interval,
+ *    which both fire this function;
+ *  - linger fire — the 3 s reset in `syncProgressLinger`.
+ *
+ * Contract: synchronous, reads the CURRENT counters/config from `state`, and
+ * picks the active line or the idle config line itself. There is no queued
+ * microtask or coalescing — a repaint is visible by the time the call returns,
+ * so callers may paint before a notification or an `onUpdate` and keep the
+ * established ordering.
+ *
+ * Idempotent: calling it twice with no state change repaints the same line (at
+ * the same clock instant) and cannot stack timers — the spinner ticker and
+ * linger timer are edge-triggered in their sync helpers. There is no explicit
+ * reentrancy guard; a nested paint terminates because the production render is
+ * non-reentrant and the timers are edge-triggered.
+ *
+ * `updateProgressStatus` below is the implementation. It is exported only for
+ * its unit tests; production sources (including `src/index.ts` and `src/tui.ts`)
+ * must call THIS function, while tests opt in to the implementation directly.
+ * `status-chokepoint.test.ts` asserts the production-source boundary.
+ */
+export function repaintStatus(state: SessionState, ctx: ExtensionContext): void {
+	updateProgressStatus(state, ctx);
+}
+
+/**
+ * @internal Paint implementation — call {@link repaintStatus}, never this.
+ * The tag is convention-only; `status-chokepoint.test.ts`'s source scan is the
+ * enforcement.
+ */
 export function updateProgressStatus(state: SessionState, ctx: ExtensionContext): void {
 	syncActiveSince(state, Date.now());
 	syncProgressLinger(state, ctx);
@@ -231,6 +272,12 @@ export function updateProgressStatus(state: SessionState, ctx: ExtensionContext)
 	syncProgressTicker(state, ctx);
 }
 
+/**
+ * @internal The idle config line — also part of the one-entry paint contract.
+ * Produced by {@link updateProgressStatus} when no run is active; production
+ * callers must reach it through {@link repaintStatus}. The tag is
+ * convention-only; `status-chokepoint.test.ts`'s source scan is the enforcement.
+ */
 export function updateStatus(state: SessionState, ctx: ExtensionContext): void {
 	// The idle config line: no run is active, so the spinner has no job.
 	stopProgressTicker(state);
