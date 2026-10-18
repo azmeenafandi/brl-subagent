@@ -3,9 +3,10 @@
  *
  * The status layer owns the paint: every lifecycle edge (dispatch, settle,
  * dequeue, config change, poller/spinner tick, linger fire) calls
- * `repaintStatus`, and nothing outside `src/concurrency.ts` calls the paint
- * implementation or writes the footer status key directly. The source scan
- * below is the build failure that keeps a future caller from drifting.
+ * `repaintStatus`, and no production source outside `src/concurrency.ts` calls
+ * the paint implementation, aliases it, calls the idle line directly, or writes
+ * the footer status key. The source scan below is the build failure that keeps a
+ * future caller from drifting; tests opt in to the implementation directly.
  *
  * The unit half pins the chokepoint's two load-bearing properties: repeated
  * calls are idempotent (same line at a frozen clock, no stacked timers) and a
@@ -14,20 +15,38 @@
  */
 
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { repaintStatus, stopProgressTicker } from "../concurrency";
 import { createSessionState } from "../state";
 
 const SRC_DIR = join(__dirname, "..");
-const CONCURRENCY_FILE = "concurrency.ts";
+const CONCURRENCY_FILE = join(SRC_DIR, "concurrency.ts");
 
-/** Production modules only: top-level `src/*.ts`, excluding the status layer. */
+/**
+ * Production modules only: every TypeScript file under `src/`, excluding test
+ * trees and the status layer itself. The walk is recursive so a future nested
+ * module cannot silently escape the scan.
+ */
 function productionSources(): Array<{ file: string; text: string }> {
-	return readdirSync(SRC_DIR)
-		.filter((file) => file.endsWith(".ts") && file !== CONCURRENCY_FILE)
-		.map((file) => ({ file, text: readFileSync(join(SRC_DIR, file), "utf8") }));
+	const sources: Array<{ file: string; text: string }> = [];
+
+	const walk = (dir: string): void => {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			const path = join(dir, entry.name);
+			if (entry.isDirectory()) {
+				if (entry.name === "__tests__") continue;
+				walk(path);
+				continue;
+			}
+			if (!entry.name.endsWith(".ts") || path === CONCURRENCY_FILE) continue;
+			sources.push({ file: relative(SRC_DIR, path), text: readFileSync(path, "utf8") });
+		}
+	};
+
+	walk(SRC_DIR);
+	return sources;
 }
 
 function mockCtx() {
@@ -49,6 +68,21 @@ describe("footer repaint chokepoint — source boundary (issue #356)", () => {
 		expect(offenders.map(({ file }) => file)).toEqual([]);
 	});
 
+	it("no production module outside the status layer calls the idle line directly", () => {
+		const offenders = productionSources().filter(({ text }) => /\bupdateStatus\s*\(/.test(text));
+		expect(offenders.map(({ file }) => file)).toEqual([]);
+	});
+
+	it("no production module aliases the paint implementation or the idle line", () => {
+		// Catches `const x = updateProgressStatus` / `= updateStatus` and
+		// `import { updateStatus as x }`-style aliases. See the report note on
+		// what a determined caller could still evade (e.g. `obj[\"updateStatus\"]`).
+		const aliasPattern =
+			/\b(?:const|let|var)\s+\w+\s*(?::[^=]+)?=\s*(?:updateProgressStatus|updateStatus)\b|\b(?:updateProgressStatus|updateStatus)\s+as\s+\w+/;
+		const offenders = productionSources().filter(({ text }) => aliasPattern.test(text));
+		expect(offenders.map(({ file }) => file)).toEqual([]);
+	});
+
 	it("no production module outside the status layer paints the footer key directly", () => {
 		const offenders = productionSources().filter(({ text }) =>
 			/\.ui\.setStatus\s*\(\s*["'`]brl-subagent/.test(text),
@@ -65,7 +99,7 @@ describe("footer repaint chokepoint — source boundary (issue #356)", () => {
 	});
 
 	it("only the chokepoint calls the paint implementation", () => {
-		const concurrencySource = readFileSync(join(SRC_DIR, CONCURRENCY_FILE), "utf8");
+		const concurrencySource = readFileSync(CONCURRENCY_FILE, "utf8");
 
 		// The definition is not a call; the single `(state, ctx)` call is the
 		// chokepoint delegating to the implementation.

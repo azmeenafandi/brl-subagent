@@ -237,20 +237,26 @@ export function syncProgressLinger(state: SessionState, ctx: ExtensionContext): 
  * so callers may paint before a notification or an `onUpdate` and keep the
  * established ordering.
  *
- * Idempotent and reentrancy-safe: calling it twice with no state change
- * repaints the same line (at the same clock instant) and cannot stack timers —
- * the spinner ticker and linger timer are edge-triggered in their sync helpers.
- * A nested call from inside a render sees the same state and terminates.
+ * Idempotent: calling it twice with no state change repaints the same line (at
+ * the same clock instant) and cannot stack timers — the spinner ticker and
+ * linger timer are edge-triggered in their sync helpers. There is no explicit
+ * reentrancy guard; a nested paint terminates because the production render is
+ * non-reentrant and the timers are edge-triggered.
  *
- * `updateProgressStatus` below is the implementation and is kept exported only
- * for its unit tests; production code (including `src/index.ts` and `src/tui.ts`)
- * must call THIS function. `status-chokepoint.test.ts` asserts that boundary.
+ * `updateProgressStatus` below is the implementation. It is exported only for
+ * its unit tests; production sources (including `src/index.ts` and `src/tui.ts`)
+ * must call THIS function, while tests opt in to the implementation directly.
+ * `status-chokepoint.test.ts` asserts the production-source boundary.
  */
 export function repaintStatus(state: SessionState, ctx: ExtensionContext): void {
 	updateProgressStatus(state, ctx);
 }
 
-/** @internal Paint implementation — call {@link repaintStatus}, never this. */
+/**
+ * @internal Paint implementation — call {@link repaintStatus}, never this.
+ * The tag is convention-only; `status-chokepoint.test.ts`'s source scan is the
+ * enforcement.
+ */
 export function updateProgressStatus(state: SessionState, ctx: ExtensionContext): void {
 	syncActiveSince(state, Date.now());
 	syncProgressLinger(state, ctx);
@@ -266,6 +272,12 @@ export function updateProgressStatus(state: SessionState, ctx: ExtensionContext)
 	syncProgressTicker(state, ctx);
 }
 
+/**
+ * @internal The idle config line — also part of the one-entry paint contract.
+ * Produced by {@link updateProgressStatus} when no run is active; production
+ * callers must reach it through {@link repaintStatus}. The tag is
+ * convention-only; `status-chokepoint.test.ts`'s source scan is the enforcement.
+ */
 export function updateStatus(state: SessionState, ctx: ExtensionContext): void {
 	// The idle config line: no run is active, so the spinner has no job.
 	stopProgressTicker(state);
