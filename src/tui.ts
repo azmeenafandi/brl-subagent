@@ -65,7 +65,7 @@ import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type Se
 import { getAgent } from "./session-manager";
 import { visibleRunEntriesForSession } from "./recovery-surface";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
-import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName, formatMenuValue, formatTemplateSummary, menuSection } from "./tui-format";
+import { formatElapsed, formatOutcomeSymbol, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName, formatMenuValue, formatTemplateSummary, menuSection } from "./tui-format";
 import {
 	renderTranscriptMessages,
 	type TranscriptLineStyle,
@@ -1339,8 +1339,8 @@ export async function showRunHistory(
 ): Promise<void> {
 	const statusIcon: Record<string, string> = {
 		running: ctx.ui.theme.fg("accent", "◉"),
-		done: ctx.ui.theme.fg("success", "✓"),
-		failed: ctx.ui.theme.fg("error", "✗"),
+		done: formatOutcomeSymbol("success", ctx.ui.theme),
+		failed: formatOutcomeSymbol("failure", ctx.ui.theme),
 		interrupted: ctx.ui.theme.fg("warning", "◌"),
 	};
 
@@ -2140,9 +2140,9 @@ export async function showDashboard(
 				for (const run of recent10) {
 					const icon =
 						run.status === "done"
-							? theme.fg("success", "\u2713")
+							? formatOutcomeSymbol("success", theme)
 							: run.status === "failed"
-								? theme.fg("error", "\u2717")
+								? formatOutcomeSymbol("failure", theme)
 								: theme.fg("accent", "\u25CF");
 					const name = run.label || run.task.slice(0, 50);
 					const dur = run.durationMs ? compactDuration(run.durationMs) : "...";
@@ -2185,6 +2185,8 @@ export async function showDashboard(
 				);
 				}
 			} else {
+				// A sentence, not a status icon: coloured as a whole line, so it is
+				// deliberately not routed through formatOutcomeSymbol.
 				container.addChild(new Text(theme.fg("success", "  No errors \u2713"), 1, 0));
 			}
 			container.addChild(new Text("", 0, 0));
@@ -2268,6 +2270,8 @@ export async function showRetryMenu(
 		const err = r.errorMessage ? r.errorMessage.slice(0, 40) : interrupted ? "interrupted" : "error";
 		return {
 			value: r.id,
+			// Uncoloured select-list label pairing ✗ with the interrupted ◌, so the
+			// verdict symbol here is not the themed one — kept as an exception.
 			label: `${interrupted ? "◌" : "✗"} ${name}`,
 			description: `${interrupted ? "interrupted · " : ""}${model} · ${err}`,
 		};
@@ -2413,17 +2417,13 @@ function renderCollapsedChain(
 	theme: Theme,
 ): string {
 	const allSucceeded = details.results.every((r) => !isSubagentError(r));
-	const icon = allSucceeded
-		? theme.fg("success", "\u2713")
-		: theme.fg("error", "\u2717");
+	const icon = formatOutcomeSymbol(allSucceeded ? "success" : "failure", theme);
 	const stoppedEarly = details.stoppedEarly ? " (stopped early)" : "";
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold("chain"))} ${theme.fg("muted", `${details.completedSteps}/${details.totalSteps} steps${stoppedEarly}`)}`;
 
 	for (const r of details.results) {
 		const isErr = isSubagentError(r);
-		const statusIcon = isErr
-			? theme.fg("error", "\u2717")
-			: theme.fg("success", "\u2713");
+		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
 		const stepNum =
 			r.step !== undefined ? theme.fg("muted", `${r.step}. `) : "";
 		const label = r.label ? theme.fg("accent", r.label) : "";
@@ -2447,17 +2447,12 @@ function renderCollapsedParallel(
 	details: ParallelDetails,
 	theme: Theme,
 ): string {
-	const icon =
-		details.failed === 0
-			? theme.fg("success", "\u2713")
-			: theme.fg("error", "\u2717");
+	const icon = formatOutcomeSymbol(details.failed === 0 ? "success" : "failure", theme);
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel"))} ${theme.fg("muted", `${details.succeeded}/${details.failed}/${details.results.length} total`)}`;
 
 	for (const r of details.results) {
 		const isErr = isSubagentError(r);
-		const statusIcon = isErr
-			? theme.fg("error", "\u2717")
-			: theme.fg("success", "\u2713");
+		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
 		const label = r.label ? theme.fg("accent", r.label) : "";
 		const output = getFinalOutput(r.messages);
 		const preview = output.split("\n").slice(0, 2).join("\n");
@@ -2501,9 +2496,7 @@ function renderExpandedChain(
 
 	for (const r of details.results) {
 		const isErr = isSubagentError(r);
-		const statusIcon = isErr
-			? theme.fg("error", "\u2717")
-			: theme.fg("success", "\u2713");
+		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
 		const stepNum = r.step !== undefined ? `${r.step}. ` : "";
 		const label = r.label ? `[${r.label}] ` : "";
 		container.addChild(
@@ -2583,9 +2576,7 @@ function renderExpandedParallel(
 
 	for (const r of details.results) {
 		const isErr = isSubagentError(r);
-		const statusIcon = isErr
-			? theme.fg("error", "\u2717")
-			: theme.fg("success", "\u2713");
+		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
 		const label = r.label ? `[${r.label}] ` : "";
 		container.addChild(
 			new Text(
@@ -2958,9 +2949,7 @@ function renderCollapsedGraph(
 	const allSucceeded = details.waves.every((w) =>
 		w.tasks.every((r) => !isSubagentError(r)),
 	);
-	const icon = allSucceeded
-		? theme.fg("success", "\u2713")
-		: theme.fg("error", "\u2717");
+	const icon = formatOutcomeSymbol(allSucceeded ? "success" : "failure", theme);
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold("graph"))} ${theme.fg("muted", `${totalTasks} tasks in ${details.waves.length} waves`)}`;
 
 	const maxWavesToShow = 3;
@@ -2968,15 +2957,11 @@ function renderCollapsedGraph(
 
 	for (const wave of wavesToRender) {
 		const waveOk = wave.tasks.every((r) => !isSubagentError(r));
-		const waveIcon = waveOk
-			? theme.fg("success", "\u2713")
-			: theme.fg("error", "\u2717");
+		const waveIcon = formatOutcomeSymbol(waveOk ? "success" : "failure", theme);
 		const modeLabel = wave.parallel ? "parallel" : "serial";
 		const taskLabels = wave.tasks.map((r) => {
 			const label = r.label || r.task.slice(0, 30);
-			const taskIcon = !isSubagentError(r)
-				? theme.fg("success", "\u2713")
-				: theme.fg("error", "\u2717");
+			const taskIcon = formatOutcomeSymbol(isSubagentError(r) ? "failure" : "success", theme);
 			return `${taskIcon} ${theme.fg("dim", label)}`;
 		});
 		text += `
@@ -3015,9 +3000,7 @@ function renderExpandedGraph(
 
 	for (const wave of details.waves) {
 		const waveOk = wave.tasks.every((r) => !isSubagentError(r));
-		const waveIcon = waveOk
-			? theme.fg("success", "\u2713")
-			: theme.fg("error", "\u2717");
+		const waveIcon = formatOutcomeSymbol(waveOk ? "success" : "failure", theme);
 		const modeLabel = wave.parallel ? "parallel" : "serial";
 		container.addChild(
 			new Text(
@@ -3029,9 +3012,7 @@ function renderExpandedGraph(
 
 		for (const r of wave.tasks) {
 			const isErr = isSubagentError(r);
-			const statusIcon = isErr
-				? theme.fg("error", "\u2717")
-				: theme.fg("success", "\u2713");
+			const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
 			const label = r.label ? `[${r.label}] ` : "";
 
 			container.addChild(
@@ -3228,7 +3209,7 @@ export function renderDelegateResult(
 	}
 
 	const isError = isSubagentError(details);
-	const icon = isError ? theme.fg("error", "\u2717") : theme.fg("success", "\u2713");
+	const icon = formatOutcomeSymbol(isError ? "failure" : "success", theme);
 	const finalOutput = getFinalOutput(details.messages);
 
 	if (options.expanded) {

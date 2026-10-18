@@ -412,6 +412,16 @@ describe("updateProgressStatus modeContext composition (issue #133)", () => {
 		};
 	}
 
+	// Issue #354 made the footer time-derived (spinner frame + elapsed), so the
+	// clock is frozen: frame 0 (⠋) and a 0s elapsed suffix are deterministic.
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("prepends the graph wave/node breakdown when modeContext is set", () => {
 		const state = createSessionState();
 		state.activeSubagents = 2;
@@ -422,7 +432,7 @@ describe("updateProgressStatus modeContext composition (issue #133)", () => {
 
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
 			"brl-subagent",
-			"brl: graph wave 1/2 · node 2/3, 2 running",
+			"\u280B brl: graph wave 1/2 \u00b7 node 2/3, 2 running \u00b7 0s",
 		);
 	});
 
@@ -436,7 +446,7 @@ describe("updateProgressStatus modeContext composition (issue #133)", () => {
 
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
 			"brl-subagent",
-			"brl: chain step 2/3, 1 running",
+			"\u280B brl: chain step 2/3, 1 running \u00b7 0s",
 		);
 	});
 
@@ -450,7 +460,7 @@ describe("updateProgressStatus modeContext composition (issue #133)", () => {
 
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
 			"brl-subagent",
-			"brl: 2 running",
+			"\u280B brl: 2 running \u00b7 0s",
 		);
 	});
 });

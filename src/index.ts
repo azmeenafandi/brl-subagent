@@ -75,7 +75,7 @@ import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
 import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams, snapshotOriginalParams } from "./params";
 import { delegateTaskParamsSchema } from "./schema";
-import { createSessionState, resolveTerminalRunEntry } from "./state";
+import { createSessionState, resolveTerminalRunEntry, type SessionState } from "./state";
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs, reapActiveChildren } from "./runner";
@@ -85,7 +85,7 @@ import {
 	newDispatchIdentity,
 } from "./recovery";
 import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
-import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
+import { acquireSlot, clearProgressLinger, releaseSlot, updateStatus, updateProgressStatus, stopProgressTicker } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
 import {
 	finalizeRunRecord,
@@ -182,6 +182,34 @@ export function buildTemplateGuideline(templateSummary: string): string {
 	return `Templates are file-backed task starters with \${param} slots. Built-in templates: ${templateSummary}. Custom templates are NOT listed here — inspect them via /brl-subagent templates before choosing one.`;
 }
 
+/**
+ * Issue #354 review minor: the synchronous shutdown cleanup, extracted so the
+ * real body (not a hand-mirrored copy) is exercised by tests. Clears every
+ * session-bound live collection, resets the counters, and stops both footer
+ * timers. Ordering is significant: the ticker is stopped before the linger is
+ * cleared, and the maps are cleared before their guard claim set.
+ */
+export function cleanupSessionState(state: SessionState): void {
+	// Clear all live subagent sessions
+	state.subagentSessions.clear();
+	// Drop pending finalize claims too (PR #71 review: the claim set must
+	// not outlive the map it guards — a fresh session could otherwise
+	// no-op on an id a stale claim still remembers).
+	state.resetLiveFinalizeClaims();
+	// Reset counters
+	state.activeSubagents = 0;
+	state.completedSubagents = 0;
+	state.failedSubagents = 0;
+	state.unseenSubagents = 0;
+	// Issue #354: the footer ticker must not outlive the session (it also
+	// drops the elapsed anchor, so a new session starts its own clock), and
+	// neither may the 3 s linger timer (F2) — it would repaint a dead pane.
+	stopProgressTicker(state);
+	clearProgressLinger(state);
+	// Clear pending queue
+	state.pendingQueue.length = 0;
+}
+
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
@@ -219,7 +247,10 @@ export default function (pi: ExtensionAPI) {
 	// -------------------------------------------------------------------
 
 	function applyConfig(ctx: ExtensionContext, message: string) {
-		updateStatus(state, ctx);
+		// Issue #354: a config change mid-run must not blank the footer —
+		// updateProgressStatus renders the activity line while runs are active and
+		// falls back to the idle config line when none are.
+		updateProgressStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify(message, "info");
 	}
@@ -239,7 +270,7 @@ export default function (pi: ExtensionAPI) {
 			getAllPresets(state.builtinPresets, state.customPresets),
 			log,
 		);
-		updateStatus(state, ctx);
+		updateProgressStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify("Subagent configuration reset", "info");
 	}
@@ -4204,19 +4235,7 @@ export default function (pi: ExtensionAPI) {
 			log.warn("Shutdown reap failed", { error: (err as Error).message });
 		}
 
-		// Clear all live subagent sessions
-		state.subagentSessions.clear();
-		// Drop pending finalize claims too (PR #71 review: the claim set must
-		// not outlive the map it guards — a fresh session could otherwise
-		// no-op on an id a stale claim still remembers).
-		state.resetLiveFinalizeClaims();
-		// Reset counters
-		state.activeSubagents = 0;
-		state.completedSubagents = 0;
-		state.failedSubagents = 0;
-		state.unseenSubagents = 0;
-		// Clear pending queue
-		state.pendingQueue.length = 0;
+		cleanupSessionState(state);
 		// U3: a new session boot may notify again.
 		recoveryNoticeDelivered = false;
 	});
