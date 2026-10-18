@@ -1,13 +1,17 @@
 /**
  * Issue #354 — the footer activity indicator.
  *
- * The formatter half (`src/tui-format.ts`) is pure: spinner frame from `now`,
- * `formatElapsed` for the suffix, the per-outcome colour of the completion
- * segment (painted as one unit, symbols included), segment omission, and the
- * unseen count inside the segment.
+ * Two halves, both pinned here:
+ *  1. FORMATTER (`src/tui-format.ts`) — pure: spinner frame from `now`,
+ *     `formatElapsed` for the suffix, the per-outcome colour of the completion
+ *     segment (painted as one unit, symbols included), segment omission, and
+ *     the unseen count inside the segment.
+ *  2. TICKER (`src/concurrency.ts`) — one interval: started by the first
+ *     active run, stopped when the last one settles or the session shuts down,
+ *     never mutating the counters and never replacing the 3 s linger/reset.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	LIVE_SPINNER_FRAME_MS,
 	LIVE_SPINNER_FRAMES,
@@ -17,6 +21,9 @@ import {
 	type ProgressStatusInput,
 	type ProgressStatusTheme,
 } from "../tui-format";
+import { stopProgressTicker, updateProgressStatus } from "../concurrency";
+import { createSessionState } from "../state";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -46,6 +53,17 @@ function input(overrides: Partial<ProgressStatusInput> = {}): ProgressStatusInpu
 		unseenSubagents: 0,
 		...overrides,
 	};
+}
+
+function mockCtx() {
+	const setStatus = vi.fn();
+	const ctx = {
+		ui: {
+			setStatus,
+			theme: { fg: (_c: string, t: string) => t },
+		},
+	} as unknown as ExtensionContext;
+	return { ctx, setStatus };
 }
 
 // ---------------------------------------------------------------------------
@@ -265,5 +283,153 @@ describe("formatProgressSegments — composition (issue #354)", () => {
 
 	it("emits no segment for a state with nothing to report", () => {
 		expect(formatProgressSegments(input({ activeSubagents: 0 }), 0)).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Ticker lifecycle
+// ---------------------------------------------------------------------------
+
+describe("footer ticker lifecycle (issue #354)", () => {
+	let setIntervalSpy: ReturnType<typeof vi.spyOn>;
+	let clearIntervalSpy: ReturnType<typeof vi.spyOn>;
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+		clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it("starts exactly one interval at the spinner frame rate on first activity", () => {
+		const state = createSessionState();
+		const { ctx } = mockCtx();
+
+		state.activeSubagents = 1;
+		updateProgressStatus(state, ctx);
+		updateProgressStatus(state, ctx);
+
+		expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+		expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), LIVE_SPINNER_FRAME_MS);
+		expect(state.statusTicker).toBeDefined();
+		stopProgressTicker(state); // hygiene for the timer object itself
+	});
+
+	it("repaints with a new frame every tick and leaves the counters alone", () => {
+		const state = createSessionState();
+		const { ctx, setStatus } = mockCtx();
+		state.activeSubagents = 2;
+		state.completedSubagents = 1;
+		state.unseenSubagents = 1;
+
+		updateProgressStatus(state, ctx);
+		const firstLine = setStatus.mock.calls.at(-1)?.[1];
+
+		vi.advanceTimersByTime(LIVE_SPINNER_FRAME_MS);
+		const secondLine = setStatus.mock.calls.at(-1)?.[1];
+
+		expect(secondLine).not.toBe(firstLine);
+		expect(String(secondLine)).toContain(LIVE_SPINNER_FRAMES[1]);
+		expect(state.activeSubagents).toBe(2);
+		expect(state.completedSubagents).toBe(1);
+		expect(state.failedSubagents).toBe(0);
+		expect(state.unseenSubagents).toBe(1);
+		stopProgressTicker(state);
+	});
+
+	it("counts elapsed from the first active run and keeps it across the ticker", () => {
+		const state = createSessionState();
+		const { ctx, setStatus } = mockCtx();
+		state.activeSubagents = 1;
+
+		updateProgressStatus(state, ctx);
+		vi.advanceTimersByTime(65_000);
+
+		expect(String(setStatus.mock.calls.at(-1)?.[1])).toContain(" \u00b7 1m 5s");
+		stopProgressTicker(state);
+	});
+
+	it("stops when the last run settles, leaving a static linger line", () => {
+		const state = createSessionState();
+		const { ctx, setStatus } = mockCtx();
+		state.activeSubagents = 1;
+		updateProgressStatus(state, ctx);
+
+		state.activeSubagents = 0;
+		state.completedSubagents = 1;
+		state.unseenSubagents = 1;
+		updateProgressStatus(state, ctx);
+
+		expect(clearIntervalSpy).toHaveBeenCalled();
+		expect(state.statusTicker).toBeUndefined();
+
+		const lingerLine = setStatus.mock.calls.at(-1)?.[1];
+		expect(lingerLine).toBe("\u2713 brl: 1 done (1 unseen)");
+		expect(state.activeSinceMs).toBeUndefined();
+
+		// The linger window is static: no tick rewrites the line, and the 3 s
+		// reset still hands back the idle config line.
+		const callsBefore = setStatus.mock.calls.length;
+		vi.advanceTimersByTime(2_000);
+		expect(setStatus.mock.calls.length).toBe(callsBefore);
+
+		vi.advanceTimersByTime(1_001);
+		expect(String(setStatus.mock.calls.at(-1)?.[1])).toContain("use /brl-subagent to configure");
+		expect(setStatus.mock.calls.length).toBe(callsBefore + 1);
+	});
+
+	it("never leaves a timer behind on session shutdown", () => {
+		const state = createSessionState();
+		const { ctx, setStatus } = mockCtx();
+		state.activeSubagents = 1;
+		updateProgressStatus(state, ctx);
+
+		// Mirrors the session_shutdown handler in src/index.ts.
+		state.activeSubagents = 0;
+		state.completedSubagents = 0;
+		state.failedSubagents = 0;
+		state.unseenSubagents = 0;
+		stopProgressTicker(state);
+
+		expect(state.statusTicker).toBeUndefined();
+		const callsAfterShutdown = setStatus.mock.calls.length;
+		vi.advanceTimersByTime(10_000);
+		expect(setStatus.mock.calls.length).toBe(callsAfterShutdown);
+	});
+
+	it("does not start a ticker while nothing is active", () => {
+		const state = createSessionState();
+		const { ctx } = mockCtx();
+		state.completedSubagents = 1;
+
+		updateProgressStatus(state, ctx);
+
+		expect(setIntervalSpy).not.toHaveBeenCalled();
+		expect(state.statusTicker).toBeUndefined();
+	});
+
+	it("starts a fresh interval and a fresh elapsed anchor for the next burst", () => {
+		const state = createSessionState();
+		const { ctx } = mockCtx();
+		state.activeSubagents = 1;
+		updateProgressStatus(state, ctx);
+		state.activeSubagents = 0;
+		updateProgressStatus(state, ctx);
+
+		vi.advanceTimersByTime(30_000);
+		state.activeSubagents = 1;
+		state.completedSubagents = 0;
+		state.unseenSubagents = 0;
+		updateProgressStatus(state, ctx);
+
+		expect(setIntervalSpy).toHaveBeenCalledTimes(2);
+		expect(state.activeSinceMs).toBe(Date.now());
+
+		stopProgressTicker(state);
 	});
 });

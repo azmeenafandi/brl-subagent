@@ -20,6 +20,7 @@ import type {
 	RecoveryMode,
 	CircuitBreakerState,
 	Priority,
+	ModeContext,
 } from "./types";
 import type { TranscriptMessage } from "./transcript-tail";
 import {
@@ -163,6 +164,21 @@ export class SessionState {
 	failedSubagents = 0;
 	unseenSubagents = 0;
 
+	/**
+	 * Issue #354: the footer activity ticker — the single interval that animates
+	 * the status-line spinner while a run is active. Owned by src/concurrency.ts
+	 * (syncProgressTicker / stopProgressTicker), undefined when idle; it lives on
+	 * the session so shutdown can clear it and no module-level timer leaks.
+	 */
+	statusTicker: ReturnType<typeof setInterval> | undefined;
+
+	/**
+	 * Issue #354: epoch ms at which the oldest still-active run started — the
+	 * ` · 1m 14s` suffix's anchor. Set when the active count first rises above
+	 * zero, cleared when the last run settles.
+	 */
+	activeSinceMs: number | undefined;
+
 	/** Concurrency queue */
 	pendingQueue: Array<{
 		run: () => void;
@@ -181,9 +197,7 @@ export class SessionState {
 	 * (src/concurrency.ts), cleared in the mode's finally. Undefined when no
 	 * graph/chain dispatch is active.
 	 */
-	modeContext?:
-		| { kind: "graph"; wave: number; totalWaves: number; node: number; totalNodes: number }
-		| { kind: "chain"; step: number; totalSteps: number };
+	modeContext?: ModeContext;
 
 	/**
 	 * Ids whose live entry has been finalized (deferred delete pending).

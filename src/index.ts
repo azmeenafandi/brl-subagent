@@ -85,7 +85,7 @@ import {
 	newDispatchIdentity,
 } from "./recovery";
 import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
-import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
+import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus, stopProgressTicker } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
 import {
 	finalizeRunRecord,
@@ -219,7 +219,10 @@ export default function (pi: ExtensionAPI) {
 	// -------------------------------------------------------------------
 
 	function applyConfig(ctx: ExtensionContext, message: string) {
-		updateStatus(state, ctx);
+		// Issue #354: a config change mid-run must not blank the footer —
+		// updateProgressStatus renders the activity line while runs are active and
+		// falls back to the idle config line when none are.
+		updateProgressStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify(message, "info");
 	}
@@ -239,7 +242,7 @@ export default function (pi: ExtensionAPI) {
 			getAllPresets(state.builtinPresets, state.customPresets),
 			log,
 		);
-		updateStatus(state, ctx);
+		updateProgressStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify("Subagent configuration reset", "info");
 	}
@@ -4215,6 +4218,9 @@ export default function (pi: ExtensionAPI) {
 		state.completedSubagents = 0;
 		state.failedSubagents = 0;
 		state.unseenSubagents = 0;
+		// Issue #354: the footer ticker must not outlive the session (it also
+		// drops the elapsed anchor, so a new session starts its own clock).
+		stopProgressTicker(state);
 		// Clear pending queue
 		state.pendingQueue.length = 0;
 		// U3: a new session boot may notify again.
