@@ -33,6 +33,8 @@ import type {
 	FileDiff,
 	CompletionNotifyMode,
 	RecoveryMode,
+	LiveSubagent,
+	SLAMetrics,
 } from "./types";
 import {
 	THINKING_LEVELS,
@@ -2028,6 +2030,250 @@ function compactDuration(ms: number): string {
 	return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
 }
 
+// ---------------------------------------------------------------------------
+// E1 dashboard panels (issue #356)
+//
+// `showDashboard` is a thin composer: it samples the session state once per
+// render pass, then appends these six panels in order. Each panel renders only
+// its own data slice and returns its components instead of painting a
+// container, so its output is pinnable without a terminal (see
+// `src/__tests__/dashboard-panels.test.ts`) while the composer keeps ownership
+// of ordering, borders and spacing.
+// ---------------------------------------------------------------------------
+
+/** The per-row live-session slice the Active Subagents panel renders. */
+export type ActiveSubagentSlice = Pick<
+	LiveSubagent,
+	"label" | "task" | "startedAt" | "usage"
+>;
+
+/** Panel 1 — header: the dashboard title plus the refresh stamp. */
+export function renderDashboardHeader(theme: Theme, refreshStr: string): Component[] {
+	return [
+		new Text(
+			theme.fg("accent", theme.bold("brl-subagent Dashboard")) +
+				theme.fg("dim", `  ${refreshStr}`),
+			1,
+			0,
+		),
+		new Text("", 0, 0),
+	];
+}
+
+/**
+ * Panel 2 — active subagents: the live count in the title, one row per entry.
+ *
+ * `now` is injected (the composer passes the wall clock) so the spinner frame
+ * and the elapsed suffix stay testable; it is sampled per row, as before.
+ */
+export function renderDashboardActivePanel(
+	theme: Theme,
+	sessions: ReadonlyMap<string, ActiveSubagentSlice>,
+	now: () => number = Date.now,
+): Component[] {
+	const activeCount = sessions.size;
+	const components: Component[] = [
+		new Text(
+			theme.fg("accent", theme.bold(`Active Subagents (${activeCount})`)),
+			1,
+			0,
+		),
+	];
+	if (activeCount === 0) {
+		components.push(new Text(theme.fg("dim", "  None running"), 1, 0));
+	} else {
+		let idx = 0;
+		for (const [id, session] of sessions) {
+			const elapsedStr = formatElapsed(now() - session.startedAt);
+			const name = liveRowName(session.label, session.task);
+			const spinner = liveSpinner(now());
+			components.push(
+				new Text(
+					theme.fg("accent", `  ${spinner} ${name}`) +
+						theme.fg(
+							"dim",
+							formatLiveRowDim(id, session.usage, elapsedStr),
+						),
+					1,
+					0,
+				),
+			);
+			idx++;
+			if (idx < activeCount) components.push(new Text("", 0, 0));
+		}
+	}
+	components.push(new Text("", 0, 0));
+	return components;
+}
+
+/**
+ * Panel 3 — SLA summary: success rate (colour-graded), p50/p95/p99 and cost over
+ * the current SLA window. `metrics` is null when there is no run history and
+ * `runCount` is the window size named in the title.
+ */
+export function renderDashboardSlaPanel(
+	theme: Theme,
+	metrics: SLAMetrics | null,
+	runCount: number,
+): Component[] {
+	const components: Component[] = [
+		new Text(
+			theme.fg("accent", theme.bold(`SLA Summary (last ${runCount} runs)`)),
+			1,
+			0,
+		),
+	];
+	if (metrics && metrics.totalRuns > 0) {
+		const successPct = (metrics.successRate * 100).toFixed(1);
+		const successColor = metrics.successRate >= 0.9 ? "success" : metrics.successRate >= 0.7 ? "warning" : "error";
+		components.push(
+			new Text(
+				theme.fg("dim", "  Success: ") +
+					theme.fg(successColor, `${successPct}%`) +
+					theme.fg("dim", ` \u00b7 p50: ${compactDuration(metrics.p50DurationMs)} \u00b7 p95: ${compactDuration(metrics.p95DurationMs)} \u00b7 p99: ${compactDuration(metrics.p99DurationMs)}`),
+				1,
+				0,
+			),
+		);
+		components.push(
+			new Text(
+				theme.fg("dim", "  Cost:      ") +
+					theme.fg("dim", `total $${metrics.totalCost.toFixed(4)} \u00b7 avg $${metrics.averageCost.toFixed(4)}`),
+				1,
+				0,
+			),
+		);
+	} else {
+		components.push(new Text(theme.fg("dim", "  No completed runs yet"), 1, 0));
+	}
+	components.push(new Text("", 0, 0));
+	return components;
+}
+
+/** Panel 4 — recent runs: outcome symbol, name, duration and cost per row. */
+export function renderDashboardRecentRunsPanel(
+	theme: Theme,
+	runs: SubagentRun[],
+): Component[] {
+	const components: Component[] = [
+		new Text(
+			theme.fg("accent", theme.bold("Recent Runs")),
+			1,
+			0,
+		),
+	];
+	if (runs.length === 0) {
+		components.push(new Text(theme.fg("dim", "  No runs recorded"), 1, 0));
+	} else {
+		for (const run of runs) {
+			const icon =
+				run.status === "done"
+					? formatOutcomeSymbol("success", theme)
+					: run.status === "failed"
+						? formatOutcomeSymbol("failure", theme)
+						: theme.fg("accent", "\u25CF");
+			const name = run.label || run.task.slice(0, 50);
+			const dur = run.durationMs ? compactDuration(run.durationMs) : "...";
+			const cost = run.cost ? ` $${run.cost.toFixed(4)}` : "";
+			components.push(
+				new Text(
+					`  ${icon} ${theme.fg("dim", name.slice(0, 50))}` +
+						theme.fg("dim", `  ${dur}${cost}`),
+					1,
+					0,
+				),
+			);
+		}
+	}
+	components.push(new Text("", 0, 0));
+	return components;
+}
+
+/**
+ * Panel 5 — error breakdown: categories sorted by count, each with a
+ * proportional bar. An empty breakdown renders the "no errors" line.
+ */
+export function renderDashboardErrorPanel(
+	theme: Theme,
+	breakdown: Record<string, number> | undefined,
+): Component[] {
+	const components: Component[] = [
+		new Text(
+			theme.fg("accent", theme.bold("Error Breakdown")),
+			1,
+			0,
+		),
+	];
+	if (breakdown && Object.keys(breakdown).length > 0) {
+		const cats = Object.entries(breakdown).sort(
+			(a, b) => b[1] - a[1],
+		);
+		const maxCount = cats[0][1];
+		for (const [cat, count] of cats) {
+			const bar = buildHorizontalBar(count, maxCount, 20);
+			components.push(
+				new Text(
+					theme.fg("dim", `  ${cat.padEnd(18)} `) +
+						theme.fg("error", bar) +
+						theme.fg("dim", ` ${count}`),
+					1,
+					0,
+				),
+			);
+		}
+	} else {
+		// A sentence, not a status icon: coloured as a whole line, so it is
+		// deliberately not routed through formatOutcomeSymbol.
+		components.push(new Text(theme.fg("success", "  No errors \u2713"), 1, 0));
+	}
+	components.push(new Text("", 0, 0));
+	return components;
+}
+
+/**
+ * Panel 6 — cost trend: the sparkline for the sampled costs plus the run count
+ * and cost totals.
+ */
+export function renderDashboardCostTrendPanel(
+	theme: Theme,
+	costTrend: number[],
+): Component[] {
+	const components: Component[] = [
+		new Text(
+			theme.fg("accent", theme.bold("Cost Trend (last 20 runs)")),
+			1,
+			0,
+		),
+	];
+	if (costTrend.length > 0) {
+		const sparkline = formatSparkline(costTrend);
+		const totalCost = costTrend.reduce((s, c) => s + c, 0);
+		components.push(
+			new Text(
+				theme.fg("dim", "  ") + theme.fg("accent", sparkline),
+				1,
+				0,
+			),
+		);
+		components.push(
+			new Text(
+				theme.fg("dim", `  ${costTrend.length} runs \u00b7 total $${totalCost.toFixed(4)} \u00b7 avg $${(totalCost / costTrend.length).toFixed(4)}`),
+				1,
+				0,
+			),
+		);
+	} else {
+		components.push(new Text(theme.fg("dim", "  No cost data"), 1, 0));
+	}
+	components.push(new Text("", 0, 0));
+	return components;
+}
+
+/**
+ * E1 dashboard — the composer. Samples the session state once per render pass
+ * and appends the six panels (rendered above) between the two borders; the
+ * panel bodies themselves live in their own render functions.
+ */
 export async function showDashboard(
 	ctx: ExtensionContext,
 	state: SessionState,
@@ -2039,189 +2285,34 @@ export async function showDashboard(
 			sweepStaleLiveSubagents(state, getAgent);
 
 			const container = new Container();
+			const append = (components: Component[]) => {
+				for (const component of components) container.addChild(component);
+			};
 			const now = new Date();
 			const refreshStr = `refreshing \u00b7 ${now.toLocaleTimeString()}`;
 
 			// ---- Panel 1: Header ----
 			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold("brl-subagent Dashboard")) +
-						theme.fg("dim", `  ${refreshStr}`),
-				1,
-				0,
-			),
-			);
-			container.addChild(new Text("", 0, 0));
+			append(renderDashboardHeader(theme, refreshStr));
 
 			// ---- Panel 2: Active subagents ----
-			const activeCount = state.subagentSessions.size;
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold(`Active Subagents (${activeCount})`)),
-					1,
-					0,
-				),
-			);
-			if (activeCount === 0) {
-				container.addChild(new Text(theme.fg("dim", "  None running"), 1, 0));
-			} else {
-				let idx = 0;
-				for (const [id, session] of state.subagentSessions) {
-					const elapsedStr = formatElapsed(Date.now() - session.startedAt);
-					const name = liveRowName(session.label, session.task);
-					const spinner = liveSpinner(Date.now());
-					container.addChild(
-						new Text(
-							theme.fg("accent", `  ${spinner} ${name}`) +
-								theme.fg(
-									"dim",
-									formatLiveRowDim(id, session.usage, elapsedStr),
-								),
-							1,
-							0,
-						),
-					);
-					idx++;
-					if (idx < activeCount) container.addChild(new Text("", 0, 0));
-				}
-			}
-			container.addChild(new Text("", 0, 0));
+			append(renderDashboardActivePanel(theme, state.subagentSessions, Date.now));
 
 			// ---- Panel 3: SLA Summary ----
 			const allRuns = state.getRunEntries(ctx);
 			const recentRuns = allRuns.slice(0, state.config.slaWindowSize || 50);
 			const metrics = recentRuns.length > 0 ? computeSLAMetrics(recentRuns) : null;
-
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold(`SLA Summary (last ${recentRuns.length} runs)`)),
-					1,
-					0,
-				),
-			);
-			if (metrics && metrics.totalRuns > 0) {
-				const successPct = (metrics.successRate * 100).toFixed(1);
-				const successColor = metrics.successRate >= 0.9 ? "success" : metrics.successRate >= 0.7 ? "warning" : "error";
-				container.addChild(
-					new Text(
-						theme.fg("dim", "  Success: ") +
-							theme.fg(successColor, `${successPct}%`) +
-							theme.fg("dim", ` \u00b7 p50: ${compactDuration(metrics.p50DurationMs)} \u00b7 p95: ${compactDuration(metrics.p95DurationMs)} \u00b7 p99: ${compactDuration(metrics.p99DurationMs)}`),
-					1,
-					0,
-				),
-				);
-				container.addChild(
-					new Text(
-						theme.fg("dim", "  Cost:      ") +
-							theme.fg("dim", `total $${metrics.totalCost.toFixed(4)} \u00b7 avg $${metrics.averageCost.toFixed(4)}`),
-					1,
-					0,
-				),
-				);
-			} else {
-				container.addChild(new Text(theme.fg("dim", "  No completed runs yet"), 1, 0));
-			}
-			container.addChild(new Text("", 0, 0));
+			append(renderDashboardSlaPanel(theme, metrics, recentRuns.length));
 
 			// ---- Panel 4: Recent Runs (last 10) ----
-			const recent10 = allRuns.slice(0, 10);
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold("Recent Runs")),
-					1,
-					0,
-				),
-			);
-			if (recent10.length === 0) {
-				container.addChild(new Text(theme.fg("dim", "  No runs recorded"), 1, 0));
-			} else {
-				for (const run of recent10) {
-					const icon =
-						run.status === "done"
-							? formatOutcomeSymbol("success", theme)
-							: run.status === "failed"
-								? formatOutcomeSymbol("failure", theme)
-								: theme.fg("accent", "\u25CF");
-					const name = run.label || run.task.slice(0, 50);
-					const dur = run.durationMs ? compactDuration(run.durationMs) : "...";
-					const cost = run.cost ? ` $${run.cost.toFixed(4)}` : "";
-					container.addChild(
-						new Text(
-							`  ${icon} ${theme.fg("dim", name.slice(0, 50))}` +
-								theme.fg("dim", `  ${dur}${cost}`),
-							1,
-							0,
-						),
-					);
-				}
-			}
-			container.addChild(new Text("", 0, 0));
+			append(renderDashboardRecentRunsPanel(theme, allRuns.slice(0, 10)));
 
 			// ---- Panel 5: Error Breakdown ----
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold("Error Breakdown")),
-					1,
-					0,
-				),
-			);
-			if (metrics && Object.keys(metrics.errorCategoryBreakdown).length > 0) {
-				const cats = Object.entries(metrics.errorCategoryBreakdown).sort(
-					(a, b) => b[1] - a[1],
-				);
-				const maxCount = cats[0][1];
-				for (const [cat, count] of cats) {
-					const bar = buildHorizontalBar(count, maxCount, 20);
-					container.addChild(
-						new Text(
-							theme.fg("dim", `  ${cat.padEnd(18)} `) +
-								theme.fg("error", bar) +
-								theme.fg("dim", ` ${count}`),
-						1,
-						0,
-					),
-				);
-				}
-			} else {
-				// A sentence, not a status icon: coloured as a whole line, so it is
-				// deliberately not routed through formatOutcomeSymbol.
-				container.addChild(new Text(theme.fg("success", "  No errors \u2713"), 1, 0));
-			}
-			container.addChild(new Text("", 0, 0));
+			append(renderDashboardErrorPanel(theme, metrics?.errorCategoryBreakdown));
 
 			// ---- Panel 6: Cost Trend (sparkline) ----
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold("Cost Trend (last 20 runs)")),
-					1,
-					0,
-				),
-			);
-			const costTrend = computeCostTrend(allRuns, 20);
-			if (costTrend.length > 0) {
-				const sparkline = formatSparkline(costTrend);
-				const totalCost = costTrend.reduce((s, c) => s + c, 0);
-				container.addChild(
-					new Text(
-						theme.fg("dim", "  ") + theme.fg("accent", sparkline),
-						1,
-						0,
-					),
-				);
-				container.addChild(
-					new Text(
-						theme.fg("dim", `  ${costTrend.length} runs \u00b7 total $${totalCost.toFixed(4)} \u00b7 avg $${(totalCost / costTrend.length).toFixed(4)}`),
-						1,
-						0,
-					),
-				);
-			} else {
-				container.addChild(new Text(theme.fg("dim", "  No cost data"), 1, 0));
-			}
+			append(renderDashboardCostTrendPanel(theme, computeCostTrend(allRuns, 20)));
 
-			container.addChild(new Text("", 0, 0));
 			container.addChild(new Text(theme.fg("dim", "q / esc to close"), 1, 0));
 			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
