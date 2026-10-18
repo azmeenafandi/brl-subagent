@@ -9,6 +9,8 @@
  *  2. TICKER (`src/concurrency.ts`) — one interval: started by the first
  *     active run, stopped when the last one settles or the session shuts down,
  *     never mutating the counters and never replacing the 3 s linger/reset.
+ *  3. LINGER TIMER (F2) — ONE `setTimeout` on the session, edge-triggered on
+ *     the transition into `active === 0`, so repeated renders cannot stack.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,7 +23,12 @@ import {
 	type ProgressStatusInput,
 	type ProgressStatusTheme,
 } from "../tui-format";
-import { stopProgressTicker, updateProgressStatus } from "../concurrency";
+import {
+	clearProgressLinger,
+	stopProgressTicker,
+	syncProgressLinger,
+	updateProgressStatus,
+} from "../concurrency";
 import { createSessionState } from "../state";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -431,5 +438,184 @@ describe("footer ticker lifecycle (issue #354)", () => {
 		expect(state.activeSinceMs).toBe(Date.now());
 
 		stopProgressTicker(state);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// F2 — the linger/reset timer is one handle, not one per render
+// ---------------------------------------------------------------------------
+
+describe("footer linger reset timer (F2)", () => {
+	const DELAY_MS = 3000;
+
+	let setTimeoutSpy: ReturnType<typeof vi.spyOn>;
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	/** A session with one run that has just settled. */
+	function settledState(completed = 1, failed = 0) {
+		const state = createSessionState();
+		state.completedSubagents = completed;
+		state.failedSubagents = failed;
+		state.unseenSubagents = completed;
+		return state;
+	}
+
+	it("arms exactly one timer no matter how many renders occur while idle", () => {
+		const state = settledState();
+		const { ctx } = mockCtx();
+
+		updateProgressStatus(state, ctx);
+		updateProgressStatus(state, ctx);
+		updateProgressStatus(state, ctx);
+
+		expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+		expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), DELAY_MS);
+		expect(state.statusResetTimer).toBeDefined();
+		expect(vi.getTimerCount()).toBe(1);
+	});
+
+	it("still arms only once when the linger line changes between renders", () => {
+		const state = settledState(1, 0);
+		const { ctx } = mockCtx();
+		updateProgressStatus(state, ctx);
+
+		// A sibling settles inside the linger window: same burst, same timer.
+		state.completedSubagents = 2;
+		state.unseenSubagents = 2;
+		updateProgressStatus(state, ctx);
+
+		expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+		vi.advanceTimersByTime(DELAY_MS);
+		expect(vi.getTimerCount()).toBe(0);
+		expect(state.completedSubagents).toBe(0);
+		expect(state.failedSubagents).toBe(0);
+	});
+
+	it("fires once: resets the counters, repaints idle, and leaves nothing armed", () => {
+		const state = settledState(2, 1);
+		const { ctx, setStatus } = mockCtx();
+		updateProgressStatus(state, ctx);
+
+		const lingerCalls = setStatus.mock.calls.length;
+		vi.advanceTimersByTime(DELAY_MS - 1);
+		expect(state.completedSubagents).toBe(2); // not yet
+		expect(setStatus.mock.calls.length).toBe(lingerCalls);
+
+		vi.advanceTimersByTime(1);
+		expect(state.completedSubagents).toBe(0);
+		expect(state.failedSubagents).toBe(0);
+		expect(state.unseenSubagents).toBe(0);
+		expect(state.statusResetTimer).toBeUndefined();
+		expect(String(setStatus.mock.calls.at(-1)?.[1])).toContain("use /brl-subagent to configure");
+		expect(vi.getTimerCount()).toBe(0); // no leak
+
+		// Firing twice is impossible: nothing is left to fire.
+		const callsAfterReset = setStatus.mock.calls.length;
+		vi.advanceTimersByTime(DELAY_MS * 4);
+		expect(setStatus.mock.calls.length).toBe(callsAfterReset);
+	});
+
+	it("a new dispatch cancels the armed reset", () => {
+		const state = settledState(1, 0);
+		const { ctx, setStatus } = mockCtx();
+		updateProgressStatus(state, ctx);
+		expect(state.statusResetTimer).toBeDefined();
+
+		// Next run becomes active — the linger window is over.
+		state.activeSubagents = 1;
+		updateProgressStatus(state, ctx);
+
+		expect(state.statusResetTimer).toBeUndefined();
+		const callsAfterDispatch = setStatus.mock.calls.length;
+		vi.advanceTimersByTime(DELAY_MS * 3);
+
+		// The old timer must not have reset the counters behind the live run.
+		expect(state.completedSubagents).toBe(1);
+		expect(state.activeSubagents).toBe(1);
+		expect(setStatus.mock.calls.length).toBeGreaterThan(callsAfterDispatch); // the ticker, not the reset
+		stopProgressTicker(state);
+	});
+
+	it("re-arms for the next burst after a cancelled window", () => {
+		const state = settledState(1, 0);
+		const { ctx } = mockCtx();
+		updateProgressStatus(state, ctx);
+
+		state.activeSubagents = 1;
+		updateProgressStatus(state, ctx); // cancels
+		expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+
+		state.activeSubagents = 0;
+		state.completedSubagents = 2;
+		updateProgressStatus(state, ctx); // fresh burst settles → re-arm
+
+		expect(setTimeoutSpy).toHaveBeenCalledTimes(2);
+		expect(state.statusResetTimer).toBeDefined();
+		vi.advanceTimersByTime(DELAY_MS);
+		expect(state.completedSubagents).toBe(0);
+	});
+
+	it("session shutdown clears the armed reset and leaves no timer behind", () => {
+		const state = settledState(1, 1);
+		const { ctx, setStatus } = mockCtx();
+		updateProgressStatus(state, ctx);
+		expect(state.statusResetTimer).toBeDefined();
+
+		// Mirrors the session_shutdown handler in src/index.ts.
+		state.activeSubagents = 0;
+		state.completedSubagents = 0;
+		state.failedSubagents = 0;
+		state.unseenSubagents = 0;
+		stopProgressTicker(state);
+		clearProgressLinger(state);
+
+		expect(state.statusResetTimer).toBeUndefined();
+		expect(vi.getTimerCount()).toBe(0);
+
+		const callsAfterShutdown = setStatus.mock.calls.length;
+		vi.advanceTimersByTime(DELAY_MS * 4);
+		expect(setStatus.mock.calls.length).toBe(callsAfterShutdown);
+	});
+
+	it("clears rather than arms when nothing has settled", () => {
+		const state = createSessionState();
+		const { ctx } = mockCtx();
+
+		updateProgressStatus(state, ctx);
+
+		expect(setTimeoutSpy).not.toHaveBeenCalled();
+		expect(state.statusResetTimer).toBeUndefined();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("syncProgressLinger is idempotent in all three directions", () => {
+		const state = settledState(1, 0);
+		const { ctx } = mockCtx();
+
+		syncProgressLinger(state, ctx);
+		syncProgressLinger(state, ctx);
+		expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+
+		state.activeSubagents = 1;
+		syncProgressLinger(state, ctx);
+		syncProgressLinger(state, ctx);
+		expect(state.statusResetTimer).toBeUndefined();
+		expect(vi.getTimerCount()).toBe(0);
+
+		state.activeSubagents = 0;
+		syncProgressLinger(state, ctx);
+		expect(setTimeoutSpy).toHaveBeenCalledTimes(2);
+		vi.advanceTimersByTime(DELAY_MS);
+		expect(vi.getTimerCount()).toBe(0);
 	});
 });

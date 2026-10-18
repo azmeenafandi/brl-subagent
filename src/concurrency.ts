@@ -171,8 +171,54 @@ export function stopProgressTicker(state: SessionState): void {
 	state.activeSinceMs = undefined;
 }
 
+/**
+ * Drop the linger timer (idempotent). Exported so session shutdown can
+ * guarantee no timer outlives the session.
+ */
+export function clearProgressLinger(state: SessionState): void {
+	if (state.statusResetTimer !== undefined) {
+		clearTimeout(state.statusResetTimer);
+		state.statusResetTimer = undefined;
+	}
+}
+
+/**
+ * One linger timer per burst of settled runs (issue #354, F2).
+ *
+ * When every run has settled the footer lingers on the static summary line for
+ * {@link STATUS_RESET_DELAY_MS} before the counters reset and the idle config
+ * line returns. The timer is EDGE-triggered: it arms once, on the transition
+ * into `active === 0` with something settled, and repeated renders of the same
+ * linger line leave it alone — so N renders can never stack N timers, and no
+ * render allocates a closure. Cleared when a new run becomes active (the
+ * linger window is over), when it fires, and on session shutdown.
+ *
+ * The window is measured from the end of the burst, not from the last render:
+ * a sibling settling inside it updates the line but does not extend it.
+ */
+export function syncProgressLinger(state: SessionState, ctx: ExtensionContext): void {
+	const settled = state.completedSubagents + state.failedSubagents;
+
+	// A live run, or nothing settled to linger over: no armed timer may survive.
+	if (state.activeSubagents > 0 || settled === 0) {
+		clearProgressLinger(state);
+		return;
+	}
+
+	if (state.statusResetTimer !== undefined) return; // already armed — edge held
+
+	state.statusResetTimer = setTimeout(() => {
+		state.statusResetTimer = undefined;
+		state.completedSubagents = 0;
+		state.failedSubagents = 0;
+		state.unseenSubagents = 0;
+		updateStatus(state, ctx);
+	}, STATUS_RESET_DELAY_MS);
+}
+
 export function updateProgressStatus(state: SessionState, ctx: ExtensionContext): void {
 	syncActiveSince(state, Date.now());
+	syncProgressLinger(state, ctx);
 
 	const total = state.activeSubagents + state.completedSubagents + state.failedSubagents;
 
@@ -183,24 +229,6 @@ export function updateProgressStatus(state: SessionState, ctx: ExtensionContext)
 
 	renderProgressStatus(state, ctx);
 	syncProgressTicker(state, ctx);
-
-	// When all subagents finish, reset counters after a brief delay. This is the
-	// linger window: the ticker is already stopped, so the line stays static
-	// (same text minus spinner and elapsed) until the idle config line returns.
-	if (state.activeSubagents === 0) {
-		const snapshotTotal = total;
-		setTimeout(() => {
-			if (
-				state.activeSubagents === 0 &&
-				state.completedSubagents + state.failedSubagents === snapshotTotal
-			) {
-				state.completedSubagents = 0;
-				state.failedSubagents = 0;
-				state.unseenSubagents = 0;
-				updateStatus(state, ctx);
-			}
-		}, STATUS_RESET_DELAY_MS);
-	}
 }
 
 export function updateStatus(state: SessionState, ctx: ExtensionContext): void {

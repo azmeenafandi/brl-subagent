@@ -85,7 +85,7 @@ import {
 	newDispatchIdentity,
 } from "./recovery";
 import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
-import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus, stopProgressTicker } from "./concurrency";
+import { acquireSlot, clearProgressLinger, releaseSlot, updateStatus, updateProgressStatus, stopProgressTicker } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
 import {
 	finalizeRunRecord,
@@ -4219,8 +4219,10 @@ export default function (pi: ExtensionAPI) {
 		state.failedSubagents = 0;
 		state.unseenSubagents = 0;
 		// Issue #354: the footer ticker must not outlive the session (it also
-		// drops the elapsed anchor, so a new session starts its own clock).
+		// drops the elapsed anchor, so a new session starts its own clock), and
+		// neither may the 3 s linger timer (F2) — it would repaint a dead pane.
 		stopProgressTicker(state);
+		clearProgressLinger(state);
 		// Clear pending queue
 		state.pendingQueue.length = 0;
 		// U3: a new session boot may notify again.

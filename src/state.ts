@@ -173,6 +173,17 @@ export class SessionState {
 	statusTicker: ReturnType<typeof setInterval> | undefined;
 
 	/**
+	 * Issue #354 (F2): the single 3 s linger timer that clears the settled
+	 * counters and hands the footer back to the idle config line. Owned by
+	 * src/concurrency.ts (syncProgressLinger / clearProgressLinger): armed at
+	 * most once per burst of settled runs — edge-triggered on `active === 0`,
+	 * never re-armed by repeated renders — and cleared when a new run starts,
+	 * when it fires, and on session_shutdown. Lives on the session for the same
+	 * reason as `statusTicker`: no timer may outlive the session.
+	 */
+	statusResetTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/**
 	 * Issue #354: epoch ms at which the oldest still-active run started — the
 	 * ` · 1m 14s` suffix's anchor. Set when the active count first rises above
 	 * zero, cleared when the last run settles.
