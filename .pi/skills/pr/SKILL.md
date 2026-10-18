@@ -57,3 +57,9 @@ One `Fixes #N` **per line**; a comma list does NOT fan out, and the keyword fire
 the default-branch merge only — a `dev` merge defers the close to the next release.
 
 Fixes #NNN
+
+## Issue auto-close does not fire on `dev`-targeted PRs
+
+GitHub only auto-closes issues when the merging PR targets the **default branch** (`main`). These PRs target
+`dev`, so `Fixes #N` / `Closes #N` is documentation only — **close the issue manually after merge** (with a
+comment naming the merge commit).
