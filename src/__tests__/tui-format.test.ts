@@ -3,6 +3,8 @@ import {
 	formatElapsed,
 	formatLiveRowDim,
 	formatMenuValue,
+	formatOutcomeSymbol,
+	formatProgressStatus,
 	formatUnset,
 	liveRowName,
 	liveSpinner,
@@ -13,6 +15,7 @@ import {
 	type MenuValueKind,
 } from "../tui-format";
 import { DEFAULT_SLA_WINDOW_SIZE, formatMaxParallel, formatModel } from "../types";
+import type { ProgressStatusTheme } from "../tui-format";
 
 describe("formatElapsed", () => {
 	it("formats sub-minute durations in seconds", () => {
@@ -364,5 +367,65 @@ describe("menuSection", () => {
 
 	it("keeps the raw label inside the rendered label", () => {
 		expect(menuSection("Advanced Settings").label).toContain("Advanced Settings");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// F1 — the one success/failure symbol pair
+// ---------------------------------------------------------------------------
+
+describe("formatOutcomeSymbol", () => {
+	/** A theme that records every (colour, text) pair it is handed. */
+	function recordingTheme() {
+		const calls: Array<{ color: string; text: string }> = [];
+		const theme: ProgressStatusTheme = {
+			fg: (color, text) => {
+				calls.push({ color, text });
+				return text;
+			},
+		};
+		return { calls, theme };
+	}
+
+	/** No styling — the glyph the user sees, minus colour. */
+	const PLAIN: ProgressStatusTheme = { fg: (_color, text) => text };
+
+	it("paints ✓ success", () => {
+		const { calls, theme } = recordingTheme();
+
+		expect(formatOutcomeSymbol("success", theme)).toBe("\u2713");
+		expect(calls).toEqual([{ color: "success", text: "\u2713" }]);
+	});
+
+	it("paints ✗ error", () => {
+		const { calls, theme } = recordingTheme();
+
+		expect(formatOutcomeSymbol("failure", theme)).toBe("\u2717");
+		expect(calls).toEqual([{ color: "error", text: "\u2717" }]);
+	});
+
+	it("uses exactly the glyphs the footer and result renderers used inline", () => {
+		// Pin the code points: a drift here would change every verdict icon.
+		expect(formatOutcomeSymbol("success", PLAIN)).toBe("\u2713"); // ✓ U+2713
+		expect(formatOutcomeSymbol("failure", PLAIN)).toBe("\u2717"); // ✗ U+2717
+		expect(formatOutcomeSymbol("success", PLAIN).length).toBe(1);
+		expect(formatOutcomeSymbol("failure", PLAIN).length).toBe(1);
+	});
+
+	it("agrees with the footer's completion symbols (no visual drift)", () => {
+		const linger = (completed: number, failed: number) =>
+			formatProgressStatus(
+				{
+					activeSubagents: 0,
+					completedSubagents: completed,
+					failedSubagents: failed,
+					unseenSubagents: 0,
+				},
+				0,
+				PLAIN,
+			);
+
+		expect(linger(1, 0).startsWith(formatOutcomeSymbol("success", PLAIN))).toBe(true);
+		expect(linger(0, 1).startsWith(formatOutcomeSymbol("failure", PLAIN))).toBe(true);
 	});
 });

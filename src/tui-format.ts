@@ -96,6 +96,22 @@ const FAILED_SYMBOL = "\u2717";
 /** Separator before the elapsed suffix — " · ", muted with the duration. */
 const ELAPSED_SEPARATOR = " \u00b7 ";
 
+/** The verdict a run or step settled on — the input to {@link formatOutcomeSymbol}. */
+export type OutcomeKind = "success" | "failure";
+
+/**
+ * The one success/failure symbol pair: `✓` in `success`, `✗` in `error`. Every
+ * surface that paints a verdict icon (result renderers, history rows, graph and
+ * chain summaries, the footer) routes through here, so the glyph-to-colour
+ * pairing cannot drift between them. Theme is injected, like
+ * {@link formatProgressStatus}, to keep this module free of TUI imports.
+ */
+export function formatOutcomeSymbol(outcome: OutcomeKind, theme: ProgressStatusTheme): string {
+	return outcome === "success"
+		? theme.fg("success", DONE_SYMBOL)
+		: theme.fg("error", FAILED_SYMBOL);
+}
+
 /**
  * The completion segment's colour, decided by outcome: all success → success,
  * mixed → warning, failure-only → error (issue #354).
