@@ -204,7 +204,7 @@ export class SessionState {
 	/**
 	 * Issue #133: multi-unit mode breakdown for the status bar — set by
 	 * runGraphMode / runChainMode (src/index.ts) while a dispatch is in
-	 * flight, composed into the status text by updateProgressStatus
+	 * flight, composed into the status text by repaintStatus
 	 * (src/concurrency.ts), cleared in the mode's finally. Undefined when no
 	 * graph/chain dispatch is active.
 	 */
