@@ -6,15 +6,15 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: 1d61b36 (2026-10-18)
+Verified: 3cc4359 (2026-10-18)
 
-- **dev** @ `1d61b36` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
+- **dev** @ `3cc4359` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
 - **Released:** v2.5.2 is LIVE — `main` @ `ae7c488` (tag `v2.5.2`), npm `latest` = 2.5.2 —
   `gh release list`, `git log -1 --oneline main`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path).
   pi runtime **1.3.0**; deps `@earendil-works/*` ^1.3.0 + `typebox` 1.3.27 (the host pin) —
   `cat package.json`.
-- **Board:** zero open issues — `gh issue list`.
+- **Board:** zero actionable issues — `gh issue list` shows only **#344** (the deliberate typebox signal).
 - **Cycle `vendor parity + boundary guards`: CLOSED 2026-10-17 (v2.5.2)** — pi 1.3.0 parity
   (#338), boundary guards (#336/#339), the dangling-row fix (#340/#341), vitest 5.0.4 with
   `typebox` held at the host pin (#342). Cycle-end ritual ran before the release docs; Rule 11 = 0
@@ -30,12 +30,14 @@ Verified: 1d61b36 (2026-10-18)
 - **PRs:** none open (issue tracker) · **#344 open deliberately** — typebox 1.3.37 held at the host
   pin 1.3.27 (the standalone awareness signal; no `ignore` by policy).
 - **#356 CLOSED** — repaint chokepoint (#357) + `showDashboard` split (#358) merged; 5 review minors fixed.
-- **Suite:** 78 files / 1625 tests — `npx vitest run`; `npx tsc --noEmit` clean.
+- **Suite:** 80 files / 1676 tests — `npx vitest run`; `npx tsc --noEmit` clean.
 
 ### Since the last handover
 - U5–U7 merged (Templates onto the Presets shell, presets parity, final sweep) — PRs #350–#352.
 - Handoff mechanism built, reviewed (approve-with-nits → 2 minors fixed), merged `ca73803`; HANDOFF
   restructured + archived; lifecycle step 0 added (step 6→7 renumbered).
+- Footer activity indicator (#354/PR #355) and the #356 refactor pair (PRs #357/#358) merged, each
+  reviewed (approve-with-nits, all minors fixed); issue #356 closed.
 
 ### Next actions
 1. Schedule the two handoff design-observation follow-ups (self-commit lag; extension typechecking)
