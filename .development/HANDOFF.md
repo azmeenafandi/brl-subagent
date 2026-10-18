@@ -6,9 +6,9 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: 780fb00 (2026-10-18)
+Verified: 1d61b36 (2026-10-18)
 
-- **dev** @ `780fb00` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
+- **dev** @ `1d61b36` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
 - **Released:** v2.5.2 is LIVE — `main` @ `ae7c488` (tag `v2.5.2`), npm `latest` = 2.5.2 —
   `gh release list`, `git log -1 --oneline main`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path).
@@ -23,13 +23,13 @@ Verified: 780fb00 (2026-10-18)
   `e397be4`); awaits the maintainer's close/release decision (the release is the cycle's first act —
   `references/sprint-end-ritual.md`). Presentation-only, no navigation/keybinding changes. + **footer activity indicator** (#354, PR #355 `780fb00`)
   — spinner, oldest-run elapsed, outcome-coloured completion symbols; replaces the static status text.
+  + **refactor pair #356**: repaint chokepoint (#357 `ca83766`) and `showDashboard` split (#358 `1d61b36`).
 - **Handoff mechanism: MERGED** (PR #353 `ca73803`) — `.pi/extensions/handoff/` (session_start +
   session_compact injection, guards, `/handoff`, `/handoff mark`), `.pi/skills/handoff/`, this
   restructure + archive. **Live checks: 1 ✅ injection · 2 ✅ RECONCILE line (the expected lag) · 4 ✅ subagent inertness (FG env=1; BG agents see no host events) · 5 ✅ worktree (unit) · 3 ✅ `/pi-vcc` post-compaction (STATE re-injected after the summary).**
 - **PRs:** none open (issue tracker) · **#344 open deliberately** — typebox 1.3.37 held at the host
   pin 1.3.27 (the standalone awareness signal; no `ignore` by policy).
-- **#356 open** — refactor flags from PR #355: a footer repaint chokepoint (14 `updateProgressStatus`
-  call sites) and the `showDashboard` six-panel split; **being implemented now**.
+- **#356 CLOSED** — repaint chokepoint (#357) + `showDashboard` split (#358) merged; 5 review minors fixed.
 - **Suite:** 78 files / 1625 tests — `npx vitest run`; `npx tsc --noEmit` clean.
 
 ### Since the last handover
