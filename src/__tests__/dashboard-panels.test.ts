@@ -362,6 +362,25 @@ const RICH_FG_CALLS: Array<[string, string]> = [
 	["accent", "────────────────────────────────────────────────────────────────────────────────"],
 ];
 
+/** Every `fg` call the empty render makes, in order — the empty-branch colour vocabulary. */
+const EMPTY_FG_CALLS: Array<[string, string]> = [
+	["accent", "brl-subagent Dashboard"],
+	["dim", "  refreshing \u00b7 <time>"],
+	["accent", "Active Subagents (0)"],
+	["dim", "  None running"],
+	["accent", "SLA Summary (last 0 runs)"],
+	["dim", "  No completed runs yet"],
+	["accent", "Recent Runs"],
+	["dim", "  No runs recorded"],
+	["accent", "Error Breakdown"],
+	["success", "  No errors \u2713"],
+	["accent", "Cost Trend (last 20 runs)"],
+	["dim", "  No cost data"],
+	["dim", "q / esc to close"],
+	["accent", "\u2500".repeat(WIDTH)],
+	["accent", "\u2500".repeat(WIDTH)],
+];
+
 // ---------------------------------------------------------------------------
 // 1. Composer — the whole screen, byte for byte
 // ---------------------------------------------------------------------------
@@ -435,6 +454,17 @@ describe("showDashboard — rendered screen (issue #356)", () => {
 		await renderDashboard(state, ctx, theme);
 
 		expect(calls).toEqual(RICH_FG_CALLS);
+	});
+
+	it("paints every empty branch with the pinned colour vocabulary, in order", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(NOW);
+		const { state, ctx } = emptyState();
+		const { theme, calls } = recordingTheme();
+
+		await renderDashboard(state, ctx, theme);
+
+		expect(calls).toEqual(EMPTY_FG_CALLS);
 	});
 });
 
