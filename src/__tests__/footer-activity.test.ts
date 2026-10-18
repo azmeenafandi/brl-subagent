@@ -24,12 +24,12 @@ import {
 	type ProgressStatusTheme,
 } from "../tui-format";
 import {
-	clearProgressLinger,
 	stopProgressTicker,
 	syncProgressLinger,
 	updateProgressStatus,
 } from "../concurrency";
 import { createSessionState } from "../state";
+import { cleanupSessionState } from "../index";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -396,14 +396,16 @@ describe("footer ticker lifecycle (issue #354)", () => {
 		state.activeSubagents = 1;
 		updateProgressStatus(state, ctx);
 
-		// Mirrors the session_shutdown handler in src/index.ts.
-		state.activeSubagents = 0;
-		state.completedSubagents = 0;
-		state.failedSubagents = 0;
-		state.unseenSubagents = 0;
-		stopProgressTicker(state);
+		// The real shutdown cleanup body (extracted from the session_shutdown
+		// handler in src/index.ts), not a hand-mirrored copy.
+		cleanupSessionState(state);
 
 		expect(state.statusTicker).toBeUndefined();
+		expect(state.activeSinceMs).toBeUndefined();
+		expect(state.activeSubagents).toBe(0);
+		expect(state.completedSubagents).toBe(0);
+		expect(state.failedSubagents).toBe(0);
+		expect(state.unseenSubagents).toBe(0);
 		const callsAfterShutdown = setStatus.mock.calls.length;
 		vi.advanceTimersByTime(10_000);
 		expect(setStatus.mock.calls.length).toBe(callsAfterShutdown);
@@ -571,13 +573,9 @@ describe("footer linger reset timer (F2)", () => {
 		updateProgressStatus(state, ctx);
 		expect(state.statusResetTimer).toBeDefined();
 
-		// Mirrors the session_shutdown handler in src/index.ts.
-		state.activeSubagents = 0;
-		state.completedSubagents = 0;
-		state.failedSubagents = 0;
-		state.unseenSubagents = 0;
-		stopProgressTicker(state);
-		clearProgressLinger(state);
+		// The real shutdown cleanup body (extracted from the session_shutdown
+		// handler in src/index.ts), not a hand-mirrored copy.
+		cleanupSessionState(state);
 
 		expect(state.statusResetTimer).toBeUndefined();
 		expect(vi.getTimerCount()).toBe(0);
