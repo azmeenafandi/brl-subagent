@@ -13,9 +13,12 @@ import {
 	formatTokens,
 	isInterruptedRun,
 } from "./types";
-import type { SubagentRun, TaskTemplate } from "./types";
+import type { ModeContext, SubagentRun, TaskTemplate } from "./types";
 
-/** Braille spinner frames, indexed by Math.floor(now / 150) % 10. */
+/** Frame duration of the braille spinners (10 frames → a 1.5 s cycle). */
+export const LIVE_SPINNER_FRAME_MS = 150;
+
+/** Braille spinner frames, indexed by Math.floor(now / LIVE_SPINNER_FRAME_MS) % 10. */
 export const LIVE_SPINNER_FRAMES: readonly string[] = [
 	"\u280B",
 	"\u2819",
@@ -45,7 +48,153 @@ export function liveRowName(label: string | undefined, task: string): string {
 
 /** Spinner frame at a given timestamp (ms since epoch). */
 export function liveSpinner(now: number): string {
-	return LIVE_SPINNER_FRAMES[Math.floor(now / 150) % 10];
+	return LIVE_SPINNER_FRAMES[Math.floor(now / LIVE_SPINNER_FRAME_MS) % LIVE_SPINNER_FRAMES.length];
+}
+
+// ---------------------------------------------------------------------------
+// Footer activity indicator (issue #354)
+// ---------------------------------------------------------------------------
+
+/**
+ * The footer line's colour vocabulary — the subset of pi's `ThemeColor` the
+ * status line uses, declared locally so this module keeps importing only
+ * `./types`. `ctx.ui.theme` satisfies {@link ProgressStatusTheme} structurally,
+ * which keeps the formatter free of any TUI import.
+ */
+export type ProgressStatusColor = "accent" | "success" | "warning" | "error" | "muted";
+
+/** The one theme capability the footer needs. */
+export interface ProgressStatusTheme {
+	fg(color: ProgressStatusColor, text: string): string;
+}
+
+/**
+ * The footer's input: the counter slice of `SessionState` plus the elapsed
+ * anchor. Structural rather than `SessionState` so the formatter has no
+ * dependency on session state and every case is unit-testable.
+ */
+export interface ProgressStatusInput {
+	activeSubagents: number;
+	completedSubagents: number;
+	failedSubagents: number;
+	unseenSubagents: number;
+	/** Issue #133 multi-unit breakdown, present only while a dispatch is in flight. */
+	modeContext?: ModeContext;
+	/** Epoch ms at which the oldest active run started; absent → no elapsed suffix. */
+	activeSinceMs?: number;
+}
+
+/** One coloured run of text on the footer line. */
+export interface ProgressStatusSegment {
+	color: ProgressStatusColor;
+	text: string;
+}
+
+const STATUS_PREFIX = "brl:";
+const DONE_SYMBOL = "\u2713";
+const FAILED_SYMBOL = "\u2717";
+/** Separator before the elapsed suffix — " · ", muted with the duration. */
+const ELAPSED_SEPARATOR = " \u00b7 ";
+
+/**
+ * The completion segment's colour, decided by outcome: all success → success,
+ * mixed → warning, failure-only → error (issue #354).
+ */
+export function progressCompletionColor(
+	completed: number,
+	failed: number,
+): ProgressStatusColor {
+	if (failed === 0) return "success";
+	return completed > 0 ? "warning" : "error";
+}
+
+/** The #133 breakdown that qualifies the active count. */
+function modeBreakdown(mc: ModeContext): string {
+	return mc.kind === "graph"
+		? `graph wave ${mc.wave}/${mc.totalWaves} \u00b7 node ${mc.node}/${mc.totalNodes}`
+		: `chain step ${mc.step}/${mc.totalSteps}`;
+}
+
+/**
+ * The footer as coloured segments, so the completion group can be painted as
+ * one unit (symbols included) while the active segment and elapsed suffix take
+ * their own colours. Pure: frame, counts and elapsed are all derived from
+ * `now` and the counters.
+ *
+ * Shapes (issue #354):
+ * - active:    `⠋ brl: 2 running, ✓ 1 done, ✗ 1 failed · 1m 14s`
+ * - linger:    `✓ brl: 3 done (1 unseen), ✗ 1 failed` (no spinner, no elapsed)
+ */
+export function formatProgressSegments(
+	state: ProgressStatusInput,
+	now: number,
+): ProgressStatusSegment[] {
+	const active = state.activeSubagents > 0;
+	const segments: ProgressStatusSegment[] = [];
+
+	// Completion labels, kept separate from their symbols so the prefix can be
+	// inserted after the first symbol on the linger line.
+	const completion: Array<{ symbol: string; label: string }> = [];
+	if (state.completedSubagents > 0) {
+		const unseen = state.unseenSubagents > 0 ? ` (${state.unseenSubagents} unseen)` : "";
+		completion.push({
+			symbol: DONE_SYMBOL,
+			label: `${state.completedSubagents} done${unseen}`,
+		});
+	}
+	if (state.failedSubagents > 0) {
+		completion.push({ symbol: FAILED_SYMBOL, label: `${state.failedSubagents} failed` });
+	}
+
+	if (active) {
+		const detail: string[] = [];
+		if (state.modeContext) detail.push(modeBreakdown(state.modeContext));
+		detail.push(`${state.activeSubagents} running`);
+		// The separator trailing the active segment stays with it, so the
+		// completion segment is contiguous and can be coloured as a unit.
+		segments.push({
+			color: "accent",
+			text: `${liveSpinner(now)} ${STATUS_PREFIX} ${detail.join(", ")}${completion.length > 0 ? ", " : ""}`,
+		});
+	}
+
+	if (completion.length > 0) {
+		// With no active run the segment carries the prefix itself:
+		// `✓ brl: 3 done (1 unseen)`.
+		const prefix = active ? "" : `${STATUS_PREFIX} `;
+		const [first, ...rest] = completion;
+		const text = [
+			`${first.symbol} ${prefix}${first.label}`,
+			...rest.map((part) => `${part.symbol} ${part.label}`),
+		].join(", ");
+		segments.push({
+			color: progressCompletionColor(state.completedSubagents, state.failedSubagents),
+			text,
+		});
+	}
+
+	if (active && state.activeSinceMs !== undefined) {
+		// Clamp at zero: a clock jump backwards must never print a negative age.
+		const elapsed = formatElapsed(Math.max(0, now - state.activeSinceMs));
+		segments.push({ color: "muted", text: `${ELAPSED_SEPARATOR}${elapsed}` });
+	}
+
+	return segments;
+}
+
+/**
+ * The footer line as one themed string — the coloured form of
+ * {@link formatProgressSegments}. Pure: every byte is a function of the
+ * counters, `now` and the injected theme.
+ */
+export function formatProgressStatus(
+	state: ProgressStatusInput,
+	now: number,
+	theme: ProgressStatusTheme,
+): string {
+	return formatProgressSegments(state, now)
+		.map((segment) => theme.fg(segment.color, segment.text))
+		.join("");
 }
 
 /** Dim section of a live row: short id + token counts + elapsed. */
