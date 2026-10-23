@@ -6,16 +6,16 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: def79fc (2026-10-18)
+Verified: 32b41ed (2026-10-23)
 
-- **dev** @ `def79fc` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
+- **dev** @ `32b41ed` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
 - **Released:** v2.5.2 is LIVE — `main` @ `ae7c488` (tag `v2.5.2`), npm `latest` = 2.5.2 —
   `gh release list`, `git log -1 --oneline main`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path).
-  pi runtime **1.3.0**; deps `@earendil-works/*` ^1.3.0 + `typebox` 1.3.27 (the host pin) —
-  `cat package.json`.
-- **Board:** zero open issues — `gh issue list`. (PRs target `dev`, so `Fixes #N` does **not** auto-close;
-  #354 was closed manually after #355. **#344 is an open PR**, not an issue — the deliberate typebox signal.)
+  pi runtime **1.4.0** (released 2026-10-21); deps still `@earendil-works/*` ^1.3.0 — the parity bump
+  is in flight as **#359**; `typebox` stays **1.3.27** (the 1.4.0 host pin) — `cat package.json`.
+- **Board:** **#359 open** (pi 1.4.0 parity — bump + API diff); otherwise zero. (PRs target `dev`, so
+  `Fixes #N` does **not** auto-close; #354 was closed manually. **#344 is an open PR**, not an issue.)
 - **Cycle `vendor parity + boundary guards`: CLOSED 2026-10-17 (v2.5.2)** — pi 1.3.0 parity
   (#338), boundary guards (#336/#339), the dangling-row fix (#340/#341), vitest 5.0.4 with
   `typebox` held at the host pin (#342). Cycle-end ritual ran before the release docs; Rule 11 = 0
@@ -43,7 +43,8 @@ Verified: def79fc (2026-10-18)
 ### Next actions
 1. Schedule the two handoff design-observation follow-ups (self-commit lag; extension typechecking)
    — live checks 1–5 are all confirmed.
-2. Maintainer: decide the menu-polish cycle close + the next release version (v2.6.0 suggested).
+2. **pi 1.4.0 parity (#359):** read-only API diff running; bump + tests + review next.
+3. Maintainer: decide the menu-polish cycle close + the next release version (v2.6.0 suggested).
 
 ## Open items
 - **Handoff live checks 1–5** — post-merge, conductor-run (spec §Verification).
