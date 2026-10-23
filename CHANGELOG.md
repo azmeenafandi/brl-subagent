@@ -2,6 +2,11 @@
 
 Release history for brl-subagent. Newest first. The full narrative for each release lives in the GitHub release notes.
 
+## Unreleased
+
+- **Toolchain — Pi 1.4.0 parity (issue #359):** the `@earendil-works/*` devDependencies move to `^1.4.0` (`typebox` stays at the host pin 1.3.27; the peer ranges stay `*`), so the type surface the extension compiles against matches the host it runs on. No source change was needed: 1.4.0 has no breaking section, every symbol we import still resolves to the same signature, and the notable changes (`generateSummary()` ignoring `reserveTokens`, `before_provider_headers` attribution, the new `pi-ai/models` subpath) are all outside our call paths — the dialog-concurrency fix only makes our stacked `custom()` overlays behave correctly. The lockfile gains one transitive dependency (`marked-cjk-friendly`, pulled by pi-tui's Markdown renderer).
+- 1685 tests across 81 files.
+
 ### v2.5.2
 
 - **Gate rejections no longer leave phantom runs (issue #340):** a foreground dispatch rejected by the circuit breaker — or cancelled while waiting for a concurrency slot — used to leave a `running` record behind, surfacing at the next boot as an interrupted run that never started (and, on a retry, as a dangling twin beside the source). Both pre-start paths now finalize the persisted record before returning: terminal `failed`/`aborted` with the exact gate message, the inflight registry row cleared, and the live entry released; the retry-source retention is unchanged. Found by the FGP review, mutation-verified and live-probed.
