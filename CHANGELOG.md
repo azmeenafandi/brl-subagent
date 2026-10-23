@@ -4,8 +4,9 @@ Release history for brl-subagent. Newest first. The full narrative for each rele
 
 ## Unreleased
 
+- **`background` is the conditional default (issue #361):** omitted, a single task or a `tasks` fan-out now runs in the **background** when the *effective* approval mode is `auto` (per-call param, else config) — the tool returns an agent id immediately and the conductor is woken on terminal state — and stays **foreground** under `writes`/`always` or for `chain`/`graph`. The fallback is the safety property: a background run has no approval dialog, so a gate that needs the user can never be reached by a default (`always` was a hard rejection, `writes` silently auto-approved). Explicit `true`/`false` keeps exactly today's semantics, including the verbatim `background: true` + chain/graph rejection; the effective value is recorded on the run so a retry restores the shape it actually had. A background run still defaults to the 30-minute deadline; pass `background: false` for a quick probe whose answer the next step needs inline.
 - **Toolchain — Pi 1.4.0 parity (issue #359):** the `@earendil-works/*` devDependencies move to `^1.4.0` (`typebox` stays at the host pin 1.3.27; the peer ranges stay `*`), so the type surface the extension compiles against matches the host it runs on. No source change was needed: 1.4.0 has no breaking section, every symbol we import still resolves to the same signature, and the notable changes (`generateSummary()` ignoring `reserveTokens`, `before_provider_headers` attribution, the new `pi-ai/models` subpath) are all outside our call paths — the dialog-concurrency fix only makes our stacked `custom()` overlays behave correctly. The lockfile gains one transitive dependency (`marked-cjk-friendly`, pulled by pi-tui's Markdown renderer).
-- 1685 tests across 81 files.
+- 1699 tests across 82 files.
 
 ### v2.5.2
 

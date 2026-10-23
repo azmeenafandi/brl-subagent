@@ -16,16 +16,17 @@ delegation-heavy work.
 
 | Mode | What blocks | What wakes you | Batchable? |
 | --- | --- | --- | --- |
-| single, foreground | blocks until it returns | — (result comes back inline) | no |
-| single, background | returns immediately with an agent id | yes — a `subagent-completion` message on terminal state | no |
+| single, background (**default** at effective `auto`) | returns immediately with an agent id | yes — a `subagent-completion` message on terminal state | no |
+| single, foreground (default at `writes`/`always`, or `background: false`) | blocks until it returns | — (result comes back inline) | no |
 | chain | blocks until the chain finishes or fails | — | yes (foreground) |
-| parallel (`tasks`), foreground | blocks until every task finishes | — | yes (foreground) |
-| parallel, background (fan-out) | returns immediately with one agent id per task | yes — a `subagent-completion` message per agent, on each agent's terminal state | yes |
+| parallel (`tasks`), background fan-out (**default** at effective `auto`) | returns immediately with one agent id per task | yes — a `subagent-completion` message per agent, on each agent's terminal state | yes |
+| parallel (`tasks`), foreground (default at `writes`/`always`, or `background: false`) | blocks until every task finishes | — | yes (foreground) |
 | graph | blocks; runs in waves via `dependsOn` | — | yes (foreground) |
 
+- **`background` is a conditional default (issue #361).** With `background` omitted, a single task or a `tasks` fan-out runs in the **background** when the *effective* approval mode is `auto` (per-call param, else the configured default), and stays **foreground** when it is `writes` or `always`. Chain and graph always stay foreground. Explicit `true`/`false` is honoured exactly.
 - Foreground single blocks: you wait for the result inline.
 - Background single returns immediately with an agent id; a completion message wakes you (see below).
-- Chain, parallel, and graph are batch — one call, many subtasks. Chain and graph are foreground; `tasks` + `background: true` fans out: every task starts as its own background agent, the call returns with one id per task in task order, and you are woken once per agent as each finishes.
+- Chain, parallel, and graph are batch — one call, many subtasks. Chain and graph are foreground; `tasks` fans out by default under `auto` (and always with `background: true`): every task starts as its own background agent, the call returns with one id per task in task order, and you are woken once per agent as each finishes.
 - Fan-out validates the whole batch before spawning anything: any invalid task (cwd, `outputFile`, or a pre-task check) rejects the entire batch before a single spawn starts, and the error names the task (`Task N ("label")`).
 - Fan-out rejects `gitMode: "branch"` for the batch — the git lock is awaited inside the first spawn and held until that agent settles, so branch-mode spawns targeting the same repository would serialize and block the call (the rule is blanket because the lock is keyed by the resolved repository root, so any two units of the same repo contend). It also rejects `approvalMode: "always"` up front, and the session cost limit is checked as per-task estimate × N.
 - Spawn failure mid-loop stops further spawns and reports the failed task plus the ids already started; abort mid-loop stops further spawns and reports the ids already started. Either way those agents are detached and still wake you.
@@ -45,11 +46,11 @@ delegation-heavy work.
 
 ## Delegation judgment
 
-- Foreground vs background: if your next step needs the result inline, run foreground. If the user can keep working or is AFK, run background and act on the wake. Pre-declared independent work while the user is away → `tasks` + `background: true` (fan-out); act on each wake.
+- Foreground vs background: the default is background under effective `auto`, foreground otherwise. Pass `background: false` for a quick probe whose answer the next step needs inline (it keeps the call blocking, so no wake round-trip). Pass `background: true` to force a background run where the default blocks. If the user can keep working or is AFK, act on the wake. Pre-declared independent work while the user is away → `tasks` (fan-out is the default) and act on each wake.
 - Batch vs sequential: if the work is pre-declared, use chain/parallel/graph. If you're steering incrementally with the user, issue sequential calls.
 - Retry taxonomy: `retryRunId` is a retry — it re-runs with the recorded task and params. A re-dispatch (a fresh call with the same task text) is not a retry. Never re-issue an identical spec after a termination without confirming the cause with the user.
 - When to delegate: when the task needs an isolated context, a deep investigation, parallel research, or a long-running analysis.
-- Approval: `approvalMode: "always"` is rejected in background — there is no dialog. Use `auto` (default) or `writes`; `writes` auto-approves in background.
+- Approval: `approvalMode: "always"` is rejected in background — there is no dialog. Use `auto` (default) or `writes`; `writes` auto-approves in background. This is why the background default is approval-aware: an omitted `background` stays foreground under `writes`/`always`, so the gate is never silently bypassed by a default.
 
 ### Claim verification
 
@@ -62,8 +63,9 @@ delegation-heavy work.
 
 - Batch chain with `{previous}`: `chain: [{ task: "…" }, { task: "Use {previous} …" }]` — each step gets the prior step's output.
 - Graph with `dependsOn`: subtasks declare edges; the scheduler runs them in waves.
-- Background + act on wake: spawn a background run, then act when the completion message arrives. Never poll between spawn and wake.
-- Background fan-out: `tasks: [...], background: true` — one background agent per task, one id per task in task order, one wake per agent.
+- Background + act on wake: spawn a background run (the default under `auto`), then act when the completion message arrives. Never poll between spawn and wake.
+- Background fan-out: `tasks: [...]` — one background agent per task, one id per task in task order, one wake per agent.
+- Inline probe: `background: false` — blocks and returns the result in the same turn when the next step needs it immediately.
 - retryRunId: pass a failed or **interrupted** run's id to re-run it with its recorded task and params; explicit parameters override the originals. A run interrupted before durable task capture (a pre-enrichment registry entry) has no recorded task — pass `task` explicitly for those.
 
 ## Interrupted runs and recovery
@@ -75,7 +77,7 @@ delegation-heavy work.
 
 ## Deadlines and retries
 
-- `timeout` (ms) is a **deadline, not a ceiling** — an explicit value is honored as given; 30 minutes is only the default for a background run that passes none. Background expiry aborts the session (the run ends `stopped`); foreground expiry kills the process.
+- `timeout` (ms) is a **deadline, not a ceiling** — an explicit value is honored as given; 30 minutes is only the default for a background run that passes none (a foreground run is not capped). Background expiry aborts the session (the run ends `stopped`); foreground expiry kills the process. Because background is now the default under `auto`, remember the 30-minute deadline: pass an explicit `timeout` for anything expected to run longer.
 - `retryOnTimeout` applies to **foreground runs only**. A timed-out background run is not auto-retried: re-dispatch it with `retryRunId` if that is the right call. The same applies to an interrupted run — recovery is always an explicit `retryRunId` call, never automatic (auto mode is not yet accepted).
 
 ## Mechanics pointer
