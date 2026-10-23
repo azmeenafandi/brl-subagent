@@ -169,7 +169,9 @@ export const delegateTaskParamsSchema = Type.Object({
 						"When true, the tool returns immediately with an agent ID. " +
 						"The conductor is woken with a completion message; use get_subagent_result for post-wake retrieval and stall checks. " +
 						"Supports a single task or the tasks array (a fan-out that starts one background agent per task; with tasks the call returns one ID per task and the conductor is woken once per agent as each finishes); combining background with chain or graph is rejected. " +
-						"Default: false (blocking mode).",
+						"Default: conditional. Omitted, a single task or tasks fan-out runs in the BACKGROUND when the effective approvalMode is 'auto' (call param, else config); it stays foreground for 'writes'/'always' (a background run has no approval dialog, so the gate must stay in front of the user) and for chain/graph, which block by definition. " +
+						"Pass background: false for a quick probe whose answer the next step needs inline. Explicit true/false always wins. " +
+						"A background run defaults to a 30-minute deadline when no timeout is given.",
 				}),
 			),
 			priority: Type.Optional(

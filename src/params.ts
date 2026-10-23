@@ -121,6 +121,61 @@ export function snapshotOriginalParams(params: {
 	};
 }
 
+// ---------------------------------------------------------------------------
+// Effective approval mode + the background default (issue #361)
+// ---------------------------------------------------------------------------
+
+/**
+ * The approval mode that would actually apply to a child dispatched with these
+ * params: per-call param > preset > configured default.
+ *
+ * Single source of truth (issue #361): `resolveSubagentParams` resolves the
+ * child's mode through this function, and the dispatch chokepoint uses it to
+ * pick the background default, so the mode that decides "can this run
+ * unattended?" is always the mode the child runs with. Presets declare no
+ * `approvalMode` field today (see SubagentPreset), so the chain currently
+ * reduces to param > config — that is where a preset tier would slot in.
+ */
+export function resolveEffectiveApprovalMode(
+	approvalMode: string | undefined,
+	state: Pick<SessionState, "config">,
+): ApprovalMode {
+	return approvalMode === "auto" || approvalMode === "writes" || approvalMode === "always"
+		? approvalMode
+		: state.config.approvalMode;
+}
+
+/**
+ * Dispatch shapes that can select a `background` default. `parallel` is the
+ * `tasks` fan-out; `chain`/`graph` are batch modes that always block.
+ */
+export type DispatchShape = "single" | "parallel" | "chain" | "graph";
+
+/**
+ * Issue #361: the CONDITIONAL default for `background` when the caller omits
+ * it. Background wins only where it cannot weaken a gate:
+ *
+ *   - `chain`/`graph` stay foreground — they block by definition and an
+ *     explicit `background: true` is still rejected at dispatch.
+ *   - an effective approval mode that needs the interactive dialog
+ *     (`always`) or gates on writes (`writes`) stays foreground — a
+ *     background run has no dialog, so defaulting there would either break
+ *     the run or silently auto-approve diffs the user asked to review.
+ *   - everything else (single task, `tasks` fan-out, effective `auto`) is
+ *     background: the tool returns an agent id immediately and the conductor
+ *     is woken on terminal state.
+ *
+ * Explicit `true`/`false` always wins — callers spread `params.background ??
+ * defaultBackgroundFor(...)`.
+ */
+export function defaultBackgroundFor(
+	shape: DispatchShape,
+	effectiveApprovalMode: ApprovalMode,
+): boolean {
+	if (shape === "chain" || shape === "graph") return false;
+	return effectiveApprovalMode === "auto";
+}
+
 export function resolveSubagentParams(
 	params: {
 		task: string;
@@ -212,11 +267,8 @@ export function resolveSubagentParams(
 			: state.config.gitMode;
 
 	// P4: Resolve approval mode: per-call param > state config > default "writes"
-	const mergedApprovalMode = params.approvalMode as ApprovalMode | undefined;
-	const resolvedApprovalMode: ApprovalMode =
-		mergedApprovalMode === "auto" || mergedApprovalMode === "writes" || mergedApprovalMode === "always"
-			? mergedApprovalMode
-			: state.config.approvalMode;
+	// (shared with the dispatch chokepoint's background default, issue #361).
+	const resolvedApprovalMode = resolveEffectiveApprovalMode(params.approvalMode, state);
 
 	const thinkingLevel = resolveThinkingLevel(
 		mergedThinkingLevel,
