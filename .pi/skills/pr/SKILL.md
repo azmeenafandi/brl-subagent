@@ -63,3 +63,10 @@ Fixes #NNN
 GitHub only auto-closes issues when the merging PR targets the **default branch** (`main`). These PRs target
 `dev`, so `Fixes #N` / `Closes #N` is documentation only — **close the issue manually after merge** (with a
 comment naming the merge commit).
+
+## A PR is not complete until CI is green
+
+Check `gh pr checks <n>` before reporting the PR ready (and again after every push). The README
+**test-count guard** is a common red: `scripts/check-readme-test-count.mjs` fails when README's
+`"<N>+ test suite"` claim overstates the run or trails it by more than 100 — update the claim in the
+same commit as the test-count change.
