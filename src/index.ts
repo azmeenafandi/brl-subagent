@@ -73,7 +73,16 @@ import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
-import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams, snapshotOriginalParams } from "./params";
+import {
+	defaultBackgroundFor,
+	findUnknownParams,
+	KNOWN_DELEGATE_KEYS,
+	resolveEffectiveApprovalMode,
+	resolveSubagentParams,
+	shouldRejectBackgroundForBatch,
+	snapshotOriginalParams,
+	type DispatchShape,
+} from "./params";
 import { delegateTaskParamsSchema } from "./schema";
 import { createSessionState, resolveTerminalRunEntry, type SessionState } from "./state";
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
@@ -2854,7 +2863,7 @@ export default function (pi: ExtensionAPI) {
 			buildTemplateGuideline(templateSummary),
 			"To retry a failed subagent, pass its run ID as retryRunId. The retry restores the recorded params - including background, gitMode, approvalMode, force - with explicit values on this call winning. Multi-step runs degrade to a single task. See the retryRunId description for the full field list.",
 			"Set retryOnTimeout: true to automatically retry a FOREGROUND subagent that times out. Only retries once — the second timeout is treated as a final failure. Background runs are not auto-retried; re-dispatch with retryRunId.",
-			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. With tasks, background fans out: every task starts as its own background agent, the call returns one ID per task in task order, and the conductor is woken once per agent as each finishes; chain and graph cannot be combined with background (rejected). Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate.",
+			"Background is the CONDITIONAL default for delegate_task. With background omitted, a single task or a tasks fan-out runs in the BACKGROUND when the effective approvalMode is 'auto' (call param, else config): the tool returns an agent ID immediately, and with tasks it fans out — every task starts as its own background agent, one ID per task in task order, and the conductor is woken once per agent as each finishes. It stays FOREGROUND when the effective approvalMode is 'writes' or 'always' (a background run has no approval dialog, so a gate that needs the user must keep blocking), and for chain and graph (they block by definition; an explicit background: true with chain/graph is rejected). Pass background: false for a quick probe whose answer the next step needs inline; pass background: true to force a background run where the default would block. Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate. A background run defaults to a 30-minute deadline when no timeout is given.",
 			"",
 			"## Conductor Guardrails",
 			"",
@@ -3057,12 +3066,29 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			const dispatchShape: DispatchShape = isChain
+				? "chain"
+				: isGraph
+					? "graph"
+					: isParallel
+						? "parallel"
+						: "single";
+
+			// Capture the caller's value BEFORE the default is recorded on
+			// `params.background` below. The guard must judge what the caller
+			// actually asked for; reading the recorded value would make it depend
+			// on the default. Keeping the capture first makes that ordering
+			// self-evident (issue #361 review).
+			const explicitBackground = params.background;
+
 			// background: true with chain/graph was silently ignored — the batch ran
 			// foreground (blocking until every unit finished) while the caller believed
 			// it was background. Both remain rejected loudly at dispatch validation;
 			// tasks (parallel) fans out into independent background agents instead.
-			if (params.background && (isChain || isGraph)) {
-				const batchMode = isChain ? "chain" : "graph";
+			// Only an EXPLICIT true trips this (issue #361): an omitted `background`
+			// now defaults to foreground here rather than being rejected.
+			if (shouldRejectBackgroundForBatch(dispatchShape, explicitBackground)) {
+				const batchMode = dispatchShape === "chain" ? "chain" : "graph";
 				return {
 					content: [
 						{
@@ -3074,6 +3100,24 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
+
+			// Issue #361: background is the CONDITIONAL default for the shapes that
+			// can run unattended. Resolved ONCE per dispatch and reused by the
+			// single and fan-out paths below, so the decision cannot drift between
+			// them. The approval mode is the EFFECTIVE one (call param, else the
+			// configured default — presets declare no approvalMode today) — the same
+			// value the child will run with — so the default never routes a run into a
+			// background context that would break or silently auto-approve it
+			// ('always' has no dialog; 'writes' gates the diff on approval).
+			const useBackground =
+				params.background ??
+				defaultBackgroundFor(dispatchShape, resolveEffectiveApprovalMode(params.approvalMode, state));
+			// Record the EFFECTIVE value on the dispatch (a no-op when the caller was
+			// explicit): a run started by the default must retry as what it actually
+			// was instead of re-deriving the default, which may since have moved with
+			// the config. Fan-out units still record no background of their own — a
+			// unit retries as a single foreground run (issue #229), unaffected here.
+			params.background ??= useBackground;
 
 			if (isChain) {
 				if (params.chain!.length > MAX_CHAIN_STEPS) {
@@ -3104,7 +3148,7 @@ export default function (pi: ExtensionAPI) {
 						isError: true,
 					};
 				}
-				if (params.background) return runBackgroundFanOut(pi, ctx, params, signal);
+				if (useBackground) return runBackgroundFanOut(pi, ctx, params, signal);
 				return runParallelMode(params, signal, onUpdate, ctx);
 			}
 
@@ -3117,7 +3161,7 @@ export default function (pi: ExtensionAPI) {
 			// boolean-array filter — assert, mirroring params.chain!/params.tasks! above.
 			const singleTask = params.task!; // non-empty (sanitizer guarantees; isSingle confirms)
 
-			if (params.background) {
+			if (useBackground) {
 				return spawnBackgroundRun(pi, ctx, params, singleTask, retrySourceRun);
 			}
 

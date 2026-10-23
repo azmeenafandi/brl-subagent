@@ -14,7 +14,7 @@
 - **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and a 30-minute default deadline for runs that don't set one. Nothing orphans; nothing leaks.
 - **Preset-driven tool scoping** — every subagent runs with exactly the tools its job needs, restricted by preset or per-call `tools`/`excludeTools`, with auto-route that picks the right preset when you don't.
 - **Templates with slots** — saved, file-backed task templates with `${param}` placeholders for workflows you run again and again.
-- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence, and a 1600+ test suite pinning every contract against the real pi SDK.
+- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence, and a 1700+ test suite pinning every contract against the real pi SDK.
 
 ---
 
@@ -92,7 +92,7 @@ All settings persist across sessions.
 | `outputFile` | string | — | Path for the subagent to write full findings. Returns only a summary. |
 | `timeout` | number | — | Max milliseconds. Foreground: exceeded → SIGTERM (5s grace) → SIGKILL. Background: the session is aborted and the run ends `stopped` with the timeout reason. A background run with no explicit `timeout` gets the 30-minute default deadline — an explicit timeout is honored as given (a default, not a ceiling). A raw value `≥ 2^31-1` normalizes to no timeout (for a background run, the 30-minute default then applies). |
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
-| `background` | boolean | `false` | Spawn as an independent background session; returns an ID immediately. With `tasks` it fans out (one background agent per task, one ID per task), and the conductor is woken once per agent as each finishes. See [Background execution](#background-execution). |
+| `background` | boolean | conditional | Spawn as an independent background session; returns an ID immediately. **Omitted**, a single task or a `tasks` fan-out runs in the background when the *effective* `approvalMode` is `auto` (call param, else config), and stays foreground under `writes`/`always` or for `chain`/`graph` — see [Background execution](#background-execution). With `tasks` it fans out (one background agent per task, one ID per task), and the conductor is woken once per agent as each finishes. Pass `false` for a quick probe whose answer the next step needs inline. |
 | `priority` | string | — | Concurrency priority: `critical` / `high` / `normal` / `low`. Defaults to `normal`; higher-priority delegations queue ahead. `tasks[]` / `graph[]` steps can set `priority` per unit (see below). |
 | `tools` | array | — | Explicit tool allowlist for the subagent. |
 | `excludeTools` | array | — | Tool names to disable for the subagent. |
@@ -126,7 +126,7 @@ All settings persist across sessions.
 
 Beyond a single `task`, `delegate_task` accepts three multi-step shapes: `chain` (sequential steps, `{previous}` references the prior step's output), `tasks` (parallel, independent), and `graph` (dependency-ordered, `{<nodeId>}` references another node's output — the referenced node's own `id`, which must be a word-character id: letters, digits, and underscore. `{step-1}` and `{node.a}` are not matched and are left as literal text).
 
-`background: true` fans out the `tasks` shape into one background agent per task (one ID per task, one completion wake per agent); `chain` and `graph` reject it.
+`background: true` fans out the `tasks` shape into one background agent per task (one ID per task, one completion wake per agent); `chain` and `graph` reject it. Under an effective `approvalMode` of `auto` that fan-out is the **default** (see [Background execution](#background-execution)); pass `background: false` to run the batch foreground.
 
 Every execution knob can be set per step: `model`, `thinkingLevel`, `tools`, `excludeTools`, `noBuiltinTools`, `systemPrompt`, `inheritSystemPrompt`, `outputFile`, `timeout`, `cwd`. Unset fields inherit from the global parameters (and their preset defaults).
 
@@ -283,7 +283,18 @@ The built-in `code-review` template's slot is `${target}` (its companion `securi
 
 ## Background execution
 
-Set `background: true` to spawn the subagent as an independent session that returns an ID immediately and keeps running. Its progress is tracked via `getAgent` and the live monitor while the main session continues. Steering via `steerAgent` delivers the message into the agent's live session — it is queued while the agent runs and delivered after the current tool call finishes, before the next model call. Repeat steers work, and a delivery failure surfaces as a real tool error rather than a recorded-but-undelivered steer.
+The tool can spawn the subagent as an independent session that returns an ID immediately and keeps running (`background: true`). Its progress is tracked via `getAgent` and the live monitor while the main session continues. Steering via `steerAgent` delivers the message into the agent's live session — it is queued while the agent runs and delivered after the current tool call finishes, before the next model call. Repeat steers work, and a delivery failure surfaces as a real tool error rather than a recorded-but-undelivered steer.
+
+**Background is the conditional default (issue #361).** When `background` is omitted, dispatch resolves it once from the *effective* approval mode (per-call param, else the configured default — the mode the child will actually run with):
+
+| Call shape | Default |
+| --- | --- |
+| single task or `tasks` fan-out, effective `approvalMode: 'auto'` | **background** |
+| `chain` / `graph` | foreground (an explicit `background: true` is still rejected) |
+| effective `approvalMode` `'writes'` or `'always'` | foreground |
+| explicit `true` / `false` | honoured exactly |
+
+The approval-aware fallback is the safety property: background runs have no approval dialog, so a mode that gates on the user cannot be reached by a default. Pass `background: false` for a quick probe whose answer the next step needs inline, and `background: true` to force a background run where the default blocks. The effective value is recorded on the run, so a retry restores what the run actually was.
 
 **System prompt semantics:** background sessions are spawned with the same built prompt as foreground subagents (base prompt when `inheritSystemPrompt: true`, custom prompt, preset guidance, and subagent instructions). Like pi's own `--append-system-prompt`, supplying this prompt **replaces** any discovered `.pi/APPEND_SYSTEM.md` / global `APPEND_SYSTEM.md` content — this matches foreground subagent behavior exactly. With `inheritSystemPrompt: true` (the default) your conductor session's instructions — including its own appended content — are inherited through the base prompt.
 
