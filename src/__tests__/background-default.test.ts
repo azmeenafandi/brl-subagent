@@ -76,7 +76,11 @@ vi.mock("@earendil-works/pi-tui", () => {
 });
 
 import initExtension from "../index";
-import { defaultBackgroundFor, resolveEffectiveApprovalMode } from "../params";
+import {
+	defaultBackgroundFor,
+	resolveEffectiveApprovalMode,
+	shouldRejectBackgroundForBatch,
+} from "../params";
 import { CUSTOM_ENTRY_TYPES } from "../types";
 import type { ApprovalMode, SubagentResult } from "../types";
 import type { SessionState } from "../state";
@@ -289,6 +293,21 @@ describe("background default matrix (issue #361)", () => {
 		// (the same rule resolveSubagentParams has always applied).
 		expect(resolveEffectiveApprovalMode("banana", state)).toBe("writes");
 	});
+
+	it("rejects an explicit background: true on chain/graph only (strict === true)", () => {
+		// The guard's exact predicate, pinned independently of the default: only
+		// an explicit `true` on a batch shape trips it. `undefined` is not an
+		// explicit request (it falls through to the default), and `false` is
+		// always honoured.
+		for (const shape of ["chain", "graph"] as const) {
+			expect(shouldRejectBackgroundForBatch(shape, true)).toBe(true);
+			expect(shouldRejectBackgroundForBatch(shape, undefined)).toBe(false);
+			expect(shouldRejectBackgroundForBatch(shape, false)).toBe(false);
+		}
+		// Non-batch shapes never reject, even with an explicit true.
+		expect(shouldRejectBackgroundForBatch("single", true)).toBe(false);
+		expect(shouldRejectBackgroundForBatch("parallel", true)).toBe(false);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -485,5 +504,64 @@ describe("explicit background keeps today's semantics", () => {
 		// The pre-existing W5 rejection (src/prelude.ts), verbatim.
 		expect(result.content[0].text).toContain("Cannot spawn background agent with approvalMode 'always'");
 		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Guard ordering: the explicit value is judged before the default is recorded
+// ---------------------------------------------------------------------------
+
+describe("batch guard ordering (issue #361 review)", () => {
+	it("judges the caller's explicit value, not the value the default records", async () => {
+		// Make the default say "background" for chain, so a guard that read the
+		// RECORDED value (after `params.background ??= ...`) would see `true` and
+		// reject. The caller omitted the param, so the real ordering — capture
+		// the explicit value and guard BEFORE recording — must not reject.
+		vi.resetModules();
+		vi.doMock("../params", async (importOriginal) => {
+			const actual = await importOriginal<typeof import("../params")>();
+			return {
+				...actual,
+				defaultBackgroundFor: (...args: Parameters<typeof actual.defaultBackgroundFor>) =>
+					args[0] === "chain" || args[0] === "graph"
+						? true
+						: actual.defaultBackgroundFor(...args),
+			};
+		});
+		try {
+			const { default: initFresh } = await import("../index");
+			const registered = new Map<string, ToolEntry>();
+			initFresh({
+				registerTool: (t: ToolEntry) => registered.set(t.name, t),
+				registerCommand: () => {},
+				registerShortcut: () => {},
+				on: () => {},
+				appendEntry: () => {},
+				sendMessage: () => {},
+				ctx: { getState: () => undefined, setState: () => {} },
+			} as never);
+			const freshTool = registered.get("delegate_task");
+			if (!freshTool) throw new Error("delegate_task tool not registered");
+
+			vi.useFakeTimers();
+			const result = await freshTool.execute(
+				"call-guard-order",
+				{ chain: [{ task: "step one" }] },
+				undefined,
+				undefined,
+				makeCtx(),
+			);
+			vi.clearAllTimers();
+			vi.useRealTimers();
+
+			expect(result.isError).toBeFalsy();
+			expect(result.content[0].text).not.toContain("not supported with chain");
+			expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+			vi.doUnmock("../params");
+			vi.resetModules();
+		}
 	});
 });

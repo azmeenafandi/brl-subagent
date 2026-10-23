@@ -79,6 +79,7 @@ import {
 	KNOWN_DELEGATE_KEYS,
 	resolveEffectiveApprovalMode,
 	resolveSubagentParams,
+	shouldRejectBackgroundForBatch,
 	snapshotOriginalParams,
 	type DispatchShape,
 } from "./params";
@@ -3065,14 +3066,29 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			const dispatchShape: DispatchShape = isChain
+				? "chain"
+				: isGraph
+					? "graph"
+					: isParallel
+						? "parallel"
+						: "single";
+
+			// Capture the caller's value BEFORE the default is recorded on
+			// `params.background` below. The guard must judge what the caller
+			// actually asked for; reading the recorded value would make it depend
+			// on the default. Keeping the capture first makes that ordering
+			// self-evident (issue #361 review).
+			const explicitBackground = params.background;
+
 			// background: true with chain/graph was silently ignored — the batch ran
 			// foreground (blocking until every unit finished) while the caller believed
 			// it was background. Both remain rejected loudly at dispatch validation;
 			// tasks (parallel) fans out into independent background agents instead.
 			// Only an EXPLICIT true trips this (issue #361): an omitted `background`
 			// now defaults to foreground here rather than being rejected.
-			if (params.background === true && (isChain || isGraph)) {
-				const batchMode = isChain ? "chain" : "graph";
+			if (shouldRejectBackgroundForBatch(dispatchShape, explicitBackground)) {
+				const batchMode = dispatchShape === "chain" ? "chain" : "graph";
 				return {
 					content: [
 						{
@@ -3093,13 +3109,6 @@ export default function (pi: ExtensionAPI) {
 			// value the child will run with — so the default never routes a run into a
 			// background context that would break or silently auto-approve it
 			// ('always' has no dialog; 'writes' gates the diff on approval).
-			const dispatchShape: DispatchShape = isChain
-				? "chain"
-				: isGraph
-					? "graph"
-					: isParallel
-						? "parallel"
-						: "single";
 			const useBackground =
 				params.background ??
 				defaultBackgroundFor(dispatchShape, resolveEffectiveApprovalMode(params.approvalMode, state));

@@ -127,14 +127,15 @@ export function snapshotOriginalParams(params: {
 
 /**
  * The approval mode that would actually apply to a child dispatched with these
- * params: per-call param > preset > configured default.
+ * params: per-call param > configured default.
  *
  * Single source of truth (issue #361): `resolveSubagentParams` resolves the
  * child's mode through this function, and the dispatch chokepoint uses it to
  * pick the background default, so the mode that decides "can this run
  * unattended?" is always the mode the child runs with. Presets declare no
- * `approvalMode` field today (see SubagentPreset), so the chain currently
- * reduces to param > config — that is where a preset tier would slot in.
+ * `approvalMode` field today (see SubagentPreset), so there is no preset tier;
+ * should one be added, it would slot in between the call param and the
+ * configured default.
  */
 export function resolveEffectiveApprovalMode(
 	approvalMode: string | undefined,
@@ -150,6 +151,21 @@ export function resolveEffectiveApprovalMode(
  * `tasks` fan-out; `chain`/`graph` are batch modes that always block.
  */
 export type DispatchShape = "single" | "parallel" | "chain" | "graph";
+
+/**
+ * Whether an EXPLICIT `background` value must be rejected for the dispatch
+ * shape. Only `chain`/`graph` reject, and only an explicit `true` — an omitted
+ * `background` (`undefined`) is not an explicit request and falls through to
+ * `defaultBackgroundFor`, while an explicit `false` is always honoured. Pure
+ * and separate from dispatch so the guard's strictness and its position ahead
+ * of default resolution can be pinned independently (issue #361 review).
+ */
+export function shouldRejectBackgroundForBatch(
+	shape: DispatchShape,
+	explicit: boolean | undefined,
+): boolean {
+	return explicit === true && (shape === "chain" || shape === "graph");
+}
 
 /**
  * Issue #361: the CONDITIONAL default for `background` when the caller omits
