@@ -6,9 +6,9 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: 65721c1 (2026-10-23)
+Verified: 7b3f6b9 (2026-10-23)
 
-- **dev** @ `65721c1` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
+- **dev** @ `7b3f6b9` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
 - **Released:** v2.5.2 is LIVE — `main` @ `ae7c488` (tag `v2.5.2`), npm `latest` = 2.5.2 —
   `gh release list`, `git log -1 --oneline main`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path).
@@ -31,7 +31,10 @@ Verified: 65721c1 (2026-10-23)
 - **PRs:** none open (issue tracker) · **#344 open deliberately** — typebox 1.3.37 held at the host
   pin 1.3.27 (the standalone awareness signal; no `ignore` by policy).
 - **#356 CLOSED** — repaint chokepoint (#357) + `showDashboard` split (#358) merged; 5 review minors fixed.
-- **Suite:** 81 files / 1685 tests — `npx vitest run`; `npx tsc --noEmit` clean.
+- **delegate_task default: conditional background** (#361, PR #362 `7b3f6b9`) — omitted `background`
+  resolves **background** for auto single/fan-out, **foreground** for chain/graph and `always`/`writes`;
+  explicit values unchanged. The runtime background deadline (30 min) applies unless `timeout` is set.
+- **Suite:** 82 files / 1701 tests — `npx vitest run`; `npx tsc --noEmit` clean.
 
 ### Since the last handover
 - U5–U7 merged (Templates onto the Presets shell, presets parity, final sweep) — PRs #350–#352.
@@ -41,6 +44,9 @@ Verified: 65721c1 (2026-10-23)
   reviewed (approve-with-nits, all minors fixed); issue #356 closed.
 - **pi 1.4.0 parity** merged (PR #360 `a899209`): `@earendil-works/*` ^1.4.0, **no source change**, review
   approve/0 findings (byte-identical ExtensionAPI signatures); cockpit tree refreshed to 1.4.0.
+- **Conditional background default** merged (#361/PR #362): approval-aware matrix, explicit-only chain/graph
+  guard (strictness + ordering individually pinned), retry records the effective value; review
+  approve-with-nits (2 minors fixed). CI's README test-count guard caught a stale "1600+" claim (now 1700+).
 
 ### Next actions
 1. Schedule the two handoff design-observation follow-ups (self-commit lag; extension typechecking)
