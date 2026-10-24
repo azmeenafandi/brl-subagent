@@ -37,7 +37,10 @@ Verified: c94e1bb (2026-10-24)
 - **delegate_task default: conditional background** (#361, PR #362 `7b3f6b9`) — omitted `background`
   resolves **background** for auto single/fan-out, **foreground** for chain/graph and `always`/`writes`;
   explicit values unchanged. The runtime background deadline (30 min) applies unless `timeout` is set.
-- **Suite:** 82 files / 1702 tests (~16 s) — `npx vitest run`; `npx tsc --noEmit` clean. **Budget guard in CI:**
+- **Transport auto-retry: LIVE** (#365, PR #370 `509efa1`) — a background run settling with a transport-class
+  failure (exit_error + transport message, **original attempt only**) auto-retries **once** with the recorded
+  params (`resumeOf`/attempt 2); the source notice is suppressed in favour of a toast; a second failure surfaces.
+- **Suite:** 83 files / 1719 tests (~20 s) — `npx vitest run`; `npx tsc --noEmit` clean. **Budget guard in CI:**
   wall ≤ 60 s, test:source LOC ratio ≤ 2.0 (ceilings; `scripts/check-test-budget.mjs`).
 
 ### Since the last handover
@@ -58,7 +61,7 @@ Verified: c94e1bb (2026-10-24)
 ### Next actions
 1. **Test-suite audit: DONE** (#368/PR #369) — budget guard live; prune zero + one pin; one module per cycle
    from here (see the report).
-2. The P0s: **#365** (transport auto-retry) and **#366** (mechanical Jev query).
+2. **#366** (mechanical Jev query) is the remaining P0.
 3. Queued: the two handoff design-observation follow-ups (self-commit lag; extension typechecking).
 
 ## Open items
