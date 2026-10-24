@@ -37,7 +37,8 @@ Verified: c94e1bb (2026-10-24)
 - **delegate_task default: conditional background** (#361, PR #362 `7b3f6b9`) — omitted `background`
   resolves **background** for auto single/fan-out, **foreground** for chain/graph and `always`/`writes`;
   explicit values unchanged. The runtime background deadline (30 min) applies unless `timeout` is set.
-- **Suite:** 82 files / 1701 tests — `npx vitest run`; `npx tsc --noEmit` clean.
+- **Suite:** 82 files / 1702 tests (~16 s) — `npx vitest run`; `npx tsc --noEmit` clean. **Budget guard in CI:**
+  wall ≤ 60 s, test:source LOC ratio ≤ 2.0 (ceilings; `scripts/check-test-budget.mjs`).
 
 ### Since the last handover
 - U5–U7 merged (Templates onto the Presets shell, presets parity, final sweep) — PRs #350–#352.
@@ -55,9 +56,9 @@ Verified: c94e1bb (2026-10-24)
   list); vitest 5.0.5 adopted (~17 s suite).
 
 ### Next actions
-1. **Next cycle, first unit: the test-suite audit** — budget pins (runtime/ratio) + weak-test identification
-   via mutation sampling + consolidation; the suite is 82 files / 1701 at ~17 s (vitest 5.0.5).
-2. Then the P0s **#365** (transport auto-retry) and **#366** (mechanical Jev query).
+1. **Test-suite audit: DONE** (#368/PR #369) — budget guard live; prune zero + one pin; one module per cycle
+   from here (see the report).
+2. The P0s: **#365** (transport auto-retry) and **#366** (mechanical Jev query).
 3. Queued: the two handoff design-observation follow-ups (self-commit lag; extension typechecking).
 
 ## Open items

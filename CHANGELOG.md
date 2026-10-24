@@ -2,6 +2,10 @@
 
 Release history for brl-subagent. Newest first. The full narrative for each release lives in the GitHub release notes.
 
+## Unreleased
+
+- **Test-suite stewardship (issue #368):** a CI **budget guard** now pins the suite's wall time (≤ 60 s; ~16 s today) and its test:source LOC ratio (≤ 2.0; 1.62 today) — ceilings, not targets. The first mutation-sampled audit mutated six modules across hazard classes: five were killed by existing tests, one genuine survivor (an interrupted run's first timestamp could be silently overwritten by a second boot scan) is now pinned. **No tests were removed.** The audit repeats one module per cycle.
+
 ### v2.6.0
 
 - **`background` is the conditional default (issue #361):** omitted, a single task or a `tasks` fan-out now runs in the **background** when the *effective* approval mode is `auto` (per-call param, else config) — the tool returns an agent id immediately and the conductor is woken on terminal state — and stays **foreground** under `writes`/`always` or for `chain`/`graph`. The fallback is the safety property: a background run has no approval dialog, so a gate that needs the user can never be reached by a default (`always` was a hard rejection, `writes` silently auto-approved). Explicit `true`/`false` keeps exactly today's semantics, including the verbatim `background: true` + chain/graph rejection; the effective value is recorded on the run so a retry restores the shape it actually had. A background run still defaults to the 30-minute deadline; pass `background: false` for a quick probe whose answer the next step needs inline.
