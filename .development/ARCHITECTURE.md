@@ -166,6 +166,9 @@ Each rule below is enforced in code and pinned by tests; the pointer is where it
   session paths.
 - CI runs `npm run typecheck` and `npx vitest run`; `.pi/skills/worktree/check-repo.sh` mirrors the gate
   locally before a worktree is created.
+- The suite's growth budget is `scripts/check-test-budget.mjs` (issue #368): wall time ≤ 60 s and
+  test:source LOC ratio ≤ 2.0, read from the vitest JSON report and the source tree. They are ceilings,
+  not targets — growth needs a reason, shrinking is always allowed.
 - The module map's own guard is `src/__tests__/architecture-doc.test.ts`: regeneration must equal the
   checked-in block, so a new module without a purpose header — or an edit that skips `npm run docs:arch` —
   fails the suite.

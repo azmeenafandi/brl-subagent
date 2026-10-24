@@ -179,6 +179,17 @@ describe("registry lifecycle", () => {
 		expect(readEntry(id)).toBeNull();
 	});
 
+	// Issue #368 mutation sample: without the early return in `markInterrupted`, a
+	// second boot scan overwrites the FIRST interruption timestamp — the recovery
+	// surface's "how long has this been interrupted" age would silently reset.
+	it("markInterrupted is idempotent — a second mark preserves the first timestamp", () => {
+		const id = crypto.randomUUID();
+		registerInflightRun({ id, kind: "unit", startedAt: ISO });
+		expect(markInterrupted(id, "2026-10-09T01:00:00.000Z")).toBe(true);
+		expect(markInterrupted(id, "2026-10-10T02:00:00.000Z")).toBe(true);
+		expect(readEntry(id)?.interruptedAt).toBe("2026-10-09T01:00:00.000Z");
+	});
+
 	it("tolerates malformed and unsafe entries without throwing", () => {
 		fs.mkdirSync(registryDir(), { recursive: true });
 		fs.writeFileSync(path.join(registryDir(), "garbage.json"), "{not json");
