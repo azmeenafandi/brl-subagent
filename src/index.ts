@@ -146,6 +146,7 @@ import {
 	claimTerminalNotice,
 	resolveRunEntry,
 } from "./notify-completion";
+import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "./transport-retry";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2862,7 +2863,7 @@ export default function (pi: ExtensionAPI) {
 			`Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.`,
 			buildTemplateGuideline(templateSummary),
 			"To retry a failed subagent, pass its run ID as retryRunId. The retry restores the recorded params - including background, gitMode, approvalMode, force - with explicit values on this call winning. Multi-step runs degrade to a single task. See the retryRunId description for the full field list.",
-			"Set retryOnTimeout: true to automatically retry a FOREGROUND subagent that times out. Only retries once — the second timeout is treated as a final failure. Background runs are not auto-retried; re-dispatch with retryRunId.",
+			"Set retryOnTimeout: true to automatically retry a FOREGROUND subagent that times out. Only retries once — the second timeout is treated as a final failure. A background run is not retried on its deadline, but it IS retried once automatically when it dies on a transport-class error (a dropped connection before the work started), recorded as attempt 2 and announced with a warning toast — do not re-dispatch it yourself. Any other background failure needs an explicit retryRunId.",
 			"Background is the CONDITIONAL default for delegate_task. With background omitted, a single task or a tasks fan-out runs in the BACKGROUND when the effective approvalMode is 'auto' (call param, else config): the tool returns an agent ID immediately, and with tasks it fans out — every task starts as its own background agent, one ID per task in task order, and the conductor is woken once per agent as each finishes. It stays FOREGROUND when the effective approvalMode is 'writes' or 'always' (a background run has no approval dialog, so a gate that needs the user must keep blocking), and for chain and graph (they block by definition; an explicit background: true with chain/graph is rejected). Pass background: false for a quick probe whose answer the next step needs inline; pass background: true to force a background run where the default would block. Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate. A background run defaults to a 30-minute deadline when no timeout is given.",
 			"",
 			"## Conductor Guardrails",
@@ -4313,6 +4314,50 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	/**
+	 * Issue #365: re-dispatch a background run that settled with a transport-class
+	 * failure, using the `retryRunId` machinery. `resolveRetryParams({}, run)`
+	 * restores the recorded params and `spawnBackgroundRun(..., run)` mints the
+	 * lineage (`resumeOf` + `attempt: 2`), so the retry re-runs the normal gates
+	 * (cost, approval, pre-task) and is visible in the record.
+	 *
+	 * Returns TRUE when the retry was actually spawned — the caller then SUPPRESSES
+	 * the source run's completion notice, because the retry's own terminal settle
+	 * is the wake. A gate rejection or a throwing spawn returns FALSE and the
+	 * caller reports the original failure exactly as before (no silent drop).
+	 */
+	async function scheduleTransportRetry(
+		ctx: ExtensionContext,
+		run: SubagentRun,
+	): Promise<boolean> {
+		const sourceAttempt = run.attempt ?? 1;
+		try {
+			const retryParams = resolveRetryParams({}, run);
+			const result = await spawnBackgroundRun(pi, ctx, retryParams, retryParams.task!, run);
+			if (result.isError) {
+				log.warn("Transport auto-retry spawn rejected — surfacing the original failure", {
+					sourceId: run.id,
+					attempt: sourceAttempt,
+					error: result.content[0]?.type === "text" ? result.content[0].text : undefined,
+				});
+				return false;
+			}
+		} catch (err) {
+			log.warn("Transport auto-retry spawn failed — surfacing the original failure", {
+				sourceId: run.id,
+				attempt: sourceAttempt,
+				error: (err as Error).message,
+			});
+			return false;
+		}
+		log.info("Background run settled — transport auto-retry scheduled", {
+			sourceId: run.id,
+			attempt: sourceAttempt + 1,
+		});
+		ctx.ui.notify(TRANSPORT_RETRY_TOAST, "warning");
+		return true;
+	}
+
 	async function deliverCompletionAlert(event: SubagentEvent): Promise<void> {
 		const id = event.agentId;
 		if (!claimTerminalNotice(id)) return;
@@ -4324,6 +4369,14 @@ export default function (pi: ExtensionAPI) {
 			if (!agent) return; // pruned or foreign id — nothing to notify
 			const knob = state.config.completionNotify ?? "all";
 			const run = resolveRunEntry(state.getRunEntries(ctx), id);
+			// Issue #365: a transport-class background failure is re-dispatched once
+			// and the source notice is suppressed (the retry's settle is the wake).
+			// Every other terminal type — and every non-retryable failure — keeps the
+			// existing path unchanged.
+			if (event.type === "subagent:failed" && run && isTransportRetryable(run)) {
+				const retried = await scheduleTransportRetry(ctx, run);
+				if (retried) return;
+			}
 			const message = buildCompletionMessage(agent, run);
 			// Issue #179 (D2): resolve delivery from the CLASSIFIED notification
 			// status, not the raw agent status — otherwise a run whose completion

@@ -99,13 +99,14 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `transcript-path.ts` | The single declaration of the transcript path format — filesystem (`join`) and display (POSIX) forms. |
 | `transcript-tail.ts` | Pure line-planning for the drill-in transcript overlay (no TUI imports). |
 | `transcript.ts` | JSONL transcript recording for every agent run (`.pi/output/agent-<id>.jsonl`). |
+| `transport-retry.ts` | The pure auto-retry predicate for background runs that settled with a transport-class failure (issue #365). |
 | `tui-format.ts` | Pure TUI row formatting shared by the monitor and dashboard (no TUI imports). |
 | `tui.ts` | All TUI surfaces: config menus, preset/template managers, history, live monitor, and result rendering. |
 | `types.ts` | Shared types, constants, and the error/termination classification taxonomy. |
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**40 modules** — every one is listed because a new module without a purpose fails CI.
+**41 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
@@ -152,7 +153,8 @@ Each rule below is enforced in code and pinned by tests; the pointer is where it
   per-repo git lock serializes branch-mode runs (#28, #198).
 - **Retry fidelity** — a retry restores the recorded execution shape (`background`, `gitMode`, `approvalMode`,
   `force`, model, thinking level, priority) with explicitly passed values winning; multi-step shapes degrade
-  to a single run; background runs are not auto-retried on timeout (#227, #244).
+  to a single run; background runs are not auto-retried on timeout (#227, #244), while a transport-class
+  failure is auto-retried once (#365).
 - **Cost governance** — a session cost gate runs in the shared prelude before every spawn family, with the
   per-task estimate fallback (#R5, #201).
 - **Concurrency queue** — four priority tiers govern slot acquisition for foreground and multi-mode runs;
