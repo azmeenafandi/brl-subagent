@@ -106,7 +106,7 @@ All settings persist across sessions.
 | `approvalMode` | string | — | `auto` / `writes` / `always`. Default is user config (`/brl-subagent approval`). `always` is rejected for background runs. |
 | `force` | boolean | `false` | Dispatch anyway past a capability pre-flight block; the block is downgraded to a warning. |
 | `retryRunId` | string | — | Re-run a previously failed or interrupted run with its recorded task and params. |
-| `retryOnTimeout` | boolean | `false` | Retry once if a **foreground** subagent times out. The second timeout is a final failure. Background runs are not auto-retried — re-dispatch with `retryRunId`. |
+| `retryOnTimeout` | boolean | `false` | Retry once if a **foreground** subagent times out. The second timeout is a final failure. A **background** run is not retried on its deadline, but it *is* re-dispatched once automatically when it dies on a transport-class error — see [Transport auto-retry](#transport-auto-retry). Any other background failure is re-dispatched with `retryRunId`. |
 
 **Capability pre-flight:** before spawning, the extension checks that the resolved toolset can actually do the task — a run/execute/test/compile/benchmark task with no `bash`, or an exploration task (search/grep/find/list/locate/glob) with none of `find`/`ls`/`grep`/`bash`. Such a dispatch is **rejected** by default; `force: true` downgrades the rejection to a **warning**. `force` never suppresses an `outputFile`-without-write conflict — that stays a hard error. Warnings are surfaced in the returned result in every mode.
 
@@ -121,6 +121,14 @@ All settings persist across sessions.
 **Not restored:** `chain` / `tasks` / `graph` and `params` are discarded, so retrying a multi-step run silently degrades to a single task — re-issue it fresh for those shapes. `retryOnTimeout` is **explicit-only**: it is never restored from the recorded run and takes effect only when you pass it on the retry call (foreground only; it arms a deadline for *this* call).
 
 **`template` is asymmetric:** the original run's template is **not** restored, but a `template` you supply explicitly on the retry call **does** take effect (it is resolved before the retry merge, issue #175) — its body wins over the recorded `task`.
+
+#### Transport auto-retry
+
+A **background** run that settles `failed` with `errorCategory: 'exit_error'` and a transport signature in its message (`connection error`, `econnreset`, `econnrefused`, `socket hang up`, `fetch failed`, `network error`, `etimedout`, `enotfound`, `eai_again` — case-insensitive) is **re-dispatched once**, mechanically, with the parameters the run recorded. This is the class that dropped four background dispatches in the 2026-10 cycle before any file work; a replay is cheap and the cause is external.
+
+The retry is a normal dispatch of the existing `retryRunId` shape: the recorded task, model, thinking level, tools, `cwd`, `timeout` and preset are restored, the record continues the logical dispatch (`resumeOf` the source run, `attempt: 2`), and every gate (session cost, approval, capability pre-flight) runs again. The source run's completion message is **suppressed** — replaced by a warning toast (`Transport failure — auto-retrying once (attempt 2/2)`), so the retry's own terminal settle is the wake. If the retry also fails, that failure is surfaced as an ordinary one: **one retry per logical dispatch, never a chain**.
+
+Out of scope by construction: non-transport failures, foreground runs (a synchronous failure is already visible, and `retryOnTimeout` covers the timeout case), fan-out units (their records carry no `originalParams`), and chain/graph. Recovery from an interrupted run stays an explicit `retryRunId` call.
 
 ## Multi-step modes (chain, tasks, graph)
 
@@ -305,6 +313,7 @@ The approval-aware fallback is the safety property: background runs have no appr
 - **Per-agent timeout** — the deadline is armed immediately after the prompt is issued, so in-prompt preflight (auth, model resolution) counts toward it. A background run with no explicit `timeout` gets a 30-minute default deadline (the issue #28 orphan protection); an explicit timeout is honored as given — 30 minutes is the default, not a ceiling. On expiry the session is aborted and the agent ends with status `stopped` and the timeout reason. Timeout values are normalized (`0`/negative/`NaN`/`Infinity`/`≥ 2^31` → no timeout, which for a background run means the 30-minute default) and a double-fire guard prevents the timer from acting on an already-settled agent.
 - **Session cost limit (R5)** — the cost check runs before the background spawn, so a session at its limit cannot bypass it by delegating to background. For a background fan-out the whole batch is checked up front as per-task estimate × N.
 - **Approval mode** — `approvalMode: 'always'` is rejected for background agents (there is no interactive dialog to approve a diff while running unattended); `'writes'` silently auto-approves with a warning logged. For a fan-out, `'always'` rejects the whole batch before any spawn and `'writes'` warns once for the batch.
+- **Transport auto-retry** — a run that dies on a dropped connection is replayed once with its recorded params (see [Transport auto-retry](#transport-auto-retry)); the source notice is replaced by a toast so a lost connection doesn't read as a lost run. A second failure surfaces normally.
 - **gitMode branch isolation** — with `gitMode: 'branch'` a work branch is created before the run, the agent's changes are committed at teardown so the diff is real, the diff is captured and surfaced via `get_subagent_result`, and the branch is then switched away from and deleted. This requires a clean working tree — a dirty tree is refused loudly rather than risking the base branch. `gitMode: 'branch'` is rejected for background fan-out — see [Background fan-out](#background-fan-out).
 
 ### Background fan-out
