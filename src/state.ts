@@ -20,6 +20,7 @@ import type {
 	RecoveryMode,
 	CircuitBreakerState,
 	Priority,
+	ModeContext,
 } from "./types";
 import type { TranscriptMessage } from "./transcript-tail";
 import {
@@ -163,6 +164,32 @@ export class SessionState {
 	failedSubagents = 0;
 	unseenSubagents = 0;
 
+	/**
+	 * Issue #354: the footer activity ticker — the single interval that animates
+	 * the status-line spinner while a run is active. Owned by src/concurrency.ts
+	 * (syncProgressTicker / stopProgressTicker), undefined when idle; it lives on
+	 * the session so shutdown can clear it and no module-level timer leaks.
+	 */
+	statusTicker: ReturnType<typeof setInterval> | undefined;
+
+	/**
+	 * Issue #354 (F2): the single 3 s linger timer that clears the settled
+	 * counters and hands the footer back to the idle config line. Owned by
+	 * src/concurrency.ts (syncProgressLinger / clearProgressLinger): armed at
+	 * most once per burst of settled runs — edge-triggered on `active === 0`,
+	 * never re-armed by repeated renders — and cleared when a new run starts,
+	 * when it fires, and on session_shutdown. Lives on the session for the same
+	 * reason as `statusTicker`: no timer may outlive the session.
+	 */
+	statusResetTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/**
+	 * Issue #354: epoch ms at which the oldest still-active run started — the
+	 * ` · 1m 14s` suffix's anchor. Set when the active count first rises above
+	 * zero, cleared when the last run settles.
+	 */
+	activeSinceMs: number | undefined;
+
 	/** Concurrency queue */
 	pendingQueue: Array<{
 		run: () => void;
@@ -177,13 +204,11 @@ export class SessionState {
 	/**
 	 * Issue #133: multi-unit mode breakdown for the status bar — set by
 	 * runGraphMode / runChainMode (src/index.ts) while a dispatch is in
-	 * flight, composed into the status text by updateProgressStatus
+	 * flight, composed into the status text by repaintStatus
 	 * (src/concurrency.ts), cleared in the mode's finally. Undefined when no
 	 * graph/chain dispatch is active.
 	 */
-	modeContext?:
-		| { kind: "graph"; wave: number; totalWaves: number; node: number; totalNodes: number }
-		| { kind: "chain"; step: number; totalSteps: number };
+	modeContext?: ModeContext;
 
 	/**
 	 * Ids whose live entry has been finalized (deferred delete pending).

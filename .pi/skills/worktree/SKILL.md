@@ -127,7 +127,7 @@ never re-type their logic by hand. Full design:
       0016). Underneath `recon.sh`: `codegraph callers <symbol>`, `codegraph
       impact <symbol>` (file nodes by basename, e.g. `runner.ts`), `codegraph
       query <terms>`, `codegraph affected <file>`; refresh with
-      `codegraph-refresh.sh` at every merge (lifecycle step 6);
+      `codegraph-refresh.sh` at every merge (lifecycle step 7);
       `codegraph-check.py --repo-root <path>` for freshness. CLI-only,
       conductor-side, watcher off, never a hook (#230).
     - **Doc concept / cross-document questions → grep + `docs-arch` + the ADRs**
@@ -256,13 +256,19 @@ never re-type their logic by hand. Full design:
 ## Lifecycle
 
 ```
-0. PRE-FLIGHT   check-repo.sh                 (cockpit checkout; stop on failure)
-1. CREATE       git worktree add <path> <branch>
-2. PREP         worktree-prep.sh <path> [--force-isolated if bump]  (symlink/install + smoke test)
-3. DELEGATE     task with cwd = <path>; subagent commits, pushes, opens PR (body per the pr skill)
-4. REVIEW       adversarial review (REVIEW_*.md lives in worktree, gitignored)
-5. USER LOOP    review → revisions → approve
-6. MERGE        merge commit to `dev` (PRs target `dev`; `dev → main` is the
+0. ORIENT       read `.development/HANDOFF.md` §STATE (the handoff extension also
+                injects it at session start / after compaction), then VERIFY its
+                claims with the commands it names — the snapshot describes the
+                tree it was written for, not necessarily HEAD (`Verified:`).
+                Stale? reconcile before starting work. Contract:
+                `.pi/skills/handoff/references/handoff.md`.
+1. PRE-FLIGHT   check-repo.sh                 (cockpit checkout; stop on failure)
+2. CREATE       git worktree add <path> <branch>
+3. PREP         worktree-prep.sh <path> [--force-isolated if bump]  (symlink/install + smoke test)
+4. DELEGATE     task with cwd = <path>; subagent commits, pushes, opens PR (body per the pr skill)
+5. REVIEW       adversarial review (REVIEW_*.md lives in worktree, gitignored)
+6. USER LOOP    review → revisions → approve
+7. MERGE        merge commit to `dev` (PRs target `dev`; `dev → main` is the
                 release-time merge commit. Never squash — per-issue commits
                 must survive so release notes can read them. Never merge a
                 task PR straight to `main`.) Then run
@@ -272,12 +278,12 @@ never re-type their logic by hand. Full design:
                 freshness (`indexed_at_commit == HEAD`, `index_state =
                 complete`). CodeGraph is the SOLE structural index (ADR 0016);
                 graphify is retired.
-7. CHECKPOINT   release checkpoint for extension-code changes — conductor
+8. CHECKPOINT   release checkpoint for extension-code changes — conductor
                 pauses for the user (rule #6; docs/tests/tooling: none)
-8. CLEANUP      worktree-cleanup.sh <path>   (UNCONDITIONAL — auto-derives the branch;
+9. CLEANUP      worktree-cleanup.sh <path>   (UNCONDITIONAL — auto-derives the branch;
                 deletes local + remote heads, never dev/main. Applies to EVERY
                 worktree of the unit — implementation AND review worktrees)
-9. VERIFY       (rule #9) at the point of use — for C1/C2 changes dispatch a
+10. VERIFY       (rule #9) at the point of use — for C1/C2 changes dispatch a
                 live probe and confirm the behavior, verifying what the
                 mechanism PRODUCES, not that it exists. Under npm dogfooding
                 the installed extension is the RELEASED version, so on-disk
@@ -317,7 +323,7 @@ mechanics, verdict format: `references/review-dispatch.md`.
   cockpit. The pull is skipped with a warning when the cockpit has uncommitted
   changes. Unconditional; warns if the shared tree is stale.
 - **`codegraph-refresh.sh [--repo-root <path>] [--full]`** — after EVERY merge
-  into `dev` (lifecycle step 6): runs `codegraph sync` (or `--full` for a
+  into `dev` (lifecycle step 7): runs `codegraph sync` (or `--full` for a
   rebuild) in the cockpit, then `codegraph-check.py`. CodeGraph is the sole
   structural index (ADR 0016); refreshed by this explicit step, never by a hook
   (#230). Needs the pinned CLI (`pnpm add -g @colbymchenry/codegraph@1.6.2` —

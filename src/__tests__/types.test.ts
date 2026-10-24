@@ -265,8 +265,8 @@ describe("formatModel", () => {
 });
 
 describe("formatMaxParallel", () => {
-	it('returns "unlimited" for 0', () => {
-		expect(formatMaxParallel(0)).toBe("unlimited");
+	it('returns "Unlimited" for 0', () => {
+		expect(formatMaxParallel(0)).toBe("Unlimited");
 	});
 
 	it("returns string number for positive values", () => {

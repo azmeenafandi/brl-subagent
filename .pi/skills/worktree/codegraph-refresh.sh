@@ -3,7 +3,7 @@
 #
 # STATUS: **the gate.** CodeGraph is the sole structural index (ADR 0016); the
 # graphify layer it replaced is retired. Run at EVERY merge into `dev` (lifecycle
-# step 6) — explicit invocation, never a hook (#230). Landed by the 2026-10-08
+# step 7) — explicit invocation, never a hook (#230). Landed by the 2026-10-08
 # bake-off (Phase 1). Findings:
 #   .development/investigations/codegraph-bakeoff-2026-10-08/findings.md
 #   .development/decisions/0016-retire-graphify.md

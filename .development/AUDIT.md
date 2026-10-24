@@ -1,6 +1,6 @@
 # brl-subagent — Audit: Strengths & Weaknesses
 
-> Generated: 2026-08-03 | Version: 2.5.2 (released 2026-10-17). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.5.2 (see the follow-up sections below).
+> Generated: 2026-08-03 | Version: 2.6.0 (released 2026-10-24). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.6.0 (see the follow-up sections below).
 
 ## What's Been Fixed (since v1.3.0)
 
@@ -607,3 +607,9 @@ A follow-on sweep in which **every item traces to something the 2.3.5 release ex
 - **#164 CLOSED — the obsolete update notifier removed.** It duplicated pi's native notice, misdirected users to the GitHub release, and — under staged publishing — could announce a version npm did not yet have. `src/update.ts` and its test deleted; the module count drops **31 → 30**. The C2 focused review proved backwards compatibility **empirically** (legacy session keys ignored, not rejected; the guard did not go soft elsewhere) and mutation-tested the README pinning test four ways.
 - **Corrections**: module count 31 → **30** (update.ts removed). Two spec-scoping gaps were surfaced by the **implementer**, not the conductor — an e2e fixture list referencing the deleted module by *name* (symbol greps cannot see it) and a self-contradictory grep check. Both logged; the name-vs-symbol lesson is the second instance this sprint of *'the query did not cover the evidence'*.
 - **Toolchain**: vitest 4 → 5 (major; CI-verified) and typebox 1.3.25 → 1.3.29. The typebox dev/runtime divergence from pi's bundled **1.3.7** was verified **inert** for our nine-primitive-builder surface (byte-identical schema output across 1.3.7/1.3.25/1.3.29) and is now recorded in the Distribution & Packaging section so it need not be re-investigated.
+
+## v2.6.0 Audit Follow-up (2026-10-24)
+
+- **UI/UX:** the config menu and the footer now carry the cycle's consistency work — one grammar, divider grouping, the Templates/Presets unification, and the live activity indicator. Presentation-only; no keys or actions changed. Four reviewed units produced five minors, all fixed pre-merge (empty-branch colour keys unpinned, guard strictness/ordering pinned only in conjunction, two overstated docstrings/comments, a shutdown test that mirrored rather than invoked the handler).
+- **Dispatch semantics:** `background` is now the conditional default (approval-aware). The safety property is explicit: gated modes stay foreground by default, so a background run can never reach a prompt it cannot show.
+- **Process:** the first cycle-close audit under the Jev/calibration regime produced two Rule 11 escalations (transport auto-retry; the Jev query made mechanical) and five advisory sweep candidates. The **test-suite audit** is the next cycle's first unit — the suite stands at 1701 tests / 82 files (~17 s on vitest 5.0.5), and its remit is budget pins + weak-test identification, not fewer tests for their own sake.

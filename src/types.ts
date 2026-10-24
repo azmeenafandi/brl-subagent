@@ -577,6 +577,16 @@ export type DelegateTaskDetails =
  */
 export type DelegateTaskParams = Static<typeof delegateTaskParamsSchema>;
 
+/**
+ * The multi-unit breakdown shown in the footer while a graph/chain dispatch is
+ * in flight (issue #133). `SessionState.modeContext` carries it for the
+ * duration of the dispatch; the footer formatter (src/tui-format.ts) renders
+ * it, so the shape lives here rather than in `state.ts`.
+ */
+export type ModeContext =
+	| { kind: "graph"; wave: number; totalWaves: number; node: number; totalNodes: number }
+	| { kind: "chain"; step: number; totalSteps: number };
+
 // ---------------------------------------------------------------------------
 // Resolved params (after preset merging + validation)
 // ---------------------------------------------------------------------------
@@ -983,11 +993,11 @@ export function coherentFailureReason(
 }
 
 export function formatModel(m: { provider: string; id: string } | undefined): string {
-	return m ? `${m.provider}/${m.id}` : "Not set (will use main agent\u2019s model)";
+	return m ? `${m.provider}/${m.id}` : "Not set";
 }
 
 export function formatMaxParallel(n: number): string {
-	return n === 0 ? "unlimited" : String(n);
+	return n === 0 ? "Unlimited" : String(n);
 }
 
 /**

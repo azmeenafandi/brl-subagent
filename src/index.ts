@@ -73,9 +73,18 @@ import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
-import { findUnknownParams, KNOWN_DELEGATE_KEYS, resolveSubagentParams, snapshotOriginalParams } from "./params";
+import {
+	defaultBackgroundFor,
+	findUnknownParams,
+	KNOWN_DELEGATE_KEYS,
+	resolveEffectiveApprovalMode,
+	resolveSubagentParams,
+	shouldRejectBackgroundForBatch,
+	snapshotOriginalParams,
+	type DispatchShape,
+} from "./params";
 import { delegateTaskParamsSchema } from "./schema";
-import { createSessionState, resolveTerminalRunEntry } from "./state";
+import { createSessionState, resolveTerminalRunEntry, type SessionState } from "./state";
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs, reapActiveChildren } from "./runner";
@@ -85,7 +94,7 @@ import {
 	newDispatchIdentity,
 } from "./recovery";
 import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
-import { acquireSlot, releaseSlot, updateStatus, updateProgressStatus } from "./concurrency";
+import { acquireSlot, clearProgressLinger, releaseSlot, repaintStatus, stopProgressTicker } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
 import {
 	finalizeRunRecord,
@@ -182,6 +191,34 @@ export function buildTemplateGuideline(templateSummary: string): string {
 	return `Templates are file-backed task starters with \${param} slots. Built-in templates: ${templateSummary}. Custom templates are NOT listed here — inspect them via /brl-subagent templates before choosing one.`;
 }
 
+/**
+ * Issue #354 review minor: the synchronous shutdown cleanup, extracted so the
+ * real body (not a hand-mirrored copy) is exercised by tests. Clears every
+ * session-bound live collection, resets the counters, and stops both footer
+ * timers. Ordering is significant: the ticker is stopped before the linger is
+ * cleared, and the maps are cleared before their guard claim set.
+ */
+export function cleanupSessionState(state: SessionState): void {
+	// Clear all live subagent sessions
+	state.subagentSessions.clear();
+	// Drop pending finalize claims too (PR #71 review: the claim set must
+	// not outlive the map it guards — a fresh session could otherwise
+	// no-op on an id a stale claim still remembers).
+	state.resetLiveFinalizeClaims();
+	// Reset counters
+	state.activeSubagents = 0;
+	state.completedSubagents = 0;
+	state.failedSubagents = 0;
+	state.unseenSubagents = 0;
+	// Issue #354: the footer ticker must not outlive the session (it also
+	// drops the elapsed anchor, so a new session starts its own clock), and
+	// neither may the 3 s linger timer (F2) — it would repaint a dead pane.
+	stopProgressTicker(state);
+	clearProgressLinger(state);
+	// Clear pending queue
+	state.pendingQueue.length = 0;
+}
+
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
@@ -219,7 +256,10 @@ export default function (pi: ExtensionAPI) {
 	// -------------------------------------------------------------------
 
 	function applyConfig(ctx: ExtensionContext, message: string) {
-		updateStatus(state, ctx);
+		// Issue #354: a config change mid-run must not blank the footer —
+		// repaintStatus renders the activity line while runs are active and
+		// falls back to the idle config line when none are.
+		repaintStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify(message, "info");
 	}
@@ -239,7 +279,7 @@ export default function (pi: ExtensionAPI) {
 			getAllPresets(state.builtinPresets, state.customPresets),
 			log,
 		);
-		updateStatus(state, ctx);
+		repaintStatus(state, ctx);
 		state.persistState(pi);
 		ctx.ui.notify("Subagent configuration reset", "info");
 	}
@@ -694,10 +734,10 @@ export default function (pi: ExtensionAPI) {
 				};
 				// Issue #133: render the breakdown — the chain holds ONE mode-level
 				// slot (acquired at mode start, released in the finally), so no
-				// per-step acquire/release calls updateProgressStatus while the
+				// per-step acquire/release calls repaintStatus while the
 				// mode context is set. Call it directly here (mirrors how the
 				// graph path's per-node slot operations trigger the render).
-				updateProgressStatus(state, ctx);
+				repaintStatus(state, ctx);
 
 				// Emit initial progress for this step
 				const modeInfo = describePromptMode(
@@ -2362,7 +2402,7 @@ export default function (pi: ExtensionAPI) {
 		
 		// Update footer counters
 		state.activeSubagents++;
-		updateProgressStatus(state, ctx);
+		repaintStatus(state, ctx);
 
 		let completed = false;
 		
@@ -2394,7 +2434,7 @@ export default function (pi: ExtensionAPI) {
 						if (state.activeSubagents < 0) state.activeSubagents = 0;
 					}
 					state.failedSubagents++;
-					updateProgressStatus(state, ctx);
+					repaintStatus(state, ctx);
 					sendCrashNotice(`Background agent "${agent.description}" crashed.`);
 					return;
 				}
@@ -2441,7 +2481,7 @@ export default function (pi: ExtensionAPI) {
 					
 					if (agent.status === 'failed') {
 						state.failedSubagents++;
-						updateProgressStatus(state, ctx);
+						repaintStatus(state, ctx);
 						// Issue #315: the terminal wake (`subagent-completion`, emitted by
 						// the session-manager settle) is the ONE notice for a failed run.
 						// The status here was set by that settle, so the wake already
@@ -2449,11 +2489,11 @@ export default function (pi: ExtensionAPI) {
 					} else if (agent.status === 'stopped') {
 						// User-initiated stop (stop_subagent) or deadline abort
 						// (timeout/deadline) — not a failure.
-						updateProgressStatus(state, ctx);
+						repaintStatus(state, ctx);
 					} else {
 						state.completedSubagents++;
 						state.unseenSubagents++;
-						updateProgressStatus(state, ctx);
+						repaintStatus(state, ctx);
 					}
 				}
 			} catch (err) {
@@ -2472,7 +2512,7 @@ export default function (pi: ExtensionAPI) {
 						if (state.activeSubagents < 0) state.activeSubagents = 0;
 					}
 					state.failedSubagents++;
-					updateProgressStatus(state, ctx);
+					repaintStatus(state, ctx);
 					sendCrashNotice(`Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`);
 				}
 			}
@@ -2517,7 +2557,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					// m6: deadline abort is a stop, not a completion — mirror the
 					// W3/poller stopped path (no completedSubagents increment).
-					updateProgressStatus(state, ctx);
+					repaintStatus(state, ctx);
 				} catch (err) {
 					// Defensive: never let the deadline timer throw uncaught — that would
 					// skip finalizeLiveSubagent, the counter decrement, and the notification.
@@ -2543,7 +2583,7 @@ export default function (pi: ExtensionAPI) {
 						if (state.activeSubagents < 0) state.activeSubagents = 0;
 					}
 					state.failedSubagents++;
-					updateProgressStatus(state, ctx);
+					repaintStatus(state, ctx);
 				}
 			}
 		}, hardCapMs);
@@ -2823,7 +2863,7 @@ export default function (pi: ExtensionAPI) {
 			buildTemplateGuideline(templateSummary),
 			"To retry a failed subagent, pass its run ID as retryRunId. The retry restores the recorded params - including background, gitMode, approvalMode, force - with explicit values on this call winning. Multi-step runs degrade to a single task. See the retryRunId description for the full field list.",
 			"Set retryOnTimeout: true to automatically retry a FOREGROUND subagent that times out. Only retries once — the second timeout is treated as a final failure. Background runs are not auto-retried; re-dispatch with retryRunId.",
-			"Set background: true to run the subagent in the background without blocking. The tool returns immediately with an agent ID. With tasks, background fans out: every task starts as its own background agent, the call returns one ID per task in task order, and the conductor is woken once per agent as each finishes; chain and graph cannot be combined with background (rejected). Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate.",
+			"Background is the CONDITIONAL default for delegate_task. With background omitted, a single task or a tasks fan-out runs in the BACKGROUND when the effective approvalMode is 'auto' (call param, else config): the tool returns an agent ID immediately, and with tasks it fans out — every task starts as its own background agent, one ID per task in task order, and the conductor is woken once per agent as each finishes. It stays FOREGROUND when the effective approvalMode is 'writes' or 'always' (a background run has no approval dialog, so a gate that needs the user must keep blocking), and for chain and graph (they block by definition; an explicit background: true with chain/graph is rejected). Pass background: false for a quick probe whose answer the next step needs inline; pass background: true to force a background run where the default would block. Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate. A background run defaults to a 30-minute deadline when no timeout is given.",
 			"",
 			"## Conductor Guardrails",
 			"",
@@ -3026,12 +3066,29 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			const dispatchShape: DispatchShape = isChain
+				? "chain"
+				: isGraph
+					? "graph"
+					: isParallel
+						? "parallel"
+						: "single";
+
+			// Capture the caller's value BEFORE the default is recorded on
+			// `params.background` below. The guard must judge what the caller
+			// actually asked for; reading the recorded value would make it depend
+			// on the default. Keeping the capture first makes that ordering
+			// self-evident (issue #361 review).
+			const explicitBackground = params.background;
+
 			// background: true with chain/graph was silently ignored — the batch ran
 			// foreground (blocking until every unit finished) while the caller believed
 			// it was background. Both remain rejected loudly at dispatch validation;
 			// tasks (parallel) fans out into independent background agents instead.
-			if (params.background && (isChain || isGraph)) {
-				const batchMode = isChain ? "chain" : "graph";
+			// Only an EXPLICIT true trips this (issue #361): an omitted `background`
+			// now defaults to foreground here rather than being rejected.
+			if (shouldRejectBackgroundForBatch(dispatchShape, explicitBackground)) {
+				const batchMode = dispatchShape === "chain" ? "chain" : "graph";
 				return {
 					content: [
 						{
@@ -3043,6 +3100,24 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
+
+			// Issue #361: background is the CONDITIONAL default for the shapes that
+			// can run unattended. Resolved ONCE per dispatch and reused by the
+			// single and fan-out paths below, so the decision cannot drift between
+			// them. The approval mode is the EFFECTIVE one (call param, else the
+			// configured default — presets declare no approvalMode today) — the same
+			// value the child will run with — so the default never routes a run into a
+			// background context that would break or silently auto-approve it
+			// ('always' has no dialog; 'writes' gates the diff on approval).
+			const useBackground =
+				params.background ??
+				defaultBackgroundFor(dispatchShape, resolveEffectiveApprovalMode(params.approvalMode, state));
+			// Record the EFFECTIVE value on the dispatch (a no-op when the caller was
+			// explicit): a run started by the default must retry as what it actually
+			// was instead of re-deriving the default, which may since have moved with
+			// the config. Fan-out units still record no background of their own — a
+			// unit retries as a single foreground run (issue #229), unaffected here.
+			params.background ??= useBackground;
 
 			if (isChain) {
 				if (params.chain!.length > MAX_CHAIN_STEPS) {
@@ -3073,7 +3148,7 @@ export default function (pi: ExtensionAPI) {
 						isError: true,
 					};
 				}
-				if (params.background) return runBackgroundFanOut(pi, ctx, params, signal);
+				if (useBackground) return runBackgroundFanOut(pi, ctx, params, signal);
 				return runParallelMode(params, signal, onUpdate, ctx);
 			}
 
@@ -3086,7 +3161,7 @@ export default function (pi: ExtensionAPI) {
 			// boolean-array filter — assert, mirroring params.chain!/params.tasks! above.
 			const singleTask = params.task!; // non-empty (sanitizer guarantees; isSingle confirms)
 
-			if (params.background) {
+			if (useBackground) {
 				return spawnBackgroundRun(pi, ctx, params, singleTask, retrySourceRun);
 			}
 
@@ -4187,7 +4262,10 @@ export default function (pi: ExtensionAPI) {
 		// run ONCE, at the next turn boundary (never mid-turn).
 		await maybeSendRecoveryNotice(ctx);
 
-		updateStatus(state, ctx);
+		// Issue #356: boot is a config-paint edge — route it through the same
+		// chokepoint as every other footer repaint. With no runs in flight the
+		// chokepoint draws the idle config line the old direct call painted.
+		repaintStatus(state, ctx);
 	});
 
 	// F7: Clean up session-bound state on shutdown
@@ -4204,19 +4282,7 @@ export default function (pi: ExtensionAPI) {
 			log.warn("Shutdown reap failed", { error: (err as Error).message });
 		}
 
-		// Clear all live subagent sessions
-		state.subagentSessions.clear();
-		// Drop pending finalize claims too (PR #71 review: the claim set must
-		// not outlive the map it guards — a fresh session could otherwise
-		// no-op on an id a stale claim still remembers).
-		state.resetLiveFinalizeClaims();
-		// Reset counters
-		state.activeSubagents = 0;
-		state.completedSubagents = 0;
-		state.failedSubagents = 0;
-		state.unseenSubagents = 0;
-		// Clear pending queue
-		state.pendingQueue.length = 0;
+		cleanupSessionState(state);
 		// U3: a new session boot may notify again.
 		recoveryNoticeDelivered = false;
 	});

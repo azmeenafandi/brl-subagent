@@ -33,6 +33,8 @@ import type {
 	FileDiff,
 	CompletionNotifyMode,
 	RecoveryMode,
+	LiveSubagent,
+	SLAMetrics,
 } from "./types";
 import {
 	THINKING_LEVELS,
@@ -46,7 +48,6 @@ import {
 	DEFAULT_OUTPUT_CAP_BYTES,
 	formatTokens,
 	formatUsageStats,
-	formatModel,
 	formatMaxParallel,
 	getFinalOutput,
 	isSubagentError,
@@ -58,7 +59,7 @@ import {
 import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
 import { extractParamNames } from "./templates";
 import { parseDiff } from "./diff";
-import { formatPresetSummary, getPreset, loadCustomPresets } from "./presets";
+import { formatPresetSummary, getPreset, loadCustomPresets, sanitizeFileName } from "./presets";
 import { buildOutputHonestyLines, formatRunDuration } from "./history";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -66,7 +67,7 @@ import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type Se
 import { getAgent } from "./session-manager";
 import { visibleRunEntriesForSession } from "./recovery-surface";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
-import { formatElapsed, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName } from "./tui-format";
+import { formatElapsed, formatOutcomeSymbol, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName, formatMenuValue, formatTemplateSummary, menuSection } from "./tui-format";
 import {
 	renderTranscriptMessages,
 	type TranscriptLineStyle,
@@ -122,6 +123,103 @@ export async function showSelectList(
 }
 
 // ---------------------------------------------------------------------------
+// Choice-list rows (menu polish U2): one `(current)` marker syntax
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply the single canonical current-value marker to a choice label. Every
+ * in-scope choice list marks exactly the row whose value equals the current
+ * setting, and marks nothing when no current value exists.
+ */
+export function withCurrentMarker(label: string, isCurrent: boolean): string {
+	return isCurrent ? `${label} (current)` : label;
+}
+
+/** Model choice rows; the current `provider/id` carries the `(current)` marker. */
+export function getModelSelectorItems(
+	models: ReadonlyArray<Pick<Model<Api>, "provider" | "id" | "name" | "contextWindow">>,
+	state: SessionState,
+): SelectItem[] {
+	const current = state.config.model
+		? `${state.config.model.provider}/${state.config.model.id}`
+		: undefined;
+	return models.map((m) => {
+		const value = `${m.provider}/${m.id}`;
+		return {
+			value,
+			label: withCurrentMarker(value, value === current),
+			description: m.name ?? `context: ${(m.contextWindow ?? 0) / 1000}K`,
+		};
+	});
+}
+
+/** Thinking-level choice rows; the configured ceiling carries the marker. */
+export function getThinkingSelectorItems(state: SessionState): SelectItem[] {
+	return THINKING_LEVELS.map((level) => ({
+		value: level,
+		label: withCurrentMarker(level, level === state.config.maxThinkingLevel),
+	}));
+}
+
+/** Change-approval choice rows; the active mode carries the marker. */
+export function getApprovalModeItems(state: SessionState): SelectItem[] {
+	const descriptions: Record<string, string> = {
+		auto: "Never ask - auto-approve",
+		writes: "Ask when files changed - default",
+		always: "Ask every time",
+	};
+	return (["auto", "writes", "always"] as const).map((mode) => ({
+		value: mode,
+		label: withCurrentMarker(mode, mode === state.config.approvalMode),
+		description: descriptions[mode],
+	}));
+}
+
+/** Completion-notify choice rows; the active mode carries the marker. */
+export function getCompletionNotifyItems(state: SessionState): SelectItem[] {
+	const modeDescriptions: Record<CompletionNotifyMode, string> = {
+		all: "Wake on every terminal state (completed, failed, stopped) - default",
+		failed: "Wake only on failed / stopped runs",
+		off: "Never wake (still delivered passively at the next user prompt)",
+	};
+	return COMPLETION_NOTIFY_MODES.map((mode) => ({
+		value: mode,
+		label: withCurrentMarker(mode, mode === state.config.completionNotify),
+		description: modeDescriptions[mode],
+	}));
+}
+
+/** Recovery-posture choice rows; the active posture carries the marker. */
+export function getRecoveryItems(state: SessionState): SelectItem[] {
+	const modeDescriptions: Record<RecoveryMode, string> = {
+		offer: "Surface interrupted runs (Run History row + one boot notice) - default",
+		off: "Do not surface interrupted runs",
+	};
+	return RECOVERY_MODES.map((mode) => ({
+		value: mode,
+		label: withCurrentMarker(mode, mode === state.config.recovery),
+		description: modeDescriptions[mode],
+	}));
+}
+
+/** SLA enable→window step 1; exactly one of Enabled/Disabled carries the marker. */
+export function getSLAEnableItems(state: SessionState): SelectItem[] {
+	const enabled = state.config.slaTrackingEnabled;
+	return [
+		{
+			value: "disabled",
+			label: withCurrentMarker("Disabled", !enabled),
+			description: "No SLA tracking",
+		},
+		{
+			value: "enabled",
+			label: withCurrentMarker("Enabled", enabled),
+			description: "Track performance metrics and detect degradation",
+		},
+	];
+}
+
+// ---------------------------------------------------------------------------
 // Model selector
 // ---------------------------------------------------------------------------
 
@@ -140,11 +238,7 @@ export async function showModelSelector(
 		return;
 	}
 
-	const items: SelectItem[] = availableModels.map((m: Model<Api>) => ({
-		value: `${m.provider}/${m.id}`,
-		label: `${m.provider}/${m.id}`,
-		description: m.name ?? `context: ${(m.contextWindow ?? 0) / 1000}K`,
-	}));
+	const items: SelectItem[] = getModelSelectorItems(availableModels, state);
 
 	const result = await showSelectList(ctx, "Select Subagent Model", items, 15);
 	if (!result) return;
@@ -163,10 +257,7 @@ export async function showThinkingSelector(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const items: SelectItem[] = THINKING_LEVELS.map((level) => ({
-		value: level,
-		label: level === state.config.maxThinkingLevel ? `${level} (current - ceiling)` : level,
-	}));
+	const items: SelectItem[] = getThinkingSelectorItems(state);
 
 	const result = await showSelectList(ctx, "Select Max Thinking Level", items, 10);
 	if (!result) return;
@@ -187,7 +278,9 @@ export async function showConcurrencyInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const result = await ctx.ui.input(`Max parallel subagents (0 = unlimited, current ${formatMaxParallel(state.config.maxParallel)}):`);
+	const result = await ctx.ui.input(
+		`Max parallel subagents (0 = Unlimited \u00b7 current: ${formatMenuValue("parallel", { maxParallel: state.config.maxParallel })}):`,
+	);
 	if (result == null) return;
 	const num = parseInt(result, 10);
 	if (isNaN(num) || num < 0) {
@@ -207,7 +300,9 @@ export async function showDepthInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const result = await ctx.ui.input(`Max subagent recursion depth (0 = cannot delegate, 1 = one level, current ${state.config.maxSubagentDepth}):`);
+	const result = await ctx.ui.input(
+		`Max subagent recursion depth (0 = cannot delegate, 1 = one level \u00b7 current: ${formatMenuValue("depth", { maxSubagentDepth: state.config.maxSubagentDepth })}):`,
+	);
 	if (result == null) return;
 	const num = parseInt(result, 10);
 	if (isNaN(num) || num < 0) {
@@ -230,11 +325,12 @@ export async function showHistoryEntriesInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const current =
-		state.config.maxHistoryEntries === 0
-			? "unlimited"
-			: String(state.config.maxHistoryEntries);
-	const result = await ctx.ui.input(`Max run history entries (0 = unlimited, default 500, current ${current}):`);
+	const current = formatMenuValue("historyentries", {
+		maxHistoryEntries: state.config.maxHistoryEntries,
+	});
+	const result = await ctx.ui.input(
+		`Max run history entries (0 = Unlimited, default 500 \u00b7 current: ${current}):`,
+	);
 	if (result == null) return;
 	const num = parseInt(result, 10);
 	if (isNaN(num) || num < 0) {
@@ -245,7 +341,7 @@ export async function showHistoryEntriesInput(
 	onConfigChanged(
 		ctx,
 		num === 0
-			? "Run history set to unlimited (no pruning)"
+			? `Run history set to ${formatMenuValue("historyentries", { maxHistoryEntries: num })}`
 			: `Run history entries set to ${num} (oldest entries will be pruned)`,
 	);
 }
@@ -259,11 +355,12 @@ export async function showCostLimitInput(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const current =
-		state.config.sessionCostLimit === 0
-			? "0 (unlimited)"
-			: String(state.config.sessionCostLimit);
-	const result = await ctx.ui.input(`Session cost limit in USD (0 = unlimited, e.g. 1.00 for $1, current ${current}):`);
+	const current = formatMenuValue("costlimit", {
+		sessionCostLimit: state.config.sessionCostLimit,
+	});
+	const result = await ctx.ui.input(
+		`Session cost limit in USD (0 = Unlimited, e.g. 1.00 for $1 \u00b7 current: ${current}):`,
+	);
 	if (result == null) return;
 	const num = parseFloat(result);
 	if (isNaN(num) || num < 0) {
@@ -274,7 +371,7 @@ export async function showCostLimitInput(
 	onConfigChanged(
 		ctx,
 		num === 0
-			? "Session cost limit set to unlimited"
+			? `Session cost limit set to ${formatMenuValue("costlimit", { sessionCostLimit: num })}`
 			: `Session cost limit set to $${num.toFixed(2)}`,
 	);
 }
@@ -288,23 +385,7 @@ export async function showApprovalModeSelector(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const items: SelectItem[] = [
-		{
-			value: "auto",
-			label: "auto",
-			description: "Never ask - auto-approve",
-		},
-		{
-			value: "writes",
-			label: "writes",
-			description: "Ask when files changed - default",
-		},
-		{
-			value: "always",
-			label: "always",
-			description: "Ask every time",
-		},
-	];
+	const items: SelectItem[] = getApprovalModeItems(state);
 
 	const result = await showSelectList(ctx, "Select Change Approval Mode", items, 5);
 	if (!result) return;
@@ -322,18 +403,9 @@ export async function showCompletionNotifySelector(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const modeDescriptions: Record<CompletionNotifyMode, string> = {
-		all: "Wake on every terminal state (completed, failed, stopped) - default",
-		failed: "Wake only on failed / stopped runs",
-		off: "Never wake (still delivered passively at the next user prompt)",
-	};
-	const items: SelectItem[] = COMPLETION_NOTIFY_MODES.map((mode) => ({
-		value: mode,
-		label: mode,
-		description: modeDescriptions[mode],
-	}));
+	const items: SelectItem[] = getCompletionNotifyItems(state);
 
-	const result = await showSelectList(ctx, "Completion Notify Mode", items, 5);
+	const result = await showSelectList(ctx, "Select Completion Notify Mode", items, 5);
 	if (!result) return;
 
 	state.config.completionNotify = result as CompletionNotifyMode;
@@ -349,17 +421,9 @@ export async function showRecoverySelector(
 	state: SessionState,
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
-	const modeDescriptions: Record<RecoveryMode, string> = {
-		offer: "Surface interrupted runs (Run History row + one boot notice) - default",
-		off: "Do not surface interrupted runs",
-	};
-	const items: SelectItem[] = RECOVERY_MODES.map((mode) => ({
-		value: mode,
-		label: mode,
-		description: modeDescriptions[mode],
-	}));
+	const items: SelectItem[] = getRecoveryItems(state);
 
-	const result = await showSelectList(ctx, "Recovery Posture", items, 5);
+	const result = await showSelectList(ctx, "Select Recovery Posture", items, 5);
 	if (!result) return;
 
 	state.config.recovery = result as RecoveryMode;
@@ -376,11 +440,8 @@ export async function showSLAConfig(
 	onConfigChanged: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<void> {
 	// Step 1: Enable/disable toggle
-	const enableItems: SelectItem[] = [
-		{ value: "disabled", label: "Disabled", description: "No SLA tracking" },
-		{ value: "enabled", label: "Enabled", description: "Track performance metrics and detect degradation" },
-	];
-	const enableResult = await showSelectList(ctx, "SLA Tracking", enableItems, 5);
+	const enableItems: SelectItem[] = getSLAEnableItems(state);
+	const enableResult = await showSelectList(ctx, "Configure SLA Tracking", enableItems, 5);
 	if (!enableResult) return;
 
 	const enabled = enableResult === "enabled";
@@ -392,7 +453,9 @@ export async function showSLAConfig(
 	}
 
 	// Step 2: Window size input
-	const sizeResult = await ctx.ui.input(`Window size (10-500, current ${state.config.slaWindowSize}):`);
+	const sizeResult = await ctx.ui.input(
+		`Window size (10-500 \u00b7 current: ${state.config.slaWindowSize}):`,
+	);
 	if (sizeResult == null) return;
 	const size = parseInt(sizeResult, 10);
 	if (isNaN(size) || size < 10 || size > 500) {
@@ -686,127 +749,326 @@ export async function showPresetManager(
 
 	const items: SelectItem[] = [
 		...builtinItems,
-		...(customItems.length > 0
-			? [
-					{
-						value: "__divider__",
-						label: "\u2500\u2500\u2500 Custom Presets \u2500\u2500\u2500",
-						description: "",
-					},
-				]
-			: []),
+		// Shared factory (U1) rather than a literal: same value shape
+		// (`__divider__:<slug>`) and label grammar as every other section row.
+		...(customItems.length > 0 ? [menuSection("Custom Presets")] : []),
 		...customItems,
 	];
 
-	const result = await showSelectList(
-		ctx,
-		`Presets (${state.builtinPresets.length} built-in, ${state.customPresets.length} custom)`,
-		items,
-		15,
-	);
-	if (!result || result === "__divider__") return;
+	// Defensive zero-item case, mirroring the Templates manager: never open an
+	// empty SelectList — say so instead.
+	if (items.length === 0) {
+		ctx.ui.notify(emptyManagerNotice("presets", "presets", "presets"), "info");
+		return;
+	}
 
-	{
-		// Extract preset name from value
-		const isBuiltin = result.startsWith("__builtin__:");
-		const isCustom = result.startsWith("__custom__:");
-		const presetName = isBuiltin
+	const title = `Presets (${state.builtinPresets.length} built-in, ${state.customPresets.length} custom)`;
+
+	// Browse loop: selecting the divider is a no-op re-render (the list comes
+	// back), never a close — the same semantics as the Templates manager and
+	// the config menu's dividers.
+	while (true) {
+		const result = await showSelectList(ctx, title, items, 15);
+		if (!result) return;
+		if (isDividerValue(result)) continue;
+
+		// Row values carry the tier prefix; the detail view takes the bare name.
+		const presetName = result.startsWith("__builtin__:")
 			? result.slice("__builtin__:".length)
-			: isCustom
+			: result.startsWith("__custom__:")
 				? result.slice("__custom__:".length)
 				: result;
-
-		const preset = getPreset(presetName, state.builtinPresets, state.customPresets);
-		if (preset) {
-			await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-				const container = new Container();
-				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-				container.addChild(
-					new Text(
-						theme.fg("accent", theme.bold(`Preset: ${preset.name}`)) +
-							(isBuiltin ? theme.fg("dim", " (built-in)") : ""),
-						1,
-						0,
-					),
-				);
-				if (preset.description)
-					container.addChild(new Text(theme.fg("dim", preset.description), 1, 0));
-				container.addChild(new Text("", 0, 0));
-				container.addChild(
-					new Text(theme.fg("dim", `Thinking: ${preset.thinkingLevel || "(not set)"}`), 1, 0),
-				);
-				container.addChild(
-					new Text(
-						theme.fg(
-							"dim",
-							`Inherit: ${preset.inheritSystemPrompt === false ? "no" : "yes (default)"}`,
-						),
-						1,
-						0,
-					),
-				);
-				if (preset.tools)
-					container.addChild(
-						new Text(theme.fg("dim", `Tools: ${preset.tools.join(", ")}`), 1, 0),
-					);
-				if (preset.excludeTools)
-					container.addChild(
-						new Text(theme.fg("dim", `Exclude: ${preset.excludeTools.join(", ")}`), 1, 0),
-					);
-				if (preset.systemPrompt)
-					container.addChild(
-						new Text(theme.fg("dim", `System prompt: ${preset.systemPrompt.slice(0, 100)}`), 1, 0),
-					);
-				container.addChild(new Text("", 0, 0));
-				container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
-				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-				return {
-					render: (w: number) => container.render(w),
-					invalidate: () => container.invalidate(),
-					handleInput: (_data: string) => done(),
-				};
-			});
-		}
+		await showViewPreset(ctx, state, presetName);
+		return;
 	}
 }
 
 /**
- * Determine whether a custom preset comes from the project or global directory.
- * Checks state.customPresets source by scanning file directories.
+ * Preset detail view. Mirrors `showViewTemplate` exactly (U6): same tier suffix
+ * vocabulary, same `Label: value` field grammar, and the same unset-field policy
+ * — unset optional fields are omitted, `Inherit:` always renders because it is a
+ * real default (`yes (default)`), not an absent value.
  */
-function findPresetSource(name: string, ctx: ExtensionContext): "project" | "global" {
+export async function showViewPreset(
+	ctx: ExtensionContext,
+	state: SessionState,
+	name: string,
+): Promise<void> {
+	const preset = getPreset(name, state.builtinPresets, state.customPresets);
+	if (!preset) return;
+
+	// A custom preset that shadows a built-in name wins in getPreset, so only a
+	// name with no custom entry is `builtin`; the rest split project/global.
+	const tier: Tier = state.customPresets.some((p) => p.name === preset.name)
+		? findPresetSource(preset.name, ctx)
+		: "builtin";
+
+	await showDetailView(ctx, {
+		title: `Preset: ${preset.name}`,
+		tier,
+		description: preset.description,
+		content: (theme) =>
+			detailFieldLines(theme, [
+				{ label: "Thinking", value: preset.thinkingLevel },
+				{
+					label: "Inherit",
+					value: preset.inheritSystemPrompt === false ? "no" : "yes (default)",
+				},
+				{ label: "Tools", value: preset.tools?.join(", ") },
+				{ label: "Exclude", value: preset.excludeTools?.join(", ") },
+				{ label: "System prompt", value: preset.systemPrompt?.slice(0, 100) },
+			]),
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Tier classification (menu polish U4, umbrella #345)
+// ---------------------------------------------------------------------------
+
+/** Tier vocabulary shared by presets and templates: shipped, project-local, user-global. */
+export type Tier = "builtin" | "project" | "global";
+
+/** One candidate directory for classifyTier, tagged with the tier it represents. */
+export interface TierDir {
+	tier: "project" | "global";
+	dir: string;
+}
+
+/** Injected I/O and terminal fallback for classifyTier (keeps the decision pure). */
+export interface TierClassifierIo {
+	/** Terminal fallback for the surface: the tier to return when no canonical file matches. */
+	fallback: Tier;
+	/** Existence probe for a candidate file path. */
+	exists: (filePath: string) => boolean;
+}
+
+/**
+ * Pure tier classifier: decide which tier a preset or template name comes from.
+ *
+ * Order of decision:
+ *   1. `<sanitizeFileName(name)>.md` in each `dirs` entry, in order — the real
+ *      writers (`writePresetFile` / `writeTemplateFile`) emit exactly that
+ *      filename via the same `sanitizeFileName`, so a file we wrote by name is
+ *      always resolved by path (#345 A1: the pre-U4 finders re-derived a
+ *      different, lowercased/underscored filename convention and missed it).
+ *   2. `io.fallback` — the surface's terminal value: `builtin` for templates,
+ *      `project` for presets (the preset manager only has [P]/[G] labels, so it
+ *      maps the non-global answer to `project`).
+ *
+ * Both the filesystem and the fallback are injected, so the result is a pure
+ * function of its arguments and testable against temp dirs or stubs.
+ *
+ * Documented residual (accepted this cycle): a hand-written file that overrides
+ * a builtin NAME but is stored under a non-canonical filename matches no path
+ * and is therefore classified by the surface fallback (templates → `builtin`,
+ * presets → `project`). The additive `source` field (out of scope for U4) is
+ * what would fix it.
+ */
+export function classifyTier(
+	name: string,
+	dirs: readonly TierDir[],
+	io: TierClassifierIo,
+): Tier {
+	const fileName = sanitizeFileName(name) + ".md";
+	for (const { tier, dir } of dirs) {
+		if (io.exists(path.join(dir, fileName))) return tier;
+	}
+	return io.fallback;
+}
+
+/**
+ * The two on-disk tiers for a preset or template surface, highest priority
+ * first. Mirrors the order loadCustomPresets/loadCustomTemplates scan: the
+ * project-local dir wins over the user-global dir.
+ */
+function tierDirs(ctx: ExtensionContext, kind: "presets" | "templates"): TierDir[] {
 	const homedir = process.env.HOME || process.env.USERPROFILE || "";
-	const projectDir = path.join(ctx.cwd, ".pi", "brl-subagent", "presets");
-	const globalDir = path.join(homedir, ".pi", "agent", "brl-subagent", "presets");
-	// Prefer project over global (project has higher priority in loadCustomPresets)
-	const sanitizedName = name.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
-	if (fs.existsSync(path.join(projectDir, sanitizedName + ".md"))) return "project";
-	if (fs.existsSync(path.join(globalDir, sanitizedName + ".md"))) return "global";
-	return "project";
+	return [
+		{ tier: "project", dir: path.join(ctx.cwd, ".pi", "brl-subagent", kind) },
+		{ tier: "global", dir: path.join(homedir, ".pi", "agent", "brl-subagent", kind) },
+	];
+}
+
+/**
+ * Determine whether a custom preset comes from the project or global directory.
+ * Delegates the decision to classifyTier; the preset manager only ever labels
+ * custom entries ([P]/[G]), and the preset surface fallback is already
+ * `project`, so a builtin-named custom preset stored under a non-canonical
+ * filename keeps the pre-U4 project label.
+ */
+export function findPresetSource(name: string, ctx: ExtensionContext): "project" | "global" {
+	const tier = classifyTier(name, tierDirs(ctx, "presets"), {
+		fallback: "project",
+		exists: fs.existsSync,
+	});
+	return tier === "global" ? "global" : "project";
 }
 
 /**
  * Determine which tier a template comes from: project, global, or builtin.
- * Scans the project templates dir first, then the user-global dir; a name
- * found in neither is a builtin. Mirrors findPresetSource.
+ * Mirrors findPresetSource. The `builtin` terminal value is the template
+ * surface fallback: any name with no canonical file on disk is `builtin`.
  */
-function findTemplateSource(
-	name: string,
-	ctx: ExtensionContext,
-): "project" | "global" | "builtin" {
-	const homedir = process.env.HOME || process.env.USERPROFILE || "";
-	const projectDir = path.join(ctx.cwd, ".pi", "brl-subagent", "templates");
-	const globalDir = path.join(homedir, ".pi", "agent", "brl-subagent", "templates");
-	// Prefer project over global (project has higher priority in loadCustomTemplates)
-	const sanitizedName = name.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
-	if (fs.existsSync(path.join(projectDir, sanitizedName + ".md"))) return "project";
-	if (fs.existsSync(path.join(globalDir, sanitizedName + ".md"))) return "global";
-	return "builtin";
+export function findTemplateSource(name: string, ctx: ExtensionContext): Tier {
+	return classifyTier(name, tierDirs(ctx, "templates"), {
+		fallback: "builtin",
+		exists: fs.existsSync,
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Shared manager/detail helpers (menu polish U6, umbrella #345)
+// ---------------------------------------------------------------------------
+
+/**
+ * The empty-state notice every manager surface uses: one shape, one set of
+ * places to add files. A manager whose row list is empty notifies with this
+ * instead of opening a SelectList with nothing to select.
+ */
+export function emptyManagerNotice(
+	loadedNoun: string,
+	builtinNoun: string,
+	dir: string,
+): string {
+	return (
+		`No ${loadedNoun} loaded — built-in ${builtinNoun} ship with the extension and ` +
+		"should always be present. Add custom .md files in " +
+		`~/.pi/agent/brl-subagent/${dir}/ or <project>/.pi/brl-subagent/${dir}/.`
+	);
+}
+
+/**
+ * Tier suffix for a detail-view title: `(built-in)`, `(project)`, or `(global)`.
+ * One vocabulary for both detail views, so the title always names the same tier
+ * the manager row's `[B]`/`[P]`/`[G]` prefix came from.
+ */
+export function tierDetailSuffix(tier: Tier): string {
+	return tier === "builtin" ? " (built-in)" : tier === "project" ? " (project)" : " (global)";
+}
+
+/**
+ * One `Label: value` row in a detail view. `value === undefined` means "unset"
+ * and the row is omitted (the U6 unset-field policy).
+ */
+export interface DetailField {
+	label: string;
+	value: string | undefined;
+}
+
+/**
+ * Render a detail view's field block: dim `Label: value` lines, in the order
+ * given, with unset fields omitted. A field that has a real DEFAULT (such as
+ * `Inherit: yes (default)`) passes its resolved value and therefore always
+ * renders — the policy drops absent data, not defaults.
+ */
+export function detailFieldLines(theme: Theme, fields: readonly DetailField[]): string[] {
+	return fields
+		.filter((f) => f.value !== undefined && f.value !== "")
+		.map((f) => theme.fg("dim", `${f.label}: ${f.value}`));
+}
+
+/** What a detail view shows: a titled, tier-suffixed header plus body lines. */
+export interface DetailView {
+	/** Bold accent title, e.g. `Preset: code-review`. */
+	title: string;
+	/** Tier vocabulary from `tierDetailSuffix`. */
+	tier: Tier;
+	/** Optional dim subtitle under the title. */
+	description?: string;
+	/** Body lines (a lead row first, then the field block). */
+	content: (theme: Theme) => string[];
+}
+
+/**
+ * The one detail-view shell both `showViewPreset` and `showViewTemplate` use:
+ * accent border, title + tier suffix, optional description, body, close hint.
+ * Sharing it keeps the grammar and suffix vocabulary from drifting apart.
+ */
+async function showDetailView(ctx: ExtensionContext, view: DetailView): Promise<void> {
+	await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(
+			new Text(
+				theme.fg("accent", theme.bold(view.title)) + theme.fg("dim", tierDetailSuffix(view.tier)),
+				1,
+				0,
+			),
+		);
+		if (view.description)
+			container.addChild(new Text(theme.fg("dim", view.description), 1, 0));
+		container.addChild(new Text("", 0, 0));
+		for (const line of view.content(theme)) container.addChild(new Text(line, 1, 0));
+		container.addChild(new Text("", 0, 0));
+		container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (_data: string) => done(),
+		};
+	});
 }
 
 // ---------------------------------------------------------------------------
 // Template management UI
 // ---------------------------------------------------------------------------
+
+/** True for a select-list divider row (`menuSection` shape), never a template. */
+function isDividerValue(value: string): boolean {
+	return value.startsWith("__divider__");
+}
+
+/**
+ * Split the merged template stack by membership in the shipped built-ins: a
+ * built-in OBJECT is `builtin`, everything else is `custom`. Object identity —
+ * not the name, not the filename — is the partition key, so a custom template
+ * that overrides a built-in name (the merged stack then holds only the custom
+ * object) still counts as custom. Both the manager and the parent config row
+ * read this, so their counts can never disagree.
+ */
+export function partitionTemplates(
+	templates: readonly TaskTemplate[],
+	builtinTemplates: readonly TaskTemplate[],
+): { builtin: TaskTemplate[]; custom: TaskTemplate[] } {
+	const shipped = new Set<TaskTemplate>(builtinTemplates);
+	const builtin: TaskTemplate[] = [];
+	const custom: TaskTemplate[] = [];
+	for (const t of templates) (shipped.has(t) ? builtin : custom).push(t);
+	return { builtin, custom };
+}
+
+/**
+ * Build the Templates manager's rows: built-ins first (shipped order), then —
+ * only when customs exist — a `─── Custom Templates ───` divider, then customs
+ * in current order. Pure: the tier lookup for the `[P]`/`[G]` prefix is injected
+ * (`findTemplateSource` in production), so ordering/partition is testable with
+ * no TUI and no filesystem.
+ *
+ * @param templates - the FULL merged stack (`state.config.templates`)
+ * @param sourceOf - tier lookup for a custom row's prefix
+ * @param builtinTemplates - the shipped built-ins (`state.builtinTemplates`)
+ */
+export function buildTemplateMenuItems(
+	templates: readonly TaskTemplate[],
+	sourceOf: (name: string) => Tier,
+	builtinTemplates: readonly TaskTemplate[],
+): SelectItem[] {
+	const { builtin, custom } = partitionTemplates(templates, builtinTemplates);
+
+	const rows = (list: TaskTemplate[], prefix: (t: TaskTemplate) => string): SelectItem[] =>
+		list.map((t) => ({
+			value: t.name,
+			label: `[${prefix(t)}] ${t.name}`,
+			description: t.description || formatTemplateSummary(t),
+		}));
+
+	return [
+		...rows(builtin, () => "B"),
+		...(custom.length > 0 ? [menuSection("Custom Templates")] : []),
+		...rows(custom, (t) => (sourceOf(t.name) === "project" ? "P" : "G")),
+	];
+}
 
 export function getTemplate(
 	name: string,
@@ -823,64 +1085,27 @@ export async function showViewTemplate(
 	const template = getTemplate(name, state.config.templates);
 	if (!template) return;
 
-	// Tier suffix mirrors the preset view's dim "(built-in)" treatment, extended
-	// to project/global so the detail view matches the manager's tier labels.
-	const templateTier = findTemplateSource(template.name, ctx);
-	const tierSuffix =
-		templateTier === "builtin"
-			? " (built-in)"
-			: templateTier === "project"
-				? " (project)"
-				: " (global)";
-
 	const paramNames = extractParamNames(template.task + (template.outputFile || ""));
 
-	await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-		const container = new Container();
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		container.addChild(
-			new Text(
-				theme.fg("accent", theme.bold(`Template: ${template.name}`)) +
-					theme.fg("dim", tierSuffix),
-				1,
-				0,
-			),
-		);
-		if (template.description)
-			container.addChild(new Text(theme.fg("dim", template.description), 1, 0));
-		container.addChild(new Text("", 0, 0));
-		container.addChild(
-			new Text(theme.fg("toolTitle", "Task:") + " " + theme.fg("toolOutput", template.task), 1, 0),
-		);
-		if (paramNames.length > 0) {
-			container.addChild(
-				new Text(theme.fg("dim", `Parameters: ${paramNames.join(", ")}`), 1, 0),
-			);
-		}
-		if (template.preset)
-			container.addChild(
-				new Text(theme.fg("dim", `Preset: ${template.preset}`), 1, 0),
-			);
-		if (template.thinkingLevel)
-			container.addChild(
-				new Text(theme.fg("dim", `Thinking: ${template.thinkingLevel}`), 1, 0),
-			);
-		if (template.outputFile)
-			container.addChild(
-				new Text(theme.fg("dim", `Output file: ${template.outputFile}`), 1, 0),
-			);
-		if (template.timeout)
-			container.addChild(
-				new Text(theme.fg("dim", `Timeout: ${template.timeout}ms`), 1, 0),
-			);
-		container.addChild(new Text("", 0, 0));
-		container.addChild(new Text(theme.fg("dim", "Press any key to close"), 1, 0));
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		return {
-			render: (w: number) => container.render(w),
-			invalidate: () => container.invalidate(),
-			handleInput: (_data: string) => done(),
-		};
+	await showDetailView(ctx, {
+		title: `Template: ${template.name}`,
+		tier: findTemplateSource(template.name, ctx),
+		description: template.description,
+		// The task IS the template, so it leads the body; every other concept is
+		// an optional field and follows the shared omit-when-unset policy.
+		content: (theme) => [
+			theme.fg("toolTitle", "Task:") + " " + theme.fg("toolOutput", template.task),
+			...detailFieldLines(theme, [
+				{
+					label: "Parameters",
+					value: paramNames.length > 0 ? paramNames.join(", ") : undefined,
+				},
+				{ label: "Preset", value: template.preset },
+				{ label: "Thinking", value: template.thinkingLevel },
+				{ label: "Output file", value: template.outputFile },
+				{ label: "Timeout", value: template.timeout ? `${template.timeout}ms` : undefined },
+			]),
+		],
 	});
 }
 
@@ -889,112 +1114,113 @@ export async function showTemplateManager(
 	state: SessionState,
 ): Promise<void> {
 	if (state.config.templates.length === 0) {
-		ctx.ui.notify(
-			"No task templates loaded — built-in templates ship with the extension and " +
-			"should always be present. Add custom .md files in " +
-			"~/.pi/agent/brl-subagent/templates/ or <project>/.pi/brl-subagent/templates/.",
-			"info",
-		);
+		ctx.ui.notify(emptyManagerNotice("task templates", "templates", "templates"), "info");
 		return;
 	}
 
-	// Tier-prefixed labels mirror showPresetManager: [P]roject / [G]lobal / [B]uiltin.
-	const templateItems: SelectItem[] = state.config.templates.map((t) => {
-		const source = findTemplateSource(t.name, ctx);
-		const tierLabel = source === "project" ? "P" : source === "global" ? "G" : "B";
-		return {
-			value: t.name,
-			label: `[${tierLabel}] ${t.name}`,
-			description: t.description || t.task.slice(0, 60),
-		};
-	});
-
-	const result = await showSelectList(
-		ctx,
-		`Templates (${state.config.templates.length})`,
-		templateItems,
-		15,
+	// The FULL merged stack plus the shipped built-ins: the builder partitions by
+	// membership, so custom-overrides-builtin still classifies as custom.
+	const items = buildTemplateMenuItems(
+		state.config.templates,
+		(name) => findTemplateSource(name, ctx),
+		state.builtinTemplates,
 	);
-	if (!result) return;
+	const { builtin, custom } = partitionTemplates(state.config.templates, state.builtinTemplates);
+	const title = `Templates (${builtin.length} built-in, ${custom.length} custom)`;
 
-	await showViewTemplate(ctx, state, result);
+	// Browse loop: selecting the divider is a no-op re-render (the list comes
+	// back), never a close — mirrors the config menu's divider semantics.
+	while (true) {
+		const result = await showSelectList(ctx, title, items, 15);
+		if (!result) return;
+		if (isDividerValue(result)) continue;
+
+		await showViewTemplate(ctx, state, result);
+		return;
+	}
 }
 
 // ---------------------------------------------------------------------------
 // Configuration menu
 // ---------------------------------------------------------------------------
 
+/** Maximum config rows visible before the list scrolls (U3: 10 → 15). */
+export const CONFIG_MENU_VIEWPORT = 15;
+
 export function getConfigMenuItems(state: SessionState): SelectItem[] {
+	// Menu polish U2: every value row renders the canonical token from
+	// `formatMenuValue` (tui-format.ts) instead of hand-rolled prose. Templates
+	// have no `customTemplates` field on state; the merged stack keeps the
+	// BUILTIN objects by reference (getAllTemplates), so an identity partition
+	// is the state-side equivalent of the manager's builtin/custom split.
+	const templateCounts = partitionTemplates(state.config.templates, state.builtinTemplates);
+
 	return [
 		{
 			value: "model",
-			label: "Select Model",
-			description: state.config.model
-				? `${state.config.model.provider}/${state.config.model.id}`
-				: "Not set (will use main agent\u2019s model by default)",
+			label: "Set Model",
+			description: formatMenuValue("model", { model: state.config.model }),
 		},
 		{
 			value: "thinking",
-			label: "Select Max Thinking Level",
-			description: state.config.maxThinkingLevel,
+			label: "Set Max Thinking Level",
+			description: formatMenuValue("thinking", {
+				maxThinkingLevel: state.config.maxThinkingLevel,
+			}),
 		},
 		{
 			value: "concurrency",
 			label: "Set Max Parallel Subagents",
-			description: formatMaxParallel(state.config.maxParallel),
+			description: formatMenuValue("parallel", { maxParallel: state.config.maxParallel }),
 		},
 		{
 			value: "depth",
 			label: "Set Max Recursion Depth",
-			description: state.config.maxSubagentDepth === 0
-				? "No delegation from subagents"
-				: `Subagents can delegate up to ${state.config.maxSubagentDepth} level${state.config.maxSubagentDepth > 1 ? "s" : ""} deep`,
+			description: formatMenuValue("depth", {
+				maxSubagentDepth: state.config.maxSubagentDepth,
+			}),
 		},
 		{
 			value: "approval",
 			label: "Set Change Approval Mode",
-			description: state.config.approvalMode === "auto"
-				? "Never ask"
-				: state.config.approvalMode === "writes"
-					? "Ask when files changed"
-					: "Ask every time",
+			description: formatMenuValue("approval", { approvalMode: state.config.approvalMode }),
 		},
 		{
 			value: "completionnotify",
 			label: "Set Completion Notify Mode",
-			description: state.config.completionNotify === "all"
-				? "Wake on every terminal state"
-				: state.config.completionNotify === "failed"
-					? "Wake only on failed/stopped"
-					: "Never wake (passive delivery)",
+			description: formatMenuValue("completionnotify", {
+				completionNotify: state.config.completionNotify,
+			}),
 		},
 		{
 			value: "recovery",
 			label: "Set Recovery Posture",
-			description: state.config.recovery === "offer"
-				? "Surface interrupted runs (default)"
-				: "Do not surface interrupted runs",
+			description: formatMenuValue("recovery", { recovery: state.config.recovery }),
 		},
 
 		{
 			value: "historyentries",
 			label: "Set Max History Entries",
-			description: state.config.maxHistoryEntries === 0
-				? "Unlimited (no pruning)"
-				: `${state.config.maxHistoryEntries} entries kept`,
+			description: formatMenuValue("historyentries", {
+				maxHistoryEntries: state.config.maxHistoryEntries,
+			}),
 		},
 		{
 			value: "costlimit",
 			label: "Set Session Cost Limit",
-			description: state.config.sessionCostLimit === 0
-				? "Unlimited"
-				: `$${state.config.sessionCostLimit.toFixed(2)}`,
+			description: formatMenuValue("costlimit", {
+				sessionCostLimit: state.config.sessionCostLimit,
+			}),
 		},
 		{
-			value: "reset",
-			label: "Reset to Default",
-			description: "Clear subagent configuration",
+			value: "sla",
+			label: "Set SLA Tracking",
+			description: formatMenuValue("sla", {
+				slaTrackingEnabled: state.config.slaTrackingEnabled,
+				slaWindowSize: state.config.slaWindowSize,
+			}),
 		},
+		menuSection("Run Activity"),
 		{
 			value: "history",
 			label: "View Run History",
@@ -1002,37 +1228,40 @@ export function getConfigMenuItems(state: SessionState): SelectItem[] {
 		},
 		{
 			value: "monitor",
-			label: "Live Monitor",
+			label: "View Live Monitor",
 			description: "Watch running subagents in real-time",
 		},
 		{
 			value: "dashboard",
-			label: "Observability Dashboard",
+			label: "View Observability Dashboard",
 			description: "Real-time metrics, SLA, errors, and cost trends",
-		},
-		{
-			value: "preset",
-			label: "Manage Presets",
-			description: `${state.builtinPresets.length} built-in, ${state.customPresets.length} custom`,
-		},
-		{
-			value: "templates",
-			label: "Manage Templates",
-			description: state.config.templates.length === 0
-				? "None saved"
-				: `${state.config.templates.length} saved`,
 		},
 		{
 			value: "retry",
 			label: "Retry Failed Run",
 			description: "Select a failed subagent to retry",
 		},
+		menuSection("Presets & Templates"),
 		{
-			value: "sla",
-			label: "SLA Tracking",
-			description: state.config.slaTrackingEnabled
-				? `Enabled (window: ${state.config.slaWindowSize})`
-				: "Disabled",
+			value: "preset",
+			label: "Browse Presets",
+			description: formatMenuValue("presetCounts", {
+				builtinCount: state.builtinPresets.length,
+				customCount: state.customPresets.length,
+			}),
+		},
+		{
+			value: "templates",
+			label: "Browse Templates",
+			description: formatMenuValue("templateCounts", {
+				builtinCount: templateCounts.builtin.length,
+				customCount: templateCounts.custom.length,
+			}),
+		},
+		{
+			value: "reset",
+			label: "Reset Configuration",
+			description: "Clear subagent configuration",
 		},
 	];
 }
@@ -1060,37 +1289,9 @@ export async function showConfigMenu(
 				new Text(theme.fg("accent", theme.bold("brl-subagent Configuration")), 1, 0),
 			);
 
-			container.addChild(
-				new Text(theme.fg("dim", `Model: ${formatModel(state.config.model)}`), 1, 0),
-			);
-			container.addChild(
-				new Text(
-					theme.fg("dim", `Max Thinking: ${state.config.maxThinkingLevel}`),
-					1,
-					0,
-				),
-			);
-			container.addChild(
-				new Text(
-					theme.fg("dim", `Max parallel: ${formatMaxParallel(state.config.maxParallel)}`),
-					1,
-					0,
-				),
-			);
-			if (state.config.sessionCostLimit > 0) {
-				container.addChild(
-					new Text(
-						theme.fg("dim", `Cost limit: $${state.config.sessionCostLimit.toFixed(2)}`),
-						1,
-						0,
-					),
-				);
-			}
-			container.addChild(new Text("", 0, 0));
-
 			const selectList = new SelectList(
 				items,
-				Math.min(items.length, 10),
+				Math.min(items.length, CONFIG_MENU_VIEWPORT),
 				makeSelectListTheme(theme),
 			);
 			selectList.onSelect = (item) => done(item.value);
@@ -1140,8 +1341,8 @@ export async function showRunHistory(
 ): Promise<void> {
 	const statusIcon: Record<string, string> = {
 		running: ctx.ui.theme.fg("accent", "◉"),
-		done: ctx.ui.theme.fg("success", "✓"),
-		failed: ctx.ui.theme.fg("error", "✗"),
+		done: formatOutcomeSymbol("success", ctx.ui.theme),
+		failed: formatOutcomeSymbol("failure", ctx.ui.theme),
 		interrupted: ctx.ui.theme.fg("warning", "◌"),
 	};
 
@@ -1182,8 +1383,8 @@ export async function showRunHistory(
 		// Mark as seen
 		if (state.markRunSeen(run.id)) {
 			persistState();
-			import("./concurrency").then(({ updateProgressStatus }) => {
-				updateProgressStatus(state, ctx);
+			import("./concurrency").then(({ repaintStatus }) => {
+				repaintStatus(state, ctx);
 			});
 		}
 
@@ -1829,6 +2030,250 @@ function compactDuration(ms: number): string {
 	return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
 }
 
+// ---------------------------------------------------------------------------
+// E1 dashboard panels (issue #356)
+//
+// `showDashboard` is a thin composer: it samples the session state once per
+// render pass, then appends these six panels in order. Each panel renders only
+// its own data slice and returns its components instead of painting a
+// container, so its output is pinnable without a terminal (see
+// `src/__tests__/dashboard-panels.test.ts`) while the composer keeps ownership
+// of ordering, borders and spacing.
+// ---------------------------------------------------------------------------
+
+/** The per-row live-session slice the Active Subagents panel renders. */
+export type ActiveSubagentSlice = Pick<
+	LiveSubagent,
+	"label" | "task" | "startedAt" | "usage"
+>;
+
+/** Panel 1 — header: the dashboard title plus the refresh stamp. */
+export function renderDashboardHeader(theme: Theme, refreshStr: string): Component[] {
+	return [
+		new Text(
+			theme.fg("accent", theme.bold("brl-subagent Dashboard")) +
+				theme.fg("dim", `  ${refreshStr}`),
+			1,
+			0,
+		),
+		new Text("", 0, 0),
+	];
+}
+
+/**
+ * Panel 2 — active subagents: the live count in the title, one row per entry.
+ *
+ * `now` is injected (the composer passes the wall clock) so the spinner frame
+ * and the elapsed suffix stay testable; it is sampled per row, as before.
+ */
+export function renderDashboardActivePanel(
+	theme: Theme,
+	sessions: ReadonlyMap<string, ActiveSubagentSlice>,
+	now: () => number = Date.now,
+): Component[] {
+	const activeCount = sessions.size;
+	const components: Component[] = [
+		new Text(
+			theme.fg("accent", theme.bold(`Active Subagents (${activeCount})`)),
+			1,
+			0,
+		),
+	];
+	if (activeCount === 0) {
+		components.push(new Text(theme.fg("dim", "  None running"), 1, 0));
+	} else {
+		let idx = 0;
+		for (const [id, session] of sessions) {
+			const elapsedStr = formatElapsed(now() - session.startedAt);
+			const name = liveRowName(session.label, session.task);
+			const spinner = liveSpinner(now());
+			components.push(
+				new Text(
+					theme.fg("accent", `  ${spinner} ${name}`) +
+						theme.fg(
+							"dim",
+							formatLiveRowDim(id, session.usage, elapsedStr),
+						),
+					1,
+					0,
+				),
+			);
+			idx++;
+			if (idx < activeCount) components.push(new Text("", 0, 0));
+		}
+	}
+	components.push(new Text("", 0, 0));
+	return components;
+}
+
+/**
+ * Panel 3 — SLA summary: success rate (colour-graded), p50/p95/p99 and cost over
+ * the current SLA window. `metrics` is null when there is no run history and
+ * `runCount` is the window size named in the title.
+ */
+export function renderDashboardSlaPanel(
+	theme: Theme,
+	metrics: SLAMetrics | null,
+	runCount: number,
+): Component[] {
+	const components: Component[] = [
+		new Text(
+			theme.fg("accent", theme.bold(`SLA Summary (last ${runCount} runs)`)),
+			1,
+			0,
+		),
+	];
+	if (metrics && metrics.totalRuns > 0) {
+		const successPct = (metrics.successRate * 100).toFixed(1);
+		const successColor = metrics.successRate >= 0.9 ? "success" : metrics.successRate >= 0.7 ? "warning" : "error";
+		components.push(
+			new Text(
+				theme.fg("dim", "  Success: ") +
+					theme.fg(successColor, `${successPct}%`) +
+					theme.fg("dim", ` \u00b7 p50: ${compactDuration(metrics.p50DurationMs)} \u00b7 p95: ${compactDuration(metrics.p95DurationMs)} \u00b7 p99: ${compactDuration(metrics.p99DurationMs)}`),
+				1,
+				0,
+			),
+		);
+		components.push(
+			new Text(
+				theme.fg("dim", "  Cost:      ") +
+					theme.fg("dim", `total $${metrics.totalCost.toFixed(4)} \u00b7 avg $${metrics.averageCost.toFixed(4)}`),
+				1,
+				0,
+			),
+		);
+	} else {
+		components.push(new Text(theme.fg("dim", "  No completed runs yet"), 1, 0));
+	}
+	components.push(new Text("", 0, 0));
+	return components;
+}
+
+/** Panel 4 — recent runs: outcome symbol, name, duration and cost per row. */
+export function renderDashboardRecentRunsPanel(
+	theme: Theme,
+	runs: SubagentRun[],
+): Component[] {
+	const components: Component[] = [
+		new Text(
+			theme.fg("accent", theme.bold("Recent Runs")),
+			1,
+			0,
+		),
+	];
+	if (runs.length === 0) {
+		components.push(new Text(theme.fg("dim", "  No runs recorded"), 1, 0));
+	} else {
+		for (const run of runs) {
+			const icon =
+				run.status === "done"
+					? formatOutcomeSymbol("success", theme)
+					: run.status === "failed"
+						? formatOutcomeSymbol("failure", theme)
+						: theme.fg("accent", "\u25CF");
+			const name = run.label || run.task.slice(0, 50);
+			const dur = run.durationMs ? compactDuration(run.durationMs) : "...";
+			const cost = run.cost ? ` $${run.cost.toFixed(4)}` : "";
+			components.push(
+				new Text(
+					`  ${icon} ${theme.fg("dim", name.slice(0, 50))}` +
+						theme.fg("dim", `  ${dur}${cost}`),
+					1,
+					0,
+				),
+			);
+		}
+	}
+	components.push(new Text("", 0, 0));
+	return components;
+}
+
+/**
+ * Panel 5 — error breakdown: categories sorted by count, each with a
+ * proportional bar. An empty breakdown renders the "no errors" line.
+ */
+export function renderDashboardErrorPanel(
+	theme: Theme,
+	breakdown: Record<string, number> | undefined,
+): Component[] {
+	const components: Component[] = [
+		new Text(
+			theme.fg("accent", theme.bold("Error Breakdown")),
+			1,
+			0,
+		),
+	];
+	if (breakdown && Object.keys(breakdown).length > 0) {
+		const cats = Object.entries(breakdown).sort(
+			(a, b) => b[1] - a[1],
+		);
+		const maxCount = cats[0][1];
+		for (const [cat, count] of cats) {
+			const bar = buildHorizontalBar(count, maxCount, 20);
+			components.push(
+				new Text(
+					theme.fg("dim", `  ${cat.padEnd(18)} `) +
+						theme.fg("error", bar) +
+						theme.fg("dim", ` ${count}`),
+					1,
+					0,
+				),
+			);
+		}
+	} else {
+		// A sentence, not a status icon: coloured as a whole line, so it is
+		// deliberately not routed through formatOutcomeSymbol.
+		components.push(new Text(theme.fg("success", "  No errors \u2713"), 1, 0));
+	}
+	components.push(new Text("", 0, 0));
+	return components;
+}
+
+/**
+ * Panel 6 — cost trend: the sparkline for the sampled costs plus the run count
+ * and cost totals.
+ */
+export function renderDashboardCostTrendPanel(
+	theme: Theme,
+	costTrend: number[],
+): Component[] {
+	const components: Component[] = [
+		new Text(
+			theme.fg("accent", theme.bold("Cost Trend (last 20 runs)")),
+			1,
+			0,
+		),
+	];
+	if (costTrend.length > 0) {
+		const sparkline = formatSparkline(costTrend);
+		const totalCost = costTrend.reduce((s, c) => s + c, 0);
+		components.push(
+			new Text(
+				theme.fg("dim", "  ") + theme.fg("accent", sparkline),
+				1,
+				0,
+			),
+		);
+		components.push(
+			new Text(
+				theme.fg("dim", `  ${costTrend.length} runs \u00b7 total $${totalCost.toFixed(4)} \u00b7 avg $${(totalCost / costTrend.length).toFixed(4)}`),
+				1,
+				0,
+			),
+		);
+	} else {
+		components.push(new Text(theme.fg("dim", "  No cost data"), 1, 0));
+	}
+	components.push(new Text("", 0, 0));
+	return components;
+}
+
+/**
+ * E1 dashboard — the composer. Samples the session state once per render pass
+ * and appends the six panels (rendered above) between the two borders; the
+ * panel bodies themselves live in their own render functions.
+ */
 export async function showDashboard(
 	ctx: ExtensionContext,
 	state: SessionState,
@@ -1840,187 +2285,34 @@ export async function showDashboard(
 			sweepStaleLiveSubagents(state, getAgent);
 
 			const container = new Container();
+			const append = (components: Component[]) => {
+				for (const component of components) container.addChild(component);
+			};
 			const now = new Date();
 			const refreshStr = `refreshing \u00b7 ${now.toLocaleTimeString()}`;
 
 			// ---- Panel 1: Header ----
 			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold("brl-subagent Dashboard")) +
-						theme.fg("dim", `  ${refreshStr}`),
-				1,
-				0,
-			),
-			);
-			container.addChild(new Text("", 0, 0));
+			append(renderDashboardHeader(theme, refreshStr));
 
 			// ---- Panel 2: Active subagents ----
-			const activeCount = state.subagentSessions.size;
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold(`Active Subagents (${activeCount})`)),
-					1,
-					0,
-				),
-			);
-			if (activeCount === 0) {
-				container.addChild(new Text(theme.fg("dim", "  None running"), 1, 0));
-			} else {
-				let idx = 0;
-				for (const [id, session] of state.subagentSessions) {
-					const elapsedStr = formatElapsed(Date.now() - session.startedAt);
-					const name = liveRowName(session.label, session.task);
-					const spinner = liveSpinner(Date.now());
-					container.addChild(
-						new Text(
-							theme.fg("accent", `  ${spinner} ${name}`) +
-								theme.fg(
-									"dim",
-									formatLiveRowDim(id, session.usage, elapsedStr),
-								),
-							1,
-							0,
-						),
-					);
-					idx++;
-					if (idx < activeCount) container.addChild(new Text("", 0, 0));
-				}
-			}
-			container.addChild(new Text("", 0, 0));
+			append(renderDashboardActivePanel(theme, state.subagentSessions, Date.now));
 
 			// ---- Panel 3: SLA Summary ----
 			const allRuns = state.getRunEntries(ctx);
 			const recentRuns = allRuns.slice(0, state.config.slaWindowSize || 50);
 			const metrics = recentRuns.length > 0 ? computeSLAMetrics(recentRuns) : null;
-
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold(`SLA Summary (last ${recentRuns.length} runs)`)),
-					1,
-					0,
-				),
-			);
-			if (metrics && metrics.totalRuns > 0) {
-				const successPct = (metrics.successRate * 100).toFixed(1);
-				const successColor = metrics.successRate >= 0.9 ? "success" : metrics.successRate >= 0.7 ? "warning" : "error";
-				container.addChild(
-					new Text(
-						theme.fg("dim", "  Success: ") +
-							theme.fg(successColor, `${successPct}%`) +
-							theme.fg("dim", ` \u00b7 p50: ${compactDuration(metrics.p50DurationMs)} \u00b7 p95: ${compactDuration(metrics.p95DurationMs)} \u00b7 p99: ${compactDuration(metrics.p99DurationMs)}`),
-					1,
-					0,
-				),
-				);
-				container.addChild(
-					new Text(
-						theme.fg("dim", "  Cost:      ") +
-							theme.fg("dim", `total $${metrics.totalCost.toFixed(4)} \u00b7 avg $${metrics.averageCost.toFixed(4)}`),
-					1,
-					0,
-				),
-				);
-			} else {
-				container.addChild(new Text(theme.fg("dim", "  No completed runs yet"), 1, 0));
-			}
-			container.addChild(new Text("", 0, 0));
+			append(renderDashboardSlaPanel(theme, metrics, recentRuns.length));
 
 			// ---- Panel 4: Recent Runs (last 10) ----
-			const recent10 = allRuns.slice(0, 10);
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold("Recent Runs")),
-					1,
-					0,
-				),
-			);
-			if (recent10.length === 0) {
-				container.addChild(new Text(theme.fg("dim", "  No runs recorded"), 1, 0));
-			} else {
-				for (const run of recent10) {
-					const icon =
-						run.status === "done"
-							? theme.fg("success", "\u2713")
-							: run.status === "failed"
-								? theme.fg("error", "\u2717")
-								: theme.fg("accent", "\u25CF");
-					const name = run.label || run.task.slice(0, 50);
-					const dur = run.durationMs ? compactDuration(run.durationMs) : "...";
-					const cost = run.cost ? ` $${run.cost.toFixed(4)}` : "";
-					container.addChild(
-						new Text(
-							`  ${icon} ${theme.fg("dim", name.slice(0, 50))}` +
-								theme.fg("dim", `  ${dur}${cost}`),
-							1,
-							0,
-						),
-					);
-				}
-			}
-			container.addChild(new Text("", 0, 0));
+			append(renderDashboardRecentRunsPanel(theme, allRuns.slice(0, 10)));
 
 			// ---- Panel 5: Error Breakdown ----
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold("Error Breakdown")),
-					1,
-					0,
-				),
-			);
-			if (metrics && Object.keys(metrics.errorCategoryBreakdown).length > 0) {
-				const cats = Object.entries(metrics.errorCategoryBreakdown).sort(
-					(a, b) => b[1] - a[1],
-				);
-				const maxCount = cats[0][1];
-				for (const [cat, count] of cats) {
-					const bar = buildHorizontalBar(count, maxCount, 20);
-					container.addChild(
-						new Text(
-							theme.fg("dim", `  ${cat.padEnd(18)} `) +
-								theme.fg("error", bar) +
-								theme.fg("dim", ` ${count}`),
-						1,
-						0,
-					),
-				);
-				}
-			} else {
-				container.addChild(new Text(theme.fg("success", "  No errors \u2713"), 1, 0));
-			}
-			container.addChild(new Text("", 0, 0));
+			append(renderDashboardErrorPanel(theme, metrics?.errorCategoryBreakdown));
 
 			// ---- Panel 6: Cost Trend (sparkline) ----
-			container.addChild(
-				new Text(
-					theme.fg("accent", theme.bold("Cost Trend (last 20 runs)")),
-					1,
-					0,
-				),
-			);
-			const costTrend = computeCostTrend(allRuns, 20);
-			if (costTrend.length > 0) {
-				const sparkline = formatSparkline(costTrend);
-				const totalCost = costTrend.reduce((s, c) => s + c, 0);
-				container.addChild(
-					new Text(
-						theme.fg("dim", "  ") + theme.fg("accent", sparkline),
-						1,
-						0,
-					),
-				);
-				container.addChild(
-					new Text(
-						theme.fg("dim", `  ${costTrend.length} runs \u00b7 total $${totalCost.toFixed(4)} \u00b7 avg $${(totalCost / costTrend.length).toFixed(4)}`),
-						1,
-						0,
-					),
-				);
-			} else {
-				container.addChild(new Text(theme.fg("dim", "  No cost data"), 1, 0));
-			}
+			append(renderDashboardCostTrendPanel(theme, computeCostTrend(allRuns, 20)));
 
-			container.addChild(new Text("", 0, 0));
 			container.addChild(new Text(theme.fg("dim", "q / esc to close"), 1, 0));
 			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
@@ -2069,6 +2361,8 @@ export async function showRetryMenu(
 		const err = r.errorMessage ? r.errorMessage.slice(0, 40) : interrupted ? "interrupted" : "error";
 		return {
 			value: r.id,
+			// Uncoloured select-list label pairing ✗ with the interrupted ◌, so the
+			// verdict symbol here is not the themed one — kept as an exception.
 			label: `${interrupted ? "◌" : "✗"} ${name}`,
 			description: `${interrupted ? "interrupted · " : ""}${model} · ${err}`,
 		};
@@ -2214,17 +2508,13 @@ function renderCollapsedChain(
 	theme: Theme,
 ): string {
 	const allSucceeded = details.results.every((r) => !isSubagentError(r));
-	const icon = allSucceeded
-		? theme.fg("success", "\u2713")
-		: theme.fg("error", "\u2717");
+	const icon = formatOutcomeSymbol(allSucceeded ? "success" : "failure", theme);
 	const stoppedEarly = details.stoppedEarly ? " (stopped early)" : "";
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold("chain"))} ${theme.fg("muted", `${details.completedSteps}/${details.totalSteps} steps${stoppedEarly}`)}`;
 
 	for (const r of details.results) {
 		const isErr = isSubagentError(r);
-		const statusIcon = isErr
-			? theme.fg("error", "\u2717")
-			: theme.fg("success", "\u2713");
+		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
 		const stepNum =
 			r.step !== undefined ? theme.fg("muted", `${r.step}. `) : "";
 		const label = r.label ? theme.fg("accent", r.label) : "";
@@ -2248,17 +2538,12 @@ function renderCollapsedParallel(
 	details: ParallelDetails,
 	theme: Theme,
 ): string {
-	const icon =
-		details.failed === 0
-			? theme.fg("success", "\u2713")
-			: theme.fg("error", "\u2717");
+	const icon = formatOutcomeSymbol(details.failed === 0 ? "success" : "failure", theme);
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel"))} ${theme.fg("muted", `${details.succeeded}/${details.failed}/${details.results.length} total`)}`;
 
 	for (const r of details.results) {
 		const isErr = isSubagentError(r);
-		const statusIcon = isErr
-			? theme.fg("error", "\u2717")
-			: theme.fg("success", "\u2713");
+		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
 		const label = r.label ? theme.fg("accent", r.label) : "";
 		const output = getFinalOutput(r.messages);
 		const preview = output.split("\n").slice(0, 2).join("\n");
@@ -2302,9 +2587,7 @@ function renderExpandedChain(
 
 	for (const r of details.results) {
 		const isErr = isSubagentError(r);
-		const statusIcon = isErr
-			? theme.fg("error", "\u2717")
-			: theme.fg("success", "\u2713");
+		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
 		const stepNum = r.step !== undefined ? `${r.step}. ` : "";
 		const label = r.label ? `[${r.label}] ` : "";
 		container.addChild(
@@ -2384,9 +2667,7 @@ function renderExpandedParallel(
 
 	for (const r of details.results) {
 		const isErr = isSubagentError(r);
-		const statusIcon = isErr
-			? theme.fg("error", "\u2717")
-			: theme.fg("success", "\u2713");
+		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
 		const label = r.label ? `[${r.label}] ` : "";
 		container.addChild(
 			new Text(
@@ -2759,9 +3040,7 @@ function renderCollapsedGraph(
 	const allSucceeded = details.waves.every((w) =>
 		w.tasks.every((r) => !isSubagentError(r)),
 	);
-	const icon = allSucceeded
-		? theme.fg("success", "\u2713")
-		: theme.fg("error", "\u2717");
+	const icon = formatOutcomeSymbol(allSucceeded ? "success" : "failure", theme);
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold("graph"))} ${theme.fg("muted", `${totalTasks} tasks in ${details.waves.length} waves`)}`;
 
 	const maxWavesToShow = 3;
@@ -2769,15 +3048,11 @@ function renderCollapsedGraph(
 
 	for (const wave of wavesToRender) {
 		const waveOk = wave.tasks.every((r) => !isSubagentError(r));
-		const waveIcon = waveOk
-			? theme.fg("success", "\u2713")
-			: theme.fg("error", "\u2717");
+		const waveIcon = formatOutcomeSymbol(waveOk ? "success" : "failure", theme);
 		const modeLabel = wave.parallel ? "parallel" : "serial";
 		const taskLabels = wave.tasks.map((r) => {
 			const label = r.label || r.task.slice(0, 30);
-			const taskIcon = !isSubagentError(r)
-				? theme.fg("success", "\u2713")
-				: theme.fg("error", "\u2717");
+			const taskIcon = formatOutcomeSymbol(isSubagentError(r) ? "failure" : "success", theme);
 			return `${taskIcon} ${theme.fg("dim", label)}`;
 		});
 		text += `
@@ -2816,9 +3091,7 @@ function renderExpandedGraph(
 
 	for (const wave of details.waves) {
 		const waveOk = wave.tasks.every((r) => !isSubagentError(r));
-		const waveIcon = waveOk
-			? theme.fg("success", "\u2713")
-			: theme.fg("error", "\u2717");
+		const waveIcon = formatOutcomeSymbol(waveOk ? "success" : "failure", theme);
 		const modeLabel = wave.parallel ? "parallel" : "serial";
 		container.addChild(
 			new Text(
@@ -2830,9 +3103,7 @@ function renderExpandedGraph(
 
 		for (const r of wave.tasks) {
 			const isErr = isSubagentError(r);
-			const statusIcon = isErr
-				? theme.fg("error", "\u2717")
-				: theme.fg("success", "\u2713");
+			const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
 			const label = r.label ? `[${r.label}] ` : "";
 
 			container.addChild(
@@ -3029,7 +3300,7 @@ export function renderDelegateResult(
 	}
 
 	const isError = isSubagentError(details);
-	const icon = isError ? theme.fg("error", "\u2717") : theme.fg("success", "\u2713");
+	const icon = formatOutcomeSymbol(isError ? "failure" : "success", theme);
 	const finalOutput = getFinalOutput(details.messages);
 
 	if (options.expanded) {
