@@ -4,6 +4,9 @@ Release history for brl-subagent. Newest first. The full narrative for each rele
 
 ## Unreleased
 
+- **For contributors — the Jev ritual is checkable:** a ledger check and a dispatch-line formatter run in CI, so a pre-dispatch classification skipped in practice (a bare level with no confidence) now fails the build instead of silently eroding the calibration record.
+
+
 - **Background transport failures auto-retry once (issue #365):** a background run that settles `failed` / `exit_error` with a transport signature (`Connection error.`, `ECONNRESET`, `socket hang up`, `fetch failed`, `ETIMEDOUT`, …) is re-dispatched **once** through the `retryRunId` machinery — recorded task/model/thinking/tools/cwd/timeout restored, all gates re-run, the record continued as `resumeOf` the source with `attempt: 2`. The source completion message is suppressed and replaced by a warning toast, so the retry's settle is the one wake; a second failure surfaces normally and nothing else retries (foreground, non-transport, fan-out units, chain/graph are untouched). Found by the 2026-10-24 cycle close: the connection-error class recurred four times, all recovered by hand.
 
 - **Test-suite stewardship (issue #368):** a CI **budget guard** now pins the suite's wall time (≤ 60 s; ~16 s today) and its test:source LOC ratio (≤ 2.0; 1.62 today) — ceilings, not targets. The first mutation-sampled audit mutated six modules across hazard classes: five were killed by existing tests, one genuine survivor (an interrupted run's first timestamp could be silently overwritten by a second boot scan) is now pinned. **No tests were removed.** The audit repeats one module per cycle.

@@ -61,7 +61,8 @@ Verified: c94e1bb (2026-10-24)
 ### Next actions
 1. **Test-suite audit: DONE** (#368/PR #369) — budget guard live; prune zero + one pin; one module per cycle
    from here (see the report).
-2. **#366** (mechanical Jev query) is the remaining P0.
+2. **#366** (mechanical Jev query): **DONE** (#371) — `jev-check.mjs` runs in CI (ledger + selftest). The P0s
+   and the audit are all complete; the board is clean except the held typebox PR #364.
 3. Queued: the two handoff design-observation follow-ups (self-commit lag; extension typechecking).
 
 ## Open items
