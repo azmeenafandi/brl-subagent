@@ -22,6 +22,9 @@
  * mock, mocked ../runner, temp dirs redirected, ONE extension instance for the
  * whole file because each init appends another permanent event-bus listener).
  */
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 
 import type { SubagentRun } from "../types";
@@ -319,6 +322,21 @@ function terminalMessages(): Captured[] {
 	);
 }
 
+const LOG_FILE = () => path.join(env.testCwd, ".pi", "subagent-logs", "brl-subagent.log");
+
+/** Parse the shared log sink written during the current test. */
+function logEntries(): Array<{ message: string; data?: Record<string, unknown> }> {
+	const file = LOG_FILE();
+	if (!fs.existsSync(file)) return [];
+	return fs
+		.readFileSync(file, "utf-8")
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line));
+}
+
+const RETRY_SCHEDULED = "Background run settled — transport auto-retry scheduled";
+
 beforeAll(async () => {
 	env.setUp();
 	setupExtension();
@@ -331,6 +349,8 @@ beforeEach(() => {
 	spawnSeq = 0;
 	agentsById.clear();
 	sessionEntries = [];
+	// Isolate the log assertions: the sink is shared for the whole file.
+	fs.rmSync(LOG_FILE(), { force: true });
 	__resetTerminalClaims();
 	h.spawnBackgroundSession.mockReset();
 	h.getAgent.mockReset();
@@ -396,6 +416,12 @@ describe("deliverCompletionAlert — transport auto-retry (issue #365)", () => {
 			expect(terminalMessages()).toHaveLength(0);
 			// …and the user is told, once.
 			expect(notified).toEqual([{ message: TRANSPORT_RETRY_TOAST, level: "warning" }]);
+
+			// The scheduled log is the machine-readable half of the same event
+			// (the toast is only the user-facing half): source id + retried attempt.
+			const scheduled = logEntries().filter((e) => e.message === RETRY_SCHEDULED);
+			expect(scheduled).toHaveLength(1);
+			expect(scheduled[0].data).toEqual({ sourceId: SOURCE_ID, attempt: 2 });
 		} finally {
 			vi.clearAllTimers();
 			vi.useRealTimers();
@@ -491,6 +517,41 @@ describe("deliverCompletionAlert — transport auto-retry (issue #365)", () => {
 			expect(String(completions[0].message.content)).toContain("— failed");
 			// No toast: the retry never got scheduled.
 			expect(notified).toEqual([]);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("an error-result spawn (gate rejection) falls back to the normal failure notice", async () => {
+		vi.useFakeTimers();
+		try {
+			registerSettledAgent(SOURCE_ID, "Connection error.");
+			// approvalMode 'always' cannot run in background, so the retry's own
+			// gate rejects it before the session spawn: spawnBackgroundRun returns
+			// an isError result rather than throwing.
+			persistRunEntry(
+				settledRun({ originalParams: { background: true, approvalMode: "always" } }),
+			);
+
+			await settle(SOURCE_ID);
+
+			// Exactly one retry attempt, rejected before any session spawn.
+			expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+			expect(
+				logEntries().filter(
+					(e) =>
+						e.message ===
+						"Transport auto-retry spawn rejected — surfacing the original failure",
+				),
+			).toHaveLength(1);
+			// The source failure notice is delivered (never a silent drop).
+			const completions = messagesOfType("subagent-completion");
+			expect(completions).toHaveLength(1);
+			expect(String(completions[0].message.content)).toContain("— failed");
+			// No toast and no scheduled log: the retry never got scheduled.
+			expect(notified).toEqual([]);
+			expect(logEntries().filter((e) => e.message === RETRY_SCHEDULED)).toHaveLength(0);
 		} finally {
 			vi.clearAllTimers();
 			vi.useRealTimers();
