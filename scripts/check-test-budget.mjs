@@ -121,7 +121,7 @@ if (wallMs > WALL_CEILING_MS) {
 if (locRatio > LOC_RATIO_CEILING) {
 	fail(
 		`test:source LOC ratio ${locRatio.toFixed(2)} (${testLoc} test / ${sourceLoc} source) ` +
-			`exceeds the ${LOC_RATIO_CEILING.toFixed(1)} ceiling (the ceiling is a limit, not a target).`,
+			`exceeds the ${LOC_RATIO_CEILING.toFixed(1)} ceiling (report: ${reportPath}; the ceiling is a limit, not a target).`,
 	);
 	failed = true;
 }
