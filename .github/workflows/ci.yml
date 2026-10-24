@@ -27,6 +27,9 @@ jobs:
       # the JSON report feeds a drift check — the claim may trail the real count by at most 100.
       - run: npx vitest run --reporter=default --reporter=json --outputFile=vitest-report.json
       - run: node scripts/check-readme-test-count.mjs vitest-report.json
+      # The suite's growth budget (issue #368): wall time <= 60 s and test:source
+      # LOC ratio <= 2.0. Ceilings, not targets — growth needs a reason.
+      - run: node scripts/check-test-budget.mjs vitest-report.json
       # Permanent guard for the sprint-metrics window parser (issue #336): a
       # time-suffixed bound must not silently drop its day (pre-fix: 22 vs 68).
       - run: python3 .pi/skills/worktree/sprint-metrics.py --selftest
