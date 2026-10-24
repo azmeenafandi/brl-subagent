@@ -1,12 +1,15 @@
 # Friction log ritual
 
 Log a friction **when one occurs** — not once per cycle. A clean delegation
-cycle logs **nothing**, and that is the expected outcome. Append one line to
-`.development/FRICTION_LOG.md`:
+cycle logs **nothing**, and that is the expected outcome. Append one row to the
+table in `.development/FRICTION_LOG.md` (one shape — never mix lists and
+tables):
 
 ```
-YYYY-MM-DD | <tag> | <observation>
+| YYYY-MM-DD | <tag> | <observation> |
 ```
+
+Escape a literal `|` inside the observation as `\|` (GFM splits cells on it).
 
 One line, no elaboration, no judgment — what happened, not what to do about it.
 Log frictions as they happen, not deferred to sprint end. The purpose is the
