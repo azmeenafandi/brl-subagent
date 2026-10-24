@@ -40,6 +40,51 @@ return { level: r.answers.level.choice, conf: r.answers.level.confidence,
          risk: r.answers.risk.choice, worktree: r.answers.worktree.probability > 0.5 };
 ```
 
+## The line — format it with the helper, never by hand
+
+The classifier JSON above is the input to `.pi/skills/worktree/jev-check.mjs --line`, which
+prints the **exact** dispatch line and refuses a level without a confidence:
+
+```bash
+$ node .pi/skills/worktree/jev-check.mjs --line \
+    '{"level":"medium","conf":0.84,"risk":"C2","worktree":true}'
+jev: medium (0.84) · C2 · worktree y          # paste this into the spec and the dispatch
+
+$ node .pi/skills/worktree/jev-check.mjs --line '{"level":"medium","risk":"C2","worktree":true}'
+jev-check: missing "conf" — a level without its classifier confidence is the skipped form (#366); …
+                                              # exit 1
+```
+
+**Pipeline:** codemode block → `--line` → paste. Three steps, one command after the query; no
+hand-formatting, no rounding drift, no missing confidence.
+
+**A bare level is a finding.** `jev: medium · C2 · worktree y` records no query — it is the exact
+form the 2026-10-13 and 2026-10-23 skips produced. Every spec and dispatch carries the full line
+`jev: <level> (<conf>) · Cx · worktree <y|n>`; a review that sees a bare level (or no line at all)
+raises it. The ledger check below makes that mechanical.
+
+## The ledger check — the record is machine-audited
+
+The dispatch's `jev:` line and the log row are the **artifact** of the query, so the ritual is
+checkable without automating the call:
+
+```bash
+node .pi/skills/worktree/jev-check.mjs --ledger .development/investigations/jev-calibration-log.md
+```
+
+- Every row dated **on/after 2026-10-12** (the strict-Jev cutoff) must carry a confidence
+  `(0.xx)` in the Jev cell **or** an explicit gap marker (`unavailable`, `not classified`, `n/a`,
+  `ritual gap`).
+- Offenders report `date + dispatch + the cell`, and the check exits 1.
+- Zero parsed rows is a hard error (exit 2) — an unparsed or restructured table fails loudly
+  rather than passing silently.
+- `--ledger` takes an optional path (fixtures, a scratch ledger); `--selftest` proves the pass and
+  fail paths with fixtures.
+
+CI runs both (`--selftest` and `--ledger` on the tracked log) beside the test-budget guard, so a
+bare level cannot merge. **Historical rows are never edited** to satisfy the check: a genuine
+pre-query row stays bare, and the row is a record of the gap.
+
 ## Input template — hazard-shaped, blind
 
 Jev's output is only as good as the task text. The fix is a *uniform* description carrying the
@@ -89,7 +134,9 @@ the dispatch **closes** (merge / rejection), not at dispatch time:
 ## The rules (Rule 22)
 
 - **Advisory only.** The conductor decides; the maintainer's spec approval is the gate.
-- **Record the line** in the spec and the dispatch. **Strict Jev (ratified 2026-10-12):** use Jev's
+- **Record the line** in the spec and the dispatch — format it with
+  `.pi/skills/worktree/jev-check.mjs --line '<classifier-json>'` (a bare level is a finding).
+  **Strict Jev (ratified 2026-10-12):** use Jev's
   level. **ANY deviation (either direction) carries a one-line reason**; the former C1⇒high convention
   is retired.
 - **Low-confidence carve-out (the one standing exception):** on a C1, when Jev's confidence is

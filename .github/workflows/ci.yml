@@ -30,6 +30,11 @@ jobs:
       # The suite's growth budget (issue #368): wall time <= 60 s and test:source
       # LOC ratio <= 2.0. Ceilings, not targets — growth needs a reason.
       - run: node scripts/check-test-budget.mjs vitest-report.json
+      # The Jev ritual's mechanical gate (issue #366): the dispatch-line formatter's selftest, then
+      # an audit of the calibration log — every row since the strict-Jev cutoff (2026-10-12) must
+      # carry a queried confidence or an explicit gap marker. A bare level is a finding.
+      - run: node .pi/skills/worktree/jev-check.mjs --selftest
+      - run: node .pi/skills/worktree/jev-check.mjs --ledger .development/investigations/jev-calibration-log.md
       # Permanent guard for the sprint-metrics window parser (issue #336): a
       # time-suffixed bound must not silently drop its day (pre-fix: 22 vs 68).
       - run: python3 .pi/skills/worktree/sprint-metrics.py --selftest

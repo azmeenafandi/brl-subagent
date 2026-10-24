@@ -252,6 +252,12 @@ never re-type their logic by hand. Full design:
     caught the #308 regression, was called high→xhigh) live in
     `references/jev-advisory.md` — **build the task text from its input template and record
     the outcome in its calibration log** (`.development/investigations/jev-calibration-log.md`).
+    **The ritual is checkable (issue #366):** `jev-check.mjs --line '<classifier-json>'`
+    prints the exact line (a level without a confidence is rejected), and
+    `jev-check.mjs --ledger <log>` fails any row dated on/after 2026-10-12 whose Jev cell
+    carries neither a confidence nor a gap marker — **a bare level is a finding**. CI runs
+    both beside the test-budget guard; a review brief that omits the jev-line check is
+    itself a process gap (`references/review-dispatch.md`).
 
 ## Lifecycle
 
@@ -342,6 +348,14 @@ mechanics, verdict format: `references/review-dispatch.md`.
   boundaries (what it does NOT check). Exits non-zero on any discrepancy —
   catching the silent refresh failures that issues #173 (missing module) and
   #189 (missing symbols) record. Run from the cockpit.
+- **`jev-check.mjs`** — the Rule 22 gate (issue #366). `--line '<classifier-json>'`
+  validates the codemode answer and prints the exact
+  `jev: <level> (<conf>) · Cx · worktree <y|n>` line (a missing/invalid confidence
+  is rejected, exit 1 — the skipped form); `--ledger [path]` audits the calibration
+  log — rows dated on/after 2026-10-12 need a confidence or an explicit gap marker,
+  offenders print `date + dispatch + cell` and exit 1, and zero parsed rows is a
+  hard error (never a silent pass); `--selftest` proves both paths with fixtures.
+  CI runs `--selftest` and `--ledger` beside the test-budget guard.
 
 ## Notes
 
@@ -351,7 +365,8 @@ mechanics, verdict format: `references/review-dispatch.md`.
 - Scripts are bash and run from the cockpit checkout (they resolve the repo root
   from their own location; `--repo-root` overrides); `worktree-prep.sh` runs
   from the cockpit, not the worktree. `sprint-metrics.py` is python3 and derives
-  its own session-log source.
+  its own session-log source. `jev-check.mjs` is Node ESM and resolves its ledger
+  path from the current directory — run it from the repo/worktree root.
 - If a script fails, read its output — it states the mode chosen and why. That
   output is the audit trail.
 - The skill is the playbook, the scripts are the enforcement, the docs are the
