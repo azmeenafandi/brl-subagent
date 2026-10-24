@@ -6,16 +6,17 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: 7b3f6b9 (2026-10-23)
+Verified: 4bb3a56 (2026-10-24)
 
-- **dev** @ `7b3f6b9` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
+- **dev** @ `4bb3a56` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
 - **Released:** v2.5.2 is LIVE — `main` @ `ae7c488` (tag `v2.5.2`), npm `latest` = 2.5.2 —
   `gh release list`, `git log -1 --oneline main`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path).
   pi runtime **1.4.0** (released 2026-10-21); deps `@earendil-works/*` **^1.4.0** (parity merged, PR #360
   `a899209`, cockpit refreshed with `npm ci`); `typebox` stays **1.3.27** (the 1.4.0 host pin) — `cat package.json`.
-- **Board:** zero open issues — `gh issue list`. (PRs target `dev`, so `Fixes #N` does **not** auto-close;
-  #354 and #359 were closed manually. **#344 is an open PR**, not an issue.)
+- **Board:** zero open issues — `gh issue list`. **Dependabot (2026-10-24):** **#364 typebox 1.4.2 — HELD** at
+  the host pin 1.3.27 (the visible signal; no `ignore`); **#363 vitest 5.0.5 — adopting** (dev-only patch,
+  isolated bump). PRs target `dev`, so `Fixes #N` does **not** auto-close (close manually).
 - **Cycle `vendor parity + boundary guards`: CLOSED 2026-10-17 (v2.5.2)** — pi 1.3.0 parity
   (#338), boundary guards (#336/#339), the dangling-row fix (#340/#341), vitest 5.0.4 with
   `typebox` held at the host pin (#342). Cycle-end ritual ran before the release docs; Rule 11 = 0
