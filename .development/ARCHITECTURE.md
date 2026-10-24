@@ -99,13 +99,14 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `transcript-path.ts` | The single declaration of the transcript path format — filesystem (`join`) and display (POSIX) forms. |
 | `transcript-tail.ts` | Pure line-planning for the drill-in transcript overlay (no TUI imports). |
 | `transcript.ts` | JSONL transcript recording for every agent run (`.pi/output/agent-<id>.jsonl`). |
+| `transport-retry.ts` | The pure auto-retry predicate for background runs that settled with a transport-class failure (issue #365). |
 | `tui-format.ts` | Pure TUI row formatting shared by the monitor and dashboard (no TUI imports). |
 | `tui.ts` | All TUI surfaces: config menus, preset/template managers, history, live monitor, and result rendering. |
 | `types.ts` | Shared types, constants, and the error/termination classification taxonomy. |
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**40 modules** — every one is listed because a new module without a purpose fails CI.
+**41 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

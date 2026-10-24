@@ -143,7 +143,7 @@ export const delegateTaskParamsSchema = Type.Object({
 					description:
 						"If true and a FOREGROUND subagent times out, automatically retry with the same parameters. " +
 						"Only retries once — the second timeout is treated as a final failure. " +
-						"Background runs are not auto-retried; re-dispatch with retryRunId.",
+						"A background run is not retried on its deadline, but it is retried once automatically on a transport-class error; any other background failure needs an explicit retryRunId.",
 				}),
 			),
 			approvalMode: Type.Optional(
