@@ -2,6 +2,14 @@
 
 Classify first — the C1/C2/C3 table is in `SKILL.md`.
 
+**Jev check on the dispatch (Rule 22):** the spec/dispatch under review carries a *queried*
+`jev: level (confidence)` line — `jev: medium (0.84) · C2 · worktree y`, produced by the codemode
+query and formatted with `.pi/skills/worktree/jev-check.mjs --line`. A **bare level**
+(`jev: medium · C2`, no confidence) or a **missing line** is a finding: both are the exact form the
+2026-10-13 and 2026-10-23 skips took. Record it in the verdict's findings table like any other
+finding — it is a process defect, not a style nit. Format, the pipeline and the ledger check:
+`references/jev-advisory.md`.
+
 Reviewers are **read-only on the repo but have bash** — the read-only
 `code-reviewer` preset excludes bash and is NOT used (empirical verification
 needs execution). Use the project-scoped `project-reviewer` preset
