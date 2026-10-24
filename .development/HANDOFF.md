@@ -9,8 +9,9 @@
 Verified: 4bb3a56 (2026-10-24)
 
 - **dev** @ `4bb3a56` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
-- **Released:** v2.5.2 is LIVE — `main` @ `ae7c488` (tag `v2.5.2`), npm `latest` = 2.5.2 —
-  `gh release list`, `git log -1 --oneline main`.
+- **Released:** **v2.6.0 prepared** — release PR #367 merged `6f7d0aa`; bump `ef9f6be` tagged `v2.6.0`;
+  the GitHub release is a **DRAFT** (publish it — that triggers `publish.yml`; approve the staged package
+  with 2FA at npmjs.com). npm `latest` is still 2.5.2 until that approval — `gh release list`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path).
   pi runtime **1.4.0** (released 2026-10-21); deps `@earendil-works/*` **^1.4.0** (parity merged, PR #360
   `a899209`, cockpit refreshed with `npm ci`); `typebox` stays **1.3.27** (the 1.4.0 host pin) — `cat package.json`.
@@ -21,11 +22,12 @@ Verified: 4bb3a56 (2026-10-24)
   (#338), boundary guards (#336/#339), the dangling-row fix (#340/#341), vitest 5.0.4 with
   `typebox` held at the host pin (#342). Cycle-end ritual ran before the release docs; Rule 11 = 0
   escalations.
-- **Cycle `/brl-subagent` menu polish: OPEN** — all units U1–U7 merged (PRs #346–#352, last
-  `e397be4`); awaits the maintainer's close/release decision (the release is the cycle's first act —
-  `references/sprint-end-ritual.md`). Presentation-only, no navigation/keybinding changes. + **footer activity indicator** (#354, PR #355 `780fb00`)
-  — spinner, oldest-run elapsed, outcome-coloured completion symbols; replaces the static status text.
-  + **refactor pair #356**: repaint chokepoint (#357 `ca83766`) and `showDashboard` split (#358 `1d61b36`).
+- **Cycle `menu polish + live signals`: CLOSED 2026-10-24 (v2.6.0)** — ritual ran before the release:
+  metrics row 40 dispatches / 87.8%, **Rule 11 = 2 escalations** (#365 transport auto-retry; #366
+  mechanical Jev query), 5 advisory sweep candidates. Units: U1–U7 (#346–#352), footer (#355),
+  refactors (#357/#358), handoff (#353), pi 1.4.0 (#360), background default (#362), vitest 5.0.5 (#363).
+- **Next cycle: OPEN (opens with the v2.6.0 release)** — first unit: the **test-suite audit** (budget
+  pins + weak-test identification + consolidation; the suite is 1701/82 at ~17 s). Then the P0s #365/#366.
 - **Handoff mechanism: MERGED** (PR #353 `ca73803`) — `.pi/extensions/handoff/` (session_start +
   session_compact injection, guards, `/handoff`, `/handoff mark`), `.pi/skills/handoff/`, this
   restructure + archive. **Live checks: 1 ✅ injection · 2 ✅ RECONCILE line (the expected lag) · 4 ✅ subagent inertness (FG env=1; BG agents see no host events) · 5 ✅ worktree (unit) · 3 ✅ `/pi-vcc` post-compaction (STATE re-injected after the summary).**
