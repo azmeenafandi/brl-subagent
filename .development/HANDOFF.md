@@ -9,12 +9,11 @@
 Verified: 4bb3a56 (2026-10-24)
 
 - **dev** @ `4bb3a56` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
-- **Released:** **v2.6.0 prepared** — release PR #367 merged `6f7d0aa`; bump `ef9f6be` tagged `v2.6.0`;
-  the GitHub release is a **DRAFT** (publish it — that triggers `publish.yml`; approve the staged package
-  with 2FA at npmjs.com). npm `latest` is still 2.5.2 until that approval — `gh release list`.
-- **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path).
-  pi runtime **1.4.0** (released 2026-10-21); deps `@earendil-works/*` **^1.4.0** (parity merged, PR #360
-  `a899209`, cockpit refreshed with `npm ci`); `typebox` stays **1.3.27** (the 1.4.0 host pin) — `cat package.json`.
+- **Released:** **v2.6.0 LIVE (2026-10-24)** — release PR #367 merged `6f7d0aa`; bump `ef9f6be` tagged
+  `v2.6.0`; publish workflow green; npm `latest` = **2.6.0** — `gh release list`, `npm view brl-subagent version`.
+- **Running install:** **`npm:brl-subagent` 2.6.0** (the published package; the local-path toggle is OFF — the
+  dev checkout stays on disk for the next cycle). pi runtime **1.4.0**; repo deps `@earendil-works/*`
+  **^1.4.0**, `typebox` at the host pin **1.3.27** — `pi list`, `cat package.json`.
 - **Board:** zero open issues — `gh issue list`. **Dependabot (2026-10-24):** **#364 typebox 1.4.2 — HELD** at
   the host pin 1.3.27 (the visible signal; no `ignore`); **#363 vitest 5.0.5 — adopting** (dev-only patch,
   isolated bump). PRs target `dev`, so `Fixes #N` does **not** auto-close (close manually).
@@ -50,6 +49,9 @@ Verified: 4bb3a56 (2026-10-24)
 - **Conditional background default** merged (#361/PR #362): approval-aware matrix, explicit-only chain/graph
   guard (strictness + ordering individually pinned), retry records the effective value; review
   approve-with-nits (2 minors fixed). CI's README test-count guard caught a stale "1600+" claim (now 1700+).
+- **v2.6.0 RELEASED (2026-10-24):** release PR #367 `6f7d0aa`, bump `ef9f6be` tagged, npm staged → approved
+  → `latest` = 2.6.0; **install switched back to `npm:brl-subagent`** (dev checkout removed from the install
+  list); vitest 5.0.5 adopted (~17 s suite).
 
 ### Next actions
 1. Schedule the two handoff design-observation follow-ups (self-commit lag; extension typechecking)
