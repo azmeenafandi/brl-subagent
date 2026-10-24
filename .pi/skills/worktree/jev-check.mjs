@@ -39,7 +39,7 @@ const STRICT_JEV_CUTOFF = "2026-10-12";
 /** Explicit "the classifier did not run" markers — recorded, not silent (Rule 22). */
 const GAP_MARKERS = ["unavailable", "not classified", "n/a", "ritual gap"];
 
-/** A confidence in the Jev cell: any decimal (0.84, .5, 1.0). */
+/** A confidence in the Jev cell: any decimal with a leading digit (0.84, 1.0) — `.5` is not matched. */
 const CONFIDENCE_IN_CELL = /\d\.\d/;
 
 const DEFAULT_LEDGER = ".development/investigations/jev-calibration-log.md";
