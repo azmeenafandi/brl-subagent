@@ -6,18 +6,18 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: c94e1bb (2026-10-24)
+Verified: 498d50e (2026-10-24)
 
-- **dev** @ `c94e1bb` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
+- **dev** @ `498d50e` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
 - **Released:** **v2.6.0 LIVE (2026-10-24)** — release PR #367 merged `6f7d0aa`; bump `ef9f6be` tagged
   `v2.6.0`; publish workflow green; npm `latest` = **2.6.0** — `gh release list`, `npm view brl-subagent version`.
 - **Running install:** **`npm:brl-subagent` 2.6.0** (the published package; the local-path toggle is OFF — the
   dev checkout stays on disk for the next cycle). pi runtime **1.4.0**; repo deps `@earendil-works/*`
   **^1.4.0**, `typebox` at the host pin **1.3.27** — `pi list`, `cat package.json`.
-- **Board:** **#365 + #366 open** — the 2026-10-24 cycle-close P0s (transport auto-retry; mechanical Jev
-  query), the next cycle's work after the audit. **Dependabot:** **#364 typebox 1.4.2 — HELD** (open PR, the
-  visible signal; no `ignore`); **#363 vitest 5.0.5 — ADOPTED** (merged `0907ae1`). PRs target `dev`, so
-  `Fixes #N` does **not** auto-close (close manually).
+- **Board:** **zero open issues** — the audit (#368) and both P0s (#365 transport auto-retry, #366 Jev check)
+  are closed. **Dependabot:** **#364 typebox 1.4.2 — HELD** (the only open PR, the visible signal; no
+  `ignore`); **#363 vitest 5.0.5 — ADOPTED** (merged `0907ae1`). PRs target `dev`, so `Fixes #N` does **not**
+  auto-close (close manually).
 - **Cycle `vendor parity + boundary guards`: CLOSED 2026-10-17 (v2.5.2)** — pi 1.3.0 parity
   (#338), boundary guards (#336/#339), the dangling-row fix (#340/#341), vitest 5.0.4 with
   `typebox` held at the host pin (#342). Cycle-end ritual ran before the release docs; Rule 11 = 0
@@ -26,8 +26,8 @@ Verified: c94e1bb (2026-10-24)
   metrics row 40 dispatches / 87.8%, **Rule 11 = 2 escalations** (#365 transport auto-retry; #366
   mechanical Jev query), 5 advisory sweep candidates. Units: U1–U7 (#346–#352), footer (#355),
   refactors (#357/#358), handoff (#353), pi 1.4.0 (#360), background default (#362), vitest 5.0.5 (#363).
-- **Next cycle: OPEN (opens with the v2.6.0 release)** — first unit: the **test-suite audit** (budget
-  pins + weak-test identification + consolidation; the suite is 1701/82 at ~17 s). Then the P0s #365/#366.
+- **Next cycle: OPEN (opened with the v2.6.0 release)** — the **test-suite audit** (#368) and both P0s
+  (#365, #366) are complete; remaining queued: the two handoff design follow-ups.
 - **Handoff mechanism: MERGED** (PR #353 `ca73803`) — `.pi/extensions/handoff/` (session_start +
   session_compact injection, guards, `/handoff`, `/handoff mark`), `.pi/skills/handoff/`, this
   restructure + archive. **Live checks: 1 ✅ injection · 2 ✅ RECONCILE line (the expected lag) · 4 ✅ subagent inertness (FG env=1; BG agents see no host events) · 5 ✅ worktree (unit) · 3 ✅ `/pi-vcc` post-compaction (STATE re-injected after the summary).**
