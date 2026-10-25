@@ -2,7 +2,7 @@
 
 Reviewer: `openrouter/meta/muse-spark-1.3-contributor` — focused C2, Jev **medium (0.78)**. Sub-issue #376 (parent #374), audit §2.1 D3/D8. Diff `2f46001..HEAD`: `src/index.ts` (`toSubTaskResult`, 3 call sites), `src/session-manager.ts` (`finalizeAbortedRun`, 2), `session-manager.test.ts` (+4 assertions).
 
-**Verdict: approve — 0 findings.** Merged `MERGE_SHA`.
+**Verdict: approve — 0 findings.** Merged `804482c`.
 
 ## Verified-OK (empirical)
 
@@ -18,4 +18,4 @@ SOLID/DRY violations flagged: 0
 
 ## Disposition (2026-10-25)
 
-Merged `MERGE_SHA`; sub-issue closed — sweep 2/6. Flagged for later (out of scope): chain/parallel still construct a placeholder `SubTaskResult` with throwaway defaults (immutability would require restructuring the unit success return).
+Merged `804482c`; sub-issue closed — sweep 2/6. Flagged for later (out of scope): chain/parallel still construct a placeholder `SubTaskResult` with throwaway defaults (immutability would require restructuring the unit success return).
