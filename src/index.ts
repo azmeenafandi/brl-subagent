@@ -69,7 +69,7 @@ import {
 	type HeadState,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets, formatValidationWarnings } from "./prelude";
+import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, formatValidationWarnings } from "./prelude";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable } from "./model-availability";
 import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
@@ -653,38 +653,22 @@ export default function (pi: ExtensionAPI) {
 		// step's output (only its TASK text consumes {previous}), so the pass
 		// can run up front — and must, because discovering step 5's bad cwd
 		// after four steps already ran would waste their whole budget.
-		const stepCwds: string[] = [];
-		const stepWarnings: string[] = [];
-		for (let i = 0; i < chainSteps.length; i++) {
-			const merged = mergeSubTaskParams(globalParams, chainSteps[i]);
-			const stepPrefix = `Step ${i + 1} ("${displayTaskName(merged)}")`;
-
-			const stepTargets = validateDelegationTargets({
-				ctx,
-				effectiveCwd: merged.effectiveCwd,
-				outputFile: merged.outputFile,
-				prefix: stepPrefix,
-			});
-			if (!stepTargets.ok) return stepTargets.error;
-			stepCwds.push(stepTargets.cwd);
-
-			const stepValidation = runPreTaskValidation({
-				log,
-				label: "Chain",
-				prefix: stepPrefix,
+		const stepPass = validateUnitPrePass({
+			units: chainSteps,
+			label: "Chain",
+			gitMode: globalParams.resolvedGitMode,
+			ctx,
+			log,
+			force: params.force as boolean | undefined,
+			merge: (step) => mergeSubTaskParams(globalParams, step),
+			describe: (_step, merged, i) => ({
+				prefix: `Step ${i + 1} ("${displayTaskName(merged)}")`,
 				logContext: { step: i + 1 },
-				preTask: {
-					task: merged.task,
-					toolOptions: merged.toolOptions,
-					thinkingLevel: merged.thinkingLevel,
-					gitMode: globalParams.resolvedGitMode,
-					outputFile: merged.outputFile,
-					force: params.force as boolean | undefined,
-				},
-			});
-			if (stepValidation.error) return stepValidation.error;
-			for (const w of stepValidation.warnings) stepWarnings.push(`${stepPrefix}: ${w}`);
-		}
+			}),
+		});
+		if (!stepPass.ok) return stepPass.error;
+		const stepCwds = stepPass.units.map((u) => u.cwd);
+		const stepWarnings = stepPass.warnings;
 
 		// Resolve model once (per-call top-level model override beats preset)
 		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
@@ -1136,39 +1120,23 @@ export default function (pi: ExtensionAPI) {
 		// mode-level cwd. Per-task warnings are prefixed with their unit and
 		// collected here to ride the final result. The mode-entry validation
 		// above stays for the mode-level outputFile (issue #34).
-		const taskWarnings: string[] = [];
-		// Parallel index → the task's own validated cwd (issue #222).
-		const taskCwds: string[] = [];
-		for (let i = 0; i < taskList.length; i++) {
-			const merged = mergeSubTaskParams(globalParams, taskList[i]);
-			const taskPrefix = `Task ${i + 1} ("${displayTaskName(merged)}")`;
-
-			const taskTargets = validateDelegationTargets({
-				ctx,
-				effectiveCwd: merged.effectiveCwd,
-				outputFile: merged.outputFile,
-				prefix: taskPrefix,
-			});
-			if (!taskTargets.ok) return taskTargets.error;
-			taskCwds.push(taskTargets.cwd);
-
-			const unitValidation = runPreTaskValidation({
-				log,
-				label: "Parallel",
-				prefix: taskPrefix,
+		const taskPass = validateUnitPrePass({
+			units: taskList,
+			label: "Parallel",
+			gitMode: globalParams.resolvedGitMode,
+			ctx,
+			log,
+			force: params.force as boolean | undefined,
+			merge: (task) => mergeSubTaskParams(globalParams, task),
+			describe: (_task, merged, i) => ({
+				prefix: `Task ${i + 1} ("${displayTaskName(merged)}")`,
 				logContext: { task: i + 1 },
-				preTask: {
-					task: merged.task,
-					toolOptions: merged.toolOptions,
-					thinkingLevel: merged.thinkingLevel,
-					gitMode: globalParams.resolvedGitMode,
-					outputFile: merged.outputFile,
-					force: params.force as boolean | undefined,
-				},
-			});
-			if (unitValidation.error) return unitValidation.error;
-			for (const w of unitValidation.warnings) taskWarnings.push(`${taskPrefix}: ${w}`);
-		}
+			}),
+		});
+		if (!taskPass.ok) return taskPass.error;
+		// Parallel index → the task's own validated cwd (issue #222).
+		const taskCwds = taskPass.units.map((u) => u.cwd);
+		const taskWarnings = taskPass.warnings;
 
 		// Resolve model once (per-call top-level model override beats preset)
 		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
@@ -1673,43 +1641,29 @@ export default function (pi: ExtensionAPI) {
 		// wording is still validated, and refusing to validate up front would
 		// mean a bad node in the LAST wave is discovered after every earlier
 		// wave already spent its budget.
-		const nodeCwds = new Map<string, string>();
-		const nodeWarnings: string[] = [];
-		for (const graphTask of graphTasks) {
-			const merged = mergeSubTaskParams(globalParams, graphTaskToSubTaskParams(graphTask));
-			const nodePrefix = `Node "${graphTask.id}"`;
-
-			const nodeTargets = validateDelegationTargets({
-				ctx,
-				effectiveCwd: merged.effectiveCwd,
-				outputFile: merged.outputFile,
-				prefix: nodePrefix,
-			});
-			if (!nodeTargets.ok) return nodeTargets.error;
-			nodeCwds.set(graphTask.id, nodeTargets.cwd);
-
-			const nodeValidation = runPreTaskValidation({
-				log,
-				label: "Graph",
-				prefix: nodePrefix,
-				logContext: { id: graphTask.id },
-				preTask: {
-					// Placeholder TOKENS stripped (issue #222 review): the rules
-					// read the declared string, so a `{<id>}` whose dependency id
-					// is a blocking keyword would block on a token, not on text
-					// the host wrote. The declared wording around it is unchanged
-					// and still validated.
-					task: merged.task.replace(GRAPH_OUTPUT_PLACEHOLDER_RE, " "),
-					toolOptions: merged.toolOptions,
-					thinkingLevel: merged.thinkingLevel,
-					gitMode: globalParams.resolvedGitMode,
-					outputFile: merged.outputFile,
-					force: params.force as boolean | undefined,
-				},
-			});
-			if (nodeValidation.error) return nodeValidation.error;
-			for (const w of nodeValidation.warnings) nodeWarnings.push(`${nodePrefix}: ${w}`);
-		}
+		const nodePass = validateUnitPrePass({
+			units: graphTasks,
+			label: "Graph",
+			gitMode: globalParams.resolvedGitMode,
+			ctx,
+			log,
+			force: params.force as boolean | undefined,
+			merge: (node) => mergeSubTaskParams(globalParams, graphTaskToSubTaskParams(node)),
+			describe: (node, merged) => ({
+				prefix: `Node "${node.id}"`,
+				logContext: { id: node.id },
+				// Placeholder TOKENS stripped (issue #222 review): the rules
+				// read the declared string, so a `{<id>}` whose dependency id
+				// is a blocking keyword would block on a token, not on text
+				// the host wrote. The declared wording around it is unchanged
+				// and still validated. Graph policy — it stays here, not in
+				// the shared helper.
+				task: merged.task.replace(GRAPH_OUTPUT_PLACEHOLDER_RE, " "),
+			}),
+		});
+		if (!nodePass.ok) return nodePass.error;
+		const nodeCwds = new Map(nodePass.units.map((u) => [u.unit.id, u.cwd] as const));
+		const nodeWarnings = nodePass.warnings;
 
 		// Build base prompt once
 		const basePrompt = ctx.getSystemPrompt();

@@ -335,6 +335,37 @@ describe("architecture rules (issue #251)", () => {
 		expect(namedCasts).toHaveLength(1);
 	});
 
+	it("the per-unit pre-pass is one helper, called by each batch handler (#379)", () => {
+		// D2: `merge → validate targets → H1 → collect `${prefix}: ${w}`` was
+		// copied into chain/parallel/graph under three names. jscpd cannot see it
+		// at the sweep's 10L/70t threshold (design note §1 finding 5), so the
+		// source shape is ratcheted here. The helper must be CALLED by each
+		// handler at its existing position — never invoked from the prologue — so
+		// this pins one call per batch handler rather than a call count alone.
+		const indexSource = readFileSync(join(SRC, "index.ts"), "utf8");
+		const calls = [...indexSource.matchAll(/\bvalidateUnitPrePass\(\{/g)].map((m) => m.index!);
+		expect(calls, "chain, parallel and graph each call validateUnitPrePass").toHaveLength(3);
+
+		const regions = ["runChainMode", "runParallelMode", "runGraphMode"].map((name) => {
+			const start = indexSource.indexOf(`async function ${name}(`);
+			expect(start, `${name} must exist in src/index.ts`).toBeGreaterThanOrEqual(0);
+			return start;
+		});
+		expect(calls[0]).toBeGreaterThan(regions[0]);
+		expect(calls[0]).toBeLessThan(regions[1]);
+		expect(calls[1]).toBeGreaterThan(regions[1]);
+		expect(calls[1]).toBeLessThan(regions[2]);
+		expect(calls[2]).toBeGreaterThan(regions[2]);
+
+		// The batch copies' prefix bindings are gone. The background fan-out
+		// keeps its own loop and its `taskPrefix` binding (a different sequence,
+		// design note §2.4/IN8) — outside this commit's scope, so exactly one
+		// such binding may remain.
+		expect(indexSource).not.toContain("const stepPrefix =");
+		expect(indexSource).not.toContain("const nodePrefix =");
+		expect(indexSource.match(/const taskPrefix =/g) ?? []).toHaveLength(1);
+	});
+
 	it("the transcript-path format is single-sourced in transcript-path.ts (#287)", () => {
 		// The transcript path (`.pi/output/agent-<id>.jsonl`) has ONE declaration,
 		// `transcript-path.ts`; every other module derives it through TRANSCRIPT_DIR,
