@@ -590,3 +590,8 @@ At `8L/50t` scoped to `src/index.ts` (15 clones), D2 appears only as tails —
 `667-677 ↔ 1170-1180` and `1168-1180 ↔ 2181-2193` — and the `renderCall` copy appears as
 `567-576 ↔ 3854-3863`. That is the evidence for finding 5: **D2 needs a structural guard, not the
 detector.**
+
+> **Correction (2026-10-25, from the commit-2 pins):** §6(d)'s assumption that a graph **cycle** is caught
+> before the cost gate is wrong — `validateGraph` checks empty/over-limit/duplicate/missing-dep only; cycles are
+> rejected by `topologicalSort` **after** the prologue. The pins assert the duplicate-id contract, which is the
+> true pre-cost graph validation.
