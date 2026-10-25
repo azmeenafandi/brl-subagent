@@ -5,7 +5,7 @@ Reviewer: `openrouter/meta/muse-spark-1.3-contributor` — focused C2, Jev **med
 Diff `3bd05e7..HEAD`: `src/schema.ts` (shared field slices), `src/types.ts` (`SnapshotParams`), `src/params.ts`,
 `src/index.ts` (graph spread).
 
-**Verdict: approve — 0 findings.** Merged `MERGE_SHA`.
+**Verdict: approve — 0 findings.** Merged `64ba744`.
 
 ## Verified-OK (empirical)
 
