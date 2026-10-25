@@ -11,8 +11,9 @@ Verified: 5c85128 (2026-10-25)
 - **dev** @ `5c85128` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
 - **Released:** **v2.6.0 LIVE (2026-10-24)** — release PR #367 merged `6f7d0aa`; bump `ef9f6be` tagged
   `v2.6.0`; publish workflow green; npm `latest` = **2.6.0** — `gh release list`, `npm view brl-subagent version`.
-- **Running install:** **`npm:brl-subagent` 2.6.0** (the published package; the local-path toggle is OFF — the
-  dev checkout stays on disk for the next cycle). pi runtime **1.4.0**; repo deps `@earendil-works/*`
+- **Running install:** **the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path)**; the npm
+  install was removed. The release switched back to npm; this cycle switched to the checkout so the dev-only
+  **transport auto-retry** is live for the sweep's dispatches. pi runtime **1.4.0**; deps `@earendil-works/*`
   **^1.4.0**, `typebox` at the host pin **1.3.27** — `pi list`, `cat package.json`.
 - **Board:** **#374 parent + sub-issues #376–#381** (the duplication sweep — native sub-issues; #375 merged).
   **Dependabot:** **#364 typebox 1.4.2 — HELD** (open PR, the visible signal; no `ignore`); **#363 vitest
