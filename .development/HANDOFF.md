@@ -6,11 +6,11 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: 04f41d0 (2026-10-25)
+Verified: f1ece22 (2026-10-25)
 
-- **dev** @ `04f41d0` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees (the #379 worktree is merged and removable).
+- **dev** @ `f1ece22` — `git log -1 --oneline dev`. Only `dev` + `main`; the #379 worktree is merged and removed (`git worktree list`).
 - **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
-- **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; #365's transport auto-retry is live and exercised 5× today). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
+- **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
 - **Board:** **ZERO open issues** — `gh issue list`. **#364 (typebox 1.4.2) held** — the only open PR; no `ignore` by policy.
 - **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
 - **Cycle (post-v2.6.0): OPEN** — its work landed: test-suite audit (#368), P0s (#365 transport auto-retry, #366 Jev check), smell audit (#372), the sweep (#374, now complete). Remaining: the two handoff follow-ups. No release decision yet.
@@ -25,7 +25,6 @@ Verified: 04f41d0 (2026-10-25)
 ### Next actions
 1. The two handoff follow-ups (the `Verified:` self-commit lag; `.pi/extensions/**` typechecking).
 2. #364 stays held (typebox at the host pin); no release decision this cycle yet.
-3. Housekeeping: the merged `brl-subagent-wt-379-impl` worktree is removable.
 
 ## Open items` → follow `## Pointers`.
 > §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
