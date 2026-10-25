@@ -22,11 +22,10 @@
  * known backlog item; allow-listing them here would make the guard lie.
  *
  * Detection = whitespace-normalised EQUALITY, or word-token Jaccard ≥ 0.80.
- * Measured ceiling on the tree this guard landed against: 0.70 (the
- * `retryOnTimeout` guideline vs its schema description — the same parameter
- * deliberately described in two voices). 0.80 sits clear of that noise floor
- * and still catches a one-word edit: a ~12-token literal with one token changed
- * scores ≈0.85.
+ * Measured ceiling on the tree this guard landed against: 0.667
+ * (`src/index.ts:2867` ↔ `src/schema.ts:168`; the `retryOnTimeout` pair now
+ * 0.619). 0.80 clears that ceiling with margin and still catches a one-word
+ * edit: a ~12-token literal with one token changed scores ≈0.85.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -41,6 +40,7 @@ import {
 	isTemplateExpression,
 	isTypeNode,
 	parseTexts,
+	SUBSTITUTION,
 	SyntaxKind,
 } from "../../scripts/ts-ast.mjs";
 import type { Node, SourceFile } from "../../scripts/ts-ast.mjs";
@@ -265,6 +265,27 @@ describe("prose-duplication detector coverage", () => {
 		const right = fixtureFile("two.ts", `const b = "${FIXTURE_SENTENCE.slice(0, 40)} " + "${FIXTURE_SENTENCE.slice(41)}";`);
 		const literals = [...collectLiterals(left.sourceFile, left.file), ...collectLiterals(right.sourceFile, right.file)];
 		expect(findNearDuplicates(literals)).toHaveLength(1);
+	});
+
+	it("collects a no-substitution template literal verbatim", () => {
+		// The extractor sees backtick literals with no `${…}` as prose, not as
+		// syntax. Break that branch and this fixture collects nothing.
+		const fixture = fixtureFile("one.ts", `const a = \`${FIXTURE_SENTENCE}\`;`);
+		const literals = collectLiterals(fixture.sourceFile, fixture.file);
+		expect(literals).toHaveLength(1);
+		expect(literals[0]!.text).toBe(FIXTURE_SENTENCE);
+	});
+
+	it("collects a template expression with its substitution flattened", () => {
+		// `${…}` is a placeholder, not prose: the surrounding text must survive
+		// and compare with a plain literal. Break the substitution flattening and
+		// the collected text loses the head/tail it should frame.
+		const head = "The timeout applies to foreground runs only and never restores";
+		const tail = "the explicit-only retry flag on a retry";
+		const fixture = fixtureFile("one.ts", `const a = \`${head} \${value} ${tail}\`;`);
+		const literals = collectLiterals(fixture.sourceFile, fixture.file);
+		expect(literals).toHaveLength(1);
+		expect(literals[0]!.text).toBe(`${head} ${SUBSTITUTION} ${tail}`);
 	});
 
 	it("comments and type positions are not prose", () => {
