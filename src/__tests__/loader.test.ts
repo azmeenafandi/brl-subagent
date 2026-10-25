@@ -65,7 +65,8 @@ describe("loadMarkdownRecords", () => {
 		const dir = makeTempDir();
 		writeFile(dir, "a.md", FM(["name: a", "extra: one"], "body a"));
 		writeFile(dir, "b.md", FM(["name: b"], "body b"));
-		writeFile(dir, "notes.txt", "not markdown");
+		// Valid frontmatter, wrong extension: only the `.md` filter keeps this out.
+		writeFile(dir, "notes.txt", FM(["name: notes"], "valid but not markdown"));
 		writeFile(dir, "README", "not markdown");
 
 		const records = loadMarkdownRecords<Rec>({
@@ -79,6 +80,7 @@ describe("loadMarkdownRecords", () => {
 			{ name: "a", body: "body a", extra: "one" },
 			{ name: "b", body: "body b", extra: undefined },
 		]);
+		expect(records.map((r) => r.name)).not.toContain("notes");
 	});
 
 	it("warns once per validation error and skips the file", () => {
