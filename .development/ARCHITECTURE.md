@@ -50,8 +50,14 @@ awaited inside the spawn (issues #28, #147, #198).
 
 `delegate_task` → sanitize (`sanitize.ts`) → resolve params (`params.ts`: preset merge, thinking caps, timeout
 normalization, model resolution, edit→write fix, auto-routing) → template / retry resolution → validate
-(`validate.ts` H1 + capability pre-flight) → shared prelude (`prelude.ts`: cost gate, approval gating,
-dispatch guards, per-unit pre-pass) → mode runner (`index.ts`) → spawn → run records + monitor → result or wake.
+(`validate.ts` H1 + capability pre-flight) → shared gates (`prelude.ts`: cost, approval, targets, H1, the
+per-unit pre-pass) → mode runner (`index.ts`) → spawn → run records + monitor → result or wake.
+
+The three foreground batch handlers (chain, parallel, graph) run their prologue through one helper,
+`mode-prologue.ts` (`runModePrologue`: DAG hook → cost → depth → resolve → targets → preflight → H1) and
+afterwards the shared tail, `resolveModeModel` (`prelude.ts`: model resolution → empty-model rejection →
+circuit check). The per-unit pre-pass stays handler-called, at each mode's pinned position, and the single
+foreground and background paths keep their own sequences (#379).
 
 `schema.ts` is the single source of truth for the `delegate_task` parameter schema, and `DelegateTaskParams`
 is derived from it, so schema and type cannot drift (#239).
@@ -75,12 +81,13 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `logging.ts` | Leveled structured logging with file output and rotation under `.pi/subagent-logs/`. |
 | `messaging.ts` | Inter-subagent messaging: the Intercom channel and `[TO:id]` output parsing. |
 | `metrics.ts` | SLA metrics over run history: p50/p95/p99 latency, success and cost rates, degradation detection. |
-| `model-availability.ts` | Auth-aware model availability: distinguishes catalog presence from configured provider auth. |
+| `mode-prologue.ts` | The batch-mode prologue (cost → depth → resolve → targets → preflight → H1), one call per foreground batch handler. |
+| `model-availability.ts` | Model identity + auth-aware availability: parse a provider/model-id string and check catalog presence plus configured provider auth. |
 | `notify-completion.ts` | Builds and sends the completion-push wake message for terminal background runs. |
 | `params.ts` | Param resolution: per-call + preset merge, thinking caps, timeout normalization, tool and git/approval resolution, auto-routing. |
 | `paths.ts` | Package-root path resolution (`pkgPath()`) so shipped assets resolve from the extension directory. |
 | `preflight.ts` | Pre-spawn environment checks: pi binary, temp-dir writability, cwd readability. |
-| `prelude.ts` | Shared guard/validation prelude for delegation modes (cost gate, approval, H1 validation, dispatch guards, the per-unit pre-pass). |
+| `prelude.ts` | Shared guard/validation prelude for delegation modes: the individual gates (cost, approval, targets, H1), the per-unit pre-pass, and the batch modes' model tail. |
 | `presets.ts` | Preset loading, parsing, validation, and the file-backed custom-preset tier. |
 | `proc.ts` | Production process primitives — Linux/POSIX /proc reads, feature detection, and the default recovery deps. |
 | `prompt.ts` | Builds the subagent system prompt, including the task fence and inherited-instruction handling. |
@@ -107,7 +114,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**42 modules** — every one is listed because a new module without a purpose fails CI.
+**43 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

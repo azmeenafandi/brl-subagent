@@ -54,6 +54,7 @@ import {
 	type RecoveryMode,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
+import { runModePrologue } from "./mode-prologue";
 import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates, validateTemplatePresetRefs, extractParamNames } from "./templates";
 import { pkgPath } from "./paths";
 
@@ -69,9 +70,9 @@ import {
 	type HeadState,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, formatValidationWarnings } from "./prelude";
+import { depthLimitRejection, formatValidationWarnings, gateSessionCost, modelNotConfiguredRejection, rejectApprovalAlwaysInBackground, rejection, resolveModeModel, resolveSubagentModelPrecedence, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, type SubagentModelResolution } from "./prelude";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
-import { modelIsAvailable } from "./model-availability";
+import { modelIsAvailable, parseModelString } from "./model-availability";
 import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
 import {
 	defaultBackgroundFor,
@@ -367,73 +368,16 @@ export default function (pi: ExtensionAPI) {
 	// Parameter resolution (extracted to src/params.ts — issue #59)
 	// -------------------------------------------------------------------
 
-	/** Parse "provider/model-id" into {provider, id}. Returns null on bad format. */
-	function parseModelString(s: string): { provider: string; id: string } | null {
-		const trimmed = s.trim();
-		const idx = trimmed.indexOf("/");
-		if (idx <= 0 || idx === trimmed.length - 1) return null;
-		return { provider: trimmed.slice(0, idx), id: trimmed.slice(idx + 1) };
-	}
-
+	// The model-precedence chain lives in prelude.ts (issue #379) so the batch
+	// modes' tail (`resolveModeModel`) and these single/background paths resolve
+	// identically; this wrapper keeps their call shape (context + preset +
+	// per-call override) unchanged.
 	function resolveSubagentModel(
 		ctx: ExtensionContext,
 		preset: SubagentPreset | undefined,
 		perCallModel?: string, // NEW: top-level delegate_task model param (issue #96)
-	):
-		| { ok: true; model: { provider: string; id: string } }
-		| { ok: false; error: ToolResult<SubagentResult | undefined> } {
-		// Precedence: per-call model > preset.model > state.config.model > conductor model
-		let subagentModel: { provider: string; id: string } | undefined;
-
-		if (perCallModel) {
-			const parsed = parseModelString(perCallModel);
-			if (!parsed) {
-				log.warn("Model override is not a valid provider/model-id, falling back", { model: perCallModel });
-			} else if (modelIsAvailable(ctx.modelRegistry, parsed)) {
-				log.info("Using per-call model override", { model: perCallModel });
-				return { ok: true, model: parsed };
-			} else {
-				log.warn("Model override unavailable, falling back", { model: perCallModel });
-			}
-		}
-
-		if (preset?.model) {
-			const parsed = parseModelString(preset.model);
-			if (parsed && modelIsAvailable(ctx.modelRegistry, parsed)) {
-				subagentModel = parsed;
-				log.info("Using preset model", { preset: preset.name, model: preset.model });
-			} else {
-				// Fallback: preset model unavailable → configured model
-				log.warn("Preset model unavailable, falling back to configured model", {
-					preset: preset.name,
-					model: preset.model,
-				});
-			}
-		}
-
-		if (!subagentModel) {
-			subagentModel =
-				state.config.model ||
-				(ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined);
-		}
-
-		if (!subagentModel) {
-			return {
-				ok: false,
-				error: {
-					content: [
-						{
-							type: "text" as const,
-							text: "No model available. Configure API keys first, then use /brl-subagent to set a model.",
-						},
-					],
-					details: undefined,
-					isError: true,
-				},
-			};
-		}
-
-		return { ok: true, model: subagentModel };
+	): SubagentModelResolution {
+		return resolveSubagentModelPrecedence({ state, ctx, log, preset, perCallModel });
 	}
 
 	// C3: Resolve a step's model override (step.model > global resolved model).
@@ -554,96 +498,22 @@ export default function (pi: ExtensionAPI) {
 		// startedAt (captured once, at mode entry, not at completion).
 		const chainModeStartedAt = new Date().toISOString();
 
-		// R5: Check session cost limit before spawning
-		const costError = gateSessionCost({
+		// Mode prologue (issue #379): cost → depth → resolve → targets →
+		// preflight → H1, the sequence every batch mode shares (mode-prologue.ts).
+		// Chain's per-mode inputs are only the label and the unit count; H1 here
+		// validates the MODE-level params (top-level tasks are empty, so only the
+		// hard outputFile-vs-write conflict applies), while every step's own
+		// cwd/outputFile/tools belong to the per-step pass below (issue #222).
+		const pro = runModePrologue({
+			params,
 			state,
 			ctx,
 			log,
+			label: "Chain",
 			units: chainSteps.length,
-			label: "Chain delegation",
 		});
-		if (costError) return costError;
-
-		// Reject delegation if recursion depth exceeds configured max
-		const currentDepth = getCurrentDepth();
-		if (currentDepth >= state.config.maxSubagentDepth) {
-			log.warn("Chain delegation rejected: max depth reached", {
-				currentDepth,
-				maxDepth: state.config.maxSubagentDepth,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate further: subagent recursion depth limit reached ` +
-							`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// Resolve global params once
-		const globalParams = resolveSubagentParams(params, state, ctx, log);
-
-		// Validate CWD once
-		const cwdResult = validateCwd(globalParams.effectiveCwd, ctx.cwd);
-		if (!cwdResult.ok) {
-			return {
-				content: [
-					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-		const resolvedCwd = cwdResult.value;
-
-		// Pre-flight checks — fail fast before consuming resources
-		const pfResult = preflightCheck(resolvedCwd);
-		if (!pfResult.ok) {
-			log.warn("Chain pre-flight check failed", { error: pfResult.error });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Pre-flight check failed: ${pfResult.error}`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// H1: Pre-task validation at mode entry — deterministic check that
-		// tools/thinking match the task (mirrors single/background modes, issue
-		// #32). Chain top-level tasks are empty (modeCount forbids task+chain), so
-		// keyword warnings skip on empty text and only the hard outputFile-vs-write
-		// conflict applies (issue #34). The mode-level outputFile on globalParams is
-		// the one validated here; every step's own cwd/outputFile/tools are
-		// validated by the per-step pre-pass below (issue #222).
-		const validation = validatePreTask({
-			task: globalParams.task,
-			toolOptions: globalParams.toolOptions,
-			thinkingLevel: globalParams.thinkingLevel,
-			gitMode: globalParams.resolvedGitMode,
-			outputFile: globalParams.outputFile,
-		});
-		if (validation.warnings.length > 0) {
-			log.warn("Chain pre-task validation warnings", { warnings: validation.warnings });
-		}
-		if (!validation.valid) {
-			const errText = validation.errors.join("; ");
-			log.warn("Chain pre-task validation failed", { errors: validation.errors });
-			return {
-				content: [{ type: "text" as const, text: errText }],
-				details: undefined,
-				isError: true,
-			};
-		}
+		if (!pro.ok) return pro.error;
+		const { globalParams, resolvedCwd, currentDepth } = pro;
 
 		// Per-step pre-pass (issue #222): resolve + validate EVERY step before
 		// any spawn, so a single bad step rejects the chain with nothing
@@ -670,39 +540,20 @@ export default function (pi: ExtensionAPI) {
 		const stepCwds = stepPass.units.map((u) => u.cwd);
 		const stepWarnings = stepPass.warnings;
 
-		// Resolve model once (per-call top-level model override beats preset)
-		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
-		if (!modelResult.ok) return modelResult.error;
-		const subagentModel = modelResult.model;
-
-		const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
-		if (!modelStr || modelStr === "/") {
-			log.warn("Model string is empty after resolution", { model: subagentModel });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							"Subagent model is not configured. " +
-							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// R1: Circuit breaker check — reject if circuit is open
-		const circuitCheck = state.checkCircuit();
-		if (circuitCheck.isOpen) {
-			return {
-				content: [
-					{ type: "text" as const, text: circuitCheck.message! },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		// Mode tail (issue #379): resolve the model (preset + per-call override,
+		// auto-route included in `resolvedPreset`), reject an empty resolution,
+		// then the circuit breaker. It runs AFTER the per-step pass — IN8 keeps
+		// a bad step's rejection ahead of an unconfigured model.
+		const tail = resolveModeModel({
+			state,
+			ctx,
+			log,
+			preset: globalParams.resolvedPreset,
+			perCallModel: params.model,
+		});
+		if (!tail.ok) return tail.error;
+		const subagentModel = tail.model;
+		const modelStr = tail.modelStr;
 
 		// Resolve priority (issue #114: no config knob — the call-level default)
 		const chainPriority: Priority = (
@@ -1033,82 +884,22 @@ export default function (pi: ExtensionAPI) {
 	): Promise<ToolResult<SubagentResult | ParallelDetails | undefined>> {
 		const taskList: SubTaskParams[] = params.tasks!;
 
-		// R5: Check session cost limit before spawning
-		const costError = gateSessionCost({
+		// Mode prologue (issue #379): cost → depth → resolve → targets →
+		// preflight → H1, the sequence every batch mode shares (mode-prologue.ts).
+		// Parallel's per-mode inputs are only the label and the unit count; H1
+		// validates the MODE-level params (top-level tasks are empty, so only the
+		// hard outputFile-vs-write conflict applies — issue #34), while every
+		// task's own cwd/outputFile/tools belong to the per-task pass below.
+		const pro = runModePrologue({
+			params,
 			state,
 			ctx,
 			log,
-			units: taskList.length,
-			label: "Parallel delegation",
-		});
-		if (costError) return costError;
-
-		// Reject delegation if recursion depth exceeds configured max
-		const currentDepth = getCurrentDepth();
-		if (currentDepth >= state.config.maxSubagentDepth) {
-			log.warn("Parallel delegation rejected: max depth reached", {
-				currentDepth,
-				maxDepth: state.config.maxSubagentDepth,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate further: subagent recursion depth limit reached ` +
-							`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// Resolve global params once
-		const globalParams = resolveSubagentParams(params, state, ctx, log);
-
-		// Validate CWD once
-		const targets = validateDelegationTargets({ ctx, effectiveCwd: globalParams.effectiveCwd });
-		if (!targets.ok) return targets.error;
-		const resolvedCwd = targets.cwd;
-
-		// Pre-flight checks — fail fast before consuming resources
-		const pfResult = preflightCheck(resolvedCwd);
-		if (!pfResult.ok) {
-			log.warn("Parallel pre-flight check failed", { error: pfResult.error });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Pre-flight check failed: ${pfResult.error}`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// H1: Pre-task validation at mode entry — deterministic check that
-		// tools/thinking match the task (mirrors single/background modes, issue
-		// #32). Parallel top-level tasks are empty (modeCount forbids task+tasks),
-		// so keyword warnings skip on empty text and only the hard
-		// outputFile-vs-write conflict applies (issue #34). The mode-level
-		// outputFile on globalParams is the one validated here; every task's own
-		// cwd/outputFile/tools are validated by the per-task pre-pass below
-		// (issue #222).
-		const preTask = runPreTaskValidation({
-			log,
 			label: "Parallel",
-			preTask: {
-				task: globalParams.task,
-				toolOptions: globalParams.toolOptions,
-				thinkingLevel: globalParams.thinkingLevel,
-				gitMode: globalParams.resolvedGitMode,
-				outputFile: globalParams.outputFile,
-			},
+			units: taskList.length,
 		});
-		if (preTask.error) return preTask.error;
+		if (!pro.ok) return pro.error;
+		const { globalParams, resolvedCwd, currentDepth } = pro;
 
 		// Per-task pre-pass (issue #220, extended by #222): validate EVERY task
 		// before any spawn, so a single bad task rejects the batch with nothing
@@ -1138,39 +929,19 @@ export default function (pi: ExtensionAPI) {
 		const taskCwds = taskPass.units.map((u) => u.cwd);
 		const taskWarnings = taskPass.warnings;
 
-		// Resolve model once (per-call top-level model override beats preset)
-		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
-		if (!modelResult.ok) return modelResult.error;
-		const subagentModel = modelResult.model;
-
-		const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
-		if (!modelStr || modelStr === "/") {
-			log.warn("Model string is empty after resolution", { model: subagentModel });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							"Subagent model is not configured. " +
-							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// R1: Circuit breaker check — reject if circuit is open
-		const circuitCheck = state.checkCircuit();
-		if (circuitCheck.isOpen) {
-			return {
-				content: [
-					{ type: "text" as const, text: circuitCheck.message! },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		// Mode tail (issue #379): model resolution (preset + per-call override,
+		// auto-route included in `resolvedPreset`), the empty-model rejection and
+		// the circuit check. Runs AFTER the per-task pass (IN8).
+		const tail = resolveModeModel({
+			state,
+			ctx,
+			log,
+			preset: globalParams.resolvedPreset,
+			perCallModel: params.model,
+		});
+		if (!tail.ok) return tail.error;
+		const subagentModel = tail.model;
+		const modelStr = tail.modelStr;
 
 		// Build base prompt once
 		const basePrompt = ctx.getSystemPrompt();
@@ -1464,146 +1235,43 @@ export default function (pi: ExtensionAPI) {
 		// startedAt (captured once, at mode entry, not at completion).
 		const graphModeStartedAt = new Date().toISOString();
 
-		// Validate graph
-		const errors = validateGraph(graphTasks);
-		if (errors.length > 0) {
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Graph validation failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// R5: Check session cost limit before spawning
-		const costError = gateSessionCost({
+		// Mode prologue (issue #379): cost → depth → resolve → targets →
+		// preflight → H1, with the DAG check as the graph-only pre-cost hook — a
+		// malformed graph (empty / over-limit / duplicate id / missing dep) is
+		// rejected before the session spends anything (IN1 boundary). Cycles are
+		// NOT caught here; topologicalSort rejects them after the tail.
+		const pro = runModePrologue({
+			params,
 			state,
 			ctx,
 			log,
+			label: "Graph",
 			units: graphTasks.length,
-			label: "Graph delegation",
+			beforeCost: () => {
+				const errors = validateGraph(graphTasks);
+				return errors.length === 0
+					? undefined
+					: rejection(`Graph validation failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`);
+			},
 		});
-		if (costError) return costError;
+		if (!pro.ok) return pro.error;
+		const { globalParams, resolvedCwd, currentDepth } = pro;
 
-		// Reject delegation if recursion depth exceeds configured max
-		const currentDepth = getCurrentDepth();
-		if (currentDepth >= state.config.maxSubagentDepth) {
-			log.warn("Graph delegation rejected: max depth reached", {
-				currentDepth,
-				maxDepth: state.config.maxSubagentDepth,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate further: subagent recursion depth limit reached ` +
-							`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// Resolve global params once
-		const globalParams = resolveSubagentParams(params, state, ctx, log);
-
-		// Validate CWD once
-		const cwdResult = validateCwd(globalParams.effectiveCwd, ctx.cwd);
-		if (!cwdResult.ok) {
-			return {
-				content: [
-					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-		const resolvedCwd = cwdResult.value;
-
-		// Pre-flight checks
-		const pfResult = preflightCheck(resolvedCwd);
-		if (!pfResult.ok) {
-			log.warn("Graph pre-flight check failed", { error: pfResult.error });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Pre-flight check failed: ${pfResult.error}`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// H1: Pre-task validation at mode entry — deterministic check that
-		// tools/thinking match the task (mirrors single/background modes, issue
-		// #32). Graph top-level tasks are empty (modeCount forbids task+graph),
-		// so keyword warnings skip on empty text and only the hard
-		// outputFile-vs-write conflict applies (issue #34). The mode-level
-		// outputFile on globalParams is the one validated here; every node's own
-		// cwd/outputFile/tools are validated by the per-node pre-pass below
-		// (issue #222).
-		const validation = validatePreTask({
-			task: globalParams.task,
-			toolOptions: globalParams.toolOptions,
-			thinkingLevel: globalParams.thinkingLevel,
-			gitMode: globalParams.resolvedGitMode,
-			outputFile: globalParams.outputFile,
+		// Mode tail (issue #379): model resolution (preset + per-call override,
+		// auto-route included in `resolvedPreset`), the empty-model rejection and
+		// the circuit check. It runs BEFORE the topological sort and the per-node
+		// pass (IN8/IN11): a graph with a bad node AND an unconfigured model
+		// reports the MODEL error first.
+		const tail = resolveModeModel({
+			state,
+			ctx,
+			log,
+			preset: globalParams.resolvedPreset,
+			perCallModel: params.model,
 		});
-		if (validation.warnings.length > 0) {
-			log.warn("Graph pre-task validation warnings", { warnings: validation.warnings });
-		}
-		if (!validation.valid) {
-			const errText = validation.errors.join("; ");
-			log.warn("Graph pre-task validation failed", { errors: validation.errors });
-			return {
-				content: [{ type: "text" as const, text: errText }],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// Resolve model once (per-call top-level model override beats preset)
-		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
-		if (!modelResult.ok) return modelResult.error;
-		const subagentModel = modelResult.model;
-
-		const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
-		if (!modelStr || modelStr === "/") {
-			log.warn("Model string is empty after resolution", { model: subagentModel });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							"Subagent model is not configured. " +
-							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// R1: Circuit breaker check
-		const circuitCheck = state.checkCircuit();
-		if (circuitCheck.isOpen) {
-			return {
-				content: [
-					{ type: "text" as const, text: circuitCheck.message! },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		if (!tail.ok) return tail.error;
+		const subagentModel = tail.model;
+		const modelStr = tail.modelStr;
 
 		// Resolve priority — the FALLBACK for per-unit priority (issue #114): a
 		// task-level priority on graph[] items wins per slot; this is the floor.
@@ -3092,19 +2760,7 @@ export default function (pi: ExtensionAPI) {
 					currentDepth,
 					maxDepth: state.config.maxSubagentDepth,
 				});
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text:
-								`Cannot delegate further: subagent recursion depth limit reached ` +
-								`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-								`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
-						},
-					],
-					details: undefined,
-					isError: true,
-				};
+				return depthLimitRejection(currentDepth, state.config.maxSubagentDepth);
 			}
 
 			const {
@@ -3200,18 +2856,7 @@ export default function (pi: ExtensionAPI) {
 			const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
 			if (!modelStr || modelStr === "/") {
 				log.warn("Model string is empty after resolution", { model: subagentModel });
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text:
-								"Subagent model is not configured. " +
-								"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
-						},
-					],
-					details: undefined,
-					isError: true,
-				};
+				return modelNotConfiguredRejection();
 			}
 
 			// Create run record
