@@ -1,4 +1,4 @@
-// Purpose: Auth-aware model availability: distinguishes catalog presence from configured provider auth.
+// Purpose: Model identity + auth-aware availability: parse a provider/model-id string and check catalog presence plus configured provider auth.
 /**
  * Auth-aware model availability check (issue #4).
  *
@@ -21,6 +21,18 @@
 export interface ModelLike {
 	provider: string;
 	id: string;
+}
+
+/**
+ * Parse a `provider/model-id` string. Returns null on anything that is not
+ * exactly one non-empty provider and one non-empty id (no provider-only or
+ * trailing-slash values).
+ */
+export function parseModelString(s: string): { provider: string; id: string } | null {
+	const trimmed = s.trim();
+	const idx = trimmed.indexOf("/");
+	if (idx <= 0 || idx === trimmed.length - 1) return null;
+	return { provider: trimmed.slice(0, idx), id: trimmed.slice(idx + 1) };
 }
 
 export interface ProviderAuthStatusLike {

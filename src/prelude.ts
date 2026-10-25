@@ -1,4 +1,4 @@
-// Purpose: Shared guard/validation prelude for delegation modes (cost gate, approval, H1 validation, dispatch guards, the per-unit pre-pass).
+// Purpose: Shared guard/validation prelude for delegation modes: the individual gates (cost, approval, targets, H1), the per-unit pre-pass, and the batch modes' model tail.
 /**
  * Shared guard/validation prelude for delegation modes (issue #201).
  *
@@ -30,6 +30,15 @@
  * is validateUnitPrePass. Handlers CALL it at their own position; the gate
  * order around it stays visible per mode.
  *
+ * The batch modes' tail — model resolution, the empty-model rejection and the
+ * circuit check (IN11) — is resolveModeModel, built on
+ * resolveSubagentModelPrecedence, the one precedence chain the single and
+ * background paths resolve through too.
+ *
+ * The three foreground batch handlers compose the cost, target, preflight and
+ * H1 gates through `mode-prologue.ts` (`runModePrologue`), so their sequence
+ * is defined in one place; this module keeps the individual gates.
+ *
  * Messages are byte-identical to the pre-extraction copies (the suites pin
  * them); the parameters absorb only the real differences between sites — the
  * cost-gate log label and unit count, and the H1 log label / unit prefix /
@@ -37,19 +46,47 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ApprovalMode, GitMode, SubagentToolOptions, ThinkingLevel, ToolResult } from "./types";
+import type { ApprovalMode, GitMode, SubagentPreset, SubagentToolOptions, ThinkingLevel, ToolResult } from "./types";
 import type { SessionState } from "./state";
 import type { Logger } from "./logging";
 import { validateCwd, validateOutputFile } from "./sanitize";
 import { validatePreTask, type ValidateConfig } from "./validate";
+import { modelIsAvailable, parseModelString } from "./model-availability";
 
 /** The standard rejection result shape shared by these gates. */
-function rejection(text: string): ToolResult<undefined> {
+export function rejection(text: string): ToolResult<undefined> {
 	return {
 		content: [{ type: "text" as const, text }],
 		details: undefined,
 		isError: true,
 	};
+}
+
+// ── Shared rejection messages (one wording, every dispatch path) ────────
+
+/**
+ * The recursion-depth rejection (IN3). The gate itself lives per family (the
+ * batch prologue and the single foreground path), but the wording must not
+ * drift between them — the #375 prose guard treats a second copy as a build
+ * failure.
+ */
+export function depthLimitRejection(currentDepth: number, maxDepth: number): ToolResult<undefined> {
+	return rejection(
+		`Cannot delegate further: subagent recursion depth limit reached ` +
+		`(depth ${currentDepth}/${maxDepth}). ` +
+		`Subagents can delegate up to ${maxDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
+	);
+}
+
+/**
+ * The empty-`provider/id` rejection (IN11): a model resolved to nothing usable.
+ * Shared by the batch tail (`resolveModeModel`) and the single foreground path.
+ */
+export function modelNotConfiguredRejection(): ToolResult<undefined> {
+	return rejection(
+		"Subagent model is not configured. " +
+		"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
+	);
 }
 
 // ── Gate 1: session cost ────────────────────────────────────────────────
@@ -324,4 +361,114 @@ export function validateUnitPrePass<U, M extends UnitPrePassSource>(
 	}
 
 	return { ok: true, units: validated, warnings };
+}
+
+// ── Batch tail: model resolution + empty-model + circuit (IN11) ──────────
+
+export type SubagentModelResolution =
+	| { ok: true; model: { provider: string; id: string } }
+	| { ok: false; error: ToolResult<undefined> };
+
+/**
+ * Resolve WHICH model a dispatch runs on: per-call override > preset.model >
+ * configured model > conductor model. The preset handed in is the mode-level
+ * `resolvedPreset` — already carrying the auto-route decision when routing
+ * chose it — so this one chain serves the batch tail and the single/background
+ * paths alike (the fallbacks log, they never throw).
+ */
+export function resolveSubagentModelPrecedence(input: {
+	state: SessionState;
+	ctx: ExtensionContext;
+	log: Logger;
+	preset: SubagentPreset | undefined;
+	/** Top-level delegate_task model override (issue #96) — beats the preset. */
+	perCallModel?: string;
+}): SubagentModelResolution {
+	const { state, ctx, log, preset, perCallModel } = input;
+	let subagentModel: { provider: string; id: string } | undefined;
+
+	if (perCallModel) {
+		const parsed = parseModelString(perCallModel);
+		if (!parsed) {
+			log.warn("Model override is not a valid provider/model-id, falling back", { model: perCallModel });
+		} else if (modelIsAvailable(ctx.modelRegistry, parsed)) {
+			log.info("Using per-call model override", { model: perCallModel });
+			return { ok: true, model: parsed };
+		} else {
+			log.warn("Model override unavailable, falling back", { model: perCallModel });
+		}
+	}
+
+	if (preset?.model) {
+		const parsed = parseModelString(preset.model);
+		if (parsed && modelIsAvailable(ctx.modelRegistry, parsed)) {
+			subagentModel = parsed;
+			log.info("Using preset model", { preset: preset.name, model: preset.model });
+		} else {
+			// Fallback: preset model unavailable → configured model
+			log.warn("Preset model unavailable, falling back to configured model", {
+				preset: preset.name,
+				model: preset.model,
+			});
+		}
+	}
+
+	if (!subagentModel) {
+		subagentModel =
+			state.config.model ||
+			(ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined);
+	}
+
+	if (!subagentModel) {
+		return {
+			ok: false,
+			error: rejection(
+				"No model available. Configure API keys first, then use /brl-subagent to set a model.",
+			),
+		};
+	}
+
+	return { ok: true, model: subagentModel };
+}
+
+export type ModeModelOutcome =
+	| { ok: true; model: { provider: string; id: string }; modelStr: string }
+	| { ok: false; error: ToolResult<undefined> };
+
+/**
+ * The batch modes' shared tail (IN11): resolve the model (preset + per-call
+ * override), reject an empty `provider/id` resolution, then apply the circuit
+ * breaker. Handlers CALL it at their own position — chain/parallel after the
+ * per-unit pass, graph before its topological sort and per-node pass — because
+ * that position is pinned (IN8/IN11).
+ */
+export function resolveModeModel(input: {
+	state: SessionState;
+	ctx: ExtensionContext;
+	log: Logger;
+	preset: SubagentPreset | undefined;
+	perCallModel?: string;
+}): ModeModelOutcome {
+	const { state, ctx, log, preset, perCallModel } = input;
+
+	const resolution = resolveSubagentModelPrecedence({ state, ctx, log, preset, perCallModel });
+	if (!resolution.ok) return { ok: false, error: resolution.error };
+	const subagentModel = resolution.model;
+
+	const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
+	if (!modelStr || modelStr === "/") {
+		log.warn("Model string is empty after resolution", { model: subagentModel });
+		return {
+			ok: false,
+			error: modelNotConfiguredRejection(),
+		};
+	}
+
+	// R1: Circuit breaker check — after model resolution (IN11).
+	const circuitCheck = state.checkCircuit();
+	if (circuitCheck.isOpen) {
+		return { ok: false, error: rejection(circuitCheck.message!) };
+	}
+
+	return { ok: true, model: subagentModel, modelStr };
 }
