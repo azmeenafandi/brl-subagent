@@ -466,6 +466,31 @@ export async function showSLAConfig(
 	onConfigChanged(ctx, `SLA tracking enabled with window size ${size}`);
 }
 
+/**
+ * D9: the one report "lines modal" — accent border, title, blank row, dim body
+ * lines, accent border. Closes on `q` or Escape. Presentation-only; every
+ * report screen routes through this so the chrome cannot drift between them.
+ */
+function showLinesModal(ctx: ExtensionContext, title: string, lines: string[]): void {
+	ctx.ui.custom((tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
+		container.addChild(new Text("", 0, 0));
+		for (const line of lines) {
+			container.addChild(new Text(theme.fg("dim", line), 1, 0));
+		}
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				if (data === "q" || data === "\x1b") done(undefined);
+			},
+		};
+	});
+}
+
 export async function showSLAStats(
 	ctx: ExtensionContext,
 	state: SessionState,
@@ -503,23 +528,7 @@ export async function showSLAStats(
 		}
 	}
 
-	ctx.ui.custom((tui, theme, _kb, done) => {
-		const container = new Container();
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("SLA Statistics")), 1, 0));
-		container.addChild(new Text("", 0, 0));
-		for (const line of lines) {
-			container.addChild(new Text(theme.fg("dim", line), 1, 0));
-		}
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		return {
-			render: (w: number) => container.render(w),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => {
-				if (data === "q" || data === "\x1b") done(undefined);
-			},
-		};
-	});
+	showLinesModal(ctx, "SLA Statistics", lines);
 }
 
 // Preset management UI
@@ -561,23 +570,7 @@ export async function showFileAccessReport(
 		lines.push(`    Runs: ${runIds.join(", ")}`);
 	}
 
-	ctx.ui.custom((tui, theme, _kb, done) => {
-		const container = new Container();
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("File Access Report")), 1, 0));
-		container.addChild(new Text("", 0, 0));
-		for (const line of lines) {
-			container.addChild(new Text(theme.fg("dim", line), 1, 0));
-		}
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		return {
-			render: (w: number) => container.render(w),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => {
-				if (data === "q" || data === "\x1b") done(undefined);
-			},
-		};
-	});
+	showLinesModal(ctx, "File Access Report", lines);
 }
 
 export async function showSecretsExposureReport(
@@ -634,23 +627,7 @@ export async function showSecretsExposureReport(
 		}
 	}
 
-	ctx.ui.custom((tui, theme, _kb, done) => {
-		const container = new Container();
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Secrets Exposure Report")), 1, 0));
-		container.addChild(new Text("", 0, 0));
-		for (const line of lines) {
-			container.addChild(new Text(theme.fg("dim", line), 1, 0));
-		}
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		return {
-			render: (w: number) => container.render(w),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => {
-				if (data === "q" || data === "\x1b") done(undefined);
-			},
-		};
-	});
+	showLinesModal(ctx, "Secrets Exposure Report", lines);
 }
 
 export async function showFullComplianceSummary(
@@ -683,23 +660,7 @@ export async function showFullComplianceSummary(
 		`  High Severity:     ${summary.highSeverityFindings}`,
 	];
 
-	ctx.ui.custom((tui, theme, _kb, done) => {
-		const container = new Container();
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Compliance Summary")), 1, 0));
-		container.addChild(new Text("", 0, 0));
-		for (const line of lines) {
-			container.addChild(new Text(theme.fg("dim", line), 1, 0));
-		}
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		return {
-			render: (w: number) => container.render(w),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => {
-				if (data === "q" || data === "\x1b") done(undefined);
-			},
-		};
-	});
+	showLinesModal(ctx, "Compliance Summary", lines);
 }
 
 export async function showComplianceMenu(
