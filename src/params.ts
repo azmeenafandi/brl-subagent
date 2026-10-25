@@ -22,6 +22,7 @@ import type {
 	SubagentToolOptions,
 	ResolvedParams,
 	SnapshotParams,
+	DelegateTaskParams,
 } from "./types";
 import { resolveThinkingLevel } from "./types";
 import { getAllPresets, getPreset } from "./presets";
@@ -180,30 +181,46 @@ export function defaultBackgroundFor(
 	return effectiveApprovalMode === "auto";
 }
 
+/**
+ * The resolver's input: the dispatch-param fields resolution actually reads,
+ * derived from the registered schema (issue #379) instead of re-spelled here.
+ *
+ * `task` is OPTIONAL because the schema says so (`chain`/`tasks`/`graph`
+ * dispatches carry no mode-level task) — batch call sites therefore pass the
+ * registered params object through unchanged. The four `params as {…}`
+ * assertions this replaces existed only to claim a `task` the schema never
+ * required. `resolveSubagentParams` defaults it with `?? ""`, which every
+ * reader of the field treats like `undefined` (see the `task` line below).
+ *
+ * Compile-time coverage of this key list is ratcheted in index.ts
+ * (`_ResolveInputCoverage`) — a schema field the resolver forgets is silent at
+ * runtime, so only the compiler can catch it.
+ */
+export type ResolveInputParams = Pick<
+	DelegateTaskParams,
+	| "task"
+	| "label"
+	| "preset"
+	| "systemPrompt"
+	| "inheritSystemPrompt"
+	| "thinkingLevel"
+	| "outputFile"
+	| "timeout"
+	| "cwd"
+	| "tools"
+	| "excludeTools"
+	| "noBuiltinTools"
+	| "gitMode"
+	| "approvalMode"
+	| "template"
+	// Capability-block override: carried here so the validation call sites
+	// (which receive the resolved params) can forward it to validatePreTask.
+	// Resolution itself ignores it.
+	| "force"
+>;
+
 export function resolveSubagentParams(
-	params: {
-		task: string;
-		label?: string;
-		preset?: string;
-		systemPrompt?: string;
-		inheritSystemPrompt?: boolean;
-		thinkingLevel?: string;
-		outputFile?: string;
-		timeout?: number;
-		cwd?: string;
-		tools?: string[];
-		excludeTools?: string[];
-		noBuiltinTools?: boolean;
-		gitMode?: string;
-		approvalMode?: string;
-		template?: string;
-		/**
-		 * Capability-block override: carried here so the validation call sites
-		 * (which receive the resolved params) can forward it to validatePreTask.
-		 * Resolution itself ignores it.
-		 */
-		force?: boolean;
-	},
+	params: ResolveInputParams,
 	state: SessionState,
 	ctx: ExtensionContext,
 	log: Logger,
@@ -229,7 +246,7 @@ export function resolveSubagentParams(
 		params.noBuiltinTools !== undefined;
 	if (!resolvedPreset && !params.template && !hasExplicitToolPreference) {
 		const allPresets = getAllPresets(state.builtinPresets, state.customPresets);
-		const matched = classifyTask(params.task, allPresets);
+		const matched = classifyTask(params.task ?? "", allPresets);
 		if (matched) {
 			resolvedPreset = matched.preset;
 			wasAutoRouted = true;
@@ -289,7 +306,10 @@ export function resolveSubagentParams(
 			: undefined;
 
 	return {
-		task: params.task,
+		// "" ≡ undefined at all three readers of the field: mergeSubTaskParams
+		// (`subTask.task || globalParams.task`), validatePreTask
+		// (`config.task || ''`) and classifyTask (`if (!task …)`).
+		task: params.task ?? "",
 		label: params.label?.trim() || undefined,
 		inheritSP: mergedInheritSP !== false,
 		customSP: mergedSystemPrompt,

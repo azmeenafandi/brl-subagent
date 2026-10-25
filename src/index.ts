@@ -82,6 +82,7 @@ import {
 	shouldRejectBackgroundForBatch,
 	snapshotOriginalParams,
 	type DispatchShape,
+	type ResolveInputParams,
 } from "./params";
 import { delegateTaskParamsSchema } from "./schema";
 import { createSessionState, resolveTerminalRunEntry, type SessionState } from "./state";
@@ -234,6 +235,32 @@ export function cleanupSessionState(state: SessionState): void {
 type _KnownDelegateKey = (typeof KNOWN_DELEGATE_KEYS extends Set<infer K> ? K : never) & string;
 type _ExpectNever<T extends never> = T;
 type _DelegateParamCoverage = _ExpectNever<Exclude<_KnownDelegateKey, keyof DelegateTaskParams>>;
+
+/**
+ * Issue #379: `ResolveInputParams` derives from the schema via `Pick`, so a
+ * params field ADDED to the schema is not in the resolver's input until the
+ * key list names it — and a missed field is invisible at runtime (the key
+ * reaches execute and is silently unused). Only the compiler can catch it.
+ *
+ * The excluded keys are the ones resolution deliberately does not read: the
+ * execution-shape inputs (`chain`/`tasks`/`graph`), the template machinery
+ * (`template` is the exception — it IS read, so it stays in the resolver;
+ * `params` is not), the retry inputs, and the per-dispatch fields
+ * (`model`/`priority`/`background`) that resolve outside this merge.
+ */
+type _NonResolutionDelegateKey =
+	| "chain"
+	| "tasks"
+	| "graph"
+	| "params"
+	| "retryRunId"
+	| "retryOnTimeout"
+	| "model"
+	| "priority"
+	| "background";
+type _ResolveInputCoverage = _ExpectNever<
+	Exclude<_KnownDelegateKey, keyof ResolveInputParams | _NonResolutionDelegateKey>
+>;
 
 /**
  * Issue #381 (audit D4): the one graph-node → SubTaskParams mapping, shared by
@@ -560,26 +587,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// Resolve global params once
-		const globalParams = resolveSubagentParams(
-			params as {
-				task: string;
-				label?: string;
-				preset?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-				gitMode?: string;
-			},
-			state,
-			ctx,
-			log,
-		);
+		const globalParams = resolveSubagentParams(params, state, ctx, log);
 
 		// Validate CWD once
 		const cwdResult = validateCwd(globalParams.effectiveCwd, ctx.cwd);
@@ -1074,26 +1082,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// Resolve global params once
-		const globalParams = resolveSubagentParams(
-			params as {
-				task: string;
-				label?: string;
-				preset?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-				gitMode?: string;
-			},
-			state,
-			ctx,
-			log,
-		);
+		const globalParams = resolveSubagentParams(params, state, ctx, log);
 
 		// Validate CWD once
 		const targets = validateDelegationTargets({ ctx, effectiveCwd: globalParams.effectiveCwd });
@@ -1555,27 +1544,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// Resolve global params once
-		const globalParams = resolveSubagentParams(
-			params as {
-				task: string;
-				label?: string;
-				preset?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-				gitMode?: string;
-				approvalMode?: string;
-			},
-			state,
-			ctx,
-			log,
-		);
+		const globalParams = resolveSubagentParams(params, state, ctx, log);
 
 		// Validate CWD once
 		const cwdResult = validateCwd(globalParams.effectiveCwd, ctx.cwd);
@@ -2084,26 +2053,7 @@ export default function (pi: ExtensionAPI) {
 		if (costError) return costError;
 
 		// Resolve global params once — same call shape as runParallelMode.
-		const globalParams = resolveSubagentParams(
-			params as {
-				task: string;
-				label?: string;
-				preset?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-				gitMode?: string;
-			},
-			state,
-			ctx,
-			log,
-		);
+		const globalParams = resolveSubagentParams(params, state, ctx, log);
 
 		// Resolve the global model once (per-call model beats preset/config).
 		const globalModelResult = resolveSubagentModel(
@@ -2600,11 +2550,15 @@ export default function (pi: ExtensionAPI) {
 	async function spawnBackgroundRun(
 		pi: ExtensionAPI,
 		ctx: ExtensionContext,
-		params: Omit<Parameters<typeof resolveSubagentParams>[0], "task"> & {
-			task?: string;
-			model?: string;
-			priority?: string;
-		},
+		/**
+		 * Two shapes, both passed WITHOUT an assertion (issue #379):
+		 *  - `DelegateTaskParams` — a fresh dispatch, schema-validated;
+		 *  - the `resolveRetryParams` bag — rebuilt from a run record, whose
+		 *    `priority` is the unvalidated persisted string. It is the only field
+		 *    the two shapes disagree on, and claiming the recorded value was
+		 *    schema-validated would be a lie: records are read back from disk.
+		 */
+		params: DelegateTaskParams | ReturnType<typeof resolveRetryParams>,
 		singleTask: string,
 		// Option B U1: the spawn entry a retryRunId resolved to, so a retried
 		// background run inherits dispatchId/resumeOf/attempt (record identity,
@@ -3849,19 +3803,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(
-			args: {
-				task?: string;
-				label?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-			},
+			args: DelegateTaskParams,
 			theme: Theme,
 			_context: unknown,
 		) {

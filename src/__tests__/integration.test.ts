@@ -368,6 +368,27 @@ describe("resolveSubagentParams integration", () => {
 		expect(result.toolOptions?.noBuiltinTools).toBe(true);
 	});
 
+	/**
+	 * Issue #379: `task` is OPTIONAL in the resolver's input (the schema says
+	 * so — chain/tasks/graph dispatches carry no mode-level task) and it
+	 * normalises to "", which all three readers of the field treat like
+	 * `undefined`: mergeSubTaskParams' `subTask.task || globalParams.task`,
+	 * validatePreTask's `config.task || ''`, classifyTask's `if (!task …)`.
+	 */
+	it("absent task normalises to '' and never auto-routes (issue #379)", () => {
+		const state = new SessionState();
+		// A preset with matching keywords — if an empty task could match anything,
+		// this is the fixture that would fire.
+		state.builtinPresets = [auditorPreset];
+		const ctx = createMockPluginContext();
+
+		const result = resolveSubagentParams({}, state, ctx, log);
+
+		expect(result.task).toBe("");
+		expect(result.resolvedPreset).toBeUndefined();
+		expect(result.autoRoutedPreset).toBeUndefined();
+	});
+
 	it("does NOT auto-route when an explicit preset is given (issue #57 intent rule)", () => {
 		const state = new SessionState();
 		state.builtinPresets = [reviewerPreset, auditorPreset];
