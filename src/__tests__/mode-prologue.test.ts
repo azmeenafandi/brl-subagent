@@ -353,6 +353,11 @@ function textOf(result: { content: Array<{ type: string; text: string }> }): str
 }
 
 /** Assert every named event appears, in this order, in the recorded log. */
+/**
+ * First-occurrence matching: `expectOrder` records each gate's FIRST event, so a
+ * mode-level and a per-unit gate of the same kind cannot be distinguished here.
+ * The IN8 precedence/position tests cover that gap (issue #379 review, advisory).
+ */
 function expectOrder(...names: string[]): void {
 	const positions = names.map((name) => {
 		const index = gateLog.order.indexOf(name);
