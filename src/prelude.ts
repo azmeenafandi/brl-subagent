@@ -1,4 +1,4 @@
-// Purpose: Shared guard/validation prelude opening every delegation mode (cost gate, approval, H1 validation, dispatch guards).
+// Purpose: Shared guard/validation prelude for delegation modes (cost gate, approval, H1 validation, dispatch guards, the per-unit pre-pass).
 /**
  * Shared guard/validation prelude for delegation modes (issue #201).
  *
@@ -26,6 +26,10 @@
  *     const pre = runPreTaskValidation({ … });
  *     if (pre.error) return pre.error;
  *
+ * The per-unit pre-pass (merge → targets → H1 → warnings, repeated per unit)
+ * is validateUnitPrePass. Handlers CALL it at their own position; the gate
+ * order around it stays visible per mode.
+ *
  * Messages are byte-identical to the pre-extraction copies (the suites pin
  * them); the parameters absorb only the real differences between sites — the
  * cost-gate log label and unit count, and the H1 log label / unit prefix /
@@ -33,7 +37,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ApprovalMode, ToolResult } from "./types";
+import type { ApprovalMode, GitMode, SubagentToolOptions, ThinkingLevel, ToolResult } from "./types";
 import type { SessionState } from "./state";
 import type { Logger } from "./logging";
 import { validateCwd, validateOutputFile } from "./sanitize";
@@ -204,4 +208,120 @@ export function runPreTaskValidation(input: {
 		};
 	}
 	return { warnings: validation.warnings };
+}
+
+// ── Gate 4: per-unit pre-pass (merge → targets → H1) ────────────────────
+
+/**
+ * A merged per-unit source, structurally (mergeSubTaskParams lives in
+ * index.ts and is passed in by the handler). These are the fields the
+ * pre-pass reads; the handler's own type is preserved through the generic
+ * `M` so it can build its mode-specific unit records from the result.
+ */
+export interface UnitPrePassSource {
+	task: string;
+	label?: string;
+	effectiveCwd: string;
+	outputFile?: string;
+	thinkingLevel: ThinkingLevel;
+	toolOptions?: SubagentToolOptions;
+}
+
+/** One validated unit: the handler's unit and merged source, plus the
+ * resolved cwd/outputFile that unit must spawn in. */
+export interface ValidatedUnit<U, M extends UnitPrePassSource> {
+	unit: U;
+	merged: M;
+	cwd: string;
+	outputFile: string | undefined;
+}
+
+export interface UnitPrePassInput<U, M extends UnitPrePassSource> {
+	units: readonly U[];
+	/** The handler's mergeSubTaskParams, bound to its globalParams. */
+	merge: (unit: U, index: number) => M;
+	/**
+	 * Per-unit display data the handler already computes — no formatting
+	 * policy lives in this helper. Called after `merge` and before target
+	 * validation, so the unit is described exactly once, in unit order.
+	 */
+	describe: (
+		unit: U,
+		merged: M,
+		index: number,
+	) => {
+		/** Unit prefix, e.g. `Step 1 ("one")` / `Node "n1"`. */
+		prefix: string;
+		/** Extra structured fields merged into the H1 warn entries. */
+		logContext: Record<string, unknown>;
+		/** Text H1 validates (defaults to `merged.task`); the graph
+		 * pre-pass passes its placeholder-stripped declared text. */
+		task?: string;
+	};
+	/** H1 site label, e.g. "Chain" / "Parallel" / "Graph". */
+	label: string;
+	/** Mode-level resolved git mode applied to every unit's H1. */
+	gitMode: GitMode;
+	ctx: ExtensionContext;
+	log: Logger;
+	/** Per-unit force flag (IN10): mode entry never carries it. */
+	force?: boolean;
+}
+
+export type UnitPrePassOutcome<U, M extends UnitPrePassSource> =
+	| { ok: false; error: ToolResult<undefined> }
+	| { ok: true; units: Array<ValidatedUnit<U, M>>; warnings: string[] };
+
+/**
+ * The per-unit pre-pass shared by chain, parallel and graph: for EVERY unit,
+ * merge → validate cwd/outputFile → H1 → collect `${prefix}: ${warning}`.
+ *
+ * This is a helper each handler CALLS at its own position; it is deliberately
+ * not a hook the mode prologue invokes — the three modes run it at different
+ * points (chain/parallel before model resolution, graph after the circuit
+ * check and the topological sort), and the position is part of the contract
+ * (design note #379 IN8). All units are validated before any spawn; the first
+ * rejection wins, so nothing starts on a bad unit. Warnings come back in unit
+ * order for the caller to surface after the result payload (IN9).
+ */
+export function validateUnitPrePass<U, M extends UnitPrePassSource>(
+	input: UnitPrePassInput<U, M>,
+): UnitPrePassOutcome<U, M> {
+	const { units, merge, describe, label, gitMode, ctx, log, force } = input;
+	const validated: Array<ValidatedUnit<U, M>> = [];
+	const warnings: string[] = [];
+
+	for (let i = 0; i < units.length; i++) {
+		const unit = units[i];
+		const merged = merge(unit, i);
+		const display = describe(unit, merged, i);
+
+		const targets = validateDelegationTargets({
+			ctx,
+			effectiveCwd: merged.effectiveCwd,
+			outputFile: merged.outputFile,
+			prefix: display.prefix,
+		});
+		if (!targets.ok) return { ok: false, error: targets.error };
+		validated.push({ unit, merged, cwd: targets.cwd, outputFile: targets.outputFile });
+
+		const validation = runPreTaskValidation({
+			log,
+			label,
+			prefix: display.prefix,
+			logContext: display.logContext,
+			preTask: {
+				task: display.task ?? merged.task,
+				toolOptions: merged.toolOptions,
+				thinkingLevel: merged.thinkingLevel,
+				gitMode,
+				outputFile: merged.outputFile,
+				force,
+			},
+		});
+		if (validation.error) return { ok: false, error: validation.error };
+		for (const w of validation.warnings) warnings.push(`${display.prefix}: ${w}`);
+	}
+
+	return { ok: true, units: validated, warnings };
 }

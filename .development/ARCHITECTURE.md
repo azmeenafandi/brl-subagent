@@ -51,7 +51,7 @@ awaited inside the spawn (issues #28, #147, #198).
 `delegate_task` → sanitize (`sanitize.ts`) → resolve params (`params.ts`: preset merge, thinking caps, timeout
 normalization, model resolution, edit→write fix, auto-routing) → template / retry resolution → validate
 (`validate.ts` H1 + capability pre-flight) → shared prelude (`prelude.ts`: cost gate, approval gating,
-dispatch guards) → mode runner (`index.ts`) → spawn → run records + monitor → result or wake.
+dispatch guards, per-unit pre-pass) → mode runner (`index.ts`) → spawn → run records + monitor → result or wake.
 
 `schema.ts` is the single source of truth for the `delegate_task` parameter schema, and `DelegateTaskParams`
 is derived from it, so schema and type cannot drift (#239).
@@ -80,7 +80,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `params.ts` | Param resolution: per-call + preset merge, thinking caps, timeout normalization, tool and git/approval resolution, auto-routing. |
 | `paths.ts` | Package-root path resolution (`pkgPath()`) so shipped assets resolve from the extension directory. |
 | `preflight.ts` | Pre-spawn environment checks: pi binary, temp-dir writability, cwd readability. |
-| `prelude.ts` | Shared guard/validation prelude opening every delegation mode (cost gate, approval, H1 validation, dispatch guards). |
+| `prelude.ts` | Shared guard/validation prelude for delegation modes (cost gate, approval, H1 validation, dispatch guards, the per-unit pre-pass). |
 | `presets.ts` | Preset loading, parsing, validation, and the file-backed custom-preset tier. |
 | `proc.ts` | Production process primitives — Linux/POSIX /proc reads, feature detection, and the default recovery deps. |
 | `prompt.ts` | Builds the subagent system prompt, including the task fence and inherited-instruction handling. |
