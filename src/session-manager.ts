@@ -1005,6 +1005,52 @@ export async function spawnBackgroundSession(
     return info;
   };
 
+  // Issue #376 (audit D8): the aborted settle path is reached from BOTH
+  // handlers — the .then (probe contract: an abort RESOLVES the prompt) and the
+  // .catch (the prompt rejects while the agent is already 'stopped'). Both must
+  // record the same partial-work result and the same retryable failure, so they
+  // share one helper.
+  //   - `gitInfo` is caller-captured: cleanupWorkBranch is once-per-run
+  //     (idempotent), and the .catch failed path reuses that same capture.
+  //   - `stopReason` is caller-supplied: the .then can narrow it from the last
+  //     assistant message; the .catch has no message to read.
+  const finalizeAbortedRun = (
+    gitInfo: { gitBranch?: string; gitDiff?: string },
+    stopReason: string,
+  ): void => {
+    // W4/M1: capture whatever the branch produced before discarding it — an
+    // aborted background agent's partial work is still worth reviewing, and
+    // must be RECORDED, not just captured-and-deleted.
+    if (gitInfo.gitBranch) {
+      agent.result = {
+        ...(agent.result ?? {}),
+        exitCode: 1,
+        messages: [],
+        stderr: '',
+        usage: agent.result?.usage ?? EMPTY_USAGE,
+        stopReason: 'aborted',
+        gitBranch: gitInfo.gitBranch,
+        gitDiff: gitInfo.gitDiff,
+      } as SubagentResult;
+      agents.set(id, agent);
+      persistAgent(agent);
+    }
+    // Issue #98: aborts/timeouts are retryable failures (retry schema:
+    // timeout/abort counts as failure) — finalize the run entry.
+    // Issue #122: a timed-out run burned tokens — record the real usage
+    // (the git-diff block above must not leave the empty fallback).
+    recordSessionUsage();
+    // Issue #120 (Track 1): agent.error carries the reason when the stop was a
+    // deadline timeout ('Timed out after Xms' → 'timeout'); a user cancel
+    // (stop_subagent) sets no error, so fall back to the honest user-abort
+    // stamp (→ 'aborted') instead of the old ambiguous 'Aborted or timed out'.
+    finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE, { stopReason });
+    // Issue #31: capture the final output while the session is still live,
+    // then release the ref on the terminal path (memory retention; the poller
+    // treats a nulled ref on a terminal agent as expected).
+    captureAndReleaseSession();
+  };
+
   // Issue #53: the settle handlers (.then/.catch below) run in promise
   // callbacks — a throw from any step (fs failure, deleted transcript, emit
   // error) would escape as an uncaughtException and kill the whole pi
@@ -1142,43 +1188,14 @@ export async function spawnBackgroundSession(
           updateAgentStatus(id, 'stopped');
           transcript.completeTranscript(id, 'stopped');
         }
-        // W4/M1: capture whatever the branch produced before discarding it — an
-        // aborted background agent's partial work is still worth reviewing, and
-        // must be RECORDED, not just captured-and-deleted.
-        const gitInfo = cleanupWorkBranch();
-        if (gitInfo.gitBranch) {
-          agent.result = {
-            ...(agent.result ?? {}),
-            exitCode: 1,
-            messages: [],
-            stderr: '',
-            usage: agent.result?.usage ?? EMPTY_USAGE,
-            stopReason: 'aborted',
-            gitBranch: gitInfo.gitBranch,
-            gitDiff: gitInfo.gitDiff,
-          } as SubagentResult;
-          agents.set(id, agent);
-          persistAgent(agent);
-        }
-        // Issue #98: aborts/timeouts are retryable failures (retry schema:
-        // timeout/abort counts as failure) — finalize the run entry.
-        // Issue #122: a timed-out run burned tokens — record the real usage
-        // (the git-diff block above must not leave the empty fallback).
-        // Issue #120 (Track 1): agent.error carries the reason when the stop was
-        // a deadline timeout ('Timed out after Xms' → 'timeout'); a user cancel
-        // (stop_subagent) sets no error, so fall back to the honest user-abort
-        // stamp (→ 'aborted') instead of the old ambiguous 'Aborted or timed out'.
-        recordSessionUsage();
-        finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE, {
-          stopReason:
-            terminalStopReason && terminalStopReason !== 'stop'
-              ? terminalStopReason
-              : 'aborted',
-        });
-        // Issue #31: capture the final output while the session is still
-        // live, then release the ref on the terminal path (memory retention;
-        // the poller treats a nulled ref on a terminal agent as expected).
-        captureAndReleaseSession();
+        // W4/M1 + #98/#122/#120/#31: the same aborted settle as the .catch
+        // stopped branch (issue #376/D8 — one helper, no second copy).
+        finalizeAbortedRun(
+          cleanupWorkBranch(),
+          terminalStopReason && terminalStopReason !== 'stop'
+            ? terminalStopReason
+            : 'aborted',
+        );
         return;
       }
       // Issue #179 (D1/D2): prompt() RESOLVED — but a resolved prompt is NOT
@@ -1283,33 +1300,11 @@ export async function spawnBackgroundSession(
       // model resolution, invalid task). Abort never rejects (probe contract).
       if (agent.status === 'stopped') {
         // M1: record the partial work even on the stopped path.
-        if (gitInfo.gitBranch) {
-          agent.result = {
-            ...(agent.result ?? {}),
-            exitCode: 1,
-            messages: [],
-            stderr: '',
-            usage: agent.result?.usage ?? EMPTY_USAGE,
-            stopReason: 'aborted',
-            gitBranch: gitInfo.gitBranch,
-            gitDiff: gitInfo.gitDiff,
-          } as SubagentResult;
-          agents.set(id, agent);
-          persistAgent(agent);
-        }
-        // Issue #98: the stopped path is a retryable failure too — finalize
-        // the run entry alongside the agent record flip.
-        // Issue #122: a stopped/timed-out run burned tokens too — record the
-        // real usage (same aborted path semantics as the .then branch).
-        // Issue #120 (Track 1): same honest fallback — a deadline timeout keeps
-        // agent.error ('Timed out...' → 'timeout'); a user cancel has no error
-        // and stamps 'Subagent aborted by user' (→ 'aborted').
-        recordSessionUsage();
-        finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE, {
-          stopReason: 'aborted',
-        });
-        // Issue #31: the stopped path is terminal too — capture + release.
-        captureAndReleaseSession();
+        // Issue #376 (D8): identical to the .then aborted branch — the work-branch
+        // capture above is reused (cleanupWorkBranch is once-per-run) and there is
+        // no last assistant message here to narrow the reason from.
+        finalizeAbortedRun(gitInfo, 'aborted');
+        // Issue #31: the stopped path is terminal too — its transcript note.
         transcript.completeTranscript(id, 'stopped');
         return;
       }
