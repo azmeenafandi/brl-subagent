@@ -48,9 +48,10 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   artifact) — a re-dispatch then starts with "read the banked file first".
 - Output your verdict in this exact format in your final response:
   verdict line (`approve` / `approve-with-nits` / `changes-requested`),
-  findings table (severity | file:line | one-liner), verified-OK list,
-  and `SOLID/DRY violations flagged: N` (the efficacy gauge — the
-  project-reviewer preset's mirror check feeds it).
+  findings table (severity | `Smell` | file:line | one-liner) — see
+  *Findings by smell key* below, verified-OK list, and the efficacy
+  gauge: the count of smell findings, by key (the project-reviewer
+  preset's mirror check feeds it).
 - Gate A: verify stateful claims (teardown, races, git/fs behavior)
   empirically — scratch repos in /tmp, real commands — do not just read code.
 - Keep the verdict compact; the deep write-up lives in the final output only.
@@ -58,3 +59,54 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
 The conductor retrieves the final output (never sleep-waits — the user
 watches the monitor and pings when done), writes `REVIEW_PR*.md` in the
 worktree from the returned verdict, and presents it for the user loop.
+
+## Findings by smell key
+
+Name a finding by the **problem**, not by the rule that found it (#375,
+smell audit §8.4.1). `SOLID/DRY violations flagged: N` is an un-typed
+counter — no two review records are comparable. The findings table
+carries a `Smell` column:
+
+| Severity | Smell | file:line | One-liner |
+|---|---|---|---|
+| major | `duplicated-code` | `src/prelude.ts:41` | the mode prologue is copied three times; the copies will drift |
+| nit | `too-many-parameters` | `src/tui.ts:812` | six positional args; one record would make the call site readable |
+
+The keys are tool-independent, so a finding survives a change of linter:
+`oversized-function`, `too-many-parameters`, `deep-nesting`,
+`duplicated-code`, `oversized-file`.
+
+**`suggested` vs `enforced`.** Only `duplicated-code` earns enforcement:
+a textual duplicate is decidable and mechanically guardable (it has a
+test — `src/__tests__/prose-duplication.test.ts`). `too-many-parameters`
+and `deep-nesting` are **suggested**: past the threshold they cost
+readability, not correctness, and a refactor that only appeases the
+count can make the code worse. Report them as nits unless the call site
+genuinely suffers.
+
+**The uncoached bucket is fail-closed.** A smell with no key above is
+never dropped: report it under its nearest key, or as a free-form key
+and say it is uncoached. A stage that dies must not print a clean pass —
+`0 findings` is only valid from a stage that ran to completion (the same
+instinct as `pr371`'s `StructuralError` on a malformed ledger).
+
+## The guide shape
+
+Every finding — and every fix proposed for one — follows this shape. It
+is the durable half of the habit-hooks mechanic: the **metric is the
+cue, the guide is the action**. A bare number gets gamed (5.6% genuine
+on Sonnet 4.6, 79/90 gamed there) and our own loudest detector "findings"
+landed on functions a review had just certified correct (audit §7). So a
+smell count opens a question; it never closes one.
+
+1. **Problem** — the key and the concrete site.
+2. **Why it matters** — the cost *at this call site*, not in general.
+3. **Numbered moves** — 2–4 concrete steps, ordered.
+4. **AVOID** — the anti-Goodhart paragraph. *"Avoid mechanical
+extraction … pulling matching lines into a function with five parameters
+leaves the real shape untouched."* The duplicate disappears; the design
+flaw survives, now harder to see. Same judgement as `pr357`'s
+"`repaintStatus` is a synchronous pass-through" — reached from the other
+end.
+5. **A concrete technique** — the one thing to try first (the seam, the
+record, the guard).
