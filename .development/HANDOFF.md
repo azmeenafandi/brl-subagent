@@ -16,8 +16,9 @@ Verified: e0bef43 (2026-10-25)
   **transport auto-retry** is live for the sweep's dispatches. pi runtime **1.4.0**; deps `@earendil-works/*`
   **^1.4.0**, `typebox` at the host pin **1.3.27** — `pi list`, `cat package.json`.
 - **Board:** **#374 parent + sub-issues #376–#381** (the duplication sweep — native sub-issues; #375 and
-  #381, #376–#378 and #380 merged — 5/6 of the sweep done; #379 (design-first) open — design note merged (PR #388); **commits 1–2 merged** (PR #389 typed
-  resolver input; PR #390 the 20 gate-order pins); commits 3–4 staged).
+  #381, #376–#378 and #380 merged — 5/6 of the sweep done; #379 (design-first) open — design note merged (PR #388); **commits 1–3 merged** (PR #389 typed
+  resolver input; PR #390 the 20 gate-order pins; PR #391 the pre-pass helper); **commit 4 gated on the
+  maintainer's go** — the gate email was sent).
   **Dependabot:** **#364 typebox 1.4.2 — HELD** (open PR, the visible signal; no `ignore`); **#363 vitest
   5.0.5 — ADOPTED** (merged `0907ae1`). PRs target `dev`, so `Fixes #N` does **not** auto-close (close
   manually).
