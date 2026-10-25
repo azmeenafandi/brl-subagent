@@ -6,9 +6,9 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: 498d50e (2026-10-24)
+Verified: 00991f7 (2026-10-25)
 
-- **dev** @ `498d50e` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
+- **dev** @ `00991f7` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees.
 - **Released:** **v2.6.0 LIVE (2026-10-24)** — release PR #367 merged `6f7d0aa`; bump `ef9f6be` tagged
   `v2.6.0`; publish workflow green; npm `latest` = **2.6.0** — `gh release list`, `npm view brl-subagent version`.
 - **Running install:** **`npm:brl-subagent` 2.6.0** (the published package; the local-path toggle is OFF — the
