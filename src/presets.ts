@@ -12,61 +12,12 @@ import * as path from "node:path";
 import type { SubagentPreset, ThinkingLevel } from "./types";
 import { THINKING_LEVELS } from "./types";
 import type { Logger } from "./logging";
+import { loadMarkdownRecords } from "./loader";
 
-// ---------------------------------------------------------------------------
-// Frontmatter parsing
-// ---------------------------------------------------------------------------
-
-/**
- * Parse YAML frontmatter from a markdown file.
- * Returns metadata key-value pairs and the body content.
- */
-export function parseFrontmatter(content: string): { meta: Record<string, unknown>; body: string } {
-	const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-	if (!match) return { meta: {}, body: content };
-
-	const meta: Record<string, unknown> = {};
-	const lines = match[1].split("\n");
-	let currentKey = "";
-	let currentArray: string[] | null = null;
-
-	for (const line of lines) {
-		// Array item: starts with "- "
-		if (line.match(/^\s+-\s+/)) {
-			if (currentArray !== null) {
-				currentArray.push(line.replace(/^\s+-\s+/, "").trim());
-			}
-			continue;
-		}
-
-		// End of array if we were in one
-		if (currentArray !== null) {
-			meta[currentKey] = currentArray;
-			currentArray = null;
-		}
-
-		// Key-value pair
-		const kvMatch = line.match(/^(\w+):\s*(.*)$/);
-		if (kvMatch) {
-			const key = kvMatch[1];
-			const value = kvMatch[2].trim();
-			// Check if next line starts an array
-			if (value === "") {
-				currentKey = key;
-				currentArray = [];
-			} else {
-				// Strip quotes if present
-				meta[key] = value.replace(/^["']|["']$/g, "");
-			}
-		}
-	}
-	// Close any pending array
-	if (currentArray !== null) {
-		meta[currentKey] = currentArray;
-	}
-
-	return { meta, body: match[2].trim() };
-}
+// `parseFrontmatter` moved to loader.ts when the four loader copies collapsed
+// into one walk (issue #380). Re-exported so the existing import sites keep
+// working unchanged.
+export { parseFrontmatter } from "./loader";
 
 // ---------------------------------------------------------------------------
 // Preset validation
@@ -121,53 +72,46 @@ export function validatePreset(meta: Record<string, unknown>, fileName: string):
 // ---------------------------------------------------------------------------
 
 /**
+ * Normalise validated preset frontmatter into a SubagentPreset. Shared by both
+ * preset tiers — the file walk and validation live in loadMarkdownRecords.
+ */
+function presetFromFrontmatter(
+	meta: Record<string, unknown>,
+	body: string,
+	name: string,
+): SubagentPreset {
+	return {
+		name,
+		description: (meta.description as string) || undefined,
+		systemPrompt: body || undefined,
+		thinkingLevel: (meta.thinkingLevel as string) || undefined,
+		model: (meta.model as string) || undefined,
+		inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
+		tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
+		excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
+		noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
+		promptGuideline: (meta.promptGuideline as string) || undefined,
+	};
+}
+
+/**
  * Load built-in presets from a directory of markdown files.
  * Files must have YAML frontmatter with at least a `name` field.
  * Invalid files are skipped with log warnings.
  */
 export function loadBuiltinPresets(presetsDir: string, log?: Logger): SubagentPreset[] {
-	const presets: SubagentPreset[] = [];
-
-	try {
-		const files = fs.readdirSync(presetsDir);
-		for (const file of files) {
-			if (!file.endsWith(".md")) continue;
-
-			try {
-				const filePath = path.join(presetsDir, file);
-				const content = fs.readFileSync(filePath, "utf-8");
-				const { meta, body } = parseFrontmatter(content);
-
-				const errors = validatePreset(meta, file);
-				if (errors.length > 0) {
-					for (const err of errors) {
-						log?.warn("Preset validation failed", { file, error: err });
-					}
-					continue;
-				}
-
-				const name = meta.name as string;
-
-				presets.push({
-					name,
-					description: (meta.description as string) || undefined,
-					systemPrompt: body || undefined,
-					thinkingLevel: (meta.thinkingLevel as string) || undefined,
-					model: (meta.model as string) || undefined,
-					inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
-					tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
-					excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
-					noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
-					promptGuideline: (meta.promptGuideline as string) || undefined,
-				});
-			} catch (err) {
-				log?.warn("Failed to load preset file", { file, error: (err as Error).message });
-			}
-		}
-	} catch {
-		// Presets directory doesn't exist or can't be read — no built-in presets
-		log?.info("No built-in presets directory found", { dir: presetsDir });
-	}
+	const presets = loadMarkdownRecords<SubagentPreset>({
+		dirs: [presetsDir],
+		validate: validatePreset,
+		map: presetFromFrontmatter,
+		log,
+		messages: {
+			invalid: "Preset validation failed",
+			readFailed: "Failed to load preset file",
+		},
+		// Built-in presets directory doesn't exist or can't be read — no built-in presets
+		onMissingDir: (dir) => log?.info("No built-in presets directory found", { dir }),
+	});
 
 	// Validate all loaded presets
 	const validationErrors = validateAllPresets(presets);
@@ -195,60 +139,24 @@ export function loadBuiltinPresets(presetsDir: string, log?: Logger): SubagentPr
  *   2. ~/.pi/agent/brl-subagent/presets/ (global)
  */
 export function loadCustomPresets(cwd: string, log?: Logger): SubagentPreset[] {
-	const presets: SubagentPreset[] = [];
-	const seenNames = new Set<string>();
 	const homedir = process.env.HOME || process.env.USERPROFILE || "";
 
-	const dirs = [
-		path.join(cwd, ".pi", "brl-subagent", "presets"),
-		path.join(homedir, ".pi", "agent", "brl-subagent", "presets"),
-	];
-
-	for (const dir of dirs) {
-		try {
-			const files = fs.readdirSync(dir);
-			for (const file of files) {
-				if (!file.endsWith(".md")) continue;
-				try {
-					const filePath = path.join(dir, file);
-					const content = fs.readFileSync(filePath, "utf-8");
-					const { meta, body } = parseFrontmatter(content);
-
-					const errors = validatePreset(meta, file);
-					if (errors.length > 0) {
-						for (const err of errors) {
-							log?.warn("Custom preset validation failed", { file, error: err });
-						}
-						continue;
-					}
-
-					const name = meta.name as string;
-					// Dedup by name: the first occurrence (project-local, scanned
-					// first) wins; user-global duplicates are skipped.
-					if (seenNames.has(name)) continue;
-					seenNames.add(name);
-					presets.push({
-						name,
-						description: (meta.description as string) || undefined,
-						systemPrompt: body || undefined,
-						thinkingLevel: (meta.thinkingLevel as string) || undefined,
-						model: (meta.model as string) || undefined,
-						inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
-						tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
-						excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
-						noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
-						promptGuideline: (meta.promptGuideline as string) || undefined,
-					});
-				} catch (err) {
-					log?.warn("Failed to load custom preset file", { file, error: (err as Error).message });
-				}
-			}
-		} catch {
-			// Directory doesn't exist — that's fine, no custom presets
-		}
-	}
-
-	return presets;
+	return loadMarkdownRecords<SubagentPreset>({
+		dirs: [
+			path.join(cwd, ".pi", "brl-subagent", "presets"),
+			path.join(homedir, ".pi", "agent", "brl-subagent", "presets"),
+		],
+		validate: validatePreset,
+		map: presetFromFrontmatter,
+		// Dedup by name: the first occurrence (project-local, scanned first) wins.
+		dedupeByName: true,
+		log,
+		messages: {
+			invalid: "Custom preset validation failed",
+			readFailed: "Failed to load custom preset file",
+		},
+		// A missing directory is fine — no custom presets in that tier.
+	});
 }
 
 // ---------------------------------------------------------------------------
