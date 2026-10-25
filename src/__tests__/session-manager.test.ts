@@ -1688,6 +1688,18 @@ describe("issue #31 — terminal paths release agent._sessionRef", () => {
 		expect(agent.completedAt).toBeDefined();
 		expect(agent.finalOutput).toBe("stopped mid-run");
 		expect(agent._sessionRef).toBeUndefined();
+
+		// Issue #376 (D8): the .catch stopped branch settles exactly like the .then
+		// aborted branch — failed, with the honest user-abort stamp and the
+		// 'aborted' reason (there is no last assistant message to narrow it from
+		// on this path). Pinned here so the shared helper cannot drift from the
+		// .then branch's finalize semantics.
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.status).toBe("failed");
+		expect(run.stopReason).toBe("aborted");
+		expect(run.errorMessage).toBe("Subagent aborted by user");
+		expect(run.originalParams?.errorCategory).toBe("aborted");
 	});
 });
 
