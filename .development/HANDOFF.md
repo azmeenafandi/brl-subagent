@@ -6,6 +6,33 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
+Verified: 04f41d0 (2026-10-25)
+
+- **dev** @ `04f41d0` — `git log -1 --oneline dev`. Only `dev` + `main`; no stray worktrees (the #379 worktree is merged and removable).
+- **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
+- **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; #365's transport auto-retry is live and exercised 5× today). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
+- **Board:** **ZERO open issues** — `gh issue list`. **#364 (typebox 1.4.2) held** — the only open PR; no `ignore` by policy.
+- **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
+- **Cycle (post-v2.6.0): OPEN** — its work landed: test-suite audit (#368), P0s (#365 transport auto-retry, #366 Jev check), smell audit (#372), the sweep (#374, now complete). Remaining: the two handoff follow-ups. No release decision yet.
+- **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
+- **Notification channel:** `brl-notifications-fa9@clawmail.me` (claimed) — autonomous-run decisions only; token in `~/.config/brl-notifications/clawmail.env` (never in the repo).
+- **Handoff mechanism:** LIVE (PR #353) — injection + staleness line + `/handoff` + `/handoff mark`; all five live checks passed (2026-10-17/18).
+
+### Since the last handover
+- #379 commits 3–4 merged (PRs #391/#392), each C2-reviewed (approve-with-nits with 1 informational; then approve, 0 findings).
+- **The sweep closed:** #379 and #374 closed; board empty. #365's auto-retry recovered 5 transport drops today (5/5 succeeded; 0 re-work).
+
+### Next actions
+1. The two handoff follow-ups (the `Verified:` self-commit lag; `.pi/extensions/**` typechecking).
+2. #364 stays held (typebox at the host pin); no release decision this cycle yet.
+3. Housekeeping: the merged `brl-subagent-wt-379-impl` worktree is removable.
+
+## Open items` → follow `## Pointers`.
+> §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
+> `Verified:` staleness line; the write contract is `.pi/skills/handoff/references/handoff.md`.
+> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
+
+## STATE
 Verified: 10eca8b (2026-10-25)
 
 - **dev** @ `10eca8b` — `git log -1 --oneline dev`. Only `dev` + `main`; one worktree, `brl-subagent-wt-379-impl` (active on #379 commit 4).
