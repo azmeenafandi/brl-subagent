@@ -4,6 +4,9 @@ Release history for brl-subagent. Newest first. The full narrative for each rele
 
 ## Unreleased
 
+- **For contributors — the review speaks one smell vocabulary:** review guidance now uses the tool-independent keys (`oversized-function`, `too-many-parameters`, `deep-nesting`, `duplicated-code`, `oversized-file`) with a coaching-guide shape, and a new guard fails the suite when the same ≥80-char sentence lives on two surfaces — the prose-drift class (e.g. the `retryOnTimeout` duplication) is now mechanical.
+
+
 - **For contributors — the Jev ritual is checkable:** a ledger check and a dispatch-line formatter run in CI, so a pre-dispatch classification skipped in practice (a bare level with no confidence) now fails the build instead of silently eroding the calibration record.
 
 

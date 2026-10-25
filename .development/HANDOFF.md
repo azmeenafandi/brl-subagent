@@ -14,11 +14,10 @@ Verified: 5c85128 (2026-10-25)
 - **Running install:** **`npm:brl-subagent` 2.6.0** (the published package; the local-path toggle is OFF — the
   dev checkout stays on disk for the next cycle). pi runtime **1.4.0**; repo deps `@earendil-works/*`
   **^1.4.0**, `typebox` at the host pin **1.3.27** — `pi list`, `cat package.json`.
-- **Board:** **#374 + #375 open** — from the smell-audit experiment (report `smell-audit-2026-10-25.md`,
-  PR #373): **#374** the duplication sweep (umbrella, U1–U6, 11 clusters) and **#375** the smell vocabulary
-  + guide adoption + the near-duplicate prose guard. **Dependabot:** **#364 typebox 1.4.2 — HELD** (open PR,
-  the visible signal; no `ignore`); **#363 vitest 5.0.5 — ADOPTED** (merged `0907ae1`). PRs target `dev`, so
-  `Fixes #N` does **not** auto-close (close manually).
+- **Board:** **#374 parent + sub-issues #376–#381** (the duplication sweep — native sub-issues; #375 merged).
+  **Dependabot:** **#364 typebox 1.4.2 — HELD** (open PR, the visible signal; no `ignore`); **#363 vitest
+  5.0.5 — ADOPTED** (merged `0907ae1`). PRs target `dev`, so `Fixes #N` does **not** auto-close (close
+  manually).
 - **Cycle `vendor parity + boundary guards`: CLOSED 2026-10-17 (v2.5.2)** — pi 1.3.0 parity
   (#338), boundary guards (#336/#339), the dangling-row fix (#340/#341), vitest 5.0.4 with
   `typebox` held at the host pin (#342). Cycle-end ritual ran before the release docs; Rule 11 = 0
@@ -41,8 +40,9 @@ Verified: 5c85128 (2026-10-25)
 - **Transport auto-retry: LIVE** (#365, PR #370 `509efa1`) — a background run settling with a transport-class
   failure (exit_error + transport message, **original attempt only**) auto-retries **once** with the recorded
   params (`resumeOf`/attempt 2); the source notice is suppressed in favour of a toast; a second failure surfaces.
-- **Suite:** 83 files / 1719 tests (~20 s) — `npx vitest run`; `npx tsc --noEmit` clean. **Budget guard in CI:**
-  wall ≤ 60 s, test:source LOC ratio ≤ 2.0 (ceilings; `scripts/check-test-budget.mjs`).
+- **Suite:** 84 files / 1729 tests (~20 s) — `npx vitest run`; `npx tsc --noEmit` clean. **Budget guard in CI:**
+  wall ≤ 60 s, test:source LOC ratio ≤ 2.0 (ceilings; `scripts/check-test-budget.mjs`). **Prose guard:** the
+  same ≥80-char sentence on two surfaces fails the suite (issue #375).
 
 ### Since the last handover
 - U5–U7 merged (Templates onto the Presets shell, presets parity, final sweep) — PRs #350–#352.
@@ -60,8 +60,8 @@ Verified: 5c85128 (2026-10-25)
   list); vitest 5.0.5 adopted (~17 s suite).
 
 ### Next actions
-1. **Smell audit: DONE** (#372/PR #373) — **no write-time coach** (backlog, not stream); the spend is
-   **#374** (duplication sweep) + **#375** (vocabulary/guide + prose guard).
+1. **Smell audit + the borrow: DONE** (#372/PR #373; #375/PR #382) — the coach is parked; the sweep is
+   **#374** with sub-issues **#376–#381** (start with **#381**, the mechanical unit).
 2. **#366** (mechanical Jev query): **DONE** (#371) — `jev-check.mjs` runs in CI (ledger + selftest). The P0s
    and the audit are all complete; the board is clean except the held typebox PR #364.
 3. Queued: the two handoff design-observation follow-ups (self-commit lag; extension typechecking).
