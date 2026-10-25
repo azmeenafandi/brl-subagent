@@ -22,6 +22,7 @@ import type {
 	SubagentResult,
 	SubagentRun,
 	SubTaskParams,
+	SubTaskResult,
 	MultiSubagentDetails,
 	ChainDetails,
 	ParallelDetails,
@@ -2441,6 +2442,31 @@ function renderCollapsedText(
 // Chain / parallel collapsed rendering
 // ---------------------------------------------------------------------------
 
+/** One collapsed per-step line — shared by the chain and parallel summaries. */
+function renderCollapsedSubTask(
+	r: SubTaskResult,
+	theme: Theme,
+	opts: { stepPrefix: boolean; emptyLabelSeparator: string },
+): string {
+	const isErr = isSubagentError(r);
+	const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
+	const stepNum =
+		opts.stepPrefix && r.step !== undefined
+			? theme.fg("muted", `${r.step}. `)
+			: "";
+	const label = r.label ? theme.fg("accent", r.label) : "";
+	const output = getFinalOutput(r.messages);
+	const preview = output.split("\n").slice(0, 2).join("\n");
+	const sep = label ? ": " : opts.emptyLabelSeparator;
+	let text = `\n${stepNum}${statusIcon} ${label}${sep}${theme.fg("toolOutput", preview)}`;
+	if (r.errorMessage) {
+		text += `\n   ${theme.fg("error", r.errorMessage)}`;
+	}
+	const diffSummary = renderCollapsedDiffSummary(r.gitDiff, theme);
+	if (diffSummary) text += `\n   ${diffSummary}`;
+	return text;
+}
+
 function renderCollapsedChain(
 	details: ChainDetails,
 	theme: Theme,
@@ -2451,21 +2477,10 @@ function renderCollapsedChain(
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold("chain"))} ${theme.fg("muted", `${details.completedSteps}/${details.totalSteps} steps${stoppedEarly}`)}`;
 
 	for (const r of details.results) {
-		const isErr = isSubagentError(r);
-		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
-		const stepNum =
-			r.step !== undefined ? theme.fg("muted", `${r.step}. `) : "";
-		const label = r.label ? theme.fg("accent", r.label) : "";
-		const output = getFinalOutput(r.messages);
-		const preview = output.split("\n").slice(0, 2).join("\n");
-		const sep = label ? ": " : "";
-		text += `\n${stepNum}${statusIcon} ${label}${sep}${theme.fg("toolOutput", preview)}`;
-		if (r.errorMessage) {
-			text += `\n   ${theme.fg("error", r.errorMessage)}`;
-		}
-		// P5: Collapsed diff file summary per step
-		const diffSummary = renderCollapsedDiffSummary(r.gitDiff, theme);
-		if (diffSummary) text += `\n   ${diffSummary}`;
+		text += renderCollapsedSubTask(r, theme, {
+			stepPrefix: true,
+			emptyLabelSeparator: "",
+		});
 	}
 
 	text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
@@ -2480,19 +2495,10 @@ function renderCollapsedParallel(
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel"))} ${theme.fg("muted", `${details.succeeded}/${details.failed}/${details.results.length} total`)}`;
 
 	for (const r of details.results) {
-		const isErr = isSubagentError(r);
-		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
-		const label = r.label ? theme.fg("accent", r.label) : "";
-		const output = getFinalOutput(r.messages);
-		const preview = output.split("\n").slice(0, 2).join("\n");
-		const sep = label ? ": " : " ";
-		text += `\n${statusIcon} ${label}${sep}${theme.fg("toolOutput", preview)}`;
-		if (r.errorMessage) {
-			text += `\n   ${theme.fg("error", r.errorMessage)}`;
-		}
-		// P5: Collapsed diff file summary per task
-		const diffSummary = renderCollapsedDiffSummary(r.gitDiff, theme);
-		if (diffSummary) text += `\n   ${diffSummary}`;
+		text += renderCollapsedSubTask(r, theme, {
+			stepPrefix: false,
+			emptyLabelSeparator: " ",
+		});
 	}
 
 	text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
@@ -2503,76 +2509,74 @@ function renderCollapsedParallel(
 // Chain / parallel expanded rendering
 // ---------------------------------------------------------------------------
 
-function renderExpandedChain(
-	details: ChainDetails,
+type AggregatedTotals = Pick<
+	MultiSubagentDetails,
+	"totalInput" | "totalOutput" | "totalCost" | "totalTurns"
+>;
+
+/** Add one expanded sub-task block (result header, task, output, diff, usage). */
+function addExpandedSubTask(
+	container: Container,
+	r: SubTaskResult,
 	theme: Theme,
 	mdTheme: ReturnType<typeof getMarkdownTheme>,
-): Container {
-	const container = new Container();
-	const stoppedEarly = details.stoppedEarly ? " (stopped early)" : "";
+	opts: { stepPrefix: boolean },
+): void {
+	const isErr = isSubagentError(r);
+	const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
+	const stepNum =
+		opts.stepPrefix && r.step !== undefined ? `${r.step}. ` : "";
+	const label = r.label ? `[${r.label}] ` : "";
 	container.addChild(
 		new Text(
-			theme.fg("accent", theme.bold("Chain")) +
-				theme.fg(
-					"muted",
-					` ${details.completedSteps}/${details.totalSteps} steps${stoppedEarly}`,
-				),
+			`${statusIcon} ${stepNum}${theme.fg("toolTitle", theme.bold(label))}` +
+				(r.model ? theme.fg("muted", ` (${r.model})`) : ""),
 			0,
 			0,
 		),
 	);
-	container.addChild(new Spacer(1));
+	container.addChild(
+		new Text(theme.fg("dim", `Task: ${r.task.slice(0, 200)}`), 0, 0),
+	);
 
-	for (const r of details.results) {
-		const isErr = isSubagentError(r);
-		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
-		const stepNum = r.step !== undefined ? `${r.step}. ` : "";
-		const label = r.label ? `[${r.label}] ` : "";
+	if (isErr && r.errorMessage) {
 		container.addChild(
-			new Text(
-				`${statusIcon} ${stepNum}${theme.fg("toolTitle", theme.bold(label))}` +
-					(r.model ? theme.fg("muted", ` (${r.model})`) : ""),
-				0,
-				0,
-			),
+			new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0),
 		);
-		container.addChild(
-			new Text(theme.fg("dim", `Task: ${r.task.slice(0, 200)}`), 0, 0),
-		);
-
-		if (isErr && r.errorMessage) {
-			container.addChild(
-				new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0),
-			);
-		}
-
-		const output = getFinalOutput(r.messages);
-		if (output) {
-			container.addChild(
-				new Text(theme.fg("muted", "\u2500\u2500\u2500 Output \u2500\u2500\u2500"), 0, 0),
-			);
-			container.addChild(new Markdown(output.trim(), 0, 0, mdTheme));
-		}
-
-		// P5: Expanded diff section per step
-		addExpandedDiffSection(container, r.gitDiff, theme);
-
-		const usageStr = formatUsageStats(r.usage, r.model);
-		if (usageStr) {
-			container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
-		}
-		container.addChild(new Spacer(1));
 	}
 
-	// Aggregated totals
+	const output = getFinalOutput(r.messages);
+	if (output) {
+		container.addChild(
+			new Text(theme.fg("muted", "\u2500\u2500\u2500 Output \u2500\u2500\u2500"), 0, 0),
+		);
+		container.addChild(new Markdown(output.trim(), 0, 0, mdTheme));
+	}
+
+	// P5: Expanded diff section per step/task
+	addExpandedDiffSection(container, r.gitDiff, theme);
+
+	const usageStr = formatUsageStats(r.usage, r.model);
+	if (usageStr) {
+		container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
+	}
+	container.addChild(new Spacer(1));
+}
+
+/** Add the aggregated totals line shared by every multi-task mode. */
+function addAggregatedTotals(
+	container: Container,
+	totals: AggregatedTotals,
+	theme: Theme,
+): void {
 	const aggUsage: UsageStats = {
-		input: details.totalInput,
-		output: details.totalOutput,
+		input: totals.totalInput,
+		output: totals.totalOutput,
 		cacheRead: 0,
 		cacheWrite: 0,
-		cost: details.totalCost,
+		cost: totals.totalCost,
 		contextTokens: 0,
-		turns: details.totalTurns,
+		turns: totals.totalTurns,
 	};
 	const aggStr = formatUsageStats(aggUsage);
 	if (aggStr) {
@@ -2580,8 +2584,47 @@ function renderExpandedChain(
 			new Text(theme.fg("dim", `Totals: ${aggStr}`), 0, 0),
 		);
 	}
+}
+
+/**
+ * Expanded chain/parallel view. The two modes differ only in their header and
+ * per-step labelling, both supplied by the caller.
+ */
+function renderExpandedMulti(
+	details: MultiSubagentDetails,
+	header: string,
+	theme: Theme,
+	mdTheme: ReturnType<typeof getMarkdownTheme>,
+	opts: { stepPrefix: boolean },
+): Container {
+	const container = new Container();
+	container.addChild(new Text(header, 0, 0));
+	container.addChild(new Spacer(1));
+
+	for (const r of details.results) {
+		addExpandedSubTask(container, r, theme, mdTheme, opts);
+	}
+
+	addAggregatedTotals(container, details, theme);
 
 	return container;
+}
+
+function renderExpandedChain(
+	details: ChainDetails,
+	theme: Theme,
+	mdTheme: ReturnType<typeof getMarkdownTheme>,
+): Container {
+	const stoppedEarly = details.stoppedEarly ? " (stopped early)" : "";
+	const header =
+		theme.fg("accent", theme.bold("Chain")) +
+		theme.fg(
+			"muted",
+			` ${details.completedSteps}/${details.totalSteps} steps${stoppedEarly}`,
+		);
+	return renderExpandedMulti(details, header, theme, mdTheme, {
+		stepPrefix: true,
+	});
 }
 
 function renderExpandedParallel(
@@ -2589,78 +2632,15 @@ function renderExpandedParallel(
 	theme: Theme,
 	mdTheme: ReturnType<typeof getMarkdownTheme>,
 ): Container {
-	const container = new Container();
-	container.addChild(
-		new Text(
-			theme.fg("accent", theme.bold("Parallel")) +
-				theme.fg(
-					"muted",
-					` ${details.succeeded} succeeded, ${details.failed} failed, ${details.results.length} total`,
-				),
-			0,
-			0,
-		),
-	);
-	container.addChild(new Spacer(1));
-
-	for (const r of details.results) {
-		const isErr = isSubagentError(r);
-		const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
-		const label = r.label ? `[${r.label}] ` : "";
-		container.addChild(
-			new Text(
-				`${statusIcon} ${theme.fg("toolTitle", theme.bold(label))}` +
-					(r.model ? theme.fg("muted", ` (${r.model})`) : ""),
-				0,
-				0,
-			),
+	const header =
+		theme.fg("accent", theme.bold("Parallel")) +
+		theme.fg(
+			"muted",
+			` ${details.succeeded} succeeded, ${details.failed} failed, ${details.results.length} total`,
 		);
-		container.addChild(
-			new Text(theme.fg("dim", `Task: ${r.task.slice(0, 200)}`), 0, 0),
-		);
-
-		if (isErr && r.errorMessage) {
-			container.addChild(
-				new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0),
-			);
-		}
-
-		const output = getFinalOutput(r.messages);
-		if (output) {
-			container.addChild(
-				new Text(theme.fg("muted", "\u2500\u2500\u2500 Output \u2500\u2500\u2500"), 0, 0),
-			);
-			container.addChild(new Markdown(output.trim(), 0, 0, mdTheme));
-		}
-
-		// P5: Expanded diff section per task
-		addExpandedDiffSection(container, r.gitDiff, theme);
-
-		const usageStr = formatUsageStats(r.usage, r.model);
-		if (usageStr) {
-			container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
-		}
-		container.addChild(new Spacer(1));
-	}
-
-	// Aggregated totals
-	const aggUsage: UsageStats = {
-		input: details.totalInput,
-		output: details.totalOutput,
-		cacheRead: 0,
-		cacheWrite: 0,
-		cost: details.totalCost,
-		contextTokens: 0,
-		turns: details.totalTurns,
-	};
-	const aggStr = formatUsageStats(aggUsage);
-	if (aggStr) {
-		container.addChild(
-			new Text(theme.fg("dim", `Totals: ${aggStr}`), 0, 0),
-		);
-	}
-
-	return container;
+	return renderExpandedMulti(details, header, theme, mdTheme, {
+		stepPrefix: false,
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -3040,62 +3020,11 @@ function renderExpandedGraph(
 		);
 
 		for (const r of wave.tasks) {
-			const isErr = isSubagentError(r);
-			const statusIcon = formatOutcomeSymbol(isErr ? "failure" : "success", theme);
-			const label = r.label ? `[${r.label}] ` : "";
-
-			container.addChild(
-				new Text(
-					`${statusIcon} ${theme.fg("toolTitle", theme.bold(label))}` +
-						(r.model ? theme.fg("muted", ` (${r.model})`) : ""),
-					0,
-					0,
-				),
-			);
-			container.addChild(
-				new Text(theme.fg("dim", `Task: ${r.task.slice(0, 200)}`), 0, 0),
-			);
-
-			if (isErr && r.errorMessage) {
-				container.addChild(
-					new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0),
-				);
-			}
-
-			const output = getFinalOutput(r.messages);
-			if (output) {
-				container.addChild(
-					new Text(theme.fg("muted", "\u2500\u2500\u2500 Output \u2500\u2500\u2500"), 0, 0),
-				);
-				container.addChild(new Markdown(output.trim(), 0, 0, mdTheme));
-			}
-
-			addExpandedDiffSection(container, r.gitDiff, theme);
-
-			const usageStr = formatUsageStats(r.usage, r.model);
-			if (usageStr) {
-				container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
-			}
-			container.addChild(new Spacer(1));
+			addExpandedSubTask(container, r, theme, mdTheme, { stepPrefix: false });
 		}
 	}
 
-	// Aggregated totals
-	const aggUsage: UsageStats = {
-		input: details.totalInput,
-		output: details.totalOutput,
-		cacheRead: 0,
-		cacheWrite: 0,
-		cost: details.totalCost,
-		contextTokens: 0,
-		turns: details.totalTurns,
-	};
-	const aggStr = formatUsageStats(aggUsage);
-	if (aggStr) {
-		container.addChild(
-			new Text(theme.fg("dim", `Totals: ${aggStr}`), 0, 0),
-		);
-	}
+	addAggregatedTotals(container, details, theme);
 
 	return container;
 }
@@ -3103,6 +3032,30 @@ function renderExpandedGraph(
 // ---------------------------------------------------------------------------
 // Public rendering entry points (used by delegate_task tool)
 // ---------------------------------------------------------------------------
+
+/**
+ * Render the delegate_task call preview shared by graph / chain / parallel.
+ * `items` are pre-resolved labels (plus an optional already-formatted suffix).
+ */
+function renderDelegatePreview(
+	kind: string,
+	noun: string,
+	items: Array<{ label: string; suffix?: string }>,
+	theme: Theme,
+): Text {
+	const count = items.length;
+	let text = `${theme.fg("accent", "delegate_task")} ${theme.fg("muted", `${kind} (${count} ${noun}${count > 1 ? "s" : ""})`)}`;
+	const preview = items.slice(0, 3);
+	for (let i = 0; i < preview.length; i++) {
+		const item = preview[i];
+		const suffix = item.suffix ? theme.fg("dim", item.suffix) : "";
+		text += `\n${theme.fg("muted", `${i + 1}.`)} ${theme.fg("dim", item.label)}${suffix}`;
+	}
+	if (count > 3) {
+		text += `\n${theme.fg("dim", `+${count - 3} more`)}`;
+	}
+	return new Text(text, 0, 0);
+}
 
 export function renderDelegateCall(
 	args: {
@@ -3125,53 +3078,37 @@ export function renderDelegateCall(
 ): Text {
 	// Graph mode
 	if (args.graph && args.graph.length > 0) {
-		const n = args.graph.length;
-		let text = `${theme.fg("accent", "delegate_task")} ${theme.fg("muted", `graph (${n} task${n > 1 ? "s" : ""})`)}`;
-		const preview = args.graph.slice(0, 3);
-		for (let i = 0; i < preview.length; i++) {
-			const t = preview[i];
-			const label = t.label || t.id;
-			const deps = t.dependsOn?.length ? theme.fg("dim", ` [depends on: ${t.dependsOn.join(", ")}]`) : "";
-			text += `
-${theme.fg("muted", `${i + 1}.`)} ${theme.fg("dim", label)}${deps}`;
-		}
-		if (n > 3) {
-			text += `
-${theme.fg("dim", `+${n - 3} more`)}`;
-		}
-		return new Text(text, 0, 0);
+		return renderDelegatePreview(
+			"graph",
+			"task",
+			args.graph.map((t) => ({
+				label: t.label || t.id,
+				suffix: t.dependsOn?.length
+					? ` [depends on: ${t.dependsOn.join(", ")}]`
+					: undefined,
+			})),
+			theme,
+		);
 	}
 
 	// Chain mode
 	if (args.chain && args.chain.length > 0) {
-		const n = args.chain.length;
-		let text = `${theme.fg("accent", "delegate_task")} ${theme.fg("muted", `chain (${n} step${n > 1 ? "s" : ""})`)}`;
-		const preview = args.chain.slice(0, 3);
-		for (let i = 0; i < preview.length; i++) {
-			const s = preview[i];
-			const label = s.label || s.task.slice(0, 60);
-			text += `\n${theme.fg("muted", `${i + 1}.`)} ${theme.fg("dim", label)}`;
-		}
-		if (n > 3) {
-			text += `\n${theme.fg("dim", `+${n - 3} more`)}`;
-		}
-		return new Text(text, 0, 0);
+		return renderDelegatePreview(
+			"chain",
+			"step",
+			args.chain.map((s) => ({ label: s.label || s.task.slice(0, 60) })),
+			theme,
+		);
 	}
 
 	// Parallel mode
 	if (args.tasks && args.tasks.length > 0) {
-		const n = args.tasks.length;
-		let text = `${theme.fg("accent", "delegate_task")} ${theme.fg("muted", `parallel (${n} task${n > 1 ? "s" : ""})`)}`;
-		const preview = args.tasks.slice(0, 3);
-		for (let i = 0; i < preview.length; i++) {
-			const t = preview[i];
-			const label = t.label || t.task.slice(0, 60);
-			text += `\n${theme.fg("muted", `${i + 1}.`)} ${theme.fg("dim", label)}`;
-		}
-		if (n > 3) {
-			text += `\n${theme.fg("dim", `+${n - 3} more`)}`;
-		}
-		return new Text(text, 0, 0);
+		return renderDelegatePreview(
+			"parallel",
+			"task",
+			args.tasks.map((t) => ({ label: t.label || t.task.slice(0, 60) })),
+			theme,
+		);
 	}
 
 	// Single mode (original)
