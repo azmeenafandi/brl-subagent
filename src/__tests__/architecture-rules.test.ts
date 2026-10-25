@@ -301,6 +301,40 @@ describe("architecture rules (issue #251)", () => {
 		).toEqual([]);
 	});
 
+	it("dispatch carries typed values, not anonymous object-literal casts (#379)", () => {
+		// The mode-prologue design note's structural guard: commit 1 deleted the
+		// four `params as { …13 fields… }` prologue casts. Nothing at runtime
+		// can notice their reintroduction (the assertion is erased), so the
+		// source shape is ratcheted here. A legitimate new object-literal
+		// assertion must come with a recorded reason, like the other allow-lists
+		// in this file.
+		const indexSource = readFileSync(join(SRC, "index.ts"), "utf8");
+
+		expect(
+			/\bas\s*\{/.test(indexSource),
+			"src/index.ts must contain zero `as { … }` object-literal assertions — depend on a declared type instead",
+		).toBe(false);
+
+		// The retry path is the ONE remaining named cast. It exists because
+		// resolveRetryParams rebuilds from a run record whose priority/gitMode/
+		// approvalMode are persisted strings, not schema-validated unions.
+		// Removing it needs the production type work (history.ts's return type),
+		// so this commit PINS the current typed cast and forbids regressing it to
+		// an anonymous literal or `any`.
+		const retryAssignments = indexSource
+			.split("\n")
+			.filter((line) => /\bparams\s*=\s*resolveRetryParams\(/.test(line));
+		expect(retryAssignments).toHaveLength(1);
+		expect(retryAssignments[0]).toContain("as DelegateTaskParams");
+		expect(retryAssignments[0]).not.toMatch(/\bas\s+(?:any|unknown)\b/);
+
+		// One named retry cast is the whole contract: a second `as
+		// DelegateTaskParams` elsewhere re-opens the unchecked-claim class commit
+		// 1 closed.
+		const namedCasts = indexSource.match(/\bas\s+DelegateTaskParams\b/g) ?? [];
+		expect(namedCasts).toHaveLength(1);
+	});
+
 	it("the transcript-path format is single-sourced in transcript-path.ts (#287)", () => {
 		// The transcript path (`.pi/output/agent-<id>.jsonl`) has ONE declaration,
 		// `transcript-path.ts`; every other module derives it through TRANSCRIPT_DIR,
