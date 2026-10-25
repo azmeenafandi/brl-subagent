@@ -1,0 +1,154 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`chain renderer goldens (issue #378) > collapsed 1`] = `
+"<error>✗</error> <toolTitle>**chain**</toolTitle> <muted>2/3 steps (stopped early)</muted>                              
+<muted>1. </muted><success>✓</success> <accent>plan</accent>: <toolOutput>Plan written.                                 
+Second line.</toolOutput>                                                                                               
+   <muted>─── Files: </muted><accent>src/alpha.ts</accent><accent> (+1 -1)</accent><muted> ───</muted>                  
+<muted>2. </muted><error>✗</error> <accent>build</accent>: <toolOutput></toolOutput>                                    
+   <error>boom in build</error>                                                                                         
+<muted>3. </muted><success>✓</success> <toolOutput>Verification skipped.</toolOutput>                                   
+<muted>(Ctrl+O to expand)</muted>                                                                                       "
+`;
+
+exports[`chain renderer goldens (issue #378) > expanded 1`] = `
+"<accent>**Chain**</accent><muted> 2/3 steps (stopped early)</muted>                                                     
+
+<success>✓</success> 1. <toolTitle>**[plan] **</toolTitle><muted> (test/model-a)</muted>                                
+<dim>Task: Plan the change</dim>                                                                                        
+<muted>─── Output ───</muted>                                                                                           
+Plan written.                                                                                                           
+Second line.                                                                                                            
+Third line.                                                                                                             
+
+<muted>─── Files changed (1) ───</muted>                                                                                
+<accent>src/alpha.ts</accent><dim>  (+1 -1)</dim>                                                                       
+<muted>──────────────────────────────────────────────────</muted>                                                       
+<toolOutput>@@ -1,3 +1,4 @@                                                                                             
+ const a = 1;                                                                                                           
++const b = 2;                                                                                                           
+-const c = 3;                                                                                                           
+ const d = 4;</toolOutput>                                                                                              
+<dim>2 turns ↑100 ↓50 R5 W2 $0.0123 ctx:1.2k test/model-a</dim>                                                         
+
+<error>✗</error> 2. <toolTitle>**[build] **</toolTitle>                                                                 
+<dim>Task: Build the change</dim>                                                                                       
+<error>Error: boom in build</error>                                                                                     
+<dim>1 turn</dim>                                                                                                       
+
+<success>✓</success> 3. <toolTitle>****</toolTitle>                                                                     
+<dim>Task: Verify the change</dim>                                                                                      
+<muted>─── Output ───</muted>                                                                                           
+Verification skipped.                                                                                                   
+
+<dim>Totals: 3 turns ↑200 ↓80 $0.0200</dim>                                                                             "
+`;
+
+exports[`delegate_task call preview goldens (issue #378) > chain preview (>3 steps, labelled and unlabelled) 1`] = `
+"<accent>delegate_task</accent> <muted>chain (5 steps)</muted>                                                           
+<muted>1.</muted> <dim>one</dim>                                                                                        
+<muted>2.</muted> <dim>step two without label</dim>                                                                     
+<muted>3.</muted> <dim>three</dim>                                                                                      
+<dim>+2 more</dim>                                                                                                      "
+`;
+
+exports[`delegate_task call preview goldens (issue #378) > graph preview (>3 tasks with dependencies) 1`] = `
+"<accent>delegate_task</accent> <muted>graph (4 tasks)</muted>                                                           
+<muted>1.</muted> <dim>alpha</dim>                                                                                      
+<muted>2.</muted> <dim>b</dim><dim> [depends on: a]</dim>                                                               
+<muted>3.</muted> <dim>gamma</dim><dim> [depends on: a, b]</dim>                                                        
+<dim>+1 more</dim>                                                                                                      "
+`;
+
+exports[`delegate_task call preview goldens (issue #378) > parallel preview 1`] = `
+"<accent>delegate_task</accent> <muted>parallel (2 tasks)</muted>                                                        
+<muted>1.</muted> <dim>p1</dim>                                                                                         
+<muted>2.</muted> <dim>parallel two without label</dim>                                                                 "
+`;
+
+exports[`graph renderer goldens (issue #378) > collapsed 1`] = `
+"<error>✗</error> <toolTitle>**graph**</toolTitle> <muted>5 tasks in 4 waves</muted>                                     
+  <success>✓</success> Wave 1 (<muted>parallel</muted>): <success>✓</success> <dim>alpha</dim>, <success>✓</success>    
+<dim>beta</dim>                                                                                                         
+  <error>✗</error> Wave 2 (<muted>serial</muted>): <error>✗</error> <dim>gamma</dim>                                    
+  <success>✓</success> Wave 3 (<muted>parallel</muted>): <success>✓</success> <dim>Delta node</dim>                     
+  <dim>+1 more waves</dim>                                                                                              
+<muted>(Ctrl+O to expand)</muted>                                                                                       "
+`;
+
+exports[`graph renderer goldens (issue #378) > expanded 1`] = `
+"<accent>**Graph: 5 tasks in 4 waves**</accent>                                                                          
+
+<success>✓</success> <toolTitle>**Wave 1**</toolTitle> <muted>(parallel, 2 tasks)</muted>                               
+<success>✓</success> <toolTitle>**[alpha] **</toolTitle><muted> (test/model-c)</muted>                                  
+<dim>Task: Alpha node</dim>                                                                                             
+<muted>─── Output ───</muted>                                                                                           
+Alpha done.                                                                                                             
+
+<muted>─── Files changed (1) ───</muted>                                                                                
+<accent>src/alpha.ts</accent><dim>  (+1 -1)</dim>                                                                       
+<muted>──────────────────────────────────────────────────</muted>                                                       
+<toolOutput>@@ -1,3 +1,4 @@                                                                                             
+ const a = 1;                                                                                                           
++const b = 2;                                                                                                           
+-const c = 3;                                                                                                           
+ const d = 4;</toolOutput>                                                                                              
+<dim>2 turns ↑100 ↓50 R5 W2 $0.0123 ctx:1.2k test/model-c</dim>                                                         
+
+<success>✓</success> <toolTitle>**[beta] **</toolTitle>                                                                 
+<dim>Task: Beta node</dim>                                                                                              
+<muted>─── Output ───</muted>                                                                                           
+Beta done.                                                                                                              
+
+<error>✗</error> <toolTitle>**Wave 2**</toolTitle> <muted>(serial, 1 task)</muted>                                      
+<error>✗</error> <toolTitle>**[gamma] **</toolTitle>                                                                    
+<dim>Task: Gamma node</dim>                                                                                             
+<error>Error: gamma failed</error>                                                                                      
+
+<success>✓</success> <toolTitle>**Wave 3**</toolTitle> <muted>(parallel, 1 task)</muted>                                
+<success>✓</success> <toolTitle>****</toolTitle>                                                                        
+<dim>Task: Delta node</dim>                                                                                             
+<muted>─── Output ───</muted>                                                                                           
+Delta done.                                                                                                             
+
+<success>✓</success> <toolTitle>**Wave 4**</toolTitle> <muted>(serial, 1 task)</muted>                                  
+<success>✓</success> <toolTitle>**[epsilon] **</toolTitle>                                                              
+<dim>Task: Epsilon node</dim>                                                                                           
+
+<dim>Totals: 6 turns ↑400 ↓160 $0.0400</dim>                                                                            "
+`;
+
+exports[`parallel renderer goldens (issue #378) > collapsed 1`] = `
+"<error>✗</error> <toolTitle>**parallel**</toolTitle> <muted>1/1/2 total</muted>                                         
+<success>✓</success> <accent>docs</accent>: <toolOutput>Docs updated.</toolOutput>                                      
+   <muted>─── Files: </muted><accent>src/alpha.ts</accent><accent> (+1 -1)</accent><muted> ───</muted>                  
+<error>✗</error>  <toolOutput></toolOutput>                                                                             
+   <error>tests failed</error>                                                                                          
+<muted>(Ctrl+O to expand)</muted>                                                                                       "
+`;
+
+exports[`parallel renderer goldens (issue #378) > expanded 1`] = `
+"<accent>**Parallel**</accent><muted> 1 succeeded, 1 failed, 2 total</muted>                                             
+
+<success>✓</success> <toolTitle>**[docs] **</toolTitle><muted> (test/model-b)</muted>                                   
+<dim>Task: Update docs</dim>                                                                                            
+<muted>─── Output ───</muted>                                                                                           
+Docs updated.                                                                                                           
+
+<muted>─── Files changed (1) ───</muted>                                                                                
+<accent>src/alpha.ts</accent><dim>  (+1 -1)</dim>                                                                       
+<muted>──────────────────────────────────────────────────</muted>                                                       
+<toolOutput>@@ -1,3 +1,4 @@                                                                                             
+ const a = 1;                                                                                                           
++const b = 2;                                                                                                           
+-const c = 3;                                                                                                           
+ const d = 4;</toolOutput>                                                                                              
+<dim>2 turns ↑100 ↓50 R5 W2 $0.0123 ctx:1.2k test/model-b</dim>                                                         
+
+<error>✗</error> <toolTitle>****</toolTitle>                                                                            
+<dim>Task: Run tests</dim>                                                                                              
+<error>Error: tests failed</error>                                                                                      
+<dim>1 turn</dim>                                                                                                       
+
+<dim>Totals: 2 turns ↑150 ↓60 $0.0100</dim>                                                                             "
+`;
