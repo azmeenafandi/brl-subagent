@@ -21,14 +21,13 @@ import type {
 	TaskTemplate,
 	SubagentResult,
 	SubagentRun,
-	SubTaskParams,
 	SubTaskResult,
 	MultiSubagentDetails,
 	ChainDetails,
 	ParallelDetails,
 	GraphDetails,
 	DelegateTaskDetails,
-	GraphTask,
+	DelegateTaskParams,
 	ThinkingLevel,
 	UsageStats,
 	FileDiff,
@@ -3058,22 +3057,7 @@ function renderDelegatePreview(
 }
 
 export function renderDelegateCall(
-	args: {
-		task?: string;
-		label?: string;
-		systemPrompt?: string;
-		inheritSystemPrompt?: boolean;
-		thinkingLevel?: string;
-		outputFile?: string;
-		timeout?: number;
-		cwd?: string;
-		tools?: string[];
-		excludeTools?: string[];
-		noBuiltinTools?: boolean;
-		chain?: SubTaskParams[];
-		tasks?: SubTaskParams[];
-		graph?: GraphTask[];
-	},
+	args: DelegateTaskParams,
 	theme: Theme,
 ): Text {
 	// Graph mode

@@ -7,12 +7,16 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { classifyError, EMPTY_USAGE, formatTokens, formatUsageStats } from "../types";
 import type { SubagentPreset, SubagentResult, SubagentRun } from "../types";
 import { buildSubagentPrompt, describePromptMode, SUBAGENT_INSTRUCTIONS } from "../prompt";
 import { finalizeRunRecord, resolveRetryParams, formatRunDuration } from "../history";
 import { sanitizeTask, validateCwd, validateOutputFile, getCurrentDepth, DEPTH_ENV_KEY } from "../sanitize";
 import { resolveSubagentParams } from "../params";
+import { validatePreTask } from "../validate";
+import { classifyTask } from "../router";
 
 // Minimal inline SessionState mock to avoid pi package dependencies in vitest.
 // Only includes the subset of fields/methods used by integration tests.
@@ -387,6 +391,59 @@ describe("resolveSubagentParams integration", () => {
 		expect(result.task).toBe("");
 		expect(result.resolvedPreset).toBeUndefined();
 		expect(result.autoRoutedPreset).toBeUndefined();
+	});
+
+	// Issue #379 review minor: normalisation is only half the contract — every
+	// READER of the field must also treat "" like the absent case. These pin the
+	// two directly importable readers behaviourally and ratchet the third
+	// (mergeSubTaskParams is a closure in index.ts, not importable) against its
+	// behavioural replica in chain-parallel.test.ts.
+	it("validatePreTask skips task: '' exactly like the absent case (issue #379)", () => {
+		const toolOptions = { tools: ["read"], excludeTools: ["bash"] };
+
+		// Control: the SAME config blocks a real run task (capability error).
+		expect(validatePreTask({ task: "Run the test suite", toolOptions }).valid).toBe(false);
+
+		// The resolver's absent case normalises to "": skipped as if no task
+		// were given — valid, with no warnings and no errors.
+		expect(validatePreTask({ task: "", toolOptions })).toEqual({
+			valid: true,
+			warnings: [],
+			errors: [],
+		});
+	});
+
+	it("classifyTask('') classifies like the absent case — never matches (issue #379)", () => {
+		const presets = [auditorPreset];
+
+		// Control: the fixture DOES classify a real task (so `undefined` below
+		// is the empty-task guard, not a broken keyword fixture).
+		expect(classifyTask("security", presets)).toEqual({
+			preset: "security-auditor",
+			keyword: "security",
+		});
+
+		// The resolver's absent-case output is ""; "" and whitespace-only text
+		// classify exactly like the absent case: no match.
+		const state = new SessionState();
+		state.builtinPresets = presets;
+		expect(resolveSubagentParams({}, state, createMockPluginContext(), log).task).toBe("");
+		expect(classifyTask("", presets)).toBeUndefined();
+		expect(classifyTask("   ", presets)).toBeUndefined();
+	});
+
+	it("mergeSubTaskParams keeps the || fallback that makes task: '' fall back (issue #379)", () => {
+		// UNLIKE resolveSubagentParams (extracted to params.ts for exactly this
+		// reason — issue #59), mergeSubTaskParams is still a closure inside
+		// index.ts's default export, so the real function cannot be imported
+		// here. Its behavioural fallback (a subtask `task: ""` falls back to the
+		// mode-level task) is pinned by the replica test in
+		// chain-parallel.test.ts ("SubTask empty task falls through to global
+		// task"); this ratchet keeps that replica honest — `??` would let ""
+		// through and silently drop the mode-level task.
+		const indexSource = readFileSync(join(__dirname, "..", "index.ts"), "utf8");
+		expect(indexSource).toMatch(/task:\s*subTask\.task \|\| globalParams\.task/);
+		expect(indexSource).not.toMatch(/task:\s*subTask\.task \?\?/);
 	});
 
 	it("does NOT auto-route when an explicit preset is given (issue #57 intent rule)", () => {
