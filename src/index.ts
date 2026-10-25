@@ -235,6 +235,18 @@ type _KnownDelegateKey = (typeof KNOWN_DELEGATE_KEYS extends Set<infer K> ? K : 
 type _ExpectNever<T extends never> = T;
 type _DelegateParamCoverage = _ExpectNever<Exclude<_KnownDelegateKey, keyof DelegateTaskParams>>;
 
+/**
+ * Issue #381 (audit D4): the one graph-node → SubTaskParams mapping, shared by
+ * the graph pre-pass and the per-wave dispatch. GraphTask is a structural
+ * superset of SubTaskParams, so the node-only scheduling fields are dropped by
+ * destructuring instead of re-listing every per-subtask field — a field added
+ * to either type can no longer be silently forgotten at one of the two sites.
+ */
+function graphTaskToSubTaskParams(node: GraphTask): SubTaskParams {
+	const { id: _id, dependsOn: _dependsOn, ...subTask } = node;
+	return subTask;
+}
+
 export default function (pi: ExtensionAPI) {
 	const log = createLogger("brl-subagent");
 
@@ -1674,21 +1686,7 @@ export default function (pi: ExtensionAPI) {
 		const nodeCwds = new Map<string, string>();
 		const nodeWarnings: string[] = [];
 		for (const graphTask of graphTasks) {
-			const merged = mergeSubTaskParams(globalParams, {
-				task: graphTask.task,
-				label: graphTask.label,
-				model: graphTask.model,
-				thinkingLevel: graphTask.thinkingLevel,
-				priority: graphTask.priority,
-				cwd: graphTask.cwd,
-				timeout: graphTask.timeout,
-				outputFile: graphTask.outputFile,
-				tools: graphTask.tools,
-				excludeTools: graphTask.excludeTools,
-				noBuiltinTools: graphTask.noBuiltinTools,
-				systemPrompt: graphTask.systemPrompt,
-				inheritSystemPrompt: graphTask.inheritSystemPrompt,
-			});
+			const merged = mergeSubTaskParams(globalParams, graphTaskToSubTaskParams(graphTask));
 			const nodePrefix = `Node "${graphTask.id}"`;
 
 			const nodeTargets = validateDelegationTargets({
@@ -1777,21 +1775,7 @@ export default function (pi: ExtensionAPI) {
 					// sibling node advances the counter (same-wave siblings run
 					// concurrently, so the value must be pinned here).
 					const globalNode = ++globalNodeCounter;
-					const subTaskParams: SubTaskParams = {
-						task: graphTask.task,
-						label: graphTask.label,
-						model: graphTask.model,
-						thinkingLevel: graphTask.thinkingLevel,
-						priority: graphTask.priority,
-						cwd: graphTask.cwd,
-						timeout: graphTask.timeout,
-						outputFile: graphTask.outputFile,
-						tools: graphTask.tools,
-						excludeTools: graphTask.excludeTools,
-						noBuiltinTools: graphTask.noBuiltinTools,
-						systemPrompt: graphTask.systemPrompt,
-						inheritSystemPrompt: graphTask.inheritSystemPrompt,
-					};
+					const subTaskParams = graphTaskToSubTaskParams(graphTask);
 
 					const merged = mergeSubTaskParams(globalParams, subTaskParams);
 					// Issue #222: the node's OWN validated cwd (pre-pass);
