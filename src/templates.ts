@@ -27,7 +27,8 @@ import * as path from "node:path";
 import type { TaskTemplate, ThinkingLevel, SubagentPreset } from "./types";
 import { TEMPLATE_PARAM_RE, THINKING_LEVELS } from "./types";
 import type { Logger } from "./logging";
-import { parseFrontmatter, sanitizeFileName } from "./presets";
+import { loadMarkdownRecords } from "./loader";
+import { sanitizeFileName } from "./presets";
 import { pkgPath } from "./paths";
 
 // ---------------------------------------------------------------------------
@@ -178,6 +179,40 @@ export function validateTemplate(meta: Record<string, unknown>, fileName: string
 // ---------------------------------------------------------------------------
 
 /**
+ * Normalise validated template frontmatter into a TaskTemplate. Shared by both
+ * template tiers — the file walk and validation live in loadMarkdownRecords.
+ */
+function templateFromFrontmatter(
+	meta: Record<string, unknown>,
+	body: string,
+	name: string,
+): TaskTemplate {
+	return {
+		name,
+		description: (meta.description as string) || undefined,
+		task: body,
+		preset: (meta.preset as string) || undefined,
+		thinkingLevel: (meta.thinkingLevel as string) || undefined,
+		outputFile: (meta.outputFile as string) || undefined,
+		timeout: meta.timeout !== undefined ? Number(meta.timeout) : undefined,
+		tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
+		excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
+		noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
+		inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
+	};
+}
+
+/**
+ * Reject empty/whitespace-only bodies at load: shipping task: "" would later
+ * trip mode-detection with the confusing "Provide exactly one of:
+ * task/chain/..." error instead of a load-time warn-and-skip (parseFrontmatter
+ * already trims the body).
+ */
+function templateBodyError(meta: Record<string, unknown>, body: string): string | null {
+	return body.trim() ? null : `Template "${meta.name}" has empty task body`;
+}
+
+/**
  * Load custom task templates from user directories. Templates are
  * file-backed, mirroring the custom-preset pattern (issue #66) — the TUI
  * add/remove flows were removed because single-line input cannot express a
@@ -197,73 +232,25 @@ export function validateTemplate(meta: Record<string, unknown>, fileName: string
  * missing directories are skipped silently.
  */
 export function loadCustomTemplates(cwd: string, log?: Logger): TaskTemplate[] {
-	const templates: TaskTemplate[] = [];
-	const seenNames = new Set<string>();
 	const homedir = process.env.HOME || process.env.USERPROFILE || "";
 
-	const dirs = [
-		path.join(cwd, ".pi", "brl-subagent", "templates"),
-		path.join(homedir, ".pi", "agent", "brl-subagent", "templates"),
-	];
-
-	for (const dir of dirs) {
-		try {
-			const files = fs.readdirSync(dir);
-			for (const file of files) {
-				if (!file.endsWith(".md")) continue;
-				try {
-					const filePath = path.join(dir, file);
-					const content = fs.readFileSync(filePath, "utf-8");
-					const { meta, body } = parseFrontmatter(content);
-
-					const errors = validateTemplate(meta, file);
-					if (errors.length > 0) {
-						for (const err of errors) {
-							log?.warn("Custom template validation failed", { file, error: err });
-						}
-						continue;
-					}
-
-					// Reject empty/whitespace-only bodies at load: shipping task: ""
-					// would later trip mode-detection with the confusing "Provide
-					// exactly one of: task/chain/..." error instead of a load-time
-					// warn-and-skip (parseFrontmatter already trims the body).
-					if (!body.trim()) {
-						log?.warn("Custom template validation failed", {
-							file,
-							error: `Template "${meta.name}" has empty task body`,
-						});
-						continue;
-					}
-
-					const name = meta.name as string;
-					// Dedup by name: the first occurrence (project-local, scanned
-					// first) wins; user-global duplicates are skipped.
-					if (seenNames.has(name)) continue;
-					seenNames.add(name);
-					templates.push({
-						name,
-						description: (meta.description as string) || undefined,
-						task: body,
-						preset: (meta.preset as string) || undefined,
-						thinkingLevel: (meta.thinkingLevel as string) || undefined,
-						outputFile: (meta.outputFile as string) || undefined,
-						timeout: meta.timeout !== undefined ? Number(meta.timeout) : undefined,
-						tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
-						excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
-						noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
-						inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
-					});
-				} catch (err) {
-					log?.warn("Failed to load custom template file", { file, error: (err as Error).message });
-				}
-			}
-		} catch {
-			// Directory doesn't exist — that's fine, no custom templates
-		}
-	}
-
-	return templates;
+	return loadMarkdownRecords<TaskTemplate>({
+		dirs: [
+			path.join(cwd, ".pi", "brl-subagent", "templates"),
+			path.join(homedir, ".pi", "agent", "brl-subagent", "templates"),
+		],
+		validate: validateTemplate,
+		map: templateFromFrontmatter,
+		bodyError: templateBodyError,
+		// Dedup by name: the first occurrence (project-local, scanned first) wins.
+		dedupeByName: true,
+		log,
+		messages: {
+			invalid: "Custom template validation failed",
+			readFailed: "Failed to load custom template file",
+		},
+		// A missing directory is fine — no custom templates in that tier.
+	});
 }
 
 /**
@@ -274,62 +261,19 @@ export function loadCustomTemplates(cwd: string, log?: Logger): TaskTemplate[] {
  * loadBuiltinPresets (src/presets.ts).
  */
 export function loadBuiltinTemplates(templatesDir: string, log?: Logger): TaskTemplate[] {
-	const templates: TaskTemplate[] = [];
-
-	try {
-		const files = fs.readdirSync(templatesDir);
-		for (const file of files) {
-			if (!file.endsWith(".md")) continue;
-
-			try {
-				const filePath = path.join(templatesDir, file);
-				const content = fs.readFileSync(filePath, "utf-8");
-				const { meta, body } = parseFrontmatter(content);
-
-				const errors = validateTemplate(meta, file);
-				if (errors.length > 0) {
-					for (const err of errors) {
-						log?.warn("Builtin template validation failed", { file, error: err });
-					}
-					continue;
-				}
-
-				// Same empty-body guard as loadCustomTemplates: shipped templates
-				// are authored non-empty, but keep the check so a regressed copy
-				// warns at load time instead of tripping mode-detection later.
-				if (!body.trim()) {
-					log?.warn("Builtin template validation failed", {
-						file,
-						error: `Template "${meta.name}" has empty task body`,
-					});
-					continue;
-				}
-
-				const name = meta.name as string;
-
-				templates.push({
-					name,
-					description: (meta.description as string) || undefined,
-					task: body,
-					preset: (meta.preset as string) || undefined,
-					thinkingLevel: (meta.thinkingLevel as string) || undefined,
-					outputFile: (meta.outputFile as string) || undefined,
-					timeout: meta.timeout !== undefined ? Number(meta.timeout) : undefined,
-					tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
-					excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
-					noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
-					inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
-				});
-			} catch (err) {
-				log?.warn("Failed to load builtin template file", { file, error: (err as Error).message });
-			}
-		}
-	} catch {
+	return loadMarkdownRecords<TaskTemplate>({
+		dirs: [templatesDir],
+		validate: validateTemplate,
+		map: templateFromFrontmatter,
+		bodyError: templateBodyError,
+		log,
+		messages: {
+			invalid: "Builtin template validation failed",
+			readFailed: "Failed to load builtin template file",
+		},
 		// Templates directory doesn't exist or can't be read — no built-in templates
-		log?.info("No built-in templates directory found", { dir: templatesDir });
-	}
-
-	return templates;
+		onMissingDir: (dir) => log?.info("No built-in templates directory found", { dir }),
+	});
 }
 
 // ---------------------------------------------------------------------------
