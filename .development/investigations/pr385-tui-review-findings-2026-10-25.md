@@ -3,7 +3,7 @@
 Sub-issue #377 (parent #374), audit §2.1 D9/D11. C3: conductor diff read + goldens (no reviewer dispatch).
 Diff `c3049f6..HEAD`: `src/tui.ts` (−97 net), `tui-lines-modal-goldens.test.ts` (new, 227 lines), its snapshot (451).
 
-**Verdict: approve** (conductor). Merged `MERGE385`.
+**Verdict: approve** (conductor). Merged `a1de441`.
 
 ## Verified-OK
 
