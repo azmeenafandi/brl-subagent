@@ -288,6 +288,38 @@ export interface ProcessOwner {
 	start: string;
 }
 
+/**
+ * Issue #381 (audit D5): the retry-override snapshot taken from the caller's
+ * raw delegate_task params at dispatch (see `snapshotOriginalParams` in
+ * params.ts). Declared once so the snapshotter and the run record cannot
+ * drift apart; `errorCategory` is deliberately NOT a snapshot field — the
+ * failure paths stamp it onto `originalParams` after the fact.
+ */
+export interface SnapshotParams {
+	systemPrompt?: string;
+	inheritSystemPrompt?: boolean;
+	model?: string;
+	thinkingLevel?: string;
+	/** Issue #114: per-unit priority survives retries. */
+	priority?: string;
+	outputFile?: string;
+	timeout?: number;
+	cwd?: string;
+	tools?: string[];
+	excludeTools?: string[];
+	noBuiltinTools?: boolean;
+	preset?: string;
+	/**
+	 * Issue #227: the execution-shape fields survive retries, so a retried
+	 * background run stays background and a retried branch-mode run keeps its
+	 * work branch, its approvalMode gating and its force override.
+	 */
+	background?: boolean;
+	gitMode?: string;
+	approvalMode?: string;
+	force?: boolean;
+}
+
 export interface SubagentRun {
 	id: string;
 	task: string;
@@ -351,29 +383,8 @@ export interface SubagentRun {
 	errorMessage?: string;
 	outputSummary?: string;
 	fullOutput?: string;
-	originalParams?: {
-		systemPrompt?: string;
-		inheritSystemPrompt?: boolean;
-		model?: string;
-		thinkingLevel?: string;
-		// Issue #114: per-unit priority survives retries — the snapshot carries
-		// it through so a retried run keeps its priority.
-		priority?: string;
-		outputFile?: string;
-		timeout?: number;
-		cwd?: string;
-		tools?: string[];
-		excludeTools?: string[];
-		noBuiltinTools?: boolean;
-		preset?: string;
-		// Issue #227: the execution-shape fields survive retries, so a retried
-		// background run stays background and a retried branch-mode run keeps its
-		// work branch, its approvalMode gating and its force override. Additive:
-		// records written before this change simply lack the keys.
-		background?: boolean;
-		gitMode?: string;
-		approvalMode?: string;
-		force?: boolean;
+	originalParams?: SnapshotParams & {
+		/** Issue #179 (D1/D2): classification stamped by the failure paths. */
 		errorCategory?: ErrorCategory;
 	};
 }

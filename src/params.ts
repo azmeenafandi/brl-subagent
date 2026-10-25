@@ -21,6 +21,7 @@ import type {
 	ApprovalMode,
 	SubagentToolOptions,
 	ResolvedParams,
+	SnapshotParams,
 } from "./types";
 import { resolveThinkingLevel } from "./types";
 import { getAllPresets, getPreset } from "./presets";
@@ -82,25 +83,12 @@ export function findUnknownParams(
  * resolveRetryParams rebuilds a fresh literal and a key missing here is both
  * unrestored AND discarded when passed explicitly on a retry call. Records
  * written before this change simply lack the keys (additive, undefined-safe).
+ *
+ * Issue #381 (audit D5): the 16-field shape is declared once, as
+ * `SnapshotParams` in types.ts, and shared with `SubagentRun["originalParams"]`;
+ * this signature previously carried its own copy of the literal.
  */
-export function snapshotOriginalParams(params: {
-	systemPrompt?: string;
-	inheritSystemPrompt?: boolean;
-	model?: string;
-	thinkingLevel?: string;
-	priority?: string;
-	outputFile?: string;
-	timeout?: number;
-	cwd?: string;
-	tools?: string[];
-	excludeTools?: string[];
-	noBuiltinTools?: boolean;
-	preset?: string;
-	background?: boolean;
-	gitMode?: string;
-	approvalMode?: string;
-	force?: boolean;
-}): Record<string, unknown> {
+export function snapshotOriginalParams(params: SnapshotParams): Record<string, unknown> {
 	return {
 		systemPrompt: params.systemPrompt,
 		inheritSystemPrompt: params.inheritSystemPrompt,
