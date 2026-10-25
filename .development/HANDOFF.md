@@ -42,9 +42,9 @@ Verified: e0bef43 (2026-10-25)
 - **Transport auto-retry: LIVE** (#365, PR #370 `509efa1`) — a background run settling with a transport-class
   failure (exit_error + transport message, **original attempt only**) auto-retries **once** with the recorded
   params (`resumeOf`/attempt 2); the source notice is suppressed in favour of a toast; a second failure surfaces.
-- **Notification channel:** `brl-notifications-fa9@clawmail.me` (ClawMail, owner-registered) — for
-  autonomous-run decisions only (design checkpoints, blocked reviews); token in
-  `~/.config/brl-notifications/clawmail.env` on this machine, never in the repo.
+- **Notification channel:** `brl-notifications-fa9@clawmail.me` (ClawMail, **claimed by the owner 2026-10-25**
+  → 50 sends/day + the owner dashboard) — for autonomous-run decisions only (design checkpoints, blocked
+  reviews); token in `~/.config/brl-notifications/clawmail.env` on this machine, never in the repo.
 - **Suite:** 84 files / 1729 tests (~20 s) — `npx vitest run`; `npx tsc --noEmit` clean. **Budget guard in CI:**
   wall ≤ 60 s, test:source LOC ratio ≤ 2.0 (ceilings; `scripts/check-test-budget.mjs`). **Prose guard:** the
   same ≥80-char sentence on two surfaces fails the suite (issue #375).
