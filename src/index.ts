@@ -247,6 +247,45 @@ function graphTaskToSubTaskParams(node: GraphTask): SubTaskParams {
 	return subTask;
 }
 
+/**
+ * Issue #376 (audit D3): the one `SubagentResult` → `SubTaskResult` field
+ * mapping, shared by every dispatch mode (chain, parallel, graph). The ten
+ * assignments plus the error classification were copied per mode, so a field
+ * added to `SubTaskResult` could be silently forgotten at one of the sites —
+ * and `errorCategory` could be passed through unclassified. Callers add their
+ * own mode-specific fields (`step`/`task`/`label`) around this mapping.
+ */
+function toSubTaskResult(
+	result: SubagentResult,
+): Pick<
+	SubTaskResult,
+	| "exitCode"
+	| "messages"
+	| "stderr"
+	| "usage"
+	| "model"
+	| "stopReason"
+	| "errorMessage"
+	| "errorCategory"
+	| "gitBranch"
+	| "gitDiff"
+> {
+	return {
+		exitCode: result.exitCode,
+		messages: result.messages,
+		stderr: result.stderr,
+		usage: result.usage,
+		model: result.model,
+		stopReason: result.stopReason,
+		errorMessage: result.errorMessage,
+		// The classification path is part of the mapping: every mode derives the
+		// category from the raw result, never from the runner's own field.
+		errorCategory: classifyError(result),
+		gitBranch: result.gitBranch,
+		gitDiff: result.gitDiff,
+	};
+}
+
 export default function (pi: ExtensionAPI) {
 	const log = createLogger("brl-subagent");
 
@@ -838,17 +877,8 @@ export default function (pi: ExtensionAPI) {
 				// shape finalizeRunRecord expects, errorCategory included).
 				finalizeUnitRun(state, pi, ctx, run, result, log);
 
-				// Fill SubTaskResult
-				subTaskResult.exitCode = result.exitCode;
-				subTaskResult.messages = result.messages;
-				subTaskResult.stderr = result.stderr;
-				subTaskResult.usage = result.usage;
-				subTaskResult.model = result.model;
-				subTaskResult.stopReason = result.stopReason;
-				subTaskResult.errorMessage = result.errorMessage;
-				subTaskResult.errorCategory = classifyError(result);
-				subTaskResult.gitBranch = result.gitBranch;
-				subTaskResult.gitDiff = result.gitDiff;
+				// Fill SubTaskResult (one shared field mapping — issue #376/D3).
+				Object.assign(subTaskResult, toSubTaskResult(result));
 
 				chainResults.push(subTaskResult);
 
@@ -1294,17 +1324,8 @@ export default function (pi: ExtensionAPI) {
 					run.childMarker,
 				);
 
-				// Fill SubTaskResult
-				subTaskResult.exitCode = result.exitCode;
-				subTaskResult.messages = result.messages;
-				subTaskResult.stderr = result.stderr;
-				subTaskResult.usage = result.usage;
-				subTaskResult.model = result.model;
-				subTaskResult.stopReason = result.stopReason;
-				subTaskResult.errorMessage = result.errorMessage;
-				subTaskResult.errorCategory = classifyError(result);
-				subTaskResult.gitBranch = result.gitBranch;
-				subTaskResult.gitDiff = result.gitDiff;
+				// Fill SubTaskResult (one shared field mapping — issue #376/D3).
+				Object.assign(subTaskResult, toSubTaskResult(result));
 
 				results[index] = subTaskResult;
 				completedCount++;
@@ -1882,19 +1903,12 @@ export default function (pi: ExtensionAPI) {
 							run.childMarker,
 						);
 
+						// One shared field mapping — issue #376/D3 (the graph literal was a
+						// third copy of it).
 						const subTaskResult: SubTaskResult = {
 							task: merged.task,
 							label: merged.label,
-							exitCode: result.exitCode,
-							messages: result.messages,
-							stderr: result.stderr,
-							usage: result.usage,
-							model: result.model,
-							stopReason: result.stopReason,
-							errorMessage: result.errorMessage,
-							errorCategory: classifyError(result),
-							gitBranch: result.gitBranch,
-							gitDiff: result.gitDiff,
+							...toSubTaskResult(result),
 						};
 
 						// Issue #133: finalize the per-node run entry — status, duration,
