@@ -141,13 +141,90 @@ export function shortSha(sha: string): string {
 }
 
 /**
+ * True when the recorded sha and HEAD name the same revision — one is a prefix
+ * of the other, since `Verified:` may be short (7) or full (40).
+ */
+export function sameRevision(verified: string | null, head: string | null): boolean {
+	if (verified === null || verified === "") return false;
+	const recorded = verified.toLowerCase();
+	const current = (head ?? "").toLowerCase();
+	if (current === "") return false;
+	return current.startsWith(recorded) || recorded.startsWith(current);
+}
+
+/**
+ * The handoff's own paths: the snapshot file and its archives. A commit that
+ * touches only these cannot have changed the tree `Verified:` describes.
+ */
+const HANDOFF_OWN_PATH = /^\.development\/HANDOFF(?:\.md|-ARCHIVE-[^/]+\.md)$/;
+
+/** True when `path` is the handoff file or one of its archives. */
+export function isHandoffOwnPath(path: string): boolean {
+	return HANDOFF_OWN_PATH.test(path.trim());
+}
+
+/** One commit in the `Verified..HEAD` range, with the paths it touched. */
+export interface RangeCommit {
+	sha: string;
+	paths: readonly string[];
+}
+
+/**
+ * The `Verified..HEAD` delta, resolved by the caller — git stays in `index.ts`.
+ *
+ * `ancestor: false` means `Verified:` is not an ancestor of HEAD: real drift
+ * (rebase, amend, another branch), never the handoff's own commit.
+ */
+export interface RangeDelta {
+	ancestor: boolean;
+	commits: readonly RangeCommit[];
+}
+
+/**
+ * Parse `git log --format=%x00%H --name-only <verified>..HEAD` into commits.
+ *
+ * The NUL prefix delimits commits (a path never contains one); the blank line
+ * git prints between the header and the file list is dropped. A commit with no
+ * paths is legal — git prints no diff for a merge commit, and the commits it
+ * merges are listed individually, so such a commit touched nothing of its own.
+ */
+export function parseRangeLog(raw: string): RangeCommit[] {
+	const commits: RangeCommit[] = [];
+	for (const chunk of raw.split("\u0000")) {
+		const lines = chunk.split(/\r?\n/);
+		const sha = (lines.shift() ?? "").trim();
+		if (sha === "") continue;
+		const paths = lines.map((line) => line.trim()).filter((line) => line !== "");
+		commits.push({ sha, paths });
+	}
+	return commits;
+}
+
+/** A commit whose every path belongs to the handoff itself. */
+function isHandoffOwnCommit(commit: RangeCommit): boolean {
+	return commit.paths.every((path) => isHandoffOwnPath(path));
+}
+
+/**
  * The staleness verdict, compared against the cockpit's HEAD.
  *
- * - `current` — the recorded sha is a prefix of HEAD (or vice versa).
+ * - `current` — the recorded sha is a prefix of HEAD (or vice versa); or every
+ *   commit from `Verified:` to HEAD touches only the handoff itself (`delta`).
  * - `stale` — both known, and they disagree: §STATE may describe another tree.
+ *   Includes a `Verified:` that is not an ancestor of HEAD, and a range with any
+ *   commit outside the handoff (interleaved ranges are real drift).
  * - `unverified` — no `Verified:` line, or HEAD could not be read.
+ *
+ * `delta` is optional: without it the comparison is sha-only (today's behaviour
+ * for callers that never resolved the range). The self-reference problem it
+ * solves: `Verified: <sha>` can never equal the sha of the commit that writes it,
+ * so a handoff-only delta of one commit would otherwise print RECONCILE forever.
  */
-export function buildStaleness(verified: string | null, head: string | null): Staleness {
+export function buildStaleness(
+	verified: string | null,
+	head: string | null,
+	delta?: RangeDelta | null,
+): Staleness {
 	if (verified === null || verified === "") {
 		return {
 			status: "unverified",
@@ -162,8 +239,14 @@ export function buildStaleness(verified: string | null, head: string | null): St
 			line: `Handoff verified at ${shortSha(recorded)} but HEAD could not be read — verify §STATE against the repo before trusting it.`,
 		};
 	}
-	if (current.startsWith(recorded) || recorded.startsWith(current)) {
+	if (sameRevision(recorded, current)) {
 		return { status: "current", line: `Handoff verified at ${shortSha(recorded)} — matches HEAD.` };
+	}
+	if (delta && delta.ancestor && delta.commits.length > 0 && delta.commits.every(isHandoffOwnCommit)) {
+		return {
+			status: "current",
+			line: `Handoff verified at ${shortSha(recorded)} — matches HEAD (ignoring the handoff's own commit).`,
+		};
 	}
 	return {
 		status: "stale",

@@ -9,6 +9,9 @@
  * compaction summary cannot be trusted to carry it (a summary is lossy). The
  * extension re-injects the §STATE snapshot when a session starts and after every
  * compaction, prefixed with a `Verified:` staleness line compared to dev HEAD.
+ * The comparison ignores a delta made only of the handoff's own commits (#393):
+ * `Verified:` can never name the commit that writes it, so that one-commit lag
+ * is not drift.
  *
  * Deliberate boundaries:
  *  - No `session_before_compact` handler. pi-vcc owns that event and the runner
@@ -33,11 +36,14 @@ import {
 	extractStateSection,
 	hasInjected,
 	isSubagent,
+	parseRangeLog,
 	parseVerified,
 	replaceVerified,
+	sameRevision,
 	shouldInject,
 	shortSha,
 	VERIFY_COMMANDS,
+	type RangeDelta,
 	type Staleness,
 } from "./lib";
 
@@ -57,16 +63,46 @@ interface Snapshot {
 
 type Probe = { ok: true; snapshot: Snapshot } | { ok: false; reason: string };
 
-/** One git line, or null when git fails / prints nothing. Never throws. */
-async function gitLine(pi: ExtensionAPI, cwd: string, args: string[]): Promise<string | null> {
+/** One git invocation, or null when the spawn itself failed. Never throws. */
+async function gitRun(
+	pi: ExtensionAPI,
+	cwd: string,
+	args: string[],
+): Promise<{ code: number; stdout: string } | null> {
 	try {
 		const result = await pi.exec("git", args, { cwd, timeout: 5_000 });
-		if (result.code !== 0) return null;
-		const line = result.stdout.trim();
-		return line === "" ? null : line;
+		return { code: result.code, stdout: result.stdout };
 	} catch {
 		return null;
 	}
+}
+
+/** One git line, or null when git fails / prints nothing. */
+async function gitLine(pi: ExtensionAPI, cwd: string, args: string[]): Promise<string | null> {
+	const result = await gitRun(pi, cwd, args);
+	if (result === null || result.code !== 0) return null;
+	const line = result.stdout.trim();
+	return line === "" ? null : line;
+}
+
+/**
+ * The `Verified..HEAD` delta, for the self-commit lag (#393). Only called when
+ * the shas already disagree: `Verified: <sha>` can never equal the sha of the
+ * commit that writes it, so the handoff's own commit must not read as drift.
+ *
+ * Ancestor check first — a `Verified:` that is not an ancestor of HEAD is real
+ * drift (rebase, amend, another branch), never the handoff's own commit. `null`
+ * means the range could not be resolved: the caller keeps today's RECONCILE.
+ */
+async function resolveDelta(pi: ExtensionAPI, cwd: string, verified: string): Promise<RangeDelta | null> {
+	// `merge-base --is-ancestor` prints nothing: 0 = ancestor, 1 = not, else unknown.
+	const ancestor = await gitRun(pi, cwd, ["merge-base", "--is-ancestor", verified, "HEAD"]);
+	if (ancestor === null || ancestor.code > 1) return null;
+	if (ancestor.code === 1) return { ancestor: false, commits: [] };
+	// NUL-delimited headers: one chunk per commit, its paths on the lines after.
+	const log = await gitLine(pi, cwd, ["log", "--format=%x00%H", "--name-only", `${verified}..HEAD`]);
+	if (log === null) return { ancestor: true, commits: [] };
+	return { ancestor: true, commits: parseRangeLog(log) };
 }
 
 /**
@@ -99,7 +135,16 @@ async function probe(pi: ExtensionAPI, ctx: ExtensionContext): Promise<Probe> {
 	if (state === null) return { ok: false, reason: `${HANDOFF_REL} has no §STATE section` };
 	const head = await gitLine(pi, cwd, ["rev-parse", "HEAD"]);
 	const verified = parseVerified(state);
-	return { ok: true, snapshot: { path, raw, state, verified, head, staleness: buildStaleness(verified, head) } };
+	// Only resolve the range when the shas disagree — the common case is one
+	// extra pair of git calls per injection, and never more than that.
+	const delta =
+		verified !== null && head !== null && !sameRevision(verified, head)
+			? await resolveDelta(pi, cwd, verified)
+			: null;
+	return {
+		ok: true,
+		snapshot: { path, raw, state, verified, head, staleness: buildStaleness(verified, head, delta) },
+	};
 }
 
 /**

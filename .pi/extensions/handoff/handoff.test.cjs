@@ -19,10 +19,13 @@ const {
 	dedupeKey,
 	extractStateSection,
 	hasInjected,
+	isHandoffOwnPath,
 	isSubagent,
 	messageText,
+	parseRangeLog,
 	parseVerified,
 	replaceVerified,
+	sameRevision,
 	shouldInject,
 	shortSha,
 	VERIFY_COMMANDS,
@@ -105,6 +108,129 @@ check("unreadable HEAD → unverified, never a false match", buildStaleness("f4e
 });
 check("shortSha leaves short input alone", shortSha("abc1234"), "abc1234");
 check("shortSha truncates", shortSha(HEAD), "f4e518b");
+check("sameRevision: short vs full", sameRevision("f4e518b", HEAD), true);
+check("sameRevision: full vs short", sameRevision(HEAD, "f4e518b"), true);
+check("sameRevision: divergent", sameRevision("ae7c488", HEAD), false);
+check("sameRevision: missing sides are never a match", [sameRevision(null, HEAD), sameRevision("f4e518b", null), sameRevision("", "")], [false, false, false]);
+
+console.log("-- staleness: ignoring the handoff's own commit (#393)");
+
+// Real shape: `Verified: f1ece22`, then one commit that only writes HANDOFF.md.
+const HANDOFF_ONLY = { ancestor: true, commits: [{ sha: "aaaaaaa", paths: [".development/HANDOFF.md"] }] };
+check("handoff-only range → current, says it ignored the handoff's own commit", buildStaleness("ae7c488", HEAD, HANDOFF_ONLY), {
+	status: "current",
+	line: "Handoff verified at ae7c488 — matches HEAD (ignoring the handoff's own commit).",
+});
+check(
+	"an archive-only commit is the handoff's own too",
+	buildStaleness("ae7c488", HEAD, {
+		ancestor: true,
+		commits: [{ sha: "b", paths: [".development/HANDOFF-ARCHIVE-2026-10-17.md"] }],
+	}).status,
+	"current",
+);
+check(
+	"several handoff-only commits (file + archive) still match",
+	buildStaleness("ae7c488", HEAD, {
+		ancestor: true,
+		commits: [
+			{ sha: "b", paths: [".development/HANDOFF.md", ".development/HANDOFF-ARCHIVE-2026-10-16.md"] },
+			{ sha: "c", paths: [".development/HANDOFF.md"] },
+		],
+	}).status,
+	"current",
+);
+check(
+	"a merge commit with no listed paths touched nothing of its own",
+	buildStaleness("ae7c488", HEAD, {
+		ancestor: true,
+		commits: [{ sha: "d", paths: [".development/HANDOFF.md"] }, { sha: "e", paths: [] }],
+	}).status,
+	"current",
+);
+
+const FOREIGN = { ancestor: true, commits: [{ sha: "f", paths: ["src/runner.ts"] }] };
+check("a foreign-file range → RECONCILE, unchanged wording", buildStaleness("ae7c488", HEAD, FOREIGN), {
+	status: "stale",
+	line: "Handoff verified at ae7c488 but HEAD is f4e518b — RECONCILE before trusting §STATE.",
+});
+check(
+	"mixed range (handoff-only + other commit) → RECONCILE",
+	buildStaleness("ae7c488", HEAD, {
+		ancestor: true,
+		commits: [{ sha: "a", paths: [".development/HANDOFF.md"] }, { sha: "f", paths: ["package.json"] }],
+	}).status,
+	"stale",
+);
+check(
+	"a commit touching HANDOFF.md AND source → RECONCILE",
+	buildStaleness("ae7c488", HEAD, {
+		ancestor: true,
+		commits: [{ sha: "a", paths: [".development/HANDOFF.md", "src/index.ts"] }],
+	}).status,
+	"stale",
+);
+check(
+	"a near-miss path is not the handoff's own",
+	buildStaleness("ae7c488", HEAD, {
+		ancestor: true,
+		commits: [{ sha: "a", paths: [".development/HANDOFF.md.bak"] }],
+	}).status,
+	"stale",
+);
+check(
+	"non-ancestor Verified → RECONCILE even when the range is handoff-only",
+	buildStaleness("ae7c488", HEAD, { ancestor: false, commits: [{ sha: "a", paths: [".development/HANDOFF.md"] }] }),
+	{ status: "stale", line: "Handoff verified at ae7c488 but HEAD is f4e518b — RECONCILE before trusting §STATE." },
+);
+check("empty range (Verified == HEAD) → plain match", buildStaleness("ae7c488", "ae7c4880", { ancestor: true, commits: [] }), {
+	status: "current",
+	line: "Handoff verified at ae7c488 — matches HEAD.",
+});
+check("an unresolved delta (null) keeps the sha-only verdict", buildStaleness("ae7c488", HEAD, null).status, "stale");
+check("no delta at all keeps the sha-only verdict", buildStaleness("ae7c488", HEAD).status, "stale");
+
+console.log("-- parse: the Verified..HEAD range log");
+
+// Real output shape: `git log --format=%x00%H --name-only` (NUL header, blank
+// line, paths).
+const RANGE_LOG = [
+	"\u00001111111111111111111111111111111111111111",
+	"",
+	".development/HANDOFF.md",
+	"",
+	"\u00002222222222222222222222222222222222222222",
+	"",
+	".development/HANDOFF.md",
+	".development/investigations/x.md",
+	"",
+].join("\n");
+check("one entry per commit, paths grouped", parseRangeLog(RANGE_LOG), [
+	{ sha: "1111111111111111111111111111111111111111", paths: [".development/HANDOFF.md"] },
+	{ sha: "2222222222222222222222222222222222222222", paths: [".development/HANDOFF.md", ".development/investigations/x.md"] },
+]);
+check("empty output → no commits", parseRangeLog(""), []);
+check("a pathless commit (merge) is kept with no paths", parseRangeLog("\u0000333\n"), [{ sha: "333", paths: [] }]);
+check("CRLF names are tolerated", parseRangeLog("\u0000444\r\n\r\n.development/HANDOFF.md\r\n"), [{ sha: "444", paths: [".development/HANDOFF.md"] }]);
+check("isHandoffOwnPath: the file and its archives", [".development/HANDOFF.md", ".development/HANDOFF-ARCHIVE-2026-10-17.md"].map(isHandoffOwnPath), [true, true]);
+check(
+	"isHandoffOwnPath: anything else is foreign",
+	["src/runner.ts", ".development/HANDOFF.md.bak", ".development/HANDOFF-ARCHIVE-2026-10-17.md/x", "README.md", "HANDOFF.md"].map(
+		isHandoffOwnPath,
+	),
+	[false, false, false, false, false],
+);
+const parsedRange = parseRangeLog(RANGE_LOG);
+check(
+	"a parsed handoff-only range feeds buildStaleness → current",
+	buildStaleness("ae7c488", HEAD, { ancestor: true, commits: [parsedRange[0]] }).status,
+	"current",
+);
+check(
+	"a parsed foreign range feeds buildStaleness → RECONCILE",
+	buildStaleness("ae7c488", HEAD, { ancestor: true, commits: [parsedRange[1]] }).status,
+	"stale",
+);
 
 console.log("-- guards: subagent / branch / file");
 
