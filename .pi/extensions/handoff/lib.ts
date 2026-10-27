@@ -158,12 +158,24 @@ export function sameRevision(verified: string | null, head: string | null): bool
  */
 const HANDOFF_OWN_PATH = /^\.development\/HANDOFF(?:\.md|-ARCHIVE-[^/]+\.md)$/;
 
-/** True when `path` is the handoff file or one of its archives. */
+/**
+ * True when `path` is the handoff file or one of its archives.
+ *
+ * No trimming: a path is matched exactly as git reports it, so
+ * `.development/HANDOFF.md ` (trailing space) is a DIFFERENT file and stays
+ * foreign. Trimming would let an odd filename pass as the handoff's own (#395).
+ */
 export function isHandoffOwnPath(path: string): boolean {
-	return HANDOFF_OWN_PATH.test(path.trim());
+	return HANDOFF_OWN_PATH.test(path);
 }
 
-/** One commit in the `Verified..HEAD` range, with the paths it touched. */
+/**
+ * One commit in the `Verified..HEAD` range, with the paths it touched.
+ *
+ * `paths` comes from the commit's diff against its FIRST parent, with renames
+ * and copies contributing both sides, so a path here is a path the commit
+ * really changed.
+ */
 export interface RangeCommit {
 	sha: string;
 	paths: readonly string[];
@@ -180,29 +192,77 @@ export interface RangeDelta {
 	commits: readonly RangeCommit[];
 }
 
-/**
- * Parse `git log --format=%x00%H --name-only <verified>..HEAD` into commits.
- *
- * The NUL prefix delimits commits (a path never contains one); the blank line
- * git prints between the header and the file list is dropped. A commit with no
- * paths is legal — git prints no diff for a merge commit, and the commits it
- * merges are listed individually, so such a commit touched nothing of its own.
- */
-export function parseRangeLog(raw: string): RangeCommit[] {
-	const commits: RangeCommit[] = [];
-	for (const chunk of raw.split("\u0000")) {
-		const lines = chunk.split(/\r?\n/);
-		const sha = (lines.shift() ?? "").trim();
-		if (sha === "") continue;
-		const paths = lines.map((line) => line.trim()).filter((line) => line !== "");
-		commits.push({ sha, paths });
-	}
-	return commits;
+/** One commit in the `Verified..HEAD` range, with its parents (a root has none). */
+export interface RevEntry {
+	sha: string;
+	parents: readonly string[];
 }
 
-/** A commit whose every path belongs to the handoff itself. */
-function isHandoffOwnCommit(commit: RangeCommit): boolean {
-	return commit.paths.every((path) => isHandoffOwnPath(path));
+/**
+ * Parse `git rev-list --parents <verified>..HEAD` (one commit per line: sha,
+ * then its parents). A line with no parents is a root commit — its diff has to
+ * come from `git diff-tree --root`, there is no `<sha>^` to compare against.
+ */
+export function parseRevList(raw: string): RevEntry[] {
+	const entries: RevEntry[] = [];
+	for (const line of raw.split(/\r?\n/)) {
+		const tokens = line.trim().split(/\s+/).filter((token) => token !== "");
+		if (tokens.length === 0) continue;
+		entries.push({ sha: tokens[0], parents: tokens.slice(1) });
+	}
+	return entries;
+}
+
+/** One `--name-status -z` record's status: a letter, plus a score for R/C. */
+const DIFF_STATUS = /^([ACDMRTUXB])([0-9]{0,3})$/;
+
+/** Statuses that carry TWO paths (the old name and the new one). */
+const TWO_PATH_STATUSES = new Set(["R", "C"]);
+
+/**
+ * The paths of a `git diff --name-status -M -z` record stream, or null when the
+ * output cannot be parsed.
+ *
+ * With `-z` every field is NUL-terminated, so a path may hold spaces (including
+ * a trailing one, which must survive verbatim), tabs or newlines: split on NUL
+ * and keep the tokens as-is — never `.trim()` a path, and never split on
+ * whitespace.
+ *
+ * A rename/copy record (`R100`, `C75`) yields BOTH paths: a foreign file
+ * renamed to `HANDOFF.md` touches a foreign path (the deletion), and so does the
+ * reverse. Matching only the destination would hide half the change.
+ *
+ * An empty stream is an empty diff (`[]`); a truncated or unknown record is
+ * null — the caller treats that as foreign, never as a vacuous match.
+ */
+export function parseDiffPaths(raw: string): string[] | null {
+	if (raw === "") return [];
+	const tokens = raw.split("\u0000");
+	// Each record ends with a NUL, so the last token is a trailing empty one.
+	if (tokens[tokens.length - 1] === "") tokens.pop();
+	const paths: string[] = [];
+	for (let i = 0; i < tokens.length; ) {
+		const status = DIFF_STATUS.exec(tokens[i]);
+		if (status === null) return null;
+		const wanted = TWO_PATH_STATUSES.has(status[1]) ? 2 : 1;
+		const record = tokens.slice(i + 1, i + 1 + wanted);
+		if (record.length !== wanted || record.some((path) => path === "")) return null;
+		paths.push(...record);
+		i += 1 + wanted;
+	}
+	return paths;
+}
+
+/**
+ * A commit whose every path belongs to the handoff itself.
+ *
+ * A commit with NO paths is NOT the handoff's own: an empty list is also what a
+ * failed or unparseable diff looks like, and a vacuous `every()` would report a
+ * merge that introduced a foreign file as handoff-only (#393 review). Only a
+ * non-empty, wholly handoff-owned list earns the match.
+ */
+export function isHandoffOwnCommit(commit: RangeCommit): boolean {
+	return commit.paths.length > 0 && commit.paths.every((path) => isHandoffOwnPath(path));
 }
 
 /**
@@ -212,7 +272,8 @@ function isHandoffOwnCommit(commit: RangeCommit): boolean {
  *   commit from `Verified:` to HEAD touches only the handoff itself (`delta`).
  * - `stale` — both known, and they disagree: §STATE may describe another tree.
  *   Includes a `Verified:` that is not an ancestor of HEAD, and a range with any
- *   commit outside the handoff (interleaved ranges are real drift).
+ *   commit outside the handoff (interleaved ranges are real drift). A commit
+ *   with no usable path list is drift too — see `isHandoffOwnCommit`.
  * - `unverified` — no `Verified:` line, or HEAD could not be read.
  *
  * `delta` is optional: without it the comparison is sha-only (today's behaviour
