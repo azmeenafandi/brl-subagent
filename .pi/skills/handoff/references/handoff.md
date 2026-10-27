@@ -42,13 +42,21 @@ is open, and what is next.
 - `<sha>` is the **dev HEAD the snapshot describes** — short (7) or full, either
   parses. The extension compares it to `git rev-parse HEAD` in the cockpit and
   prints `matches HEAD`, `RECONCILE …` or `no Verified: line`.
+- **The handoff's own commit is not drift.** `Verified:` can never name the commit
+  that writes it — that commit moves HEAD by one — so the extension resolves the
+  range `Verified..HEAD` and reports `matches HEAD (ignoring the handoff's own
+  commit)` when **every** commit in that range touches only
+  `.development/HANDOFF.md` and/or `.development/HANDOFF-ARCHIVE-*.md`. One commit
+  touching anything else → `RECONCILE` (interleaved ranges are real drift). A
+  `Verified:` that is not an ancestor of HEAD is drift too — rebase, amend, another
+  branch — and always `RECONCILE`s.
 - Update it at **every handover** and **whenever the STATE materially changes**
   (a merge, a release, a state change that the file now describes).
 - `/handoff mark` rewrites the sha to HEAD for you — it does **not** reconcile
   the content. Marking a stale snapshot as current is a false claim.
-- A doc-only commit after `Verified:` does not invalidate it (the sha check is a
-  prefix match against the described tree, not a byte-level audit); a merge that
-  changes what STATE says does.
+- The ignore list is exactly the handoff and its archives. A doc-only commit
+  elsewhere (an investigation, a CHANGELOG entry) still `RECONCILE`s — re-mark if
+  it changed what `§STATE` describes, and tolerate the banner as noise if not.
 
 ## Pre-compaction checklist
 

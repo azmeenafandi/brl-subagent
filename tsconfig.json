@@ -10,6 +10,10 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts"],
+  // `.pi/extensions/**` is dev tooling (tracked, jiti-loaded, never shipped), but
+  // it still has to typecheck: drift there otherwise surfaces only at runtime.
+  // One config, one include list — the extension imports resolve from the root
+  // `node_modules`, so a second config would only be drift risk (issue #394).
+  "include": ["src/**/*.ts", ".pi/extensions/**/*.ts"],
   "exclude": ["src/__tests__"]
 }

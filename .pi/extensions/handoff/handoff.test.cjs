@@ -19,10 +19,15 @@ const {
 	dedupeKey,
 	extractStateSection,
 	hasInjected,
+	isHandoffOwnCommit,
+	isHandoffOwnPath,
 	isSubagent,
 	messageText,
+	parseDiffPaths,
+	parseRevList,
 	parseVerified,
 	replaceVerified,
+	sameRevision,
 	shouldInject,
 	shortSha,
 	VERIFY_COMMANDS,
@@ -40,6 +45,23 @@ function check(name, actual, expected) {
 }
 
 const HEAD = "f4e518b08dcbe7dae3fc89e36017b3673be8fa9a";
+
+/**
+ * Mirror of `resolveDelta` in index.ts: `git rev-list --parents` for the range,
+ * then one `--name-status -M -z` diff per commit, keyed by sha. The walk stops
+ * at the first commit that is not the handoff's own. `diffs` values are the raw
+ * NUL-separated git output; a missing one stands for a diff that git could not
+ * produce.
+ */
+function deltaFrom(revList, diffs) {
+	const commits = [];
+	for (const entry of parseRevList(revList)) {
+		const commit = { sha: entry.sha, paths: parseDiffPaths(diffs[entry.sha] ?? "") ?? [] };
+		commits.push(commit);
+		if (!isHandoffOwnCommit(commit)) break;
+	}
+	return { ancestor: true, commits };
+}
 
 console.log("-- extract: §STATE markers");
 
@@ -105,6 +127,190 @@ check("unreadable HEAD → unverified, never a false match", buildStaleness("f4e
 });
 check("shortSha leaves short input alone", shortSha("abc1234"), "abc1234");
 check("shortSha truncates", shortSha(HEAD), "f4e518b");
+check("sameRevision: short vs full", sameRevision("f4e518b", HEAD), true);
+check("sameRevision: full vs short", sameRevision(HEAD, "f4e518b"), true);
+check("sameRevision: divergent", sameRevision("ae7c488", HEAD), false);
+check("sameRevision: missing sides are never a match", [sameRevision(null, HEAD), sameRevision("f4e518b", null), sameRevision("", "")], [false, false, false]);
+
+console.log("-- staleness: ignoring the handoff's own commit (#393)");
+
+// Real shape: `Verified: f1ece22`, then one commit that only writes HANDOFF.md.
+const HANDOFF_ONLY = { ancestor: true, commits: [{ sha: "aaaaaaa", paths: [".development/HANDOFF.md"] }] };
+check("handoff-only range → current, says it ignored the handoff's own commit", buildStaleness("ae7c488", HEAD, HANDOFF_ONLY), {
+	status: "current",
+	line: "Handoff verified at ae7c488 — matches HEAD (ignoring the handoff's own commit).",
+});
+check(
+	"an archive-only commit is the handoff's own too",
+	buildStaleness("ae7c488", HEAD, {
+		ancestor: true,
+		commits: [{ sha: "b", paths: [".development/HANDOFF-ARCHIVE-2026-10-17.md"] }],
+	}).status,
+	"current",
+);
+check(
+	"several handoff-only commits (file + archive) still match",
+	buildStaleness("ae7c488", HEAD, {
+		ancestor: true,
+		commits: [
+			{ sha: "b", paths: [".development/HANDOFF.md", ".development/HANDOFF-ARCHIVE-2026-10-16.md"] },
+			{ sha: "c", paths: [".development/HANDOFF.md"] },
+		],
+	}).status,
+	"current",
+);
+check(
+	"a merge commit whose resolution adds a foreign file → RECONCILE (#395)",
+	buildStaleness(
+		"ae7c488",
+		HEAD,
+		// The first-parent diff carries the resolution AND what the merge brought
+		// in. `git log --name-only` printed nothing for the merge itself, so this
+		// range used to read as handoff-only (a vacuous `every()` of no paths).
+		deltaFrom("mm1 b1 b2\n", { mm1: "A\0.development/HANDOFF.md\0A\0src/merge-fix.ts\0" }),
+	),
+	{ status: "stale", line: "Handoff verified at ae7c488 but HEAD is f4e518b — RECONCILE before trusting §STATE." },
+);
+
+const FOREIGN = { ancestor: true, commits: [{ sha: "f", paths: ["src/runner.ts"] }] };
+check("a foreign-file range → RECONCILE, unchanged wording", buildStaleness("ae7c488", HEAD, FOREIGN), {
+	status: "stale",
+	line: "Handoff verified at ae7c488 but HEAD is f4e518b — RECONCILE before trusting §STATE.",
+});
+check(
+	"mixed range (handoff-only + other commit) → RECONCILE",
+	buildStaleness("ae7c488", HEAD, {
+		ancestor: true,
+		commits: [{ sha: "a", paths: [".development/HANDOFF.md"] }, { sha: "f", paths: ["package.json"] }],
+	}).status,
+	"stale",
+);
+check(
+	"a commit touching HANDOFF.md AND source → RECONCILE",
+	buildStaleness("ae7c488", HEAD, {
+		ancestor: true,
+		commits: [{ sha: "a", paths: [".development/HANDOFF.md", "src/index.ts"] }],
+	}).status,
+	"stale",
+);
+check(
+	"a near-miss path is not the handoff's own",
+	buildStaleness("ae7c488", HEAD, {
+		ancestor: true,
+		commits: [{ sha: "a", paths: [".development/HANDOFF.md.bak"] }],
+	}).status,
+	"stale",
+);
+check(
+	"non-ancestor Verified → RECONCILE even when the range is handoff-only",
+	buildStaleness("ae7c488", HEAD, { ancestor: false, commits: [{ sha: "a", paths: [".development/HANDOFF.md"] }] }),
+	{ status: "stale", line: "Handoff verified at ae7c488 but HEAD is f4e518b — RECONCILE before trusting §STATE." },
+);
+check("empty range (Verified == HEAD) → plain match", buildStaleness("ae7c488", "ae7c4880", { ancestor: true, commits: [] }), {
+	status: "current",
+	line: "Handoff verified at ae7c488 — matches HEAD.",
+});
+check("an unresolved delta (null) keeps the sha-only verdict", buildStaleness("ae7c488", HEAD, null).status, "stale");
+check("no delta at all keeps the sha-only verdict", buildStaleness("ae7c488", HEAD).status, "stale");
+
+console.log("-- parse: the range listing (rev-list --parents)");
+
+// Real shape: one line per commit, newest first — sha, then its parents.
+check("one entry per commit, with its parents", parseRevList("mmm1 aaa1 bbb1\nccc1 aaa1\n"), [
+	{ sha: "mmm1", parents: ["aaa1", "bbb1"] },
+	{ sha: "ccc1", parents: ["aaa1"] },
+]);
+check("a root commit has no parents", parseRevList("aaa1\n"), [{ sha: "aaa1", parents: [] }]);
+check("empty output → no commits (an empty range)", parseRevList(""), []);
+check("blank lines and CRLF are tolerated", parseRevList("\r\n aaa1   bbb1 \r\n\n"), [{ sha: "aaa1", parents: ["bbb1"] }]);
+
+console.log("-- parse: one commit's --name-status -M -z diff");
+
+// Real shape: each field NUL-terminated — `STATUS\0path\0`, and two paths for
+// a rename/copy (`R100\0old\0new\0`).
+check("adds and modifies: one path per record", parseDiffPaths("A\0a.txt\0M\0b.txt\0"), ["a.txt", "b.txt"]);
+check("a delete keeps its path", parseDiffPaths("D\0gone.txt\0"), ["gone.txt"]);
+check("a rename yields BOTH paths", parseDiffPaths("R100\0src/runner.ts\0.development/HANDOFF.md\0"), [
+	"src/runner.ts",
+	".development/HANDOFF.md",
+]);
+check("a scored rename yields both paths", parseDiffPaths("R087\0a.md\0b.md\0"), ["a.md", "b.md"]);
+check("a copy yields both paths", parseDiffPaths("C75\0old.md\0new.md\0"), ["old.md", "new.md"]);
+check("an empty diff → no paths", parseDiffPaths(""), []);
+check("a truncated stream (no final NUL) → null, never a vacuous path list", parseDiffPaths("M\0.development/HANDOFF.md"), null);
+check("a truncated rename record → null", parseDiffPaths("R100\0a.md\0b.md"), null);
+check("a trailing space is part of the path, never trimmed", parseDiffPaths("A\0.development/HANDOFF.md \0"), [
+	".development/HANDOFF.md ",
+]);
+check("a path with an embedded newline survives", parseDiffPaths("A\0weird\nname.md\0"), ["weird\nname.md"]);
+check("an unknown status → null (unparseable)", parseDiffPaths("Q\0a.txt\0"), null);
+check("a record with no status → null", parseDiffPaths("nonsense"), null);
+check("truncated records → null, never a partial match", ["M\0", "R100\0only-old.txt\0", "A\0a.txt\0M\0"].map(parseDiffPaths), [
+	null,
+	null,
+	null,
+]);
+
+console.log("-- ownership: the handoff's own paths");
+
+check("isHandoffOwnPath: the file and its archives", [".development/HANDOFF.md", ".development/HANDOFF-ARCHIVE-2026-10-17.md"].map(isHandoffOwnPath), [true, true]);
+check(
+	"isHandoffOwnPath: anything else is foreign",
+	["src/runner.ts", ".development/HANDOFF.md.bak", ".development/HANDOFF-ARCHIVE-2026-10-17.md/x", "README.md", "HANDOFF.md"].map(
+		isHandoffOwnPath,
+	),
+	[false, false, false, false, false],
+);
+check("isHandoffOwnPath never trims (a trailing space is another file)", isHandoffOwnPath(".development/HANDOFF.md "), false);
+check("isHandoffOwnCommit: a wholly handoff-owned commit", isHandoffOwnCommit({ sha: "a", paths: [".development/HANDOFF.md"] }), true);
+check("isHandoffOwnCommit: one foreign path spoils it", isHandoffOwnCommit({ sha: "a", paths: [".development/HANDOFF.md", "src/x.ts"] }), false);
+check("isHandoffOwnCommit: no paths is NOT the handoff's own (never vacuous)", isHandoffOwnCommit({ sha: "a", paths: [] }), false);
+
+console.log("-- range → verdict, through the real parsers (#395)");
+
+check("one handoff-only commit → current", buildStaleness("ae7c488", HEAD, deltaFrom("h1 p0\n", { h1: "M\0.development/HANDOFF.md\0" })).status, "current");
+
+// Finding 1a: a foreign file renamed INTO the handoff. A name-only listing shows
+// only the destination, so the foreign deletion used to vanish.
+const RENAMED_INTO = deltaFrom("r1 p0\n", { r1: "R100\0src/runner.ts\0.development/HANDOFF.md\0" });
+check("foreign → HANDOFF.md rename → RECONCILE", buildStaleness("ae7c488", HEAD, RENAMED_INTO).status, "stale");
+check("…and the delta still names the foreign side", RENAMED_INTO.commits[0].paths, ["src/runner.ts", ".development/HANDOFF.md"]);
+check(
+	"HANDOFF.md → foreign rename → RECONCILE",
+	buildStaleness("ae7c488", HEAD, deltaFrom("r2 p0\n", { r2: "R100\0.development/HANDOFF.md\0docs/handoff.md\0" })).status,
+	"stale",
+);
+
+// Finding 2: a path that only LOOKS like the handoff — `-z` tokens are never
+// trimmed, so the trailing space keeps it a different file.
+check(
+	"a path with a trailing space → RECONCILE",
+	buildStaleness("ae7c488", HEAD, deltaFrom("s1 p0\n", { s1: "A\0.development/HANDOFF.md \0" })).status,
+	"stale",
+);
+
+// Never a vacuous match: an empty list is what a failed or unreadable diff looks
+// like, so it counts as foreign. Only a non-empty, wholly own list matches.
+check("an empty path list → RECONCILE (no vacuous match)", buildStaleness("ae7c488", HEAD, deltaFrom("e1 p0\n", { e1: "" })).status, "stale");
+check("a commit with no paths at all → RECONCILE", buildStaleness("ae7c488", HEAD, { ancestor: true, commits: [{ sha: "e2", paths: [] }] }).status, "stale");
+check(
+	"a diff git could not produce → RECONCILE",
+	buildStaleness("ae7c488", HEAD, deltaFrom("e3 p0\n", {})).status,
+	"stale",
+);
+check(
+	"an unparseable diff → RECONCILE",
+	buildStaleness("ae7c488", HEAD, deltaFrom("u1 p0\n", { u1: "Q\0weird\0" })).status,
+	"stale",
+);
+
+// The walk stops at the first foreign commit: the verdict cannot improve after
+// it, so a long drifted range does not pay for every diff.
+check(
+	"the walk stops after the first foreign commit",
+	deltaFrom("c1 c0\nc2 c1\nc3 c2\n", { c1: "M\0.development/HANDOFF.md\0", c2: "M\0src/x.ts\0", c3: "M\0.development/HANDOFF.md\0" }).commits.length,
+	2,
+);
 
 console.log("-- guards: subagent / branch / file");
 

@@ -141,13 +141,155 @@ export function shortSha(sha: string): string {
 }
 
 /**
+ * True when the recorded sha and HEAD name the same revision — one is a prefix
+ * of the other, since `Verified:` may be short (7) or full (40).
+ */
+export function sameRevision(verified: string | null, head: string | null): boolean {
+	if (verified === null || verified === "") return false;
+	const recorded = verified.toLowerCase();
+	const current = (head ?? "").toLowerCase();
+	if (current === "") return false;
+	return current.startsWith(recorded) || recorded.startsWith(current);
+}
+
+/**
+ * The handoff's own paths: the snapshot file and its archives. A commit that
+ * touches only these cannot have changed the tree `Verified:` describes.
+ */
+const HANDOFF_OWN_PATH = /^\.development\/HANDOFF(?:\.md|-ARCHIVE-[^/]+\.md)$/;
+
+/**
+ * True when `path` is the handoff file or one of its archives.
+ *
+ * No trimming: a path is matched exactly as git reports it, so
+ * `.development/HANDOFF.md ` (trailing space) is a DIFFERENT file and stays
+ * foreign. Trimming would let an odd filename pass as the handoff's own (#395).
+ */
+export function isHandoffOwnPath(path: string): boolean {
+	return HANDOFF_OWN_PATH.test(path);
+}
+
+/**
+ * One commit in the `Verified..HEAD` range, with the paths it touched.
+ *
+ * `paths` comes from the commit's diff against its FIRST parent, with renames
+ * and copies contributing both sides, so a path here is a path the commit
+ * really changed.
+ */
+export interface RangeCommit {
+	sha: string;
+	paths: readonly string[];
+}
+
+/**
+ * The `Verified..HEAD` delta, resolved by the caller — git stays in `index.ts`.
+ *
+ * `ancestor: false` means `Verified:` is not an ancestor of HEAD: real drift
+ * (rebase, amend, another branch), never the handoff's own commit.
+ */
+export interface RangeDelta {
+	ancestor: boolean;
+	commits: readonly RangeCommit[];
+}
+
+/** One commit in the `Verified..HEAD` range, with its parents (a root has none). */
+export interface RevEntry {
+	sha: string;
+	parents: readonly string[];
+}
+
+/**
+ * Parse `git rev-list --parents <verified>..HEAD` (one commit per line: sha,
+ * then its parents). A line with no parents is a root commit — its diff has to
+ * come from `git diff-tree --root`, there is no `<sha>^` to compare against.
+ */
+export function parseRevList(raw: string): RevEntry[] {
+	const entries: RevEntry[] = [];
+	for (const line of raw.split(/\r?\n/)) {
+		const tokens = line.trim().split(/\s+/).filter((token) => token !== "");
+		if (tokens.length === 0) continue;
+		entries.push({ sha: tokens[0], parents: tokens.slice(1) });
+	}
+	return entries;
+}
+
+/** One `--name-status -z` record's status: a letter, plus a score for R/C. */
+const DIFF_STATUS = /^([ACDMRTUXB])([0-9]{0,3})$/;
+
+/** Statuses that carry TWO paths (the old name and the new one). */
+const TWO_PATH_STATUSES = new Set(["R", "C"]);
+
+/**
+ * The paths of a `git diff --name-status -M -z` record stream, or null when the
+ * output cannot be parsed.
+ *
+ * With `-z` every field is NUL-terminated, so a path may hold spaces (including
+ * a trailing one, which must survive verbatim), tabs or newlines: split on NUL
+ * and keep the tokens as-is — never `.trim()` a path, and never split on
+ * whitespace.
+ *
+ * A rename/copy record (`R100`, `C75`) yields BOTH paths: a foreign file
+ * renamed to `HANDOFF.md` touches a foreign path (the deletion), and so does the
+ * reverse. Matching only the destination would hide half the change.
+ *
+ * An empty stream is an empty diff (`[]`); a truncated or unknown record is
+ * null — the caller treats that as foreign, never as a vacuous match.
+ */
+export function parseDiffPaths(raw: string): string[] | null {
+	if (raw === "") return [];
+	const tokens = raw.split("\u0000");
+	// Every field ends with a NUL, so a well-formed stream's last token is the
+	// trailing empty one. A stream that does not end in NUL is truncated (a
+	// killed process, a short read): reject it outright rather than accept a
+	// final path the producer never terminated.
+	if (tokens[tokens.length - 1] !== "") return null;
+	tokens.pop();
+	const paths: string[] = [];
+	for (let i = 0; i < tokens.length; ) {
+		const status = DIFF_STATUS.exec(tokens[i]);
+		if (status === null) return null;
+		const wanted = TWO_PATH_STATUSES.has(status[1]) ? 2 : 1;
+		const record = tokens.slice(i + 1, i + 1 + wanted);
+		if (record.length !== wanted || record.some((path) => path === "")) return null;
+		paths.push(...record);
+		i += 1 + wanted;
+	}
+	return paths;
+}
+
+/**
+ * A commit whose every path belongs to the handoff itself.
+ *
+ * A commit with NO paths is NOT the handoff's own: an empty list is also what a
+ * failed or unparseable diff looks like, and a vacuous `every()` would report a
+ * merge that introduced a foreign file as handoff-only (#393 review). Only a
+ * non-empty, wholly handoff-owned list earns the match.
+ */
+export function isHandoffOwnCommit(commit: RangeCommit): boolean {
+	return commit.paths.length > 0 && commit.paths.every((path) => isHandoffOwnPath(path));
+}
+
+/**
  * The staleness verdict, compared against the cockpit's HEAD.
  *
- * - `current` — the recorded sha is a prefix of HEAD (or vice versa).
+ * - `current` — the recorded sha is a prefix of HEAD (or vice versa); or every
+ *   commit from `Verified:` to HEAD touches only the handoff itself (`delta`).
  * - `stale` — both known, and they disagree: §STATE may describe another tree.
+ *   Includes a `Verified:` that is not an ancestor of HEAD, and a range with any
+ *   commit outside the handoff (interleaved ranges are real drift). A commit
+ *   with no usable path list is drift too — see `isHandoffOwnCommit`.
  * - `unverified` — no `Verified:` line, or HEAD could not be read.
+ *
+ * `delta` is optional: without it the comparison is sha-only (today's behaviour
+ * for callers that never resolved the range). The self-reference problem it
+ * solves: `Verified: <sha>` can never equal the sha of the commit that writes it,
+ * so a handoff-only delta of one commit would otherwise print RECONCILE forever.
  */
-export function buildStaleness(verified: string | null, head: string | null): Staleness {
+export function buildStaleness(
+	verified: string | null,
+	head: string | null,
+	delta?: RangeDelta | null,
+): Staleness {
 	if (verified === null || verified === "") {
 		return {
 			status: "unverified",
@@ -162,8 +304,14 @@ export function buildStaleness(verified: string | null, head: string | null): St
 			line: `Handoff verified at ${shortSha(recorded)} but HEAD could not be read — verify §STATE against the repo before trusting it.`,
 		};
 	}
-	if (current.startsWith(recorded) || recorded.startsWith(current)) {
+	if (sameRevision(recorded, current)) {
 		return { status: "current", line: `Handoff verified at ${shortSha(recorded)} — matches HEAD.` };
+	}
+	if (delta && delta.ancestor && delta.commits.length > 0 && delta.commits.every(isHandoffOwnCommit)) {
+		return {
+			status: "current",
+			line: `Handoff verified at ${shortSha(recorded)} — matches HEAD (ignoring the handoff's own commit).`,
+		};
 	}
 	return {
 		status: "stale",
