@@ -238,8 +238,12 @@ const TWO_PATH_STATUSES = new Set(["R", "C"]);
 export function parseDiffPaths(raw: string): string[] | null {
 	if (raw === "") return [];
 	const tokens = raw.split("\u0000");
-	// Each record ends with a NUL, so the last token is a trailing empty one.
-	if (tokens[tokens.length - 1] === "") tokens.pop();
+	// Every field ends with a NUL, so a well-formed stream's last token is the
+	// trailing empty one. A stream that does not end in NUL is truncated (a
+	// killed process, a short read): reject it outright rather than accept a
+	// final path the producer never terminated.
+	if (tokens[tokens.length - 1] !== "") return null;
+	tokens.pop();
 	const paths: string[] = [];
 	for (let i = 0; i < tokens.length; ) {
 		const status = DIFF_STATUS.exec(tokens[i]);

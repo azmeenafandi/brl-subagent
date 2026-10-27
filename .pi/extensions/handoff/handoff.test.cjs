@@ -237,6 +237,8 @@ check("a rename yields BOTH paths", parseDiffPaths("R100\0src/runner.ts\0.develo
 check("a scored rename yields both paths", parseDiffPaths("R087\0a.md\0b.md\0"), ["a.md", "b.md"]);
 check("a copy yields both paths", parseDiffPaths("C75\0old.md\0new.md\0"), ["old.md", "new.md"]);
 check("an empty diff → no paths", parseDiffPaths(""), []);
+check("a truncated stream (no final NUL) → null, never a vacuous path list", parseDiffPaths("M\0.development/HANDOFF.md"), null);
+check("a truncated rename record → null", parseDiffPaths("R100\0a.md\0b.md"), null);
 check("a trailing space is part of the path, never trimmed", parseDiffPaths("A\0.development/HANDOFF.md \0"), [
 	".development/HANDOFF.md ",
 ]);
