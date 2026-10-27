@@ -24,7 +24,7 @@ Verified: f1ece22 (2026-10-25)
 - Friction: `pre-dispatch Jev skipped` ×3 today (incl. the #395 fix dispatch) — the ledger-only check cannot see a skipped dispatch; `jev-check --log` proposed.
 
 ### Next actions
-1. **Declare the sprint end and release v2.7.0** — cycle-end ritual first (Rule 11, trust metrics, env sweep, retros), then the release sequence.
+1. **Release v2.7.0 held until SAT 2026-10-31 / SUN 2026-11-01** (maintainer, 2026-10-27) — awaiting a possible pi release this week. If pi ships: run the **vendor-parity unit first** (release notes break-by-break, deps bump, API diff, suite, parity PR → dev), then the cycle-end ritual (Rule 11, trust metrics, env sweep, retros) and the release sequence. pi `latest` today = **1.4.0** (installed); dependabot's next visit is also 31 Oct, so the release lands after it.
 2. #364 stays held until pi's typebox pin moves.
 3. A `/reload` picks up the #395 handoff fix (the current session still runs the old hook).
 
