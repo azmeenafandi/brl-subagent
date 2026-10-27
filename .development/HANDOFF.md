@@ -8,12 +8,40 @@
 ## STATE
 Verified: f1ece22 (2026-10-25)
 
-- **dev** @ `f1ece22` — `git log -1 --oneline dev`. Only `dev` + `main`; the #379 worktree is merged and removed (`git worktree list`).
+- **dev** @ `2a0142b` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
 - **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
-- **Board:** **ZERO open issues** — `gh issue list`. **#364 (typebox 1.4.2) held** — the only open PR; no `ignore` by policy.
+- **Board:** **ZERO open issues** — `gh issue list`. **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
 - **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
-- **Cycle (post-v2.6.0): OPEN** — its work landed: test-suite audit (#368), P0s (#365 transport auto-retry, #366 Jev check), smell audit (#372), the sweep (#374, now complete). Remaining: the two handoff follow-ups. No release decision yet.
+- **Cycle (post-v2.6.0): OPEN — all work landed.** Test-suite audit (#368), P0s (#365 auto-retry, #366 Jev check), smell audit (#372), the sweep (#374), and the handoff follow-ups (#393 staleness ignore + conservative range judging, #394 extension typecheck — PR #395 `2a0142b`). **Only the release decision remains.**
+- **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
+- **Notification channel:** `brl-notifications-fa9@clawmail.me` (claimed) — autonomous-run decisions only; token in `~/.config/brl-notifications/clawmail.env` (never in the repo).
+- **Handoff mechanism:** LIVE (PR #353) — injection + staleness line + `/handoff` + `/handoff mark`; all five live checks passed (2026-10-17/18).
+
+### Since the last handover
+- #393/#394 merged (PR #395, two review rounds: merge/rename path holes + a truncated-stream gap, all fixed and mutation-proven). The handoff hook now ignores its own commits and judges ranges conservatively; extension code is typechecked.
+- Typebox 1.4.2 experiment: a no-op for our surface; held for host parity (record: `typebox-1.4.2-experiment-2026-10-27.md`).
+- Friction: `pre-dispatch Jev skipped` ×3 today (incl. the #395 fix dispatch) — the ledger-only check cannot see a skipped dispatch; `jev-check --log` proposed.
+
+### Next actions
+1. **Declare the sprint end and release v2.7.0** — cycle-end ritual first (Rule 11, trust metrics, env sweep, retros), then the release sequence.
+2. #364 stays held until pi's typebox pin moves.
+3. A `/reload` picks up the #395 handoff fix (the current session still runs the old hook).
+
+## Open items` → follow `## Pointers`.
+> §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
+> `Verified:` staleness line; the write contract is `.pi/skills/handoff/references/handoff.md`.
+> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
+
+## STATE
+Verified: f1ece22 (2026-10-25)
+
+- **dev** @ `2a0142b` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
+- **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
+- **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
+- **Board:** **ZERO open issues** — `gh issue list`. **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
+- **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
+- **Cycle (post-v2.6.0): OPEN — all work landed.** Test-suite audit (#368), P0s (#365 auto-retry, #366 Jev check), smell audit (#372), the sweep (#374), and the handoff follow-ups (#393 staleness ignore + conservative range judging, #394 extension typecheck — PR #395 `2a0142b`). **Only the release decision remains.**
 - **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
 - **Notification channel:** `brl-notifications-fa9@clawmail.me` (claimed) — autonomous-run decisions only; token in `~/.config/brl-notifications/clawmail.env` (never in the repo).
 - **Handoff mechanism:** LIVE (PR #353) — injection + staleness line + `/handoff` + `/handoff mark`; all five live checks passed (2026-10-17/18).
