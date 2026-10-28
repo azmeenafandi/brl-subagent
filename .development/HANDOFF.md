@@ -95,7 +95,10 @@ Verified: 10eca8b (2026-10-25)
 - **Dispatch conventions:** implementers run the configured default at `low`; reviewers pin a model
   explicitly at `medium` (never the config default). Skill workflows that need `delegate_task` run in
   the conductor — subagents have no dispatch.
-- **Reviews:** C1 adversarial (project-reviewer), C2 focused, C3 conductor read (Rule 10).
+- **Reviews:** C1 adversarial (project-reviewer), C2 focused, C3 conductor read (Rule 10). **Reviewer model:
+  `openrouter/meta/muse-spark-1.3-contributor`** (standing). The gpt-6-luna run was an old one-off trial and is
+  closed — after a compaction, check the last dispatch artifact (subagent log / ledger row) for the current
+  convention instead of trusting a summary's preference list.
 - **Gates:** `npx vitest run` · `npx tsc --noEmit` · `node scripts/docs-arch.mjs` ·
   `node scripts/docs-decisions.mjs` · `git diff --check`.
 - **Never `npm install` in the cockpit** — `worktree-prep.sh` is the only provisioning path (Rule 2).
