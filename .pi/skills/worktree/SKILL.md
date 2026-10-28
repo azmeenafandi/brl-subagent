@@ -322,7 +322,9 @@ mechanics, verdict format: `references/review-dispatch.md`.
   lockfiles match, isolated `npm ci` otherwise) and smoke-tests vitest, running
   the pre-flight itself. **Do not delegate until the smoke test passes.** Pass
   `--force-isolated` for a dependency-bump task (rule 2); `--include-dev-docs`
-  is redundant since #247.
+  is redundant since #247. The full vitest output is teed to
+  `.pi/worktree-prep-<worktree>-<UTC>.log` (gitignored, printed on failure) — a
+  flaky verdict always has an artifact to inspect.
 - **`worktree-cleanup.sh <path> [--branch <name>]`** — after the PR is merged OR
   closed. Removes the worktree; deletes the branch (auto-derived when `--branch`
   is omitted) from local and `origin` (never `dev`/`main`); then syncs the
