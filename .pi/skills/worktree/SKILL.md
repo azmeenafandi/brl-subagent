@@ -274,10 +274,15 @@ never re-type their logic by hand. Full design:
 4. DELEGATE     task with cwd = <path>; subagent commits, pushes, opens PR (body per the pr skill)
 5. REVIEW       adversarial review (REVIEW_*.md lives in worktree, gitignored)
 6. USER LOOP    review → revisions → approve
-7. MERGE        merge commit to `dev` (PRs target `dev`; `dev → main` is the
-                release-time merge commit. Never squash — per-issue commits
-                must survive so release notes can read them. Never merge a
-                task PR straight to `main`.) Then run
+7. MERGE        **run `merge-guard.sh <pr> <review-record.md>` first — it is the gate:**
+                (a) `gh pr checks` has no failing/pending check, (b) the record names
+                `#<pr>`, (c) its last `Verdict:` is approve/approve-with-nits, (d) the
+                PR's CURRENT head sha is in the record or a `conductor-verified:` line
+                says how the post-verdict commit was verified, (e) `jev-check --log` is
+                green. Any failure blocks and lists every reason. Then merge commit to
+                `dev` (PRs target `dev`; `dev → main` is the release-time merge commit.
+                Never squash — per-issue commits must survive so release notes can read
+                them. Never merge a task PR straight to `main`.) Then run
                 `codegraph-refresh.sh` — the canonical structural index
                 (cockpit/dev) is refreshed AT EVERY MERGE; explicit invocation
                 only, never a hook (#230). The refresh asserts coverage AND
@@ -358,6 +363,13 @@ mechanics, verdict format: `references/review-dispatch.md`.
   offenders print `date + dispatch + cell` and exit 1, and zero parsed rows is a
   hard error (never a silent pass); `--selftest` proves both paths with fixtures.
   CI runs `--selftest` and `--ledger` beside the test-budget guard.
+- **`merge-guard.sh <pr-number> <review-record-path>`** — the mechanical merge gate
+  (lifecycle step 7), wired to the `unreviewed final fix` friction entry (#395
+  `77338bf`): CI green, the record names the PR, its last `Verdict:` is
+  approve/approve-with-nits, the PR's **current head** is in the record (or a
+  `conductor-verified:` line documents the post-verdict commit), and `jev-check --log`
+  passes. Exit 1 lists every failed reason at once; run it from the cockpit.
+  `--selftest` covers the record parsing with temp fixtures.
 
 ## Notes
 
