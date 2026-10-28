@@ -8,10 +8,10 @@
 ## STATE
 Verified: f1ece22 (2026-10-25)
 
-- **dev** @ `2a0142b` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
+- **dev** @ `2ff396b` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
 - **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
-- **Board:** **ZERO open issues** — `gh issue list`. **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
+- **Board:** **#396 open** (dispatch: `get_subagent_result` should report a recovered run's retry lineage — enhancement, next cycle). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
 - **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
 - **Cycle (post-v2.6.0): OPEN — all work landed.** Test-suite audit (#368), P0s (#365 auto-retry, #366 Jev check), smell audit (#372), the sweep (#374), and the handoff follow-ups (#393 staleness ignore + conservative range judging, #394 extension typecheck — PR #395 `2a0142b`). **Only the release decision remains.**
 - **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
@@ -19,6 +19,7 @@ Verified: f1ece22 (2026-10-25)
 - **Handoff mechanism:** LIVE (PR #353) — injection + staleness line + `/handoff` + `/handoff mark`; all five live checks passed (2026-10-17/18).
 
 ### Since the last handover
+- Three recurrence-guards merged (PR #397): prep smoke log retained, `merge-guard.sh` (CI + verdict + reviewed-head/disposition + dispatch audit) is now the merge gate (SKILL.md step 7), `jev-check --log` audits dispatch payloads. #396 filed for the shipped `get_subagent_result` lineage fix.
 - #393/#394 merged (PR #395, two review rounds: merge/rename path holes + a truncated-stream gap, all fixed and mutation-proven). The handoff hook now ignores its own commits and judges ranges conservatively; extension code is typechecked.
 - Typebox 1.4.2 experiment: a no-op for our surface; held for host parity (record: `typebox-1.4.2-experiment-2026-10-27.md`).
 - Friction: `pre-dispatch Jev skipped` ×3 today (incl. the #395 fix dispatch) — the ledger-only check cannot see a skipped dispatch; `jev-check --log` proposed.
@@ -36,10 +37,10 @@ Verified: f1ece22 (2026-10-25)
 ## STATE
 Verified: f1ece22 (2026-10-25)
 
-- **dev** @ `2a0142b` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
+- **dev** @ `2ff396b` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
 - **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
-- **Board:** **ZERO open issues** — `gh issue list`. **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
+- **Board:** **#396 open** (dispatch: `get_subagent_result` should report a recovered run's retry lineage — enhancement, next cycle). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
 - **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
 - **Cycle (post-v2.6.0): OPEN — all work landed.** Test-suite audit (#368), P0s (#365 auto-retry, #366 Jev check), smell audit (#372), the sweep (#374), and the handoff follow-ups (#393 staleness ignore + conservative range judging, #394 extension typecheck — PR #395 `2a0142b`). **Only the release decision remains.**
 - **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
@@ -47,6 +48,7 @@ Verified: f1ece22 (2026-10-25)
 - **Handoff mechanism:** LIVE (PR #353) — injection + staleness line + `/handoff` + `/handoff mark`; all five live checks passed (2026-10-17/18).
 
 ### Since the last handover
+- Three recurrence-guards merged (PR #397): prep smoke log retained, `merge-guard.sh` (CI + verdict + reviewed-head/disposition + dispatch audit) is now the merge gate (SKILL.md step 7), `jev-check --log` audits dispatch payloads. #396 filed for the shipped `get_subagent_result` lineage fix.
 - #379 commits 3–4 merged (PRs #391/#392), each C2-reviewed (approve-with-nits with 1 informational; then approve, 0 findings).
 - **The sweep closed:** #379 and #374 closed; board empty. #365's auto-retry recovered 5 transport drops today (5/5 succeeded; 0 re-work).
 
@@ -73,6 +75,7 @@ Verified: 10eca8b (2026-10-25)
 - **Handoff mechanism:** LIVE (PR #353) — injection + staleness line + `/handoff` + `/handoff mark`; all five live checks passed (2026-10-17/18).
 
 ### Since the last handover
+- Three recurrence-guards merged (PR #397): prep smoke log retained, `merge-guard.sh` (CI + verdict + reviewed-head/disposition + dispatch audit) is now the merge gate (SKILL.md step 7), `jev-check --log` audits dispatch payloads. #396 filed for the shipped `get_subagent_result` lineage fix.
 - Test-suite audit (#368/PR #369): the CI budget guard; prune zero + one pin.
 - #365 transport auto-retry (PR #370) and #366 the mechanical Jev check (PR #371) merged.
 - Smell audit (#372/PR #373): no write-time coach — the spend became the sweep (#374) and the vocabulary/guide + prose guard (#375/PR #382).
