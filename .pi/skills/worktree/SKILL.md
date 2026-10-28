@@ -242,7 +242,7 @@ never re-type their logic by hand. Full design:
 22. **Thinking-level calibration (Rule 22 — advisory, Jev).** Before writing a spec or
     dispatch, classify the task **blind** (task text only) with the Jev classifier and
     record the result in the spec and the dispatch:
-    `jev: <level> (<conf>) · risk <C1|C2|C3> · worktree <y|n>`. Deviations **≥2
+    `jev: <level> (<conf>) · <C1|C2|C3> · worktree <y|n>`. Deviations **≥2
     levels**, and **any level below Jev on a review**, carry a one-line reason. Clamps:
     artifact-producing dispatches floor at `low`; reviews floor at `medium`. If
     `codemode`/Jev is unavailable, record `jev: unavailable` and proceed — never block
@@ -258,6 +258,10 @@ never re-type their logic by hand. Full design:
     carries neither a confidence nor a gap marker — **a bare level is a finding**. CI runs
     both beside the test-budget guard; a review brief that omits the jev-line check is
     itself a process gap (`references/review-dispatch.md`).
+    **The dispatch itself is audited too:** `jev-check.mjs --log` reads the local subagent log
+    and fails every `Background agent spawned` task dated on/after 2026-10-28 whose payload has
+    no valid line — the ledger cannot see a skip because its rows are written afterwards. It is
+    conductor/merge-time only (the log is local, not CI-visible) and `merge-guard.sh` runs it.
 
 ## Lifecycle
 
@@ -361,8 +365,14 @@ mechanics, verdict format: `references/review-dispatch.md`.
   is rejected, exit 1 — the skipped form); `--ledger [path]` audits the calibration
   log — rows dated on/after 2026-10-12 need a confidence or an explicit gap marker,
   offenders print `date + dispatch + cell` and exit 1, and zero parsed rows is a
-  hard error (never a silent pass); `--selftest` proves both paths with fixtures.
-  CI runs `--selftest` and `--ledger` beside the test-budget guard.
+  hard error (never a silent pass); `--log [path] [--since YYYY-MM-DD]` audits the
+  **dispatch artifact** in `.pi/subagent-logs/brl-subagent.log` — every
+  `Background agent spawned` task dated on/after 2026-10-28 must carry a valid Rule 22
+  line, offenders print `timestamp + task head + reason` and exit 1, zero parsed
+  dispatch events is exit 2. `--log` is conductor/merge-time (the log is local and
+  gitignored, so it is NOT CI-visible; `--since` re-audits legacy dispatches).
+  `--selftest` proves every path with fixtures. CI runs `--selftest` and `--ledger`
+  beside the test-budget guard.
 - **`merge-guard.sh <pr-number> <review-record-path>`** — the mechanical merge gate
   (lifecycle step 7), wired to the `unreviewed final fix` friction entry (#395
   `77338bf`): CI green, the record names the PR, its last `Verdict:` is

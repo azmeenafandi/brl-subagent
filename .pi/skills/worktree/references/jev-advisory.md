@@ -4,8 +4,11 @@
 **Jev** classifier (TypeSafe System One) and record the result in the spec/dispatch:
 
 ```
-jev: medium (0.72) · risk C2 · worktree y
+jev: medium (0.72) · C2 · worktree y
 ```
+
+The form is fixed: `<level> (<conf>) · <Cx> · worktree <y|n>`. (`· risk C2 ·` is the old
+hand-written shape — the audit parses the canonical one, and `--line` prints it.)
 
 ## How
 
@@ -84,6 +87,37 @@ node .pi/skills/worktree/jev-check.mjs --ledger .development/investigations/jev-
 CI runs both (`--selftest` and `--ledger` on the tracked log) beside the test-budget guard, so a
 bare level cannot merge. **Historical rows are never edited** to satisfy the check: a genuine
 pre-query row stays bare, and the row is a record of the gap.
+
+## The dispatch audit — `--log` (the ledger's blind spot)
+
+The ledger is written **after** a dispatch closes, so it cannot see a skip: a bare level quoted in
+the dispatch becomes a tidy `(0.84)` row written afterwards and `--ledger` passes. The 2026-10-27
+recurrence (class occurrences #3–#5) proved it — the check had merged (#366) and the skips still
+went out. The artifact that *does* exist at dispatch time is the subagent log's spawn event: it
+carries the task payload verbatim.
+
+```bash
+node .pi/skills/worktree/jev-check.mjs --log                 # default: .pi/subagent-logs/brl-subagent.log
+node .pi/skills/worktree/jev-check.mjs --log --since 2026-10-25   # re-audit legacy dispatches
+```
+
+- Every `Background agent spawned` event dated **on/after `STRICT_DISPATCH_CUTOFF` (2026-10-28)**
+  must carry a valid line in `data.task`: `jev: <level> (<0.xx>) · C<1|2|3> · worktree <y|n>`. The
+  line is parsed and then validated by the same code `--line` uses (so a bad confidence or an
+  unknown level is a finding, not a pass).
+- Offenders print `timestamp`, the task head, and the reason (`missing Rule 22 line`, `bare level
+  without its classifier confidence`, …) and the check exits 1.
+- **Zero parsed dispatch events is a hard error (exit 2)** — an empty, rotated or wrong-path log
+  never reads as "all clean".
+- Pre-cutoff events are **grandfathered**: the log is a historical record and is never edited
+  (`--since` exists to audit a legacy window deliberately).
+- A quoted *template* (`jev: <level> (<conf>) · Cx · worktree y|n`) does not pass — placeholders
+  never validate, which is why the line must be pasted from `--line`.
+
+**This mode is conductor/merge-time, not CI.** The log lives under the local, gitignored `.pi/`,
+so CI cannot see it; `merge-guard.sh` runs `--log` as its check (e) at the merge point, and the
+conductor's own dispatch is in that log — the first dispatch after the cutoff is judged by the
+same gate as everyone else's.
 
 ## Input template — hazard-shaped, blind
 
