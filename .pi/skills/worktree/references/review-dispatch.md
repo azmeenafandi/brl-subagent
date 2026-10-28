@@ -48,10 +48,11 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   artifact) — a re-dispatch then starts with "read the banked file first".
 - Output your verdict in this exact format in your final response:
   verdict line (`approve` / `approve-with-nits` / `changes-requested`),
-  findings table (severity | `Smell` | file:line | one-liner) — see
-  *Findings by smell key* below, verified-OK list, and the efficacy
-  gauge: the count of smell findings, by key (the project-reviewer
-  preset's mirror check feeds it).
+  `Reviewed head: <sha>` (the commit you actually reviewed — `git -C <worktree>
+  rev-parse HEAD`, not the sha quoted in the dispatch), findings table
+  (severity | `Smell` | file:line | one-liner) — see *Findings by smell key*
+  below, verified-OK list, and the efficacy gauge: the count of smell
+  findings, by key (the project-reviewer preset's mirror check feeds it).
 - Gate A: verify stateful claims (teardown, races, git/fs behavior)
   empirically — scratch repos in /tmp, real commands — do not just read code.
 - Keep the verdict compact; the deep write-up lives in the final output only.
@@ -59,6 +60,62 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
 The conductor retrieves the final output (never sleep-waits — the user
 watches the monitor and pings when done), writes `REVIEW_PR*.md` in the
 worktree from the returned verdict, and presents it for the user loop.
+
+## The review record is a contract — it is merge-gated
+
+`merge-guard.sh <pr> <record>` (lifecycle step 7) reads the record with a script, so the
+record carries three machine-checked facts. Miss one and the gate blocks the merge:
+
+| Line | Required | Checked by |
+|---|---|---|
+| PR number | `#<pr>` somewhere in the record (title is fine) | (b) the guard |
+| `Verdict: approve` / `Verdict: approve-with-nits` | one **final** disposition line; `changes-requested` may not merge | (c) the guard |
+| `Reviewed head: <sha>` | the commit the verdict covers (`@ <sha>` in the title also counts; a >=7-char prefix of the head is accepted) | (d) the guard |
+
+Format the head line explicitly, e.g.
+
+```
+# REVIEW — PR #412 (`tooling/x`, "title") @ 4c1d9ab
+
+Reviewed head: 4c1d9ab2f1e0…
+
+Verdict: approve-with-nits
+```
+
+Rules the parser assumes:
+
+- The **last** `Verdict:` line is the disposition. Round-by-round narratives
+  (`## Round 1 — 3c5473c: changes-requested`) belong in the body; only the final line
+  starts with `Verdict:`. A line naming more than one verdict (an echoed template) is
+  read as **ambiguous** and blocks — state one disposition.
+- `approve-with-nits` is a mergeable verdict; `changes-requested` is not, and an
+  unrecognised/absent verdict is not either.
+- Markdown decoration is fine (`**Verdict: approve**`, `## Verdict:`, backticks).
+
+### `conductor-verified:` — the post-verdict commit
+
+If a commit lands **after** the verdict, the reviewed head no longer equals the PR head.
+The gate blocks that by default: a C2 change whose last commit never saw a reviewer is the
+`unreviewed final fix` friction entry (PR #395, 2026-10-27 — round 2 returned
+changes-requested, the two-line NUL-terminator fix went in as `77338bf`, the gates ran
+locally, and the PR merged with that commit unreviewed; the disposition was defensible but
+nothing but prose recorded it).
+
+Two legitimate exits, in order of preference:
+
+1. **Re-review the new head** and write its sha in `Reviewed head:`. This is the default.
+2. **Record the conductor verification** when a re-review is disproportionate (docs/nits, a
+   mechanically-proven guard, a trivial rebase): add a line the guard recognises —
+
+   ```
+   conductor-verified: 77338bf — two-line NUL guard + 2 regression tests; mutation fails both
+                       new tests; extension suite, tsc, full suite 90/1798 green; diff-check clean.
+   ```
+
+   Name what was run and what it produced (Rule 21), never just "verified". The marker clears
+   check (d) — it does **not** upgrade the verdict: a `changes-requested` record still blocks.
+
+A record `merge-guard.sh` refuses is not a merge candidate, however clean the diff reads.
 
 ## Findings by smell key
 

@@ -15,7 +15,15 @@
 #     --force-isolated overrides: always isolated (dependency-bump worktree).
 #   - sync-extension.sh: provisioned (gitignored — never materializes otherwise).
 #   - smoke test: vitest must run in the worktree before any subagent starts.
+#     The FULL vitest output is teed to `<repo-root>/.pi/worktree-prep-<worktree>-<UTC>.log`
+#     (gitignored) and the path is printed on failure — a flaky-failure verdict with no
+#     artifact is uninvestigable (friction log: prep-smoke-failure-without-evidence, 2026-10-10
+#     + recurrence on 2026-10-27).
 #   - pre-flight: check-repo.sh runs first — never provision from a broken source of truth.
+#
+# Test hook (never set in normal use): WORKTREE_PREP_SMOKE_FORCE_FAIL=1 replaces the smoke
+# command with a 4-line failing stub, so the failure path (log retention + message) can be
+# exercised on a healthy tree.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,7 +37,7 @@ while [[ $# -gt 0 ]]; do
         --repo-root) REPO_ROOT="$2"; shift 2 ;;
         --include-dev-docs) INCLUDE_DEV_DOCS=true; shift ;;
         --force-isolated) FORCE_ISOLATED=true; shift ;;
-        -h|--help) grep '^#' "$0" | head -22; exit 0 ;;
+        -h|--help) grep '^#' "$0" | head -26; exit 0 ;;
         *) WORKTREE_PATH="$1"; shift ;;
     esac
 done
@@ -128,12 +136,32 @@ if [[ "${INCLUDE_DEV_DOCS}" == "true" && -d "${REPO_ROOT}/.development" ]]; then
 fi
 
 # ── 4. Smoke test: vitest runs ───────────────────────────────────────────
+# The full output goes to a log under the repo root's .pi/ (gitignored) so a failure is
+# inspectable after the fact; the terminal still gets today's last lines. A verdict without
+# an artifact is what made the 2026-10-10 / 2026-10-27 flakes uninvestigable.
 echo ""
 echo "  Smoke test: running vitest in worktree..."
-if (cd "${WORKTREE_PATH}" && npx vitest run --reporter=dot 2>&1 | tail -3); then
-    echo "  Smoke test: OK — worktree is ready for delegation."
+LOG_DIR="${REPO_ROOT}/.pi"
+mkdir -p "${LOG_DIR}"
+WORKTREE_SLUG="$(printf '%s' "$(basename "${WORKTREE_PATH}")" | tr -c 'A-Za-z0-9._-' '-')"
+SMOKE_LOG="${LOG_DIR}/worktree-prep-${WORKTREE_SLUG}-$(date -u +%Y%m%dT%H%M%SZ).log"
+
+if [[ "${WORKTREE_PREP_SMOKE_FORCE_FAIL:-}" == "1" ]]; then
+    SMOKE_CMD=(sh -c 'echo "vitest: forced failure (WORKTREE_PREP_SMOKE_FORCE_FAIL=1)"; echo "line 2"; echo "line 3"; echo "line 4"; exit 1')
 else
-    echo "  SMOKE TEST FAILED — worktree provisioned but tests do not run."
+    SMOKE_CMD=(npx vitest run --reporter=dot)
+fi
+
+set +e
+( cd "${WORKTREE_PATH}" && "${SMOKE_CMD[@]}" ) 2>&1 | tee "${SMOKE_LOG}" | tail -3
+SMOKE_RC="${PIPESTATUS[0]}"
+set -e
+
+if [[ "${SMOKE_RC}" -eq 0 ]]; then
+    echo "  Smoke test: OK — worktree is ready for delegation. (full log: ${SMOKE_LOG})"
+else
+    echo "  SMOKE TEST FAILED — worktree provisioned but tests do not run (exit ${SMOKE_RC})."
+    echo "  full log: ${SMOKE_LOG}"
     echo "  Investigate before delegating; do NOT send a subagent into a broken worktree."
     exit 1
 fi

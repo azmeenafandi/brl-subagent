@@ -16,7 +16,18 @@
 //                               STRICT_JEV_CUTOFF must carry a confidence `(0.xx)` in the Jev cell OR
 //                               an explicit gap marker. Offenders print date + dispatch + cell, exit 1.
 //                               Zero parsed rows is a hard error (exit 2) — never a silent pass.
-//   --selftest                  fixture proof of both modes (CI-wired), deterministic, no network.
+//   --log [path] [--since D]    audit the DISPATCH ARTIFACT: the JSONL subagent log (default
+//                               below) records every `Background agent spawned` event with its
+//                               task payload. Every such event dated on/after STRICT_DISPATCH_CUTOFF
+//                               (or `--since`) must carry a valid Rule-22 line in `data.task`;
+//                               offenders print timestamp + task head + reason, exit 1. Zero parsed
+//                               dispatch events is a hard error (exit 2) — never a silent pass.
+//                               This is the check `--ledger` structurally cannot be: ledger rows are
+//                               written AFTER a dispatch closes, so a skipped pre-dispatch query still
+//                               passes the ledger. CONDUCTOR/MERGE-TIME ONLY — the log lives under the
+//                               local `.pi/` (gitignored), so it is NOT CI-visible; CI keeps running
+//                               `--selftest` + `--ledger`.
+//   --selftest                  fixture proof of every mode (CI-wired), deterministic, no network.
 //
 // CI:
 //   node .pi/skills/worktree/jev-check.mjs --selftest
@@ -35,6 +46,22 @@ const RISKS = ["C1", "C2", "C3"];
 
 /** Strict Jev was ratified on this date; rows from here on must carry a confidence. */
 const STRICT_JEV_CUTOFF = "2026-10-12";
+
+/**
+ * The dispatch-artifact cutoff (2026-10-28). Dispatch events before this date are grandfathered —
+ * the log is a historical record and is never edited. From here on every `Background agent spawned`
+ * task must carry the Rule-22 line: the 2026-10-13 / 2026-10-23 / 2026-10-27 skips all show up here.
+ */
+const STRICT_DISPATCH_CUTOFF = "2026-10-28";
+
+/** The exact form a dispatch task must carry (Rule 22) — quoted verbatim in every failure. */
+const REQUIRED_DISPATCH_FORM = "jev: <level> (<0.xx>) · C<1|2|3> · worktree <y|n>";
+
+/** Default subagent log (repo-root relative; run from the repo/cockpit root). */
+const DEFAULT_SUBAGENT_LOG = ".pi/subagent-logs/brl-subagent.log";
+
+/** The one spawn event that carries the dispatch payload (the `warn` variants duplicate it). */
+const DISPATCH_EVENT_MESSAGE = "Background agent spawned";
 
 /** Explicit "the classifier did not run" markers — recorded, not silent (Rule 22). */
 const GAP_MARKERS = ["unavailable", "not classified", "n/a", "ritual gap"];
@@ -229,6 +256,173 @@ function reportLedger(path) {
 	return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Mode 3 — the dispatch-artifact audit (`--log`).
+//
+// The ledger audit sees the RECORD of a dispatch; this mode sees the DISPATCH itself. Ledger rows
+// are appended when a run closes, so a skipped pre-dispatch query (`jev: medium · C2`, no confidence)
+// still produces a passing `(0.84)` row written afterwards. The subagent log's
+// `Background agent spawned` event carries the task payload verbatim — that is the artifact a skip
+// leaves behind, and it is checkable.
+// ---------------------------------------------------------------------------
+
+/**
+ * The Rule-22 line as it appears inside a dispatch task:
+ * `jev: medium (0.84) · C2 · worktree y`. Placeholders (`jev: <level> (<conf>) …`) never match,
+ * which is what keeps a quoted template from passing the audit.
+ */
+const DISPATCH_LINE_PATTERN = /jev:\s*([A-Za-z]+)\s*(?:\(\s*([0-9.]+)\s*\))?\s*·\s*(C\d)\s*·\s*worktree\s*([A-Za-z]+)/i;
+
+/** A line that at least TRIED to be a dispatch line — used to tell "bare level" from "missing". */
+const BARE_DISPATCH_LINE_PATTERN = /jev:\s*(?:off|minimal|low|medium|high|xhigh)\b/i;
+
+/** Keep offender output to one readable line per dispatch. */
+function clip(text, limit = 110) {
+	const flat = text.replace(/\s+/g, " ").trim();
+	return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
+}
+
+/**
+ * Audit one task payload for the Rule 22 line. Returns `{ok: true}` when a valid line is found,
+ * otherwise `{ok: false, reason}` naming what is wrong. A bare level is reported as such — it is
+ * the exact form the skips took, and the reason must not be a generic "invalid".
+ */
+function auditDispatchTask(task) {
+	const attempts = [];
+	for (const raw of String(task).split(/\r?\n/)) {
+		if (!/jev:/i.test(raw)) continue;
+		const line = raw.trim();
+		const match = DISPATCH_LINE_PATTERN.exec(line);
+		if (match === null) {
+			const reason = BARE_DISPATCH_LINE_PATTERN.test(line)
+				? `bare level without its classifier confidence — ${clip(line)}`
+				: `unparseable Rule 22 line — ${clip(line)}`;
+			attempts.push(reason);
+			continue;
+		}
+		const [, level, conf, risk, worktree] = match;
+		if (conf === undefined) {
+			// The regex accepts a confidence-less line so the reason can name it precisely — this
+			// is the skip's exact form, and "invalid" would hide the fix.
+			attempts.push(`bare level without its classifier confidence — ${clip(line)}`);
+			continue;
+		}
+		try {
+			formatDispatchLine({ level, conf, risk, worktree });
+			return { ok: true };
+		} catch (error) {
+			attempts.push(`${describe(error)} — ${clip(line)}`);
+		}
+	}
+	if (attempts.length === 0) return { ok: false, reason: `missing Rule 22 line (${REQUIRED_DISPATCH_FORM})` };
+	return { ok: false, reason: attempts[0] };
+}
+
+/**
+ * Parse JSONL dispatch events. Reads the message field (not a substring) and keeps only the
+ * `Background agent spawned` event — the `warn` variants repeat the same task and would double-count.
+ * A spawn event with no task payload is a finding, not a skip: it cannot be audited.
+ */
+function parseDispatchEvents(text) {
+	const events = [];
+	const unparsed = [];
+	text.split(/\r?\n/).forEach((raw, index) => {
+		const line = raw.trim();
+		if (line === "") return;
+		let entry;
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			unparsed.push(index + 1);
+			return;
+		}
+		if (entry === null || typeof entry !== "object" || entry.message !== DISPATCH_EVENT_MESSAGE) return;
+		const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : "";
+		const task = entry.data?.task;
+		events.push({
+			lineNumber: index + 1,
+			timestamp,
+			task: typeof task === "string" ? task : null,
+		});
+	});
+	return { events, unparsed };
+}
+
+/**
+ * `YYYY-MM-DD` part of an ISO timestamp. A missing/unrecognisable timestamp sorts LAST (it can
+ * never be grandfathered by the cutoff) — an undateable dispatch is audited, not skipped.
+ */
+function eventDate(timestamp) {
+	if (DATE_PATTERN.test(timestamp.slice(0, 10))) return timestamp.slice(0, 10);
+	return "9999-12-31";
+}
+
+/**
+ * Audit the dispatch log text. Throws StructuralError when no dispatch event parses at all: an
+ * empty/rotated/unreadable log must fail loudly, never read as "every dispatch was clean".
+ */
+function analyzeDispatchLog(text, cutoff) {
+	const { events, unparsed } = parseDispatchEvents(text);
+	if (events.length === 0) {
+		throw new StructuralError(
+			`no dispatch events parsed — expected JSONL lines with message "${DISPATCH_EVENT_MESSAGE}"; ` +
+				"refusing to pass an empty/unreadable log (is this the subagent log path?)",
+		);
+	}
+	const relevant = events.filter((event) => eventDate(event.timestamp) >= cutoff);
+	const offenders = [];
+	for (const event of relevant) {
+		const audit = event.task === null ? { ok: false, reason: "spawn event carries no task payload — cannot audit" } : auditDispatchTask(event.task);
+		if (!audit.ok) offenders.push({ ...event, reason: audit.reason });
+	}
+	return { events, relevant, offenders, unparsed };
+}
+
+/** Validate a `--since` value: a plain date, comparable to the ISO timestamps' date prefix. */
+function normalizeSince(value) {
+	if (typeof value !== "string" || !DATE_PATTERN.test(value)) {
+		throw new StructuralError(`--since needs a YYYY-MM-DD date (got ${JSON.stringify(value)})`);
+	}
+	return value;
+}
+
+function reportDispatchLog(path, since) {
+	const cutoff = since === undefined ? STRICT_DISPATCH_CUTOFF : normalizeSince(since);
+	let text;
+	try {
+		text = readFileSync(path, "utf8");
+	} catch (error) {
+		throw new StructuralError(`${path}: cannot read the subagent log (${describe(error)})`);
+	}
+	const { events, relevant, offenders, unparsed } = analyzeDispatchLog(text, cutoff);
+
+	if (unparsed.length > 0) {
+		console.error(`jev-check: ${path}: ${unparsed.length} unparsed JSONL line(s) skipped (line ${unparsed[0]}…).`);
+	}
+
+	if (offenders.length > 0) {
+		console.error(
+			`jev-check: ${offenders.length} of ${relevant.length} dispatch(es) dated >= ${cutoff} carry no valid Rule 22 line:`,
+		);
+		for (const event of offenders) {
+			console.error(`  ${event.timestamp || `(no timestamp, line ${event.lineNumber})`}  ${clip(event.task ?? "", 90)}  — ${event.reason}`);
+		}
+		console.error(`jev-check: every dispatch task must carry exactly: ${REQUIRED_DISPATCH_FORM}`);
+		console.error(
+			"jev-check: format it with `--line '<classifier-json>'` and paste it into the dispatch task " +
+				"(a bare level without its confidence is the skip — #366, friction log 2026-10-13/23/27).",
+		);
+		return 1;
+	}
+
+	const skipped = events.length - relevant.length;
+	console.log(
+		`jev-check: ${events.length} dispatch event(s) parsed, ${relevant.length} since ${cutoff} — ` +
+			`every task carries a valid Rule 22 line${skipped > 0 ? ` (${skipped} pre-cutoff grandfathered)` : ""}.`,
+	);
+	return 0;
+}
+
 function reportLine(raw) {
 	if (raw.trim() === "") {
 		throw new StructuralError(
@@ -260,6 +454,21 @@ function ledgerFixture(...rows) {
 
 function ledgerRow(date, dispatch, jevCell) {
 	return `| ${date} | \`${dispatch}\` | impl | ${jevCell} | medium | 0 | fixture | pending |`;
+}
+
+/** One JSONL `Background agent spawned` event, shaped like the real subagent log. */
+function dispatchEvent(timestamp, task, message = DISPATCH_EVENT_MESSAGE) {
+	return JSON.stringify({
+		timestamp,
+		level: "info",
+		prefix: "brl-subagent",
+		message,
+		data: { agentId: "fixture-agent", task, model: "fixture/model" },
+	});
+}
+
+function dispatchLogFixture(...lines) {
+	return lines.join("\n");
 }
 
 function assertEqual(actual, expected, label) {
@@ -424,6 +633,147 @@ const SELFTEST_CASES = [
 			);
 		},
 	},
+
+	// --- --log --------------------------------------------------------------
+	{
+		name: "--log: a MISSING Rule 22 line is an offender (timestamp + task head + reason)",
+		run() {
+			const {
+				events,
+				relevant,
+				offenders,
+			} = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-10-28T09:00:00.000Z", "Implement the thing. No classification here.")),
+				STRICT_DISPATCH_CUTOFF,
+			);
+			assertEqual(events.length, 1, "dispatch events");
+			assertEqual(relevant.length, 1, "events since the cutoff");
+			assertEqual(offenders.length, 1, "offenders");
+			assertEqual(offenders[0].timestamp, "2026-10-28T09:00:00.000Z", "offender timestamp");
+			if (!/missing Rule 22 line/.test(offenders[0].reason)) {
+				throw new Error(`offender reason: expected /missing Rule 22 line/, got ${JSON.stringify(offenders[0].reason)}`);
+			}
+		},
+	},
+	{
+		name: "--log: a BARE LEVEL (no confidence) is an offender, named as such",
+		run() {
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(
+					dispatchEvent("2026-10-28T09:00:00.000Z", "Task text.\n\njev: medium · C2 · worktree y"),
+				),
+				STRICT_DISPATCH_CUTOFF,
+			);
+			assertEqual(offenders.length, 1, "offenders");
+			if (!/bare level without its classifier confidence/.test(offenders[0].reason)) {
+				throw new Error(`offender reason: expected /bare level/, got ${JSON.stringify(offenders[0].reason)}`);
+			}
+		},
+	},
+	{
+		name: "--log: a valid Rule 22 line passes",
+		run() {
+			const { relevant, offenders } = analyzeDispatchLog(
+				dispatchLogFixture(
+					dispatchEvent(
+						"2026-10-28T09:00:00.000Z",
+						"Task text.\n\njev: medium (0.88) · C2 · worktree y (classifier says n — reason recorded).",
+					),
+				),
+				STRICT_DISPATCH_CUTOFF,
+			);
+			assertEqual(relevant.length, 1, "events since the cutoff");
+			assertEqual(offenders.length, 0, "offenders");
+		},
+	},
+	{
+		name: "--log: a pre-cutoff dispatch is grandfathered (the log is never edited)",
+		run() {
+			const { events, relevant, offenders } = analyzeDispatchLog(
+				dispatchLogFixture(
+					dispatchEvent("2026-10-27T11:10:25.194Z", "Legacy dispatch — no jev line."),
+					dispatchEvent("2026-10-28T09:00:00.000Z", "New dispatch.\n\njev: low (0.71) · C3 · worktree n"),
+				),
+				STRICT_DISPATCH_CUTOFF,
+			);
+			assertEqual(events.length, 2, "dispatch events");
+			assertEqual(relevant.length, 1, "events since the cutoff");
+			assertEqual(offenders.length, 0, "offenders");
+		},
+	},
+	{
+		name: `--log: the cutoff (${STRICT_DISPATCH_CUTOFF}) is inclusive`,
+		run() {
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent(`${STRICT_DISPATCH_CUTOFF}T00:00:00.000Z`, "Edge dispatch — no jev line.")),
+				STRICT_DISPATCH_CUTOFF,
+			);
+			assertEqual(offenders.length, 1, "offenders");
+		},
+	},
+	{
+		name: "--log: zero dispatch events is an error, never a silent pass",
+		run() {
+			assertRejects(() => analyzeDispatchLog("", STRICT_DISPATCH_CUTOFF), /no dispatch events parsed/, "empty log");
+			assertRejects(
+				() => analyzeDispatchLog('{"message":"Session started"}\nnot json\n', STRICT_DISPATCH_CUTOFF),
+				/no dispatch events parsed/,
+				"no spawn events",
+			);
+		},
+	},
+	{
+		name: "--log: the `warn` spawn variant does not double-count the same dispatch",
+		run() {
+			const task = "Task text.\n\njev: medium (0.88) · C2 · worktree y";
+			const { events, offenders } = analyzeDispatchLog(
+				dispatchLogFixture(
+					dispatchEvent("2026-10-28T09:00:00.000Z", task, "Background agent spawned with approvalMode 'writes' — auto-approving (no dialog in background)"),
+					dispatchEvent("2026-10-28T09:00:00.000Z", task),
+				),
+				STRICT_DISPATCH_CUTOFF,
+			);
+			assertEqual(events.length, 1, "dispatch events");
+			assertEqual(offenders.length, 0, "offenders");
+		},
+	},
+	{
+		name: "--log: a quoted PLACEHOLDER template is not a real line (offender)",
+		run() {
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(
+					dispatchEvent("2026-10-28T09:00:00.000Z", "Carry exactly `jev: <level> (<conf>) · Cx · worktree y|n` in the task."),
+				),
+				STRICT_DISPATCH_CUTOFF,
+			);
+			assertEqual(offenders.length, 1, "offenders");
+		},
+	},
+	{
+		name: "--log: an out-of-range confidence is an offender (validated by --line's own parser)",
+		run() {
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-10-28T09:00:00.000Z", "Task.\n\njev: medium (1.4) · C2 · worktree y")),
+				STRICT_DISPATCH_CUTOFF,
+			);
+			assertEqual(offenders.length, 1, "offenders");
+			if (!/invalid "conf"/.test(offenders[0].reason)) {
+				throw new Error(`offender reason: expected /invalid "conf"/, got ${JSON.stringify(offenders[0].reason)}`);
+			}
+		},
+	},
+	{
+		name: "--log: a spawn event with no task payload is a finding, not a skip",
+		run() {
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(
+					JSON.stringify({ timestamp: "2026-10-28T09:00:00.000Z", message: DISPATCH_EVENT_MESSAGE, data: { agentId: "x" } }),
+				),
+				STRICT_DISPATCH_CUTOFF,
+			);
+			assertEqual(offenders.length, 1, "offenders");
+		},
+	},
 ];
 
 function runSelftest() {
@@ -448,13 +798,38 @@ function runSelftest() {
 // ---------------------------------------------------------------------------
 
 const USAGE = [
-	"usage: jev-check.mjs --line '<classifier-json>' | --ledger [path] | --selftest",
+	"usage: jev-check.mjs --line '<classifier-json>' | --ledger [path] | --log [path] [--since YYYY-MM-DD] | --selftest",
 	"",
 	"  --line '<json>'   validate {level, conf, risk, worktree} and print",
 	'                    `jev: <level> (<conf>) · <Cx> · worktree <y|n>`',
 	`  --ledger [path]   audit the Jev calibration log (default: ${DEFAULT_LEDGER})`,
-	"  --selftest        fixture proof of both modes (CI-wired)",
+	`  --log [path]      audit dispatch payloads in the subagent log (default: ${DEFAULT_SUBAGENT_LOG});`,
+	`                    every \`${DISPATCH_EVENT_MESSAGE}\` event dated >= ${STRICT_DISPATCH_CUTOFF}`,
+	"                    must carry a valid Rule 22 line. Conductor/merge-time (local log).",
+	"  --since YYYY-MM-DD  with --log: override the dispatch cutoff (legacy audit)",
+	"  --selftest        fixture proof of every mode (CI-wired)",
 ].join("\n");
+
+/** Parse `--log [path] [--since YYYY-MM-DD]` in either order; a second path is a usage error. */
+function parseLogArgs(args) {
+	let path;
+	let since;
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (arg === "--since") {
+			if (index + 1 >= args.length) throw new StructuralError("--since needs a YYYY-MM-DD date");
+			since = args[index + 1];
+			index += 1;
+		} else if (arg.startsWith("--")) {
+			throw new StructuralError(`unknown --log option ${JSON.stringify(arg)}\n\n${USAGE}`);
+		} else if (path === undefined) {
+			path = arg;
+		} else {
+			throw new StructuralError(`--log takes at most one path (got ${JSON.stringify(path)} and ${JSON.stringify(arg)})`);
+		}
+	}
+	return { path: path ?? DEFAULT_SUBAGENT_LOG, since };
+}
 
 function main(argv) {
 	const [mode, ...rest] = argv;
@@ -463,6 +838,10 @@ function main(argv) {
 		if (mode === "--ledger") {
 			if (rest.length > 1) throw new StructuralError(`--ledger takes at most one path (got ${rest.length})`);
 			return reportLedger(rest[0] ?? DEFAULT_LEDGER);
+		}
+		if (mode === "--log") {
+			const { path, since } = parseLogArgs(rest);
+			return reportDispatchLog(path, since);
 		}
 		if (mode === "--selftest") return runSelftest();
 		if (mode === "--help" || mode === "-h") {

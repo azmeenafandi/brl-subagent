@@ -242,7 +242,7 @@ never re-type their logic by hand. Full design:
 22. **Thinking-level calibration (Rule 22 — advisory, Jev).** Before writing a spec or
     dispatch, classify the task **blind** (task text only) with the Jev classifier and
     record the result in the spec and the dispatch:
-    `jev: <level> (<conf>) · risk <C1|C2|C3> · worktree <y|n>`. Deviations **≥2
+    `jev: <level> (<conf>) · <C1|C2|C3> · worktree <y|n>`. Deviations **≥2
     levels**, and **any level below Jev on a review**, carry a one-line reason. Clamps:
     artifact-producing dispatches floor at `low`; reviews floor at `medium`. If
     `codemode`/Jev is unavailable, record `jev: unavailable` and proceed — never block
@@ -258,6 +258,10 @@ never re-type their logic by hand. Full design:
     carries neither a confidence nor a gap marker — **a bare level is a finding**. CI runs
     both beside the test-budget guard; a review brief that omits the jev-line check is
     itself a process gap (`references/review-dispatch.md`).
+    **The dispatch itself is audited too:** `jev-check.mjs --log` reads the local subagent log
+    and fails every `Background agent spawned` task dated on/after 2026-10-28 whose payload has
+    no valid line — the ledger cannot see a skip because its rows are written afterwards. It is
+    conductor/merge-time only (the log is local, not CI-visible) and `merge-guard.sh` runs it.
 
 ## Lifecycle
 
@@ -274,10 +278,15 @@ never re-type their logic by hand. Full design:
 4. DELEGATE     task with cwd = <path>; subagent commits, pushes, opens PR (body per the pr skill)
 5. REVIEW       adversarial review (REVIEW_*.md lives in worktree, gitignored)
 6. USER LOOP    review → revisions → approve
-7. MERGE        merge commit to `dev` (PRs target `dev`; `dev → main` is the
-                release-time merge commit. Never squash — per-issue commits
-                must survive so release notes can read them. Never merge a
-                task PR straight to `main`.) Then run
+7. MERGE        **run `merge-guard.sh <pr> <review-record.md>` first — it is the gate:**
+                (a) `gh pr checks` has no failing/pending check, (b) the record names
+                `#<pr>`, (c) its last `Verdict:` is approve/approve-with-nits, (d) the
+                PR's CURRENT head sha is in the record or a `conductor-verified:` line
+                says how the post-verdict commit was verified, (e) `jev-check --log` is
+                green. Any failure blocks and lists every reason. Then merge commit to
+                `dev` (PRs target `dev`; `dev → main` is the release-time merge commit.
+                Never squash — per-issue commits must survive so release notes can read
+                them. Never merge a task PR straight to `main`.) Then run
                 `codegraph-refresh.sh` — the canonical structural index
                 (cockpit/dev) is refreshed AT EVERY MERGE; explicit invocation
                 only, never a hook (#230). The refresh asserts coverage AND
@@ -322,7 +331,9 @@ mechanics, verdict format: `references/review-dispatch.md`.
   lockfiles match, isolated `npm ci` otherwise) and smoke-tests vitest, running
   the pre-flight itself. **Do not delegate until the smoke test passes.** Pass
   `--force-isolated` for a dependency-bump task (rule 2); `--include-dev-docs`
-  is redundant since #247.
+  is redundant since #247. The full vitest output is teed to
+  `.pi/worktree-prep-<worktree>-<UTC>.log` (gitignored, printed on failure) — a
+  flaky verdict always has an artifact to inspect.
 - **`worktree-cleanup.sh <path> [--branch <name>]`** — after the PR is merged OR
   closed. Removes the worktree; deletes the branch (auto-derived when `--branch`
   is omitted) from local and `origin` (never `dev`/`main`); then syncs the
@@ -354,8 +365,21 @@ mechanics, verdict format: `references/review-dispatch.md`.
   is rejected, exit 1 — the skipped form); `--ledger [path]` audits the calibration
   log — rows dated on/after 2026-10-12 need a confidence or an explicit gap marker,
   offenders print `date + dispatch + cell` and exit 1, and zero parsed rows is a
-  hard error (never a silent pass); `--selftest` proves both paths with fixtures.
-  CI runs `--selftest` and `--ledger` beside the test-budget guard.
+  hard error (never a silent pass); `--log [path] [--since YYYY-MM-DD]` audits the
+  **dispatch artifact** in `.pi/subagent-logs/brl-subagent.log` — every
+  `Background agent spawned` task dated on/after 2026-10-28 must carry a valid Rule 22
+  line, offenders print `timestamp + task head + reason` and exit 1, zero parsed
+  dispatch events is exit 2. `--log` is conductor/merge-time (the log is local and
+  gitignored, so it is NOT CI-visible; `--since` re-audits legacy dispatches).
+  `--selftest` proves every path with fixtures. CI runs `--selftest` and `--ledger`
+  beside the test-budget guard.
+- **`merge-guard.sh <pr-number> <review-record-path>`** — the mechanical merge gate
+  (lifecycle step 7), wired to the `unreviewed final fix` friction entry (#395
+  `77338bf`): CI green, the record names the PR, its last `Verdict:` is
+  approve/approve-with-nits, the PR's **current head** is in the record (or a
+  `conductor-verified:` line documents the post-verdict commit), and `jev-check --log`
+  passes. Exit 1 lists every failed reason at once; run it from the cockpit.
+  `--selftest` covers the record parsing with temp fixtures.
 
 ## Notes
 
