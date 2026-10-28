@@ -103,7 +103,8 @@ Verified: 10eca8b (2026-10-25)
   closed — after a compaction, check the last dispatch artifact (subagent log / ledger row) for the current
   convention instead of trusting a summary's preference list.
 - **Gates:** `npx vitest run` · `npx tsc --noEmit` · `node scripts/docs-arch.mjs` ·
-  `node scripts/docs-decisions.mjs` · `git diff --check`.
+  `node scripts/docs-decisions.mjs` · `git diff --check`. **Merge step 7: run `codegraph-refresh.sh`** — the
+  structural index is a gate (never automatic; `codegraph-check.py` must pass: coverage + built from HEAD).
 - **Never `npm install` in the cockpit** — `worktree-prep.sh` is the only provisioning path (Rule 2).
 - **Jev (Rule 22):** strict — any deviation carries a one-line reason; calibration log at
   `.development/investigations/jev-calibration-log.md`.
