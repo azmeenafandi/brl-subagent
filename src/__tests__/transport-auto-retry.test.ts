@@ -88,6 +88,7 @@ vi.mock("@earendil-works/pi-tui", () => {
 import * as eventBus from "../event-bus";
 import initExtension from "../index";
 import { __resetTerminalClaims } from "../notify-completion";
+import { backgroundSessionDir } from "../session-manager";
 import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "../transport-retry";
 import { CUSTOM_ENTRY_TYPES } from "../types";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
@@ -588,9 +589,10 @@ describe("deliverCompletionAlert — transport auto-retry (issue #365)", () => {
 // and re-wrote what attempt 1 had already done. The fix prefixes the CHILD'S
 // PROMPT with a bounded inspect-first block. Two invariants are pinned here:
 //
-//   1. the preamble is present (marker, source id, bank path) and names NO
-//      transcript path (the output file is a start/steering log, not the
-//      conversation; the session dir is pruned on settle — see #404);
+//   1. the preamble is present (marker, source id, bank path), names no
+//      start/steering stub, and names the retained session directory ONLY when
+//      it exists (issue #404) — with an ABSOLUTE path, since the retry's child
+//      can run in a different cwd;
 //   2. the preamble is prompt-only — `resolveSubagentParams` and the H1
 //      pre-task validation still see the RECORDED ORIGINAL task, so routing,
 //      thinking level, model and capability warnings cannot be steered by text
@@ -615,31 +617,68 @@ function retrySpawn(): Record<string, unknown> {
 }
 
 describe("transport auto-retry — resume preamble (issue #401)", () => {
-	it("prepends a bounded resume preamble and names no transcript path", async () => {
+	it("names the retained session only when it exists, with an absolute path", async () => {
 		vi.useFakeTimers();
 		try {
-			registerSettledAgent(SOURCE_ID, "Connection error.");
-			persistRunEntry(settledRun({ label: "review-docs" }));
+			const sourceId = "9a1e2d3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+			const sessionDir = backgroundSessionDir(sourceId);
+			fs.mkdirSync(sessionDir, { recursive: true });
+			fs.writeFileSync(path.join(sessionDir, "2026-10-31T10-00-00.jsonl"), "{}\n");
+			try {
+				registerSettledAgent(sourceId, "Connection error.");
+				persistRunEntry(settledRun({ id: sourceId, label: "review-docs" }));
 
-			await settle(SOURCE_ID);
+				await settle(sourceId);
+
+				const task = String(retrySpawn().task);
+				// Marker + attempts, and the source the preamble is about.
+				expect(task).toContain(`[attempt 2 — the previous attempt (${sourceId}) died on a transport failure.`);
+				// The surviving-directory guard, in runtime vocabulary (no internal
+				// process terms leak into a prompt a user can see).
+				expect(task).toContain("This directory may already contain its uncommitted edits.");
+				// The inspect-first instruction: working tree, recent history, bank.
+				expect(task).toContain("git status --short");
+				expect(task).toContain("git log --oneline -8");
+				expect(task).toContain("/tmp/brl-review-docs-bank.md");
+				// The retained session, ABSOLUTE (the child's cwd can differ).
+				const pointerLine = task.split("\n").find((line) => line.includes("retained at"));
+				expect(pointerLine).toBeDefined();
+				const pointerPath = pointerLine!.match(/retained at (\S+)/)?.[1];
+				expect(pointerPath).toBe(path.resolve(sessionDir));
+				expect(pointerPath && path.isAbsolute(pointerPath)).toBe(true);
+				expect(task).toContain("newest .jsonl inside");
+				// Closing instruction.
+				expect(task).toContain("Continue from what exists; do NOT redo committed, written, or banked work.");
+				// A pointer at .pi/output/agent-*.jsonl would be a dead end (a
+				// start/steering log, not the conversation).
+				expect(task).not.toContain(".pi/output");
+				// Bounded: including the marker and the original task.
+				expect(task.split("\n").length).toBeLessThanOrEqual(7);
+			} finally {
+				fs.rmSync(sessionDir, { recursive: true, force: true });
+			}
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("omits the session pointer when no retained session exists", async () => {
+		vi.useFakeTimers();
+		try {
+			const sourceId = "9a1e2d3f-4a5b-4c6d-8e9f-0a1b2c3d4e60";
+			const sessionDir = backgroundSessionDir(sourceId);
+			fs.rmSync(sessionDir, { recursive: true, force: true });
+			registerSettledAgent(sourceId, "Connection error.");
+			persistRunEntry(settledRun({ id: sourceId, label: "review-docs" }));
+
+			await settle(sourceId);
 
 			const task = String(retrySpawn().task);
-			// Marker + attempts, and the source the preamble is about.
-			expect(task).toContain("[attempt 2 — the previous attempt (bg-365-source) died on a transport failure.");
-			// The surviving-directory guard, in runtime vocabulary (no internal
-			// process terms leak into a prompt a user can see).
-			expect(task).toContain("This directory may already contain its uncommitted edits.");
-			// The inspect-first instruction: working tree, recent history, bank.
-			expect(task).toContain("git status --short");
-			expect(task).toContain("git log --oneline -8");
-			expect(task).toContain("/tmp/brl-review-docs-bank.md");
-			// Closing instruction.
-			expect(task).toContain("Continue from what exists; do NOT redo committed, written, or banked work.");
-			// A pointer at .pi/output/agent-*.jsonl would be a dead end (a
-			// start/steering log, not the conversation) — the bank is the artifact.
-			expect(task).not.toContain("transcript");
-			expect(task).not.toContain(".pi/output");
-			// Bounded: five lines max including the marker and the original task.
+			expect(task).toContain(`/tmp/brl-review-docs-bank.md`);
+			expect(task).not.toContain(path.resolve(sessionDir));
+			expect(task).not.toContain("retained at");
+			expect(task).not.toContain("newest .jsonl inside");
 			expect(task.split("\n").length).toBeLessThanOrEqual(6);
 		} finally {
 			vi.clearAllTimers();

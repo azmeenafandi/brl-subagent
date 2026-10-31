@@ -36,7 +36,7 @@ Interruption evidence = registry entries carrying `interruptedAt`, agent records
 - **Rolling:** append a snapshot after each observed interruption AND at least weekly (next due ~2026-10-18), same enumeration command.
 - **Extension policy (2026-10-14):** if a snapshot still reads zero interruptions across all projects, EXTEND the window rather than conclude (zero observed = insufficient exposure); record the new due date here.
 - **Assess per interruption:** would resume have avoided meaningful re-work? (task size, how far the run got, whether a cold re-dispatch repeated it). Record the judgment — this is the "re-work meaningful" criterion.
-- **Debris check:** session dirs left behind by terminal/abandoned runs (should be none; U2 prunes), registry entries for settled runs (should be retired).
+- **Debris check:** session dirs left behind by terminal/abandoned runs (should be none; U2 prunes), registry entries for settled runs (should be retired). **Retention exception (issue #404):** up to 5 marked `.transport-retained` dirs / 50 MB / 14 days are by design — these are the auto-retry's input, not debris. Interrupted-run dirs are also unmarked and deliberately kept. Judge a stray dir by the marker file, not by a non-empty sessions count.
 
 ## Gate status
 
@@ -60,6 +60,11 @@ Enumeration re-run (same command, all projects):
 | `ephemeral-rp` | 11 (terminal) | 0 | 0 | 0 |
 
 **`interruptedAt` entries anywhere: 0.** No debris; the stores stay bounded.
+
+**Retention exception (issue #404):** the store's bounded state now includes up to 5 marked
+`.transport-retained` session dirs (50 MB / 14 days caps), retained for the transport auto-retry's resume
+preamble. Those are not debris; the settle-time sweep reclaims them. Interrupted-run dirs remain unmarked
+and exempt. The "should be none" reading above applies to unmarked dirs of settled runs.
 
 **But the transport class is now measured, not assumed** — the durable counter is the extension log line
 `Background run settled — transport auto-retry scheduled` (exact-message parse; a raw `grep` overcounts because

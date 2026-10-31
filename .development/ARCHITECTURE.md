@@ -135,6 +135,7 @@ no gate, hook, or artifact for it.
 | Where | What |
 |---|---|
 | `.pi/subagents/` | run records — the source for history, the monitor, and retries (owner-only permissions) |
+| `.pi/subagents/sessions/<id>/` | per-run SDK session dirs — live during a run; pruned at terminal settle, except interrupted runs and (bounded) transport-failed attempt-1 runs retained for the auto-retry (#404) |
 | `.pi/output/agent-<id>.jsonl` | transcripts — every run, enabling the drill-in view and the steering audit trail |
 | `.pi/subagent-logs/` | leveled structured logs with rotation |
 | session state (`state.ts`) | concurrency counters, config, preset/template caches — session-bound, version-validated on restore |
@@ -166,6 +167,13 @@ Each rule below is enforced in code and pinned by tests; the pointer is where it
   (#401).
 - **Cost governance** — a session cost gate runs in the shared prelude before every spawn family, with the
   per-task estimate fallback (#R5, #201).
+- **Bounded session retention** — a background run's SDK session dir is pruned at the single terminal
+  settle choke point. Two classes are kept: interrupted runs (marked by the boot scan, unmarked on disk,
+  kept until resolved) and the auto-retry class — failed attempt-1 background run with `exit_error` + a
+  transport signature. The latter is marked `.transport-retained` and bounded by a settle-time sweep over
+  marked dirs only (5 dirs / 50 MB / 14 days, marker mtime as recency; the current settle's dir is exempt
+  for one cycle). The prune/mark decision precedes the run-record write and everything above it is pure;
+  a failed marker write falls back to pruning (#404).
 - **Concurrency queue** — four priority tiers govern slot acquisition for foreground and multi-mode runs;
   background fan-out deliberately runs outside the slot queue (#114, #198).
 
