@@ -1,89 +1,93 @@
-# Issue #412 — implementation brief (rev. 1): the three decision rules + the dispatch pre-flight
+# Issue #412 — implementation brief (rev. 2, post-critique)
 
-Draft plan, 2026-10-31 (absorbs #407). HEAD `4f95228`. Every claim below was checked against the tree; the
-seam list is the part the last brief got wrong, so it leads.
+HEAD `7495756` (critic audited). Verdict `needs-work` — 2 blockers + 10 majors incorporated. Absorbs #407.
+**Order: the pre-flight mechanism first (Part 2), the three rules second (Part 1).** One PR.
 
-## Goal
+## Part 2 — the dispatch pre-flight (built first)
 
-Encode three conductor decision rules where a check can see them, and make the Rule 22 dispatch line **mechanical**
-at `delegate_task` time — without rejecting a user's dispatch that has no Jev line (the rule is ours, the tool ships
-to users). `AGENT.md` is untouched: it documents product behavior, not our process.
+### 2a. Rule 2's mechanism — the auto-switch (blocker 1: it was absent)
 
-## Verified seams
+At `src/index.ts:2763` (`params.background ??= useBackground;`), after template resolution (`:2622`) and `retryRunId`
+(`:2639`), before `preflightCheck` (`:2884`) / `validatePreTask` (`:2891`):
 
-- `validatePreTask` — `src/validate.ts`; called at `src/index.ts:2891` (single dispatch) and `src/prelude.ts:194`
-  (batch gate 3b). Capability/tool validation, not the dispatch line.
-- `src/preflight.ts:155 preflightCheck(cwd)` — environment only (pi binary, cwd readable, temp writable). Not the seam.
-- Project-local config is **directories only**: `src/presets.ts:138`, `src/templates.ts:227` (`.pi/brl-subagent/…`);
-  there is **no config-flag mechanism** (`ls src/` — no `config.ts`; `grep -rn "brl-subagent/" src/*.ts` → presets,
-  templates, tui text only).
-- `force` (capability override) — `src/schema.ts:200`.
-- The cycle-end ritual (`references/sprint-end-ritual.md`) does **not** instruct proposing a version; the drift was
-  the ritual *record row* we wrote at close (`FRICTION_LOG.md:178`) + the `§STATE` wording.
-- PR body requirements — `.pi/skills/pr/SKILL.md`; review-record requirements —
-  `.pi/skills/worktree/references/review-dispatch.md`.
-- Local templates/presets are **gitignored** — a change to `.pi/brl-subagent/templates/plan-critique.md` cannot ride
-  the PR; it is a post-merge local-config step.
+- Capture `explicitBackground = params.background` **before** defaulting.
+- When `effectiveThinking ∈ {high, xhigh}` **and** `explicitBackground === false` **and** `params.timeout` is set
+  explicitly: set `params.background = true`, **drop the explicit timeout** (the background 30-min
+  `DEFAULT_BACKGROUND_DEADLINE_MS` applies), and emit a notice stating the true tool fact.
+- `force: true` (existing field) keeps it foreground and logs "foreground forced"; no new reason channel —
+  the dispatch text is the reason (`force` has no reason field; do not widen it, ADR 0007's text stays true).
+- **Ordering invariant**: the switch must be applied **before** the retry snapshot (`src/params.ts:106`,
+  `snapshotOriginalParams`) so `originalParams.background === true` and `transport-retry.ts:89` still classifies
+  the run as background.
+- Tests: (i) `thinkingLevel:"high", background:false, timeout:900000` → background spawn + notice, timeout = default;
+  (ii) the same with `force:true` → foreground; (iii) `medium` stays untouched; (iv) the ordering test: the snapshot
+  captures `background:true`, and the auto-retry predicate accepts the run.
 
-## Part 1 — the three rules (docs, no code)
+### 2b. The Jev line check
 
-1. `.pi/skills/worktree/SKILL.md` gains **"Conductor decision rules"**:
-   - **No unprompted releases** — the ritual ends at "cycle complete — ready when you say"; never name a version or
-     a date. The release decision is the maintainer's.
-   - **No deadline ⇒ durable path** — a missing deadline means verify first, act once: background, banked,
-     commit-per-step; foreground only for a probe whose answer the next step needs inline; never a short foreground
-     timeout on a `high`/`xhigh` run.
-   - **"Done" carries its falsifier** — every completion names the check that would prove it wrong, or says
-     "unverified".
-2. `references/sprint-end-ritual.md`: a cycle close never proposes a version; the record row says "release: the
-   maintainer's call".
-3. `.pi/skills/pr/SKILL.md`: the PR body carries a `Verification:` line (command + observed result); the review
-   cites it.
-4. `references/review-dispatch.md`: the reviewer writes `REVIEW_<issue>.md` (gitignored) **before** its final
-   message; the conductor transcribes/verifies the verdict. (Both silent-completion incidents of 2026-10-31.)
-5. `CONTRIBUTING.md`: **AGENT.md is shipped product behavior; our build/release discipline lives in `.pi/skills/**`
+- **Opt-in (blocker 2)**: a `package.json` field — `"brl-subagent": { "requireJevLine": true }` — read from
+  `<cwd>/package.json`. Tracked, so it exists in every worktree (worktrees share the repo's package.json).
+  Absent → no check (users unaffected). Add the field to this repo's `package.json` in the PR.
+- **Check site**: inside `validatePreTask` (`src/validate.ts:293`) so all seven pre-spawn sites inherit it
+  (`index.ts:2891` directly; `prelude.ts:235` inside `runPreTaskValidation`; the batch paths via
+  `validateUnitPrePass` at `index.ts:574/962/1360` and `mode-prologue.ts:144`). Blocking error, not a warning.
+  Coverage falsifier: a test that fails when a new pre-spawn path bypasses the check.
+- **Parser**: new `src/dispatch-line.ts` (first line `// Purpose: …`, architecture-doc pin) — accepts the full line
+  and the sanctioned escape `jev: unavailable` (`SKILL.md:263`). **Conformance test**: golden vectors shelled against
+  `node .pi/skills/worktree/jev-check.mjs --line '<json>'` must agree accept/reject; mutate one pattern → fail
+  (`.pi/` is not shipped, so no import is possible).
+- **Bypass**: `noJev: Type.Optional(Type.String({ minLength: 1 }))` in `src/schema.ts` — `true` and `""` are refused
+  at the schema layer; a handler test proves the logged bypass. Separate from `force`.
+- **Foreground**: covered (the 15-min kill was a foreground dispatch). The merge audit stays background-only
+  (`--log`) — deliberate, stated as a non-goal; foreground strictness is dispatch-time only.
+- **Retries**: a retry inherits the original's line; no re-check; pin one test.
+- **Provenance (Part 2c — the Goodhart fix)**: `jev-check --line '<json>' --label <name>` appends
+  `<iso>\t<label>\t<line>` to `.pi/jev-lines.log` (gitignored); `--log --require-provenance` fails a logged dispatch
+  line with no provenance entry, since the cutoff recorded in that file's header. `merge-guard` check (e) calls the
+  action with `--require-provenance`. Historical dispatches exempt (cutoff = this PR's merge). Update `--selftest`.
+
+### 2d. ADR 0018 (new; never edit 0007/0001)
+
+`.development/decisions/0018-dispatch-preflight.md` — the hard pre-spawn reject, the opt-in field, the `force`/`noJev`
+escapes, and rule 2's auto-switch. Run `npm run docs:decisions`, commit the regenerated index + README block.
+
+## Part 1 — the three rules (docs, after Part 2)
+
+1. `SKILL.md`: a **"Conductor decision rules"** section (no unprompted releases; no deadline ⇒ durable path; "done"
+   carries its falsifier) **and** amend the Rule 22 text (`:257-264`): advisory for the *level*, **blocking on
+   presence** when the project opts in; `jev: unavailable` is an accepted form.
+2. `references/sprint-end-ritual.md`: **add** a record-row contract (there is none today) — the close row says
+   "release: the maintainer's call", never a version.
+3. `.pi/skills/handoff/references/handoff.md` (the durable write contract): the no-unprompted-release sentence —
+   not only in `HANDOFF.md`, which is injected/regenerated.
+4. `.pi/skills/pr/SKILL.md` §2: name the format `Verification: <command> → <observed result>` (extend the existing
+   evidence section; do not add a second contract).
+5. `references/review-dispatch.md`: the reviewer writes `/tmp/REVIEW_<n>.md` via bash **before** its final message
+   (read-only reviewer, /tmp is scratch — the bank precedent); the conductor copies it into the worktree.
+6. `CONTRIBUTING.md`: **AGENT.md is shipped product behavior; our build/release discipline lives in `.pi/skills/**`
    and `.development/`.**
-
-## Part 2 — the dispatch pre-flight (absorbs #407)
-
-Design:
-
-- **New `src/dispatch-line.ts`**: the canonical line (`jev: <level> (<0.xx>) · C<1|2|3> · worktree <y|n>`) as a
-  parser + a `checkDispatchLine(task): {ok, line?}` — one place, unit-tested.
-- **Opt-in for this repository only**, so users are unaffected. Recommended: a tracked marker file **`.pi/jev-required`**
-  (exists → enforce; absent → no check). Alternatives for the critic: a gitignored marker under `.pi/brl-subagent/`,
-  or a `package.json` field. Verify which `.pi` paths are tracked vs ignored.
-- **Check site**: every `delegate_task` path, after template rendering and **before any spawn** — the single
-  handler (near `index.ts:2891`), the batch prelude (`prelude.ts:194`), and any path that writes a run record.
-  Rejection names the exact form and `jev-check --line '<json>'`.
-- **Bypass**: `noJev?: string` (a **non-empty reason**, not a boolean) on the schema; logged; a bare `true` is
-  rejected. Same spirit as `force`, separate field (different meaning).
-- **Templates**: the local `plan-critique` (and any other local template we dispatch) gains a `${jev}` slot; the
-  conductor passes `params.jev`. Builtin templates must **never** gain the slot (users' renders would break). The
-  local-template edit is post-merge, gitignored.
-- **Tests** (each fails before / passes after): marker present + no line → refused, zero spawns, message names the
-  form; valid line → unaffected; `noJev: "reason"` → allowed + logged, `noJev: true` → refused; marker absent →
-  no rejection (user path); the template-render path covered; the three 2026-10-31 task shapes as fixtures.
-
-## Non-goals
-
-- No change to `jev-check --log`, the classifier, or the ledger format (#407 non-goals stand).
-- No resumable timeouts (separate follow-up).
-- No `AGENT.md` edits.
 
 ## Stages
 
-1. Worktree `../brl-subagent-412-…` on `feat/412-…` (`worktree-prep.sh`).
-2. Red tests → code → docs → `npm run typecheck && npx vitest run` + `node scripts/docs-arch.mjs && node scripts/docs-decisions.mjs`.
-3. C1 adversarial review; merge gate.
-4. Post-merge local config: add `${jev}` to `.pi/brl-subagent/templates/plan-critique.md` + create `.pi/jev-required`
-   (if that is the chosen marker) — a local step, recorded in STATE.
+1. Worktree `../brl-subagent-412-…` on `feat/412-…`; re-stamp all line refs at the worktree's base sha.
+2. Red tests → 2a → 2b/2c → ADR 0018 → Part 1 docs → gates: `npm run typecheck`; the **CI reporter form**
+   (`npx vitest run --reporter=json --outputFile=vitest-report.json`) + `node scripts/check-readme-test-count.mjs`
+   + `node scripts/check-test-budget.mjs`; `npm run docs:arch` (write mode) + commit `.development/ARCHITECTURE.md`.
+3. C1 adversarial review; merge gate — the **conductor** runs `codegraph-refresh.sh` + `codegraph-check.py` at the
+   merged head (a new `src/` module makes this mandatory).
+4. Post-merge local config: the `${jev}` slot in **all five** local templates (`adversarial-review`, `debug-task`,
+   `design-proposal`, `focused-review`, `plan-critique`); the reviewer-preset wording for the `/tmp` record.
+   (An unfilled slot hard-errors at resolution — the desired fail-fast.)
 
-## Open questions the critic should settle
+## Non-goals
 
-- Marker mechanism (tracked `.pi/jev-required` vs gitignored local marker vs `package.json` field) — which actually
-  works with the repo's tracked/ignored split?
-- Is the batch prelude (`prelude.ts:194`) really on every mode's path, or only chain/parallel/graph? Where is the
-  single foreground path's pre-spawn seam?
-- Does foreground need the check at all (are the three 2026-10-31 misses in the audited log as background spawns)?
-- Is `noJev: string` the right shape, or does `force` already carry a reason field we should reuse?
+- `--log` stays background-only (foreground is dispatch-time only).
+- No classifier or ledger-format change; no resumable timeouts.
+
+## Resolved by the critique (do not re-open)
+
+- ADR 0018: **yes**; run `docs:decisions`, commit the README decisions block.
+- `noJev: true` / `""`: refused **at the schema layer** (`minLength: 1`), plus a handler-level test.
+- `jev: unavailable`: **accepted** as a line (SKILL's sanctioned escape).
+- The auto-switch must be recorded **before** the retry snapshot; ordering test name it.
+- Foreground is covered at dispatch; the merge audit stays background-only.
