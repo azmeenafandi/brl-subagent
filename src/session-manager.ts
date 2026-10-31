@@ -1,7 +1,7 @@
 // Purpose: Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths.
 import { randomUUID } from 'crypto';
 import { basename, dirname, join, resolve } from 'path';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, RecoveryMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
 import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
@@ -15,7 +15,7 @@ import { getCurrentBranch, getHeadState, restoreHead, createWorkBranch, captureD
 import type { HeadState } from './git';
 import { normalizeTimeout, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
 import { currentProcessOwner } from './recovery';
-import { persistRunRecord } from './run-registry';
+import { persistRunRecord, listInflightRuns, type InflightRun } from './run-registry';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -255,6 +255,447 @@ export function listPersistedAgents(): BackgroundAgent[] {
     if (record) records.push(record);
   }
   return records;
+}
+
+
+// ---------------------------------------------------------------------------
+// Issue #396: retry lineage for `get_subagent_result`.
+//
+// A run id is not necessarily the id of the run that actually finished it: the
+// background transport auto-retry (#365) re-dispatches the same logical task as
+// `attempt: 2`, and a manual `retryRunId` can mint attempt 3 whose `resumeOf`
+// points at attempt 2. The durable agent store therefore has to be consulted
+// before "not found" or a terminal source status is reported as final.
+//
+// Two properties drive the implementation:
+//
+//   1. ID FORM — notices render the first 8 hex characters of a UUID, while
+//      `resumeOf`/record ids are full UUIDs. Resolve a unique 8-hex prefix
+//      before either the record read or the lineage match; an ambiguous prefix
+//      is refused explicitly rather than guessed.
+//   2. COST — the agent store is large and never pruned (measured: 1151
+//      records / 116 MB; a full parse is ~0.5 s per tool call). This reader
+//      stats first, keeps only records inside a 7-day mtime window, caps the
+//      number read at `RETRY_SCAN_CAP`, and extracts just the identity fields
+//      with a top-level scanner instead of JSON-parsing result.messages.
+//
+// Deliberately NOT `listPersistedAgents()`: that sweep full-parses every
+// record, and its "production has no caller" comment documents that decision.
+// ---------------------------------------------------------------------------
+
+/** How far back the lineage reader looks (mtime of the record file). */
+const RETRY_SCAN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Upper bound on records read for one lineage answer. */
+const RETRY_SCAN_CAP = 200;
+
+/** The short form rendered by notices: the first 8 hex characters of a UUID. */
+const SHORT_AGENT_ID_RE = /^[0-9a-f]{8}$/i;
+
+const RETRY_IDENTITY_KEYS: ReadonlySet<string> = new Set([
+  'id',
+  'dispatchId',
+  'resumeOf',
+  'attempt',
+  'status',
+  'startedAt',
+]);
+
+const AGENT_STATUSES: ReadonlySet<string> = new Set([
+  'pending',
+  'running',
+  'steered',
+  'completed',
+  'failed',
+  'stopped',
+]);
+
+/** One record's lineage-relevant fields — never its result/transcript. */
+export interface RetryRecordIdentity {
+  id: string;
+  dispatchId?: string;
+  resumeOf?: string;
+  attempt: number;
+  status: AgentStatus;
+  /** Epoch milliseconds (agent records store ms; registry ISO is normalised). */
+  startedAt: number;
+}
+
+export type AgentIdResolution =
+  | { kind: 'resolved'; id: string }
+  | { kind: 'ambiguous'; matches: string[] }
+  | { kind: 'unresolved'; id: string };
+
+export interface RetryLineage {
+  id: string;
+  /** Every known attempt of the logical dispatch, ordered by attempt/start. */
+  family: RetryRecordIdentity[];
+  /** The requested id's own record, when it exists. */
+  found: RetryRecordIdentity | null;
+  /** The newest attempt in the family. */
+  latest: RetryRecordIdentity | null;
+  /** Registry entries that name the id itself or a member of its family. */
+  inflight: InflightRun[];
+}
+
+function isSafeAgentId(id: string): boolean {
+  try {
+    assertSafeAgentId(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function isTerminalAgentStatus(status: AgentStatus): boolean {
+  return status === 'completed' || status === 'failed' || status === 'stopped';
+}
+
+function isAgentStatus(value: unknown): value is AgentStatus {
+  return typeof value === 'string' && AGENT_STATUSES.has(value);
+}
+
+function normalizeStartedAt(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function safeListInflightRuns(): InflightRun[] {
+  try {
+    return listInflightRuns();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve the tool's id parameter before any record lookup. A full UUID passes
+ * through; a unique 8-hex prefix resolves to its full id; multiple matches are
+ * returned as `ambiguous` (fail closed); anything else stays unresolved and
+ * follows today's not-found path.
+ *
+ * Candidates come from live records, the agent store's file names, and the
+ * in-flight registry — every surface on which an id can currently exist.
+ */
+export function resolveAgentId(raw: string): AgentIdResolution {
+  if (isSafeAgentId(raw)) return { kind: 'resolved', id: raw };
+  if (!SHORT_AGENT_ID_RE.test(raw)) return { kind: 'unresolved', id: raw };
+
+  const needle = raw.toLowerCase();
+  const matches = new Set<string>();
+
+  for (const id of agents.keys()) {
+    if (id.toLowerCase().startsWith(needle)) matches.add(id);
+  }
+
+  try {
+    if (existsSync(STORAGE_DIR)) {
+      for (const file of readdirSync(STORAGE_DIR)) {
+        if (!file.endsWith('.json')) continue;
+        const id = file.slice(0, -'.json'.length);
+        if (isSafeAgentId(id) && id.toLowerCase().startsWith(needle)) matches.add(id);
+      }
+    }
+  } catch {
+    // An unreadable store is not a prefix match — fall through to the registry.
+  }
+
+  for (const run of safeListInflightRuns()) {
+    if (run.id.toLowerCase().startsWith(needle)) matches.add(run.id);
+  }
+
+  const ids = [...matches].sort();
+  if (ids.length === 1) return { kind: 'resolved', id: ids[0] };
+  if (ids.length > 1) return { kind: 'ambiguous', matches: ids };
+  return { kind: 'unresolved', id: raw };
+}
+
+// ---------------------------------------------------------------------------
+// Shallow JSON identity reader
+// ---------------------------------------------------------------------------
+
+type JsonScalar = string | number | boolean | null;
+
+function skipWhitespace(text: string, index: number): number {
+  let i = index;
+  while (i < text.length && /\s/.test(text[i])) i += 1;
+  return i;
+}
+
+/** Read one JSON string starting at `start` (which must be `"`). */
+function readJsonStringAt(text: string, start: number): { value: string; end: number } {
+  let i = start + 1;
+  let escaped = false;
+  while (i < text.length) {
+    const char = text[i];
+    if (escaped) {
+      escaped = false;
+      i += 1;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      i += 1;
+      continue;
+    }
+    if (char === '"') {
+      const raw = text.slice(start, i + 1);
+      i += 1;
+      try {
+        return { value: JSON.parse(raw) as string, end: i };
+      } catch {
+        return { value: raw.slice(1, -1), end: i };
+      }
+    }
+    i += 1;
+  }
+  return { value: text.slice(start + 1), end: i };
+}
+
+/** Skip one JSON value (scalar, object, or array) without parsing it. */
+function skipJsonValue(text: string, start: number): number {
+  if (text[start] === '"') return readJsonStringAt(text, start).end;
+  if (text[start] === '{' || text[start] === '[') {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i += 1) {
+      const char = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') inString = true;
+      else if (char === '{' || char === '[') depth += 1;
+      else if (char === '}' || char === ']') {
+        depth -= 1;
+        if (depth === 0) return i + 1;
+      }
+    }
+    return text.length;
+  }
+  let i = start;
+  while (i < text.length && text[i] !== ',' && text[i] !== '}') i += 1;
+  return i;
+}
+
+function parseJsonScalar(raw: string): JsonScalar {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (raw === 'null') return null;
+  if (raw !== '' && Number.isFinite(Number(raw))) return Number(raw);
+  return raw;
+}
+
+/**
+ * Extract top-level scalar fields from a record's JSON text. Nested values
+ * (notably `result.messages` and `finalOutput`) are skipped, not parsed — the
+ * reader only ever touches the six identity keys.
+ */
+function scanTopLevelScalars(text: string, wanted: ReadonlySet<string>): Map<string, JsonScalar> {
+  const out = new Map<string, JsonScalar>();
+  let i = skipWhitespace(text, 0);
+  if (text[i] !== '{') return out;
+  i += 1;
+
+  while (i < text.length) {
+    i = skipWhitespace(text, i);
+    if (i >= text.length) break;
+    const char = text[i];
+    if (char === '}') break;
+    if (char === ',') {
+      i += 1;
+      continue;
+    }
+    if (char !== '"') {
+      // Malformed object: make progress rather than looping forever.
+      i += 1;
+      continue;
+    }
+
+    const keyStart = i;
+    const key = readJsonStringAt(text, i);
+    i = skipWhitespace(text, key.end);
+    if (text[i] !== ':') break;
+    i = skipWhitespace(text, i + 1);
+    if (i >= text.length) break;
+
+    if (wanted.has(key.value)) {
+      const valueStart = text[i];
+      if (valueStart === '"') {
+        const value = readJsonStringAt(text, i);
+        out.set(key.value, value.value);
+        i = value.end;
+      } else if (valueStart === '{' || valueStart === '[') {
+        i = skipJsonValue(text, i);
+      } else {
+        let end = i;
+        while (end < text.length && text[end] !== ',' && text[end] !== '}') end += 1;
+        out.set(key.value, parseJsonScalar(text.slice(i, end).trim()));
+        i = end;
+      }
+    } else {
+      i = skipJsonValue(text, i);
+    }
+
+    if (i <= keyStart) break;
+  }
+
+  return out;
+}
+
+/** Read one agent record's identity fields; null when malformed/incomplete. */
+function readAgentIdentity(file: string): RetryRecordIdentity | null {
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  const fields = scanTopLevelScalars(text, RETRY_IDENTITY_KEYS);
+  const embeddedId = fields.get('id');
+  const id = typeof embeddedId === 'string' ? embeddedId : basename(file, '.json');
+  if (!isSafeAgentId(id)) return null;
+
+  const status = fields.get('status');
+  if (!isAgentStatus(status)) return null;
+
+  const startedAt = normalizeStartedAt(fields.get('startedAt'));
+  if (startedAt === null) return null;
+
+  const attemptValue = fields.get('attempt');
+  const attempt =
+    typeof attemptValue === 'number' && Number.isFinite(attemptValue) && attemptValue > 0
+      ? Math.floor(attemptValue)
+      : 1;
+
+  const dispatchId = fields.get('dispatchId');
+  const resumeOf = fields.get('resumeOf');
+  return {
+    id,
+    status,
+    startedAt,
+    attempt,
+    ...(typeof dispatchId === 'string' ? { dispatchId } : {}),
+    ...(typeof resumeOf === 'string' ? { resumeOf } : {}),
+  };
+}
+
+/**
+ * The bounded store read: stat every record (cheap), keep the ones inside the
+ * mtime window, sort newest-first, cap at `RETRY_SCAN_CAP`, then read only the
+ * surviving files' identity fields. Corrupt/unsafe records are skipped.
+ */
+function readRecentAgentIdentities(): RetryRecordIdentity[] {
+  let files: string[];
+  try {
+    if (!existsSync(STORAGE_DIR)) return [];
+    files = readdirSync(STORAGE_DIR);
+  } catch {
+    return [];
+  }
+
+  const cutoff = Date.now() - RETRY_SCAN_WINDOW_MS;
+  const recent: Array<{ file: string; mtime: number }> = [];
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    const id = file.slice(0, -'.json'.length);
+    if (!isSafeAgentId(id)) continue;
+    const fullPath = join(STORAGE_DIR, file);
+    try {
+      const stat = statSync(fullPath);
+      if (stat.mtimeMs >= cutoff) recent.push({ file: fullPath, mtime: stat.mtimeMs });
+    } catch {
+      // Vanished between readdir and stat — not a lineage candidate.
+    }
+  }
+
+  recent.sort((a, b) => b.mtime - a.mtime);
+  const records: RetryRecordIdentity[] = [];
+  for (const entry of recent.slice(0, RETRY_SCAN_CAP)) {
+    const record = readAgentIdentity(entry.file);
+    if (record) records.push(record);
+  }
+  return records;
+}
+
+function identityFromAgent(agent: BackgroundAgent): RetryRecordIdentity | null {
+  const startedAt = normalizeStartedAt(agent.startedAt);
+  if (startedAt === null) return null;
+  return {
+    id: agent.id,
+    status: agent.status,
+    startedAt,
+    attempt: agent.attempt ?? 1,
+    ...(agent.dispatchId ? { dispatchId: agent.dispatchId } : {}),
+    ...(agent.resumeOf ? { resumeOf: agent.resumeOf } : {}),
+  };
+}
+
+function identityFromRegistry(run: InflightRun): RetryRecordIdentity | null {
+  const startedAt = normalizeStartedAt(run.startedAt);
+  if (startedAt === null) return null;
+  return {
+    id: run.id,
+    status: 'running',
+    startedAt,
+    attempt: run.attempt ?? 1,
+    ...(run.dispatchId ? { dispatchId: run.dispatchId } : {}),
+  };
+}
+
+/**
+ * Find the logical dispatch family for `id`.
+ *
+ * Family membership is `dispatchId` (inherited by every attempt, including a
+ * manual attempt 3 whose `resumeOf` names attempt 2). Records without a
+ * `dispatchId` fall back to direct `resumeOf` matching. The registry is folded
+ * in so an in-flight retry is visible without a store record.
+ */
+export function findRetryLineage(id: string, source?: BackgroundAgent | null): RetryLineage {
+  const empty: RetryLineage = { id, family: [], found: null, latest: null, inflight: [] };
+  if (!isSafeAgentId(id)) return empty;
+
+  const byId = new Map<string, RetryRecordIdentity>();
+  for (const record of readRecentAgentIdentities()) byId.set(record.id, record);
+
+  const sourceIdentity = source && source.id === id ? identityFromAgent(source) : null;
+  if (sourceIdentity) byId.set(id, sourceIdentity);
+
+  const registry = safeListInflightRuns();
+  for (const run of registry) {
+    const identity = identityFromRegistry(run);
+    // A persisted record is authoritative over the registry's "running" view.
+    if (identity && !byId.has(identity.id)) byId.set(identity.id, identity);
+  }
+
+  const all = [...byId.values()];
+  const found = byId.get(id) ?? sourceIdentity;
+  const direct = all.filter((record) => record.resumeOf === id && record.id !== id);
+  const familyDispatch = found?.dispatchId ?? direct[0]?.dispatchId;
+
+  const members = familyDispatch
+    ? all.filter((record) => record.dispatchId === familyDispatch)
+    : [...(found ? [found] : []), ...direct];
+
+  const family = [...new Map(members.map((record) => [record.id, record])).values()];
+  family.sort(
+    (a, b) => a.attempt - b.attempt || a.startedAt - b.startedAt || a.id.localeCompare(b.id),
+  );
+
+  const latest = family.length > 0 ? family[family.length - 1] : null;
+  const inflight = registry.filter(
+    (run) => run.id === id || (familyDispatch !== undefined && run.dispatchId === familyDispatch),
+  );
+
+  return { id, family, found, latest, inflight };
 }
 
 /**
