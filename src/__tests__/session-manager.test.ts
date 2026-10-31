@@ -286,8 +286,8 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 		expect(start).toBeGreaterThanOrEqual(0);
 		expect(end).toBeGreaterThan(start);
 		const block = source.slice(start, end);
-		const interpolations = block.match(/\$\{params\.[a-zA-Z]+\b/g) ?? [];
-		expect(interpolations).toEqual(["${params.systemPrompt}", "${params.resumeContext}"]);
+		const interpolations = [...block.matchAll(/\$\{params\.([a-zA-Z]+)/g)].map((m) => m[1]);
+		expect(interpolations).toEqual(["systemPrompt", "resumeContext"]);
 	});
 
 	it("never loads extensions or skills from the target cwd (F25)", async () => {
