@@ -55,6 +55,10 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   findings, by key (the project-reviewer preset's mirror check feeds it).
 - Gate A: verify stateful claims (teardown, races, git/fs behavior)
   empirically — scratch repos in /tmp, real commands — do not just read code.
+- **Refactor PRs (moved/renamed/deleted exports):** verify the conductor's
+  `Structural closure` block against the PR diff — re-run at least one symbol yourself
+  (`--repo-root <cockpit>`). A graph gap (`recon` exit 3, empty output, `(returned no
+  JSON)`) is a finding, never a pass; "no callers" must name the query.
 - Keep the verdict compact; the deep write-up lives in the final output only.
 
 The conductor retrieves the final output (never sleep-waits — the user
@@ -71,6 +75,7 @@ record carries three machine-checked facts. Miss one and the gate blocks the mer
 | PR number | `#<pr>` somewhere in the record (title is fine) | (b) the guard |
 | `Verdict: approve` / `Verdict: approve-with-nits` | one **final** disposition line; `changes-requested` may not merge | (c) the guard |
 | `Reviewed head: <sha>` | the commit the verdict covers (`@ <sha>` in the title also counts; a >=7-char prefix of the head is accepted) | (d) the guard |
+| `Structural closure:` | present for refactor PRs, or an explicit `n/a` | **informational** in this unit — not merge-gated |
 
 Format the head line explicitly, e.g.
 
@@ -116,6 +121,38 @@ Two legitimate exits, in order of preference:
    check (d) — it does **not** upgrade the verdict: a `changes-requested` record still blocks.
 
 A record `merge-guard.sh` refuses is not a merge candidate, however clean the diff reads.
+
+## Structural closure (refactor PRs)
+
+A refactor that **moves, renames or deletes an exported symbol** (or changes an exported
+signature incompatibly) must carry a `Structural closure` block. It is produced by the
+**conductor** at PR-open time — the reviewer is read-only — and pasted into the dispatch;
+the reviewer verifies it. File moves/renames are optional (same artifact when done).
+
+**Command** — one per affected export:
+
+```
+bash .pi/skills/worktree/recon.sh <symbol> --grep --repo-root <cockpit>
+```
+
+`recon.sh` refreshes a stale index itself (the only write is the gitignored `.codegraph/`
+— not a repository edit) and exits **3** when it cannot. Exit 3, an empty result, or
+`(returned no JSON)` is a **graph-gap finding**, never "no callers".
+
+**Provenance.** The block describes **cockpit `dev` HEAD**, not the PR branch — so it is
+paired with a one-line reconciliation: which of the listed call sites the PR adds, removes
+or leaves unchanged (`recon.sh`'s `grep delta` line is the anchor). Without the
+reconciliation the paste is decorative.
+
+**Record.** The archived record (`.development/investigations/prNNN-*-review-findings-*.md`)
+carries the block — it survives the worktree. No-op wording:
+`Structural closure: n/a — no moved/deleted exports`.
+
+**Goodhart rules.** Each symbol line carries the **numeric callers count** exactly as
+printed; "no callers" names the query; prose summaries ("impact reviewed") are not
+accepted. Keep `recon`'s `codegraph @ <short-sha>` header for provenance — it is a dev sha
+and cannot satisfy the guard's `Reviewed head:` check (only a >=7-hex prefix collision
+could, and `Reviewed head:` is written explicitly).
 
 ## Findings by smell key
 

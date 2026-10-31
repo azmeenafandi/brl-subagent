@@ -130,6 +130,9 @@ never re-type their logic by hand. Full design:
       `codegraph-refresh.sh` at every merge (lifecycle step 7);
       `codegraph-check.py --repo-root <path>` for freshness. CLI-only,
       conductor-side, watcher off, never a hook (#230).
+      **Enforced for refactor PRs** via the review brief's `Structural closure`
+      (`review-dispatch.md`): moved/renamed/deleted exports carry `recon.sh` callers +
+      impact, reconciled against the PR diff.
     - **Doc concept / cross-document questions → grep + `docs-arch` + the ADRs**
       — the deterministic fallback. graphify is retired (ADR 0016); no LLM sits
       on the doc-navigation path.
