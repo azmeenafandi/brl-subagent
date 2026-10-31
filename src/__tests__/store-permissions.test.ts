@@ -11,7 +11,7 @@
  * the requested mode, so mode assertions no-op there.
  */
 import { describe, it, expect, afterEach } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -25,19 +25,18 @@ const POSIX = process.platform !== "win32";
 
 const modeOf = (path: string): number => statSync(path).mode & 0o777;
 
+// One scaffold for both describes (a duplicated one was the review's SOLID/DRY nit).
+const created: string[] = [];
+const tempDir = (name: string): string => {
+	const dir = mkdtempSync(join(tmpdir(), `brl-store-perm-${name}-`));
+	created.push(dir);
+	return dir;
+};
+afterEach(() => {
+	for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
 describe("ensureOwnerOnlyDir (issue #408)", () => {
-	const created: string[] = [];
-
-	const tempDir = (name: string): string => {
-		const dir = mkdtempSync(join(tmpdir(), `brl-store-perm-${name}-`));
-		created.push(dir);
-		return dir;
-	};
-
-	afterEach(() => {
-		for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true });
-	});
-
 	it("creates a fresh directory owner-only", () => {
 		if (!POSIX) return;
 		const dir = join(tempDir("fresh"), "store");
@@ -105,19 +104,33 @@ describe("ensureOwnerOnlyDir (issue #408)", () => {
 		expect(() => ensureOwnerOnlyDir(dir)).not.toThrow();
 		expect(modeOf(dir)).toBe(0o500);
 	});
+
+	it("never follows a symlinked dir (chmod would retarget the link's target)", () => {
+		if (!POSIX) return;
+		const base = tempDir("symdir");
+		const target = join(base, "target");
+		const link = join(base, "link");
+		mkdirSync(target, { recursive: true });
+		chmodSync(target, 0o755);
+		symlinkSync(target, link, "dir");
+		ensureOwnerOnlyDir(link);
+		expect(modeOf(target)).toBe(0o755);
+	});
 });
 
 describe("repairOwnerOnlyFiles (issue #408)", () => {
-	const created: string[] = [];
-
-	const tempDir = (name: string): string => {
-		const dir = mkdtempSync(join(tmpdir(), `brl-store-files-${name}-`));
-		created.push(dir);
-		return dir;
-	};
-
-	afterEach(() => {
-		for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true });
+	it("never chmods through a symlinked file", () => {
+		if (!POSIX) return;
+		// The target lives OUTSIDE the repaired dir: inside it, the target is a
+		// regular file and the repair would legitimately chmod it.
+		const outside = join(tempDir("symtarget"), "target.jsonl");
+		const dir = tempDir("symfile");
+		const link = join(dir, "link.jsonl");
+		writeFileSync(outside, "{}\n");
+		chmodSync(outside, 0o644);
+		symlinkSync(outside, link);
+		repairOwnerOnlyFiles(dir);
+		expect(modeOf(outside)).toBe(0o644);
 	});
 
 	it("repairs a world-readable file to owner-only and leaves subdirectories alone", () => {

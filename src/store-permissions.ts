@@ -20,7 +20,7 @@
  * run on spawn/settle/registry-write paths where a permission failure must not
  * break execution. A failure is logged and the path is left as it was.
  */
-import { chmodSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createLogger } from './logging';
 
@@ -49,6 +49,14 @@ export function ensureOwnerOnlyDir(dir: string): void {
     return;
   }
   try {
+    // A symlink must never be followed: `chmod` would retarget the LINK's target
+    // (a local user with write access to the store could otherwise point a dir at
+    // another path). Not reachable today (the stores are owner-writable), but the
+    // guard makes the boundary structural.
+    if (lstatSync(dir).isSymbolicLink()) {
+      log.warn(`Refusing to repair a symlinked store dir: ${dir}`);
+      return;
+    }
     const mode = statSync(dir).mode & 0o777;
     if ((mode & 0o077) !== 0) chmodSync(dir, OWNER_ONLY_DIR_MODE);
   } catch (err) {
@@ -78,6 +86,8 @@ export function repairOwnerOnlyFiles(dir: string): void {
   for (const name of names) {
     const file = join(dir, name);
     try {
+      // Same no-follow rule as the directory repair: never chmod through a link.
+      if (lstatSync(file).isSymbolicLink()) continue;
       const stat = statSync(file);
       if (!stat.isFile()) continue;
       if ((stat.mode & 0o077) !== 0) chmodSync(file, OWNER_ONLY_FILE_MODE);
