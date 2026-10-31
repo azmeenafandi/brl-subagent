@@ -89,13 +89,19 @@ Verdict: approve-with-nits
 
 Rules the parser assumes:
 
-- The **last** `Verdict:` line is the disposition. Round-by-round narratives
+- The **last line-start** `Verdict:` is the disposition. Round-by-round narratives
   (`## Round 1 — 3c5473c: changes-requested`) belong in the body; only the final line
   starts with `Verdict:`. A line naming more than one verdict (an echoed template) is
   read as **ambiguous** and blocks — state one disposition.
+- **Prose mentions and fenced examples are inert.** A sentence that merely *names* the
+  field ("the record introduces no `Verdict:` line"), or a `~~~` / ```` ``` ```` block
+  quoting the format, does not count as the disposition — the parser strips leading
+  decoration and only accepts a line that *starts* with `Verdict:`, outside fences. (Before
+  2026-10-31 it took the last line *anywhere* containing the token, so every record that
+  documented the gate blocked itself: PR #397 once, PR #399 twice.)
 - `approve-with-nits` is a mergeable verdict; `changes-requested` is not, and an
   unrecognised/absent verdict is not either.
-- Markdown decoration is fine (`**Verdict: approve**`, `## Verdict:`, backticks).
+- Markdown decoration is fine (`**Verdict: approve**`, `## Verdict:`, backticks) — it is stripped before the line-start check.
 
 ### `conductor-verified:` — the post-verdict commit
 

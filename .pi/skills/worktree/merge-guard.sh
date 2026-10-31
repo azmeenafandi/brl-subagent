@@ -55,10 +55,26 @@ record_mentions_pr() {
 # Markdown decorations (`**Verdict: approve**`, `## Verdict:`, backticks) are stripped. A line that
 # names MORE than one verdict (an echoed template) is `ambiguous` — fail-closed, never a guess.
 record_verdict() {
-    local record="$1" line rest first lower have=""
-    line="$(grep -iE 'Verdict:' "${record}" | tail -1 || true)"
+    local record="$1" line="" rest first lower have="" raw stripped in_fence=0
+    # A disposition is a LINE-START `Verdict:` outside a fenced code block: markdown
+    # decoration (spaces, #, *, backticks) is stripped first, then the prefix must be
+    # `Verdict:`. Prose mentions ("the `Verdict:` line says…") and fenced examples are
+    # inert — the previous any-line/tail-1 rule made every record that *documents* the
+    # gate block itself (PR #397 once, PR #399 twice).
+    local fence='^[[:space:]]*(```|~~~)'
+    while IFS= read -r raw; do
+        if [[ "${raw}" =~ ${fence} ]]; then
+            in_fence=$((in_fence ? 0 : 1))
+            continue
+        fi
+        [[ ${in_fence} -eq 1 ]] && continue
+        stripped="$(printf '%s' "${raw}" | sed -E 's/^[[:space:]#*`]+//')"
+        case "${stripped,,}" in
+            verdict:*) line="${stripped}" ;;
+        esac
+    done < "${record}"
     [[ -n "${line}" ]] || return 0
-    rest="$(printf '%s' "${line}" | sed -E 's/.*[Vv][Ee][Rr][Dd][Ii][Cc][Tt]://')"
+    rest="$(printf '%s' "${line}" | sed -E 's/^[Vv][Ee][Rr][Dd][Ii][Cc][Tt]://')"
     lower="${rest,,}"
     [[ "${lower}" == *changes-requested* ]] && have+="c"
     [[ "${lower}" == *approve-with-nits* ]] && have+="n"
@@ -145,12 +161,12 @@ check_record() {
         changes-requested)
             fail_line "(c) verdict is changes-requested — the findings must be fixed and the head re-reviewed before merging" ;;
         "")
-            fail_line "(c) the record has no 'Verdict:' line — a record without a disposition cannot clear a merge" ;;
+            fail_line "(c) the record has no line-start 'Verdict:' disposition (outside fences) — a record without one cannot clear a merge" ;;
         *)
             fail_line "(c) unrecognised verdict '${verdict}' — expected approve or approve-with-nits" ;;
     esac
     if [[ "${verdict}" == "ambiguous" ]]; then
-        fail_line "(c) the record's last 'Verdict:' line names more than one verdict (an echoed template?) — state one disposition"
+        fail_line "(c) the record's last line-start disposition names more than one verdict (an echoed template?) — state one disposition"
     fi
 
     # (d) Reviewed head (or the documented post-verdict disposition).
@@ -362,6 +378,33 @@ Reviewed head: ${head}
 Verdict: approve | approve-with-nits | changes-requested
 EOF
 
+    cat >"${dir}/prose-mention.md" <<EOF
+# Review — PR #412
+
+Reviewed head: ${head}
+
+**Verdict: approve** — zero findings.
+
+Notes: the record-contract table's machine-checked rows are untouched; the new section
+introduces no \`Verdict:\` line and no head sha. A later sentence mentioning Verdict: inline must not win.
+EOF
+
+    cat >"${dir}/fenced-example.md" <<EOF
+# Review — PR #412
+
+Reviewed head: ${head}
+
+**Verdict: approve** — zero findings.
+
+The required format is:
+
+~~~md
+Verdict: changes-requested
+~~~
+
+(the fenced example above is documentation, not the disposition)
+EOF
+
     echo "merge-guard --selftest: record parsing"
     expect_ok "(b) names #412" record_mentions_pr "${dir}/approve.md" 412
     expect_fail "(b) #400 does not name #412" record_mentions_pr "${dir}/wrong-pr.md" 412
@@ -372,6 +415,8 @@ EOF
     expect_verdict "(c) changes-requested parses as changes-requested" "${dir}/changes-requested.md" "changes-requested"
     expect_verdict "(c) a record with no Verdict: line parses as empty" "${dir}/no-verdict.md" ""
     expect_verdict "(c) an echoed template is ambiguous (fail-closed)" "${dir}/template-echo.md" "ambiguous"
+    expect_verdict "(c) a prose mention after the disposition is inert" "${dir}/prose-mention.md" "approve"
+    expect_verdict "(c) a fenced example after the disposition is inert" "${dir}/fenced-example.md" "approve"
 
     expect_ok "(d) full head sha appears in the record" record_mentions_sha "${dir}/approve.md" "${head}"
     expect_ok "(d) a 7-char prefix counts as the head" record_mentions_sha "${dir}/approve-nits.md" "${head}"
