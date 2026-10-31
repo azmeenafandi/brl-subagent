@@ -103,6 +103,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `schema.ts` | The registered `delegate_task` parameter schema — the single source of truth for its types. |
 | `session-manager.ts` | Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths. |
 | `state.ts` | Session-bound state container with versioned validation and migration for persisted settings. |
+| `store-permissions.ts` | Owner-only repair for the persistent stores' directories and files — mkdirSync's mode applies only on CREATE. |
 | `templates.ts` | Task-template resolution: `${param}` substitution over the file-backed template tiers. |
 | `transcript-path.ts` | The single declaration of the transcript path format — filesystem (`join`) and display (POSIX) forms. |
 | `transcript-tail.ts` | Pure line-planning for the drill-in transcript overlay (no TUI imports). |
@@ -114,7 +115,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**43 modules** — every one is listed because a new module without a purpose fails CI.
+**44 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
