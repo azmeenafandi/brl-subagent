@@ -181,6 +181,74 @@ export function defaultBackgroundFor(
 	return effectiveApprovalMode === "auto";
 }
 
+// ---------------------------------------------------------------------------
+// The thinking-level dispatch-shape pre-flight (issue #412, rule 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The notice the dispatch emits when it auto-switches the shape. The text
+ * states the TRUE tool fact (why the shape matters), because that is the only
+ * thing that makes the switch acceptable to the conductor that asked for
+ * foreground: a foreground run has no transcript to resume, so a timeout there
+ * loses the work, while a background run keeps its session and is retried on a
+ * transport error.
+ */
+export const THINKING_SWITCH_NOTICE =
+	"Dispatch pre-flight (no deadline means the durable path): a high/xhigh-thinking run was dispatched FOREGROUND with an explicit timeout. " +
+	"The explicit timeout was dropped — foreground runs persist nothing, so a timeout there loses the run's whole context, while the 30-minute background deadline applies instead. " +
+	"The run is now background; the conductor is woken on terminal state. Pass force: true to keep it foreground (state the reason in the task text).";
+
+/** The pre-flight's verdict for one dispatch. */
+export type ThinkingDispatchSwitch = "switch" | "forced" | "none";
+
+/**
+ * Issue #412 (rule 2: "no deadline ⇒ durable path") — should the pre-flight
+ * change this dispatch's shape?
+ *
+ * The 2026-10-31 incident: a plan critique ran foreground under a 15-minute
+ * timeout, was killed at ~14 minutes ("almost done"), and lost everything —
+ * the background re-run then cost another 17 minutes. The decision was
+ * conductor discretion; this predicate makes the durable shape the only one
+ * for the runs where losing the context is expensive:
+ *
+ *   thinkingLevel high|xhigh
+ *     + background EXPLICITLY false (the caller asked for foreground)
+ *     + an explicit timeout (the deadline that would kill it)
+ *     → switch to background and drop the timeout.
+ *
+ * Deliberately exempt:
+ *   - `chain`/`graph` — they block by definition and `background: true` is
+ *     rejected at dispatch; the decision cannot apply to them.
+ *   - an omitted `background` — the #361 default already decided, and it knows
+ *     about approval modes (a `writes`/`always` run must stay in front of the
+ *     user); second-guessing it here would silently move a gated run into a
+ *     context with no approval dialog.
+ *   - no explicit timeout — there is no deadline to lose; the background
+ *     default is a deadline too, so switching would not make the run safer.
+ *   - `force: true` — the override, reported as `forced` (not `none`) so the
+ *     caller can tell "kept foreground by request" from "never applied".
+ *     `force` carries no reason field (ADR 0007): the dispatch text is the
+ *     reason.
+ *
+ * `thinkingLevel` is the DECLARED level (per-call, else the named preset's),
+ * not the capped one: `maxThinkingLevel` defaults to `off` for an unconfigured
+ * session, so applying the cap here would disable the pre-flight exactly where
+ * nobody configured anything — the drift this rule exists to remove.
+ */
+export function resolveThinkingDispatchSwitch(input: {
+	thinkingLevel: ThinkingLevel | undefined;
+	explicitBackground: boolean | undefined;
+	timeout: number | undefined;
+	force: boolean | undefined;
+	shape: DispatchShape;
+}): ThinkingDispatchSwitch {
+	if (input.shape === "chain" || input.shape === "graph") return "none";
+	if (input.thinkingLevel !== "high" && input.thinkingLevel !== "xhigh") return "none";
+	if (input.explicitBackground !== false) return "none";
+	if (input.timeout === undefined) return "none";
+	return input.force === true ? "forced" : "switch";
+}
+
 /**
  * The resolver's input: the dispatch-param fields resolution actually reads,
  * derived from the registered schema (issue #379) instead of re-spelled here.

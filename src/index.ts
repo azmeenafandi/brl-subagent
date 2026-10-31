@@ -72,7 +72,7 @@ import {
 } from "./git";
 import { preflightCheck } from "./preflight";
 import { depthLimitRejection, formatValidationWarnings, gateSessionCost, modelNotConfiguredRejection, rejectApprovalAlwaysInBackground, rejection, resolveModeModel, resolveSubagentModelPrecedence, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, type SubagentModelResolution } from "./prelude";
-import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
+import { loadBuiltinPresets, loadCustomPresets, getAllPresets, getPreset, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable, parseModelString } from "./model-availability";
 import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
 import {
@@ -81,8 +81,10 @@ import {
 	KNOWN_DELEGATE_KEYS,
 	resolveEffectiveApprovalMode,
 	resolveSubagentParams,
+	resolveThinkingDispatchSwitch,
 	shouldRejectBackgroundForBatch,
 	snapshotOriginalParams,
+	THINKING_SWITCH_NOTICE,
 	type DispatchShape,
 	type ResolveInputParams,
 } from "./params";
@@ -2723,6 +2725,56 @@ export default function (pi: ExtensionAPI) {
 			// on the default. Keeping the capture first makes that ordering
 			// self-evident (issue #361 review).
 			const explicitBackground = params.background;
+
+			// Issue #412 (rule 2: "no deadline ⇒ durable path") — the dispatch-shape
+			// pre-flight. A high/xhigh-thinking run the conductor asked to run
+			// FOREGROUND with an explicit timeout is the shape that lost 14 minutes of
+			// plan critique on 2026-10-31: foreground runs persist nothing, so the
+			// deadline kills the work outright, while a background run keeps its
+			// session and is retried on a transport error. The switch is applied HERE
+			// — after template/retry resolution and BEFORE `useBackground` is resolved
+			// and before any run record is written — so the shape every downstream
+			// reader sees (the spawn, the retry snapshot, the pending-work record) is
+			// the switched one. Moving it after `snapshotOriginalParams` would record
+			// `background:false` and silently cost the run its transport auto-retry
+			// (`transport-retry.ts` classifies off that snapshot).
+			const declaredPresetForSwitch = params.preset
+				? getPreset(params.preset, state.builtinPresets, state.customPresets)
+				: undefined;
+			const thinkingSwitch = resolveThinkingDispatchSwitch({
+				thinkingLevel: (params.thinkingLevel ?? declaredPresetForSwitch?.thinkingLevel) as
+					| ThinkingLevel
+					| undefined,
+				explicitBackground,
+				timeout: params.timeout,
+				force: params.force,
+				shape: dispatchShape,
+			});
+			if (thinkingSwitch === "switch") {
+				params.background = true;
+				// Drop the foreground deadline: the 30-minute background default
+				// (DEFAULT_BACKGROUND_DEADLINE_MS) applies instead. Recorded as
+				// undefined, so a retry re-derives it rather than restoring the cap.
+				params.timeout = undefined;
+				log.info("Dispatch pre-flight: high-thinking foreground switched to background", {
+					thinkingLevel: params.thinkingLevel,
+					timeout: "dropped (background default applies)",
+				});
+				pi.sendMessage({
+					customType: "delegate-notification",
+					content: THINKING_SWITCH_NOTICE,
+					display: true,
+					details: { thinkingLevel: params.thinkingLevel, previousTimeout: "dropped" },
+				}, { deliverAs: "followUp" });
+				ctx.ui.notify(THINKING_SWITCH_NOTICE, "warning");
+			} else if (thinkingSwitch === "forced") {
+				// The override is recorded, not silent: the dispatch text is the reason
+				// (`force` has no reason field — ADR 0007's contract stays unchanged).
+				log.info("Dispatch pre-flight: high-thinking foreground forced", {
+					thinkingLevel: params.thinkingLevel,
+					timeout: params.timeout,
+				});
+			}
 
 			// background: true with chain/graph was silently ignored — the batch ran
 			// foreground (blocking until every unit finished) while the caller believed
