@@ -54,6 +54,13 @@ because nothing checked them and no test pins them.
 5. **Docs that ship** — `README.md` version header; `CHANGELOG.md` release entry
    (newest-first, project voice). *(The git-install example tag was dropped in
    #171 — npm is the sole user-facing install/update path.)*
+
+   **Tarball smoke, user path (issue #415):** before publishing, `npm pack` the
+   release commit and exercise the tarball from a temp project **without** the
+   `brl-subagent.processChecks` field — one explicit `background: false` +
+   `timeout` dispatch must keep its foreground shape and timeout, and a line-less
+   task must spawn. The process checks are maintainer-only; this is the check
+   that they are inert for users.
 6. **Commit + tag + push** — `chore: bump version to <X>`. The commit carries
    only `package.json`, `package-lock.json`, `README.md`, `CHANGELOG.md`
    (`.development/` docs are tracked now — commit them separately, so the bump

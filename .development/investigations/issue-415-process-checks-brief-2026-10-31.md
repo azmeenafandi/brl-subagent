@@ -1,6 +1,6 @@
 # Issue #415 — implementation brief: one umbrella `processChecks` flag
 
-Base: `dev` @ `dd61159`. Issue: #415. ADR 0019 will supersede the global part of 0018.
+Base: worktree `fix/415-process-checks` @ `26c4976` (dev `dd61159` + this brief). Issue: #415. ADR 0019 will supersede the global part of 0018.
 
 ## Goal
 

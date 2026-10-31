@@ -1,4 +1,4 @@
-// Purpose: Parse and validate the Rule 22 dispatch line, plus the project-local opt-in that makes it required.
+// Purpose: Parse and validate the Rule 22 dispatch line (the project-local opt-in lives in project-flags.ts).
 /**
  * The Jev dispatch line — parse side (issue #412, absorbing #407).
  *
@@ -16,13 +16,13 @@
  * kept byte-comparable with the script's (`DISPATCH_LINE_PATTERN`,
  * `BARE_DISPATCH_LINE_PATTERN`, `GAP_MARKERS`). Change one, change both.
  *
- * The check is OPT-IN per project: `package.json` carries
- * `{"brl-subagent": {"requireJevLine": true}}`. Absent (every user's project)
- * → no check, ever: this is our process, not a product requirement (ADR 0018).
+ * The check is OPT-IN per project, through the umbrella flag in
+ * `src/project-flags.ts`: the project's manifest carries the `processChecks`
+ * field (issue #415, ADR 0019). Absent (every user's project) → no check,
+ * ever: this is our process, not a product requirement. This module owns the
+ * PARSER only; the manifest read lives in `project-flags.ts` (the
+ * single-reader ratchet).
  */
-
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 /**
  * The exact form a dispatch task must carry — quoted verbatim in every
@@ -141,25 +141,4 @@ export function parseDispatchLine(task: string): DispatchLineVerdict {
 		return { ok: false, reason: `missing Jev dispatch line (${DISPATCH_LINE_FORM})` };
 	}
 	return { ok: false, reason: attempts[0] };
-}
-
-/**
- * Whether the project at `cwd` opted in. Read from the project's OWN
- * `package.json` — tracked, so it exists in every worktree (worktrees share
- * the repo's manifest), unlike a gitignored marker under `.pi/`.
- *
- * A missing, unreadable or malformed manifest is OFF, never an error: the
- * check must never turn a project's packaging mistake into a rejected
- * dispatch (and a user's project has no such field at all).
- */
-export function isJevLineRequired(cwd: string | undefined): boolean {
-	if (cwd === undefined || cwd === "") return false;
-	try {
-		const manifest = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")) as {
-			"brl-subagent"?: { requireJevLine?: unknown };
-		};
-		return manifest["brl-subagent"]?.requireJevLine === true;
-	} catch {
-		return false;
-	}
 }

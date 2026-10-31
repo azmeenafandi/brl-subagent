@@ -75,6 +75,7 @@ import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 const GLOBAL_MODEL = { provider: "test", id: "test-model" };
 const VALID_LINE = "jev: high (0.44) · C2 · worktree y";
+const REPO_ROOT = path.resolve(__dirname, "..", "..");
 
 interface SpawnParams {
 	task?: string;
@@ -233,7 +234,7 @@ const PLAN_CRITIQUE_TASK = [
 function optIn(): void {
 	writeFileSync(
 		path.join(env.testCwd, "package.json"),
-		JSON.stringify({ name: "fixture-project", "brl-subagent": { requireJevLine: true } }, null, 2),
+		JSON.stringify({ name: "fixture-project", "brl-subagent": { processChecks: true } }, null, 2),
 		"utf8",
 	);
 }
@@ -362,16 +363,33 @@ describe("no opt-in means no check (the product is unchanged for users)", () => 
 		expect(h.runSubagent).toHaveBeenCalledTimes(1);
 	});
 
-	it("a package.json with requireJevLine:false is still off", async () => {
+	it("a package.json with processChecks:false is still off", async () => {
 		writeFileSync(
 			path.join(env.testCwd, "package.json"),
-			JSON.stringify({ name: "fixture", "brl-subagent": { requireJevLine: false } }),
+			JSON.stringify({ name: "fixture", "brl-subagent": { processChecks: false } }),
 			"utf8",
 		);
 		const result = await execute({ task: "Implement the thing.", background: false });
 
 		expect(result.isError).toBeFalsy();
 		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Our path — THIS checkout opts in via its tracked package.json (#415)
+// ---------------------------------------------------------------------------
+
+describe("this repository opts in (processChecks on its own manifest)", () => {
+	it("a line-less dispatch from the repo root is rejected before anything spawns", async () => {
+		const ctx = makeCtx();
+		(ctx as { cwd: string }).cwd = REPO_ROOT;
+		const result = await execute({ task: "Implement the thing.", background: false }, ctx);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/missing Jev dispatch line/);
+		expect(h.runSubagent).not.toHaveBeenCalled();
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
 	});
 });
 

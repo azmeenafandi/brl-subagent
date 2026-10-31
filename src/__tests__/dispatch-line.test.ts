@@ -11,8 +11,9 @@
  * that covers it flips.
  *
  * The check is OPT-IN, per project: `package.json` carries
- * `{"brl-subagent":{"requireJevLine":true}}`. Absent → no check (a user's
- * dispatch is never rejected for our process). Both directions are pinned here.
+ * `{"brl-subagent":{"processChecks":true}}` (the umbrella flag, issue #415).
+ * Absent → no check (a user's dispatch is never rejected for our process).
+ * Both directions are pinned here.
  */
 
 import { describe, expect, it } from "vitest";
@@ -24,7 +25,6 @@ import * as path from "node:path";
 import {
 	DISPATCH_LINE_FORM,
 	JEV_UNAVAILABLE,
-	isJevLineRequired,
 	parseDispatchLine,
 } from "../dispatch-line";
 import { delegateTaskParamsSchema } from "../schema";
@@ -43,7 +43,7 @@ function tempProject(manifest: unknown | null): string {
 }
 
 /** A project that opted in, and one that did not — the two directions. */
-const OPTED_IN = tempProject({ name: "opted-in", "brl-subagent": { requireJevLine: true } });
+const OPTED_IN = tempProject({ name: "opted-in", "brl-subagent": { processChecks: true } });
 const OPTED_OUT = tempProject({ name: "opted-out" });
 
 // ---------------------------------------------------------------------------
@@ -195,28 +195,19 @@ describe("conformance: jev-check.mjs --line and parseDispatchLine agree", () => 
 
 // ---------------------------------------------------------------------------
 // The opt-in — both directions
+//
+// The reader itself lives in src/project-flags.ts and is pinned by
+// project-flags.test.ts (the single-reader ratchet); here the flag is exercised
+// through the validator that every pre-spawn path shares.
 // ---------------------------------------------------------------------------
 
-describe("isJevLineRequired — the project-local opt-in", () => {
+describe("the project-local opt-in", () => {
 	it("is ON for a project whose package.json opts in", () => {
-		expect(isJevLineRequired(OPTED_IN)).toBe(true);
+		expect(validatePreTask({ task: "Implement the thing.", cwd: OPTED_IN }).valid).toBe(false);
 	});
 
 	it("is OFF for a project with no opt-in field (a user's dispatch is never rejected)", () => {
-		expect(isJevLineRequired(OPTED_OUT)).toBe(false);
-		expect(isJevLineRequired(tempProject({ "brl-subagent": { requireJevLine: false } }))).toBe(false);
-	});
-
-	it("is OFF (never throws) when package.json is absent or malformed", () => {
-		expect(isJevLineRequired(path.join(os.tmpdir(), "brl-does-not-exist-412"))).toBe(false);
-		const broken = tempProject(null);
-		fs.writeFileSync(path.join(broken, "package.json"), "{not json", "utf8");
-		expect(isJevLineRequired(broken)).toBe(false);
-	});
-
-	it("reads the manifest of the DISPATCH cwd, not the conductor's", () => {
-		expect(isJevLineRequired(OPTED_IN)).toBe(true);
-		expect(isJevLineRequired(OPTED_OUT)).toBe(false);
+		expect(validatePreTask({ task: "Implement the thing.", cwd: OPTED_OUT }).valid).toBe(true);
 	});
 });
 

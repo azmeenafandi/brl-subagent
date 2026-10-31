@@ -210,7 +210,7 @@ export const delegateTaskParamsSchema = Type.Object({
 				Type.String({
 					minLength: 1,
 					description:
-						"Stated bypass for the Jev dispatch-line pre-flight, which is active ONLY in a project whose package.json sets `brl-subagent.requireJevLine: true` (this repository). " +
+						"Stated bypass for the Jev dispatch-line pre-flight, which is active ONLY in a project whose package.json sets the `brl-subagent.processChecks` field (this repository). " +
 						"A NON-EMPTY reason string: the dispatch proceeds and the reason is surfaced as a warning in the result, so the bypass is never silent. " +
 						"It bypasses ONLY the line check — capability conflicts still reject (unlike force). " +
 						"Append `jev: unavailable` to the task instead when the classifier did not run.",
@@ -224,7 +224,7 @@ export const delegateTaskParamsSchema = Type.Object({
 						"The conductor is woken with a completion message; use get_subagent_result for post-wake retrieval and stall checks. " +
 						"Supports a single task or the tasks array (a fan-out that starts one background agent per task; with tasks the call returns one ID per task and the conductor is woken once per agent as each finishes); combining background with chain or graph is rejected. " +
 						"Default: conditional. Omitted, a single task or tasks fan-out runs in the BACKGROUND when the effective approvalMode is 'auto' (call param, else config); it stays foreground for 'writes'/'always' (a background run has no approval dialog, so the gate must stay in front of the user) and for chain/graph, which block by definition. " +
-						"Pass background: false for a quick probe whose answer the next step needs inline. Explicit true/false wins, with ONE pre-flight exception: a high/xhigh-thinking dispatch with background: false AND an explicit timeout is switched to background and the explicit timeout is dropped, because a foreground run loses its whole work at a timeout while a background run keeps its session and is retried on a transport error. Pass force: true to keep it foreground. " +
+						"Pass background: false for a quick probe whose answer the next step needs inline. Explicit true/false wins. ONE pre-flight exception exists, and only in a project that opted into its own process checks (package.json `brl-subagent.processChecks: true`; this repository): a high/xhigh-thinking dispatch with background: false AND an explicit timeout is switched to background and the explicit timeout is dropped, because a foreground run loses its whole work at a timeout while a background run keeps its session and is retried on a transport error; pass force: true to keep it foreground. Without that project opt-in the explicit shape and its timeout stand. " +
 						"A background run defaults to a 30-minute deadline when no timeout is given.",
 				}),
 			),

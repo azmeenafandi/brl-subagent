@@ -90,6 +90,7 @@ import {
 	type ResolveInputParams,
 } from "./params";
 import { delegateTaskParamsSchema } from "./schema";
+import { readProcessChecks } from "./project-flags";
 import { createSessionState, resolveTerminalRunEntry, type SessionState } from "./state";
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
@@ -2750,12 +2751,22 @@ export default function (pi: ExtensionAPI) {
 			// the switched one. Moving it after `snapshotOriginalParams` would record
 			// `background:false` and silently cost the run its transport auto-retry
 			// (`transport-retry.ts` classifies off that snapshot).
+			// Issue #415: the switch is OUR process (a conductor decision rule), not
+			// product behavior — a user's explicit foreground timeout is usually a
+			// budget cap, so a GLOBAL switch could triple time and cost against
+			// their instruction. The umbrella project-local `processChecks` flag
+			// gates it (fail-open: no/malformed manifest → off). Resolve the
+			// dispatch cwd ONCE, the way the target validation below will.
+			const processChecksCwd =
+				params.cwd === undefined ? ctx.cwd : path.resolve(ctx.cwd, params.cwd);
+			const processChecks = readProcessChecks(processChecksCwd);
 			// The preset the dispatch will actually run with — an auto-routed
 			// `code-reviewer`/`debugger` is a high-thinking run even though the
 			// caller declared no level, so the pre-flight resolves the SAME preset
 			// the merge below will (one rule, `resolveDispatchPreset`).
 			const declaredPresetForSwitch = resolveDispatchPreset(params, state).preset;
 			const thinkingSwitch = resolveThinkingDispatchSwitch({
+				processChecks,
 				thinkingLevel: (params.thinkingLevel ?? declaredPresetForSwitch?.thinkingLevel) as
 					| ThinkingLevel
 					| undefined,
