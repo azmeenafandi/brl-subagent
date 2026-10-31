@@ -25,6 +25,36 @@ Verified: f1ece22 (2026-10-25)
 - Friction: `pre-dispatch Jev skipped` ×3 today (incl. the #395 fix dispatch) — the ledger-only check cannot see a skipped dispatch; `jev-check --log` proposed.
 
 ### Next actions
+1. **No release date.** Finish the known fixes first, then the cycle-end ritual and the release — a clean release waits for the work, never the calendar.
+   - **#401** — auto-retry resume preamble (cwd + `git status`/`git log` + bank + attempt-1 transcript) and banking in every brief.
+   - **#396** — retry-lineage in `get_subagent_result`; plan **v2** with the maintainer's scope call: the **found-but-superseded** path is in the fix. Critique: `.development/investigations/issue-396-plan-critique-2026-10-31.md` (2 blockers / 4 majors).
+2. #364 stays held until pi's typebox pin moves.
+
+## Open items` → follow `## Pointers`.
+> §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
+> `Verified:` staleness line; the write contract is `.pi/skills/handoff/references/handoff.md`.
+> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
+
+## STATE
+Verified: f1ece22 (2026-10-25)
+
+- **dev** @ `b0badd9` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
+- **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
+- **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
+- **Board:** **#396 open** only (`get_subagent_result` retry-lineage fix — enhancement, next cycle). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
+- **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
+- **Cycle (post-v2.6.0): OPEN — all work landed.** Test-suite audit (#368), P0s (#365 auto-retry, #366 Jev check), smell audit (#372), the sweep (#374), and the handoff follow-ups (#393 staleness ignore + conservative range judging, #394 extension typecheck — PR #395 `2a0142b`). **Only the release decision remains.**
+- **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
+- **Notification channel:** `brl-notifications-fa9@clawmail.me` (claimed) — autonomous-run decisions only; token in `~/.config/brl-notifications/clawmail.env` (never in the repo).
+- **Handoff mechanism:** LIVE (PR #353) — injection + staleness line + `/handoff` + `/handoff mark`; all five live checks passed (2026-10-17/18).
+
+### Since the last handover
+- Three recurrence-guards merged (PR #397): prep smoke log retained, `merge-guard.sh` (CI + verdict + reviewed-head/disposition + dispatch audit) is now the merge gate (SKILL.md step 7), `jev-check --log` audits dispatch payloads. #396 filed for the shipped `get_subagent_result` lineage fix.
+- #393/#394 merged (PR #395, two review rounds: merge/rename path holes + a truncated-stream gap, all fixed and mutation-proven). The handoff hook now ignores its own commits and judges ranges conservatively; extension code is typechecked.
+- Typebox 1.4.2 experiment: a no-op for our surface; held for host parity (record: `typebox-1.4.2-experiment-2026-10-27.md`).
+- Friction: `pre-dispatch Jev skipped` ×3 today (incl. the #395 fix dispatch) — the ledger-only check cannot see a skipped dispatch; `jev-check --log` proposed.
+
+### Next actions
 1. **Release v2.7.0 held until SAT 2026-10-31 / SUN 2026-11-01** (maintainer, 2026-10-27) — awaiting a possible pi release this week. If pi ships: run the **vendor-parity unit first** (release notes break-by-break, deps bump, API diff, suite, parity PR → dev), then the cycle-end ritual (Rule 11, trust metrics, env sweep, retros) and the release sequence. pi `latest` today = **1.4.0** (installed); dependabot's next visit is also 31 Oct, so the release lands after it.
 2. #364 stays held until pi's typebox pin moves.
 3. A `/reload` picks up the #395 handoff fix (the current session still runs the old hook).
@@ -98,6 +128,7 @@ Verified: 10eca8b (2026-10-25)
 - **Dispatch conventions:** implementers run the configured default at `low`; reviewers pin a model
   explicitly at `medium` (never the config default). Skill workflows that need `delegate_task` run in
   the conductor — subagents have no dispatch.
+- **Releases:** no calendar pressure. Do not propose or schedule a release while a known fix is open — the cycle closes when the work is done. (Maintainer, 2026-10-31.)
 - **Reviews:** C1 adversarial (project-reviewer), C2 focused, C3 conductor read (Rule 10). **Reviewer model:
   `openrouter/meta/muse-spark-1.3-contributor`** (standing). The gpt-6-luna run was an old one-off trial and is
   closed — after a compaction, check the last dispatch artifact (subagent log / ledger row) for the current
