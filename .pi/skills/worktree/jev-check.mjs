@@ -54,6 +54,14 @@ const STRICT_JEV_CUTOFF = "2026-10-12";
  */
 const STRICT_DISPATCH_CUTOFF = "2026-10-28";
 
+/**
+ * Recorded dispatch-line exceptions (Rule 22). A HISTORICAL miss can never be edited into the log,
+ * so without this the `--log` audit would block every merge forever. One exception per line:
+ * `<agent-id-prefix>  <reason>`; `#` lines are comments. Matching offenders are reported as
+ * acknowledged (with the reason), never as clean and never as failing. Local (`.pi/` is gitignored).
+ */
+const DISPATCH_EXCEPTIONS_DEFAULT = ".pi/jev-dispatch-exceptions.txt";
+
 /** The exact form a dispatch task must carry (Rule 22) — quoted verbatim in every failure. */
 const REQUIRED_DISPATCH_FORM = "jev: <level> (<0.xx>) · C<1|2|3> · worktree <y|n>";
 
@@ -343,9 +351,31 @@ function parseDispatchEvents(text) {
 			lineNumber: index + 1,
 			timestamp,
 			task: typeof task === "string" ? task : null,
+			agentId: typeof entry.data?.agentId === "string" ? entry.data.agentId : "",
 		});
 	});
 	return { events, unparsed };
+}
+
+/** Parse the exceptions file: `<agent-id-prefix>  <reason>`. A missing file means no exceptions. */
+function loadDispatchExceptions(path) {
+	let text;
+	try {
+		text = readFileSync(path, "utf8");
+	} catch {
+		return [];
+	}
+	const exceptions = [];
+	for (const raw of text.split("\n")) {
+		const line = raw.trim();
+		if (line === "" || line.startsWith("#")) continue;
+		const [prefix, ...rest] = line.split(/\s+/);
+		if (prefix.length < 7) {
+			console.error(`jev-check: exceptions: prefix ${JSON.stringify(prefix)} is shorter than 7 chars — it can match unrelated dispatches`);
+		}
+		exceptions.push({ prefix: prefix.toLowerCase(), reason: rest.join(" ").trim() || "(no reason recorded)" });
+	}
+	return exceptions;
 }
 
 /**
@@ -361,7 +391,7 @@ function eventDate(timestamp) {
  * Audit the dispatch log text. Throws StructuralError when no dispatch event parses at all: an
  * empty/rotated/unreadable log must fail loudly, never read as "every dispatch was clean".
  */
-function analyzeDispatchLog(text, cutoff) {
+function analyzeDispatchLog(text, cutoff, exceptions = []) {
 	const { events, unparsed } = parseDispatchEvents(text);
 	if (events.length === 0) {
 		throw new StructuralError(
@@ -371,11 +401,18 @@ function analyzeDispatchLog(text, cutoff) {
 	}
 	const relevant = events.filter((event) => eventDate(event.timestamp) >= cutoff);
 	const offenders = [];
+	const excepted = [];
 	for (const event of relevant) {
 		const audit = event.task === null ? { ok: false, reason: "spawn event carries no task payload — cannot audit" } : auditDispatchTask(event.task);
-		if (!audit.ok) offenders.push({ ...event, reason: audit.reason });
+		if (audit.ok) continue;
+		const exception = exceptions.find((entry) => event.agentId.toLowerCase().startsWith(entry.prefix));
+		if (exception) {
+			excepted.push({ ...event, reason: audit.reason, exception: exception.reason });
+		} else {
+			offenders.push({ ...event, reason: audit.reason });
+		}
 	}
-	return { events, relevant, offenders, unparsed };
+	return { events, relevant, offenders, excepted, unparsed };
 }
 
 /** Validate a `--since` value: a plain date, comparable to the ISO timestamps' date prefix. */
@@ -386,15 +423,23 @@ function normalizeSince(value) {
 	return value;
 }
 
-function reportDispatchLog(path, since) {
+function reportDispatchLog(path, since, exceptionsPath) {
 	const cutoff = since === undefined ? STRICT_DISPATCH_CUTOFF : normalizeSince(since);
+	const exceptions = loadDispatchExceptions(exceptionsPath ?? DISPATCH_EXCEPTIONS_DEFAULT);
 	let text;
 	try {
 		text = readFileSync(path, "utf8");
 	} catch (error) {
 		throw new StructuralError(`${path}: cannot read the subagent log (${describe(error)})`);
 	}
-	const { events, relevant, offenders, unparsed } = analyzeDispatchLog(text, cutoff);
+	const { events, relevant, offenders, excepted, unparsed } = analyzeDispatchLog(text, cutoff, exceptions);
+
+	if (excepted.length > 0) {
+		console.error(`jev-check: ${excepted.length} offending dispatch(es) carry a RECORDED exception:`);
+		for (const event of excepted) {
+			console.error(`  ${event.timestamp || `(no timestamp, line ${event.lineNumber})`}  ${clip(event.task ?? "", 60)}  — acknowledged: ${event.exception}`);
+		}
+	}
 
 	if (unparsed.length > 0) {
 		console.error(`jev-check: ${path}: ${unparsed.length} unparsed JSONL line(s) skipped (line ${unparsed[0]}…).`);
@@ -418,7 +463,8 @@ function reportDispatchLog(path, since) {
 	const skipped = events.length - relevant.length;
 	console.log(
 		`jev-check: ${events.length} dispatch event(s) parsed, ${relevant.length} since ${cutoff} — ` +
-			`every task carries a valid Rule 22 line${skipped > 0 ? ` (${skipped} pre-cutoff grandfathered)` : ""}.`,
+			`every task carries a valid Rule 22 line${excepted.length > 0 ? ` (${excepted.length} recorded exception(s))` : ""}` +
+			`${skipped > 0 ? ` (${skipped} pre-cutoff grandfathered)` : ""}.`,
 	);
 	return 0;
 }
@@ -457,13 +503,13 @@ function ledgerRow(date, dispatch, jevCell) {
 }
 
 /** One JSONL `Background agent spawned` event, shaped like the real subagent log. */
-function dispatchEvent(timestamp, task, message = DISPATCH_EVENT_MESSAGE) {
+function dispatchEvent(timestamp, task, message = DISPATCH_EVENT_MESSAGE, agentId = "fixture-agent") {
 	return JSON.stringify({
 		timestamp,
 		level: "info",
 		prefix: "brl-subagent",
 		message,
-		data: { agentId: "fixture-agent", task, model: "fixture/model" },
+		data: { agentId, task, model: "fixture/model" },
 	});
 }
 
@@ -712,6 +758,77 @@ const SELFTEST_CASES = [
 		},
 	},
 	{
+		name: "--log: a recorded exception acknowledges an offender without hiding it",
+		run() {
+			const { offenders, excepted } = analyzeDispatchLog(
+				dispatchLogFixture(
+					dispatchEvent("2026-10-28T09:00:00.000Z", "Legacy dispatch — no jev line.", DISPATCH_EVENT_MESSAGE, "a49e6e4f-ec0f-4540-b98c-b4aae0a197a5"),
+				),
+				STRICT_DISPATCH_CUTOFF,
+				[{ prefix: "a49e6e4f", reason: "classified high (0.39), line not pasted — conductor error" }],
+			);
+			assertEqual(offenders.length, 0, "offenders");
+			assertEqual(excepted.length, 1, "excepted");
+			if (!/line not pasted/.test(excepted[0].exception)) {
+				throw new Error(`excepted reason: got ${JSON.stringify(excepted[0].exception)}`);
+			}
+		},
+	},
+	{
+		name: "--log: a non-matching exception does not hide an offender (prefix match, case-insensitive)",
+		run() {
+			const { offenders, excepted } = analyzeDispatchLog(
+				dispatchLogFixture(
+					dispatchEvent("2026-10-28T09:00:00.000Z", "No line here.", DISPATCH_EVENT_MESSAGE, "bbbbbbbb-0000-0000-0000-000000000000"),
+				),
+				STRICT_DISPATCH_CUTOFF,
+				[{ prefix: "aaaaaaaa", reason: "some other dispatch" }],
+			);
+			assertEqual(offenders.length, 1, "offenders");
+			assertEqual(excepted.length, 0, "excepted");
+
+			const upper = analyzeDispatchLog(
+				dispatchLogFixture(
+					dispatchEvent("2026-10-28T09:00:00.000Z", "No line here.", DISPATCH_EVENT_MESSAGE, "ABCDEF12-0000-0000-0000-000000000000"),
+				),
+				STRICT_DISPATCH_CUTOFF,
+				[{ prefix: "abcdef12", reason: "case-insensitive prefix" }],
+			);
+			assertEqual(upper.offenders.length, 0, "case-insensitive offenders");
+			assertEqual(upper.excepted.length, 1, "case-insensitive excepted");
+		},
+	},
+	{
+		name: "--log: an exception prefix matching MID-STRING does not except (startsWith, not includes)",
+		run() {
+			const { offenders, excepted } = analyzeDispatchLog(
+				dispatchLogFixture(
+					dispatchEvent("2026-10-28T09:00:00.000Z", "No line here.", DISPATCH_EVENT_MESSAGE, "aaaabbbb-cccc-dddd-eeee-ffffffffffff"),
+				),
+				STRICT_DISPATCH_CUTOFF,
+				[{ prefix: "bbbb", reason: "matches only mid-string" }],
+			);
+			assertEqual(offenders.length, 1, "mid-string offenders");
+			assertEqual(excepted.length, 0, "mid-string excepted");
+		},
+	},
+
+	{
+		name: "--log: a valid line is never excepted (exceptions do not launder a clean dispatch)",
+		run() {
+			const { offenders, excepted } = analyzeDispatchLog(
+				dispatchLogFixture(
+					dispatchEvent("2026-10-28T09:00:00.000Z", "Task.\n\njev: medium (0.88) · C2 · worktree y", DISPATCH_EVENT_MESSAGE, "a49e6e4f-0000-0000-0000-000000000000"),
+				),
+				STRICT_DISPATCH_CUTOFF,
+				[{ prefix: "a49e6e4f", reason: "unused" }],
+			);
+			assertEqual(offenders.length, 0, "offenders");
+			assertEqual(excepted.length, 0, "excepted");
+		},
+	},
+
+	{
 		name: "--log: zero dispatch events is an error, never a silent pass",
 		run() {
 			assertRejects(() => analyzeDispatchLog("", STRICT_DISPATCH_CUTOFF), /no dispatch events parsed/, "empty log");
@@ -807,6 +924,8 @@ const USAGE = [
 	`                    every \`${DISPATCH_EVENT_MESSAGE}\` event dated >= ${STRICT_DISPATCH_CUTOFF}`,
 	"                    must carry a valid Rule 22 line. Conductor/merge-time (local log).",
 	"  --since YYYY-MM-DD  with --log: override the dispatch cutoff (legacy audit)",
+	`  --exceptions [path]  with --log: recorded-exception list (default: ${DISPATCH_EXCEPTIONS_DEFAULT});`,
+	"                    a matching offender prints as acknowledged, never as clean or failing",
 	"  --selftest        fixture proof of every mode (CI-wired)",
 ].join("\n");
 
@@ -814,9 +933,14 @@ const USAGE = [
 function parseLogArgs(args) {
 	let path;
 	let since;
+	let exceptions;
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index];
-		if (arg === "--since") {
+		if (arg === "--exceptions") {
+			if (index + 1 >= args.length) throw new StructuralError("--exceptions needs a path");
+			exceptions = args[index + 1];
+			index += 1;
+		} else if (arg === "--since") {
 			if (index + 1 >= args.length) throw new StructuralError("--since needs a YYYY-MM-DD date");
 			since = args[index + 1];
 			index += 1;
@@ -828,7 +952,7 @@ function parseLogArgs(args) {
 			throw new StructuralError(`--log takes at most one path (got ${JSON.stringify(path)} and ${JSON.stringify(arg)})`);
 		}
 	}
-	return { path: path ?? DEFAULT_SUBAGENT_LOG, since };
+	return { path: path ?? DEFAULT_SUBAGENT_LOG, since, exceptions };
 }
 
 function main(argv) {
@@ -840,8 +964,8 @@ function main(argv) {
 			return reportLedger(rest[0] ?? DEFAULT_LEDGER);
 		}
 		if (mode === "--log") {
-			const { path, since } = parseLogArgs(rest);
-			return reportDispatchLog(path, since);
+			const { path, since, exceptions } = parseLogArgs(rest);
+			return reportDispatchLog(path, since, exceptions);
 		}
 		if (mode === "--selftest") return runSelftest();
 		if (mode === "--help" || mode === "-h") {

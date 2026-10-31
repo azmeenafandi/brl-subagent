@@ -198,3 +198,13 @@ the dispatch **closes** (merge / rejection), not at dispatch time:
   input template above hands it that burden as facts; the calibration log measures whether
   it actually helps.
 - Evidence: `.development/investigations/jev-thinking-backtest-2026-10-10.md`.
+
+## Recorded exceptions (`--log`)
+
+A dispatch that went out without the line is a **historical** fact — the log is never edited, so
+`--log` would otherwise block every merge forever. `node .pi/skills/worktree/jev-check.mjs --log`
+reads `.pi/jev-dispatch-exceptions.txt` (local, gitignored; `--exceptions <path>` overrides):
+one `<agent-id-prefix>  <reason>` per line. A matching offender is reported as
+`acknowledged: <reason>` — never as clean, never as failing — and the ledger row for that
+dispatch is the record of record. An exception without a reason is rejected by review, not by
+the script.
