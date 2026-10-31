@@ -30,6 +30,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
+import { writeFileSync } from "node:fs";
+import * as path from "node:path";
 
 const h = vi.hoisted(() => ({
 	runSubagent: vi.fn(),
@@ -83,6 +85,17 @@ import { createTempEnv } from "./fixtures/temp-lifecycle";
 // ---------------------------------------------------------------------------
 
 const GLOBAL_MODEL = { provider: "test", id: "test/model" };
+const REPO_ROOT = path.resolve(__dirname, "..", "..");
+const VALID_LINE = `jev: high (0.44) · C2 · worktree y`;
+
+/** Opt this test's temp project in via the umbrella flag (issue #415). */
+function optIn(): void {
+	writeFileSync(
+		path.join(env.testCwd, "package.json"),
+		JSON.stringify({ name: "fixture-project", "brl-subagent": { processChecks: true } }),
+		"utf8",
+	);
+}
 
 interface SpawnParams {
 	task?: string;
@@ -268,6 +281,7 @@ afterAll(async () => {
 
 describe("resolveThinkingDispatchSwitch (rule 2's decision, pure)", () => {
 	const base = {
+		processChecks: true,
 		explicitBackground: false,
 		timeout: 900_000,
 		force: undefined,
@@ -314,6 +328,20 @@ describe("resolveThinkingDispatchSwitch (rule 2's decision, pure)", () => {
 			resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "high", force: true }),
 		).toBe("forced");
 	});
+
+	it("never switches when the project has not opted in (issue #415: the user's shape stands)", () => {
+		expect(
+			resolveThinkingDispatchSwitch({ ...base, processChecks: false, thinkingLevel: "high" }),
+		).toBe("none");
+		expect(
+			resolveThinkingDispatchSwitch({
+				...base,
+				processChecks: false,
+				thinkingLevel: "xhigh",
+				force: true,
+			}),
+		).toBe("none");
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -322,6 +350,7 @@ describe("resolveThinkingDispatchSwitch (rule 2's decision, pure)", () => {
 
 describe("auto-switch: high-thinking foreground + explicit timeout (issue #412)", () => {
 	it("auto-switches to background, drops the explicit timeout, and says so", async () => {
+		optIn();
 		const result = await dispatch({
 			task: "critique the plan",
 			thinkingLevel: "high",
@@ -347,6 +376,7 @@ describe("auto-switch: high-thinking foreground + explicit timeout (issue #412)"
 	});
 
 	it("records background:true in the retry snapshot (ordering: switch BEFORE snapshotOriginalParams)", async () => {
+		optIn();
 		await dispatch({
 			task: "critique the plan",
 			thinkingLevel: "xhigh",
@@ -380,6 +410,7 @@ describe("auto-switch: high-thinking foreground + explicit timeout (issue #412)"
 
 describe("auto-switch: force:true keeps the foreground shape (issue #412)", () => {
 	it("force:true runs foreground and preserves the explicit timeout", async () => {
+		optIn();
 		const result = await dispatch({
 			task: "read one file and answer inline",
 			thinkingLevel: "high",
@@ -436,6 +467,7 @@ describe("auto-switch: shapes it must NOT touch (issue #412)", () => {
 		// thinkingLevel: high — the caller declared no level at all, so a
 		// declared-only check would miss exactly this run. Presets are loaded by
 		// the session-start hook, so run it first (the other suites' pattern).
+		optIn();
 		await sessionStartHandler?.({}, makeCtx() as never);
 		const result = await dispatch({
 			task: "review the code for correctness",
@@ -466,5 +498,55 @@ describe("auto-switch: shapes it must NOT touch (issue #412)", () => {
 		expect(h.runSubagent).toHaveBeenCalledTimes(1);
 		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
 		expect(notices().some((m) => m.content?.includes(THINKING_SWITCH_NOTICE))).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #415 — the switch is project-local, not global
+//
+// #412 implemented a conductor decision rule as GLOBAL product behavior: any
+// user dispatching `high`/`xhigh` + `background:false` + an explicit timeout
+// got a background run with the 30-minute default instead. For a user an
+// explicit foreground timeout is usually a BUDGET CAP, so the switch could
+// triple time and cost against their instruction. The umbrella
+// `processChecks` flag now gates it; the two directions are pinned here.
+// ---------------------------------------------------------------------------
+
+describe("the switch is opt-in per project (issue #415)", () => {
+	it("USER PATH: no manifest field means the explicit foreground shape and its timeout stand", async () => {
+		// env.testCwd has no package.json at all — exactly a user's project.
+		const result = await dispatch({
+			task: "read one file and answer inline",
+			thinkingLevel: "high",
+			background: false,
+			timeout: 600_000,
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+		// Arg 8 of runSubagent is the foreground timeout: the user's cap survives.
+		expect(h.runSubagent.mock.calls[0]?.[8]).toBe(600_000);
+		expect(notices().some((m) => m.content?.includes(THINKING_SWITCH_NOTICE))).toBe(false);
+	});
+
+	it("OUR PATH: this repository (processChecks on) still gets the switch", async () => {
+		const ctx = makeCtx();
+		(ctx as { cwd: string }).cwd = REPO_ROOT;
+		const result = await dispatch(
+			{
+				task: `Review one file.\n\n${VALID_LINE}`,
+				thinkingLevel: "high",
+				background: false,
+				timeout: 900_000,
+			},
+			ctx,
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+		expect(h.runSubagent).not.toHaveBeenCalled();
+		expect(spawnArg().timeout).toBeUndefined();
+		expect(notices().some((m) => m.content?.includes(THINKING_SWITCH_NOTICE))).toBe(true);
 	});
 });
