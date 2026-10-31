@@ -14,6 +14,7 @@ Verified: d0cc223 (2026-10-31)
 - **Board:** **#407** (enforce the Jev line at `delegate_task`) · **#412** (three decision rules + the dispatch pre-flight + the AGENT.md boundary — **held**, one pass when the maintainer says) · **#402 dependabot typebox 1.4.3 HELD** (only open PR; host pins 1.3.27). **#411 closed** (merged #413).
 - **Cycle (post-v2.6.0): COMPLETE** (ritual 2026-10-31); #411 landed after it — **release checkpoint pending** (rule 6: extension code changed).
 - **Suite:** 92 files / 1855; `npx tsc --noEmit` clean; CodeGraph refreshed at `d0cc223`.
+- **Dispatch models (never guess):** implementers **`deepseek/deepseek-flash`** (the established model — no `model` override); reviewers **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic the `project-plan-critic` preset (qwen3.8-max-0902). The active run's record carries its literal `model` field.
 - **Merge gate:** `merge-guard.sh <pr> <record>` — CI + verdict + reviewed head/`conductor-verified:` + dispatch audit (exceptions in `.pi/jev-dispatch-exceptions.txt`).
 
 ### Since the last handover
