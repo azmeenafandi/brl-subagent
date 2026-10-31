@@ -443,7 +443,19 @@ function parseProvenanceLog(text) {
 		const raw = rows[index];
 		if (raw.trim() === "") continue;
 		if (raw.trimStart().startsWith("#")) {
-			const match = /^#.*\bcutoff\s+(\d{4}-\d{2}-\d{2})\s*$/.exec(raw.trim());
+			const trimmed = raw.trim();
+			// The cutoff is the log's creation INSTANT, not its date: a date-only cutoff
+			// treats every same-day dispatch as "since the cutoff", which would flag the
+			// dispatches that predate the log (the 2026-10-31 live case). No released log
+			// predates this feature, so a date-only header is a structural error rather
+			// than a silently weaker comparison.
+			if (/\bcutoff\s+\d{4}-\d{2}-\d{2}\s*$/.test(trimmed)) {
+				throw new StructuralError(
+					`${PROVENANCE_CUTOFF_PREFIX.trim()} is date-only — the cutoff must be a full ISO instant ` +
+						"(YYYY-MM-DDThh:mm:ss.sssZ); delete the log and reprint the next line with --label",
+				);
+			}
+			const match = /^#.*\bcutoff\s+(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)\s*$/.exec(trimmed);
 			if (match !== null) cutoff = match[1];
 			continue;
 		}
@@ -469,7 +481,7 @@ function appendProvenanceEntry(path, line, label, now = new Date()) {
 	} catch (error) {
 		if (error.code !== "ENOENT") throw new StructuralError(`${path}: cannot read the provenance log (${describe(error)})`);
 	}
-	const header = existing.trim() === "" ? `${PROVENANCE_CUTOFF_PREFIX}${now.toISOString().slice(0, 10)}\n` : "";
+	const header = existing.trim() === "" ? `${PROVENANCE_CUTOFF_PREFIX}${now.toISOString()}\n` : "";
 	mkdirSync(dirname(path), { recursive: true });
 	appendFileSync(path, `${header}${formatProvenanceEntry(line, label, now)}\n`);
 }
@@ -524,7 +536,10 @@ function analyzeDispatchLog(text, cutoff, exceptions = [], provenance = null) {
 			// Provenance (the Goodhart fix): a line in the right FORMAT can be invented. Only a
 			// line that `--line --label` printed has a row here. Gap lines are exempt — they
 			// record that the classifier did NOT run, so there is nothing to prove.
-			if (provenance !== null && !audit.gap && provenance.cutoff !== null && eventDate(event.timestamp) >= provenance.cutoff) {
+			const eventAt = Date.parse(event.timestamp);
+			const cutoffAt = provenance !== null && provenance.cutoff !== null ? Date.parse(provenance.cutoff) : NaN;
+			const sinceCutoff = Number.isFinite(cutoffAt) && (!Number.isFinite(eventAt) || eventAt >= cutoffAt);
+			if (provenance !== null && !audit.gap && sinceCutoff) {
 				if (!provenance.lines.has(audit.line)) {
 					offenders.push({
 						...event,
@@ -1058,7 +1073,7 @@ const SELFTEST_CASES = [
 				appendProvenanceEntry(path, "jev: high (0.44) · C1 · worktree n", "review", now);
 				const text = readFileSync(path, "utf8");
 				const parsed = parseProvenanceLog(text);
-				assertEqual(parsed.cutoff, "2026-11-02", "cutoff from the header");
+				assertEqual(parsed.cutoff, "2026-11-02T10:00:00.000Z", "cutoff from the header (full instant)");
 				assertEqual(parsed.entries.length, 2, "entries");
 				assertEqual(parsed.entries[0].label, "impl", "label");
 				assertEqual(parsed.entries[0].line, "jev: medium (0.84) · C2 · worktree y", "line");
@@ -1084,7 +1099,7 @@ const SELFTEST_CASES = [
 				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", "Task.\n\njev: medium (0.84) · C2 · worktree y")),
 				STRICT_DISPATCH_CUTOFF,
 				[],
-				{ cutoff: "2026-11-01", lines: new Set() },
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set() },
 			);
 			assertEqual(offenders.length, 1, "offenders");
 			if (!/no classifier provenance/.test(offenders[0].reason)) {
@@ -1099,7 +1114,7 @@ const SELFTEST_CASES = [
 				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", "Task.\n\njev: medium (0.84) · C2 · worktree y")),
 				STRICT_DISPATCH_CUTOFF,
 				[],
-				{ cutoff: "2026-11-01", lines: new Set(["jev: medium (0.84) · C2 · worktree y"]) },
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set(["jev: medium (0.84) · C2 · worktree y"]) },
 			);
 			assertEqual(offenders.length, 0, "offenders");
 		},
@@ -1112,7 +1127,7 @@ const SELFTEST_CASES = [
 				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", "Critique the plan.\n\njev: medium (0.7) · C2 · worktree n")),
 				STRICT_DISPATCH_CUTOFF,
 				[],
-				{ cutoff: "2026-11-01", lines: new Set(["jev: high (0.32) · C2 · worktree n"]) },
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set(["jev: high (0.32) · C2 · worktree n"]) },
 			);
 			assertEqual(offenders.length, 1, "offenders");
 		},
@@ -1124,9 +1139,45 @@ const SELFTEST_CASES = [
 				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", "Task.\n\njev: unavailable")),
 				STRICT_DISPATCH_CUTOFF,
 				[],
-				{ cutoff: "2026-11-01", lines: new Set() },
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set() },
 			);
 			assertEqual(offenders.length, 0, "offenders");
+		},
+	},
+	{
+		name: "--require-provenance: a SAME-DAY dispatch before the log's creation instant is exempt (2026-10-31 live case)",
+		run() {
+			// The live bug: the header carried a DATE, so every dispatch earlier that day was
+			// treated as "since the cutoff" and flagged. The cutoff is the creation instant.
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-10-31T04:55:14.181Z", "Task.\n\njev: medium (0.72) · C1 · worktree y")),
+				STRICT_DISPATCH_CUTOFF,
+				[],
+				{ cutoff: "2026-10-31T07:54:32.046Z", lines: new Set() },
+			);
+			assertEqual(offenders.length, 0, "offenders");
+		},
+	},
+	{
+		name: "--require-provenance: a SAME-DAY dispatch after the log's creation instant needs a row",
+		run() {
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-10-31T08:10:00.000Z", "Task.\n\njev: medium (0.76) · C2 · worktree y")),
+				STRICT_DISPATCH_CUTOFF,
+				[],
+				{ cutoff: "2026-10-31T07:54:32.046Z", lines: new Set() },
+			);
+			assertEqual(offenders.length, 1, "offenders");
+		},
+	},
+	{
+		name: "--require-provenance: a DATE-ONLY cutoff header is a structural error (fail-closed)",
+		run() {
+			assertRejects(
+				() => parseProvenanceLog("# jev-lines provenance — cutoff 2026-10-31\n2026-10-31T07:54:32.046Z\tc1\tjev: high (0.46) · C1 · worktree n\n"),
+				/date-only/,
+				"date-only cutoff",
+			);
 		},
 	},
 	{
@@ -1136,7 +1187,7 @@ const SELFTEST_CASES = [
 				dispatchLogFixture(dispatchEvent("2026-10-31T09:00:00.000Z", "Task.\n\njev: medium (0.84) · C2 · worktree y")),
 				STRICT_DISPATCH_CUTOFF,
 				[],
-				{ cutoff: "2026-11-01", lines: new Set() },
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set() },
 			);
 			assertEqual(offenders.length, 0, "offenders");
 		},
