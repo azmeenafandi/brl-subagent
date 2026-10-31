@@ -6,30 +6,33 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: d0cc223 (2026-10-31)
+Verified: db9cd51 (2026-10-31)
 
-- **dev** @ `d0cc223` — PR #413 merged. Only `dev` + `main`; worktrees: the cockpit pair only.
-- **Released:** v2.6.0 (2026-10-24, `main` @ `ef9f6be`, npm `latest`). **v2.7.0 proposed, NOT taken** — awaiting the maintainer's go; **#411 merged after the cycle ritual**, so the running install needs a `/reload` (dev toggle) or the release.
-- **Running install:** the DEV checkout (dogfood), pi **1.4.0**; deps `@earendil-works/*` ^1.4.0; `typebox` **1.3.27** (host pin).
-- **Board:** **#407** (enforce the Jev line at `delegate_task`) · **#412** (three decision rules + the dispatch pre-flight + the AGENT.md boundary — **held**, one pass when the maintainer says) · **#402 dependabot typebox 1.4.3 HELD** (only open PR; host pins 1.3.27). **#411 closed** (merged #413).
-- **Cycle (post-v2.6.0): COMPLETE** (ritual 2026-10-31); #411 landed after it — **release checkpoint pending** (rule 6: extension code changed).
-- **Suite:** 92 files / 1855; `npx tsc --noEmit` clean; CodeGraph refreshed at `d0cc223`.
-- **Dispatch models (never guess):** implementers **`deepseek/deepseek-flash`** (the established model — no `model` override); reviewers **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic the `project-plan-critic` preset (qwen3.8-max-0902). The active run's record carries its literal `model` field.
-- **Merge gate:** `merge-guard.sh <pr> <record>` — CI + verdict + reviewed head/`conductor-verified:` + dispatch audit (exceptions in `.pi/jev-dispatch-exceptions.txt`).
+- **dev** @ `db9cd51` — PR #414 merged. Only `dev` + `main`; worktrees: the cockpit pair only.
+- **Released:** v2.6.0 (2026-10-24, `main` @ `ef9f6be`, npm `latest`). **v2.7.0 NOT taken.** **Release checkpoint open:** #411 + #412 are merged but the running install is stale — `/reload` (dev toggle) or the release; reload/update is ALWAYS user-triggered.
+- **Running install:** the DEV checkout (dogfood); pi **1.4.0**; deps `@earendil-works/*` ^1.4.0; `typebox` **1.3.27** (host pin).
+- **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407 closed (folded into #412); #412 closed (merged #414).
+- **Cycle (post-v2.6.0): COMPLETE**; #411 + #412 landed after it. **Suite:** 95 files / **1920**; `npx tsc --noEmit` clean; CodeGraph fresh at `db9cd51`.
+- **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) **`--log --require-provenance`**.
+- **Dispatch models (never guess):** implementers **`deepseek/deepseek-flash`**; reviewers **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic the `project-plan-critic` preset (qwen3.8-max-0902).
+- **Jev provenance:** every dispatch line is printed by `node .pi/skills/worktree/jev-check.mjs --line '<json>' --label <label>` (appends to `.pi/jev-lines.log`, cutoff `2026-10-31T07:54:32Z`). A hand-typed line passes the format audit but fails the merge-gate provenance check.
+- **Local config (post-#412, gitignored):** the five local templates require `${jev}` (pass `params.jev`); the reviewer preset allows the `/tmp/REVIEW_<n>.md` record via bash.
 
 ### Since the last handover
-- **#411 merged** (PR #413, `d0cc223`): the resume preamble is a `<resume-context>` system-prompt entry; the wrapped task stays byte-identical; ADR **0017** (never an edit of 0001). Plan critique `needs-work` (2 blockers, 8 majors, all fixed); C1 `approve-with-nits` (2 doc nits fixed, `conductor-verified`).
-- Two silent-completion incidents: a foreground plan-critic killed at 15 min (work lost) and a C1 whose final message truncated with no verdict — both now require file-first records/banks.
+- **#411 merged** (PR #413): the retry resume context is system-side (`<resume-context>`); ADR 0017.
+- **#412 merged** (PR #414, `db9cd51`): rule 2's auto-switch (high/xhigh foreground + explicit timeout → background), the opt-in Jev gate (`package.json.brl-subagent.requireJevLine`), conformance vectors, the provenance log + merge-gate (e); ADR 0018; the three decision rules documented.
+- Two gate bugs found by using the gate: the provenance cutoff stored a date (fixed to the creation instant, `f85857e`), and the review record's head/verdict fields were missing/bulleted (record normalized; doc tightening pending).
 
 ### Next actions
-1. **Release checkpoint** (rule 6) — `/reload` the dev toggle or fold into v2.7.0; the maintainer decides.
-2. **#412** (held) — the three decision rules + the `delegate_task` pre-flight, one pass.
-3. **#407** — dispatch-line enforcement with an explicit override (ADR 0007 pattern).
+1. **Release checkpoint** — `/reload` or v2.7.0; the maintainer decides.
+2. **#402 held**; the "bare `Verdict:` line (no bullet)" doc nit is optional.
+3. The first post-reload dispatch exercises rule 2 and the line check for real.
 
 ## Open items
-- **#407 · #412 (held) · #402 held** — re-evaluate #402 only when pi's typebox pin moves.
-- **Sweep candidates (advisory):** `merge-guard` check (f) CodeGraph freshness (now exercised manually each merge); `sprint-metrics` auto-retry accounting; `stop_subagent`'s bare not-found; Jev exceptions ↔ ledger cross-check; plan-critic cost discipline.
-- **ADR amendments pending:** 0009 (the retry snapshot carries `task`; attempt context never recorded), 0003 (the durable agent record is the lineage source; metrics read lineage), 0006 (slotless templates are unusable).
+- **#402 held** — re-evaluate only when pi's typebox pin moves.
+- **Doc nit (optional):** `review-dispatch.md` should say a *bare* `Verdict:` line (no list bullet) — a bullet blocked check (c) today, normalized by hand.
+- **Sweep candidates (advisory):** `sprint-metrics` auto-retry accounting; `stop_subagent`'s bare not-found; plan-critic cost discipline; the pre-flight's effect on foreground template dispatches is unmeasured.
+- **ADR amendments still pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
 
 ## Operating notes
 - **Dispatch line (Rule 22):** every dispatch carries `jev: <level> (<conf>) · Cx · worktree y|n`; manual until #407. `jev-check --log` audits it; historical misses live in `.pi/jev-dispatch-exceptions.txt` with reasons + a ledger row.
