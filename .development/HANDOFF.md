@@ -6,32 +6,31 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: db9cd51 (2026-10-31)
+Verified: 7118862 (2026-10-31)
 
-- **dev** @ `db9cd51` — PR #414 merged. Only `dev` + `main`; worktrees: the cockpit pair only.
-- **Released:** v2.6.0 (2026-10-24, `main` @ `ef9f6be`, npm `latest`). **v2.7.0 NOT taken.** **Release checkpoint open:** #411 + #412 are merged but the running install is stale — `/reload` (dev toggle) or the release; reload/update is ALWAYS user-triggered.
-- **Running install:** the DEV checkout (dogfood); pi **1.4.0**; deps `@earendil-works/*` ^1.4.0; `typebox` **1.3.27** (host pin).
-- **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407 closed (folded into #412); #412 closed (merged #414).
-- **Cycle (post-v2.6.0): COMPLETE**; #411 + #412 landed after it. **Suite:** 95 files / **1920**; `npx tsc --noEmit` clean; CodeGraph fresh at `db9cd51`.
-- **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) **`--log --require-provenance`**.
+- **dev** @ `7118862` — PR #416 merged. Only `dev` + `main`; worktrees: the cockpit pair only.
+- **Released:** v2.6.0 (2026-10-24, `main` @ `ef9f6be`, npm `latest`). **v2.7.0 NOT taken.** **Release checkpoint open.**
+- **Running install:** DEV checkout (dogfood), pi **1.4.0**; deps ^1.4.0; typebox **1.3.27** (host pin). Reloaded after #412, **NOT after #415** — the running build reads the old `requireJevLine` (which #416 removed), so the line check is effectively off and the global shape switch is still live **until the next `/reload`** (user-triggered).
+- **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415 closed (folded/merged).
+- **Cycle (post-v2.6.0): COMPLETE**; #411/#412/#415 landed after it. **Suite:** 96 files / **1940**; tsc clean; CodeGraph fresh at `7118862`.
+- **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`.
 - **Dispatch models (never guess):** implementers **`deepseek/deepseek-flash`**; reviewers **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic the `project-plan-critic` preset (qwen3.8-max-0902).
-- **Jev provenance:** every dispatch line is printed by `node .pi/skills/worktree/jev-check.mjs --line '<json>' --label <label>` (appends to `.pi/jev-lines.log`, cutoff `2026-10-31T07:54:32Z`). A hand-typed line passes the format audit but fails the merge-gate provenance check.
-- **Local config (post-#412, gitignored):** the five local templates require `${jev}` (pass `params.jev`); the reviewer preset allows the `/tmp/REVIEW_<n>.md` record via bash.
+- **Jev provenance:** every line printed by `node .pi/skills/worktree/jev-check.mjs --line '<json>' --label <label>` (rows in `.pi/jev-lines.log`).
+- **Project flag:** the cockpit's `package.json` opts in: `{"brl-subagent": {"processChecks": true}}` — the single umbrella (ADR 0019) gating the Jev line + the shape switch; fail-open; single reader (ratchet-tested). Local templates require `${jev}`; the reviewer preset allows `/tmp/REVIEW_<n>.md`.
 
 ### Since the last handover
-- **#411 merged** (PR #413): the retry resume context is system-side (`<resume-context>`); ADR 0017.
-- **#412 merged** (PR #414, `db9cd51`): rule 2's auto-switch (high/xhigh foreground + explicit timeout → background), the opt-in Jev gate (`package.json.brl-subagent.requireJevLine`), conformance vectors, the provenance log + merge-gate (e); ADR 0018; the three decision rules documented.
-- Two gate bugs found by using the gate: the provenance cutoff stored a date (fixed to the creation instant, `f85857e`), and the review record's head/verdict fields were missing/bulleted (record normalized; doc tightening pending).
+- **#415 merged** (PR #416, `7118862`): #412's global shape switch scoped behind `processChecks`; the user path is pinned (explicit foreground + timeout stand, no notice); ADR 0019 supersedes the global scope of 0018.
+- The #415 implementer's first attempt died on transport; the auto-retry resumed and completed (the #401/#404/#411 machinery, now with the system-side resume context).
 
 ### Next actions
-1. **Release checkpoint** — `/reload` or v2.7.0; the maintainer decides.
-2. **#402 held**; the "bare `Verdict:` line (no bullet)" doc nit is optional.
-3. The first post-reload dispatch exercises rule 2 and the line check for real.
+1. **`/reload`** — to load #415 (until then the line check is off and the global switch is live in this checkout).
+2. **v2.7.0** — the maintainer's decision (no calendar pressure).
+3. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
 
 ## Open items
 - **#402 held** — re-evaluate only when pi's typebox pin moves.
-- **Doc nit (optional):** `review-dispatch.md` should say a *bare* `Verdict:` line (no list bullet) — a bullet blocked check (c) today, normalized by hand.
-- **Sweep candidates (advisory):** `sprint-metrics` auto-retry accounting; `stop_subagent`'s bare not-found; plan-critic cost discipline; the pre-flight's effect on foreground template dispatches is unmeasured.
+- **Doc nit (optional):** `review-dispatch.md` should say a *bare* `Verdict:` line (no list bullet).
+- **Sweep candidates (advisory):** `sprint-metrics` auto-retry accounting; `stop_subagent`'s bare not-found; plan-critic cost discipline; the release-ritual tarball smoke (added by #415) is not yet exercised.
 - **ADR amendments still pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
 
 ## Operating notes
