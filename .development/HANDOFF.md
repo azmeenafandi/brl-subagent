@@ -9,179 +9,36 @@
 Verified: 336fdac (2026-10-31)
 
 - **dev** @ `336fdac` — `git log -1 --oneline dev`. Only `dev` + `main`; worktrees: the cockpit pair only.
-- **Released:** v2.6.0 (2026-10-24, `main` @ `ef9f6be`, npm `latest`). **v2.7.0 proposed, NOT taken** — the cycle ritual ran (2026-10-31) and the release awaits the maintainer's go; no date pressure.
+- **Released:** v2.6.0 (2026-10-24, `main` @ `ef9f6be`, npm `latest`). **v2.7.0 proposed, NOT taken** — the cycle ritual ran (2026-10-31); the release awaits the maintainer's go, no date pressure.
 - **Running install:** the DEV checkout (dogfood); pi **1.4.0**; deps `@earendil-works/*` ^1.4.0; `typebox` **1.3.27** (host pin) — `pi list`, `cat package.json`.
-- **Board:** **#411** (ADR 0001: the #401 resume preamble sits inside the task fence — bug, C2/C1) · **#407** (enforce the Jev line at `delegate_task`; needs an explicit override per ADR 0007) · **#402 dependabot typebox 1.4.3 HELD** — the only open PR (host pins 1.3.27; 1.4.2 verified a no-op for our surface). #364 closed (superseded by #402).
-- **Cycle (post-v2.6.0): COMPLETE.** Audit #368; P0s #365/#366; smell audit #372; sweep #374 (6/6, jscpd 10/70 28 → 0); handoff follow-ups #393/#394; lineage #396; resume preamble #401; transport-session retention #404; store permissions #408; gate fixes #395/#397/#399/#400/#405. **Ritual recorded** (`FRICTION_LOG`, cycle row): 60 dispatches, 79.1% success, zero-work 1, polling 0.15/dispatch; **15 auto-retries uncounted by `sprint-metrics`** (flagged defect).
-- **Suite:** 92 files / 1849 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget, README count, prose guard, Jev ledger, runtime vocabulary.
-- **Merge gate:** `merge-guard.sh <pr> <record>` (SKILL.md step 7) — CI + verdict + reviewed-head/disposition + dispatch audit. Handoff mechanism live.
+- **Board:** **#411** (ADR 0001: the #401 resume preamble sits inside the task fence — bug, C2/C1) · **#407** (enforce the Jev line at `delegate_task`; needs an explicit override per ADR 0007) · **#402 dependabot typebox 1.4.3 HELD** — the only open PR (host pins 1.3.27; 1.4.2 verified a no-op). #364 closed (superseded).
+- **Cycle (post-v2.6.0): COMPLETE.** Audit #368; P0s #365/#366; smell audit #372; sweep #374 (6/6, jscpd 10/70 28 → 0); handoff follow-ups #393/#394; lineage #396; resume preamble #401; session retention #404; store permissions #408; gate fixes #395/#397/#399/#400/#405. **Ritual recorded** (`FRICTION_LOG`): 60 dispatches, 79.1% success, polling 0.15/dispatch; **15 auto-retries uncounted by `sprint-metrics`** (flagged).
+- **Suite:** 92 files / 1849; `npx tsc --noEmit` clean. CI: budget, README count, prose guard, Jev ledger, runtime vocabulary.
+- **Merge gate:** `merge-guard.sh <pr> <record>` (SKILL.md step 7) — CI + verdict + reviewed-head/disposition + dispatch audit.
 
 ### Since the last handover
-- #396, #401, #404, #408 merged (PRs #406, #403, #409, #410), reviewed C2/C2/C1/C1; the plan critic (preset `project-plan-critic`) caught 2 blockers on #396 and 6 majors on #404.
-- ADR audit (2026-10-31): **#411 filed** (0001 × #401 — the preamble is on the data side of the fence); ADR amendments pending (0009, 0003); 0006's slotless-template defect fixed locally.
+- #396, #401, #404, #408 merged (PRs #406, #403, #409, #410), reviewed C2/C2/C1/C1; the plan critic caught 2 blockers on #396 and 6 majors on #404.
+- ADR audit (2026-10-31): **#411 filed** (0001 × #401); ADR amendments pending (0009, 0003); the slotless-template defect fixed locally.
 
 ### Next actions
-1. **v2.7.0 release** — needs the maintainer's go; then the release ritual (release PR dev→main, bump, tag, staged publish for approval).
+1. **v2.7.0 release** — the maintainer's go; then the release ritual (release PR dev→main, bump, tag, staged publish for approval).
 2. **#411** (fence fix, C1 review) → **#407** (dispatch-line enforcement with an explicit override, per ADR 0007).
-3. ADR amendments 0009 (`originalParams.task`) and 0003 (lineage/metrics source) + the sweep candidates.
+3. ADR amendments 0009/0003 + the sweep candidates.
 
 ## Open items
 - **#411 · #407** (above) · **#402 held** (typebox 1.4.3 — re-evaluate only when pi's typebox pin moves).
-- **Sweep candidates (advisory):** `merge-guard` check (f) CodeGraph freshness; `sprint-metrics` auto-retry accounting; `stop_subagent`'s bare not-found string (#396 non-goal); Jev exceptions ↔ ledger cross-check; plan-critic cost discipline ($0.52/run — C1/C2 plans only).
-- **ADR amendments pending:** 0009 (the retry snapshot now carries `task`; attempt context is never recorded), 0003 (the durable agent record is the lineage source; metrics must read lineage), 0006 (a template with no `${slot}` is unusable — `delegate_task` ignores the task when a template is given).
+- **Sweep candidates (advisory):** `merge-guard` check (f) CodeGraph freshness; `sprint-metrics` auto-retry accounting; `stop_subagent`'s bare not-found string; Jev exceptions ↔ ledger cross-check; plan-critic cost discipline ($0.52/run — C1/C2 plans only).
+- **ADR amendments pending:** 0009 (retry snapshot now carries `task`; attempt context never recorded), 0003 (the durable agent record is the lineage source; metrics must read lineage), 0006 (a template with no `${slot}` is unusable).
 
 ## Operating notes
-- **Dispatch line (Rule 22):** every dispatch carries `jev: <level> (<conf>) · Cx · worktree y|n`; manual until #407 lands. `jev-check --log` audits it; historical misses live in `.pi/jev-dispatch-exceptions.txt` with reasons + a ledger row.
-- **Banking:** implementation and plan-critique briefs name `/tmp/brl-<label>-bank.md`; commit per step. A transport auto-retry's preamble resumes from the worktree, the bank and the retained session (#401/#404).
-- **Wake delivery:** background completion wakes arrive promptly when idle and are queued mid-turn (pi's follow-up queueing).
-- **Dispatch conventions:** implementers run the configured default at `low`/`medium`; reviewers pin a model explicitly at `medium`+ (never the config default). **Reviewer model: `openrouter/meta/muse-spark-1.3-contributor`.** Plan critic: preset `project-plan-critic` (qwen3.8-max-0902, `inheritSystemPrompt: false`).
-- **Releases:** no calendar pressure. Do not propose or schedule a release while a known fix is open — the cycle closes when the work is done.
-- **Reviews:** C1 adversarial (project-reviewer), C2 focused, C3 conductor read (Rule 10). After a verdict: re-review the new head, or record `conductor-verified: <sha> — <evidence>` for nits.
-- **Gates:** `npx vitest run` · `npx tsc --noEmit` · `node scripts/docs-arch.mjs` · `node scripts/docs-decisions.mjs` · `git diff --check` · **merge step 7 `codegraph-refresh.sh`** (never automatic; check (f) pending).
-- **Never `npm install` in the cockpit** — `worktree-prep.sh` is the only provisioning path (Rule 2). `.pi/brl-subagent/{presets,templates}` are gitignored local config.
-
-## Pointers`.
-> §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
-> `Verified:` staleness line; the write contract is `.pi/skills/handoff/references/handoff.md`.
-> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
-
-## STATE
-Verified: f1ece22 (2026-10-25)
-
-- **dev** @ `941b8fd` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
-- **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
-- **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
-- **Board:** **#407 open only** (enforce the Rule 22 line at `delegate_task` time — process, not a shipped defect) · **#364 held** (typebox, host pin). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
-- **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
-- **Cycle (post-v2.6.0): OPEN — all work landed.** Test-suite audit (#368), P0s (#365 auto-retry, #366 Jev check), smell audit (#372), the sweep (#374), and the handoff follow-ups (#393 staleness ignore + conservative range judging, #394 extension typecheck — PR #395 `2a0142b`). **Only the release decision remains.**
-- **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
-- **Notification channel:** `brl-notifications-fa9@clawmail.me` (claimed) — autonomous-run decisions only; token in `~/.config/brl-notifications/clawmail.env` (never in the repo).
-- **Handoff mechanism:** LIVE (PR #353) — injection + staleness line + `/handoff` + `/handoff mark`; all five live checks passed (2026-10-17/18).
-
-### Since the last handover
-- Three recurrence-guards merged (PR #397): prep smoke log retained, `merge-guard.sh` (CI + verdict + reviewed-head/disposition + dispatch audit) is now the merge gate (SKILL.md step 7), `jev-check --log` audits dispatch payloads. #396 filed for the shipped `get_subagent_result` lineage fix.
-- #393/#394 merged (PR #395, two review rounds: merge/rename path holes + a truncated-stream gap, all fixed and mutation-proven). The handoff hook now ignores its own commits and judges ranges conservatively; extension code is typechecked.
-- Typebox 1.4.2 experiment: a no-op for our surface; held for host parity (record: `typebox-1.4.2-experiment-2026-10-27.md`).
-- Friction: `pre-dispatch Jev skipped` ×3 today (incl. the #395 fix dispatch) — the ledger-only check cannot see a skipped dispatch; `jev-check --log` proposed.
-
-### Next actions
-1. **No release date.** Finish the known fixes first, then the cycle-end ritual and the release — a clean release waits for the work, never the calendar.
-   - **#401 — DONE** (PR #403 `9bc0526`): prompt-only resume preamble + banking in every brief; the transcript pointer was removed after verification (dead end) — #404 tracks the retention that would make it real. Gate follow-up merged: PR #405 (recorded Jev dispatch exceptions).
-   - **#396 — DONE** (PR #406 `6ea050d`): retry lineage in `get_subagent_result` (id-prefix resolution, `dispatchId` family, found-terminal `Superseded by`, registry text, bounded scan; 13-test falsifier suite). Review: approve-with-nits, all resolved.
-   - **#404 — DONE** (PR #409 `3ca9e31`): a transport-failed attempt-1 run's session is retained (marker + bounded sweep, K=5/50MB/14d, current exempt, fail-closed marker, <2KB floor) and the #401 preamble names it as an absolute path. C1 review: approve-with-nits, both resolved.
-   - **#407** — enforce the Rule 22 line at `delegate_task` time (the manual paste failed 3× on 2026-10-31) — needs its own plan (test churn/bypass decision), likely next cycle.
-   - **#408 — DONE** (PR #410 `941b8fd`): owner-only repair on every write, no-follow symlinks, live dirs chmod'ed 700. C1 review: approve-with-nits, all resolved.
-2. #364 stays held until pi's typebox pin moves.
-
-## Open items` → follow `## Pointers`.
-> §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
-> `Verified:` staleness line; the write contract is `.pi/skills/handoff/references/handoff.md`.
-> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
-
-## STATE
-Verified: f1ece22 (2026-10-25)
-
-- **dev** @ `941b8fd` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
-- **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
-- **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
-- **Board:** **#407 open only** (enforce the Rule 22 line at `delegate_task` time — process, not a shipped defect) · **#364 held** (typebox, host pin). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
-- **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
-- **Cycle (post-v2.6.0): OPEN — all work landed.** Test-suite audit (#368), P0s (#365 auto-retry, #366 Jev check), smell audit (#372), the sweep (#374), and the handoff follow-ups (#393 staleness ignore + conservative range judging, #394 extension typecheck — PR #395 `2a0142b`). **Only the release decision remains.**
-- **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
-- **Notification channel:** `brl-notifications-fa9@clawmail.me` (claimed) — autonomous-run decisions only; token in `~/.config/brl-notifications/clawmail.env` (never in the repo).
-- **Handoff mechanism:** LIVE (PR #353) — injection + staleness line + `/handoff` + `/handoff mark`; all five live checks passed (2026-10-17/18).
-
-### Since the last handover
-- Three recurrence-guards merged (PR #397): prep smoke log retained, `merge-guard.sh` (CI + verdict + reviewed-head/disposition + dispatch audit) is now the merge gate (SKILL.md step 7), `jev-check --log` audits dispatch payloads. #396 filed for the shipped `get_subagent_result` lineage fix.
-- #393/#394 merged (PR #395, two review rounds: merge/rename path holes + a truncated-stream gap, all fixed and mutation-proven). The handoff hook now ignores its own commits and judges ranges conservatively; extension code is typechecked.
-- Typebox 1.4.2 experiment: a no-op for our surface; held for host parity (record: `typebox-1.4.2-experiment-2026-10-27.md`).
-- Friction: `pre-dispatch Jev skipped` ×3 today (incl. the #395 fix dispatch) — the ledger-only check cannot see a skipped dispatch; `jev-check --log` proposed.
-
-### Next actions
-1. **Release v2.7.0 held until SAT 2026-10-31 / SUN 2026-11-01** (maintainer, 2026-10-27) — awaiting a possible pi release this week. If pi ships: run the **vendor-parity unit first** (release notes break-by-break, deps bump, API diff, suite, parity PR → dev), then the cycle-end ritual (Rule 11, trust metrics, env sweep, retros) and the release sequence. pi `latest` today = **1.4.0** (installed); dependabot's next visit is also 31 Oct, so the release lands after it.
-2. #364 stays held until pi's typebox pin moves.
-3. A `/reload` picks up the #395 handoff fix (the current session still runs the old hook).
-
-## Open items` → follow `## Pointers`.
-> §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
-> `Verified:` staleness line; the write contract is `.pi/skills/handoff/references/handoff.md`.
-> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
-
-## STATE
-Verified: f1ece22 (2026-10-25)
-
-- **dev** @ `941b8fd` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
-- **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
-- **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
-- **Board:** **#407 open only** (enforce the Rule 22 line at `delegate_task` time — process, not a shipped defect) · **#364 held** (typebox, host pin). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
-- **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
-- **Cycle (post-v2.6.0): OPEN — all work landed.** Test-suite audit (#368), P0s (#365 auto-retry, #366 Jev check), smell audit (#372), the sweep (#374), and the handoff follow-ups (#393 staleness ignore + conservative range judging, #394 extension typecheck — PR #395 `2a0142b`). **Only the release decision remains.**
-- **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
-- **Notification channel:** `brl-notifications-fa9@clawmail.me` (claimed) — autonomous-run decisions only; token in `~/.config/brl-notifications/clawmail.env` (never in the repo).
-- **Handoff mechanism:** LIVE (PR #353) — injection + staleness line + `/handoff` + `/handoff mark`; all five live checks passed (2026-10-17/18).
-
-### Since the last handover
-- Three recurrence-guards merged (PR #397): prep smoke log retained, `merge-guard.sh` (CI + verdict + reviewed-head/disposition + dispatch audit) is now the merge gate (SKILL.md step 7), `jev-check --log` audits dispatch payloads. #396 filed for the shipped `get_subagent_result` lineage fix.
-- #379 commits 3–4 merged (PRs #391/#392), each C2-reviewed (approve-with-nits with 1 informational; then approve, 0 findings).
-- **The sweep closed:** #379 and #374 closed; board empty. #365's auto-retry recovered 5 transport drops today (5/5 succeeded; 0 re-work).
-
-### Next actions
-1. The two handoff follow-ups (the `Verified:` self-commit lag; `.pi/extensions/**` typechecking).
-2. #364 stays held (typebox at the host pin); no release decision this cycle yet.
-
-## Open items` → follow `## Pointers`.
-> §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
-> `Verified:` staleness line; the write contract is `.pi/skills/handoff/references/handoff.md`.
-> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
-
-## STATE
-Verified: 10eca8b (2026-10-25)
-
-- **dev** @ `10eca8b` — `git log -1 --oneline dev`. Only `dev` + `main`; one worktree, `brl-subagent-wt-379-impl` (active on #379 commit 4).
-- **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
-- **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; the dev-only transport auto-retry is live). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
-- **Board:** **#374 (sweep parent) + #379 open**; the other five sweep sub-issues #376–#378, #380, #381 merged; #375 merged; **#364 (typebox 1.4.2) held** — `gh issue list`, `gh pr list`. PRs target `dev` → **`Fixes #N` does not auto-close** (close manually).
-- **Sweep (from the smell audit #372):** 5/6 units merged, jscpd 28 → 9 fragments. **#379 (design-first): commits 1–3 merged** — typed resolver input (#389), 20 gate-order pins (#390), per-unit pre-pass helper (#391). **Commit 4 (batch prologue) IN FLIGHT — run `99f4e815`**: on completion verify the 20 pins **unmodified** → C2 review → merge → close #379 + #374 → records.
-- **Cycle (post-v2.6.0): OPEN** — its work: test-suite audit (#368), P0s (#365 transport auto-retry, #366 Jev check), smell audit (#372), the sweep (#374). Remaining: #379 (in flight), then the two handoff follow-ups.
-- **Suite:** 89 files / 1786 — `npx vitest run`; `npx tsc --noEmit` clean. Commit 4 may add tests. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
-- **Notification channel:** `brl-notifications-fa9@clawmail.me` (claimed 2026-10-25) — autonomous-run decisions only; token in `~/.config/brl-notifications/clawmail.env` (never in the repo).
-- **Handoff mechanism:** LIVE (PR #353) — injection + staleness line + `/handoff` + `/handoff mark`; all five live checks passed (2026-10-17/18).
-
-### Since the last handover
-- Three recurrence-guards merged (PR #397): prep smoke log retained, `merge-guard.sh` (CI + verdict + reviewed-head/disposition + dispatch audit) is now the merge gate (SKILL.md step 7), `jev-check --log` audits dispatch payloads. #396 filed for the shipped `get_subagent_result` lineage fix.
-- Test-suite audit (#368/PR #369): the CI budget guard; prune zero + one pin.
-- #365 transport auto-retry (PR #370) and #366 the mechanical Jev check (PR #371) merged.
-- Smell audit (#372/PR #373): no write-time coach — the spend became the sweep (#374) and the vocabulary/guide + prose guard (#375/PR #382).
-- The sweep: #376/#377/#378/#380/#381 merged; #379 commits 1–3 merged; commit 4 in flight.
-
-### Next actions
-1. **Finish #379**: on `99f4e815`'s completion — verify the pins → C2 review → merge → close #379 and #374 → records. Then the sweep is 6/6.
-2. The two handoff follow-ups (the `Verified:` self-commit lag; `.pi/extensions/**` typechecking).
-3. #364 stays held (typebox at the host pin); no release decision this cycle yet.
-
-## Open items
-- **Handoff follow-ups (design observations from #353's review):** the `Verified:` self-commit lag (the hook could ignore the handoff's own commit in the staleness delta); `.pi/extensions/**` is not typechecked by `tsc --noEmit` (`tsconfig.include` = `src/**`).
-- **Dependabot policy:** `typebox` is held at the pi host pin; future bumps are held until the host moves. No `ignore` entries (awareness preserved; #364 is the signal).
-- **No other pinned backlog.** The menu cycle's carried nits and the duplication backlog were superseded by the sweep; the review records remain in `.development/investigations/`.
-
-## Operating notes
-- **Wake delivery:** background completion wakes arrive promptly when the conductor is idle, and
-  queued (28–567 s) mid-turn — pi's follow-up queueing, not a defect
-  (`.development/INVESTIGATION_reload_wake.md`).
-- **Dispatch conventions:** implementers run the configured default at `low`; reviewers pin a model
-  explicitly at `medium` (never the config default). Skill workflows that need `delegate_task` run in
-  the conductor — subagents have no dispatch.
-- **Releases:** no calendar pressure. Do not propose or schedule a release while a known fix is open — the cycle closes when the work is done. (Maintainer, 2026-10-31.)
-- **Reviews:** C1 adversarial (project-reviewer), C2 focused, C3 conductor read (Rule 10). **Reviewer model:
-  `openrouter/meta/muse-spark-1.3-contributor`** (standing). The gpt-6-luna run was an old one-off trial and is
-  closed — after a compaction, check the last dispatch artifact (subagent log / ledger row) for the current
-  convention instead of trusting a summary's preference list.
-- **Gates:** `npx vitest run` · `npx tsc --noEmit` · `node scripts/docs-arch.mjs` ·
-  `node scripts/docs-decisions.mjs` · `git diff --check`. **Merge step 7: run `codegraph-refresh.sh`** — the
-  structural index is a gate (never automatic; `codegraph-check.py` must pass: coverage + built from HEAD).
-- **Never `npm install` in the cockpit** — `worktree-prep.sh` is the only provisioning path (Rule 2).
-- **Jev (Rule 22):** strict — any deviation carries a one-line reason; calibration log at
-  `.development/investigations/jev-calibration-log.md`.
+- **Dispatch line (Rule 22):** every dispatch carries `jev: <level> (<conf>) · Cx · worktree y|n`; manual until #407. `jev-check --log` audits it; historical misses live in `.pi/jev-dispatch-exceptions.txt` with reasons + a ledger row.
+- **Banking:** implementation and plan-critique briefs name `/tmp/brl-<label>-bank.md`; commit per step. A transport auto-retry resumes from the worktree, the bank and the retained session (#401/#404).
+- **Wake delivery:** wakes are prompt when idle, queued mid-turn (pi's follow-up queueing).
+- **Dispatch conventions:** implementers at the configured default, `low`/`medium`; reviewers pin a model at `medium`+ (never the config default). **Reviewer model: `openrouter/meta/muse-spark-1.3-contributor`.** Plan critic: preset `project-plan-critic` (qwen3.8-max-0902, `inheritSystemPrompt: false`).
+- **Releases:** no calendar pressure; do not propose one while a known fix is open.
+- **Reviews:** C1 adversarial, C2 focused, C3 conductor read (Rule 10). After a verdict: re-review the new head, or record `conductor-verified: <sha> — <evidence>` for nits.
+- **Gates:** `npx vitest run` · `npx tsc --noEmit` · `node scripts/docs-arch.mjs` · `node scripts/docs-decisions.mjs` · `git diff --check` · **merge step 7 `codegraph-refresh.sh`** (check (f) pending).
+- **Never `npm install` in the cockpit** — `worktree-prep.sh` only (Rule 2). `.pi/brl-subagent/{presets,templates}` are gitignored local config.
 
 ## Pointers
 - `.pi/skills/worktree/SKILL.md` — lifecycle (step 0 = read §STATE), rituals, team rules.
