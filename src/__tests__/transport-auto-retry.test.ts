@@ -583,20 +583,21 @@ describe("deliverCompletionAlert — transport auto-retry (issue #365)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. The resume preamble (issue #401)
+// 3. The resume preamble (issues #401, #411)
 //
 // The retry used to replay the identical task, so attempt 2 re-read, re-planned
-// and re-wrote what attempt 1 had already done. The fix prefixes the CHILD'S
-// PROMPT with a bounded inspect-first block. Two invariants are pinned here:
+// and re-wrote what attempt 1 had already done. The fix delivers a bounded
+// inspect-first block on the CHILD'S SYSTEM PROMPT (a `<resume-context>` entry;
+// #411 moved it there, out of the `<task>` fence). Two invariants are pinned here:
 //
 //   1. the preamble is present (marker, source id, bank path), names no
 //      start/steering stub, and names the retained session directory ONLY when
 //      it exists (issue #404) — with an ABSOLUTE path, since the retry's child
 //      can run in a different cwd;
-//   2. the preamble is prompt-only — `resolveSubagentParams` and the H1
+//   2. the preamble is system-prompt-only — `resolveSubagentParams` and the H1
 //      pre-task validation still see the RECORDED ORIGINAL task, so routing,
 //      thinking level, model and capability warnings cannot be steered by text
-//      the runtime composed itself.
+//      the runtime composed itself; the wrapped task stays byte-identical.
 // ---------------------------------------------------------------------------
 
 /** The code-reviewer guidance is the resolution evidence for the routing pin. */
