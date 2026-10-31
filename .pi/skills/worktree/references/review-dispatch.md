@@ -46,6 +46,15 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   it goes (bash-side). The verdict still lives in the final response; banking
   exists so a drop/timeout leaves a resumable artifact (Rule 21's live
   artifact) — a re-dispatch then starts with "read the banked file first".
+- **The record is written to `/tmp/REVIEW_<n>.md` with bash BEFORE the final
+  message** — `cat > /tmp/REVIEW_<n>.md <<'EOF' … EOF`, then the same content
+  in the final response. `/tmp` is scratch, not a repo path, so the read-only
+  reviewer can write it (the preset excludes `write`/`edit`, keeps `bash`), and
+  a truncated or dropped final message no longer costs the whole review. The
+  conductor copies the file into the worktree as `REVIEW_PR<n>.md` (and
+  cross-checks it against the final message) instead of transcribing from
+  prose; a missing file is itself a finding to raise, not a reason to
+  reconstruct one from memory.
 - Output your verdict in this exact format in your final response:
   verdict line (`approve` / `approve-with-nits` / `changes-requested`),
   `Reviewed head: <sha>` (the commit you actually reviewed — `git -C <worktree>
@@ -62,8 +71,10 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
 - Keep the verdict compact; the deep write-up lives in the final output only.
 
 The conductor retrieves the final output (never sleep-waits — the user
-watches the monitor and pings when done), writes `REVIEW_PR*.md` in the
-worktree from the returned verdict, and presents it for the user loop.
+watches the monitor and pings when done), **copies the reviewer's
+`/tmp/REVIEW_<n>.md` into the worktree as `REVIEW_PR*.md`** (gitignored) —
+verifying it agrees with the final message rather than re-typing the verdict —
+and presents it for the user loop.
 
 ## The review record is a contract — it is merge-gated
 

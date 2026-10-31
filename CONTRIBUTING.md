@@ -44,6 +44,21 @@ A guard extension (`.pi/extensions/worktree-guard/`) enforces the important half
 edits to `src/` and `presets/` outside a worktree, and blocks `npm install` through a symlinked
 `node_modules` (which would clobber the shared dependency tree).
 
+## What ships, and what we do
+
+`AGENT.md` is **product documentation**: it is listed in `package.json` `files`, ships inside the npm tarball, and
+tells a user's conductor how `delegate_task` behaves and how to judge a delegation. Development discipline — how
+*we* build, review, and release this package — is not product behavior and does not belong there. It lives in:
+
+- `.pi/skills/**` — the conductor's process playbooks (worktree lifecycle, review dispatch, the pr contract, the
+  handoff write contract, the cycle-end ritual). Gitignored except the tracked skill files; never published.
+- `.development/` — the design record: ADRs, investigations, friction log, metrics, handoff.
+
+The rule of thumb: a statement a **user** must know to operate the tool goes in `AGENT.md`/`README.md`; a statement
+about how **we** work goes in `.pi/skills/**` or `.development/`. When they conflict, the process record wins for
+us and `AGENT.md` wins for the product — but the fix is to move the text, not to duplicate it. Adding a process
+rule to `AGENT.md` is a review finding (it would ship as an instruction to every user's conductor).
+
 ## Tests
 
 - `npx vitest run` — the full suite; it must stay green.

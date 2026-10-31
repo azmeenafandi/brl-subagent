@@ -65,6 +65,20 @@ At cycle end, ALL FOUR run — they share one cadence:
    normal backlog item; reject → recorded once and dropped). This exists because the ≥2 floor is
    truthful but blind to good single-shot fixes.
 
+**The close row (contract, part of the same ritual).** The cycle's closing record row — the
+friction-log entry that states the cycle is closed, written beside the metrics row — ends with the
+release line in this exact shape:
+
+```
+release: the maintainer's call
+```
+
+**Never a version.** Even when every input points at one, the row names no number, no "release
+proposal", and no "awaiting the go for vX.Y.Z" — naming a version is the first step of an
+unprompted release (Conductor decision rule 1, `SKILL.md`). The maintainer proposes or approves a
+version in their own turn; the release ritual then records it. A row that carries a proposed version
+is a process defect, not a wording nit.
+
 **Post-close findings:** a defect surfaced by the release that implicates the closed cycle's work
 (e.g., the published artifact differs from the tag) is recorded against the CLOSED cycle as a
 "post-close finding" — even though the release ceremony itself belongs to the next cycle.

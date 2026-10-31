@@ -42,6 +42,20 @@ show **before → after** where a before exists. Test counts relative to the bas
 (e.g. "67 files / 1360 tests — was 66/1349"). Execution output is the S-tier here;
 screenshots only for TUI-visible change. Never just "tests pass".
 
+**Every behavioral PR carries one explicit line in this shape:**
+
+```
+Verification: <command> → <observed result>
+```
+
+One per claim that matters (typecheck, the suite, the doc guards), e.g.
+`Verification: npx vitest run → 95 files / 1919 tests passed`. The arrow separates the
+command from the result it actually printed, so a reader can tell a run from a
+recollection. If something could not be run, the line says
+`Verification: <check> → not run (<why>)` — silence is not evidence, and "unverified" is
+an honest state while an unmarked claim is not. A review record cites these lines
+(Conductor decision rule 3).
+
 ## 3. Merge Danger
 
 - **Door:** one-way or two-way? If a merge cannot be walked back cheaply, name the
