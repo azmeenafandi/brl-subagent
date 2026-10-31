@@ -3472,6 +3472,8 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Check the status of a background agent and retrieve its result.",
 			"The conductor is woken with a completion message when the agent finishes; use this for post-wake retrieval, stall checks, and detail access — not for polling.",
+			"Accepts a full agent id or a unique 8-character id prefix.",
+			"When the id belongs to a retried run, the answer names the latest attempt; a finished run that was superseded also reports its successor.",
 			"Returns the agent's status, result (if completed), and transcript path.",
 		].join(" "),
 		parameters: Type.Object({
@@ -3485,14 +3487,64 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		execute: async (toolCallId, params) => {
-			const { getAgent } = await import('./session-manager');
+			const { getAgent, resolveAgentId, findRetryLineage, isTerminalAgentStatus, RETRY_SCAN_WINDOW_MS, RETRY_SCAN_WINDOW_DAYS } = await import('./session-manager');
 			const { getTranscript } = await import('./transcript');
-			
-			const agent = getAgent(params.agent_id);
-			
-			if (!agent) {
+
+			// The notices render the first 8 hex characters of an id; resolve a
+			// unique prefix before both the record read and the lineage lookup.
+			// Ambiguity fails closed — a guess here could report the wrong run.
+			const resolution = resolveAgentId(params.agent_id);
+			if (resolution.kind === 'ambiguous') {
+				return {
+					content: [{
+						type: "text" as const,
+						text: `Agent id prefix "${params.agent_id}" is ambiguous — matches: ${resolution.matches.join(', ')}`,
+					}],
+					details: undefined,
+					isError: true,
+				};
+			}
+			// Anything that is not a full id or a matching 8-hex prefix keeps
+			// today's message — there is no id to resolve against the stores.
+			if (resolution.kind === 'unresolved') {
 				return {
 					content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+					details: undefined,
+					isError: true,
+				};
+			}
+			const agentId = resolution.id;
+
+			const agent = getAgent(agentId);
+			
+			if (!agent) {
+				const lineage = findRetryLineage(agentId);
+				if (lineage.latest && lineage.latest.id !== agentId) {
+					const latest = lineage.latest;
+					return {
+						content: [{
+							type: "text" as const,
+							text: `Agent ${params.agent_id} not found — run ${params.agent_id} was retried as ${latest.id} (attempt ${latest.attempt}, ${latest.status}, started ${new Date(latest.startedAt).toISOString()}).`,
+						}],
+						details: undefined,
+						isError: true,
+					};
+				}
+
+				const registryRun = lineage.inflight.find((run) => run.id === agentId);
+				const registryStarted = registryRun
+					? (Number.isFinite(Date.parse(registryRun.startedAt))
+						? new Date(registryRun.startedAt).toISOString()
+						: registryRun.startedAt)
+					: undefined;
+				const registryText = registryRun
+					? `no recent retry lineage recorded, but the registry still lists run ${registryRun.id} (attempt ${registryRun.attempt ?? 1}, started ${registryStarted}).`
+					: `no recent retry lineage recorded (scanned the last ${RETRY_SCAN_WINDOW_DAYS} days), and no registry record either.`;
+				return {
+					content: [{
+						type: "text" as const,
+						text: `Agent ${params.agent_id} not found — ${registryText}`,
+					}],
 					details: undefined,
 					isError: true,
 				};
@@ -3509,6 +3561,22 @@ export default function (pi: ExtensionAPI) {
 			
 			if (agent.error) {
 				resultText += `Error: ${agent.error}\n`;
+			}
+
+			// A terminal source can be the WRONG run to act on: the retry that
+			// actually finished is a later attempt of the same dispatch. Name it
+			// so a terminal status is not read as the final word.
+			if (isTerminalAgentStatus(agent.status)) {
+				const lineage = findRetryLineage(agentId, agent);
+				if (lineage.latest && lineage.latest.id !== agentId) {
+					const latest = lineage.latest;
+					resultText += `Superseded by ${latest.id} (attempt ${latest.attempt}, ${latest.status}, started ${new Date(latest.startedAt).toISOString()})\n`;
+				} else if (agent.startedAt < Date.now() - RETRY_SCAN_WINDOW_MS) {
+					// The lineage scan is windowed: an older run cannot be shown a
+					// later attempt that fell outside it. Say so instead of implying
+					// there is none.
+					resultText += `Retry lineage not checked: this run started more than ${RETRY_SCAN_WINDOW_DAYS} days ago.\n`;
+				}
 			}
 			
 			if (agent.result) {
@@ -3536,7 +3604,7 @@ export default function (pi: ExtensionAPI) {
 			
 			// Include transcript if verbose
 			if (params.verbose) {
-				const transcript = getTranscript(params.agent_id);
+				const transcript = getTranscript(agentId);
 				if (transcript.length > 0) {
 					resultText += `\n\nTranscript (${transcript.length} entries):\n`;
 					for (const entry of transcript.slice(-10)) { // Last 10 entries
@@ -3546,7 +3614,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			
 			// Include transcript path
-			resultText += `\nTranscript: ${transcriptDisplayPath(params.agent_id)}`;
+			resultText += `\nTranscript: ${transcriptDisplayPath(agentId)}`;
 			
 			return {
 				content: [{ type: "text" as const, text: resultText }],
