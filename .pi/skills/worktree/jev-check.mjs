@@ -370,6 +370,9 @@ function loadDispatchExceptions(path) {
 		const line = raw.trim();
 		if (line === "" || line.startsWith("#")) continue;
 		const [prefix, ...rest] = line.split(/\s+/);
+		if (prefix.length < 7) {
+			console.error(`jev-check: exceptions: prefix ${JSON.stringify(prefix)} is shorter than 7 chars — it can match unrelated dispatches`);
+		}
 		exceptions.push({ prefix: prefix.toLowerCase(), reason: rest.join(" ").trim() || "(no reason recorded)" });
 	}
 	return exceptions;
@@ -796,6 +799,21 @@ const SELFTEST_CASES = [
 		},
 	},
 	{
+		name: "--log: an exception prefix matching MID-STRING does not except (startsWith, not includes)",
+		run() {
+			const { offenders, excepted } = analyzeDispatchLog(
+				dispatchLogFixture(
+					dispatchEvent("2026-10-28T09:00:00.000Z", "No line here.", DISPATCH_EVENT_MESSAGE, "aaaabbbb-cccc-dddd-eeee-ffffffffffff"),
+				),
+				STRICT_DISPATCH_CUTOFF,
+				[{ prefix: "bbbb", reason: "matches only mid-string" }],
+			);
+			assertEqual(offenders.length, 1, "mid-string offenders");
+			assertEqual(excepted.length, 0, "mid-string excepted");
+		},
+	},
+
+	{
 		name: "--log: a valid line is never excepted (exceptions do not launder a clean dispatch)",
 		run() {
 			const { offenders, excepted } = analyzeDispatchLog(
@@ -906,6 +924,8 @@ const USAGE = [
 	`                    every \`${DISPATCH_EVENT_MESSAGE}\` event dated >= ${STRICT_DISPATCH_CUTOFF}`,
 	"                    must carry a valid Rule 22 line. Conductor/merge-time (local log).",
 	"  --since YYYY-MM-DD  with --log: override the dispatch cutoff (legacy audit)",
+	`  --exceptions [path]  with --log: recorded-exception list (default: ${DISPATCH_EXCEPTIONS_DEFAULT});`,
+	"                    a matching offender prints as acknowledged, never as clean or failing",
 	"  --selftest        fixture proof of every mode (CI-wired)",
 ].join("\n");
 
