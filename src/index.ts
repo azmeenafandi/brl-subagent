@@ -224,14 +224,15 @@ export function cleanupSessionState(state: SessionState): void {
 }
 
 /**
- * Issue #401: the resume preamble a transport auto-retry prepends to the replayed
- * task. A dropped connection costs the child its context, not its files: the
- * retry spawns into the same directory, so the work it already did (commits,
- * written files, a bank) is still there. The preamble turns a blind replay into
- * a resume by naming what to inspect first.
+ * Issue #401/#411: the resume preamble a transport auto-retry builds and delivers
+ * as a `<resume-context>` section on the child's system prompt — never inside
+ * the `<task>` fence. A dropped connection costs the child its context, not its
+ * files: the retry spawns into the same directory, so the work it already did
+ * (commits, written files, a bank) is still there. The preamble turns a blind
+ * replay into a resume by naming what to inspect first.
  *
  * Kept bounded (5 lines max) and deliberately vetted for runtime vocabulary —
- * it is prompt text a user can see in the run's task line.
+ * it is prompt text a user can see in the child's system prompt.
  *
  * Issue #404: it also names the retained SDK session directory when one exists.
  * That is the only artifact that holds attempt 1's CONVERSATION — the output log
