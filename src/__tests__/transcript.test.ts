@@ -60,6 +60,16 @@ describe("transcript completeTranscript (issue #53)", () => {
 		expect(mode).toBe(0o600);
 	});
 
+	it("repairs a PRE-EXISTING 0o755 output dir on use (issue #408)", () => {
+		// `mkdirSync(..., { mode: 0o700 })` is create-only; a pre-F6 output dir
+		// stayed world-readable. Deleting the chmod repair makes this fail.
+		if (process.platform === "win32") return;
+		const { chmodSync, statSync } = require("node:fs") as typeof import("node:fs");
+		chmodSync(tempOutputDir, 0o755);
+		startTranscript(UUID_PRESENT, "test task");
+		expect(statSync(tempOutputDir).mode & 0o777).toBe(0o700);
+	});
+
 	it("still throws for an invalid non-UUID id (F24 preserved)", () => {
 		// F24: getTranscriptPath → assertSafeAgentId still rejects traversal ids
 		// BEFORE any filesystem access — completeTranscript must not skip it.

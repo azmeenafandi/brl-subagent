@@ -161,6 +161,27 @@ describe("U2 T1 — the session file exists during a live background run", () =>
 	});
 });
 
+describe("issue #408 — the real SDK-created session dir is repaired owner-only", () => {
+	it("chmods the per-run dir and its session file after createAgentSession", async () => {
+		// The REAL SessionManager creates the per-run dir with the process
+		// default (0o755), so this exercises the repair at the actual SDK
+		// boundary — not only the mocked spawn path. POSIX-only: Windows
+		// synthesizes modes.
+		if (process.platform === "win32") return;
+		mocks.session.prompt.mockReturnValue(new Promise(() => {})); // stays running
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "owner-only session dir",
+		});
+
+		const dir = backgroundSessionDir(agent.id);
+		expect(statSync(dir).mode & 0o777).toBe(0o700);
+		// Defense-in-depth: the flat session file is owner-only too.
+		const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
+		expect(files).toHaveLength(1);
+		expect(statSync(join(dir, files[0])).mode & 0o777).toBe(0o600);
+	});
+});
+
 describe("U2 T2 — prune on EVERY terminal settle path", () => {
 	it("success: removes the per-run dir when the prompt completes", async () => {
 		const d = deferred();
