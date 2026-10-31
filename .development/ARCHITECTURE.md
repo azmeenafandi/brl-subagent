@@ -72,7 +72,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 |---|---|
 | `concurrency.ts` | Session-bound concurrency queue: slot acquisition/release, priority insertion, and progress counters. |
 | `diff.ts` | Parses git unified diffs into structured per-file summaries and hunks for the result UI. |
-| `dispatch-line.ts` | Parse and validate the Rule 22 dispatch line, plus the project-local opt-in that makes it required. |
+| `dispatch-line.ts` | Parse and validate the Rule 22 dispatch line (the project-local opt-in lives in project-flags.ts). |
 | `event-bus.ts` | In-memory lifecycle pub/sub (`subagent:*` events) for extensions and the completion wake. |
 | `git.ts` | Branch-based git workflow for worktree runs: branch creation, diff capture, switch-back, cleanup. |
 | `history.ts` | Run-record store: creation, finalization, retry lookup, and history pruning. |
@@ -91,6 +91,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `prelude.ts` | Shared guard/validation prelude for delegation modes: the individual gates (cost, approval, targets, H1), the per-unit pre-pass, and the batch modes' model tail. |
 | `presets.ts` | Preset loading, parsing, validation, and the file-backed custom-preset tier. |
 | `proc.ts` | Production process primitives — Linux/POSIX /proc reads, feature detection, and the default recovery deps. |
+| `project-flags.ts` | The single reader for the project-local `brl-subagent` umbrella flags (issue #415). |
 | `prompt.ts` | Builds the subagent system prompt, including the task fence and inherited-instruction handling. |
 | `recovery-engine.ts` | Pure recovery decision engine — identity, owner liveness classification, and the boot-scan plan over injected process deps. |
 | `recovery-surface.ts` | U3 recovery surface — interrupted-run projection, one-per-boot notice, and the abandon action. |
@@ -116,7 +117,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**45 modules** — every one is listed because a new module without a purpose fails CI.
+**46 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

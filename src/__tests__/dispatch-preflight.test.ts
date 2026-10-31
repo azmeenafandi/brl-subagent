@@ -352,7 +352,7 @@ describe("auto-switch: high-thinking foreground + explicit timeout (issue #412)"
 	it("auto-switches to background, drops the explicit timeout, and says so", async () => {
 		optIn();
 		const result = await dispatch({
-			task: "critique the plan",
+			task: `critique the plan\n\n${VALID_LINE}`,
 			thinkingLevel: "high",
 			background: false,
 			timeout: 900_000,
@@ -378,7 +378,7 @@ describe("auto-switch: high-thinking foreground + explicit timeout (issue #412)"
 	it("records background:true in the retry snapshot (ordering: switch BEFORE snapshotOriginalParams)", async () => {
 		optIn();
 		await dispatch({
-			task: "critique the plan",
+			task: `critique the plan\n\n${VALID_LINE}`,
 			thinkingLevel: "xhigh",
 			background: false,
 			timeout: 900_000,
@@ -412,7 +412,7 @@ describe("auto-switch: force:true keeps the foreground shape (issue #412)", () =
 	it("force:true runs foreground and preserves the explicit timeout", async () => {
 		optIn();
 		const result = await dispatch({
-			task: "read one file and answer inline",
+			task: `read one file and answer inline\n\n${VALID_LINE}`,
 			thinkingLevel: "high",
 			background: false,
 			timeout: 900_000,
@@ -470,7 +470,7 @@ describe("auto-switch: shapes it must NOT touch (issue #412)", () => {
 		optIn();
 		await sessionStartHandler?.({}, makeCtx() as never);
 		const result = await dispatch({
-			task: "review the code for correctness",
+			task: `review the code for correctness\n\n${VALID_LINE}`,
 			background: false,
 			timeout: 900_000,
 		});

@@ -25,7 +25,7 @@
     ]
   },
   "brl-subagent": {
-    "requireJevLine": true
+    "processChecks": true
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

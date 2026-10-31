@@ -9,7 +9,8 @@
 
 import type { ThinkingLevel, SubagentToolOptions } from './types';
 import { THINKING_LEVELS } from './types';
-import { DISPATCH_LINE_FORM, JEV_UNAVAILABLE, isJevLineRequired, parseDispatchLine } from './dispatch-line';
+import { DISPATCH_LINE_FORM, JEV_UNAVAILABLE, parseDispatchLine } from './dispatch-line';
+import { isProcessChecksEnabled } from './project-flags';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -30,9 +31,9 @@ export interface ValidateConfig {
   force?: boolean;
   /**
    * The project this dispatch runs in (the resolved dispatch cwd). The
-   * project-local Jev-line check keys on it: no cwd means no project to
+   * project-local process checks key on it: no cwd means no project to
    * consult, so unit callers that never resolve one perform no check
-   * (issue #412).
+   * (issues #412, #415).
    */
   cwd?: string;
   /**
@@ -321,12 +322,13 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
   }
 
   // Issue #412 (absorbs #407): the Jev dispatch line, checked BEFORE anything
-  // spawns. Opt-in per project (package.json `brl-subagent.requireJevLine`):
-  // this is our process, not a product requirement, so a user's dispatch is
-  // never rejected for a missing line (ADR 0018). `noJev` — a stated reason —
-  // downgrades the rejection to a WARNING that names the reason, so the bypass
-  // is surfaced rather than silent (ADR 0007's pattern).
-  if (config.cwd !== undefined && isJevLineRequired(config.cwd)) {
+  // spawns. Opt-in per project via the umbrella `processChecks` flag (#415,
+  // ADR 0019): this is our process, not a product requirement, so a user's
+  // dispatch is never rejected for a missing line. The flag read is fail-open
+  // (`src/project-flags.ts`). `noJev` — a stated reason — downgrades the
+  // rejection to a WARNING that names the reason, so the bypass is surfaced
+  // rather than silent (ADR 0007's pattern).
+  if (isProcessChecksEnabled(config.cwd)) {
     const verdict = parseDispatchLine(taskText);
     if (!verdict.ok) {
       if (config.noJev !== undefined && config.noJev.trim() !== '') {

@@ -211,12 +211,18 @@ export type ThinkingDispatchSwitch = "switch" | "forced" | "none";
  * conductor discretion; this predicate makes the durable shape the only one
  * for the runs where losing the context is expensive:
  *
- *   thinkingLevel high|xhigh
+ *   processChecks (the project opted into OUR process — issue #415)
+ *     + thinkingLevel high|xhigh
  *     + background EXPLICITLY false (the caller asked for foreground)
  *     + an explicit timeout (the deadline that would kill it)
  *     → switch to background and drop the timeout.
  *
  * Deliberately exempt:
+ *   - `processChecks: false` — this is a CONDUCTOR decision rule, not product
+ *     behavior. A user's explicit foreground timeout is usually a budget cap,
+ *     so overriding it could triple time and cost against their instruction.
+ *     The umbrella flag (ADR 0019) is what makes the switch opt-in; the
+ *     predicate has no global mode.
  *   - `chain`/`graph` — they block by definition and `background: true` is
  *     rejected at dispatch; the decision cannot apply to them.
  *   - an omitted `background` — the #361 default already decided, and it knows
@@ -236,12 +242,14 @@ export type ThinkingDispatchSwitch = "switch" | "forced" | "none";
  * nobody configured anything — the drift this rule exists to remove.
  */
 export function resolveThinkingDispatchSwitch(input: {
+	processChecks: boolean;
 	thinkingLevel: ThinkingLevel | undefined;
 	explicitBackground: boolean | undefined;
 	timeout: number | undefined;
 	force: boolean | undefined;
 	shape: DispatchShape;
 }): ThinkingDispatchSwitch {
+	if (!input.processChecks) return "none";
 	if (input.shape === "chain" || input.shape === "graph") return "none";
 	if (input.thinkingLevel !== "high" && input.thinkingLevel !== "xhigh") return "none";
 	if (input.explicitBackground !== false) return "none";

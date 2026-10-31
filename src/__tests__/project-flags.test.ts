@@ -151,11 +151,18 @@ function productionSources(): Array<{ file: string; text: string }> {
 }
 
 const MANIFEST_KEY_RE = /\[\s*["']brl-subagent["']\s*\]/g;
-const QUOTED_MANIFEST_KEY_RE = /["']brl-subagent["']/;
+/**
+ * An ACCESS to the manifest key — bracket access (`manifest["brl-subagent"]`)
+ * or a destructuring key (`{ "brl-subagent": section }`). Deliberately NOT the
+ * bare package name/dir string, which every module uses for logs, commands and
+ * `.pi/brl-subagent` paths.
+ */
+const MANIFEST_KEY_ACCESS_RE =
+	/(?:\[\s*["']brl-subagent["']\s*\]|[{,]\s*["']brl-subagent["']\s*:)/;
 
 describe("ratchet — only src/project-flags.ts reads the brl-subagent manifest key", () => {
 	const sources = productionSources();
-	const readers = sources.filter((s) => QUOTED_MANIFEST_KEY_RE.test(s.text)).map((s) => s.file);
+	const readers = sources.filter((s) => MANIFEST_KEY_ACCESS_RE.test(s.text)).map((s) => s.file);
 
 	it("has exactly one reader, and it is src/project-flags.ts", () => {
 		expect(readers).toEqual(["project-flags.ts"]);
