@@ -3487,7 +3487,7 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		execute: async (toolCallId, params) => {
-			const { getAgent, resolveAgentId, findRetryLineage, isTerminalAgentStatus } = await import('./session-manager');
+			const { getAgent, resolveAgentId, findRetryLineage, isTerminalAgentStatus, RETRY_SCAN_WINDOW_MS, RETRY_SCAN_WINDOW_DAYS } = await import('./session-manager');
 			const { getTranscript } = await import('./transcript');
 
 			// The notices render the first 8 hex characters of an id; resolve a
@@ -3538,8 +3538,8 @@ export default function (pi: ExtensionAPI) {
 						: registryRun.startedAt)
 					: undefined;
 				const registryText = registryRun
-					? `no retry lineage recorded, but the registry still lists run ${registryRun.id} (attempt ${registryRun.attempt ?? 1}, started ${registryStarted}).`
-					: `no retry lineage recorded, and no registry record either.`;
+					? `no recent retry lineage recorded, but the registry still lists run ${registryRun.id} (attempt ${registryRun.attempt ?? 1}, started ${registryStarted}).`
+					: `no recent retry lineage recorded (scanned the last ${RETRY_SCAN_WINDOW_DAYS} days), and no registry record either.`;
 				return {
 					content: [{
 						type: "text" as const,
@@ -3571,6 +3571,11 @@ export default function (pi: ExtensionAPI) {
 				if (lineage.latest && lineage.latest.id !== agentId) {
 					const latest = lineage.latest;
 					resultText += `Superseded by ${latest.id} (attempt ${latest.attempt}, ${latest.status}, started ${new Date(latest.startedAt).toISOString()})\n`;
+				} else if (agent.startedAt < Date.now() - RETRY_SCAN_WINDOW_MS) {
+					// The lineage scan is windowed: an older run cannot be shown a
+					// later attempt that fell outside it. Say so instead of implying
+					// there is none.
+					resultText += `Retry lineage not checked: this run started more than ${RETRY_SCAN_WINDOW_DAYS} days ago.\n`;
 				}
 			}
 			

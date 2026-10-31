@@ -272,8 +272,10 @@ export function listPersistedAgents(): BackgroundAgent[] {
 //      `resumeOf`/record ids are full UUIDs. Resolve a unique 8-hex prefix
 //      before either the record read or the lineage match; an ambiguous prefix
 //      is refused explicitly rather than guessed.
-//   2. COST — the agent store is large and never pruned (measured: 1151
-//      records / 116 MB; a full parse is ~0.5 s per tool call). This reader
+//   2. COST — the agent store is large and never pruned (measured 2026-10:
+//      ~1160 records / ~116 MB on the live store; a full parse is ~0.5 s per
+//      tool call, and a synthetic 100 KB-payload fixture of the same shape
+//      measures ~225 MB). This reader
 //      stats first, keeps only records inside a 7-day mtime window, caps the
 //      number read at `RETRY_SCAN_CAP`, and extracts just the identity fields
 //      with a top-level scanner instead of JSON-parsing result.messages.
@@ -283,10 +285,13 @@ export function listPersistedAgents(): BackgroundAgent[] {
 // ---------------------------------------------------------------------------
 
 /** How far back the lineage reader looks (mtime of the record file). */
-const RETRY_SCAN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const RETRY_SCAN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Upper bound on records read for one lineage answer. */
 const RETRY_SCAN_CAP = 200;
+
+/** The scan window in whole days (the user-facing caveat derives from it). */
+export const RETRY_SCAN_WINDOW_DAYS = RETRY_SCAN_WINDOW_MS / (24 * 60 * 60 * 1000);
 
 /** The short form rendered by notices: the first 8 hex characters of a UUID. */
 const SHORT_AGENT_ID_RE = /^[0-9a-f]{8}$/i;
