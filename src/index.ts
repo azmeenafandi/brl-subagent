@@ -224,14 +224,15 @@ export function cleanupSessionState(state: SessionState): void {
 }
 
 /**
- * Issue #401: the resume preamble a transport auto-retry prepends to the replayed
- * task. A dropped connection costs the child its context, not its files: the
- * retry spawns into the same directory, so the work it already did (commits,
- * written files, a bank) is still there. The preamble turns a blind replay into
- * a resume by naming what to inspect first.
+ * Issue #401/#411: the resume preamble a transport auto-retry builds and delivers
+ * as a `<resume-context>` section on the child's system prompt — never inside
+ * the `<task>` fence. A dropped connection costs the child its context, not its
+ * files: the retry spawns into the same directory, so the work it already did
+ * (commits, written files, a bank) is still there. The preamble turns a blind
+ * replay into a resume by naming what to inspect first.
  *
  * Kept bounded (5 lines max) and deliberately vetted for runtime vocabulary —
- * it is prompt text a user can see in the run's task line.
+ * it is prompt text a user can see in the child's system prompt.
  *
  * Issue #404: it also names the retained SDK session directory when one exists.
  * That is the only artifact that holds attempt 1's CONVERSATION — the output log
@@ -1945,6 +1946,9 @@ export default function (pi: ExtensionAPI) {
 			thinkingLevel: ThinkingLevel;
 			priority?: string;
 			systemPrompt: string;
+			/** Issue #411: conductor-authored resume context for an auto-retry,
+			 *  delivered on the system-prompt side (never inside the task fence). */
+			resumeContext?: string;
 			cwd: string;
 			toolOptions?: SubagentToolOptions;
 			timeout?: number;
@@ -1977,6 +1981,7 @@ export default function (pi: ExtensionAPI) {
 			// run entry + drill-in header carry it like foreground runs.
 			priority: spawn.priority,
 			systemPrompt: spawn.systemPrompt,
+			resumeContext: spawn.resumeContext,
 			cwd: spawn.cwd,
 			toolOptions: spawn.toolOptions,
 			timeout: spawn.timeout,
@@ -2234,10 +2239,12 @@ export default function (pi: ExtensionAPI) {
 		// not a delegate param — D4).
 		retrySourceRun?: SubagentRun,
 		/**
-		 * Issue #401: the resume preamble for a TRANSPORT auto-retry. It rides the
-		 * child's PROMPT only — `resolveSubagentParams`, every gate and every H1
-		 * check above still see `singleTask`, so routing, capability warnings and
-		 * pre-flight checks cannot be steered by the preamble's wording.
+		 * Issue #401/#411: the resume preamble for a TRANSPORT auto-retry. It rides
+		 * the child's system prompt only (as a `<resume-context>` section) — never
+		 * inside the `<task>` fence. `resolveSubagentParams`, every gate and every
+		 * H1 check above still see `singleTask` (which stays byte-identical to the
+		 * recorded original), so routing, capability warnings and pre-flight checks
+		 * cannot be steered by the preamble's wording.
 		 */
 		attemptContext?: string,
 	): Promise<ToolResult<undefined>> {
@@ -2323,10 +2330,12 @@ export default function (pi: ExtensionAPI) {
 			// Option B U1: durability identity (retry inherits the original dispatch).
 			const bgIdentity = newDispatchIdentity(retrySourceRun);
 			const agent = await startBackgroundAgent(pi, ctx, {
-				// Issue #401: the preamble is prompt-only. The record below keeps the
-				// original task (`originalParams.task`) so a later retry of this retry
-				// resolves from the un-prefixed text and never compounds preambles.
-				task: attemptContext ? `${attemptContext}\n\n${singleTask}` : singleTask,
+				// Issue #411: the preamble rides the system-prompt side
+				// (`resumeContext`), never the task. The task stays the recorded
+				// original, and the snapshot keeps it too, so a later retry of this
+				// retry resolves from the un-prefixed text and never compounds.
+				task: singleTask,
+				resumeContext: attemptContext,
 				type: params.preset || 'general-purpose',
 				description: params.label,
 				model: bgModel,
@@ -3987,8 +3996,9 @@ export default function (pi: ExtensionAPI) {
 	 * lineage (`resumeOf` + `attempt: 2`), so the retry re-runs the normal gates
 	 * (cost, approval, pre-task) and is visible in the record.
 	 *
-	 * Issue #401: the retry carries a resume preamble (`attemptContext`) that is
-	 * injected into the child's PROMPT only. The task handed to
+	 * Issue #401/#411: the retry carries a resume preamble (`attemptContext`) that
+	 * is injected into the child's system prompt only (as a `<resume-context>`
+	 * section), never inside the `<task>` fence. The task handed to
 	 * `resolveSubagentParams` stays the recorded original, so auto-routing, H1
 	 * keyword warnings and the capability checks behave exactly as they did on
 	 * attempt 1.

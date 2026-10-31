@@ -416,10 +416,10 @@ describe("deliverCompletionAlert — transport auto-retry (issue #365)", () => {
 			// Exactly one spawn, carrying the source run's identity + recorded params.
 			expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
 			const spawn = h.spawnBackgroundSession.mock.calls[0][2] as Record<string, unknown>;
-			// Issue #401: the prompt is the resume preamble followed by the
-			// recorded task, which stays LAST (and unmodified).
-			expect(String(spawn.task).endsWith("\n\nreview the docs")).toBe(true);
-			expect(String(spawn.task)).toContain("[attempt 2 — ");
+			// Issue #411: the task is byte-identical to the recorded original; the
+			// resume preamble rides its own field on the system-prompt side.
+			expect(spawn.task).toBe("review the docs");
+			expect(String(spawn.resumeContext)).toContain("[attempt 2 — ");
 			expect(spawn.description).toBe("review-docs");
 			expect(spawn.model).toBe("test/test-model");
 			expect(spawn.timeout).toBe(600_000);
@@ -583,20 +583,21 @@ describe("deliverCompletionAlert — transport auto-retry (issue #365)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. The resume preamble (issue #401)
+// 3. The resume preamble (issues #401, #411)
 //
 // The retry used to replay the identical task, so attempt 2 re-read, re-planned
-// and re-wrote what attempt 1 had already done. The fix prefixes the CHILD'S
-// PROMPT with a bounded inspect-first block. Two invariants are pinned here:
+// and re-wrote what attempt 1 had already done. The fix delivers a bounded
+// inspect-first block on the CHILD'S SYSTEM PROMPT (a `<resume-context>` entry;
+// #411 moved it there, out of the `<task>` fence). Two invariants are pinned here:
 //
 //   1. the preamble is present (marker, source id, bank path), names no
 //      start/steering stub, and names the retained session directory ONLY when
 //      it exists (issue #404) — with an ABSOLUTE path, since the retry's child
 //      can run in a different cwd;
-//   2. the preamble is prompt-only — `resolveSubagentParams` and the H1
+//   2. the preamble is system-prompt-only — `resolveSubagentParams` and the H1
 //      pre-task validation still see the RECORDED ORIGINAL task, so routing,
 //      thinking level, model and capability warnings cannot be steered by text
-//      the runtime composed itself.
+//      the runtime composed itself; the wrapped task stays byte-identical.
 // ---------------------------------------------------------------------------
 
 /** The code-reviewer guidance is the resolution evidence for the routing pin. */
@@ -630,30 +631,30 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 
 				await settle(sourceId);
 
-				const task = String(retrySpawn().task);
+				const resumeContext = String(retrySpawn().resumeContext);
 				// Marker + attempts, and the source the preamble is about.
-				expect(task).toContain(`[attempt 2 — the previous attempt (${sourceId}) died on a transport failure.`);
+				expect(resumeContext).toContain(`[attempt 2 — the previous attempt (${sourceId}) died on a transport failure.`);
 				// The surviving-directory guard, in runtime vocabulary (no internal
 				// process terms leak into a prompt a user can see).
-				expect(task).toContain("This directory may already contain its uncommitted edits.");
+				expect(resumeContext).toContain("This directory may already contain its uncommitted edits.");
 				// The inspect-first instruction: working tree, recent history, bank.
-				expect(task).toContain("git status --short");
-				expect(task).toContain("git log --oneline -8");
-				expect(task).toContain("/tmp/brl-review-docs-bank.md");
+				expect(resumeContext).toContain("git status --short");
+				expect(resumeContext).toContain("git log --oneline -8");
+				expect(resumeContext).toContain("/tmp/brl-review-docs-bank.md");
 				// The retained session, ABSOLUTE (the child's cwd can differ).
-				const pointerLine = task.split("\n").find((line) => line.includes("retained at"));
+				const pointerLine = resumeContext.split("\n").find((line) => line.includes("retained at"));
 				expect(pointerLine).toBeDefined();
 				const pointerPath = pointerLine!.match(/retained at (\S+)/)?.[1];
 				expect(pointerPath).toBe(path.resolve(sessionDir));
 				expect(pointerPath && path.isAbsolute(pointerPath)).toBe(true);
-				expect(task).toContain("newest .jsonl inside");
+				expect(resumeContext).toContain("newest .jsonl inside");
 				// Closing instruction.
-				expect(task).toContain("Continue from what exists; do NOT redo committed, written, or banked work.");
+				expect(resumeContext).toContain("Continue from what exists; do NOT redo committed, written, or banked work.");
 				// A pointer at .pi/output/agent-*.jsonl would be a dead end (a
 				// start/steering log, not the conversation).
-				expect(task).not.toContain(".pi/output");
-				// Bounded: including the marker and the original task.
-				expect(task.split("\n").length).toBeLessThanOrEqual(7);
+				expect(resumeContext).not.toContain(".pi/output");
+				// Bounded: marker + 3 lines + the pointer line (the task is not here).
+				expect(resumeContext.split("\n").length).toBeLessThanOrEqual(5);
 			} finally {
 				fs.rmSync(sessionDir, { recursive: true, force: true });
 			}
@@ -674,12 +675,12 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 
 			await settle(sourceId);
 
-			const task = String(retrySpawn().task);
-			expect(task).toContain(`/tmp/brl-review-docs-bank.md`);
-			expect(task).not.toContain(path.resolve(sessionDir));
-			expect(task).not.toContain("retained at");
-			expect(task).not.toContain("newest .jsonl inside");
-			expect(task.split("\n").length).toBeLessThanOrEqual(6);
+			const resumeContext = String(retrySpawn().resumeContext);
+			expect(resumeContext).toContain(`/tmp/brl-review-docs-bank.md`);
+			expect(resumeContext).not.toContain(path.resolve(sessionDir));
+			expect(resumeContext).not.toContain("retained at");
+			expect(resumeContext).not.toContain("newest .jsonl inside");
+			expect(resumeContext.split("\n").length).toBeLessThanOrEqual(4);
 		} finally {
 			vi.clearAllTimers();
 			vi.useRealTimers();
@@ -695,9 +696,9 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 
 			await settle(sourceId);
 
-			const task = String(retrySpawn().task);
-			expect(task).toContain(`/tmp/brl-${sourceId}-bank.md`);
-			expect(task).not.toContain("/tmp/brl----bank.md");
+			const resumeContext = String(retrySpawn().resumeContext);
+			expect(resumeContext).toContain(`/tmp/brl-${sourceId}-bank.md`);
+			expect(resumeContext).not.toContain("/tmp/brl----bank.md");
 		} finally {
 			vi.clearAllTimers();
 			vi.useRealTimers();
@@ -724,9 +725,13 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 			await settle(sourceId);
 
 			const spawn = retrySpawn();
-			const task = String(spawn.task);
-			// The keywords ARE in the prompt…
-			expect(task).toContain("/tmp/brl-security-audit-run-123-bank.md");
+			const resumeContext = String(spawn.resumeContext);
+			// The keywords ARE in the resume context (system-prompt side)…
+			expect(resumeContext).toContain("/tmp/brl-security-audit-run-123-bank.md");
+			// …and never in the task or the shipped system prompt — the resume
+			// context is its own trusted section, so the label keyword cannot
+			// reach resolution or the preset guidance.
+			expect(String(spawn.systemPrompt)).not.toContain("security-audit-run-123");
 			// …but resolution saw the recorded ORIGINAL task, and nothing else.
 			const seen = resolutionTasks();
 			expect(seen).toContain("review the docs");
@@ -774,8 +779,10 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 				"[attempt 2 — the previous attempt (bg-365-source) died on a transport failure.\n" +
 				"Continue from what exists; do NOT redo committed, written, or banked work.]\n\n" +
 				"review the docs";
-			// The attempt-2 record as the auto-retry actually writes it: the run's
-			// own `task` carries the preamble, the snapshot keeps the original.
+			// A LEGACY pre-#411 attempt-2 record: its `task` still carries the
+			// attempt-2 preamble, the snapshot keeps the clean original. The
+			// precedence pin (`originalParams.task` before `run.task`) must still
+			// resolve the clean original from such a record.
 			persistRunEntry(
 				settledRun({
 					id: attempt2Id,
@@ -808,9 +815,98 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 			expect(spawn.resumeOf).toBe(attempt2Id);
 			expect(resolutionTasks()).toContain("review the docs");
 			expect(resolutionTasks().every((seenTask) => !seenTask.includes("[attempt"))).toBe(true);
-			// A manual retry gets no preamble, so nothing needed the snapshot's
-			// clean task — but the prompt (and therefore the new record's `task`)
-			// is the un-prefixed original, so the NEXT retry resolves clean too.
+			// A manual retry gets no resume context (the auto-retry preamble is
+			// rebuilt per auto-retry, never recorded) — and the new record's
+			// `task` is the un-prefixed original, so the NEXT retry resolves clean.
+			expect(spawn.resumeContext).toBeUndefined();
+			expect((spawn.originalParams as Record<string, unknown>).task).toBeUndefined();
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe("transport auto-retry — resume context is system-side (issue #411)", () => {
+	it("the retry's task is byte-identical to the original and the resume context rides its own field", async () => {
+		vi.useFakeTimers();
+		try {
+			registerSettledAgent(SOURCE_ID, "Connection error.");
+			persistRunEntry(settledRun({ task: "review the docs" }));
+
+			await settle(SOURCE_ID);
+
+			const spawn = retrySpawn();
+			// The falsifier: the task handed to the spawn (which the real
+			// spawnBackgroundSession persists verbatim as the run entry's `task`)
+			// is the clean original — never the resume preamble.
+			expect(spawn.task).toBe("review the docs");
+			expect(String(spawn.task)).not.toContain("[attempt");
+			// …and the recorded snapshot's task is the same byte-identical value.
+			const originalParams = spawn.originalParams as Record<string, unknown>;
+			expect(originalParams).toBeDefined();
+			expect(originalParams.task).toBe("review the docs");
+			expect(spawn.task).toBe(originalParams.task);
+			// The resume context moved to its own field (system-prompt side).
+			expect(String(spawn.resumeContext)).toContain("[attempt 2 — ");
+			expect(String(spawn.resumeContext)).toContain(
+				"Continue from what exists; do NOT redo committed, written, or banked work.",
+			);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("attempt 3 never compounds: a manual retry of an auto-retried record stays clean", async () => {
+		vi.useFakeTimers();
+		try {
+			// Phase A: drive the real auto-retry to mint the attempt-2 spawn.
+			registerSettledAgent(SOURCE_ID, "Connection error.");
+			persistRunEntry(settledRun({ task: "review the docs" }));
+			await settle(SOURCE_ID);
+			const attempt2 = retrySpawn();
+			expect(attempt2.task).toBe("review the docs");
+			expect(String(attempt2.resumeContext)).toContain("[attempt 2 — ");
+
+			const attempt2Id = h.spawnBackgroundSession.mock.results[0].value
+				? (await h.spawnBackgroundSession.mock.results[0].value).id as string
+				: "";
+			expect(attempt2Id).not.toBe("");
+
+			// The attempt-2 record AS THE NEW CODE WRITES IT: clean task,
+			// snapshot carries the clean original, resumeContext is not persisted.
+			h.spawnBackgroundSession.mockClear();
+			persistRunEntry(
+				settledRun({
+					id: attempt2Id,
+					task: "review the docs",
+					label: "review-docs",
+					attempt: 2,
+					resumeOf: SOURCE_ID,
+					originalParams: { background: true, model: "test/test-model", task: "review the docs" },
+				}),
+			);
+
+			// Phase B: a manual retry of that attempt-2 record mints attempt 3.
+			const result = await delegateTool.execute(
+				"call-411-attempt3",
+				{ retryRunId: attempt2Id },
+				undefined,
+				undefined,
+				makeCtx(),
+			);
+			expect(result.isError).toBeFalsy();
+
+			const spawn = retrySpawn();
+			expect(spawn.attempt).toBe(3);
+			expect(spawn.resumeOf).toBe(attempt2Id);
+			// The recorded task stays the original, with no attempt-2 text.
+			expect(spawn.task).toBe("review the docs");
+			expect(String(spawn.task)).not.toContain("[attempt");
+			// Manual retries carry no resume context (the auto-retry preamble is
+			// rebuilt per auto-retry, never recorded, never compounded).
+			expect(spawn.resumeContext).toBeUndefined();
 			expect((spawn.originalParams as Record<string, unknown>).task).toBeUndefined();
 		} finally {
 			vi.clearAllTimers();

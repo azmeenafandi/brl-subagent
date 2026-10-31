@@ -148,10 +148,11 @@ export function finalizeRunRecord(
  * call, so it is never inherited. `template`, `chain`, `tasks`, `graph` and
  * `params` are not carried — a retried multi-step run degrades to a single task.
  *
- * `task` falls back to `originalParams.task` BEFORE `run.task` (issue #401): a
- * transport auto-retry's record carries the resume preamble in `task`, so the
- * un-prefixed original lives on the snapshot. Fresh records carry no
- * `originalParams.task` and resolve from `run.task` exactly as before.
+ * `task` falls back to `originalParams.task` BEFORE `run.task` (issue #401/#411):
+ * the resume preamble now rides the system-prompt side, so a retry's record has
+ * a clean `task`; the fallback is a defensive invariant that also resolves a
+ * legacy pre-#411 record whose `task` still carries the preamble. Fresh records
+ * carry no `originalParams.task` and resolve from `run.task` exactly as before.
  */
 export function resolveRetryParams(
 	params: {

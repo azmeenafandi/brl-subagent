@@ -242,6 +242,54 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 		expect(options.resourceLoader.options.noSkills).toBe(true);
 	});
 
+	it("orders resumeContext after systemPrompt in appendSystemPrompt (issue #411)", async () => {
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "do the thing",
+			systemPrompt: "## Preset Guidance\n\nFor security audits.",
+			resumeContext:
+				"[attempt 2 — the previous attempt died on a transport failure.\nContinue from what exists; do NOT redo committed work.]",
+		});
+
+		const options = mocks.createAgentSession.mock.calls[0][0];
+		// Issue #411: the resume context is its own trusted section on the
+		// system-prompt side, AFTER <system-prompt> — never inside the task fence.
+		expect(options.resourceLoader.options.appendSystemPrompt).toEqual([
+			"\n<system-prompt>\n## Preset Guidance\n\nFor security audits.\n</system-prompt>\n",
+			"\n<resume-context>\n[attempt 2 — the previous attempt died on a transport failure.\nContinue from what exists; do NOT redo committed work.]\n</resume-context>\n",
+		]);
+	});
+
+	it("a resumeContext with no systemPrompt yields exactly one <resume-context> entry", async () => {
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "do the thing",
+			resumeContext: "[attempt 2 — continue from what exists.]",
+		});
+
+		const options = mocks.createAgentSession.mock.calls[0][0];
+		expect(options.resourceLoader).toBeDefined();
+		expect(options.resourceLoader.options.appendSystemPrompt).toEqual([
+			"\n<resume-context>\n[attempt 2 — continue from what exists.]\n</resume-context>\n",
+		]);
+		expect(options.resourceLoader.options.noExtensions).toBe(true);
+		expect(options.resourceLoader.options.noSkills).toBe(true);
+	});
+
+	it("the sections builder interpolates exactly the two charset-bounded fields (neutralization rule, issue #411)", () => {
+		// The <system-prompt> and <resume-context> frames interpolate
+		// conductor-authored, charset-bounded values, so neither needs marker
+		// neutralization today. Pin the rule: adding a THIRD interpolated field
+		// to this builder must come with a neutralization decision, and this
+		// ratchet fails until that is recorded here.
+		const source = readFileSync(join("src", "session-manager.ts"), "utf8");
+		const start = source.indexOf("const sections: string[] = [];");
+		const end = source.indexOf("const loader = new DefaultResourceLoader({");
+		expect(start).toBeGreaterThanOrEqual(0);
+		expect(end).toBeGreaterThan(start);
+		const block = source.slice(start, end);
+		const interpolations = [...block.matchAll(/\$\{params\.([a-zA-Z]+)/g)].map((m) => m[1]);
+		expect(interpolations).toEqual(["systemPrompt", "resumeContext"]);
+	});
+
 	it("never loads extensions or skills from the target cwd (F25)", async () => {
 		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
 			task: "do the thing",
