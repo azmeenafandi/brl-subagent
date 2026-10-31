@@ -41,7 +41,19 @@ const h = vi.hoisted(() => ({
 	parseSubagentLine: vi.fn(),
 	spawnBackgroundSession: vi.fn(),
 	getAgent: vi.fn(),
+	/**
+	 * Issue #401: `resolveSubagentParams` is wrapped, not replaced, so the suite
+	 * can assert WHAT PRECEDED RESOLUTION — the routing-isolation and
+	 * non-compounding pins read the `task` each resolution actually saw.
+	 */
+	resolveSubagentParams: vi.fn(),
 }));
+
+vi.mock("../params", async (importOriginal) => {
+	const orig = await importOriginal<typeof import("../params")>();
+	h.resolveSubagentParams.mockImplementation(orig.resolveSubagentParams);
+	return { ...orig, resolveSubagentParams: h.resolveSubagentParams };
+});
 
 vi.mock("../runner", () => ({
 	runSubagent: h.runSubagent,
@@ -76,6 +88,7 @@ vi.mock("@earendil-works/pi-tui", () => {
 import * as eventBus from "../event-bus";
 import initExtension from "../index";
 import { __resetTerminalClaims } from "../notify-completion";
+import { getTranscriptPath } from "../transcript";
 import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "../transport-retry";
 import { CUSTOM_ENTRY_TYPES } from "../types";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
@@ -204,6 +217,8 @@ let sessionStartHandler:
 	| ((_event: unknown, ctx: Record<string, unknown>) => Promise<void>)
 	| undefined;
 let activeCtx: Record<string, unknown>;
+/** The registered `delegate_task` tool (used by the manual-retry pin). */
+let delegateTool: ToolEntry;
 /** The run entries `state.getRunEntries(ctx)` sees — set per test. */
 let sessionEntries: Array<Record<string, unknown>> = [];
 
@@ -255,7 +270,9 @@ function setupExtension(): void {
 		},
 	};
 	initExtension(mockPi as never);
-	if (!registeredTools.get("delegate_task")) throw new Error("delegate_task tool not registered");
+	const registered = registeredTools.get("delegate_task");
+	if (!registered) throw new Error("delegate_task tool not registered");
+	delegateTool = registered;
 }
 
 function makeRegistry() {
@@ -352,6 +369,9 @@ beforeEach(() => {
 	// Isolate the log assertions: the sink is shared for the whole file.
 	fs.rmSync(LOG_FILE(), { force: true });
 	__resetTerminalClaims();
+	// Clear CALLS only — the wrapper's implementation is installed once, at mock
+	// factory time, and must survive every reset.
+	h.resolveSubagentParams.mockClear();
 	h.spawnBackgroundSession.mockReset();
 	h.getAgent.mockReset();
 	h.spawnBackgroundSession.mockImplementation(
@@ -396,7 +416,10 @@ describe("deliverCompletionAlert — transport auto-retry (issue #365)", () => {
 			// Exactly one spawn, carrying the source run's identity + recorded params.
 			expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
 			const spawn = h.spawnBackgroundSession.mock.calls[0][2] as Record<string, unknown>;
-			expect(spawn.task).toBe("review the docs");
+			// Issue #401: the prompt is the resume preamble followed by the
+			// recorded task, which stays LAST (and unmodified).
+			expect(String(spawn.task).endsWith("\n\nreview the docs")).toBe(true);
+			expect(String(spawn.task)).toContain("[attempt 2 — ");
 			expect(spawn.description).toBe("review-docs");
 			expect(spawn.model).toBe("test/test-model");
 			expect(spawn.timeout).toBe(600_000);
@@ -552,6 +575,207 @@ describe("deliverCompletionAlert — transport auto-retry (issue #365)", () => {
 			// No toast and no scheduled log: the retry never got scheduled.
 			expect(notified).toEqual([]);
 			expect(logEntries().filter((e) => e.message === RETRY_SCHEDULED)).toHaveLength(0);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 3. The resume preamble (issue #401)
+//
+// The retry used to replay the identical task, so attempt 2 re-read, re-planned
+// and re-wrote what attempt 1 had already done. The fix prefixes the CHILD'S
+// PROMPT with a bounded inspect-first block. Two invariants are pinned here:
+//
+//   1. the preamble is present (marker, source id, bank path, and the
+//      transcript sentence ONLY when that file exists);
+//   2. the preamble is prompt-only — `resolveSubagentParams` and the H1
+//      pre-task validation still see the RECORDED ORIGINAL task, so routing,
+//      thinking level, model and capability warnings cannot be steered by text
+//      the runtime composed itself.
+// ---------------------------------------------------------------------------
+
+/** The code-reviewer guidance is the resolution evidence for the routing pin. */
+const CODE_REVIEWER_GUIDELINE = "For code review of PRs or modules";
+const SECURITY_AUDITOR_GUIDELINE = "For security audits and vulnerability assessments";
+
+/** The `task` every `resolveSubagentParams` call saw during this test. */
+function resolutionTasks(): string[] {
+	return h.resolveSubagentParams.mock.calls.map(
+		(call) => (call[0] as { task?: string }).task ?? "",
+	);
+}
+
+/** The single spawn the retry made, asserting there was exactly one. */
+function retrySpawn(): Record<string, unknown> {
+	expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+	return h.spawnBackgroundSession.mock.calls[0][2] as Record<string, unknown>;
+}
+
+describe("transport auto-retry — resume preamble (issue #401)", () => {
+	it("prepends a bounded resume preamble and omits the transcript sentence when the file is absent", async () => {
+		vi.useFakeTimers();
+		try {
+			registerSettledAgent(SOURCE_ID, "Connection error.");
+			persistRunEntry(settledRun({ label: "review-docs" }));
+
+			await settle(SOURCE_ID);
+
+			const task = String(retrySpawn().task);
+			// Marker + attempts, and the source the preamble is about.
+			expect(task).toContain("[attempt 2 — the previous attempt (bg-365-source) died on a transport failure.");
+			// The surviving-directory guard, in runtime vocabulary (no internal
+			// process terms leak into a prompt a user can see).
+			expect(task).toContain("This directory may already contain its uncommitted edits.");
+			// The inspect-first instruction: working tree, recent history, bank.
+			expect(task).toContain("git status --short");
+			expect(task).toContain("git log --oneline -8");
+			expect(task).toContain("/tmp/brl-review-docs-bank.md");
+			// Closing instruction.
+			expect(task).toContain("Continue from what exists; do NOT redo committed, written, or banked work.");
+			// No transcript exists for this run, so no sentence may name one.
+			expect(task).not.toContain("transcript");
+			expect(task).not.toContain(".pi/output");
+			// Bounded: five lines max including the marker and the original task.
+			expect(task.split("\n").length).toBeLessThanOrEqual(6);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("names the previous attempt's transcript only when that file exists", async () => {
+		vi.useFakeTimers();
+		try {
+			// A real agent id is a UUID (the transcript path chokepoint enforces it).
+			const sourceId = "3f2b6c1e-9a4d-4c7e-8b21-5d0f6a7c9e10";
+			registerSettledAgent(sourceId, "Connection error.");
+			persistRunEntry(settledRun({ id: sourceId, label: "review-docs", resumeOf: undefined }));
+			fs.mkdirSync(path.dirname(getTranscriptPath(sourceId)), { recursive: true });
+			fs.writeFileSync(getTranscriptPath(sourceId), "{}\n");
+
+			await settle(sourceId);
+
+			const task = String(retrySpawn().task);
+			expect(task).toContain(
+				`The previous attempt's transcript is at .pi/output/agent-${sourceId}.jsonl`,
+			);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("a preamble carrying preset and capability keywords does not change resolution (routing isolation)", async () => {
+		vi.useFakeTimers();
+		try {
+			// The label survives bank-path sanitization, so these keywords (a
+			// security-auditor preset keyword AND a bash-class H1 keyword) really
+			// are in the preamble. If resolution saw it, the preset would flip to
+			// security-auditor and the H1 gate would block the missing 'bash'.
+			const sourceId = "bg-401-security-audit-implement-source";
+			registerSettledAgent(sourceId, "Connection error.");
+			persistRunEntry(
+				settledRun({
+					id: sourceId,
+					label: "security-audit-run-123",
+					task: "review the docs",
+				}),
+			);
+
+			await settle(sourceId);
+
+			const spawn = retrySpawn();
+			const task = String(spawn.task);
+			// The keywords ARE in the prompt…
+			expect(task).toContain("/tmp/brl-security-audit-run-123-bank.md");
+			// …but resolution saw the recorded ORIGINAL task, and nothing else.
+			const seen = resolutionTasks();
+			expect(seen).toContain("review the docs");
+			expect(seen.every((seenTask) => !seenTask.includes("[attempt"))).toBe(true);
+			// Same RESOLVED preset as attempt 1 would get from "review the docs".
+			const resolutions = h.resolveSubagentParams.mock.results.map(
+				(result) =>
+					result.value as {
+						resolvedPreset?: { name: string; thinkingLevel?: string };
+						autoRouteKeyword?: string;
+						thinkingLevel?: string;
+					},
+			);
+			expect(resolutions).toHaveLength(1);
+			const resolved = resolutions[0];
+			expect(resolved.resolvedPreset?.name).toBe("code-reviewer");
+			// The keyword evidence comes from the ORIGINAL task ("review"), not from
+			// the preamble's "audit" — the security rule is checked FIRST, so a
+			// preamble-visible resolution would have selected security-auditor.
+			expect(resolved.autoRouteKeyword).toBe("review");
+			// Thinking + model are the values that preset/config produce.
+			expect(resolved.resolvedPreset?.thinkingLevel).toBe("high");
+			expect(resolved.thinkingLevel).toBe(spawn.thinkingLevel);
+			expect(spawn.model).toBe("test/test-model");
+			// …and the shipped system prompt carries that preset's guidance.
+			expect(String(spawn.systemPrompt)).toContain(CODE_REVIEWER_GUIDELINE);
+			expect(String(spawn.systemPrompt)).not.toContain(SECURITY_AUDITOR_GUIDELINE);
+			// H1 outcome unchanged: no pre-task warnings, and the dispatch spawned
+			// (with the preamble in the validation input the missing 'bash' would
+			// have been a capability BLOCK, not a warning).
+			expect(
+				logEntries().filter((e) => e.message === "Background pre-task validation warnings"),
+			).toHaveLength(0);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("a retry of an attempt-2 run resolves from the recorded original task — preambles never compound", async () => {
+		vi.useFakeTimers();
+		try {
+			const attempt2Id = "bg-401-attempt-2";
+			const attempt2Task =
+				"[attempt 2 — the previous attempt (bg-365-source) died on a transport failure.\n" +
+				"Continue from what exists; do NOT redo committed, written, or banked work.]\n\n" +
+				"review the docs";
+			// The attempt-2 record as the auto-retry actually writes it: the run's
+			// own `task` carries the preamble, the snapshot keeps the original.
+			persistRunEntry(
+				settledRun({
+					id: attempt2Id,
+					task: attempt2Task,
+					label: "review-docs",
+					attempt: 2,
+					resumeOf: SOURCE_ID,
+					originalParams: {
+						background: true,
+						model: "test/test-model",
+						task: "review the docs",
+					},
+				}),
+			);
+
+			// A manual retry (retryRunId) of that attempt-2 record.
+			const result = await delegateTool.execute(
+				"call-401",
+				{ retryRunId: attempt2Id },
+				undefined,
+				undefined,
+				makeCtx(),
+			);
+			expect(result.isError).toBeFalsy();
+
+			const spawn = retrySpawn();
+			// No second preamble, and the resolution input is the clean original.
+			expect(spawn.task).toBe("review the docs");
+			expect(spawn.attempt).toBe(3);
+			expect(spawn.resumeOf).toBe(attempt2Id);
+			expect(resolutionTasks()).toContain("review the docs");
+			expect(resolutionTasks().every((seenTask) => !seenTask.includes("[attempt"))).toBe(true);
+			// A manual retry gets no preamble, so nothing needed the snapshot's
+			// clean task — but the prompt (and therefore the new record's `task`)
+			// is the un-prefixed original, so the NEXT retry resolves clean too.
+			expect((spawn.originalParams as Record<string, unknown>).task).toBeUndefined();
 		} finally {
 			vi.clearAllTimers();
 			vi.useRealTimers();
