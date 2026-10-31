@@ -641,8 +641,11 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 				expect(task).toContain("git log --oneline -8");
 				expect(task).toContain("/tmp/brl-review-docs-bank.md");
 				// The retained session, ABSOLUTE (the child's cwd can differ).
-				expect(task).toContain(path.resolve(sessionDir));
-				expect(path.isAbsolute(path.resolve(sessionDir))).toBe(true);
+				const pointerLine = task.split("\n").find((line) => line.includes("retained at"));
+				expect(pointerLine).toBeDefined();
+				const pointerPath = pointerLine!.match(/retained at (\S+)/)?.[1];
+				expect(pointerPath).toBe(path.resolve(sessionDir));
+				expect(pointerPath && path.isAbsolute(pointerPath)).toBe(true);
 				expect(task).toContain("newest .jsonl inside");
 				// Closing instruction.
 				expect(task).toContain("Continue from what exists; do NOT redo committed, written, or banked work.");
@@ -674,6 +677,7 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 			const task = String(retrySpawn().task);
 			expect(task).toContain(`/tmp/brl-review-docs-bank.md`);
 			expect(task).not.toContain(path.resolve(sessionDir));
+			expect(task).not.toContain("retained at");
 			expect(task).not.toContain("newest .jsonl inside");
 			expect(task.split("\n").length).toBeLessThanOrEqual(6);
 		} finally {
