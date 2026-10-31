@@ -2,6 +2,7 @@
 import { randomUUID } from 'crypto';
 import { basename, dirname, join, resolve } from 'path';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync } from 'fs';
+import type { Dirent } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, RecoveryMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
 import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
@@ -16,6 +17,7 @@ import type { HeadState } from './git';
 import { normalizeTimeout, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
 import { currentProcessOwner } from './recovery';
 import { persistRunRecord, listInflightRuns, type InflightRun } from './run-registry';
+import { isTransportRetryable } from './transport-retry';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -95,9 +97,14 @@ function ensureStorageDir(): void {
 // D5 measurement (one week of use):
 //   du -sh .pi/subagents/sessions
 //   find .pi/subagents/sessions -name '*.jsonl' | wc -l
-// The expected steady state is EMPTY between runs (terminal runs prune their
-// dir) plus one dir per currently-interrupted run — a non-empty count of
-// settled runs means a prune path regressed. There is no runtime metric.
+// The expected steady state between runs is EMPTY, plus:
+//   - one dir per currently-interrupted run (kept by design, D3), and
+//   - up to RETAINED_MAX_DIRS transport-failed dirs bearing the retention
+//     marker (issue #404 — bounded by the settle-time sweep, see the #404
+//     block below).
+// These two classes are the documented exceptions: a session dir whose name is
+// NOT one of those is a prune-path regression. Judge by the marker file
+// (`.transport-retained`), not by the raw count. There is no runtime metric.
 // ---------------------------------------------------------------------------
 
 /** Subdirectory of the agent-record store that holds per-run session dirs. */
@@ -114,6 +121,16 @@ export function backgroundSessionDir(id: string): string {
 }
 
 /**
+ * TRUE when `dir` is shaped exactly like `<...>/sessions/<id>` — the one
+ * precondition every path that touches a session directory requires before it
+ * can delete or brand it.
+ */
+function isSessionDirFor(id: string, dir: string): boolean {
+  const target = resolve(dir);
+  return basename(target) === id && basename(dirname(target)) === SESSIONS_SUBDIR;
+}
+
+/**
  * Remove ONE per-run session directory. Defensive by construction: the target
  * must look like `<...>/sessions/<id>` (basename === id, parent basename ===
  * 'sessions') before rmSync runs, so a caller can never delete a path outside
@@ -126,13 +143,12 @@ function pruneSessionDir(id: string, dir: string): void {
     log.error(`Refusing to prune session dir for invalid id: ${id}`);
     return;
   }
-  const target = resolve(dir);
-  if (basename(target) !== id || basename(dirname(target)) !== SESSIONS_SUBDIR) {
-    log.error(`Refusing to prune session dir outside ${SESSIONS_SUBDIR}/: ${target}`);
+  if (!isSessionDirFor(id, dir)) {
+    log.error(`Refusing to prune session dir outside ${SESSIONS_SUBDIR}/: ${resolve(dir)}`);
     return;
   }
   try {
-    rmSync(target, { recursive: true, force: true });
+    rmSync(resolve(dir), { recursive: true, force: true });
   } catch (err) {
     // Pruning is hygiene — it must never break execution or a settle path.
     log.warn(`Failed to prune session dir for ${id}`, {
@@ -160,6 +176,169 @@ function pruneSessionDir(id: string, dir: string): void {
  */
 export function pruneBackgroundSession(id: string): void {
   pruneSessionDir(id, backgroundSessionDir(id));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #404: bounded retention of a transport-failed run's session.
+//
+// The #401 resume preamble named no artifact beyond the working tree and the
+// bank, because the SDK session dir — the only place the conversation lives —
+// was pruned on every terminal settle. A transport failure is the ONE class a
+// retry re-dispatches automatically, so it is the one class whose session is
+// worth keeping: the retry's child reads the tail of it to recover what attempt
+// 1 had already worked out.
+//
+// Retention is an OPTIMIZATION; boundedness is the invariant. A retained dir is
+// branded with RETAINED_MARKER, and the sweep at the same choke points enforces
+// the caps below over MARKED dirs only — an interrupted run's dir (kept by
+// design, unmarked) and the agent-record store are never candidates. Nothing in
+// this block may throw into a settle path.
+//
+// Root-local, like the U3 D5 boundary above: the sweep walks the sessions root
+// the settled run actually wrote to, so a dir retained under a previous
+// STORAGE_DIR root is not reclaimed by a later settle under a new one.
+// ---------------------------------------------------------------------------
+
+/** Brand on a retained session dir — the sweep's only selection criterion. */
+const RETAINED_MARKER = '.transport-retained';
+/** Keep at most this many retained dirs (oldest marker mtime goes first). */
+const RETAINED_MAX_DIRS = 5;
+/** Keep the marked set under this total on-disk size. */
+const RETAINED_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+/** Drop a retained dir once its marker is older than this. */
+const RETAINED_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+/**
+ * Below this size there is nothing worth a retention slot: a run that died on a
+ * connection error before its first assistant turn leaves a start-entry-only
+ * file (the SDK writes the header at create()), and pointing a retry at a
+ * contentless file is worse than not pointing at all.
+ */
+const RETAINED_MIN_BYTES = 2 * 1024;
+
+/**
+ * Recursive on-disk size of `dir`. Unreadable entries count as zero and
+ * symlinks are never followed, so the walk cannot escape `dir`.
+ */
+function dirTotalBytes(dir: string): number {
+  let total = 0;
+  const stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue; // raced with a delete — size it as absent
+    }
+    for (const entry of entries) {
+      const child = join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(child);
+      } else if (entry.isFile()) {
+        try {
+          total += statSync(child).size;
+        } catch {
+          // vanished mid-walk — ignore
+        }
+      }
+    }
+  }
+  return total;
+}
+
+/**
+ * Enforce the #404 caps over the marked session dirs beside `currentDir`.
+ *
+ * `currentDir` is EXEMPT for the settle that just marked it. Without that, a
+ * single over-cap dir would be deleted at the instant it was retained — and the
+ * largest, most salvageable runs are exactly the ones that would lose. So one
+ * dir may overshoot by one; the NEXT settle reclaims it.
+ *
+ * Best-effort by construction: selection is guarded, and deletion goes through
+ * the validated, never-throwing `pruneSessionDir`.
+ */
+function sweepRetainedSessions(currentDir: string): void {
+  const current = resolve(currentDir);
+  const root = dirname(current);
+  if (basename(root) !== SESSIONS_SUBDIR) return; // never walk outside sessions/
+  let names: string[];
+  try {
+    names = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    return; // root missing/unreadable — nothing to bound
+  }
+  const now = Date.now();
+  const retained: Array<{ dir: string; size: number; markedAt: number }> = [];
+  for (const name of names) {
+    // Only ids our own spawn can mint are sweepable; a foreign name is left for
+    // a human instead of being deleted on a guess.
+    try {
+      assertSafeAgentId(name);
+    } catch {
+      continue;
+    }
+    const dir = join(root, name);
+    const marker = join(dir, RETAINED_MARKER);
+    // UNMARKED ⇒ interrupted (D3), live, or foreign. Never a candidate.
+    if (!existsSync(marker)) continue;
+    try {
+      retained.push({ dir, size: dirTotalBytes(dir), markedAt: statSync(marker).mtimeMs });
+    } catch {
+      // marker disappeared between the check and the stat — re-read as unmarked
+    }
+  }
+  retained.sort((a, b) => a.markedAt - b.markedAt);
+  let count = retained.length;
+  let total = retained.reduce((sum, entry) => sum + entry.size, 0);
+  for (const entry of retained) {
+    if (entry.dir === current) continue; // this settle's own dir — see the doc comment
+    // Ages ascend with the sort, so the oldest candidate's age speaks for the rest.
+    const tooMany = count > RETAINED_MAX_DIRS;
+    const tooBig = total > RETAINED_MAX_TOTAL_BYTES;
+    const tooOld = now - entry.markedAt > RETAINED_MAX_AGE_MS;
+    if (!tooMany && !tooBig && !tooOld) break;
+    pruneSessionDir(basename(entry.dir), entry.dir);
+    count -= 1;
+    total -= entry.size;
+  }
+}
+
+/**
+ * Retain `dir` for the #401 resume preamble: brand it with the retention marker
+ * (its mtime is the recency source) and enforce the caps.
+ *
+ * Returns TRUE when the dir is now retained — the caller then SKIPS the prune —
+ * and FALSE when retention was skipped or failed, in which case the caller must
+ * prune as before. Fail-closed on purpose: retention is an optimization, while
+ * boundedness is the invariant, and a dir whose marker write failed would be
+ * invisible to the sweep forever.
+ */
+function retainSessionDir(id: string, dir: string): boolean {
+  try {
+    if (!isSessionDirFor(id, dir) || !existsSync(dir)) return false;
+    if (dirTotalBytes(dir) < RETAINED_MIN_BYTES) return false;
+    writeFileSync(join(dir, RETAINED_MARKER), `${new Date().toISOString()}\n`, {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+  } catch (err) {
+    log.warn(`Not retaining session dir for ${id} (marker write failed)`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+  try {
+    sweepRetainedSessions(dir);
+  } catch (err) {
+    // The sweep guards its own steps; this is belt-and-braces so a settle can
+    // never be broken by hygiene.
+    log.warn(`Retained-session sweep failed for ${id}`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return true;
 }
 
 /**
@@ -1140,10 +1319,11 @@ export async function spawnBackgroundSession(
   // run — git-setup refusal, a synchronous prompt throw, the .then completed /
   // provider-failed / aborted branches, the .catch stopped / failed branches and
   // the markTerminalBestEffort catch-all ALL land here exactly once (the
-  // runFinalized guard). Pruning here therefore covers every settle path. The
-  // index.ts poller crash notices are NOT settlements (they flip only the live
-  // UI state and leave the run/agent record to this settle); an interrupted run
-  // (U1 boot-scan mark) never reaches this function and KEEPS its file (D3).
+  // runFinalized guard). The session-dir decision below therefore covers every
+  // settle path. The index.ts poller crash notices are NOT settlements (they flip
+  // only the live UI state and leave the run/agent record to this settle); an
+  // interrupted run (U1 boot-scan mark) never reaches this function and KEEPS its
+  // file (D3).
   let runFinalized = false;
   const finalizeRunEntry = (
     status: "done" | "failed",
@@ -1152,21 +1332,17 @@ export async function spawnBackgroundSession(
   ): void => {
     if (runFinalized) return;
     runFinalized = true;
-    // U2 (D2): drop the persisted session now that the run is terminal. Done
-    // FIRST (before the run-entry write below) so a persist throw cannot leave
-    // a terminal run's session file behind. Interrupted runs keep theirs.
-    if (!agent.interruptedAt) {
-      pruneSessionDir(
-        id,
-        agent._sessionFile ? dirname(agent._sessionFile) : backgroundSessionDir(id),
-      );
-    }
     const usage = agent.result?.usage ?? EMPTY_USAGE;
     const finalOutput = agent.finalOutput ?? "";
     // Issue #179 (D1/D2): the classifier's explicit category wins (it knows the
     // terminal stopReason); otherwise fall back to the legacy message-based
     // classification (refused spawns, sync throws, preflight rejections, the
     // catch-all) so no failure is ever left uncategorized.
+    //
+    // Issue #404: HOISTED above the session-dir decision below — the retention
+    // gate must read the same category/value the run record is about to get, and
+    // that decision has to happen before the record write (see the invariant
+    // note there). `classifyError` is pure and total, so hoisting costs nothing.
     const errorCategory =
       status === "failed"
         ? terminal?.errorCategory ??
@@ -1180,6 +1356,32 @@ export async function spawnBackgroundSession(
               })
             : undefined)
         : undefined;
+    // U2 (D2) prune + #404 retention. THE INVARIANT: the prune/mark decision
+    // precedes the run-record write, and everything above it is pure — so no
+    // throw between the decision and the write can leave a terminal run's session
+    // dir behind. Interrupted runs keep theirs (D3) and are never marked.
+    //
+    // The retention gate is the auto-retry predicate itself (#365/#401): only a
+    // run that will be re-dispatched has a reader for the retained session, and
+    // it is built from the values this record is about to carry, so the reader
+    // and the retainer can never disagree.
+    if (!agent.interruptedAt) {
+      // The CAPTURED dir — tests swap STORAGE_DIR per case, and a mid-run change
+      // of root must never mis-target the delete or the marker.
+      const sessionDir = agent._sessionFile ? dirname(agent._sessionFile) : backgroundSessionDir(id);
+      const retained = isTransportRetryable({
+        status,
+        errorCategory,
+        errorMessage: error,
+        attempt: run.attempt,
+        originalParams: run.originalParams,
+      });
+      // Marker write failure => prune: retention is an optimization, boundedness
+      // is the invariant (an unmarked retained dir would escape the sweep).
+      if (!retained || !retainSessionDir(id, sessionDir)) {
+        pruneSessionDir(id, sessionDir);
+      }
+    }
     // Issue #187: capture the RAW terminal reason BEFORE coercion. `finalTurnError`
     // means "the final turn was a PROVIDER error" (isProviderError); deriving it
     // from the COERCED reason would turn a missing/success reason into 'error' and

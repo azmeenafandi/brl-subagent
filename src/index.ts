@@ -5,6 +5,7 @@
  * See AGENT.md for the conductor-facing capability reference.
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
 	AgentToolResult,
@@ -232,13 +233,20 @@ export function cleanupSessionState(state: SessionState): void {
  * Kept bounded (5 lines max) and deliberately vetted for runtime vocabulary —
  * it is prompt text a user can see in the run's task line.
  *
- * It deliberately names NO transcript path: `.pi/output/agent-<id>.jsonl` holds
- * only the start/steering entries (not the conversation) and the SDK session
- * directory is pruned on settle, so a pointer there would be a dead end for the
- * exact case this serves. The bank is the artifact; #404 tracks retaining the
- * failed run's session so a pointer can be re-added.
+ * Issue #404: it also names the retained SDK session directory when one exists.
+ * That is the only artifact that holds attempt 1's CONVERSATION — the output log
+ * is a start/steering stub — and the settle path retains it for exactly this
+ * class of run. The pointer is absolute and computed conductor-side at build
+ * time: the retry's child can run in a different cwd (worktree/branch mode), so
+ * a relative path would point at the wrong tree. The exists gate is deliberate:
+ * an attempt whose session was not retained (size floor, marker failure, a
+ * legacy run) gets the bank-only preamble, never a dead path.
  */
-function buildRetryResumePreamble(run: SubagentRun, nextAttempt: number): string {
+function buildRetryResumePreamble(
+	run: SubagentRun,
+	nextAttempt: number,
+	retainedSessionDir?: string,
+): string {
 	const sanitize = (value: string): string => value.replace(/[^A-Za-z0-9._-]/g, "-");
 	const label = sanitize(run.label ?? "");
 	// A label made only of separators ("---") is not a filename; fall back to the
@@ -250,6 +258,14 @@ function buildRetryResumePreamble(run: SubagentRun, nextAttempt: number): string
 		`Before acting, inspect: \`git status --short\`, \`git log --oneline -8\`, and the progress bank at /tmp/brl-${bankLabel}-bank.md if it exists.`,
 		"Continue from what exists; do NOT redo committed, written, or banked work.]",
 	];
+	if (retainedSessionDir) {
+		// Insert before the closing line so the block still reads as one unit.
+		lines.splice(
+			lines.length - 1,
+			0,
+			`The previous attempt's session is retained at ${retainedSessionDir} — read the newest .jsonl inside (ISO-prefixed names sort lexicographically) to recover what it had worked out.`,
+		);
+	}
 	return lines.join("\n");
 }
 
@@ -3989,13 +4005,25 @@ export default function (pi: ExtensionAPI) {
 		const sourceAttempt = run.attempt ?? 1;
 		try {
 			const retryParams = resolveRetryParams({}, run);
+			// Issue #404: point at the retained session ONLY when it is really
+			// there. Resolve this conductor-side: the child may run in another cwd.
+			// An invalid id cannot have a session dir (and `backgroundSessionDir`
+			// throws on one) — no pointer, no throw.
+			let retainedSessionDir: string | undefined;
+			try {
+				const { backgroundSessionDir } = await import('./session-manager');
+				const candidate = path.resolve(backgroundSessionDir(run.id));
+				if (fs.existsSync(candidate)) retainedSessionDir = candidate;
+			} catch {
+				retainedSessionDir = undefined;
+			}
 			const result = await spawnBackgroundRun(
 				pi,
 				ctx,
 				retryParams,
 				retryParams.task!,
 				run,
-				buildRetryResumePreamble(run, sourceAttempt + 1),
+				buildRetryResumePreamble(run, sourceAttempt + 1, retainedSessionDir),
 			);
 			if (result.isError) {
 				log.warn("Transport auto-retry spawn rejected — surfacing the original failure", {

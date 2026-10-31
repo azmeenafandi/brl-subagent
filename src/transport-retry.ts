@@ -31,28 +31,20 @@ const TRANSPORT_SIGNATURES = [
 export const TRANSPORT_RETRY_TOAST = "Transport failure — auto-retrying once (attempt 2/2)";
 
 /**
- * TRUE when a settled run should be re-dispatched ONCE automatically.
+ * The CLASS half of the predicate: the run failed as a process-level exit
+ * (`exit_error`, with the legacy `originalParams.errorCategory` fallback the
+ * rest of the code uses) AND its `errorMessage` carries a transport signature.
  *
- * Every condition must hold (issue #365 spec):
+ * Extracted for issue #404: the settle path must decide whether to RETAIN the
+ * run's session directory from exactly the values the run record is about to
+ * receive, and it must do so before that record is written. Keeping the half
+ * here (not inlined at the settle site) means the retention decision and the
+ * retry decision can never drift apart.
  *
- *   1. the run FAILED as a process-level exit (`exit_error`, with the legacy
- *      `originalParams.errorCategory` fallback the rest of the code uses) —
- *      this is the class the runner already stamps for an external drop;
- *   2. its `errorMessage` carries a transport signature (see above);
- *   3. it is the ORIGINAL dispatch (`attempt ?? 1 === 1`): a user retry, or a
- *      previous auto-retry that failed again, surfaces normally. This is what
- *      bounds the machinery structurally — one retry per logical dispatch,
- *      never a chain, no timer, no queue;
- *   4. it ran in the BACKGROUND — a foreground failure is already visible
- *      inline (and `retryOnTimeout` covers the foreground timeout case);
- *   5. the record carries `originalParams`, which is what the retry restores.
- *      Fan-out units deliberately omit it (their retry semantics belong to
- *      issue #229), so they fall out here by construction.
- *
- * Pure: no pi SDK, no state, no I/O — unit-testable as a matrix.
+ * Pure: no pi SDK, no state, no I/O.
  */
-export function isTransportRetryable(
-	run: Pick<SubagentRun, "status" | "errorCategory" | "errorMessage" | "attempt" | "originalParams">,
+export function isTransportFailure(
+	run: Pick<SubagentRun, "status" | "errorCategory" | "errorMessage" | "originalParams">,
 ): boolean {
 	if (run.status !== "failed") return false;
 	// New consumers read the top-level category; the legacy snapshot key is the
@@ -60,7 +52,39 @@ export function isTransportRetryable(
 	const category = run.errorCategory ?? run.originalParams?.errorCategory;
 	if (category !== "exit_error") return false;
 	const message = (run.errorMessage ?? "").toLowerCase();
-	if (!TRANSPORT_SIGNATURES.some((signature) => message.includes(signature))) return false;
+	return TRANSPORT_SIGNATURES.some((signature) => message.includes(signature));
+}
+
+/**
+ * TRUE when a settled run should be re-dispatched ONCE automatically.
+ *
+ * Every condition must hold (issue #365 spec):
+ *
+ *   1. `isTransportFailure` — failed as `exit_error` with a transport
+ *      signature in the message (the class the runner already stamps for an
+ *      external drop);
+ *   2. it is the ORIGINAL dispatch (`attempt ?? 1 === 1`): a user retry, or a
+ *      previous auto-retry that failed again, surfaces normally. This is what
+ *      bounds the machinery structurally — one retry per logical dispatch,
+ *      never a chain, no timer, no queue;
+ *   3. it ran in the BACKGROUND — a foreground failure is already visible
+ *      inline (and `retryOnTimeout` covers the foreground timeout case);
+ *   4. the record carries `originalParams`, which is what the retry restores.
+ *      Fan-out units deliberately omit it (their retry semantics belong to
+ *      issue #229), so they fall out here by construction.
+ *
+ * Issue #404: this is ALSO the settle-time retention gate. The resume preamble
+ * that points at a retained session is built only by `scheduleTransportRetry`,
+ * which fires only when this predicate holds — so exactly this class has a
+ * reader. An attempt-2 transport failure (or one of a background-less run)
+ * prunes its session as before.
+ *
+ * Pure: no pi SDK, no state, no I/O — unit-testable as a matrix.
+ */
+export function isTransportRetryable(
+	run: Pick<SubagentRun, "status" | "errorCategory" | "errorMessage" | "attempt" | "originalParams">,
+): boolean {
+	if (!isTransportFailure(run)) return false;
 	if ((run.attempt ?? 1) !== 1) return false;
 	return run.originalParams?.background === true;
 }
