@@ -72,6 +72,31 @@ describe("runSubagent foreground task fencing (F27)", () => {
 		expect(args[args.length - 1]).toBe("<task>\nReview the auth flow\n</task>");
 	});
 
+	it("the foreground path never injects resume context (issue #411)", async () => {
+		// The resume preamble is a BACKGROUND-only channel (system-prompt side).
+		// The foreground subprocess must never receive it: runSubagent has no
+		// resumeContext input, so its -p argument carries the fenced task only —
+		// no <resume-context> section, no attempt marker. This pins that the
+		// channel does not leak into the foreground chokepoint (runner.ts).
+		await runSubagent(
+			"/tmp/cwd",
+			"system prompt",
+			{ provider: "test", id: "model" },
+			"medium",
+			"Review the auth flow",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			() => "",
+		);
+
+		const args = mocks.spawn.mock.calls[0][1] as string[];
+		const prompt = args[args.length - 1];
+		expect(prompt).not.toContain("<resume-context>");
+		expect(prompt).not.toContain("[attempt");
+	});
+
 	it("injects pending intercom messages INSIDE the fence with forged markers neutralized", async () => {
 		// E10: intercom messages (untrusted subagent output) are appended to the
 		// task inside runSubagent, BEFORE the wrap — so they land inside the

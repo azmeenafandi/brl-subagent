@@ -818,3 +818,91 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 		}
 	});
 });
+
+describe("transport auto-retry — resume context is system-side (issue #411)", () => {
+	it("the retry's task is byte-identical to the original and the resume context rides its own field", async () => {
+		vi.useFakeTimers();
+		try {
+			registerSettledAgent(SOURCE_ID, "Connection error.");
+			persistRunEntry(settledRun({ task: "review the docs" }));
+
+			await settle(SOURCE_ID);
+
+			const spawn = retrySpawn();
+			// The falsifier: the task handed to the spawn (which the real
+			// spawnBackgroundSession persists verbatim as the run entry's `task`)
+			// is the clean original — never the resume preamble.
+			expect(spawn.task).toBe("review the docs");
+			expect(String(spawn.task)).not.toContain("[attempt");
+			// …and the recorded snapshot's task is the same byte-identical value.
+			const originalParams = spawn.originalParams as Record<string, unknown>;
+			expect(originalParams).toBeDefined();
+			expect(originalParams.task).toBe("review the docs");
+			expect(spawn.task).toBe(originalParams.task);
+			// The resume context moved to its own field (system-prompt side).
+			expect(String(spawn.resumeContext)).toContain("[attempt 2 — ");
+			expect(String(spawn.resumeContext)).toContain(
+				"Continue from what exists; do NOT redo committed, written, or banked work.",
+			);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("attempt 3 never compounds: a manual retry of an auto-retried record stays clean", async () => {
+		vi.useFakeTimers();
+		try {
+			// Phase A: drive the real auto-retry to mint the attempt-2 spawn.
+			registerSettledAgent(SOURCE_ID, "Connection error.");
+			persistRunEntry(settledRun({ task: "review the docs" }));
+			await settle(SOURCE_ID);
+			const attempt2 = retrySpawn();
+			expect(attempt2.task).toBe("review the docs");
+			expect(String(attempt2.resumeContext)).toContain("[attempt 2 — ");
+
+			const attempt2Id = h.spawnBackgroundSession.mock.results[0].value
+				? (await h.spawnBackgroundSession.mock.results[0].value).id as string
+				: "";
+			expect(attempt2Id).not.toBe("");
+
+			// The attempt-2 record AS THE NEW CODE WRITES IT: clean task,
+			// snapshot carries the clean original, resumeContext is not persisted.
+			h.spawnBackgroundSession.mockClear();
+			persistRunEntry(
+				settledRun({
+					id: attempt2Id,
+					task: "review the docs",
+					label: "review-docs",
+					attempt: 2,
+					resumeOf: SOURCE_ID,
+					originalParams: { background: true, model: "test/test-model", task: "review the docs" },
+				}),
+			);
+
+			// Phase B: a manual retry of that attempt-2 record mints attempt 3.
+			const result = await delegateTool.execute(
+				"call-411-attempt3",
+				{ retryRunId: attempt2Id },
+				undefined,
+				undefined,
+				makeCtx(),
+			);
+			expect(result.isError).toBeFalsy();
+
+			const spawn = retrySpawn();
+			expect(spawn.attempt).toBe(3);
+			expect(spawn.resumeOf).toBe(attempt2Id);
+			// The recorded task stays the original, with no attempt-2 text.
+			expect(spawn.task).toBe("review the docs");
+			expect(String(spawn.task)).not.toContain("[attempt");
+			// Manual retries carry no resume context (the auto-retry preamble is
+			// rebuilt per auto-retry, never recorded, never compounded).
+			expect(spawn.resumeContext).toBeUndefined();
+			expect((spawn.originalParams as Record<string, unknown>).task).toBeUndefined();
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+});
