@@ -5,7 +5,6 @@
  * See AGENT.md for the conductor-facing capability reference.
  */
 
-import { existsSync } from "node:fs";
 import * as path from "node:path";
 import type {
 	AgentToolResult,
@@ -99,7 +98,6 @@ import {
 import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
 import { acquireSlot, clearProgressLinger, releaseSlot, repaintStatus, stopProgressTicker } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
-import { getTranscriptPath } from "./transcript";
 import {
 	finalizeRunRecord,
 	resolveRetryParams,
@@ -234,31 +232,25 @@ export function cleanupSessionState(state: SessionState): void {
  * Kept bounded (5 lines max) and deliberately vetted for runtime vocabulary —
  * it is prompt text a user can see in the run's task line.
  *
- * The transcript sentence is emitted ONLY when the file exists: naming a path
- * that is not there would send the child chasing a miss.
+ * It deliberately names NO transcript path: `.pi/output/agent-<id>.jsonl` holds
+ * only the start/steering entries (not the conversation) and the SDK session
+ * directory is pruned on settle, so a pointer there would be a dead end for the
+ * exact case this serves. The bank is the artifact; #404 tracks retaining the
+ * failed run's session so a pointer can be re-added.
  */
 function buildRetryResumePreamble(run: SubagentRun, nextAttempt: number): string {
-	const bankLabel = (run.label ?? "").replace(/[^A-Za-z0-9._-]/g, "-") || run.id;
-	// The id must pass `assertSafeAgentId` before it may reach a filesystem path
-	// (F24). A non-UUID legacy id simply gets no transcript sentence — a retry is
-	// never worth a path built from unvalidated input.
-	const transcriptFound = ((): boolean => {
-		try {
-			return existsSync(getTranscriptPath(run.id));
-		} catch {
-			return false;
-		}
-	})();
+	const sanitize = (value: string): string => value.replace(/[^A-Za-z0-9._-]/g, "-");
+	const label = sanitize(run.label ?? "");
+	// A label made only of separators ("---") is not a filename; fall back to the
+	// (UUID-shaped, hence already safe) id.
+	const bankLabel = /[A-Za-z0-9]/.test(label) ? label : sanitize(run.id);
 	const lines = [
 		`[attempt ${nextAttempt} — the previous attempt (${run.id}) died on a transport failure.`,
 		"This directory may already contain its uncommitted edits.",
 		`Before acting, inspect: \`git status --short\`, \`git log --oneline -8\`, and the progress bank at /tmp/brl-${bankLabel}-bank.md if it exists.`,
-		transcriptFound
-			? `The previous attempt's transcript is at ${transcriptDisplayPath(run.id)} — read it before deciding what is left.`
-			: "",
 		"Continue from what exists; do NOT redo committed, written, or banked work.]",
 	];
-	return lines.filter((line) => line.length > 0).join("\n");
+	return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------

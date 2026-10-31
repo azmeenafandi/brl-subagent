@@ -88,7 +88,6 @@ vi.mock("@earendil-works/pi-tui", () => {
 import * as eventBus from "../event-bus";
 import initExtension from "../index";
 import { __resetTerminalClaims } from "../notify-completion";
-import { getTranscriptPath } from "../transcript";
 import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "../transport-retry";
 import { CUSTOM_ENTRY_TYPES } from "../types";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
@@ -589,8 +588,9 @@ describe("deliverCompletionAlert — transport auto-retry (issue #365)", () => {
 // and re-wrote what attempt 1 had already done. The fix prefixes the CHILD'S
 // PROMPT with a bounded inspect-first block. Two invariants are pinned here:
 //
-//   1. the preamble is present (marker, source id, bank path, and the
-//      transcript sentence ONLY when that file exists);
+//   1. the preamble is present (marker, source id, bank path) and names NO
+//      transcript path (the output file is a start/steering log, not the
+//      conversation; the session dir is pruned on settle — see #404);
 //   2. the preamble is prompt-only — `resolveSubagentParams` and the H1
 //      pre-task validation still see the RECORDED ORIGINAL task, so routing,
 //      thinking level, model and capability warnings cannot be steered by text
@@ -615,7 +615,7 @@ function retrySpawn(): Record<string, unknown> {
 }
 
 describe("transport auto-retry — resume preamble (issue #401)", () => {
-	it("prepends a bounded resume preamble and omits the transcript sentence when the file is absent", async () => {
+	it("prepends a bounded resume preamble and names no transcript path", async () => {
 		vi.useFakeTimers();
 		try {
 			registerSettledAgent(SOURCE_ID, "Connection error.");
@@ -635,7 +635,8 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 			expect(task).toContain("/tmp/brl-review-docs-bank.md");
 			// Closing instruction.
 			expect(task).toContain("Continue from what exists; do NOT redo committed, written, or banked work.");
-			// No transcript exists for this run, so no sentence may name one.
+			// A pointer at .pi/output/agent-*.jsonl would be a dead end (a
+			// start/steering log, not the conversation) — the bank is the artifact.
 			expect(task).not.toContain("transcript");
 			expect(task).not.toContain(".pi/output");
 			// Bounded: five lines max including the marker and the original task.
@@ -646,22 +647,18 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 		}
 	});
 
-	it("names the previous attempt's transcript only when that file exists", async () => {
+	it("an all-separator label falls back to the sanitized id for the bank path", async () => {
 		vi.useFakeTimers();
 		try {
-			// A real agent id is a UUID (the transcript path chokepoint enforces it).
-			const sourceId = "3f2b6c1e-9a4d-4c7e-8b21-5d0f6a7c9e10";
+			const sourceId = "7c1e2d3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
 			registerSettledAgent(sourceId, "Connection error.");
-			persistRunEntry(settledRun({ id: sourceId, label: "review-docs", resumeOf: undefined }));
-			fs.mkdirSync(path.dirname(getTranscriptPath(sourceId)), { recursive: true });
-			fs.writeFileSync(getTranscriptPath(sourceId), "{}\n");
+			persistRunEntry(settledRun({ id: sourceId, label: "---", resumeOf: undefined }));
 
 			await settle(sourceId);
 
 			const task = String(retrySpawn().task);
-			expect(task).toContain(
-				`The previous attempt's transcript is at .pi/output/agent-${sourceId}.jsonl`,
-			);
+			expect(task).toContain(`/tmp/brl-${sourceId}-bank.md`);
+			expect(task).not.toContain("/tmp/brl----bank.md");
 		} finally {
 			vi.clearAllTimers();
 			vi.useRealTimers();
