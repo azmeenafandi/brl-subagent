@@ -284,6 +284,17 @@ const DISPATCH_LINE_PATTERN = /jev:\s*([A-Za-z]+)\s*(?:\(\s*([0-9.]+)\s*\))?\s*�
 /** A line that at least TRIED to be a dispatch line — used to tell "bare level" from "missing". */
 const BARE_DISPATCH_LINE_PATTERN = /jev:\s*(?:off|minimal|low|medium|high|xhigh)\b/i;
 
+/**
+ * The sanctioned escape, in line form: `jev: unavailable` (SKILL's Rule 22 text: "record
+ * `jev: unavailable` and proceed — never block a dispatch on the classifier"). Anchored to the
+ * `jev:` prefix so prose that merely contains the word cannot pass as a classification, and
+ * derived from GAP_MARKERS so the ledger and the log audits cannot drift apart.
+ */
+const DISPATCH_GAP_LINE_PATTERN = new RegExp(
+	`^jev:\\s*(?:${GAP_MARKERS.map((marker) => marker.replace(/[/\\^$.*+?()[\]{}|]/g, "\\$&")).join("|")})\\b`,
+	"i",
+);
+
 /** Keep offender output to one readable line per dispatch. */
 function clip(text, limit = 110) {
 	const flat = text.replace(/\s+/g, " ").trim();
@@ -300,6 +311,9 @@ function auditDispatchTask(task) {
 	for (const raw of String(task).split(/\r?\n/)) {
 		if (!/jev:/i.test(raw)) continue;
 		const line = raw.trim();
+		// A recorded gap is accepted: `jev: unavailable` is the sanctioned form when the classifier
+		// did not run. It is a RECORD, not a silent skip — the audit still reports how many.
+		if (DISPATCH_GAP_LINE_PATTERN.test(line)) return { ok: true, gap: true };
 		const match = DISPATCH_LINE_PATTERN.exec(line);
 		if (match === null) {
 			const reason = BARE_DISPATCH_LINE_PATTERN.test(line)

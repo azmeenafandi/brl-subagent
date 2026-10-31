@@ -52,7 +52,7 @@ export const KNOWN_DELEGATE_KEYS = new Set([
 	"outputFile", "label", "model", "timeout", "cwd", "tools",
 	"excludeTools", "noBuiltinTools", "preset", "template", "params",
 	"retryRunId", "gitMode", "retryOnTimeout", "approvalMode", "background",
-	"priority", "chain", "tasks", "graph", "force",
+	"priority", "chain", "tasks", "graph", "force", "noJev",
 ] as const);
 
 /**

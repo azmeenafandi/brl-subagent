@@ -16,6 +16,15 @@ const ctx = {
 	cwd: process.cwd(),
 } as unknown as Parameters<typeof validateUnitPrePass>[0]["ctx"];
 
+/**
+ * These fixtures validate tasks in THIS repository, whose package.json opts
+ * into the Jev-line pre-flight (issue #412) — so every fixture task carries a
+ * line, exactly as a real dispatch here does. `force` does not bypass the line
+ * (different escape), which is why the fixtures carry it instead of opting out.
+ */
+const JEV_LINE = "jev: medium (0.5) · C2 · worktree n";
+const withLine = (text: string): string => `${text}\n\n${JEV_LINE}`;
+
 function fakeLog(): Logger {
 	return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
@@ -31,7 +40,7 @@ interface Unit {
 function merge(unit: Unit): UnitPrePassSource & { name: string } {
 	return {
 		name: unit.name,
-		task: unit.task ?? "plain work",
+		task: withLine(unit.task ?? "plain work"),
 		effectiveCwd: unit.cwd ?? process.cwd(),
 		outputFile: unit.outputFile,
 		thinkingLevel: "medium",
@@ -46,7 +55,7 @@ function pass(units: Unit[], overrides: { force?: boolean; describeTask?: string
 		describe: (unit) => ({
 			prefix: `Unit ${unit.name}`,
 			logContext: { unit: unit.name },
-			task: overrides.describeTask,
+			task: overrides.describeTask === undefined ? undefined : withLine(overrides.describeTask),
 		}),
 		label: "Test",
 		gitMode: "none",

@@ -72,6 +72,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 |---|---|
 | `concurrency.ts` | Session-bound concurrency queue: slot acquisition/release, priority insertion, and progress counters. |
 | `diff.ts` | Parses git unified diffs into structured per-file summaries and hunks for the result UI. |
+| `dispatch-line.ts` | Parse and validate the Rule 22 dispatch line, plus the project-local opt-in that makes it required. |
 | `event-bus.ts` | In-memory lifecycle pub/sub (`subagent:*` events) for extensions and the completion wake. |
 | `git.ts` | Branch-based git workflow for worktree runs: branch creation, diff capture, switch-back, cleanup. |
 | `history.ts` | Run-record store: creation, finalization, retry lookup, and history pruning. |
@@ -115,7 +116,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**44 modules** — every one is listed because a new module without a purpose fails CI.
+**45 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

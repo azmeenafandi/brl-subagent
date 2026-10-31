@@ -308,7 +308,11 @@ type _NonResolutionDelegateKey =
 	| "retryOnTimeout"
 	| "model"
 	| "priority"
-	| "background";
+	| "background"
+	// Issue #412: `force`/`noJev` are consumed at the validation seam (they
+	// reach `validatePreTask`, not the merge), so `force` stays in the resolver's
+	// key list while `noJev` — never read by resolution — is excluded here.
+	| "noJev";
 type _ResolveInputCoverage = _ExpectNever<
 	Exclude<_KnownDelegateKey, keyof ResolveInputParams | _NonResolutionDelegateKey>
 >;
@@ -580,6 +584,7 @@ export default function (pi: ExtensionAPI) {
 			ctx,
 			log,
 			force: params.force as boolean | undefined,
+			noJev: params.noJev,
 			merge: (step) => mergeSubTaskParams(globalParams, step),
 			describe: (_step, merged, i) => ({
 				prefix: `Step ${i + 1} ("${displayTaskName(merged)}")`,
@@ -968,6 +973,7 @@ export default function (pi: ExtensionAPI) {
 			ctx,
 			log,
 			force: params.force as boolean | undefined,
+			noJev: params.noJev,
 			merge: (task) => mergeSubTaskParams(globalParams, task),
 			describe: (_task, merged, i) => ({
 				prefix: `Task ${i + 1} ("${displayTaskName(merged)}")`,
@@ -1366,6 +1372,7 @@ export default function (pi: ExtensionAPI) {
 			ctx,
 			log,
 			force: params.force as boolean | undefined,
+			noJev: params.noJev,
 			merge: (node) => mergeSubTaskParams(globalParams, graphTaskToSubTaskParams(node)),
 			describe: (node, merged) => ({
 				prefix: `Node "${node.id}"`,
@@ -1810,6 +1817,8 @@ export default function (pi: ExtensionAPI) {
 					gitMode: globalParams.resolvedGitMode,
 					outputFile: merged.outputFile,
 					force: params.force as boolean | undefined,
+					cwd: targets.cwd,
+					noJev: params.noJev,
 				},
 			});
 			if (preTask.error) return preTask.error;
@@ -2234,7 +2243,7 @@ export default function (pi: ExtensionAPI) {
 		 *    the two shapes disagree on, and claiming the recorded value was
 		 *    schema-validated would be a lie: records are read back from disk.
 		 */
-		params: DelegateTaskParams | ReturnType<typeof resolveRetryParams>,
+		params: (DelegateTaskParams & { noJev?: string }) | ReturnType<typeof resolveRetryParams>,
 		singleTask: string,
 		// Option B U1: the spawn entry a retryRunId resolved to, so a retried
 		// background run inherits dispatchId/resumeOf/attempt (record identity,
@@ -2314,6 +2323,8 @@ export default function (pi: ExtensionAPI) {
 					gitMode: bgResolved.resolvedGitMode,
 					outputFile: bgResolvedOutputFile,
 					force: params.force,
+					cwd: targets.cwd,
+					noJev: params.noJev,
 				},
 			});
 			if (bgPreTask.error) return bgPreTask.error;
@@ -2947,6 +2958,8 @@ export default function (pi: ExtensionAPI) {
 				gitMode: resolvedGitMode,
 				outputFile: resolvedOutputFile,
 				force: params.force,
+				cwd: resolvedCwd,
+				noJev: params.noJev,
 			});
 			if (validation.warnings.length > 0) {
 				log.warn("Pre-task validation warnings", { warnings: validation.warnings });

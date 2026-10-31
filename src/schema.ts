@@ -206,6 +206,16 @@ export const delegateTaskParamsSchema = Type.Object({
 						"Warnings are surfaced either way. force never suppresses outputFile-without-write conflicts.",
 				}),
 			),
+			noJev: Type.Optional(
+				Type.String({
+					minLength: 1,
+					description:
+						"Stated bypass for the Jev dispatch-line pre-flight, which is active ONLY in a project whose package.json sets `brl-subagent.requireJevLine: true` (this repository). " +
+						"A NON-EMPTY reason string: the dispatch proceeds and the reason is surfaced as a warning in the result, so the bypass is never silent. " +
+						"It bypasses ONLY the line check — capability conflicts still reject (unlike force). " +
+						"Append `jev: unavailable` to the task instead when the classifier did not run.",
+				}),
+			),
 			background: Type.Optional(
 				Type.Boolean({
 					description:
