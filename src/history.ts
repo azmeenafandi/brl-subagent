@@ -179,6 +179,11 @@ export function resolveRetryParams(
 		gitMode?: string;
 		approvalMode?: string;
 		force?: boolean;
+		/** The call-level Jev-line bypass (issue #412) — kept so an explicit
+		 * noJev on a retry call still reaches the validation seam; it is never
+		 * inherited from the original (a bypass is per dispatch, and the
+		 * original's line already rides the recorded task). */
+		noJev?: string;
 	},
 	run: SubagentRun,
 ): typeof params {
@@ -203,6 +208,7 @@ export function resolveRetryParams(
 		gitMode: params.gitMode ?? orig?.gitMode,
 		approvalMode: params.approvalMode ?? orig?.approvalMode,
 		force: params.force ?? orig?.force,
+		noJev: params.noJev,
 	};
 }
 

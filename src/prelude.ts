@@ -303,6 +303,13 @@ export interface UnitPrePassInput<U, M extends UnitPrePassSource> {
 	log: Logger;
 	/** Per-unit force flag (IN10): mode entry never carries it. */
 	force?: boolean;
+	/**
+	 * The call-level `noJev` bypass (issue #412), forwarded to every unit's H1.
+	 * Mode entry never carries it either: the mode-level pre-task check has no
+	 * task text of its own to bypass, and a per-unit bypass would let a caller
+	 * silence the check for a batch while appearing to pass it for the call.
+	 */
+	noJev?: string;
 }
 
 export type UnitPrePassOutcome<U, M extends UnitPrePassSource> =
@@ -324,7 +331,7 @@ export type UnitPrePassOutcome<U, M extends UnitPrePassSource> =
 export function validateUnitPrePass<U, M extends UnitPrePassSource>(
 	input: UnitPrePassInput<U, M>,
 ): UnitPrePassOutcome<U, M> {
-	const { units, merge, describe, label, gitMode, ctx, log, force } = input;
+	const { units, merge, describe, label, gitMode, ctx, log, force, noJev } = input;
 	const validated: Array<ValidatedUnit<U, M>> = [];
 	const warnings: string[] = [];
 
@@ -354,6 +361,8 @@ export function validateUnitPrePass<U, M extends UnitPrePassSource>(
 				gitMode,
 				outputFile: merged.outputFile,
 				force,
+				cwd: targets.cwd,
+				noJev,
 			},
 		});
 		if (validation.error) return { ok: false, error: validation.error };

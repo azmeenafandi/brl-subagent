@@ -35,6 +35,11 @@ is open, and what is next.
 5. **Absolute dates** (`2026-10-17`), not "yesterday" or "last week".
 6. **No narrative.** What happened belongs in git, `.development/investigations/`
    or the friction log — not in the handoff.
+7. **No unprompted release.** `## STATE` never proposes a version. The `### Next actions`
+   line says *"release on the maintainer's go"* (or names the release as the maintainer's
+   call); a version number appears only after the maintainer has asked for one or a defect
+   forced it. This is the durable home of the rule — `HANDOFF.md` is regenerated at every
+   handover, so a sentence that lives only there is one rewrite away from being lost.
 
 ## The `Verified:` protocol
 

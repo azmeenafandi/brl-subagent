@@ -27,12 +27,24 @@
 //                               passes the ledger. CONDUCTOR/MERGE-TIME ONLY — the log lives under the
 //                               local `.pi/` (gitignored), so it is NOT CI-visible; CI keeps running
 //                               `--selftest` + `--ledger`.
+//   --line ... --label <name>   ALSO append the printed line to the provenance log (default below):
+//                               `<iso>\t<label>\t<line>`. This is what makes the line
+//                               MACHINE-PRODUCED — the 2026-10-31 gap was a hand-typed `medium (0.70)`
+//                               line whose classifier answer was actually `high (0.32)`, and a
+//                               format-only check passes an invented confidence (Goodhart).
+//   --log ... --require-provenance
+//                               additionally require every audited dispatch line (since the
+//                               provenance log's own cutoff) to have a provenance entry. A line with
+//                               none was NOT printed by --line: it was typed, invented, or copied.
+//                               Missing provenance log = exit 2 (fail-closed, never a silent pass).
 //   --selftest                  fixture proof of every mode (CI-wired), deterministic, no network.
 //
 // CI:
 //   node .pi/skills/worktree/jev-check.mjs --selftest
 //   node .pi/skills/worktree/jev-check.mjs --ledger .development/investigations/jev-calibration-log.md
-import { readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Policy — the vocabulary Rule 22 and the ledger speak.
@@ -70,6 +82,17 @@ const DEFAULT_SUBAGENT_LOG = ".pi/subagent-logs/brl-subagent.log";
 
 /** The one spawn event that carries the dispatch payload (the `warn` variants duplicate it). */
 const DISPATCH_EVENT_MESSAGE = "Background agent spawned";
+
+/** Default provenance log (repo-root relative, gitignored — `.pi/*`). */
+const DEFAULT_PROVENANCE_LOG = ".pi/jev-lines.log";
+
+/**
+ * The provenance log's header records the cutoff: entries can only exist from the moment the log
+ * was created, so dispatches dated BEFORE it are exempt (a historical dispatch cannot have a
+ * provenance entry — the log did not exist). Recorded in the file, not in code, so the cutoff is
+ * the deployment moment rather than an arbitrary constant.
+ */
+const PROVENANCE_CUTOFF_PREFIX = "# jev-lines provenance — cutoff ";
 
 /** Explicit "the classifier did not run" markers — recorded, not silent (Rule 22). */
 const GAP_MARKERS = ["unavailable", "not classified", "n/a", "ritual gap"];
@@ -284,6 +307,17 @@ const DISPATCH_LINE_PATTERN = /jev:\s*([A-Za-z]+)\s*(?:\(\s*([0-9.]+)\s*\))?\s*�
 /** A line that at least TRIED to be a dispatch line — used to tell "bare level" from "missing". */
 const BARE_DISPATCH_LINE_PATTERN = /jev:\s*(?:off|minimal|low|medium|high|xhigh)\b/i;
 
+/**
+ * The sanctioned escape, in line form: `jev: unavailable` (SKILL's Rule 22 text: "record
+ * `jev: unavailable` and proceed — never block a dispatch on the classifier"). Anchored to the
+ * `jev:` prefix so prose that merely contains the word cannot pass as a classification, and
+ * derived from GAP_MARKERS so the ledger and the log audits cannot drift apart.
+ */
+const DISPATCH_GAP_LINE_PATTERN = new RegExp(
+	`^jev:\\s*(?:${GAP_MARKERS.map((marker) => marker.replace(/[/\\^$.*+?()[\]{}|]/g, "\\$&")).join("|")})\\b`,
+	"i",
+);
+
 /** Keep offender output to one readable line per dispatch. */
 function clip(text, limit = 110) {
 	const flat = text.replace(/\s+/g, " ").trim();
@@ -300,6 +334,9 @@ function auditDispatchTask(task) {
 	for (const raw of String(task).split(/\r?\n/)) {
 		if (!/jev:/i.test(raw)) continue;
 		const line = raw.trim();
+		// A recorded gap is accepted: `jev: unavailable` is the sanctioned form when the classifier
+		// did not run. It is a RECORD, not a silent skip — the audit still reports how many.
+		if (DISPATCH_GAP_LINE_PATTERN.test(line)) return { ok: true, gap: true, line };
 		const match = DISPATCH_LINE_PATTERN.exec(line);
 		if (match === null) {
 			const reason = BARE_DISPATCH_LINE_PATTERN.test(line)
@@ -316,8 +353,9 @@ function auditDispatchTask(task) {
 			continue;
 		}
 		try {
-			formatDispatchLine({ level, conf, risk, worktree });
-			return { ok: true };
+			// The CANONICAL rendering is what provenance stores, so an accepted line is
+			// normalized here too (a hand-typed `0.80` matches the printer's `0.8`).
+			return { ok: true, line: formatDispatchLine({ level, conf, risk, worktree }) };
 		} catch (error) {
 			attempts.push(`${describe(error)} — ${clip(line)}`);
 		}
@@ -378,6 +416,96 @@ function loadDispatchExceptions(path) {
 	return exceptions;
 }
 
+// ---------------------------------------------------------------------------
+// Provenance — the line must come from the classifier, not from the conductor's memory.
+// ---------------------------------------------------------------------------
+
+/**
+ * One provenance row: `<iso>\t<label>\t<canonical line>`. Tabs, because a task label or a line can
+ * contain anything else (the middle dot is not a separator risk; a tab cannot appear in a shell
+ * label without quoting).
+ */
+function formatProvenanceEntry(line, label, now) {
+	return `${now.toISOString()}\t${label}\t${line}`;
+}
+
+/**
+ * Parse the provenance log. Returns `{ cutoff, entries }`, where `cutoff` is the `YYYY-MM-DD` from
+ * the header (null when the file predates headers). A non-comment row that is not exactly three
+ * tab-separated fields is a StructuralError — a corrupted provenance log must never read as
+ * "no entries", which would silently fail every dispatch or, worse, silently pass none.
+ */
+function parseProvenanceLog(text) {
+	let cutoff = null;
+	const entries = [];
+	const rows = text.split(/\r?\n/);
+	for (let index = 0; index < rows.length; index += 1) {
+		const raw = rows[index];
+		if (raw.trim() === "") continue;
+		if (raw.trimStart().startsWith("#")) {
+			const trimmed = raw.trim();
+			// The cutoff is the log's creation INSTANT, not its date: a date-only cutoff
+			// treats every same-day dispatch as "since the cutoff", which would flag the
+			// dispatches that predate the log (the 2026-10-31 live case). No released log
+			// predates this feature, so a date-only header is a structural error rather
+			// than a silently weaker comparison.
+			if (/\bcutoff\s+\d{4}-\d{2}-\d{2}\s*$/.test(trimmed)) {
+				throw new StructuralError(
+					`${PROVENANCE_CUTOFF_PREFIX.trim()} is date-only — the cutoff must be a full ISO instant ` +
+						"(YYYY-MM-DDThh:mm:ss.sssZ); delete the log and reprint the next line with --label",
+				);
+			}
+			const match = /^#.*\bcutoff\s+(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)\s*$/.exec(trimmed);
+			if (match !== null) cutoff = match[1];
+			continue;
+		}
+		const parts = raw.split("\t");
+		if (parts.length !== 3 || parts[2].trim() === "" || parts[1].trim() === "") {
+			throw new StructuralError(
+				`provenance log line ${index + 1} is malformed — expected <iso>\\t<label>\\t<line>`,
+			);
+		}
+		entries.push({ at: parts[0].trim(), label: parts[1].trim(), line: parts[2].trim() });
+	}
+	return { cutoff, entries };
+}
+
+/**
+ * Append one provenance row, creating the file (and its cutoff header) on first use. The cutoff is
+ * the creation DATE, which is what exempts every dispatch that predates the log.
+ */
+function appendProvenanceEntry(path, line, label, now = new Date()) {
+	let existing = "";
+	try {
+		existing = readFileSync(path, "utf8");
+	} catch (error) {
+		if (error.code !== "ENOENT") throw new StructuralError(`${path}: cannot read the provenance log (${describe(error)})`);
+	}
+	const header = existing.trim() === "" ? `${PROVENANCE_CUTOFF_PREFIX}${now.toISOString()}\n` : "";
+	mkdirSync(dirname(path), { recursive: true });
+	appendFileSync(path, `${header}${formatProvenanceEntry(line, label, now)}\n`);
+}
+
+/** Read the provenance log, fail-closed: a missing/empty log cannot verify anything. */
+function loadProvenance(path) {
+	let text;
+	try {
+		text = readFileSync(path, "utf8");
+	} catch (error) {
+		throw new StructuralError(
+			`${path}: cannot read the provenance log (${describe(error)}) — --require-provenance is fail-closed; ` +
+				"print every dispatch line with `--line '<json>' --label <name>`",
+		);
+	}
+	const parsed = parseProvenanceLog(text);
+	if (parsed.entries.length === 0) {
+		throw new StructuralError(
+			`${path}: no provenance entries — --require-provenance cannot verify a dispatch line it never saw printed`,
+		);
+	}
+	return parsed;
+}
+
 /**
  * `YYYY-MM-DD` part of an ISO timestamp. A missing/unrecognisable timestamp sorts LAST (it can
  * never be grandfathered by the cutoff) — an undateable dispatch is audited, not skipped.
@@ -391,7 +519,7 @@ function eventDate(timestamp) {
  * Audit the dispatch log text. Throws StructuralError when no dispatch event parses at all: an
  * empty/rotated/unreadable log must fail loudly, never read as "every dispatch was clean".
  */
-function analyzeDispatchLog(text, cutoff, exceptions = []) {
+function analyzeDispatchLog(text, cutoff, exceptions = [], provenance = null) {
 	const { events, unparsed } = parseDispatchEvents(text);
 	if (events.length === 0) {
 		throw new StructuralError(
@@ -404,7 +532,25 @@ function analyzeDispatchLog(text, cutoff, exceptions = []) {
 	const excepted = [];
 	for (const event of relevant) {
 		const audit = event.task === null ? { ok: false, reason: "spawn event carries no task payload — cannot audit" } : auditDispatchTask(event.task);
-		if (audit.ok) continue;
+		if (audit.ok) {
+			// Provenance (the Goodhart fix): a line in the right FORMAT can be invented. Only a
+			// line that `--line --label` printed has a row here. Gap lines are exempt — they
+			// record that the classifier did NOT run, so there is nothing to prove.
+			const eventAt = Date.parse(event.timestamp);
+			const cutoffAt = provenance !== null && provenance.cutoff !== null ? Date.parse(provenance.cutoff) : NaN;
+			const sinceCutoff = Number.isFinite(cutoffAt) && (!Number.isFinite(eventAt) || eventAt >= cutoffAt);
+			if (provenance !== null && !audit.gap && sinceCutoff) {
+				if (!provenance.lines.has(audit.line)) {
+					offenders.push({
+						...event,
+						reason:
+							`no classifier provenance for "${audit.line}" — that line was not printed by ` +
+							"`--line --label` (an invented or copied confidence passes a format-only check)",
+					});
+				}
+			}
+			continue;
+		}
 		const exception = exceptions.find((entry) => event.agentId.toLowerCase().startsWith(entry.prefix));
 		if (exception) {
 			excepted.push({ ...event, reason: audit.reason, exception: exception.reason });
@@ -423,7 +569,7 @@ function normalizeSince(value) {
 	return value;
 }
 
-function reportDispatchLog(path, since, exceptionsPath) {
+function reportDispatchLog(path, since, exceptionsPath, requireProvenance = false) {
 	const cutoff = since === undefined ? STRICT_DISPATCH_CUTOFF : normalizeSince(since);
 	const exceptions = loadDispatchExceptions(exceptionsPath ?? DISPATCH_EXCEPTIONS_DEFAULT);
 	let text;
@@ -432,7 +578,12 @@ function reportDispatchLog(path, since, exceptionsPath) {
 	} catch (error) {
 		throw new StructuralError(`${path}: cannot read the subagent log (${describe(error)})`);
 	}
-	const { events, relevant, offenders, excepted, unparsed } = analyzeDispatchLog(text, cutoff, exceptions);
+	let provenance = null;
+	if (requireProvenance) {
+		const loaded = loadProvenance(DEFAULT_PROVENANCE_LOG);
+		provenance = { cutoff: loaded.cutoff, lines: new Set(loaded.entries.map((entry) => entry.line)) };
+	}
+	const { events, relevant, offenders, excepted, unparsed } = analyzeDispatchLog(text, cutoff, exceptions, provenance);
 
 	if (excepted.length > 0) {
 		console.error(`jev-check: ${excepted.length} offending dispatch(es) carry a RECORDED exception:`);
@@ -469,10 +620,35 @@ function reportDispatchLog(path, since, exceptionsPath) {
 	return 0;
 }
 
-function reportLine(raw) {
+/**
+ * Parse `--line '<json>' [--label <name>]`: the JSON is everything that is not an option (a shell
+ * already removed the quoting), and `--label` names the dispatch so a provenance row is readable.
+ * An unusable `--label` is a usage error rather than a silent unlabeled row.
+ */
+function parseLineArgs(args) {
+	let raw;
+	let label;
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (arg === "--label") {
+			if (index + 1 >= args.length) throw new StructuralError("--label needs a dispatch name");
+			label = args[index + 1];
+			index += 1;
+		} else if (arg.startsWith("--") && raw !== undefined) {
+			throw new StructuralError(`unknown --line option ${JSON.stringify(arg)}\n\n${USAGE}`);
+		} else if (raw === undefined) {
+			raw = arg;
+		} else {
+			raw = `${raw} ${arg}`;
+		}
+	}
+	return { raw: raw ?? "", label };
+}
+
+function reportLine(raw, label) {
 	if (raw.trim() === "") {
 		throw new StructuralError(
-			`--line needs the classifier JSON, e.g. --line '{"level":"medium","conf":0.84,"risk":"C2","worktree":true}'`,
+			`--line needs the classifier JSON, e.g. --line '{"level":"medium","conf":0.84,"risk":"C2","worktree":true}' --label <name>`,
 		);
 	}
 	let payload;
@@ -481,7 +657,13 @@ function reportLine(raw) {
 	} catch (error) {
 		throw new StructuralError(`--line: the argument is not JSON (${describe(error)})`);
 	}
-	console.log(formatDispatchLine(payload));
+	const line = formatDispatchLine(payload);
+	console.log(line);
+	if (label !== undefined) {
+		// Provenance: the ONLY writer of this log. A line without a row was not printed here.
+		appendProvenanceEntry(DEFAULT_PROVENANCE_LOG, line, label);
+		console.error(`jev-check: provenance row appended to ${DEFAULT_PROVENANCE_LOG} (label ${JSON.stringify(label)})`);
+	}
 	return 0;
 }
 
@@ -879,6 +1061,153 @@ const SELFTEST_CASES = [
 			}
 		},
 	},
+	// --- provenance --------------------------------------------------------
+	{
+		name: "--line --label: the printed line is appended with a cutoff header",
+		run() {
+			const dir = mkdtempSync(join(tmpdir(), "jev-provenance-"));
+			try {
+				const path = join(dir, "jev-lines.log");
+				const now = new Date("2026-11-02T10:00:00.000Z");
+				appendProvenanceEntry(path, "jev: medium (0.84) · C2 · worktree y", "impl", now);
+				appendProvenanceEntry(path, "jev: high (0.44) · C1 · worktree n", "review", now);
+				const text = readFileSync(path, "utf8");
+				const parsed = parseProvenanceLog(text);
+				assertEqual(parsed.cutoff, "2026-11-02T10:00:00.000Z", "cutoff from the header (full instant)");
+				assertEqual(parsed.entries.length, 2, "entries");
+				assertEqual(parsed.entries[0].label, "impl", "label");
+				assertEqual(parsed.entries[0].line, "jev: medium (0.84) · C2 · worktree y", "line");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	},
+	{
+		name: "--line --label parsing: the label is optional and detached from the JSON",
+		run() {
+			const withLabel = parseLineArgs(['{"level":"medium","conf":0.84,"risk":"C2","worktree":true}', "--label", "impl"]);
+			assertEqual(withLabel.label, "impl", "label");
+			assertEqual(JSON.parse(withLabel.raw).level, "medium", "raw json");
+			const withoutLabel = parseLineArgs(['{"level":"medium","conf":0.84,"risk":"C2","worktree":true}']);
+			assertEqual(withoutLabel.label, undefined, "no label");
+		},
+	},
+	{
+		name: "--require-provenance: a formatted line with NO provenance row is an offender",
+		run() {
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", "Task.\n\njev: medium (0.84) · C2 · worktree y")),
+				STRICT_DISPATCH_CUTOFF,
+				[],
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set() },
+			);
+			assertEqual(offenders.length, 1, "offenders");
+			if (!/no classifier provenance/.test(offenders[0].reason)) {
+				throw new Error(`offender reason: expected /no classifier provenance/, got ${JSON.stringify(offenders[0].reason)}`);
+			}
+		},
+	},
+	{
+		name: "--require-provenance: a line printed by --line passes",
+		run() {
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", "Task.\n\njev: medium (0.84) · C2 · worktree y")),
+				STRICT_DISPATCH_CUTOFF,
+				[],
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set(["jev: medium (0.84) · C2 · worktree y"]) },
+			);
+			assertEqual(offenders.length, 0, "offenders");
+		},
+	},
+	{
+		name: "--require-provenance: the hand-typed 0.70 line is caught (2026-10-31 fixture)",
+		run() {
+			// The live case: a dispatch carried `medium (0.70)`; the classifier had answered high (0.32).
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", "Critique the plan.\n\njev: medium (0.7) · C2 · worktree n")),
+				STRICT_DISPATCH_CUTOFF,
+				[],
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set(["jev: high (0.32) · C2 · worktree n"]) },
+			);
+			assertEqual(offenders.length, 1, "offenders");
+		},
+	},
+	{
+		name: "--require-provenance: `jev: unavailable` is exempt (a gap has nothing to prove)",
+		run() {
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", "Task.\n\njev: unavailable")),
+				STRICT_DISPATCH_CUTOFF,
+				[],
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set() },
+			);
+			assertEqual(offenders.length, 0, "offenders");
+		},
+	},
+	{
+		name: "--require-provenance: a SAME-DAY dispatch before the log's creation instant is exempt (2026-10-31 live case)",
+		run() {
+			// The live bug: the header carried a DATE, so every dispatch earlier that day was
+			// treated as "since the cutoff" and flagged. The cutoff is the creation instant.
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-10-31T04:55:14.181Z", "Task.\n\njev: medium (0.72) · C1 · worktree y")),
+				STRICT_DISPATCH_CUTOFF,
+				[],
+				{ cutoff: "2026-10-31T07:54:32.046Z", lines: new Set() },
+			);
+			assertEqual(offenders.length, 0, "offenders");
+		},
+	},
+	{
+		name: "--require-provenance: a SAME-DAY dispatch after the log's creation instant needs a row",
+		run() {
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-10-31T08:10:00.000Z", "Task.\n\njev: medium (0.76) · C2 · worktree y")),
+				STRICT_DISPATCH_CUTOFF,
+				[],
+				{ cutoff: "2026-10-31T07:54:32.046Z", lines: new Set() },
+			);
+			assertEqual(offenders.length, 1, "offenders");
+		},
+	},
+	{
+		name: "--require-provenance: a DATE-ONLY cutoff header is a structural error (fail-closed)",
+		run() {
+			assertRejects(
+				() => parseProvenanceLog("# jev-lines provenance — cutoff 2026-10-31\n2026-10-31T07:54:32.046Z\tc1\tjev: high (0.46) · C1 · worktree n\n"),
+				/date-only/,
+				"date-only cutoff",
+			);
+		},
+	},
+	{
+		name: "--require-provenance: dispatches BEFORE the provenance cutoff are exempt",
+		run() {
+			const { offenders } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-10-31T09:00:00.000Z", "Task.\n\njev: medium (0.84) · C2 · worktree y")),
+				STRICT_DISPATCH_CUTOFF,
+				[],
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set() },
+			);
+			assertEqual(offenders.length, 0, "offenders");
+		},
+	},
+	{
+		name: "--require-provenance: a MISSING provenance log is fail-closed (exit 2 class)",
+		run() {
+			assertRejects(
+				() => loadProvenance(join(tmpdir(), "jev-provenance-does-not-exist", "jev-lines.log")),
+				/cannot read the provenance log/,
+				"missing provenance log",
+			);
+		},
+	},
+	{
+		name: "--require-provenance: a malformed provenance row is a structural error",
+		run() {
+			assertRejects(() => parseProvenanceLog("no tabs here\n"), /malformed/, "malformed row");
+		},
+	},
 	{
 		name: "--log: a spawn event with no task payload is a finding, not a skip",
 		run() {
@@ -915,7 +1244,7 @@ function runSelftest() {
 // ---------------------------------------------------------------------------
 
 const USAGE = [
-	"usage: jev-check.mjs --line '<classifier-json>' | --ledger [path] | --log [path] [--since YYYY-MM-DD] | --selftest",
+	"usage: jev-check.mjs --line '<classifier-json>' [--label <name>] | --ledger [path] | --log [path] [--since YYYY-MM-DD] [--require-provenance] | --selftest",
 	"",
 	"  --line '<json>'   validate {level, conf, risk, worktree} and print",
 	'                    `jev: <level> (<conf>) · <Cx> · worktree <y|n>`',
@@ -924,6 +1253,10 @@ const USAGE = [
 	`                    every \`${DISPATCH_EVENT_MESSAGE}\` event dated >= ${STRICT_DISPATCH_CUTOFF}`,
 	"                    must carry a valid Rule 22 line. Conductor/merge-time (local log).",
 	"  --since YYYY-MM-DD  with --log: override the dispatch cutoff (legacy audit)",
+	"  --label <name>    with --line: append the printed line to the provenance log",
+	`                    (${DEFAULT_PROVENANCE_LOG}) so the dispatch line is machine-produced`,
+	"  --require-provenance  with --log: every dispatch line since the provenance cutoff must",
+	"                    have a provenance row. Fail-closed (exit 2) when the log is missing.",
 	`  --exceptions [path]  with --log: recorded-exception list (default: ${DISPATCH_EXCEPTIONS_DEFAULT});`,
 	"                    a matching offender prints as acknowledged, never as clean or failing",
 	"  --selftest        fixture proof of every mode (CI-wired)",
@@ -934,9 +1267,12 @@ function parseLogArgs(args) {
 	let path;
 	let since;
 	let exceptions;
+	let requireProvenance = false;
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index];
-		if (arg === "--exceptions") {
+		if (arg === "--require-provenance") {
+			requireProvenance = true;
+		} else if (arg === "--exceptions") {
 			if (index + 1 >= args.length) throw new StructuralError("--exceptions needs a path");
 			exceptions = args[index + 1];
 			index += 1;
@@ -952,20 +1288,23 @@ function parseLogArgs(args) {
 			throw new StructuralError(`--log takes at most one path (got ${JSON.stringify(path)} and ${JSON.stringify(arg)})`);
 		}
 	}
-	return { path: path ?? DEFAULT_SUBAGENT_LOG, since, exceptions };
+	return { path: path ?? DEFAULT_SUBAGENT_LOG, since, exceptions, requireProvenance };
 }
 
 function main(argv) {
 	const [mode, ...rest] = argv;
 	try {
-		if (mode === "--line") return reportLine(rest.join(" "));
+		if (mode === "--line") {
+			const { raw, label } = parseLineArgs(rest);
+			return reportLine(raw, label);
+		}
 		if (mode === "--ledger") {
 			if (rest.length > 1) throw new StructuralError(`--ledger takes at most one path (got ${rest.length})`);
 			return reportLedger(rest[0] ?? DEFAULT_LEDGER);
 		}
 		if (mode === "--log") {
-			const { path, since, exceptions } = parseLogArgs(rest);
-			return reportDispatchLog(path, since, exceptions);
+			const { path, since, exceptions, requireProvenance } = parseLogArgs(rest);
+			return reportDispatchLog(path, since, exceptions, requireProvenance);
 		}
 		if (mode === "--selftest") return runSelftest();
 		if (mode === "--help" || mode === "-h") {

@@ -3,6 +3,12 @@
 HEAD `7495756` (critic audited). Verdict `needs-work` — 2 blockers + 10 majors incorporated. Absorbs #407.
 **Order: the pre-flight mechanism first (Part 2), the three rules second (Part 1).** One PR.
 
+**Line refs re-stamped (stage 1) at the implementation base `fb2d52b`:** every ref below was read back at that
+sha and is accurate — `index.ts:2763` (`params.background ??= useBackground;`), `:2891` (`validatePreTask`),
+`:2622` (template resolution), `:2639` (`retryRunId`), `:574/:962/:1360` (`validateUnitPrePass`),
+`validate.ts:293`, `prelude.ts:235`, `mode-prologue.ts:144`, `params.ts:106` (retry snapshot),
+`transport-retry.ts:89`, `SKILL.md:257` (Rule 22). No ref needed moving.
+
 ## Part 2 — the dispatch pre-flight (built first)
 
 ### 2a. Rule 2's mechanism — the auto-switch (blocker 1: it was absent)

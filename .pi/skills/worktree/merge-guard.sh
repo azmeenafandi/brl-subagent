@@ -18,8 +18,11 @@
 #   (d) the PR's CURRENT head sha appears in the record, OR the record carries a
 #       `conductor-verified:` line — the documented disposition for a post-verdict commit
 #       (a short sha of >= 7 hex chars counts; it must be a PREFIX of the head)
-#   (e) `jev-check.mjs --log` passes for the local subagent log (Rule 22 dispatch audit) —
-#       fail-closed: a missing/empty log is exit 2 and blocks the merge
+#   (e) `jev-check.mjs --log --require-provenance` passes for the local subagent log (Rule 22
+#       dispatch audit + provenance) — fail-closed: a missing/empty log OR provenance log is
+#       exit 2 and blocks the merge. Provenance is the Goodhart fix: a line in the right FORMAT
+#       can be invented (2026-10-31: a dispatched `medium (0.70)` was really `high (0.32)`), so a
+#       dispatch line must have a row written by `jev-check --line '<json>' --label <name>`.
 #
 # Run it from the COCKPIT (dev) checkout: the subagent log lives in the cockpit's local,
 # gitignored `.pi/subagent-logs/`. `JEV_LOG` overrides the log path.
@@ -187,14 +190,14 @@ check_dispatch_audit() {
         fail_line "(e) dispatch audit: node is not installed — cannot run jev-check --log"
         return
     fi
-    out="$(node "${SCRIPT_DIR}/jev-check.mjs" --log "${JEV_LOG}" 2>&1)" || rc=$?
+    out="$(node "${SCRIPT_DIR}/jev-check.mjs" --log "${JEV_LOG}" --require-provenance 2>&1)" || rc=$?
     case "${rc}" in
-        0) pass_line "(e) dispatch audit: jev-check --log green (${JEV_LOG})" ;;
+        0) pass_line "(e) dispatch audit: jev-check --log --require-provenance green (${JEV_LOG})" ;;
         1)
-            fail_line "(e) dispatch audit: a dispatch since the cutoff carries no valid Rule 22 line"
+            fail_line "(e) dispatch audit: a dispatch since the cutoff carries no valid Rule 22 line or no provenance row"
             printf '%s\n' "${out}" | sed 's/^/      /' ;;
         *)
-            fail_line "(e) dispatch audit: jev-check --log could not run (exit ${rc}) — never a silent pass"
+            fail_line "(e) dispatch audit: jev-check --log could not run (exit ${rc}) — never a silent pass. A missing provenance log means no dispatch line was ever printed by \`--line --label\`; run it for every dispatch since the cutoff."
             printf '%s\n' "${out}" | sed 's/^/      /' ;;
     esac
 }

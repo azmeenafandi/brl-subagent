@@ -55,7 +55,12 @@ import {
 /** The params object the shared resolver consumes (`ResolveInputParams`,
  * params.ts) — the same type the background and single paths pass. */
 export interface ModePrologueInput {
-	params: ResolveInputParams;
+	/**
+	 * `noJev` is carried alongside the resolution inputs rather than inside
+	 * `ResolveInputParams`: resolution never reads it, but the mode-level H1
+	 * gate forwards it as the call's stated bypass (issue #412).
+	 */
+	params: ResolveInputParams & { noJev?: string };
 	state: SessionState;
 	ctx: ExtensionContext;
 	log: Logger;
@@ -150,6 +155,12 @@ export function runModePrologue(input: ModePrologueInput): ModePrologueOutcome {
 			thinkingLevel: globalParams.thinkingLevel,
 			gitMode: globalParams.resolvedGitMode,
 			outputFile: globalParams.outputFile,
+			// Issue #412: the project-local Jev-line check keys on the DISPATCH
+			// cwd (the project whose manifest opts in), and `noJev` is the
+			// call-level stated bypass — the mode-level task text is the caller's
+			// own, so it is checked and bypassable exactly like a single task.
+			cwd: targets.cwd,
+			noJev: params.noJev,
 		},
 	});
 	if (preTask.error) return { ok: false, error: preTask.error };

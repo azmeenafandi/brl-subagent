@@ -261,8 +261,18 @@ never re-type their logic by hand. Full design:
     levels**, and **any level below Jev on a review**, carry a one-line reason. Clamps:
     artifact-producing dispatches floor at `low`; reviews floor at `medium`. If
     `codemode`/Jev is unavailable, record `jev: unavailable` and proceed — never block
-    a dispatch on the classifier. Advisory only: the conductor (and the maintainer's
-    spec approval) still decide. Snippet + the 2026-10-10 backtest (98 dispatches,
+    a dispatch on the classifier. **Advisory on the LEVEL** — the conductor (and the
+    maintainer's spec approval) still decide — but **blocking on PRESENCE** in a project
+    that opts in: a `package.json` carrying `{"brl-subagent": {"requireJevLine": true}}`
+    makes `delegate_task` reject a dispatch whose task has no usable line (the rejection
+    carries the exact form and the command that prints it), for foreground and background
+    alike. `jev: unavailable` is an accepted form; the stated escape is
+    `noJev: "<reason>"`, which proceeds and surfaces the reason as a warning. Print every
+    line with `--line '<json>' --label <name>` so the provenance log records that a
+    CLASSIFIER produced it — `--log --require-provenance` (run by `merge-guard.sh`) fails a
+    line nobody printed, because the format check alone passes an invented confidence
+    (2026-10-31: `medium (0.70)` dispatched, the classifier had said `high (0.32)`).
+    Snippet + the 2026-10-10 backtest (98 dispatches,
     $0.0034: it flags over-leveling, raises reviews — `review-test-hygiene-r2`, which
     caught the #308 regression, was called high→xhigh) live in
     `references/jev-advisory.md` — **build the task text from its input template and record
@@ -277,6 +287,30 @@ never re-type their logic by hand. Full design:
     and fails every `Background agent spawned` task dated on/after 2026-10-28 whose payload has
     no valid line — the ledger cannot see a skip because its rows are written afterwards. It is
     conductor/merge-time only (the log is local, not CI-visible) and `merge-guard.sh` runs it.
+
+## Conductor decision rules
+
+Where a check is a **chokepoint** (the verdict parser, the merge guard, the pins) it holds; where
+enforcement is a **prose reminder or a conductor step** it drifts. The 2026-10-31 audit of ADRs
+0001/0003/0009 found the decisions that still failed were exactly the ones left to conductor
+discretion — so they are written here, in substance and with their chokepoint named. These are
+process rules: they live in `.pi/skills/**` and `.development/`, **never in `AGENT.md`** (which
+ships as product documentation — see `CONTRIBUTING.md`).
+
+1. **No unprompted releases.** The cycle-end ritual ends at *"cycle complete — ready when you
+   say"*. A version is named only when the maintainer asks for one, or a defect forces it. The
+   `§STATE` Next actions say "release on the maintainer's go" (`references/handoff.md`), and the
+   close row says `release: the maintainer's call` (`references/sprint-end-ritual.md`) — the
+   *proposal* is what we removed, never the tag.
+2. **No deadline ⇒ durable path.** A missing deadline is not permission to move fast; it means
+   verify first, act once: background, banked, commit-per-step. Foreground is only for a probe
+   whose answer the next step needs inline. This is enforced in code, not just here: a
+   `high`/`xhigh` dispatch with `background: false` and an explicit `timeout` is auto-switched to
+   background (the 30-minute default applies) unless `force: true` — a short foreground timeout
+   loses the run's work, because foreground runs persist nothing (ADR 0018).
+3. **"Done" carries its falsifier.** Every completion names the check that would prove it wrong,
+   or says "unverified". The PR body's `Verification:` line is where that is written (`pr` skill
+   §2); the review record cites it.
 
 ## Lifecycle
 
@@ -386,6 +420,10 @@ mechanics, verdict format: `references/review-dispatch.md`.
   line, offenders print `timestamp + task head + reason` and exit 1, zero parsed
   dispatch events is exit 2. `--log` is conductor/merge-time (the log is local and
   gitignored, so it is NOT CI-visible; `--since` re-audits legacy dispatches).
+  `--line ... --label <name>` appends the printed line to the gitignored provenance log
+  (`.pi/jev-lines.log`), and `--log --require-provenance` additionally fails a dispatch
+  line with no such row — fail-closed (exit 2) when the log is missing or empty. That is
+  the check the format cannot make: a hand-typed confidence passes the shape.
   `--selftest` proves every path with fixtures. CI runs `--selftest` and `--ledger`
   beside the test-budget guard.
 - **`merge-guard.sh <pr-number> <review-record-path>`** — the mechanical merge gate

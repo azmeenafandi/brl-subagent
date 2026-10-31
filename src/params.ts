@@ -52,7 +52,7 @@ export const KNOWN_DELEGATE_KEYS = new Set([
 	"outputFile", "label", "model", "timeout", "cwd", "tools",
 	"excludeTools", "noBuiltinTools", "preset", "template", "params",
 	"retryRunId", "gitMode", "retryOnTimeout", "approvalMode", "background",
-	"priority", "chain", "tasks", "graph", "force",
+	"priority", "chain", "tasks", "graph", "force", "noJev",
 ] as const);
 
 /**
@@ -181,6 +181,74 @@ export function defaultBackgroundFor(
 	return effectiveApprovalMode === "auto";
 }
 
+// ---------------------------------------------------------------------------
+// The thinking-level dispatch-shape pre-flight (issue #412, rule 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The notice the dispatch emits when it auto-switches the shape. The text
+ * states the TRUE tool fact (why the shape matters), because that is the only
+ * thing that makes the switch acceptable to the conductor that asked for
+ * foreground: a foreground run has no transcript to resume, so a timeout there
+ * loses the work, while a background run keeps its session and is retried on a
+ * transport error.
+ */
+export const THINKING_SWITCH_NOTICE =
+	"Dispatch pre-flight (no deadline means the durable path): a high/xhigh-thinking run was dispatched FOREGROUND with an explicit timeout. " +
+	"The explicit timeout was dropped — foreground runs persist nothing, so a timeout there loses the run's whole context, while the 30-minute background deadline applies instead. " +
+	"The run is now background; the conductor is woken on terminal state. Pass force: true to keep it foreground (state the reason in the task text).";
+
+/** The pre-flight's verdict for one dispatch. */
+export type ThinkingDispatchSwitch = "switch" | "forced" | "none";
+
+/**
+ * Issue #412 (rule 2: "no deadline ⇒ durable path") — should the pre-flight
+ * change this dispatch's shape?
+ *
+ * The 2026-10-31 incident: a plan critique ran foreground under a 15-minute
+ * timeout, was killed at ~14 minutes ("almost done"), and lost everything —
+ * the background re-run then cost another 17 minutes. The decision was
+ * conductor discretion; this predicate makes the durable shape the only one
+ * for the runs where losing the context is expensive:
+ *
+ *   thinkingLevel high|xhigh
+ *     + background EXPLICITLY false (the caller asked for foreground)
+ *     + an explicit timeout (the deadline that would kill it)
+ *     → switch to background and drop the timeout.
+ *
+ * Deliberately exempt:
+ *   - `chain`/`graph` — they block by definition and `background: true` is
+ *     rejected at dispatch; the decision cannot apply to them.
+ *   - an omitted `background` — the #361 default already decided, and it knows
+ *     about approval modes (a `writes`/`always` run must stay in front of the
+ *     user); second-guessing it here would silently move a gated run into a
+ *     context with no approval dialog.
+ *   - no explicit timeout — there is no deadline to lose; the background
+ *     default is a deadline too, so switching would not make the run safer.
+ *   - `force: true` — the override, reported as `forced` (not `none`) so the
+ *     caller can tell "kept foreground by request" from "never applied".
+ *     `force` carries no reason field (ADR 0007): the dispatch text is the
+ *     reason.
+ *
+ * `thinkingLevel` is the DECLARED level (per-call, else the named preset's),
+ * not the capped one: `maxThinkingLevel` defaults to `off` for an unconfigured
+ * session, so applying the cap here would disable the pre-flight exactly where
+ * nobody configured anything — the drift this rule exists to remove.
+ */
+export function resolveThinkingDispatchSwitch(input: {
+	thinkingLevel: ThinkingLevel | undefined;
+	explicitBackground: boolean | undefined;
+	timeout: number | undefined;
+	force: boolean | undefined;
+	shape: DispatchShape;
+}): ThinkingDispatchSwitch {
+	if (input.shape === "chain" || input.shape === "graph") return "none";
+	if (input.thinkingLevel !== "high" && input.thinkingLevel !== "xhigh") return "none";
+	if (input.explicitBackground !== false) return "none";
+	if (input.timeout === undefined) return "none";
+	return input.force === true ? "forced" : "switch";
+}
+
 /**
  * The resolver's input: the dispatch-param fields resolution actually reads,
  * derived from the registered schema (issue #379) instead of re-spelled here.
@@ -219,6 +287,48 @@ export type ResolveInputParams = Pick<
 	| "force"
 >;
 
+/**
+ * Issue #412: resolve the preset a dispatch will actually run with, INCLUDING
+ * the auto-route decision. Extracted from `resolveSubagentParams` so the
+ * dispatch pre-flight can ask "what thinking level will this run have?"
+ * without re-spelling the routing condition — a second copy of that condition
+ * is exactly the silent drift `_ResolveInputCoverage` and the KNOWN_DELEGATE_KEYS
+ * ratchet exist to prevent.
+ *
+ * `name` is what the caller asked for (or the routed match); `preset` is the
+ * resolved record, `undefined` when neither exists. `autoRouted` distinguishes
+ * a routed match from an explicit request (the caller logs the evidence).
+ */
+export function resolveDispatchPreset(
+	params: Pick<
+		ResolveInputParams,
+		"preset" | "template" | "tools" | "excludeTools" | "noBuiltinTools" | "task"
+	>,
+	state: Pick<SessionState, "builtinPresets" | "customPresets">,
+): { name?: string; preset?: SubagentPreset; autoRouted: boolean; keyword?: string } {
+	if (params.preset) {
+		return { name: params.preset, preset: getPreset(params.preset, state.builtinPresets, state.customPresets), autoRouted: false };
+	}
+	// E2: an explicit template or tool preference is intent that must win over
+	// keyword routing (issue #57) — unchanged from the resolver's rule.
+	const hasExplicitToolPreference =
+		params.tools !== undefined ||
+		params.excludeTools !== undefined ||
+		params.noBuiltinTools !== undefined;
+	if (params.template || hasExplicitToolPreference) return { autoRouted: false };
+	const matched = classifyTask(
+		params.task ?? "",
+		getAllPresets(state.builtinPresets, state.customPresets),
+	);
+	if (!matched) return { autoRouted: false };
+	return {
+		name: matched.preset,
+		preset: getPreset(matched.preset, state.builtinPresets, state.customPresets),
+		autoRouted: true,
+		keyword: matched.keyword,
+	};
+}
+
 export function resolveSubagentParams(
 	params: ResolveInputParams,
 	state: SessionState,
@@ -234,25 +344,16 @@ export function resolveSubagentParams(
 	autoRouteKeyword?: string;
 } {
 	// E2: Auto-route to best preset only when the conductor expressed NO
-	// explicit preference — an explicit preset, template, or tool
-	// parameters (tools/excludeTools/noBuiltinTools) all count as intent
-	// that must win over keyword-based routing (issue #57).
-	let resolvedPreset = params.preset;
-	let wasAutoRouted = false;
-	let routeKeyword: string | undefined;
-	const hasExplicitToolPreference =
-		params.tools !== undefined ||
-		params.excludeTools !== undefined ||
-		params.noBuiltinTools !== undefined;
-	if (!resolvedPreset && !params.template && !hasExplicitToolPreference) {
-		const allPresets = getAllPresets(state.builtinPresets, state.customPresets);
-		const matched = classifyTask(params.task ?? "", allPresets);
-		if (matched) {
-			resolvedPreset = matched.preset;
-			wasAutoRouted = true;
-			routeKeyword = matched.keyword;
-			log.info("Auto-routed task to preset", { preset: matched.preset, keyword: matched.keyword });
-		}
+	// explicit preference — an explicit preset, template, or tool parameters
+	// (tools/excludeTools/noBuiltinTools) all count as intent that must win over
+	// keyword-based routing (issue #57). The rule lives in `resolveDispatchPreset`
+	// so the dispatch pre-flight (#412) resolves the SAME preset this merge does.
+	const routed = resolveDispatchPreset(params, state);
+	const resolvedPreset = routed.name;
+	const wasAutoRouted = routed.autoRouted;
+	const routeKeyword = routed.keyword;
+	if (wasAutoRouted) {
+		log.info("Auto-routed task to preset", { preset: resolvedPreset, keyword: routeKeyword });
 	}
 
 	const preset = resolvedPreset

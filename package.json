@@ -24,6 +24,9 @@
       "./src/index.ts"
     ]
   },
+  "brl-subagent": {
+    "requireJevLine": true
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "docs:arch": "node scripts/docs-arch.mjs --write",

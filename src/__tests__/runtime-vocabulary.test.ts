@@ -70,7 +70,13 @@ const FORBIDDEN_TERMS: ReadonlyArray<{ term: string; pattern: RegExp }> = [
  * Empty by design — verified on the tree this ratchet landed against.
  */
 const VOCABULARY_ALLOWLIST = new Map<string, string>([
-	// `"src/example.ts|worktree": "why this string is not user-visible"`,
+	[
+		"src/dispatch-line.ts|worktree",
+		"the DISPATCH_LINE_FORM constant quotes the FIXED syntax of the Jev dispatch line " +
+			"(`jev: <level> (<0.xx>) · C<1|2|3> · worktree <y|n>`), which a conductor must type " +
+			"verbatim — the token is the line's grammar, not internal vocabulary. It is shown only " +
+			"by a project that opted into the line check (ADR 0018), never to a user's dispatch.",
+	],
 ]);
 
 // ---------------------------------------------------------------------------

@@ -423,14 +423,17 @@ const SEED: Parameters<typeof snapshotOriginalParams>[0] = {
 	force: true,
 };
 
-/** The 19 keys resolveRetryParams' return literal declares. ABSOLUTE ratchet:
+/** The 20 keys resolveRetryParams' return literal declares. ABSOLUTE ratchet:
  *  update it deliberately when the param surface changes (same spirit as the
- *  KNOWN_DELEGATE_KEYS ratchet in per-step-model.test.ts). */
+ *  KNOWN_DELEGATE_KEYS ratchet in per-step-model.test.ts).
+ *  `noJev` (issue #412) is the one key that is CARRIED but never inherited —
+ *  a call-level bypass on the retry call reaches the validation seam, and a
+ *  recorded original never contributes one. */
 const RESOLVE_KEYS = [
 	"task", "label", "model", "preset", "systemPrompt", "inheritSystemPrompt",
 	"thinkingLevel", "priority", "outputFile", "timeout", "cwd", "tools",
 	"excludeTools", "noBuiltinTools", "retryOnTimeout", "background", "gitMode",
-	"approvalMode", "force",
+	"approvalMode", "force", "noJev",
 ];
 
 function snapshotSeed() {
@@ -442,7 +445,7 @@ function resolveSeed() {
 }
 
 describe("snapshot ↔ resolve key-set drift guard (issue #229 item 3)", () => {
-	it("3a: resolve ⊇ snapshot, and the resolve key-set matches the pinned 19", () => {
+	it("3a: resolve ⊇ snapshot, and the resolve key-set matches the pinned 20", () => {
 		const snapshotKeys = Object.keys(snapshotSeed()).sort();
 		const resolveKeys = Object.keys(resolveSeed()).sort();
 

@@ -79,10 +79,13 @@ import {
 	defaultBackgroundFor,
 	findUnknownParams,
 	KNOWN_DELEGATE_KEYS,
+	resolveDispatchPreset,
 	resolveEffectiveApprovalMode,
 	resolveSubagentParams,
+	resolveThinkingDispatchSwitch,
 	shouldRejectBackgroundForBatch,
 	snapshotOriginalParams,
+	THINKING_SWITCH_NOTICE,
 	type DispatchShape,
 	type ResolveInputParams,
 } from "./params";
@@ -306,7 +309,11 @@ type _NonResolutionDelegateKey =
 	| "retryOnTimeout"
 	| "model"
 	| "priority"
-	| "background";
+	| "background"
+	// Issue #412: `force`/`noJev` are consumed at the validation seam (they
+	// reach `validatePreTask`, not the merge), so `force` stays in the resolver's
+	// key list while `noJev` — never read by resolution — is excluded here.
+	| "noJev";
 type _ResolveInputCoverage = _ExpectNever<
 	Exclude<_KnownDelegateKey, keyof ResolveInputParams | _NonResolutionDelegateKey>
 >;
@@ -578,6 +585,7 @@ export default function (pi: ExtensionAPI) {
 			ctx,
 			log,
 			force: params.force as boolean | undefined,
+			noJev: params.noJev,
 			merge: (step) => mergeSubTaskParams(globalParams, step),
 			describe: (_step, merged, i) => ({
 				prefix: `Step ${i + 1} ("${displayTaskName(merged)}")`,
@@ -966,6 +974,7 @@ export default function (pi: ExtensionAPI) {
 			ctx,
 			log,
 			force: params.force as boolean | undefined,
+			noJev: params.noJev,
 			merge: (task) => mergeSubTaskParams(globalParams, task),
 			describe: (_task, merged, i) => ({
 				prefix: `Task ${i + 1} ("${displayTaskName(merged)}")`,
@@ -1364,6 +1373,7 @@ export default function (pi: ExtensionAPI) {
 			ctx,
 			log,
 			force: params.force as boolean | undefined,
+			noJev: params.noJev,
 			merge: (node) => mergeSubTaskParams(globalParams, graphTaskToSubTaskParams(node)),
 			describe: (node, merged) => ({
 				prefix: `Node "${node.id}"`,
@@ -1808,6 +1818,8 @@ export default function (pi: ExtensionAPI) {
 					gitMode: globalParams.resolvedGitMode,
 					outputFile: merged.outputFile,
 					force: params.force as boolean | undefined,
+					cwd: targets.cwd,
+					noJev: params.noJev,
 				},
 			});
 			if (preTask.error) return preTask.error;
@@ -2232,7 +2244,7 @@ export default function (pi: ExtensionAPI) {
 		 *    the two shapes disagree on, and claiming the recorded value was
 		 *    schema-validated would be a lie: records are read back from disk.
 		 */
-		params: DelegateTaskParams | ReturnType<typeof resolveRetryParams>,
+		params: (DelegateTaskParams & { noJev?: string }) | ReturnType<typeof resolveRetryParams>,
 		singleTask: string,
 		// Option B U1: the spawn entry a retryRunId resolved to, so a retried
 		// background run inherits dispatchId/resumeOf/attempt (record identity,
@@ -2312,6 +2324,8 @@ export default function (pi: ExtensionAPI) {
 					gitMode: bgResolved.resolvedGitMode,
 					outputFile: bgResolvedOutputFile,
 					force: params.force,
+					cwd: targets.cwd,
+					noJev: params.noJev,
 				},
 			});
 			if (bgPreTask.error) return bgPreTask.error;
@@ -2724,6 +2738,58 @@ export default function (pi: ExtensionAPI) {
 			// self-evident (issue #361 review).
 			const explicitBackground = params.background;
 
+			// Issue #412 (rule 2: "no deadline ⇒ durable path") — the dispatch-shape
+			// pre-flight. A high/xhigh-thinking run the conductor asked to run
+			// FOREGROUND with an explicit timeout is the shape that lost 14 minutes of
+			// plan critique on 2026-10-31: foreground runs persist nothing, so the
+			// deadline kills the work outright, while a background run keeps its
+			// session and is retried on a transport error. The switch is applied HERE
+			// — after template/retry resolution and BEFORE `useBackground` is resolved
+			// and before any run record is written — so the shape every downstream
+			// reader sees (the spawn, the retry snapshot, the pending-work record) is
+			// the switched one. Moving it after `snapshotOriginalParams` would record
+			// `background:false` and silently cost the run its transport auto-retry
+			// (`transport-retry.ts` classifies off that snapshot).
+			// The preset the dispatch will actually run with — an auto-routed
+			// `code-reviewer`/`debugger` is a high-thinking run even though the
+			// caller declared no level, so the pre-flight resolves the SAME preset
+			// the merge below will (one rule, `resolveDispatchPreset`).
+			const declaredPresetForSwitch = resolveDispatchPreset(params, state).preset;
+			const thinkingSwitch = resolveThinkingDispatchSwitch({
+				thinkingLevel: (params.thinkingLevel ?? declaredPresetForSwitch?.thinkingLevel) as
+					| ThinkingLevel
+					| undefined,
+				explicitBackground,
+				timeout: params.timeout,
+				force: params.force,
+				shape: dispatchShape,
+			});
+			if (thinkingSwitch === "switch") {
+				params.background = true;
+				// Drop the foreground deadline: the 30-minute background default
+				// (DEFAULT_BACKGROUND_DEADLINE_MS) applies instead. Recorded as
+				// undefined, so a retry re-derives it rather than restoring the cap.
+				params.timeout = undefined;
+				log.info("Dispatch pre-flight: high-thinking foreground switched to background", {
+					thinkingLevel: params.thinkingLevel,
+					timeout: "dropped (background default applies)",
+				});
+				pi.sendMessage({
+					customType: "delegate-notification",
+					content: THINKING_SWITCH_NOTICE,
+					display: true,
+					details: { thinkingLevel: params.thinkingLevel, previousTimeout: "dropped" },
+				}, { deliverAs: "followUp" });
+				ctx.ui.notify(THINKING_SWITCH_NOTICE, "warning");
+			} else if (thinkingSwitch === "forced") {
+				// The override is recorded, not silent: the dispatch text is the reason
+				// (`force` has no reason field — ADR 0007's contract stays unchanged).
+				log.info("Dispatch pre-flight: high-thinking foreground forced", {
+					thinkingLevel: params.thinkingLevel,
+					timeout: params.timeout,
+				});
+			}
+
 			// background: true with chain/graph was silently ignored — the batch ran
 			// foreground (blocking until every unit finished) while the caller believed
 			// it was background. Both remain rejected loudly at dispatch validation;
@@ -2895,6 +2961,8 @@ export default function (pi: ExtensionAPI) {
 				gitMode: resolvedGitMode,
 				outputFile: resolvedOutputFile,
 				force: params.force,
+				cwd: resolvedCwd,
+				noJev: params.noJev,
 			});
 			if (validation.warnings.length > 0) {
 				log.warn("Pre-task validation warnings", { warnings: validation.warnings });
