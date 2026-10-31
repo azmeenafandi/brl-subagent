@@ -8,10 +8,10 @@
 ## STATE
 Verified: f1ece22 (2026-10-25)
 
-- **dev** @ `9bc0526` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
+- **dev** @ `6ea050d` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
 - **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
-- **Board:** **#396 open** (`get_subagent_result` retry-lineage — plan v2 ready, found-but-superseded in scope) · **#404 open** (retain the transport-failed run's SDK session transcript, then restore the preamble's transcript pointer). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
+- **Board:** **#404 open** (retain the transport-failed run's SDK session transcript — plan v1 at the critic) · **#407 open** (enforce the Rule 22 line at `delegate_task` time; three conductor misses on 2026-10-31) · **#364 held** (typebox, host pin). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
 - **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
 - **Cycle (post-v2.6.0): OPEN — all work landed.** Test-suite audit (#368), P0s (#365 auto-retry, #366 Jev check), smell audit (#372), the sweep (#374), and the handoff follow-ups (#393 staleness ignore + conservative range judging, #394 extension typecheck — PR #395 `2a0142b`). **Only the release decision remains.**
 - **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
@@ -27,7 +27,9 @@ Verified: f1ece22 (2026-10-25)
 ### Next actions
 1. **No release date.** Finish the known fixes first, then the cycle-end ritual and the release — a clean release waits for the work, never the calendar.
    - **#401 — DONE** (PR #403 `9bc0526`): prompt-only resume preamble + banking in every brief; the transcript pointer was removed after verification (dead end) — #404 tracks the retention that would make it real. Gate follow-up merged: PR #405 (recorded Jev dispatch exceptions).
-   - **#396** — retry-lineage in `get_subagent_result`; plan **v2** with the maintainer's scope call: the **found-but-superseded** path is in the fix. Critique: `.development/investigations/issue-396-plan-critique-2026-10-31.md` (2 blockers / 4 majors).
+   - **#396 — DONE** (PR #406 `6ea050d`): retry lineage in `get_subagent_result` (id-prefix resolution, `dispatchId` family, found-terminal `Superseded by`, registry text, bounded scan; 13-test falsifier suite). Review: approve-with-nits, all resolved.
+   - **#404** — plan v1 at the plan critic (durability: retain the transport-failed session). Implement after the critique lands.
+   - **#407** — enforce the Rule 22 line at `delegate_task` time (the manual paste failed 3× on 2026-10-31).
 2. #364 stays held until pi's typebox pin moves.
 
 ## Open items` → follow `## Pointers`.
@@ -38,10 +40,10 @@ Verified: f1ece22 (2026-10-25)
 ## STATE
 Verified: f1ece22 (2026-10-25)
 
-- **dev** @ `9bc0526` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
+- **dev** @ `6ea050d` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
 - **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
-- **Board:** **#396 open** (`get_subagent_result` retry-lineage — plan v2 ready, found-but-superseded in scope) · **#404 open** (retain the transport-failed run's SDK session transcript, then restore the preamble's transcript pointer). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
+- **Board:** **#404 open** (retain the transport-failed run's SDK session transcript — plan v1 at the critic) · **#407 open** (enforce the Rule 22 line at `delegate_task` time; three conductor misses on 2026-10-31) · **#364 held** (typebox, host pin). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
 - **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
 - **Cycle (post-v2.6.0): OPEN — all work landed.** Test-suite audit (#368), P0s (#365 auto-retry, #366 Jev check), smell audit (#372), the sweep (#374), and the handoff follow-ups (#393 staleness ignore + conservative range judging, #394 extension typecheck — PR #395 `2a0142b`). **Only the release decision remains.**
 - **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
@@ -67,10 +69,10 @@ Verified: f1ece22 (2026-10-25)
 ## STATE
 Verified: f1ece22 (2026-10-25)
 
-- **dev** @ `9bc0526` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
+- **dev** @ `6ea050d` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
 - **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
-- **Board:** **#396 open** (`get_subagent_result` retry-lineage — plan v2 ready, found-but-superseded in scope) · **#404 open** (retain the transport-failed run's SDK session transcript, then restore the preamble's transcript pointer). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
+- **Board:** **#404 open** (retain the transport-failed run's SDK session transcript — plan v1 at the critic) · **#407 open** (enforce the Rule 22 line at `delegate_task` time; three conductor misses on 2026-10-31) · **#364 held** (typebox, host pin). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
 - **Sweep (from the smell audit #372): COMPLETE 6/6** — #376–#381 all merged; #379 closed with commit 4 (PR #392 `7c4c7ab`: one batch mode prologue + `resolveModeModel` tail; the 20 pins unmodified). **jscpd 10L/70t: 28 → 9 → 0 clones.** D1/D2 gone; structural guards pin the shapes.
 - **Cycle (post-v2.6.0): OPEN — all work landed.** Test-suite audit (#368), P0s (#365 auto-retry, #366 Jev check), smell audit (#372), the sweep (#374), and the handoff follow-ups (#393 staleness ignore + conservative range judging, #394 extension typecheck — PR #395 `2a0142b`). **Only the release decision remains.**
 - **Suite:** 90 files / 1798 — `npx vitest run`; `npx tsc --noEmit` clean. CI gates: budget guard (wall ≤ 60 s, ratio ≤ 2.0), README count, prose guard (#375), Jev ledger (#366).
