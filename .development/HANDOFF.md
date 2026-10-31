@@ -10,7 +10,7 @@ Verified: 7118862 (2026-10-31)
 
 - **dev** @ `7118862` — PR #416 merged. Only `dev` + `main`; worktrees: the cockpit pair only.
 - **Released:** v2.6.0 (2026-10-24, `main` @ `ef9f6be`, npm `latest`). **v2.7.0 NOT taken.** **Release checkpoint open.**
-- **Running install:** DEV checkout (dogfood), pi **1.4.0**; deps ^1.4.0; typebox **1.3.27** (host pin). Reloaded after #412, **NOT after #415** — the running build reads the old `requireJevLine` (which #416 removed), so the line check is effectively off and the global shape switch is still live **until the next `/reload`** (user-triggered).
+- **Running install:** DEV checkout (dogfood), pi **1.4.0**; deps ^1.4.0; typebox **1.3.27** (host pin). **Reloaded after #415** — the running build reads `processChecks`; live-verified both ways (a line-less cockpit dispatch is rejected; a `high` + foreground + timeout dispatch in a cwd without the manifest stays foreground).
 - **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415 closed (folded/merged).
 - **Cycle (post-v2.6.0): COMPLETE**; #411/#412/#415 landed after it. **Suite:** 96 files / **1940**; tsc clean; CodeGraph fresh at `7118862`.
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`.
@@ -23,9 +23,8 @@ Verified: 7118862 (2026-10-31)
 - The #415 implementer's first attempt died on transport; the auto-retry resumed and completed (the #401/#404/#411 machinery, now with the system-side resume context).
 
 ### Next actions
-1. **`/reload`** — to load #415 (until then the line check is off and the global switch is live in this checkout).
-2. **v2.7.0** — the maintainer's decision (no calendar pressure).
-3. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
+1. **v2.7.0** — the maintainer's decision (no calendar pressure).
+2. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
 
 ## Open items
 - **#402 held** — re-evaluate only when pi's typebox pin moves.
