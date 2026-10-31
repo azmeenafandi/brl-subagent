@@ -31,7 +31,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, isAbsolute as pathIsAbsolute, resolve } from "node:path";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 const mocks = vi.hoisted(() => ({
@@ -74,6 +74,8 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 import {
 	backgroundSessionDir,
 	pruneBackgroundSession,
+	retainedSessionPointer,
+	__setStorageDir,
 	getAgent,
 	markAgentInterrupted,
 	spawnBackgroundSession,
@@ -522,6 +524,15 @@ describe("U3 T6 — issue #404: a transport-failed attempt-1 run retains its ses
 		const next = await spawnTransportFail();
 		expect(existsSync(big.dir)).toBe(false); // the next settle reclaims it
 		expect(existsSync(next.dir)).toBe(true);
+	});
+
+	it("resolves the retained-session pointer absolutely even from the default relative root", () => {
+		// The one case where the resolve is load-bearing: the default STORAGE_DIR is
+		// relative, and the retried child resolves against its own cwd.
+		__setStorageDir(".pi/subagents-relative-pin");
+		const pointer = retainedSessionPointer(UUID_A);
+		expect(pathIsAbsolute(pointer)).toBe(true);
+		expect(pointer).toBe(resolve(".pi/subagents-relative-pin/sessions/" + UUID_A));
 	});
 
 	it("keeps at most five marked dirs, pruning the oldest", async () => {

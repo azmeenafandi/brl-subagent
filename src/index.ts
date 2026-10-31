@@ -4011,8 +4011,8 @@ export default function (pi: ExtensionAPI) {
 			// throws on one) — no pointer, no throw.
 			let retainedSessionDir: string | undefined;
 			try {
-				const { backgroundSessionDir } = await import('./session-manager');
-				const candidate = path.resolve(backgroundSessionDir(run.id));
+				const { retainedSessionPointer } = await import('./session-manager');
+				const candidate = retainedSessionPointer(run.id);
 				if (fs.existsSync(candidate)) retainedSessionDir = candidate;
 			} catch {
 				retainedSessionDir = undefined;

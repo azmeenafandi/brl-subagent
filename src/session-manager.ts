@@ -121,6 +121,16 @@ export function backgroundSessionDir(id: string): string {
 }
 
 /**
+ * Issue #404: the ABSOLUTE path a retry preamble may name for a retained session.
+ * `backgroundSessionDir` is relative to the conductor's storage root (the default
+ * `.pi/subagents`); the retried child resolves paths against ITS OWN cwd, which can
+ * differ in worktree/branch mode — so the pointer must be resolved HERE, once.
+ */
+export function retainedSessionPointer(id: string): string {
+  return resolve(backgroundSessionDir(id));
+}
+
+/**
  * TRUE when `dir` is shaped exactly like `<...>/sessions/<id>` — the one
  * precondition every path that touches a session directory requires before it
  * can delete or brand it.
