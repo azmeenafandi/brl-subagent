@@ -1137,6 +1137,10 @@ export async function spawnBackgroundSession(
     model?: string;
     thinkingLevel?: ThinkingLevel;
     systemPrompt?: string;
+    /** Issue #411: conductor-authored resume context for an auto-retry,
+     *  appended to the system prompt as a `<resume-context>` section —
+     *  never inside the `<task>` fence. */
+    resumeContext?: string;
     cwd?: string;
     toolOptions?: SubagentToolOptions;
     /** Per-agent deadline in ms — the session is aborted when exceeded (issue #28 W3). */
@@ -1231,9 +1235,16 @@ export async function spawnBackgroundSession(
   // plant a newline-named dir + symlink leaf. Not exploitable realistically;
   // do not "simplify" the frame (e.g. dropping the "/" marker) without
   // re-verifying this property.
-  const literalPrompt = params.systemPrompt?.trim()
-    ? `\n<system-prompt>\n${params.systemPrompt}\n</system-prompt>\n`
-    : undefined;
+  // Issue #411: the appendSystemPrompt entries are built as an ordered array —
+  // <system-prompt> first, then <resume-context> — so an auto-retry's resume
+  // preamble rides the system-prompt side and never the <task> fence.
+  const sections: string[] = [];
+  if (params.systemPrompt?.trim()) {
+    sections.push(`\n<system-prompt>\n${params.systemPrompt}\n</system-prompt>\n`);
+  }
+  if (params.resumeContext?.trim()) {
+    sections.push(`\n<resume-context>\n${params.resumeContext.trim()}\n</resume-context>\n`);
+  }
   //
   // F25: ALWAYS build our own loader (even without a systemPrompt). If
   // resourceLoader is undefined, createAgentSession constructs its own
@@ -1250,7 +1261,7 @@ export async function spawnBackgroundSession(
     cwd: effectiveCwd,
     agentDir,
     settingsManager,
-    ...(literalPrompt ? { appendSystemPrompt: [literalPrompt] } : {}),
+    ...(sections.length ? { appendSystemPrompt: sections } : {}),
     noExtensions: true,
     noSkills: true,
   });
