@@ -8,7 +8,7 @@
 ## STATE
 Verified: f1ece22 (2026-10-25)
 
-- **dev** @ `357f4c3` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
+- **dev** @ `b0badd9` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
 - **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
 - **Board:** **#396 open** only (`get_subagent_result` retry-lineage fix — enhancement, next cycle). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
@@ -37,7 +37,7 @@ Verified: f1ece22 (2026-10-25)
 ## STATE
 Verified: f1ece22 (2026-10-25)
 
-- **dev** @ `357f4c3` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
+- **dev** @ `b0badd9` — `git log -1 --oneline dev`. Only `dev` + `main`; no worktrees beyond the cockpit pair.
 - **Released:** v2.6.0 LIVE (2026-10-24) — `main` @ `ef9f6be` (tag `v2.6.0`), npm `latest` = 2.6.0 — `gh release list`.
 - **Running install:** the DEV checkout (dogfood — `pi list` shows the `brl-subagent-dev` path; reloaded after the sweep, so the batch prologue is live; #365's auto-retry exercised 5× on 2026-10-25). pi 1.4.0; deps `@earendil-works/*` ^1.4.0, `typebox` 1.3.27 (host pin) — `pi list`, `cat package.json`.
 - **Board:** **#396 open** only (`get_subagent_result` retry-lineage fix — enhancement, next cycle). **#364 (typebox 1.4.2) held** — the only open PR; typebox 1.4.2 verified a no-op for our surface (`typebox-1.4.2-experiment-2026-10-27.md`), held for host parity (pi 1.4.0 ships 1.3.27).
