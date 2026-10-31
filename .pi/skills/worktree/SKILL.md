@@ -151,6 +151,18 @@ never re-type their logic by hand. Full design:
     | General work (no match) | dev-agent | — |
 
     Default: dev-agent + no template — the safe fallback, never wrong.
+
+    **Every brief banks its state (issue #401).** An IMPLEMENTATION brief names
+    the bank `/tmp/brl-<label>-bank.md` (`<label>` = the dispatch label) and
+    instructs: "append your working state before each major step / commit".
+    Reviews already bank `/tmp/review-<unit>-findings.md`
+    (`references/review-dispatch.md`) and plan critiques bank the same
+    `/tmp/brl-<label>-bank.md` shape. The bank is what a drop leaves behind: the
+    transport auto-retry's resume block points the replayed run at it, so a
+    reconnect re-reads instead of redoing. Implementation briefs also restate
+    **commit-per-step**: commit + push each green step, so the retry's
+    `git log` is the progress report (the 2026-10-06 `connection-drop-grind`
+    lesson — eight dead runs, ~3 minutes lost).
 15. **Spec environment verification (Rule 15).** Before dispatching any
     delegation, verify that every file, directory, and resource referenced in
     the spec exists in the subagent's WORKTREE (the cockpit is a different

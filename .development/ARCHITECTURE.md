@@ -162,7 +162,8 @@ Each rule below is enforced in code and pinned by tests; the pointer is where it
 - **Retry fidelity** — a retry restores the recorded execution shape (`background`, `gitMode`, `approvalMode`,
   `force`, model, thinking level, priority) with explicitly passed values winning; multi-step shapes degrade
   to a single run; background runs are not auto-retried on timeout (#227, #244), while a transport-class
-  failure is auto-retried once (#365).
+  failure is auto-retried once (#365) with a prompt-only resume preamble that names the surviving state
+  (#401).
 - **Cost governance** — a session cost gate runs in the shared prelude before every spawn family, with the
   per-task estimate fallback (#R5, #201).
 - **Concurrency queue** — four priority tiers govern slot acquisition for foreground and multi-mode runs;

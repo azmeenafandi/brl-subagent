@@ -147,6 +147,11 @@ export function finalizeRunRecord(
  * `retryOnTimeout` is deliberately explicit-only: it arms a deadline for THIS
  * call, so it is never inherited. `template`, `chain`, `tasks`, `graph` and
  * `params` are not carried — a retried multi-step run degrades to a single task.
+ *
+ * `task` falls back to `originalParams.task` BEFORE `run.task` (issue #401): a
+ * transport auto-retry's record carries the resume preamble in `task`, so the
+ * un-prefixed original lives on the snapshot. Fresh records carry no
+ * `originalParams.task` and resolve from `run.task` exactly as before.
  */
 export function resolveRetryParams(
 	params: {
@@ -178,7 +183,7 @@ export function resolveRetryParams(
 ): typeof params {
 	const orig = run.originalParams;
 	return {
-		task: params.task || run.task,
+		task: params.task || orig?.task || run.task,
 		label: params.label ?? run.label,
 		model: params.model ?? orig?.model,
 		preset: params.preset ?? orig?.preset,

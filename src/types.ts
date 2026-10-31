@@ -318,6 +318,14 @@ export interface SnapshotParams {
 	gitMode?: string;
 	approvalMode?: string;
 	force?: boolean;
+	/**
+	 * Issue #401: the original, un-prefixed task — recorded ONLY by the transport
+	 * auto-retry spawn site, whose child record's `task` also carries the resume
+	 * preamble. `snapshotOriginalParams` never writes it (the run record's `task`
+	 * is the normal carrier); it exists so a further retry resolves from the
+	 * original text instead of stacking preambles.
+	 */
+	task?: string;
 }
 
 export interface SubagentRun {
