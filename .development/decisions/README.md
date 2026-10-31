@@ -25,8 +25,9 @@ _Generated from each `.development/decisions/NNNN-*.md` record by `npm run docs:
 | 0015 | [Two knowledge layers: CodeGraph for structure, graphify for semantics](./0015-codegraph-structural-index.md) | Accepted | 2026-10-10 |
 | 0016 | [Retire graphify: CodeGraph is the sole structural index](./0016-retire-graphify.md) | Accepted | 2026-10-10 |
 | 0017 | [Retry resume context is delivered system-side, never inside the task fence](./0017-resume-context-system-side.md) | Accepted | 2026-10-31 |
+| 0018 | [The dispatch pre-flight: shape auto-switch, and the opt-in Jev-line gate](./0018-dispatch-preflight.md) | Accepted | 2026-10-31 |
 
-**17 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
+**18 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
 
 <!-- END GENERATED: adr-index -->
 
