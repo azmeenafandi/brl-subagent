@@ -72,13 +72,14 @@ import {
 } from "./git";
 import { preflightCheck } from "./preflight";
 import { depthLimitRejection, formatValidationWarnings, gateSessionCost, modelNotConfiguredRejection, rejectApprovalAlwaysInBackground, rejection, resolveModeModel, resolveSubagentModelPrecedence, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, type SubagentModelResolution } from "./prelude";
-import { loadBuiltinPresets, loadCustomPresets, getAllPresets, getPreset, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
+import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable, parseModelString } from "./model-availability";
 import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
 import {
 	defaultBackgroundFor,
 	findUnknownParams,
 	KNOWN_DELEGATE_KEYS,
+	resolveDispatchPreset,
 	resolveEffectiveApprovalMode,
 	resolveSubagentParams,
 	resolveThinkingDispatchSwitch,
@@ -2749,9 +2750,11 @@ export default function (pi: ExtensionAPI) {
 			// the switched one. Moving it after `snapshotOriginalParams` would record
 			// `background:false` and silently cost the run its transport auto-retry
 			// (`transport-retry.ts` classifies off that snapshot).
-			const declaredPresetForSwitch = params.preset
-				? getPreset(params.preset, state.builtinPresets, state.customPresets)
-				: undefined;
+			// The preset the dispatch will actually run with — an auto-routed
+			// `code-reviewer`/`debugger` is a high-thinking run even though the
+			// caller declared no level, so the pre-flight resolves the SAME preset
+			// the merge below will (one rule, `resolveDispatchPreset`).
+			const declaredPresetForSwitch = resolveDispatchPreset(params, state).preset;
 			const thinkingSwitch = resolveThinkingDispatchSwitch({
 				thinkingLevel: (params.thinkingLevel ?? declaredPresetForSwitch?.thinkingLevel) as
 					| ThinkingLevel

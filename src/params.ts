@@ -287,6 +287,48 @@ export type ResolveInputParams = Pick<
 	| "force"
 >;
 
+/**
+ * Issue #412: resolve the preset a dispatch will actually run with, INCLUDING
+ * the auto-route decision. Extracted from `resolveSubagentParams` so the
+ * dispatch pre-flight can ask "what thinking level will this run have?"
+ * without re-spelling the routing condition — a second copy of that condition
+ * is exactly the silent drift `_ResolveInputCoverage` and the KNOWN_DELEGATE_KEYS
+ * ratchet exist to prevent.
+ *
+ * `name` is what the caller asked for (or the routed match); `preset` is the
+ * resolved record, `undefined` when neither exists. `autoRouted` distinguishes
+ * a routed match from an explicit request (the caller logs the evidence).
+ */
+export function resolveDispatchPreset(
+	params: Pick<
+		ResolveInputParams,
+		"preset" | "template" | "tools" | "excludeTools" | "noBuiltinTools" | "task"
+	>,
+	state: Pick<SessionState, "builtinPresets" | "customPresets">,
+): { name?: string; preset?: SubagentPreset; autoRouted: boolean; keyword?: string } {
+	if (params.preset) {
+		return { name: params.preset, preset: getPreset(params.preset, state.builtinPresets, state.customPresets), autoRouted: false };
+	}
+	// E2: an explicit template or tool preference is intent that must win over
+	// keyword routing (issue #57) — unchanged from the resolver's rule.
+	const hasExplicitToolPreference =
+		params.tools !== undefined ||
+		params.excludeTools !== undefined ||
+		params.noBuiltinTools !== undefined;
+	if (params.template || hasExplicitToolPreference) return { autoRouted: false };
+	const matched = classifyTask(
+		params.task ?? "",
+		getAllPresets(state.builtinPresets, state.customPresets),
+	);
+	if (!matched) return { autoRouted: false };
+	return {
+		name: matched.preset,
+		preset: getPreset(matched.preset, state.builtinPresets, state.customPresets),
+		autoRouted: true,
+		keyword: matched.keyword,
+	};
+}
+
 export function resolveSubagentParams(
 	params: ResolveInputParams,
 	state: SessionState,
@@ -302,25 +344,16 @@ export function resolveSubagentParams(
 	autoRouteKeyword?: string;
 } {
 	// E2: Auto-route to best preset only when the conductor expressed NO
-	// explicit preference — an explicit preset, template, or tool
-	// parameters (tools/excludeTools/noBuiltinTools) all count as intent
-	// that must win over keyword-based routing (issue #57).
-	let resolvedPreset = params.preset;
-	let wasAutoRouted = false;
-	let routeKeyword: string | undefined;
-	const hasExplicitToolPreference =
-		params.tools !== undefined ||
-		params.excludeTools !== undefined ||
-		params.noBuiltinTools !== undefined;
-	if (!resolvedPreset && !params.template && !hasExplicitToolPreference) {
-		const allPresets = getAllPresets(state.builtinPresets, state.customPresets);
-		const matched = classifyTask(params.task ?? "", allPresets);
-		if (matched) {
-			resolvedPreset = matched.preset;
-			wasAutoRouted = true;
-			routeKeyword = matched.keyword;
-			log.info("Auto-routed task to preset", { preset: matched.preset, keyword: matched.keyword });
-		}
+	// explicit preference — an explicit preset, template, or tool parameters
+	// (tools/excludeTools/noBuiltinTools) all count as intent that must win over
+	// keyword-based routing (issue #57). The rule lives in `resolveDispatchPreset`
+	// so the dispatch pre-flight (#412) resolves the SAME preset this merge does.
+	const routed = resolveDispatchPreset(params, state);
+	const resolvedPreset = routed.name;
+	const wasAutoRouted = routed.autoRouted;
+	const routeKeyword = routed.keyword;
+	if (wasAutoRouted) {
+		log.info("Auto-routed task to preset", { preset: resolvedPreset, keyword: routeKeyword });
 	}
 
 	const preset = resolvedPreset

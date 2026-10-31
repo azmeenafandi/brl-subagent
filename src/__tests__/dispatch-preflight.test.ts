@@ -431,6 +431,27 @@ describe("auto-switch: shapes it must NOT touch (issue #412)", () => {
 		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
 	});
 
+	it("an auto-routed high-thinking preset is switched too (the effective level, not just the declared one)", async () => {
+		// "review" auto-routes to `code-reviewer`, whose preset declares
+		// thinkingLevel: high — the caller declared no level at all, so a
+		// declared-only check would miss exactly this run. Presets are loaded by
+		// the session-start hook, so run it first (the other suites' pattern).
+		await sessionStartHandler?.({}, makeCtx() as never);
+		const result = await dispatch({
+			task: "review the code for correctness",
+			background: false,
+			timeout: 900_000,
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+		expect(h.runSubagent).not.toHaveBeenCalled();
+		expect(notices().some((m) => m.content?.includes(THINKING_SWITCH_NOTICE))).toBe(true);
+		// (The spawned run's own thinkingLevel is the CAPPED one — this harness's
+		// maxThinkingLevel defaults to "off" — which is exactly why the pre-flight
+		// judges the declared/routed level rather than the cap.)
+	});
+
 	it("high thinking with an omitted background keeps the existing default (no switch notice)", async () => {
 		// Config default is 'writes' in this harness → omitted background resolves
 		// foreground by the #361 default; the #412 switch does not fire because the
