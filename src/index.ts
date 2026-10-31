@@ -5,6 +5,7 @@
  * See AGENT.md for the conductor-facing capability reference.
  */
 
+import { existsSync } from "node:fs";
 import * as path from "node:path";
 import type {
 	AgentToolResult,
@@ -98,6 +99,7 @@ import {
 import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
 import { acquireSlot, clearProgressLinger, releaseSlot, repaintStatus, stopProgressTicker } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
+import { getTranscriptPath } from "./transcript";
 import {
 	finalizeRunRecord,
 	resolveRetryParams,
@@ -220,6 +222,43 @@ export function cleanupSessionState(state: SessionState): void {
 	clearProgressLinger(state);
 	// Clear pending queue
 	state.pendingQueue.length = 0;
+}
+
+/**
+ * Issue #401: the resume preamble a transport auto-retry prepends to the replayed
+ * task. A dropped connection costs the child its context, not its files: the
+ * retry spawns into the same directory, so the work it already did (commits,
+ * written files, a bank) is still there. The preamble turns a blind replay into
+ * a resume by naming what to inspect first.
+ *
+ * Kept bounded (5 lines max) and deliberately vetted for runtime vocabulary —
+ * it is prompt text a user can see in the run's task line.
+ *
+ * The transcript sentence is emitted ONLY when the file exists: naming a path
+ * that is not there would send the child chasing a miss.
+ */
+function buildRetryResumePreamble(run: SubagentRun, nextAttempt: number): string {
+	const bankLabel = (run.label ?? "").replace(/[^A-Za-z0-9._-]/g, "-") || run.id;
+	// The id must pass `assertSafeAgentId` before it may reach a filesystem path
+	// (F24). A non-UUID legacy id simply gets no transcript sentence — a retry is
+	// never worth a path built from unvalidated input.
+	const transcriptFound = ((): boolean => {
+		try {
+			return existsSync(getTranscriptPath(run.id));
+		} catch {
+			return false;
+		}
+	})();
+	const lines = [
+		`[attempt ${nextAttempt} — the previous attempt (${run.id}) died on a transport failure.`,
+		"This directory may already contain its uncommitted edits.",
+		`Before acting, inspect: \`git status --short\`, \`git log --oneline -8\`, and the progress bank at /tmp/brl-${bankLabel}-bank.md if it exists.`,
+		transcriptFound
+			? `The previous attempt's transcript is at ${transcriptDisplayPath(run.id)} — read it before deciding what is left.`
+			: "",
+		"Continue from what exists; do NOT redo committed, written, or banked work.]",
+	];
+	return lines.filter((line) => line.length > 0).join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -2186,6 +2225,13 @@ export default function (pi: ExtensionAPI) {
 		// background run inherits dispatchId/resumeOf/attempt (record identity,
 		// not a delegate param — D4).
 		retrySourceRun?: SubagentRun,
+		/**
+		 * Issue #401: the resume preamble for a TRANSPORT auto-retry. It rides the
+		 * child's PROMPT only — `resolveSubagentParams`, every gate and every H1
+		 * check above still see `singleTask`, so routing, capability warnings and
+		 * pre-flight checks cannot be steered by the preamble's wording.
+		 */
+		attemptContext?: string,
 	): Promise<ToolResult<undefined>> {
 		// Phase 6.5: Background execution — spawn session and return ID immediately.
 		// Resolve the preset and its model BEFORE the background branch so the
@@ -2269,7 +2315,10 @@ export default function (pi: ExtensionAPI) {
 			// Option B U1: durability identity (retry inherits the original dispatch).
 			const bgIdentity = newDispatchIdentity(retrySourceRun);
 			const agent = await startBackgroundAgent(pi, ctx, {
-				task: singleTask,
+				// Issue #401: the preamble is prompt-only. The record below keeps the
+				// original task (`originalParams.task`) so a later retry of this retry
+				// resolves from the un-prefixed text and never compounds preambles.
+				task: attemptContext ? `${attemptContext}\n\n${singleTask}` : singleTask,
 				type: params.preset || 'general-purpose',
 				description: params.label,
 				model: bgModel,
@@ -2280,7 +2329,9 @@ export default function (pi: ExtensionAPI) {
 				toolOptions: bgResolved.toolOptions,
 				timeout: bgResolved.timeout,
 				gitMode: bgResolved.resolvedGitMode,
-				originalParams: snapshotOriginalParams(params),
+				originalParams: attemptContext
+					? { ...snapshotOriginalParams(params), task: singleTask }
+					: snapshotOriginalParams(params),
 				sanitizeCwd: bgResolved.effectiveCwd,
 				dispatchId: bgIdentity.dispatchId,
 				resumeOf: bgIdentity.resumeOf,
@@ -3860,6 +3911,12 @@ export default function (pi: ExtensionAPI) {
 	 * lineage (`resumeOf` + `attempt: 2`), so the retry re-runs the normal gates
 	 * (cost, approval, pre-task) and is visible in the record.
 	 *
+	 * Issue #401: the retry carries a resume preamble (`attemptContext`) that is
+	 * injected into the child's PROMPT only. The task handed to
+	 * `resolveSubagentParams` stays the recorded original, so auto-routing, H1
+	 * keyword warnings and the capability checks behave exactly as they did on
+	 * attempt 1.
+	 *
 	 * Returns TRUE when the retry was actually spawned — the caller then SUPPRESSES
 	 * the source run's completion notice, because the retry's own terminal settle
 	 * is the wake. A gate rejection or a throwing spawn returns FALSE and the
@@ -3872,7 +3929,14 @@ export default function (pi: ExtensionAPI) {
 		const sourceAttempt = run.attempt ?? 1;
 		try {
 			const retryParams = resolveRetryParams({}, run);
-			const result = await spawnBackgroundRun(pi, ctx, retryParams, retryParams.task!, run);
+			const result = await spawnBackgroundRun(
+				pi,
+				ctx,
+				retryParams,
+				retryParams.task!,
+				run,
+				buildRetryResumePreamble(run, sourceAttempt + 1),
+			);
 			if (result.isError) {
 				log.warn("Transport auto-retry spawn rejected — surfacing the original failure", {
 					sourceId: run.id,
