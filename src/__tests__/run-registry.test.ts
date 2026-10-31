@@ -171,6 +171,20 @@ describe("registry lifecycle", () => {
 		}
 	});
 
+	it("repairs a PRE-EXISTING 0o755 registry dir on write (issue #408)", () => {
+		// `mkdirSync(..., { mode: 0o700 })` never chmods an existing dir, so a
+		// registry created before F6 stayed world-readable. Deleting the repair
+		// in ensureOwnerOnlyDir makes this fail.
+		if (process.platform === "win32") return;
+		fs.mkdirSync(registryDir(), { recursive: true, mode: 0o755 });
+		fs.chmodSync(registryDir(), 0o755);
+
+		const id = crypto.randomUUID();
+		expect(registerInflightRun({ id, kind: "unit", startedAt: ISO })).toBe(true);
+
+		expect(fs.statSync(registryDir()).mode & 0o777).toBe(0o700);
+	});
+
 	it("update never resurrects a cleared entry", () => {
 		const id = crypto.randomUUID();
 		registerInflightRun({ id, kind: "unit", startedAt: ISO });

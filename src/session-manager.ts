@@ -1,7 +1,7 @@
 // Purpose: Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths.
 import { randomUUID } from 'crypto';
 import { basename, dirname, join, resolve } from 'path';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync } from 'fs';
+import { writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync } from 'fs';
 import type { Dirent } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, RecoveryMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
 import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
@@ -18,6 +18,7 @@ import { normalizeTimeout, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
 import { currentProcessOwner } from './recovery';
 import { persistRunRecord, listInflightRuns, type InflightRun } from './run-registry';
 import { isTransportRetryable } from './transport-retry';
+import { ensureOwnerOnlyDir, repairOwnerOnlyFiles } from './store-permissions';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -77,7 +78,20 @@ export function __setStorageDir(dir: string): void {
 function ensureStorageDir(): void {
   // F6 (issue #29): records hold the full task/result conversation — the dir
   // must be owner-only (0o700) so other local users cannot list the files.
-  mkdirSync(STORAGE_DIR, { recursive: true, mode: 0o700 });
+  // Issue #408: a create-only `mode` never repaired a pre-existing store, so
+  // this runs on EVERY use and chmods a wider directory back to 0o700.
+  ensureOwnerOnlyDir(STORAGE_DIR);
+}
+
+/**
+ * The root that holds the per-run SDK session dirs. The dir mode is what denies
+ * other local users traversal; repairing it here keeps a pre-F6 `.pi` store
+ * from exposing every retained conversation beneath it.
+ */
+function ensureSessionsRoot(): string {
+  const root = join(STORAGE_DIR, SESSIONS_SUBDIR);
+  ensureOwnerOnlyDir(root);
+  return root;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +342,10 @@ function sweepRetainedSessions(currentDir: string): void {
 function retainSessionDir(id: string, dir: string): boolean {
   try {
     if (!isSessionDirFor(id, dir) || !existsSync(dir)) return false;
+    // Issue #408: a retained settle is the longest-lived session dir — repair
+    // the dir mode (the traversal boundary) and its files while it is cheap.
+    ensureOwnerOnlyDir(dir);
+    repairOwnerOnlyFiles(dir);
     if (dirTotalBytes(dir) < RETAINED_MIN_BYTES) return false;
     writeFileSync(join(dir, RETAINED_MARKER), `${new Date().toISOString()}\n`, {
       encoding: 'utf-8',
@@ -1175,6 +1193,11 @@ export async function spawnBackgroundSession(
   // inspection, no U4 resume) and the SDK default (`~/.pi/agent/sessions/<cwd-key>/`,
   // passed as `undefined`) would scatter our runs into the global store. The
   // directory lives beside the agent record: `.pi/subagents/sessions/<id>/`.
+  //
+  // Issue #408: create the sessions root owner-only BEFORE the SDK sees it —
+  // its `mkdirSync` (and ours) applies `mode` only on CREATE, so a pre-existing
+  // 0o755 root would otherwise stay traversable.
+  ensureSessionsRoot();
   const sessionManager = SessionManager.create(effectiveCwd, backgroundSessionDir(id));
   // Capture the exact path the SDK will write. The settle path derives the
   // prune target from THIS (not from a freshly-computed STORAGE_DIR path) so a
@@ -1256,6 +1279,15 @@ export async function spawnBackgroundSession(
     ...(params.toolOptions?.noBuiltinTools ? { noTools: 'builtin' as const } : {}),
   });
   
+  // Issue #408: the SDK's `SessionManager.create` made the per-run dir with the
+  // process default mode (0o755). THE DIR MODE IS THE CONFIDENTIALITY BOUNDARY
+  // — no traversal means the session files inside are unreachable by other
+  // local users; the file repair below is defense-in-depth. Best-effort: a
+  // permission failure here must never break a spawn.
+  const spawnedSessionDir = sessionFile ? dirname(sessionFile) : backgroundSessionDir(id);
+  ensureOwnerOnlyDir(spawnedSessionDir);
+  repairOwnerOnlyFiles(spawnedSessionDir);
+
   // Set session name
   session.setSessionName(`background-${id.slice(0, 8)}`);
   

@@ -1508,6 +1508,46 @@ describe("persisted file modes (F6 / issue #29)", () => {
 			try { fs.unlinkSync(transcriptPath); } catch { /* ok */ }
 		}
 	});
+
+	it("repairs a PRE-EXISTING 0o755 store and output dir on use (issue #408)", async () => {
+		// The bug this pins: `mkdirSync(..., { mode: 0o700 })` never chmods a dir
+		// that already exists, so a store created before F6 stayed world-readable.
+		// Deleting the chmod repair in ensureOwnerOnlyDir makes this fail.
+		if (process.platform === "win32") return;
+		const fs = require("node:fs") as typeof import("node:fs");
+
+		fs.mkdirSync(env.storageDir, { recursive: true, mode: 0o755 });
+		fs.mkdirSync(env.outputDir, { recursive: true, mode: 0o755 });
+		fs.chmodSync(env.storageDir, 0o755);
+		fs.chmodSync(env.outputDir, 0o755);
+
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test pre-existing store modes",
+		});
+
+		expect(fs.statSync(env.storageDir).mode & 0o777).toBe(0o700);
+		expect(fs.statSync(env.outputDir).mode & 0o777).toBe(0o700);
+	});
+
+	it("creates the sessions root and the per-run session dir owner-only (issue #408)", async () => {
+		if (process.platform === "win32") return;
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path") as typeof import("node:path");
+
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const { spawnBackgroundSession } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test session dir modes",
+		});
+
+		const sessionsRoot = path.join(env.storageDir, "sessions");
+		const sessionDir = path.join(sessionsRoot, agent.id);
+		expect(fs.existsSync(sessionDir)).toBe(true);
+		expect(fs.statSync(sessionsRoot).mode & 0o777).toBe(0o700);
+		expect(fs.statSync(sessionDir).mode & 0o777).toBe(0o700);
+	});
 });
 
 describe("test storage isolation (issue #52)", () => {

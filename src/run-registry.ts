@@ -35,6 +35,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ProcessOwner, RecoveryMode, SubagentRun } from "./types";
 import { CUSTOM_ENTRY_TYPES, RECOVERY_MODES } from "./types";
 import { assertSafeAgentId } from "./sanitize";
+import { ensureOwnerOnlyDir } from "./store-permissions";
 
 /** Which execution path owns an in-flight run (drives the boot scan's mark). */
 export type InflightRunKind = "foreground" | "unit" | "background";
@@ -126,7 +127,9 @@ function resolvePath(id: string): string | null {
 }
 
 function ensureDir(): void {
-	fs.mkdirSync(REGISTRY_DIR, { recursive: true, mode: 0o700 });
+	// Issue #408: `mode` only applies on CREATE — repair a pre-existing registry
+	// dir on every write so the entries stay untraversable by other local users.
+	ensureOwnerOnlyDir(REGISTRY_DIR);
 }
 
 /** True when `value` looks like a registry entry (id + kind + startedAt). */
