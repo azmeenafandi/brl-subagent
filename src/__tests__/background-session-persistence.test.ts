@@ -25,10 +25,13 @@ import {
 	mkdtempSync,
 	readdirSync,
 	rmSync,
+	statSync,
+	truncateSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 const mocks = vi.hoisted(() => ({
@@ -92,6 +95,12 @@ const env = createTempEnv("brl-bg-session", { withCwd: false });
 /** 12-char hex-ish uuid accepted by assertSafeAgentId (UUID_RE). */
 const UUID_A = "11111111-1111-4111-8111-111111111111";
 const UUID_B = "22222222-2222-4222-8222-222222222222";
+/** Distinct, sweep-eligible ids for seeded (pre-existing) retained dirs. */
+const UUID_SEED_1 = "33333333-3333-4333-8333-333333333331";
+const UUID_SEED_2 = "33333333-3333-4333-8333-333333333332";
+const UUID_SEED_3 = "33333333-3333-4333-8333-333333333333";
+const UUID_SEED_4 = "33333333-3333-4333-8333-333333333334";
+const UUID_SEED_5 = "33333333-3333-4333-8333-333333333335";
 
 beforeEach(() => {
 	env.setUp();
@@ -311,6 +320,261 @@ describe("U2 T5 — prune helper safety", () => {
 		writeFileSync(join(sibling, "keep.txt"), "keep");
 		pruneBackgroundSession(UUID_B);
 		expect(existsSync(join(sibling, "keep.txt"))).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #404 — retain a transport-failed attempt-1 run's session dir
+//
+// The #401 retry preamble points at the retained dir, so the retention class is
+// exactly the auto-retry class: failed + exit_error + a transport signature +
+// attempt 1 + a background dispatch. Everything else keeps the T2 prune. The
+// caps (count / size / age) live in session-manager.ts; these tests pin the
+// behaviour, not the numbers, except where a number is the mechanism.
+// ---------------------------------------------------------------------------
+
+/** The retention brand written by the settle path. */
+const RETAINED_MARKER = ".transport-retained";
+
+function markerPath(dir: string): string {
+	return join(dir, RETAINED_MARKER);
+}
+
+/**
+ * Grow the session file past the retention size floor. A mocked SDK session is
+ * a few hundred bytes; a real one is MBs by the time a transport drop happens.
+ */
+function inflateSession(file: string): void {
+	appendFileSync(file, `${JSON.stringify({ type: "message", padding: "x".repeat(4096) })}\n`);
+}
+
+interface TransportFailOptions {
+	attempt?: number;
+	/** Skip the size-floor inflation (a start-entry-only session). */
+	keepTiny?: boolean;
+	/** Bytes to extend the session file to (sparse; for the size caps). */
+	truncateTo?: number;
+	/** Called after the spawn, before the failure lands. */
+	beforeFail?: (agent: { id: string; _sessionFile?: string }) => void;
+}
+
+/** Spawn, optionally tamper, then settle with a transport-class failure. */
+async function spawnTransportFail(
+	options: TransportFailOptions = {},
+): Promise<{ id: string; dir: string; file: string }> {
+	const d = deferred();
+	mocks.session.prompt.mockReturnValue(d.promise);
+	const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+		task: "transport run",
+		originalParams: { background: true, errorCategory: "exit_error" },
+		...(options.attempt !== undefined ? { attempt: options.attempt } : {}),
+	});
+	const dir = backgroundSessionDir(agent.id);
+	const file = agent._sessionFile!;
+	if (options.truncateTo !== undefined) truncateSync(file, options.truncateTo);
+	else if (!options.keepTiny) inflateSession(file);
+	options.beforeFail?.(agent);
+	d.reject(new Error("Connection error."));
+	await tick();
+	return { id: agent.id, dir, file };
+}
+
+/** A pre-existing retained dir, marked `daysOld` days ago, holding `bytes`. */
+function seedRetainedDir(id: string, daysOld: number, bytes: number): string {
+	const dir = backgroundSessionDir(id);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "seed.jsonl"), "{}\n");
+	if (bytes > 0) truncateSync(join(dir, "seed.jsonl"), bytes);
+	writeFileSync(markerPath(dir), "seeded\n");
+	const when = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000);
+	utimesSync(markerPath(dir), when, when);
+	return dir;
+}
+
+/** Marked session dirs currently under the sandboxed sessions root. */
+function markedDirs(): string[] {
+	const root = join(env.storageDir, "sessions");
+	if (!existsSync(root)) return [];
+	return readdirSync(root).filter((name) => existsSync(markerPath(join(root, name))));
+}
+
+describe("U3 T6 — issue #404: a transport-failed attempt-1 run retains its session", () => {
+	it("settles failed, keeps the conversation and brands the dir", async () => {
+		const { id, dir } = await spawnTransportFail();
+		expect(getAgent(id)?.status).toBe("failed");
+		expect(existsSync(dir)).toBe(true);
+		expect(existsSync(markerPath(dir))).toBe(true);
+		// The conversation itself is what the retry's child is pointed at.
+		expect(readdirSync(dir).filter((f) => f.endsWith(".jsonl")).length).toBeGreaterThan(0);
+	});
+
+	it("prunes an attempt-2 transport failure (the preamble only serves attempt 1)", async () => {
+		const { id, dir } = await spawnTransportFail({ attempt: 2 });
+		expect(getAgent(id)?.status).toBe("failed");
+		expect(existsSync(dir)).toBe(false);
+	});
+
+	it("prunes a non-transport failure — retention is the auto-retry class only", async () => {
+		const d = deferred();
+		mocks.session.prompt.mockReturnValue(d.promise);
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "provider failure run",
+			originalParams: { background: true },
+		});
+		const dir = backgroundSessionDir(agent.id);
+		inflateSession(agent._sessionFile!);
+		d.reject(new Error("provider exploded"));
+		await tick();
+
+		expect(getAgent(agent.id)?.status).toBe("failed");
+		expect(existsSync(dir)).toBe(false);
+	});
+
+	it("prunes a completed run", async () => {
+		const d = deferred();
+		mocks.session.prompt.mockReturnValue(d.promise);
+		mocks.session.messages = [
+			{ role: "user", content: "task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "completed run",
+			originalParams: { background: true },
+		});
+		const dir = backgroundSessionDir(agent.id);
+		inflateSession(agent._sessionFile!);
+		d.resolve();
+		await tick();
+
+		expect(getAgent(agent.id)?.status).toBe("completed");
+		expect(existsSync(dir)).toBe(false);
+	});
+
+	it("does not throw on an empty session dir (nothing to retain)", async () => {
+		const { id, dir, file } = await spawnTransportFail({
+			keepTiny: true,
+			beforeFail: (agent) => rmSync(agent._sessionFile!, { force: true }),
+		});
+		expect(existsSync(file)).toBe(false);
+		expect(existsSync(dir)).toBe(false);
+		expect(getAgent(id)?.status).toBe("failed");
+	});
+
+	it("leaves an interrupted run UNMARKED when it later settles transport-failed", async () => {
+		const d = deferred();
+		mocks.session.prompt.mockReturnValue(d.promise);
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "interrupted transport run",
+			originalParams: { background: true, errorCategory: "exit_error" },
+		});
+		const dir = backgroundSessionDir(agent.id);
+		inflateSession(agent._sessionFile!);
+		markAgentInterrupted(agent.id, new Date().toISOString());
+
+		d.reject(new Error("Connection error."));
+		await tick();
+
+		expect(getAgent(agent.id)?.status).toBe("failed");
+		// D3 keeps the dir; #404 must not mark it, or the sweep would reclaim a
+		// run that is still awaiting resolution.
+		expect(existsSync(dir)).toBe(true);
+		expect(existsSync(markerPath(dir))).toBe(false);
+	});
+
+	it("prunes (and completes) when the marker cannot be written", async () => {
+		const { id, dir } = await spawnTransportFail({
+			beforeFail: (agent) => {
+				// A directory on the marker path makes every write attempt fail.
+				mkdirSync(markerPath(dirname(agent._sessionFile!)), { recursive: true });
+			},
+		});
+		expect(getAgent(id)?.status).toBe("failed");
+		expect(existsSync(dir)).toBe(false);
+	});
+
+	it("does not throw when the session dir vanished before the settle", async () => {
+		const { id, dir } = await spawnTransportFail({
+			beforeFail: (agent) => rmSync(dirname(agent._sessionFile!), { recursive: true, force: true }),
+		});
+		expect(getAgent(id)?.status).toBe("failed");
+		expect(existsSync(dir)).toBe(false);
+	});
+
+	it("does not spend a slot on a start-entry-only session (size floor)", async () => {
+		let size = 0;
+		const { id, dir, file } = await spawnTransportFail({
+			keepTiny: true,
+			beforeFail: (agent) => {
+				size = statSync(agent._sessionFile!).size;
+			},
+		});
+		expect(size).toBeLessThan(2 * 1024); // the premise: nothing to read
+		expect(existsSync(file)).toBe(false);
+		expect(existsSync(dir)).toBe(false);
+		expect(getAgent(id)?.status).toBe("failed");
+	});
+
+	it("lets a single over-cap dir survive its own settle, then the next settle reclaims it", async () => {
+		const big = await spawnTransportFail({ truncateTo: 60 * 1024 * 1024 });
+		expect(existsSync(big.dir)).toBe(true); // overshoot by one
+		expect(existsSync(markerPath(big.dir))).toBe(true);
+
+		const next = await spawnTransportFail();
+		expect(existsSync(big.dir)).toBe(false); // the next settle reclaims it
+		expect(existsSync(next.dir)).toBe(true);
+	});
+
+	it("keeps at most five marked dirs, pruning the oldest", async () => {
+		const seeded = [
+			seedRetainedDir(UUID_SEED_1, 5, 0),
+			seedRetainedDir(UUID_SEED_2, 4, 0),
+			seedRetainedDir(UUID_SEED_3, 3, 0),
+			seedRetainedDir(UUID_SEED_4, 2, 0),
+			seedRetainedDir(UUID_SEED_5, 1, 0),
+		];
+		expect(markedDirs()).toHaveLength(5);
+
+		const settled = await spawnTransportFail();
+
+		expect(existsSync(seeded[0])).toBe(false); // oldest
+		for (const dir of seeded.slice(1)) expect(existsSync(dir)).toBe(true);
+		expect(existsSync(settled.dir)).toBe(true);
+		expect(markedDirs()).toHaveLength(5);
+	});
+
+	it("keeps the marked set under 50 MB, pruning the oldest", async () => {
+		const first = seedRetainedDir(UUID_SEED_1, 2, 30 * 1024 * 1024);
+		const second = seedRetainedDir(UUID_SEED_2, 1, 30 * 1024 * 1024);
+
+		const settled = await spawnTransportFail();
+
+		expect(existsSync(first)).toBe(false); // 30 + 30 + current > 50 MB
+		expect(existsSync(second)).toBe(true); // one prune is enough
+		expect(existsSync(settled.dir)).toBe(true);
+	});
+
+	it("prunes a marked dir older than 14 days", async () => {
+		const stale = seedRetainedDir(UUID_SEED_1, 15, 0);
+		const fresh = seedRetainedDir(UUID_SEED_2, 13, 0);
+
+		await spawnTransportFail();
+
+		expect(existsSync(stale)).toBe(false);
+		expect(existsSync(fresh)).toBe(true);
+	});
+
+	it("never touches an unmarked dir while sweeping", async () => {
+		// An interrupted run's dir, well past every cap, must survive the sweep.
+		const unmarked = backgroundSessionDir(UUID_SEED_1);
+		mkdirSync(unmarked, { recursive: true });
+		writeFileSync(join(unmarked, "keep.jsonl"), "{}\n");
+		truncateSync(join(unmarked, "keep.jsonl"), 60 * 1024 * 1024);
+		const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+		utimesSync(join(unmarked, "keep.jsonl"), old, old);
+
+		await spawnTransportFail();
+
+		expect(existsSync(unmarked)).toBe(true);
 	});
 });
 
