@@ -334,9 +334,7 @@ describe("get_subagent_result retry lineage (issue #396)", () => {
 	it("keeps the not-found answer for an unsafe id without touching the store", async () => {
 		const result = await invoke("../../etc/passwd");
 		expect(result.isError).toBe(true);
-		expect(result.content[0].text).toBe(
-			"Agent ../../etc/passwd not found — no retry lineage recorded, and no registry record either.",
-		);
+		expect(result.content[0].text).toBe("Agent ../../etc/passwd not found");
 	});
 
 	it("leaves a found, latest run's output unchanged", async () => {

@@ -3504,6 +3504,15 @@ export default function (pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
+			// Anything that is not a full id or a matching 8-hex prefix keeps
+			// today's message — there is no id to resolve against the stores.
+			if (resolution.kind === 'unresolved') {
+				return {
+					content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+					details: undefined,
+					isError: true,
+				};
+			}
 			const agentId = resolution.id;
 
 			const agent = getAgent(agentId);
@@ -3523,8 +3532,13 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				const registryRun = lineage.inflight.find((run) => run.id === agentId);
+				const registryStarted = registryRun
+					? (Number.isFinite(Date.parse(registryRun.startedAt))
+						? new Date(registryRun.startedAt).toISOString()
+						: registryRun.startedAt)
+					: undefined;
 				const registryText = registryRun
-					? `no retry lineage recorded, but the registry still lists run ${registryRun.id} (attempt ${registryRun.attempt ?? 1}, started ${new Date(registryRun.startedAt).toISOString()}).`
+					? `no retry lineage recorded, but the registry still lists run ${registryRun.id} (attempt ${registryRun.attempt ?? 1}, started ${registryStarted}).`
 					: `no retry lineage recorded, and no registry record either.`;
 				return {
 					content: [{

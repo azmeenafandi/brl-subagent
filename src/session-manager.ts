@@ -257,7 +257,6 @@ export function listPersistedAgents(): BackgroundAgent[] {
   return records;
 }
 
-
 // ---------------------------------------------------------------------------
 // Issue #396: retry lineage for `get_subagent_result`.
 //
@@ -678,7 +677,11 @@ export function findRetryLineage(id: string, source?: BackgroundAgent | null): R
 
   const all = [...byId.values()];
   const found = byId.get(id) ?? sourceIdentity;
-  const direct = all.filter((record) => record.resumeOf === id && record.id !== id);
+  // Newest-first so the dispatch chosen for an unknown id comes from its most
+  // recent direct descendant, not from readdir order.
+  const direct = all
+    .filter((record) => record.resumeOf === id && record.id !== id)
+    .sort((a, b) => b.attempt - a.attempt || b.startedAt - a.startedAt);
   const familyDispatch = found?.dispatchId ?? direct[0]?.dispatchId;
 
   const members = familyDispatch
