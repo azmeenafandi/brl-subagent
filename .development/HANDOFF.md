@@ -2,8 +2,8 @@
 Verified: 98bd36e (2026-11-01)
 
 - **dev** @ `98bd36e` — fast-forwarded to the release commit. Only `dev` + `main`; worktrees: the cockpit pair only.
-- **Released:** **v2.7.0** prepared 2026-11-01 — `main` @ `98bd36e` (tag `v2.7.0`); **npm not yet live**: the draft GitHub release awaits the maintainer's publish, which triggers the staged publish → npm approval (2FA) is what makes it live.
-- **Running install:** the DEV checkout (dogfood) — switch back to `npm:brl-subagent` **only after** the staging approval (ritual step 9), then `/reload`.
+- **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e` (tag `v2.7.0`), npm `latest` = 2.7.0 (tarball verified; the moment it appeared, installs switched).
+- **Running install:** **`npm:brl-subagent` 2.7.0** (the shipped package; dev path removed, `/reload` pending). The dev checkout stays on disk for the next cycle.
 - **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415 closed.
 - **Suite:** 96 files / **1940**; tsc clean; release PR #417 CI green; CodeGraph fresh at `98bd36e`.
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`.
@@ -17,9 +17,9 @@ Verified: 98bd36e (2026-11-01)
 - [x] Bump `98bd36e`; **tarball smoke passed** (user path `false` / our path `true`)
 - [x] Tag `v2.7.0` pushed; dev fast-forwarded
 - [x] Draft GitHub release created
-- [ ] Maintainer publishes the draft → CI stages → npm approval
-- [ ] Switch the running install back to npm + `/reload`
-- [ ] Update STATE to "live" after npm approval
+- [x] Maintainer published the draft → CI staged → npm approved (tarball live)
+- [x] Install switched to `npm:brl-subagent` 2.7.0; `/reload` pending
+- [x] STATE marked live
 
 # Handoff
 
