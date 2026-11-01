@@ -13,6 +13,7 @@
 | 2026-09-12 | 3 | 0/3 | 100.0% (3/3) | 0.0% (0) | 0 | 0% (0/0) | 0 (0.0%) | 0.33 | 0 | 0 |
 | 2026-09-20 | 24 | 3/21 | 100.0% (21/21) | 0.0% (0) | 2 | 0.0% (0/2) | 0 (0.0%) | 0.46 | 0 | 0 |
 
+
 > **The 2026-09-20 row carries a caveat.** Its 100% success / 0% zero-work figures are **contaminated by the #179 defect**, which was fixed and released *in* this sprint. Four dispatches died mid-work yet reported `status: completed` / `exitCode: 0`, so the session log recorded them as successes and no derived metric could see them. The true reading is **≈4 of 21 settled runs failed mid-work → ≈81% real success**, and those deaths never appear in `zero-work`. The friction log answers why (`dispatch-reliability`).
 >
 > **This should be the last contaminated row.** v2.3.7 shipped the fix, so the *source* of these numbers — the reported terminal status — is now truthful: a death is recorded `failed` and counted as one. Treat cross-sprint trend lines drawn through this row accordingly.
@@ -22,3 +23,7 @@
 | 2026-10-10 (v2.5.0) | 101 | 0/101 | 74.4% (64/86) | 25.6% (22) | 5 | 40.0% (2/5) | 0 (0.0%) | 0.39 | 17 | 2 |
 | 2026-10-13 (v2.5.1) | 75 | 2/73 | 72.4% (55/76) | 27.6% (21) | 3 | 100.0% (3/3) | 0 (0.0%) | 0.41 | 0 | 0 |
 | 2026-10-17 (v2.5.2) | 16 | 6/10 | 62.5% (10/16) | 37.5% (6) | 0 | 0% (0/0) | 0 (0.0%) | 0.25 | 0 | 0 |
+| 2026-10-24 (v2.6.0) | 40 | 1/39 | 87.8% (36/41) | 12.2% (5) | 2 | 50.0% (1/2) | 0 (0.0%) | 0.28 | 1 | 0 |
+| 2026-11-01 (v2.7.0) | 60 | 5/55 | 79.1% (53/67) | 20.9% (14) | 15† | n/a† | 1 (1.5%) | 0.15 | 1 | 1 |
+
+> **The 2026-11-01 row's Retries cell is log-derived, not tool-derived.** `sprint-metrics` counts only explicit `retryRunId` dispatches (it reported 0), while the session log shows **15 transport auto-retries** in the window; the 60-dispatches / 67-settled arithmetic does not reconcile with those retries (60 + 15 ≠ 67 either) — both are sweep candidates. The successful-retry split is therefore not yet computable and is written `n/a`.

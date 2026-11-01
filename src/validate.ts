@@ -9,6 +9,8 @@
 
 import type { ThinkingLevel, SubagentToolOptions } from './types';
 import { THINKING_LEVELS } from './types';
+import { DISPATCH_LINE_FORM, JEV_UNAVAILABLE, parseDispatchLine } from './dispatch-line';
+import { isProcessChecksEnabled } from './project-flags';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -27,6 +29,21 @@ export interface ValidateConfig {
    * can never succeed, so force does not apply to it.
    */
   force?: boolean;
+  /**
+   * The project this dispatch runs in (the resolved dispatch cwd). The
+   * project-local process checks key on it: no cwd means no project to
+   * consult, so unit callers that never resolve one perform no check
+   * (issues #412, #415).
+   */
+  cwd?: string;
+  /**
+   * delegate_task's `noJev` param — the STATED bypass for the Jev-line check
+   * (issue #412, ADR 0018). Non-empty by schema. It downgrades the rejection
+   * to a warning that carries the reason, so the bypass is visible in the
+   * result, never silent. It bypasses ONLY the line check: every capability
+   * conflict still rejects (unlike `force`, which is capability-only).
+   */
+  noJev?: string;
 }
 
 export interface ValidateResult {
@@ -302,6 +319,30 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
   // matches no keyword patterns, so no warnings can false-fire from this path.
   if (!taskText.trim() && !config.outputFile) {
     return { valid: true, warnings: [], errors: [] };
+  }
+
+  // Issue #412 (absorbs #407): the Jev dispatch line, checked BEFORE anything
+  // spawns. Opt-in per project via the umbrella `processChecks` flag (#415,
+  // ADR 0019): this is our process, not a product requirement, so a user's
+  // dispatch is never rejected for a missing line. The flag read is fail-open
+  // (`src/project-flags.ts`). `noJev` — a stated reason — downgrades the
+  // rejection to a WARNING that names the reason, so the bypass is surfaced
+  // rather than silent (ADR 0007's pattern).
+  if (isProcessChecksEnabled(config.cwd)) {
+    const verdict = parseDispatchLine(taskText);
+    if (!verdict.ok) {
+      if (config.noJev !== undefined && config.noJev.trim() !== '') {
+        warnings.push(
+          `noJev override: the Jev dispatch line was skipped — ${config.noJev} (${verdict.reason})`,
+        );
+      } else {
+        errors.push(
+          `missing Jev dispatch line: ${verdict.reason}. ` +
+          `Classify with the Jev classifier, format the answer with \`jev-check --line '<json>'\` (it prints the line verbatim), and append it to the task as: ${DISPATCH_LINE_FORM}. ` +
+          `When the classifier did not run, append \`${JEV_UNAVAILABLE}\` instead, or pass noJev: "<reason>".`,
+        );
+      }
+    }
   }
 
   // Check tool requirements. A missing capability is warning-class by

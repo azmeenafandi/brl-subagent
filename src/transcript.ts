@@ -1,8 +1,9 @@
 // Purpose: JSONL transcript recording for every agent run (`.pi/output/agent-<id>.jsonl`).
-import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'fs';
+import { appendFileSync, readFileSync, existsSync } from 'fs';
 import type { TranscriptEntry, TranscriptEntryType } from './types';
 import { transcriptPath, TRANSCRIPT_DIR } from './transcript-path';
 import { createLogger } from './logging';
+import { ensureOwnerOnlyDir } from './store-permissions';
 
 // Issue #265: route the settle-path warning through the logger (file-only by
 // default) instead of a raw console.warn that corrupts the pi TUI.
@@ -28,7 +29,9 @@ function ensureOutputDir(): void {
   // F6 (issue #29): transcripts may hold task/steering text — the dir must be
   // owner-only (0o700) so other local users cannot list the files. NOTE: the
   // transcript is NOT the full conversation (see appendEntry below).
-  mkdirSync(OUTPUT_DIR, { recursive: true, mode: 0o700 });
+  // Issue #408: `mode` only applies on CREATE, so repair a pre-existing 0o755
+  // output dir on every use (the DIR MODE is the traversal boundary).
+  ensureOwnerOnlyDir(OUTPUT_DIR);
 }
 
 /**

@@ -15,6 +15,7 @@ start and after every compaction, prefixed with a staleness line:
 
 ```
 Handoff verified at f4e518b — matches HEAD.
+Handoff verified at f4e518b — matches HEAD (ignoring the handoff's own commit).
 Handoff verified at ae7c488 but HEAD is f4e518b — RECONCILE before trusting §STATE.
 Handoff has no Verified: line — verify §STATE against the repo before trusting it.
 ```

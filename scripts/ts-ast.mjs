@@ -102,6 +102,39 @@ let currentRequest;
 let configCounter = 0;
 
 /**
+ * Placeholder standing in for a `${…}` substitution when a template literal is
+ * flattened to its static text.
+ */
+export const SUBSTITUTION = "\u0000";
+
+/**
+ * Flatten a string-ish expression to the text its static parts produce: string
+ * and no-substitution template literals verbatim, `+` concatenations composed,
+ * parenthesised operands unwrapped, and every `${…}` substitution (or unknown
+ * operand) collapsed to `SUBSTITUTION`. Callers can then match or compare
+ * across a whole literal without knowing the runtime value.
+ *
+ * Logic shared by the guards that reason about prose rather than syntax; the
+ * lineage is `runtime-vocabulary.test.ts` (#183).
+ *
+ * @param {import("typescript/unstable/ast").Node} node
+ * @returns {string}
+ */
+export function flattenLiteralText(node) {
+	if (isParenthesizedExpression(node)) return flattenLiteralText(node.expression);
+	if (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) return node.text;
+	if (isTemplateExpression(node)) {
+		let text = node.head.text;
+		for (const span of node.templateSpans) text += SUBSTITUTION + span.literal.text;
+		return text;
+	}
+	if (isBinaryExpression(node) && node.operatorToken.kind === SyntaxKind.PlusToken) {
+		return flattenLiteralText(node.left) + flattenLiteralText(node.right);
+	}
+	return SUBSTITUTION;
+}
+
+/**
  * Returns the process-wide API client, constructing it (and its tsgo child) on
  * first use. Registers a once-only `exit` hook so the child cannot outlive the
  * worker.

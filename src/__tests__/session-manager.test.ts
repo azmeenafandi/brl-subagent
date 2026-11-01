@@ -242,6 +242,54 @@ describe("spawnBackgroundSession systemPrompt injection", () => {
 		expect(options.resourceLoader.options.noSkills).toBe(true);
 	});
 
+	it("orders resumeContext after systemPrompt in appendSystemPrompt (issue #411)", async () => {
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "do the thing",
+			systemPrompt: "## Preset Guidance\n\nFor security audits.",
+			resumeContext:
+				"[attempt 2 — the previous attempt died on a transport failure.\nContinue from what exists; do NOT redo committed work.]",
+		});
+
+		const options = mocks.createAgentSession.mock.calls[0][0];
+		// Issue #411: the resume context is its own trusted section on the
+		// system-prompt side, AFTER <system-prompt> — never inside the task fence.
+		expect(options.resourceLoader.options.appendSystemPrompt).toEqual([
+			"\n<system-prompt>\n## Preset Guidance\n\nFor security audits.\n</system-prompt>\n",
+			"\n<resume-context>\n[attempt 2 — the previous attempt died on a transport failure.\nContinue from what exists; do NOT redo committed work.]\n</resume-context>\n",
+		]);
+	});
+
+	it("a resumeContext with no systemPrompt yields exactly one <resume-context> entry", async () => {
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "do the thing",
+			resumeContext: "[attempt 2 — continue from what exists.]",
+		});
+
+		const options = mocks.createAgentSession.mock.calls[0][0];
+		expect(options.resourceLoader).toBeDefined();
+		expect(options.resourceLoader.options.appendSystemPrompt).toEqual([
+			"\n<resume-context>\n[attempt 2 — continue from what exists.]\n</resume-context>\n",
+		]);
+		expect(options.resourceLoader.options.noExtensions).toBe(true);
+		expect(options.resourceLoader.options.noSkills).toBe(true);
+	});
+
+	it("the sections builder interpolates exactly the two charset-bounded fields (neutralization rule, issue #411)", () => {
+		// The <system-prompt> and <resume-context> frames interpolate
+		// conductor-authored, charset-bounded values, so neither needs marker
+		// neutralization today. Pin the rule: adding a THIRD interpolated field
+		// to this builder must come with a neutralization decision, and this
+		// ratchet fails until that is recorded here.
+		const source = readFileSync(join("src", "session-manager.ts"), "utf8");
+		const start = source.indexOf("const sections: string[] = [];");
+		const end = source.indexOf("const loader = new DefaultResourceLoader({");
+		expect(start).toBeGreaterThanOrEqual(0);
+		expect(end).toBeGreaterThan(start);
+		const block = source.slice(start, end);
+		const interpolations = [...block.matchAll(/\$\{params\.([a-zA-Z]+)/g)].map((m) => m[1]);
+		expect(interpolations).toEqual(["systemPrompt", "resumeContext"]);
+	});
+
 	it("never loads extensions or skills from the target cwd (F25)", async () => {
 		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
 			task: "do the thing",
@@ -1508,6 +1556,46 @@ describe("persisted file modes (F6 / issue #29)", () => {
 			try { fs.unlinkSync(transcriptPath); } catch { /* ok */ }
 		}
 	});
+
+	it("repairs a PRE-EXISTING 0o755 store and output dir on use (issue #408)", async () => {
+		// The bug this pins: `mkdirSync(..., { mode: 0o700 })` never chmods a dir
+		// that already exists, so a store created before F6 stayed world-readable.
+		// Deleting the chmod repair in ensureOwnerOnlyDir makes this fail.
+		if (process.platform === "win32") return;
+		const fs = require("node:fs") as typeof import("node:fs");
+
+		fs.mkdirSync(env.storageDir, { recursive: true, mode: 0o755 });
+		fs.mkdirSync(env.outputDir, { recursive: true, mode: 0o755 });
+		fs.chmodSync(env.storageDir, 0o755);
+		fs.chmodSync(env.outputDir, 0o755);
+
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test pre-existing store modes",
+		});
+
+		expect(fs.statSync(env.storageDir).mode & 0o777).toBe(0o700);
+		expect(fs.statSync(env.outputDir).mode & 0o777).toBe(0o700);
+	});
+
+	it("creates the sessions root and the per-run session dir owner-only (issue #408)", async () => {
+		if (process.platform === "win32") return;
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = require("node:path") as typeof import("node:path");
+
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const { spawnBackgroundSession } = await import("../session-manager");
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test session dir modes",
+		});
+
+		const sessionsRoot = path.join(env.storageDir, "sessions");
+		const sessionDir = path.join(sessionsRoot, agent.id);
+		expect(fs.existsSync(sessionDir)).toBe(true);
+		expect(fs.statSync(sessionsRoot).mode & 0o777).toBe(0o700);
+		expect(fs.statSync(sessionDir).mode & 0o777).toBe(0o700);
+	});
 });
 
 describe("test storage isolation (issue #52)", () => {
@@ -1688,6 +1776,18 @@ describe("issue #31 — terminal paths release agent._sessionRef", () => {
 		expect(agent.completedAt).toBeDefined();
 		expect(agent.finalOutput).toBe("stopped mid-run");
 		expect(agent._sessionRef).toBeUndefined();
+
+		// Issue #376 (D8): the .catch stopped branch settles exactly like the .then
+		// aborted branch — failed, with the honest user-abort stamp and the
+		// 'aborted' reason (there is no last assistant message to narrow it from
+		// on this path). Pinned here so the shared helper cannot drift from the
+		// .then branch's finalize semantics.
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(run.status).toBe("failed");
+		expect(run.stopReason).toBe("aborted");
+		expect(run.errorMessage).toBe("Subagent aborted by user");
+		expect(run.originalParams?.errorCategory).toBe("aborted");
 	});
 });
 

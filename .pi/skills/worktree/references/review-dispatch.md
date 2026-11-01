@@ -2,6 +2,14 @@
 
 Classify first — the C1/C2/C3 table is in `SKILL.md`.
 
+**Jev check on the dispatch (Rule 22):** the spec/dispatch under review carries a *queried*
+`jev: level (confidence)` line — `jev: medium (0.84) · C2 · worktree y`, produced by the codemode
+query and formatted with `.pi/skills/worktree/jev-check.mjs --line`. A **bare level**
+(`jev: medium · C2`, no confidence) or a **missing line** is a finding: both are the exact form the
+2026-10-13 and 2026-10-23 skips took. Record it in the verdict's findings table like any other
+finding — it is a process defect, not a style nit. Format, the pipeline and the ledger check:
+`references/jev-advisory.md`.
+
 Reviewers are **read-only on the repo but have bash** — the read-only
 `code-reviewer` preset excludes bash and is NOT used (empirical verification
 needs execution). Use the project-scoped `project-reviewer` preset
@@ -38,15 +46,178 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   it goes (bash-side). The verdict still lives in the final response; banking
   exists so a drop/timeout leaves a resumable artifact (Rule 21's live
   artifact) — a re-dispatch then starts with "read the banked file first".
+- **The record is written to `/tmp/REVIEW_<n>.md` with bash BEFORE the final
+  message** — `cat > /tmp/REVIEW_<n>.md <<'EOF' … EOF`, then the same content
+  in the final response. `/tmp` is scratch, not a repo path, so the read-only
+  reviewer can write it (the preset excludes `write`/`edit`, keeps `bash`), and
+  a truncated or dropped final message no longer costs the whole review. The
+  conductor copies the file into the worktree as `REVIEW_PR<n>.md` (and
+  cross-checks it against the final message) instead of transcribing from
+  prose; a missing file is itself a finding to raise, not a reason to
+  reconstruct one from memory.
 - Output your verdict in this exact format in your final response:
   verdict line (`approve` / `approve-with-nits` / `changes-requested`),
-  findings table (severity | file:line | one-liner), verified-OK list,
-  and `SOLID/DRY violations flagged: N` (the efficacy gauge — the
-  project-reviewer preset's mirror check feeds it).
+  `Reviewed head: <sha>` (the commit you actually reviewed — `git -C <worktree>
+  rev-parse HEAD`, not the sha quoted in the dispatch), findings table
+  (severity | `Smell` | file:line | one-liner) — see *Findings by smell key*
+  below, verified-OK list, and the efficacy gauge: the count of smell
+  findings, by key (the project-reviewer preset's mirror check feeds it).
 - Gate A: verify stateful claims (teardown, races, git/fs behavior)
   empirically — scratch repos in /tmp, real commands — do not just read code.
+- **Refactor PRs (moved/renamed/deleted exports):** verify the conductor's
+  `Structural closure` block against the PR diff — re-run at least one symbol yourself
+  (`--repo-root <cockpit>`). A graph gap (`recon` exit 3, empty output, `(returned no
+  JSON)`) is a finding, never a pass; "no callers" must name the query.
 - Keep the verdict compact; the deep write-up lives in the final output only.
 
 The conductor retrieves the final output (never sleep-waits — the user
-watches the monitor and pings when done), writes `REVIEW_PR*.md` in the
-worktree from the returned verdict, and presents it for the user loop.
+watches the monitor and pings when done), **copies the reviewer's
+`/tmp/REVIEW_<n>.md` into the worktree as `REVIEW_PR*.md`** (gitignored) —
+verifying it agrees with the final message rather than re-typing the verdict —
+and presents it for the user loop.
+
+## The review record is a contract — it is merge-gated
+
+`merge-guard.sh <pr> <record>` (lifecycle step 7) reads the record with a script, so the
+record carries three machine-checked facts. Miss one and the gate blocks the merge:
+
+| Line | Required | Checked by |
+|---|---|---|
+| PR number | `#<pr>` somewhere in the record (title is fine) | (b) the guard |
+| `Verdict: approve` / `Verdict: approve-with-nits` | one **final** disposition line; `changes-requested` may not merge | (c) the guard |
+| `Reviewed head: <sha>` | the commit the verdict covers (`@ <sha>` in the title also counts; a >=7-char prefix of the head is accepted) | (d) the guard |
+| `Structural closure:` | present for refactor PRs, or an explicit `n/a` | **informational** in this unit — not merge-gated |
+
+Format the head line explicitly, e.g.
+
+```
+# REVIEW — PR #412 (`tooling/x`, "title") @ 4c1d9ab
+
+Reviewed head: 4c1d9ab2f1e0…
+
+Verdict: approve-with-nits
+```
+
+Rules the parser assumes:
+
+- The **last line-start** `Verdict:` is the disposition. Round-by-round narratives
+  (`## Round 1 — 3c5473c: changes-requested`) belong in the body; only the final line
+  starts with `Verdict:`. A line naming more than one verdict (an echoed template) is
+  read as **ambiguous** and blocks — state one disposition.
+- **Prose mentions and fenced examples are inert.** A sentence that merely *names* the
+  field ("the record introduces no `Verdict:` line"), or a `~~~` / ```` ``` ```` block
+  quoting the format, does not count as the disposition — the parser strips leading
+  decoration and only accepts a line that *starts* with `Verdict:`, outside fences. (Before
+  2026-10-31 it took the last line *anywhere* containing the token, so every record that
+  documented the gate blocked itself: PR #397 once, PR #399 twice.)
+- `approve-with-nits` is a mergeable verdict; `changes-requested` is not, and an
+  unrecognised/absent verdict is not either.
+- Markdown decoration is fine (`**Verdict: approve**`, `## Verdict:`, backticks) — it is stripped before the line-start check.
+
+### `conductor-verified:` — the post-verdict commit
+
+If a commit lands **after** the verdict, the reviewed head no longer equals the PR head.
+The gate blocks that by default: a C2 change whose last commit never saw a reviewer is the
+`unreviewed final fix` friction entry (PR #395, 2026-10-27 — round 2 returned
+changes-requested, the two-line NUL-terminator fix went in as `77338bf`, the gates ran
+locally, and the PR merged with that commit unreviewed; the disposition was defensible but
+nothing but prose recorded it).
+
+Two legitimate exits, in order of preference:
+
+1. **Re-review the new head** and write its sha in `Reviewed head:`. This is the default.
+2. **Record the conductor verification** when a re-review is disproportionate (docs/nits, a
+   mechanically-proven guard, a trivial rebase): add a line the guard recognises —
+
+   ```
+   conductor-verified: 77338bf — two-line NUL guard + 2 regression tests; mutation fails both
+                       new tests; extension suite, tsc, full suite 90/1798 green; diff-check clean.
+   ```
+
+   Name what was run and what it produced (Rule 21), never just "verified". The marker clears
+   check (d) — it does **not** upgrade the verdict: a `changes-requested` record still blocks.
+
+A record `merge-guard.sh` refuses is not a merge candidate, however clean the diff reads.
+
+## Structural closure (refactor PRs)
+
+A refactor that **moves, renames or deletes an exported symbol** (or changes an exported
+signature incompatibly) must carry a `Structural closure` block. It is produced by the
+**conductor** at PR-open time — the reviewer is read-only — and pasted into the dispatch;
+the reviewer verifies it. File moves/renames are optional (same artifact when done).
+
+**Command** — one per affected export:
+
+```
+bash .pi/skills/worktree/recon.sh <symbol> --grep --repo-root <cockpit>
+```
+
+`recon.sh` refreshes a stale index itself (the only write is the gitignored `.codegraph/`
+— not a repository edit) and exits **3** when it cannot. Exit 3, an empty result, or
+`(returned no JSON)` is a **graph-gap finding**, never "no callers".
+
+**Provenance.** The block describes **cockpit `dev` HEAD**, not the PR branch — so it is
+paired with a one-line reconciliation: which of the listed call sites the PR adds, removes
+or leaves unchanged (`recon.sh`'s `grep delta` line is the anchor). Without the
+reconciliation the paste is decorative.
+
+**Record.** The archived record (`.development/investigations/prNNN-*-review-findings-*.md`)
+carries the block — it survives the worktree. No-op wording:
+`Structural closure: n/a — no moved/deleted exports`.
+
+**Goodhart rules.** Each symbol line carries the **numeric callers count** exactly as
+printed; "no callers" names the query; prose summaries ("impact reviewed") are not
+accepted. Keep `recon`'s `codegraph @ <short-sha>` header for provenance — it is a dev sha
+and cannot satisfy the guard's `Reviewed head:` check (only a >=7-hex prefix collision
+could, and `Reviewed head:` is written explicitly).
+
+## Findings by smell key
+
+Name a finding by the **problem**, not by the rule that found it (#375,
+smell audit §8.4.1). `SOLID/DRY violations flagged: N` is an un-typed
+counter — no two review records are comparable. The findings table
+carries a `Smell` column:
+
+| Severity | Smell | file:line | One-liner |
+|---|---|---|---|
+| major | `duplicated-code` | `src/prelude.ts:41` | the mode prologue is copied three times; the copies will drift |
+| nit | `too-many-parameters` | `src/tui.ts:812` | six positional args; one record would make the call site readable |
+
+The keys are tool-independent, so a finding survives a change of linter:
+`oversized-function`, `too-many-parameters`, `deep-nesting`,
+`duplicated-code`, `oversized-file`.
+
+**`suggested` vs `enforced`.** Only `duplicated-code` earns enforcement:
+a textual duplicate is decidable and mechanically guardable (it has a
+test — `src/__tests__/prose-duplication.test.ts`). `too-many-parameters`
+and `deep-nesting` are **suggested**: past the threshold they cost
+readability, not correctness, and a refactor that only appeases the
+count can make the code worse. Report them as nits unless the call site
+genuinely suffers.
+
+**The uncoached bucket is fail-closed.** A smell with no key above is
+never dropped: report it under its nearest key, or as a free-form key
+and say it is uncoached. A stage that dies must not print a clean pass —
+`0 findings` is only valid from a stage that ran to completion (the same
+instinct as `pr371`'s `StructuralError` on a malformed ledger).
+
+## The guide shape
+
+Every finding — and every fix proposed for one — follows this shape. It
+is the durable half of the habit-hooks mechanic: the **metric is the
+cue, the guide is the action**. A bare number gets gamed (5.6% genuine
+on Sonnet 4.6, 79/90 gamed there) and our own loudest detector "findings"
+landed on functions a review had just certified correct (audit §7). So a
+smell count opens a question; it never closes one.
+
+1. **Problem** — the key and the concrete site.
+2. **Why it matters** — the cost *at this call site*, not in general.
+3. **Numbered moves** — 2–4 concrete steps, ordered.
+4. **AVOID** — the anti-Goodhart paragraph. *"Avoid mechanical
+extraction … pulling matching lines into a function with five parameters
+leaves the real shape untouched."* The duplicate disappears; the design
+flaw survives, now harder to see. Same judgement as `pr357`'s
+"`repaintStatus` is a synchronous pass-through" — reached from the other
+end.
+5. **A concrete technique** — the one thing to try first (the seam, the
+record, the guard).

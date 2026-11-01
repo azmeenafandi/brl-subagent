@@ -1,7 +1,8 @@
 // Purpose: Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths.
 import { randomUUID } from 'crypto';
 import { basename, dirname, join, resolve } from 'path';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'fs';
+import { writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync } from 'fs';
+import type { Dirent } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, RecoveryMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
 import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
 import { accumulateUsage } from './runner';
@@ -15,7 +16,9 @@ import { getCurrentBranch, getHeadState, restoreHead, createWorkBranch, captureD
 import type { HeadState } from './git';
 import { normalizeTimeout, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
 import { currentProcessOwner } from './recovery';
-import { persistRunRecord } from './run-registry';
+import { persistRunRecord, listInflightRuns, type InflightRun } from './run-registry';
+import { isTransportRetryable } from './transport-retry';
+import { ensureOwnerOnlyDir, repairOwnerOnlyFiles } from './store-permissions';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -75,7 +78,20 @@ export function __setStorageDir(dir: string): void {
 function ensureStorageDir(): void {
   // F6 (issue #29): records hold the full task/result conversation — the dir
   // must be owner-only (0o700) so other local users cannot list the files.
-  mkdirSync(STORAGE_DIR, { recursive: true, mode: 0o700 });
+  // Issue #408: a create-only `mode` never repaired a pre-existing store, so
+  // this runs on EVERY use and chmods a wider directory back to 0o700.
+  ensureOwnerOnlyDir(STORAGE_DIR);
+}
+
+/**
+ * The root that holds the per-run SDK session dirs. The dir mode is what denies
+ * other local users traversal; repairing it here keeps a pre-F6 `.pi` store
+ * from exposing every retained conversation beneath it.
+ */
+function ensureSessionsRoot(): string {
+  const root = join(STORAGE_DIR, SESSIONS_SUBDIR);
+  ensureOwnerOnlyDir(root);
+  return root;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,9 +111,14 @@ function ensureStorageDir(): void {
 // D5 measurement (one week of use):
 //   du -sh .pi/subagents/sessions
 //   find .pi/subagents/sessions -name '*.jsonl' | wc -l
-// The expected steady state is EMPTY between runs (terminal runs prune their
-// dir) plus one dir per currently-interrupted run — a non-empty count of
-// settled runs means a prune path regressed. There is no runtime metric.
+// The expected steady state between runs is EMPTY, plus:
+//   - one dir per currently-interrupted run (kept by design, D3), and
+//   - up to RETAINED_MAX_DIRS transport-failed dirs bearing the retention
+//     marker (issue #404 — bounded by the settle-time sweep, see the #404
+//     block below).
+// These two classes are the documented exceptions: a session dir whose name is
+// NOT one of those is a prune-path regression. Judge by the marker file
+// (`.transport-retained`), not by the raw count. There is no runtime metric.
 // ---------------------------------------------------------------------------
 
 /** Subdirectory of the agent-record store that holds per-run session dirs. */
@@ -114,6 +135,26 @@ export function backgroundSessionDir(id: string): string {
 }
 
 /**
+ * Issue #404: the ABSOLUTE path a retry preamble may name for a retained session.
+ * `backgroundSessionDir` is relative to the conductor's storage root (the default
+ * `.pi/subagents`); the retried child resolves paths against ITS OWN cwd, which can
+ * differ in worktree/branch mode — so the pointer must be resolved HERE, once.
+ */
+export function retainedSessionPointer(id: string): string {
+  return resolve(backgroundSessionDir(id));
+}
+
+/**
+ * TRUE when `dir` is shaped exactly like `<...>/sessions/<id>` — the one
+ * precondition every path that touches a session directory requires before it
+ * can delete or brand it.
+ */
+function isSessionDirFor(id: string, dir: string): boolean {
+  const target = resolve(dir);
+  return basename(target) === id && basename(dirname(target)) === SESSIONS_SUBDIR;
+}
+
+/**
  * Remove ONE per-run session directory. Defensive by construction: the target
  * must look like `<...>/sessions/<id>` (basename === id, parent basename ===
  * 'sessions') before rmSync runs, so a caller can never delete a path outside
@@ -126,13 +167,12 @@ function pruneSessionDir(id: string, dir: string): void {
     log.error(`Refusing to prune session dir for invalid id: ${id}`);
     return;
   }
-  const target = resolve(dir);
-  if (basename(target) !== id || basename(dirname(target)) !== SESSIONS_SUBDIR) {
-    log.error(`Refusing to prune session dir outside ${SESSIONS_SUBDIR}/: ${target}`);
+  if (!isSessionDirFor(id, dir)) {
+    log.error(`Refusing to prune session dir outside ${SESSIONS_SUBDIR}/: ${resolve(dir)}`);
     return;
   }
   try {
-    rmSync(target, { recursive: true, force: true });
+    rmSync(resolve(dir), { recursive: true, force: true });
   } catch (err) {
     // Pruning is hygiene — it must never break execution or a settle path.
     log.warn(`Failed to prune session dir for ${id}`, {
@@ -160,6 +200,173 @@ function pruneSessionDir(id: string, dir: string): void {
  */
 export function pruneBackgroundSession(id: string): void {
   pruneSessionDir(id, backgroundSessionDir(id));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #404: bounded retention of a transport-failed run's session.
+//
+// The #401 resume preamble named no artifact beyond the working tree and the
+// bank, because the SDK session dir — the only place the conversation lives —
+// was pruned on every terminal settle. A transport failure is the ONE class a
+// retry re-dispatches automatically, so it is the one class whose session is
+// worth keeping: the retry's child reads the tail of it to recover what attempt
+// 1 had already worked out.
+//
+// Retention is an OPTIMIZATION; boundedness is the invariant. A retained dir is
+// branded with RETAINED_MARKER, and the sweep at the same choke points enforces
+// the caps below over MARKED dirs only — an interrupted run's dir (kept by
+// design, unmarked) and the agent-record store are never candidates. Nothing in
+// this block may throw into a settle path.
+//
+// Root-local, like the U3 D5 boundary above: the sweep walks the sessions root
+// the settled run actually wrote to, so a dir retained under a previous
+// STORAGE_DIR root is not reclaimed by a later settle under a new one.
+// ---------------------------------------------------------------------------
+
+/** Brand on a retained session dir — the sweep's only selection criterion. */
+const RETAINED_MARKER = '.transport-retained';
+/** Keep at most this many retained dirs (oldest marker mtime goes first). */
+const RETAINED_MAX_DIRS = 5;
+/** Keep the marked set under this total on-disk size. */
+const RETAINED_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+/** Drop a retained dir once its marker is older than this. */
+const RETAINED_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+/**
+ * Below this size there is nothing worth a retention slot: a run that died on a
+ * connection error before its first assistant turn leaves a start-entry-only
+ * file (the SDK writes the header at create()), and pointing a retry at a
+ * contentless file is worse than not pointing at all.
+ */
+const RETAINED_MIN_BYTES = 2 * 1024;
+
+/**
+ * Recursive on-disk size of `dir`. Unreadable entries count as zero and
+ * symlinks are never followed, so the walk cannot escape `dir`.
+ */
+function dirTotalBytes(dir: string): number {
+  let total = 0;
+  const stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue; // raced with a delete — size it as absent
+    }
+    for (const entry of entries) {
+      const child = join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(child);
+      } else if (entry.isFile()) {
+        try {
+          total += statSync(child).size;
+        } catch {
+          // vanished mid-walk — ignore
+        }
+      }
+    }
+  }
+  return total;
+}
+
+/**
+ * Enforce the #404 caps over the marked session dirs beside `currentDir`.
+ *
+ * `currentDir` is EXEMPT for the settle that just marked it. Without that, a
+ * single over-cap dir would be deleted at the instant it was retained — and the
+ * largest, most salvageable runs are exactly the ones that would lose. So one
+ * dir may overshoot by one; the NEXT settle reclaims it.
+ *
+ * Best-effort by construction: selection is guarded, and deletion goes through
+ * the validated, never-throwing `pruneSessionDir`.
+ */
+function sweepRetainedSessions(currentDir: string): void {
+  const current = resolve(currentDir);
+  const root = dirname(current);
+  if (basename(root) !== SESSIONS_SUBDIR) return; // never walk outside sessions/
+  let names: string[];
+  try {
+    names = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    return; // root missing/unreadable — nothing to bound
+  }
+  const now = Date.now();
+  const retained: Array<{ dir: string; size: number; markedAt: number }> = [];
+  for (const name of names) {
+    // Only ids our own spawn can mint are sweepable; a foreign name is left for
+    // a human instead of being deleted on a guess.
+    try {
+      assertSafeAgentId(name);
+    } catch {
+      continue;
+    }
+    const dir = join(root, name);
+    const marker = join(dir, RETAINED_MARKER);
+    // UNMARKED ⇒ interrupted (D3), live, or foreign. Never a candidate.
+    if (!existsSync(marker)) continue;
+    try {
+      retained.push({ dir, size: dirTotalBytes(dir), markedAt: statSync(marker).mtimeMs });
+    } catch {
+      // marker disappeared between the check and the stat — re-read as unmarked
+    }
+  }
+  retained.sort((a, b) => a.markedAt - b.markedAt);
+  let count = retained.length;
+  let total = retained.reduce((sum, entry) => sum + entry.size, 0);
+  for (const entry of retained) {
+    if (entry.dir === current) continue; // this settle's own dir — see the doc comment
+    // Ages ascend with the sort, so the oldest candidate's age speaks for the rest.
+    const tooMany = count > RETAINED_MAX_DIRS;
+    const tooBig = total > RETAINED_MAX_TOTAL_BYTES;
+    const tooOld = now - entry.markedAt > RETAINED_MAX_AGE_MS;
+    if (!tooMany && !tooBig && !tooOld) break;
+    pruneSessionDir(basename(entry.dir), entry.dir);
+    count -= 1;
+    total -= entry.size;
+  }
+}
+
+/**
+ * Retain `dir` for the #401 resume preamble: brand it with the retention marker
+ * (its mtime is the recency source) and enforce the caps.
+ *
+ * Returns TRUE when the dir is now retained — the caller then SKIPS the prune —
+ * and FALSE when retention was skipped or failed, in which case the caller must
+ * prune as before. Fail-closed on purpose: retention is an optimization, while
+ * boundedness is the invariant, and a dir whose marker write failed would be
+ * invisible to the sweep forever.
+ */
+function retainSessionDir(id: string, dir: string): boolean {
+  try {
+    if (!isSessionDirFor(id, dir) || !existsSync(dir)) return false;
+    // Issue #408: a retained settle is the longest-lived session dir — repair
+    // the dir mode (the traversal boundary) and its files while it is cheap.
+    ensureOwnerOnlyDir(dir);
+    repairOwnerOnlyFiles(dir);
+    if (dirTotalBytes(dir) < RETAINED_MIN_BYTES) return false;
+    writeFileSync(join(dir, RETAINED_MARKER), `${new Date().toISOString()}\n`, {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+  } catch (err) {
+    log.warn(`Not retaining session dir for ${id} (marker write failed)`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+  try {
+    sweepRetainedSessions(dir);
+  } catch (err) {
+    // The sweep guards its own steps; this is belt-and-braces so a settle can
+    // never be broken by hygiene.
+    log.warn(`Retained-session sweep failed for ${id}`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return true;
 }
 
 /**
@@ -255,6 +462,455 @@ export function listPersistedAgents(): BackgroundAgent[] {
     if (record) records.push(record);
   }
   return records;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #396: retry lineage for `get_subagent_result`.
+//
+// A run id is not necessarily the id of the run that actually finished it: the
+// background transport auto-retry (#365) re-dispatches the same logical task as
+// `attempt: 2`, and a manual `retryRunId` can mint attempt 3 whose `resumeOf`
+// points at attempt 2. The durable agent store therefore has to be consulted
+// before "not found" or a terminal source status is reported as final.
+//
+// Two properties drive the implementation:
+//
+//   1. ID FORM — notices render the first 8 hex characters of a UUID, while
+//      `resumeOf`/record ids are full UUIDs. Resolve a unique 8-hex prefix
+//      before either the record read or the lineage match; an ambiguous prefix
+//      is refused explicitly rather than guessed.
+//   2. COST — the agent store is large and never pruned (measured 2026-10:
+//      ~1160 records / ~116 MB on the live store; a full parse is ~0.5 s per
+//      tool call, and a synthetic 100 KB-payload fixture of the same shape
+//      measures ~225 MB). This reader
+//      stats first, keeps only records inside a 7-day mtime window, caps the
+//      number read at `RETRY_SCAN_CAP`, and extracts just the identity fields
+//      with a top-level scanner instead of JSON-parsing result.messages.
+//
+// Deliberately NOT `listPersistedAgents()`: that sweep full-parses every
+// record, and its "production has no caller" comment documents that decision.
+// ---------------------------------------------------------------------------
+
+/** How far back the lineage reader looks (mtime of the record file). */
+export const RETRY_SCAN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Upper bound on records read for one lineage answer. */
+const RETRY_SCAN_CAP = 200;
+
+/** The scan window in whole days (the user-facing caveat derives from it). */
+export const RETRY_SCAN_WINDOW_DAYS = RETRY_SCAN_WINDOW_MS / (24 * 60 * 60 * 1000);
+
+/** The short form rendered by notices: the first 8 hex characters of a UUID. */
+const SHORT_AGENT_ID_RE = /^[0-9a-f]{8}$/i;
+
+const RETRY_IDENTITY_KEYS: ReadonlySet<string> = new Set([
+  'id',
+  'dispatchId',
+  'resumeOf',
+  'attempt',
+  'status',
+  'startedAt',
+]);
+
+const AGENT_STATUSES: ReadonlySet<string> = new Set([
+  'pending',
+  'running',
+  'steered',
+  'completed',
+  'failed',
+  'stopped',
+]);
+
+/** One record's lineage-relevant fields — never its result/transcript. */
+export interface RetryRecordIdentity {
+  id: string;
+  dispatchId?: string;
+  resumeOf?: string;
+  attempt: number;
+  status: AgentStatus;
+  /** Epoch milliseconds (agent records store ms; registry ISO is normalised). */
+  startedAt: number;
+}
+
+export type AgentIdResolution =
+  | { kind: 'resolved'; id: string }
+  | { kind: 'ambiguous'; matches: string[] }
+  | { kind: 'unresolved'; id: string };
+
+export interface RetryLineage {
+  id: string;
+  /** Every known attempt of the logical dispatch, ordered by attempt/start. */
+  family: RetryRecordIdentity[];
+  /** The requested id's own record, when it exists. */
+  found: RetryRecordIdentity | null;
+  /** The newest attempt in the family. */
+  latest: RetryRecordIdentity | null;
+  /** Registry entries that name the id itself or a member of its family. */
+  inflight: InflightRun[];
+}
+
+function isSafeAgentId(id: string): boolean {
+  try {
+    assertSafeAgentId(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function isTerminalAgentStatus(status: AgentStatus): boolean {
+  return status === 'completed' || status === 'failed' || status === 'stopped';
+}
+
+function isAgentStatus(value: unknown): value is AgentStatus {
+  return typeof value === 'string' && AGENT_STATUSES.has(value);
+}
+
+function normalizeStartedAt(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function safeListInflightRuns(): InflightRun[] {
+  try {
+    return listInflightRuns();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve the tool's id parameter before any record lookup. A full UUID passes
+ * through; a unique 8-hex prefix resolves to its full id; multiple matches are
+ * returned as `ambiguous` (fail closed); anything else stays unresolved and
+ * follows today's not-found path.
+ *
+ * Candidates come from live records, the agent store's file names, and the
+ * in-flight registry — every surface on which an id can currently exist.
+ */
+export function resolveAgentId(raw: string): AgentIdResolution {
+  if (isSafeAgentId(raw)) return { kind: 'resolved', id: raw };
+  if (!SHORT_AGENT_ID_RE.test(raw)) return { kind: 'unresolved', id: raw };
+
+  const needle = raw.toLowerCase();
+  const matches = new Set<string>();
+
+  for (const id of agents.keys()) {
+    if (id.toLowerCase().startsWith(needle)) matches.add(id);
+  }
+
+  try {
+    if (existsSync(STORAGE_DIR)) {
+      for (const file of readdirSync(STORAGE_DIR)) {
+        if (!file.endsWith('.json')) continue;
+        const id = file.slice(0, -'.json'.length);
+        if (isSafeAgentId(id) && id.toLowerCase().startsWith(needle)) matches.add(id);
+      }
+    }
+  } catch {
+    // An unreadable store is not a prefix match — fall through to the registry.
+  }
+
+  for (const run of safeListInflightRuns()) {
+    if (run.id.toLowerCase().startsWith(needle)) matches.add(run.id);
+  }
+
+  const ids = [...matches].sort();
+  if (ids.length === 1) return { kind: 'resolved', id: ids[0] };
+  if (ids.length > 1) return { kind: 'ambiguous', matches: ids };
+  return { kind: 'unresolved', id: raw };
+}
+
+// ---------------------------------------------------------------------------
+// Shallow JSON identity reader
+// ---------------------------------------------------------------------------
+
+type JsonScalar = string | number | boolean | null;
+
+function skipWhitespace(text: string, index: number): number {
+  let i = index;
+  while (i < text.length && /\s/.test(text[i])) i += 1;
+  return i;
+}
+
+/** Read one JSON string starting at `start` (which must be `"`). */
+function readJsonStringAt(text: string, start: number): { value: string; end: number } {
+  let i = start + 1;
+  let escaped = false;
+  while (i < text.length) {
+    const char = text[i];
+    if (escaped) {
+      escaped = false;
+      i += 1;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      i += 1;
+      continue;
+    }
+    if (char === '"') {
+      const raw = text.slice(start, i + 1);
+      i += 1;
+      try {
+        return { value: JSON.parse(raw) as string, end: i };
+      } catch {
+        return { value: raw.slice(1, -1), end: i };
+      }
+    }
+    i += 1;
+  }
+  return { value: text.slice(start + 1), end: i };
+}
+
+/** Skip one JSON value (scalar, object, or array) without parsing it. */
+function skipJsonValue(text: string, start: number): number {
+  if (text[start] === '"') return readJsonStringAt(text, start).end;
+  if (text[start] === '{' || text[start] === '[') {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i += 1) {
+      const char = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') inString = true;
+      else if (char === '{' || char === '[') depth += 1;
+      else if (char === '}' || char === ']') {
+        depth -= 1;
+        if (depth === 0) return i + 1;
+      }
+    }
+    return text.length;
+  }
+  let i = start;
+  while (i < text.length && text[i] !== ',' && text[i] !== '}') i += 1;
+  return i;
+}
+
+function parseJsonScalar(raw: string): JsonScalar {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (raw === 'null') return null;
+  if (raw !== '' && Number.isFinite(Number(raw))) return Number(raw);
+  return raw;
+}
+
+/**
+ * Extract top-level scalar fields from a record's JSON text. Nested values
+ * (notably `result.messages` and `finalOutput`) are skipped, not parsed — the
+ * reader only ever touches the six identity keys.
+ */
+function scanTopLevelScalars(text: string, wanted: ReadonlySet<string>): Map<string, JsonScalar> {
+  const out = new Map<string, JsonScalar>();
+  let i = skipWhitespace(text, 0);
+  if (text[i] !== '{') return out;
+  i += 1;
+
+  while (i < text.length) {
+    i = skipWhitespace(text, i);
+    if (i >= text.length) break;
+    const char = text[i];
+    if (char === '}') break;
+    if (char === ',') {
+      i += 1;
+      continue;
+    }
+    if (char !== '"') {
+      // Malformed object: make progress rather than looping forever.
+      i += 1;
+      continue;
+    }
+
+    const keyStart = i;
+    const key = readJsonStringAt(text, i);
+    i = skipWhitespace(text, key.end);
+    if (text[i] !== ':') break;
+    i = skipWhitespace(text, i + 1);
+    if (i >= text.length) break;
+
+    if (wanted.has(key.value)) {
+      const valueStart = text[i];
+      if (valueStart === '"') {
+        const value = readJsonStringAt(text, i);
+        out.set(key.value, value.value);
+        i = value.end;
+      } else if (valueStart === '{' || valueStart === '[') {
+        i = skipJsonValue(text, i);
+      } else {
+        let end = i;
+        while (end < text.length && text[end] !== ',' && text[end] !== '}') end += 1;
+        out.set(key.value, parseJsonScalar(text.slice(i, end).trim()));
+        i = end;
+      }
+    } else {
+      i = skipJsonValue(text, i);
+    }
+
+    if (i <= keyStart) break;
+  }
+
+  return out;
+}
+
+/** Read one agent record's identity fields; null when malformed/incomplete. */
+function readAgentIdentity(file: string): RetryRecordIdentity | null {
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  const fields = scanTopLevelScalars(text, RETRY_IDENTITY_KEYS);
+  const embeddedId = fields.get('id');
+  const id = typeof embeddedId === 'string' ? embeddedId : basename(file, '.json');
+  if (!isSafeAgentId(id)) return null;
+
+  const status = fields.get('status');
+  if (!isAgentStatus(status)) return null;
+
+  const startedAt = normalizeStartedAt(fields.get('startedAt'));
+  if (startedAt === null) return null;
+
+  const attemptValue = fields.get('attempt');
+  const attempt =
+    typeof attemptValue === 'number' && Number.isFinite(attemptValue) && attemptValue > 0
+      ? Math.floor(attemptValue)
+      : 1;
+
+  const dispatchId = fields.get('dispatchId');
+  const resumeOf = fields.get('resumeOf');
+  return {
+    id,
+    status,
+    startedAt,
+    attempt,
+    ...(typeof dispatchId === 'string' ? { dispatchId } : {}),
+    ...(typeof resumeOf === 'string' ? { resumeOf } : {}),
+  };
+}
+
+/**
+ * The bounded store read: stat every record (cheap), keep the ones inside the
+ * mtime window, sort newest-first, cap at `RETRY_SCAN_CAP`, then read only the
+ * surviving files' identity fields. Corrupt/unsafe records are skipped.
+ */
+function readRecentAgentIdentities(): RetryRecordIdentity[] {
+  let files: string[];
+  try {
+    if (!existsSync(STORAGE_DIR)) return [];
+    files = readdirSync(STORAGE_DIR);
+  } catch {
+    return [];
+  }
+
+  const cutoff = Date.now() - RETRY_SCAN_WINDOW_MS;
+  const recent: Array<{ file: string; mtime: number }> = [];
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    const id = file.slice(0, -'.json'.length);
+    if (!isSafeAgentId(id)) continue;
+    const fullPath = join(STORAGE_DIR, file);
+    try {
+      const stat = statSync(fullPath);
+      if (stat.mtimeMs >= cutoff) recent.push({ file: fullPath, mtime: stat.mtimeMs });
+    } catch {
+      // Vanished between readdir and stat — not a lineage candidate.
+    }
+  }
+
+  recent.sort((a, b) => b.mtime - a.mtime);
+  const records: RetryRecordIdentity[] = [];
+  for (const entry of recent.slice(0, RETRY_SCAN_CAP)) {
+    const record = readAgentIdentity(entry.file);
+    if (record) records.push(record);
+  }
+  return records;
+}
+
+function identityFromAgent(agent: BackgroundAgent): RetryRecordIdentity | null {
+  const startedAt = normalizeStartedAt(agent.startedAt);
+  if (startedAt === null) return null;
+  return {
+    id: agent.id,
+    status: agent.status,
+    startedAt,
+    attempt: agent.attempt ?? 1,
+    ...(agent.dispatchId ? { dispatchId: agent.dispatchId } : {}),
+    ...(agent.resumeOf ? { resumeOf: agent.resumeOf } : {}),
+  };
+}
+
+function identityFromRegistry(run: InflightRun): RetryRecordIdentity | null {
+  const startedAt = normalizeStartedAt(run.startedAt);
+  if (startedAt === null) return null;
+  return {
+    id: run.id,
+    status: 'running',
+    startedAt,
+    attempt: run.attempt ?? 1,
+    ...(run.dispatchId ? { dispatchId: run.dispatchId } : {}),
+  };
+}
+
+/**
+ * Find the logical dispatch family for `id`.
+ *
+ * Family membership is `dispatchId` (inherited by every attempt, including a
+ * manual attempt 3 whose `resumeOf` names attempt 2). Records without a
+ * `dispatchId` fall back to direct `resumeOf` matching. The registry is folded
+ * in so an in-flight retry is visible without a store record.
+ */
+export function findRetryLineage(id: string, source?: BackgroundAgent | null): RetryLineage {
+  const empty: RetryLineage = { id, family: [], found: null, latest: null, inflight: [] };
+  if (!isSafeAgentId(id)) return empty;
+
+  const byId = new Map<string, RetryRecordIdentity>();
+  for (const record of readRecentAgentIdentities()) byId.set(record.id, record);
+
+  const sourceIdentity = source && source.id === id ? identityFromAgent(source) : null;
+  if (sourceIdentity) byId.set(id, sourceIdentity);
+
+  const registry = safeListInflightRuns();
+  for (const run of registry) {
+    const identity = identityFromRegistry(run);
+    // A persisted record is authoritative over the registry's "running" view.
+    if (identity && !byId.has(identity.id)) byId.set(identity.id, identity);
+  }
+
+  const all = [...byId.values()];
+  const found = byId.get(id) ?? sourceIdentity;
+  // Newest-first so the dispatch chosen for an unknown id comes from its most
+  // recent direct descendant, not from readdir order.
+  const direct = all
+    .filter((record) => record.resumeOf === id && record.id !== id)
+    .sort((a, b) => b.attempt - a.attempt || b.startedAt - a.startedAt);
+  const familyDispatch = found?.dispatchId ?? direct[0]?.dispatchId;
+
+  const members = familyDispatch
+    ? all.filter((record) => record.dispatchId === familyDispatch)
+    : [...(found ? [found] : []), ...direct];
+
+  const family = [...new Map(members.map((record) => [record.id, record])).values()];
+  family.sort(
+    (a, b) => a.attempt - b.attempt || a.startedAt - b.startedAt || a.id.localeCompare(b.id),
+  );
+
+  const latest = family.length > 0 ? family[family.length - 1] : null;
+  const inflight = registry.filter(
+    (run) => run.id === id || (familyDispatch !== undefined && run.dispatchId === familyDispatch),
+  );
+
+  return { id, family, found, latest, inflight };
 }
 
 /**
@@ -481,6 +1137,10 @@ export async function spawnBackgroundSession(
     model?: string;
     thinkingLevel?: ThinkingLevel;
     systemPrompt?: string;
+    /** Issue #411: conductor-authored resume context for an auto-retry,
+     *  appended to the system prompt as a `<resume-context>` section —
+     *  never inside the `<task>` fence. */
+    resumeContext?: string;
     cwd?: string;
     toolOptions?: SubagentToolOptions;
     /** Per-agent deadline in ms — the session is aborted when exceeded (issue #28 W3). */
@@ -537,6 +1197,11 @@ export async function spawnBackgroundSession(
   // inspection, no U4 resume) and the SDK default (`~/.pi/agent/sessions/<cwd-key>/`,
   // passed as `undefined`) would scatter our runs into the global store. The
   // directory lives beside the agent record: `.pi/subagents/sessions/<id>/`.
+  //
+  // Issue #408: create the sessions root owner-only BEFORE the SDK sees it —
+  // its `mkdirSync` (and ours) applies `mode` only on CREATE, so a pre-existing
+  // 0o755 root would otherwise stay traversable.
+  ensureSessionsRoot();
   const sessionManager = SessionManager.create(effectiveCwd, backgroundSessionDir(id));
   // Capture the exact path the SDK will write. The settle path derives the
   // prune target from THIS (not from a freshly-computed STORAGE_DIR path) so a
@@ -570,9 +1235,16 @@ export async function spawnBackgroundSession(
   // plant a newline-named dir + symlink leaf. Not exploitable realistically;
   // do not "simplify" the frame (e.g. dropping the "/" marker) without
   // re-verifying this property.
-  const literalPrompt = params.systemPrompt?.trim()
-    ? `\n<system-prompt>\n${params.systemPrompt}\n</system-prompt>\n`
-    : undefined;
+  // Issue #411: the appendSystemPrompt entries are built as an ordered array —
+  // <system-prompt> first, then <resume-context> — so an auto-retry's resume
+  // preamble rides the system-prompt side and never the <task> fence.
+  const sections: string[] = [];
+  if (params.systemPrompt?.trim()) {
+    sections.push(`\n<system-prompt>\n${params.systemPrompt}\n</system-prompt>\n`);
+  }
+  if (params.resumeContext?.trim()) {
+    sections.push(`\n<resume-context>\n${params.resumeContext.trim()}\n</resume-context>\n`);
+  }
   //
   // F25: ALWAYS build our own loader (even without a systemPrompt). If
   // resourceLoader is undefined, createAgentSession constructs its own
@@ -589,7 +1261,7 @@ export async function spawnBackgroundSession(
     cwd: effectiveCwd,
     agentDir,
     settingsManager,
-    ...(literalPrompt ? { appendSystemPrompt: [literalPrompt] } : {}),
+    ...(sections.length ? { appendSystemPrompt: sections } : {}),
     noExtensions: true,
     noSkills: true,
   });
@@ -618,6 +1290,15 @@ export async function spawnBackgroundSession(
     ...(params.toolOptions?.noBuiltinTools ? { noTools: 'builtin' as const } : {}),
   });
   
+  // Issue #408: the SDK's `SessionManager.create` made the per-run dir with the
+  // process default mode (0o755). THE DIR MODE IS THE CONFIDENTIALITY BOUNDARY
+  // — no traversal means the session files inside are unreachable by other
+  // local users; the file repair below is defense-in-depth. Best-effort: a
+  // permission failure here must never break a spawn.
+  const spawnedSessionDir = sessionFile ? dirname(sessionFile) : backgroundSessionDir(id);
+  ensureOwnerOnlyDir(spawnedSessionDir);
+  repairOwnerOnlyFiles(spawnedSessionDir);
+
   // Set session name
   session.setSessionName(`background-${id.slice(0, 8)}`);
   
@@ -691,10 +1372,11 @@ export async function spawnBackgroundSession(
   // run — git-setup refusal, a synchronous prompt throw, the .then completed /
   // provider-failed / aborted branches, the .catch stopped / failed branches and
   // the markTerminalBestEffort catch-all ALL land here exactly once (the
-  // runFinalized guard). Pruning here therefore covers every settle path. The
-  // index.ts poller crash notices are NOT settlements (they flip only the live
-  // UI state and leave the run/agent record to this settle); an interrupted run
-  // (U1 boot-scan mark) never reaches this function and KEEPS its file (D3).
+  // runFinalized guard). The session-dir decision below therefore covers every
+  // settle path. The index.ts poller crash notices are NOT settlements (they flip
+  // only the live UI state and leave the run/agent record to this settle); an
+  // interrupted run (U1 boot-scan mark) never reaches this function and KEEPS its
+  // file (D3).
   let runFinalized = false;
   const finalizeRunEntry = (
     status: "done" | "failed",
@@ -703,21 +1385,17 @@ export async function spawnBackgroundSession(
   ): void => {
     if (runFinalized) return;
     runFinalized = true;
-    // U2 (D2): drop the persisted session now that the run is terminal. Done
-    // FIRST (before the run-entry write below) so a persist throw cannot leave
-    // a terminal run's session file behind. Interrupted runs keep theirs.
-    if (!agent.interruptedAt) {
-      pruneSessionDir(
-        id,
-        agent._sessionFile ? dirname(agent._sessionFile) : backgroundSessionDir(id),
-      );
-    }
     const usage = agent.result?.usage ?? EMPTY_USAGE;
     const finalOutput = agent.finalOutput ?? "";
     // Issue #179 (D1/D2): the classifier's explicit category wins (it knows the
     // terminal stopReason); otherwise fall back to the legacy message-based
     // classification (refused spawns, sync throws, preflight rejections, the
     // catch-all) so no failure is ever left uncategorized.
+    //
+    // Issue #404: HOISTED above the session-dir decision below — the retention
+    // gate must read the same category/value the run record is about to get, and
+    // that decision has to happen before the record write (see the invariant
+    // note there). `classifyError` is pure and total, so hoisting costs nothing.
     const errorCategory =
       status === "failed"
         ? terminal?.errorCategory ??
@@ -731,6 +1409,32 @@ export async function spawnBackgroundSession(
               })
             : undefined)
         : undefined;
+    // U2 (D2) prune + #404 retention. THE INVARIANT: the prune/mark decision
+    // precedes the run-record write, and everything above it is pure — so no
+    // throw between the decision and the write can leave a terminal run's session
+    // dir behind. Interrupted runs keep theirs (D3) and are never marked.
+    //
+    // The retention gate is the auto-retry predicate itself (#365/#401): only a
+    // run that will be re-dispatched has a reader for the retained session, and
+    // it is built from the values this record is about to carry, so the reader
+    // and the retainer can never disagree.
+    if (!agent.interruptedAt) {
+      // The CAPTURED dir — tests swap STORAGE_DIR per case, and a mid-run change
+      // of root must never mis-target the delete or the marker.
+      const sessionDir = agent._sessionFile ? dirname(agent._sessionFile) : backgroundSessionDir(id);
+      const retained = isTransportRetryable({
+        status,
+        errorCategory,
+        errorMessage: error,
+        attempt: run.attempt,
+        originalParams: run.originalParams,
+      });
+      // Marker write failure => prune: retention is an optimization, boundedness
+      // is the invariant (an unmarked retained dir would escape the sweep).
+      if (!retained || !retainSessionDir(id, sessionDir)) {
+        pruneSessionDir(id, sessionDir);
+      }
+    }
     // Issue #187: capture the RAW terminal reason BEFORE coercion. `finalTurnError`
     // means "the final turn was a PROVIDER error" (isProviderError); deriving it
     // from the COERCED reason would turn a missing/success reason into 'error' and
@@ -1005,6 +1709,52 @@ export async function spawnBackgroundSession(
     return info;
   };
 
+  // Issue #376 (audit D8): the aborted settle path is reached from BOTH
+  // handlers — the .then (probe contract: an abort RESOLVES the prompt) and the
+  // .catch (the prompt rejects while the agent is already 'stopped'). Both must
+  // record the same partial-work result and the same retryable failure, so they
+  // share one helper.
+  //   - `gitInfo` is caller-captured: cleanupWorkBranch is once-per-run
+  //     (idempotent), and the .catch failed path reuses that same capture.
+  //   - `stopReason` is caller-supplied: the .then can narrow it from the last
+  //     assistant message; the .catch has no message to read.
+  const finalizeAbortedRun = (
+    gitInfo: { gitBranch?: string; gitDiff?: string },
+    stopReason: string,
+  ): void => {
+    // W4/M1: capture whatever the branch produced before discarding it — an
+    // aborted background agent's partial work is still worth reviewing, and
+    // must be RECORDED, not just captured-and-deleted.
+    if (gitInfo.gitBranch) {
+      agent.result = {
+        ...(agent.result ?? {}),
+        exitCode: 1,
+        messages: [],
+        stderr: '',
+        usage: agent.result?.usage ?? EMPTY_USAGE,
+        stopReason: 'aborted',
+        gitBranch: gitInfo.gitBranch,
+        gitDiff: gitInfo.gitDiff,
+      } as SubagentResult;
+      agents.set(id, agent);
+      persistAgent(agent);
+    }
+    // Issue #98: aborts/timeouts are retryable failures (retry schema:
+    // timeout/abort counts as failure) — finalize the run entry.
+    // Issue #122: a timed-out run burned tokens — record the real usage
+    // (the git-diff block above must not leave the empty fallback).
+    recordSessionUsage();
+    // Issue #120 (Track 1): agent.error carries the reason when the stop was a
+    // deadline timeout ('Timed out after Xms' → 'timeout'); a user cancel
+    // (stop_subagent) sets no error, so fall back to the honest user-abort
+    // stamp (→ 'aborted') instead of the old ambiguous 'Aborted or timed out'.
+    finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE, { stopReason });
+    // Issue #31: capture the final output while the session is still live,
+    // then release the ref on the terminal path (memory retention; the poller
+    // treats a nulled ref on a terminal agent as expected).
+    captureAndReleaseSession();
+  };
+
   // Issue #53: the settle handlers (.then/.catch below) run in promise
   // callbacks — a throw from any step (fs failure, deleted transcript, emit
   // error) would escape as an uncaughtException and kill the whole pi
@@ -1142,43 +1892,14 @@ export async function spawnBackgroundSession(
           updateAgentStatus(id, 'stopped');
           transcript.completeTranscript(id, 'stopped');
         }
-        // W4/M1: capture whatever the branch produced before discarding it — an
-        // aborted background agent's partial work is still worth reviewing, and
-        // must be RECORDED, not just captured-and-deleted.
-        const gitInfo = cleanupWorkBranch();
-        if (gitInfo.gitBranch) {
-          agent.result = {
-            ...(agent.result ?? {}),
-            exitCode: 1,
-            messages: [],
-            stderr: '',
-            usage: agent.result?.usage ?? EMPTY_USAGE,
-            stopReason: 'aborted',
-            gitBranch: gitInfo.gitBranch,
-            gitDiff: gitInfo.gitDiff,
-          } as SubagentResult;
-          agents.set(id, agent);
-          persistAgent(agent);
-        }
-        // Issue #98: aborts/timeouts are retryable failures (retry schema:
-        // timeout/abort counts as failure) — finalize the run entry.
-        // Issue #122: a timed-out run burned tokens — record the real usage
-        // (the git-diff block above must not leave the empty fallback).
-        // Issue #120 (Track 1): agent.error carries the reason when the stop was
-        // a deadline timeout ('Timed out after Xms' → 'timeout'); a user cancel
-        // (stop_subagent) sets no error, so fall back to the honest user-abort
-        // stamp (→ 'aborted') instead of the old ambiguous 'Aborted or timed out'.
-        recordSessionUsage();
-        finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE, {
-          stopReason:
-            terminalStopReason && terminalStopReason !== 'stop'
-              ? terminalStopReason
-              : 'aborted',
-        });
-        // Issue #31: capture the final output while the session is still
-        // live, then release the ref on the terminal path (memory retention;
-        // the poller treats a nulled ref on a terminal agent as expected).
-        captureAndReleaseSession();
+        // W4/M1 + #98/#122/#120/#31: the same aborted settle as the .catch
+        // stopped branch (issue #376/D8 — one helper, no second copy).
+        finalizeAbortedRun(
+          cleanupWorkBranch(),
+          terminalStopReason && terminalStopReason !== 'stop'
+            ? terminalStopReason
+            : 'aborted',
+        );
         return;
       }
       // Issue #179 (D1/D2): prompt() RESOLVED — but a resolved prompt is NOT
@@ -1283,33 +2004,11 @@ export async function spawnBackgroundSession(
       // model resolution, invalid task). Abort never rejects (probe contract).
       if (agent.status === 'stopped') {
         // M1: record the partial work even on the stopped path.
-        if (gitInfo.gitBranch) {
-          agent.result = {
-            ...(agent.result ?? {}),
-            exitCode: 1,
-            messages: [],
-            stderr: '',
-            usage: agent.result?.usage ?? EMPTY_USAGE,
-            stopReason: 'aborted',
-            gitBranch: gitInfo.gitBranch,
-            gitDiff: gitInfo.gitDiff,
-          } as SubagentResult;
-          agents.set(id, agent);
-          persistAgent(agent);
-        }
-        // Issue #98: the stopped path is a retryable failure too — finalize
-        // the run entry alongside the agent record flip.
-        // Issue #122: a stopped/timed-out run burned tokens too — record the
-        // real usage (same aborted path semantics as the .then branch).
-        // Issue #120 (Track 1): same honest fallback — a deadline timeout keeps
-        // agent.error ('Timed out...' → 'timeout'); a user cancel has no error
-        // and stamps 'Subagent aborted by user' (→ 'aborted').
-        recordSessionUsage();
-        finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE, {
-          stopReason: 'aborted',
-        });
-        // Issue #31: the stopped path is terminal too — capture + release.
-        captureAndReleaseSession();
+        // Issue #376 (D8): identical to the .then aborted branch — the work-branch
+        // capture above is reused (cleanupWorkBranch is once-per-run) and there is
+        // no last assistant message here to narrow the reason from.
+        finalizeAbortedRun(gitInfo, 'aborted');
+        // Issue #31: the stopped path is terminal too — its transcript note.
         transcript.completeTranscript(id, 'stopped');
         return;
       }

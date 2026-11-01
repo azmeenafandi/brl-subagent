@@ -50,8 +50,14 @@ awaited inside the spawn (issues #28, #147, #198).
 
 `delegate_task` → sanitize (`sanitize.ts`) → resolve params (`params.ts`: preset merge, thinking caps, timeout
 normalization, model resolution, edit→write fix, auto-routing) → template / retry resolution → validate
-(`validate.ts` H1 + capability pre-flight) → shared prelude (`prelude.ts`: cost gate, approval gating,
-dispatch guards) → mode runner (`index.ts`) → spawn → run records + monitor → result or wake.
+(`validate.ts` H1 + capability pre-flight) → shared gates (`prelude.ts`: cost, approval, targets, H1, the
+per-unit pre-pass) → mode runner (`index.ts`) → spawn → run records + monitor → result or wake.
+
+The three foreground batch handlers (chain, parallel, graph) run their prologue through one helper,
+`mode-prologue.ts` (`runModePrologue`: DAG hook → cost → depth → resolve → targets → preflight → H1) and
+afterwards the shared tail, `resolveModeModel` (`prelude.ts`: model resolution → empty-model rejection →
+circuit check). The per-unit pre-pass stays handler-called, at each mode's pinned position, and the single
+foreground and background paths keep their own sequences (#379).
 
 `schema.ts` is the single source of truth for the `delegate_task` parameter schema, and `DelegateTaskParams`
 is derived from it, so schema and type cannot drift (#239).
@@ -66,22 +72,26 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 |---|---|
 | `concurrency.ts` | Session-bound concurrency queue: slot acquisition/release, priority insertion, and progress counters. |
 | `diff.ts` | Parses git unified diffs into structured per-file summaries and hunks for the result UI. |
+| `dispatch-line.ts` | Parse and validate the Rule 22 dispatch line (the project-local opt-in lives in project-flags.ts). |
 | `event-bus.ts` | In-memory lifecycle pub/sub (`subagent:*` events) for extensions and the completion wake. |
 | `git.ts` | Branch-based git workflow for worktree runs: branch creation, diff capture, switch-back, cleanup. |
 | `history.ts` | Run-record store: creation, finalization, retry lookup, and history pruning. |
 | `index.ts` | Entry point: tool/command registration, the delegate_task handlers, and the execution-mode runners. |
 | `kill-escalation.ts` | The one SIGTERM → grace → SIGKILL escalation shared by foreground reap, abort/timeout, and boot recovery. |
+| `loader.ts` | Shared markdown-tier loader — scan dirs for `.md`, parse frontmatter, validate, map to a typed record. |
 | `logging.ts` | Leveled structured logging with file output and rotation under `.pi/subagent-logs/`. |
 | `messaging.ts` | Inter-subagent messaging: the Intercom channel and `[TO:id]` output parsing. |
 | `metrics.ts` | SLA metrics over run history: p50/p95/p99 latency, success and cost rates, degradation detection. |
-| `model-availability.ts` | Auth-aware model availability: distinguishes catalog presence from configured provider auth. |
+| `mode-prologue.ts` | The batch-mode prologue (cost → depth → resolve → targets → preflight → H1), one call per foreground batch handler. |
+| `model-availability.ts` | Model identity + auth-aware availability: parse a provider/model-id string and check catalog presence plus configured provider auth. |
 | `notify-completion.ts` | Builds and sends the completion-push wake message for terminal background runs. |
 | `params.ts` | Param resolution: per-call + preset merge, thinking caps, timeout normalization, tool and git/approval resolution, auto-routing. |
 | `paths.ts` | Package-root path resolution (`pkgPath()`) so shipped assets resolve from the extension directory. |
 | `preflight.ts` | Pre-spawn environment checks: pi binary, temp-dir writability, cwd readability. |
-| `prelude.ts` | Shared guard/validation prelude opening every delegation mode (cost gate, approval, H1 validation, dispatch guards). |
+| `prelude.ts` | Shared guard/validation prelude for delegation modes: the individual gates (cost, approval, targets, H1), the per-unit pre-pass, and the batch modes' model tail. |
 | `presets.ts` | Preset loading, parsing, validation, and the file-backed custom-preset tier. |
 | `proc.ts` | Production process primitives — Linux/POSIX /proc reads, feature detection, and the default recovery deps. |
+| `project-flags.ts` | The single reader for the project-local `brl-subagent` umbrella flags (issue #415). |
 | `prompt.ts` | Builds the subagent system prompt, including the task fence and inherited-instruction handling. |
 | `recovery-engine.ts` | Pure recovery decision engine — identity, owner liveness classification, and the boot-scan plan over injected process deps. |
 | `recovery-surface.ts` | U3 recovery surface — interrupted-run projection, one-per-boot notice, and the abandon action. |
@@ -95,17 +105,19 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `schema.ts` | The registered `delegate_task` parameter schema — the single source of truth for its types. |
 | `session-manager.ts` | Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths. |
 | `state.ts` | Session-bound state container with versioned validation and migration for persisted settings. |
+| `store-permissions.ts` | Owner-only repair for the persistent stores' directories and files — mkdirSync's mode applies only on CREATE. |
 | `templates.ts` | Task-template resolution: `${param}` substitution over the file-backed template tiers. |
 | `transcript-path.ts` | The single declaration of the transcript path format — filesystem (`join`) and display (POSIX) forms. |
 | `transcript-tail.ts` | Pure line-planning for the drill-in transcript overlay (no TUI imports). |
 | `transcript.ts` | JSONL transcript recording for every agent run (`.pi/output/agent-<id>.jsonl`). |
+| `transport-retry.ts` | The pure auto-retry predicate for background runs that settled with a transport-class failure (issue #365). |
 | `tui-format.ts` | Pure TUI row formatting shared by the monitor and dashboard (no TUI imports). |
 | `tui.ts` | All TUI surfaces: config menus, preset/template managers, history, live monitor, and result rendering. |
 | `types.ts` | Shared types, constants, and the error/termination classification taxonomy. |
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**40 modules** — every one is listed because a new module without a purpose fails CI.
+**46 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
@@ -126,6 +138,7 @@ no gate, hook, or artifact for it.
 | Where | What |
 |---|---|
 | `.pi/subagents/` | run records — the source for history, the monitor, and retries (owner-only permissions) |
+| `.pi/subagents/sessions/<id>/` | per-run SDK session dirs — live during a run; pruned at terminal settle, except interrupted runs and (bounded) transport-failed attempt-1 runs retained for the auto-retry (#404) |
 | `.pi/output/agent-<id>.jsonl` | transcripts — every run, enabling the drill-in view and the steering audit trail |
 | `.pi/subagent-logs/` | leveled structured logs with rotation |
 | session state (`state.ts`) | concurrency counters, config, preset/template caches — session-bound, version-validated on restore |
@@ -152,9 +165,18 @@ Each rule below is enforced in code and pinned by tests; the pointer is where it
   per-repo git lock serializes branch-mode runs (#28, #198).
 - **Retry fidelity** — a retry restores the recorded execution shape (`background`, `gitMode`, `approvalMode`,
   `force`, model, thinking level, priority) with explicitly passed values winning; multi-step shapes degrade
-  to a single run; background runs are not auto-retried on timeout (#227, #244).
+  to a single run; background runs are not auto-retried on timeout (#227, #244), while a transport-class
+  failure is auto-retried once (#365) with a prompt-only resume preamble that names the surviving state
+  (#401).
 - **Cost governance** — a session cost gate runs in the shared prelude before every spawn family, with the
   per-task estimate fallback (#R5, #201).
+- **Bounded session retention** — a background run's SDK session dir is pruned at the single terminal
+  settle choke point. Two classes are kept: interrupted runs (marked by the boot scan, unmarked on disk,
+  kept until resolved) and the auto-retry class — failed attempt-1 background run with `exit_error` + a
+  transport signature. The latter is marked `.transport-retained` and bounded by a settle-time sweep over
+  marked dirs only (5 dirs / 50 MB / 14 days, marker mtime as recency; the current settle's dir is exempt
+  for one cycle). The prune/mark decision precedes the run-record write and everything above it is pure;
+  a failed marker write falls back to pruning (#404).
 - **Concurrency queue** — four priority tiers govern slot acquisition for foreground and multi-mode runs;
   background fan-out deliberately runs outside the slot queue (#114, #198).
 
@@ -166,6 +188,9 @@ Each rule below is enforced in code and pinned by tests; the pointer is where it
   session paths.
 - CI runs `npm run typecheck` and `npx vitest run`; `.pi/skills/worktree/check-repo.sh` mirrors the gate
   locally before a worktree is created.
+- The suite's growth budget is `scripts/check-test-budget.mjs` (issue #368): wall time ≤ 60 s and
+  test:source LOC ratio ≤ 2.0, read from the vitest JSON report and the source tree. They are ceilings,
+  not targets — growth needs a reason, shrinking is always allowed.
 - The module map's own guard is `src/__tests__/architecture-doc.test.ts`: regeneration must equal the
   checked-in block, so a new module without a purpose header — or an edit that skips `npm run docs:arch` —
   fails the suite.

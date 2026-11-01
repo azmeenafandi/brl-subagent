@@ -30,6 +30,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	flattenLiteralText,
 	isBinaryExpression,
 	isNoSubstitutionTemplateLiteral,
 	isParenthesizedExpression,
@@ -37,6 +38,7 @@ import {
 	isTemplateExpression,
 	isTypeNode,
 	parseTexts,
+	SUBSTITUTION,
 	SyntaxKind,
 } from "../../scripts/ts-ast.mjs";
 import type { BinaryExpression, Node, SourceFile } from "../../scripts/ts-ast.mjs";
@@ -44,9 +46,6 @@ import type { BinaryExpression, Node, SourceFile } from "../../scripts/ts-ast.mj
 // ---------------------------------------------------------------------------
 // Forbidden vocabulary (the list comes from issue #183)
 // ---------------------------------------------------------------------------
-
-/** Placeholder standing in for a `${…}` substitution inside a template literal. */
-const SUBSTITUTION = "\u0000";
 
 /**
  * Internal process vocabulary and public issue references that must never
@@ -71,7 +70,13 @@ const FORBIDDEN_TERMS: ReadonlyArray<{ term: string; pattern: RegExp }> = [
  * Empty by design — verified on the tree this ratchet landed against.
  */
 const VOCABULARY_ALLOWLIST = new Map<string, string>([
-	// `"src/example.ts|worktree": "why this string is not user-visible"`,
+	[
+		"src/dispatch-line.ts|worktree",
+		"the DISPATCH_LINE_FORM constant quotes the FIXED syntax of the Jev dispatch line " +
+			"(`jev: <level> (<0.xx>) · C<1|2|3> · worktree <y|n>`), which a conductor must type " +
+			"verbatim — the token is the line's grammar, not internal vocabulary. It is shown only " +
+			"by a project that opted into the line check (ADR 0018), never to a user's dispatch.",
+	],
 ]);
 
 // ---------------------------------------------------------------------------
@@ -97,24 +102,6 @@ function closestAncestor(node: Node, pred: (n: Node) => boolean): Node | undefin
 	let parent = node.parent as Node | undefined;
 	while (parent && isParenthesizedExpression(parent)) parent = parent.parent;
 	return parent && pred(parent) ? parent : undefined;
-}
-
-/**
- * Flatten an expression to the literal text it will produce where statically
- * knowable. Parenthesised expressions and `+` concatenations compose; any
- * non-literal operand becomes `SUBSTITUTION`, which keeps the surrounding text
- * scannable without pretending to know the runtime value.
- */
-function flattenLiteralText(node: Node): string {
-	if (isParenthesizedExpression(node)) return flattenLiteralText(node.expression);
-	if (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) return node.text;
-	if (isTemplateExpression(node)) {
-		let text = node.head.text;
-		for (const span of node.templateSpans) text += SUBSTITUTION + span.literal.text;
-		return text;
-	}
-	if (isPlusConcatenation(node)) return flattenLiteralText(node.left) + flattenLiteralText(node.right);
-	return SUBSTITUTION;
 }
 
 /**

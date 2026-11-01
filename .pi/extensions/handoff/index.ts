@@ -9,6 +9,11 @@
  * compaction summary cannot be trusted to carry it (a summary is lossy). The
  * extension re-injects the §STATE snapshot when a session starts and after every
  * compaction, prefixed with a `Verified:` staleness line compared to dev HEAD.
+ * The comparison ignores a delta made only of the handoff's own commits (#393):
+ * `Verified:` can never name the commit that writes it, so that one-commit lag
+ * is not drift. A commit is judged by its diff against its FIRST parent (merges
+ * and renames both count, #395), and any commit whose paths are empty or
+ * unparseable is drift — the delta never matches vacuously.
  *
  * Deliberate boundaries:
  *  - No `session_before_compact` handler. pi-vcc owns that event and the runner
@@ -32,12 +37,18 @@ import {
 	dedupeKey,
 	extractStateSection,
 	hasInjected,
+	isHandoffOwnCommit,
 	isSubagent,
+	parseDiffPaths,
+	parseRevList,
 	parseVerified,
 	replaceVerified,
+	sameRevision,
 	shouldInject,
 	shortSha,
 	VERIFY_COMMANDS,
+	type RangeCommit,
+	type RangeDelta,
 	type Staleness,
 } from "./lib";
 
@@ -57,16 +68,90 @@ interface Snapshot {
 
 type Probe = { ok: true; snapshot: Snapshot } | { ok: false; reason: string };
 
-/** One git line, or null when git fails / prints nothing. Never throws. */
-async function gitLine(pi: ExtensionAPI, cwd: string, args: string[]): Promise<string | null> {
+/** One git invocation, or null when the spawn itself failed. Never throws. */
+async function gitRun(
+	pi: ExtensionAPI,
+	cwd: string,
+	args: string[],
+): Promise<{ code: number; stdout: string } | null> {
 	try {
 		const result = await pi.exec("git", args, { cwd, timeout: 5_000 });
-		if (result.code !== 0) return null;
-		const line = result.stdout.trim();
-		return line === "" ? null : line;
+		return { code: result.code, stdout: result.stdout };
 	} catch {
 		return null;
 	}
+}
+
+/** One git line, or null when git fails / prints nothing. */
+async function gitLine(pi: ExtensionAPI, cwd: string, args: string[]): Promise<string | null> {
+	const result = await gitRun(pi, cwd, args);
+	if (result === null || result.code !== 0) return null;
+	const line = result.stdout.trim();
+	return line === "" ? null : line;
+}
+
+/**
+ * One commit's paths, from its diff against its FIRST parent.
+ *
+ * `git log --name-only` prints NO paths for a merge commit, so a merge whose
+ * resolution introduced a foreign file read as handoff-only (a vacuous
+ * `every()` over an empty list). The first-parent diff is exactly the
+ * resolution's changes — `--cc`/`-c` can omit, so they are not used. `-M` folds
+ * a rename into one record, and `parseDiffPaths` keeps BOTH of its paths, so
+ * neither a foreign file renamed to `HANDOFF.md` nor the reverse can hide the
+ * foreign side. A root commit has no `<sha>^`, hence `diff-tree --root`.
+ *
+ * `null` when git failed or the output did not parse — the caller reports an
+ * empty path list, which reads as foreign (never a vacuous match).
+ */
+async function commitPaths(
+	pi: ExtensionAPI,
+	cwd: string,
+	sha: string,
+	isRoot: boolean,
+): Promise<string[] | null> {
+	const args = isRoot
+		? ["diff-tree", "--root", "-r", "--no-commit-id", "--name-status", "-M", "-z", sha]
+		: ["diff", "--name-status", "-M", "-z", `${sha}^`, sha];
+	const result = await gitRun(pi, cwd, args);
+	if (result === null || result.code !== 0) return null;
+	return parseDiffPaths(result.stdout);
+}
+
+/**
+ * The `Verified..HEAD` delta, for the self-commit lag (#393). Only called when
+ * the shas already disagree: `Verified: <sha>` can never equal the sha of the
+ * commit that writes it, so the handoff's own commit must not read as drift.
+ *
+ * Ancestor check first — a `Verified:` that is not an ancestor of HEAD is real
+ * drift (rebase, amend, another branch), never the handoff's own commit. `null`
+ * means the range could not be resolved: the caller keeps today's RECONCILE.
+ *
+ * Paths are collected per commit (see `commitPaths`), not from one `git log`
+ * pass: the log omits merge diffs and cannot tell a rename's two sides apart.
+ * The walk stops at the first commit that is not the handoff's own — the verdict
+ * cannot improve after it, so a long drifted range costs a couple of diffs.
+ */
+async function resolveDelta(pi: ExtensionAPI, cwd: string, verified: string): Promise<RangeDelta | null> {
+	// `merge-base --is-ancestor` prints nothing: 0 = ancestor, 1 = not, else unknown.
+	const ancestor = await gitRun(pi, cwd, ["merge-base", "--is-ancestor", verified, "HEAD"]);
+	if (ancestor === null || ancestor.code > 1) return null;
+	if (ancestor.code === 1) return { ancestor: false, commits: [] };
+	// One call for the range: each commit's sha, then its parents (none = root).
+	const listing = await gitRun(pi, cwd, ["rev-list", "--parents", `${verified}..HEAD`]);
+	if (listing === null || listing.code !== 0) return null;
+	const entries = parseRevList(listing.stdout);
+	// Verified is an ancestor whose sha differs from HEAD, so the range cannot be
+	// empty: an empty listing means the output was lost, not a match.
+	if (entries.length === 0) return null;
+	const commits: RangeCommit[] = [];
+	for (const entry of entries) {
+		const paths = await commitPaths(pi, cwd, entry.sha, entry.parents.length === 0);
+		const commit: RangeCommit = { sha: entry.sha, paths: paths ?? [] };
+		commits.push(commit);
+		if (!isHandoffOwnCommit(commit)) break;
+	}
+	return { ancestor: true, commits };
 }
 
 /**
@@ -99,7 +184,16 @@ async function probe(pi: ExtensionAPI, ctx: ExtensionContext): Promise<Probe> {
 	if (state === null) return { ok: false, reason: `${HANDOFF_REL} has no §STATE section` };
 	const head = await gitLine(pi, cwd, ["rev-parse", "HEAD"]);
 	const verified = parseVerified(state);
-	return { ok: true, snapshot: { path, raw, state, verified, head, staleness: buildStaleness(verified, head) } };
+	// Only resolve the range when the shas disagree — the common case is one
+	// extra pair of git calls per injection, and never more than that.
+	const delta =
+		verified !== null && head !== null && !sameRevision(verified, head)
+			? await resolveDelta(pi, cwd, verified)
+			: null;
+	return {
+		ok: true,
+		snapshot: { path, raw, state, verified, head, staleness: buildStaleness(verified, head, delta) },
+	};
 }
 
 /**

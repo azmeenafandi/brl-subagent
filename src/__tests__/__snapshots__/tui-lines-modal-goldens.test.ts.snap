@@ -1,0 +1,451 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`config-menu golden (D11) > renders identically with current values populated 1`] = `
+{
+  "colorCalls": [
+    [
+      "accent",
+      "brl-subagent Configuration",
+    ],
+    [
+      "dim",
+      "↑↓ navigate • enter select • esc cancel",
+    ],
+    [
+      "accent",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    ],
+    [
+      "accent",
+      "→ Set Model                       anthropic/claude-sonnet-4",
+    ],
+    [
+      "muted",
+      "          high",
+    ],
+    [
+      "muted",
+      "      4",
+    ],
+    [
+      "muted",
+      "         2 levels",
+    ],
+    [
+      "muted",
+      "        Never ask",
+    ],
+    [
+      "muted",
+      "      Failed only",
+    ],
+    [
+      "muted",
+      "            Off",
+    ],
+    [
+      "muted",
+      "         250 entries",
+    ],
+    [
+      "muted",
+      "          $2.50",
+    ],
+    [
+      "muted",
+      "                On (window 100)",
+    ],
+    [
+      "muted",
+      "                Browse past subagent runs",
+    ],
+    [
+      "muted",
+      "               Watch running subagents in real-time",
+    ],
+    [
+      "muted",
+      "    Real-time metrics, SLA, errors, and cost trends",
+    ],
+    [
+      "muted",
+      "                Select a failed subagent to retry",
+    ],
+    [
+      "dim",
+      "  (1/20)",
+    ],
+    [
+      "accent",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    ],
+  ],
+  "lines": [
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    " brl-subagent Configuration                                                                         ",
+    "→ Set Model                       anthropic/claude-sonnet-4",
+    "  Set Max Thinking Level          high",
+    "  Set Max Parallel Subagents      4",
+    "  Set Max Recursion Depth         2 levels",
+    "  Set Change Approval Mode        Never ask",
+    "  Set Completion Notify Mode      Failed only",
+    "  Set Recovery Posture            Off",
+    "  Set Max History Entries         250 entries",
+    "  Set Session Cost Limit          $2.50",
+    "  Set SLA Tracking                On (window 100)",
+    "  ─── Run Activity ───",
+    "  View Run History                Browse past subagent runs",
+    "  View Live Monitor               Watch running subagents in real-time",
+    "  View Observability Dashboard    Real-time metrics, SLA, errors, and cost trends",
+    "  Retry Failed Run                Select a failed subagent to retry",
+    "  (1/20)",
+    " ↑↓ navigate • enter select • esc cancel                                                            ",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  ],
+}
+`;
+
+exports[`report lines-modal goldens (D9) > Compliance Summary renders identically 1`] = `
+{
+  "colorCalls": [
+    [
+      "accent",
+      "Compliance Summary",
+    ],
+    [
+      "dim",
+      "Compliance Summary",
+    ],
+    [
+      "dim",
+      "",
+    ],
+    [
+      "dim",
+      "  Total Runs:        2",
+    ],
+    [
+      "dim",
+      "  Date Range:        1/2/2026 - 1/2/2026",
+    ],
+    [
+      "dim",
+      "",
+    ],
+    [
+      "dim",
+      "  SLA Metrics:",
+    ],
+    [
+      "dim",
+      "    Success Rate:    50.0%",
+    ],
+    [
+      "dim",
+      "    Failure Rate:    50.0%",
+    ],
+    [
+      "dim",
+      "    Avg Duration:    45000ms",
+    ],
+    [
+      "dim",
+      "    p95 Duration:    58500ms",
+    ],
+    [
+      "dim",
+      "    Total Cost:      $0.0163",
+    ],
+    [
+      "dim",
+      "",
+    ],
+    [
+      "dim",
+      "  File Access:       3 files",
+    ],
+    [
+      "dim",
+      "  Sensitive Files:   3",
+    ],
+    [
+      "dim",
+      "  High Severity:     2",
+    ],
+    [
+      "accent",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    ],
+    [
+      "accent",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    ],
+  ],
+  "lines": [
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    " Compliance Summary                                                                                 ",
+    " Compliance Summary                                                                                 ",
+    "   Total Runs:        2                                                                             ",
+    "   Date Range:        1/2/2026 - 1/2/2026                                                           ",
+    "   SLA Metrics:                                                                                     ",
+    "     Success Rate:    50.0%                                                                         ",
+    "     Failure Rate:    50.0%                                                                         ",
+    "     Avg Duration:    45000ms                                                                       ",
+    "     p95 Duration:    58500ms                                                                       ",
+    "     Total Cost:      $0.0163                                                                       ",
+    "   File Access:       3 files                                                                       ",
+    "   Sensitive Files:   3                                                                             ",
+    "   High Severity:     2                                                                             ",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  ],
+}
+`;
+
+exports[`report lines-modal goldens (D9) > File Access Report renders identically 1`] = `
+{
+  "colorCalls": [
+    [
+      "accent",
+      "File Access Report",
+    ],
+    [
+      "dim",
+      "File Access Report (3 files)",
+    ],
+    [
+      "dim",
+      "",
+    ],
+    [
+      "dim",
+      "  .env",
+    ],
+    [
+      "dim",
+      "    Runs: run-1",
+    ],
+    [
+      "dim",
+      "  credentials.json",
+    ],
+    [
+      "dim",
+      "    Runs: run-2",
+    ],
+    [
+      "dim",
+      "  src/index.ts",
+    ],
+    [
+      "dim",
+      "    Runs: run-1",
+    ],
+    [
+      "accent",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    ],
+    [
+      "accent",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    ],
+  ],
+  "lines": [
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    " File Access Report                                                                                 ",
+    " File Access Report (3 files)                                                                       ",
+    "   .env                                                                                             ",
+    "     Runs: run-1                                                                                    ",
+    "   credentials.json                                                                                 ",
+    "     Runs: run-2                                                                                    ",
+    "   src/index.ts                                                                                     ",
+    "     Runs: run-1                                                                                    ",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  ],
+}
+`;
+
+exports[`report lines-modal goldens (D9) > SLA Statistics renders identically 1`] = `
+{
+  "colorCalls": [
+    [
+      "accent",
+      "SLA Statistics",
+    ],
+    [
+      "dim",
+      "SLA Metrics (last 2 runs)",
+    ],
+    [
+      "dim",
+      "",
+    ],
+    [
+      "dim",
+      "  Success rate:      50.0%",
+    ],
+    [
+      "dim",
+      "  Failure rate:      50.0%",
+    ],
+    [
+      "dim",
+      "",
+    ],
+    [
+      "dim",
+      "  Duration (ms):",
+    ],
+    [
+      "dim",
+      "    Average:         45000",
+    ],
+    [
+      "dim",
+      "    p50:             45000",
+    ],
+    [
+      "dim",
+      "    p95:             58500",
+    ],
+    [
+      "dim",
+      "    p99:             59700",
+    ],
+    [
+      "dim",
+      "",
+    ],
+    [
+      "dim",
+      "  Cost:",
+    ],
+    [
+      "dim",
+      "    Total:           $0.0163",
+    ],
+    [
+      "dim",
+      "    Average:         $0.0082",
+    ],
+    [
+      "dim",
+      "",
+    ],
+    [
+      "dim",
+      "  Errors by category:",
+    ],
+    [
+      "dim",
+      "    timeout: 1",
+    ],
+    [
+      "accent",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    ],
+    [
+      "accent",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    ],
+  ],
+  "lines": [
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    " SLA Statistics                                                                                     ",
+    " SLA Metrics (last 2 runs)                                                                          ",
+    "   Success rate:      50.0%                                                                         ",
+    "   Failure rate:      50.0%                                                                         ",
+    "   Duration (ms):                                                                                   ",
+    "     Average:         45000                                                                         ",
+    "     p50:             45000                                                                         ",
+    "     p95:             58500                                                                         ",
+    "     p99:             59700                                                                         ",
+    "   Cost:                                                                                            ",
+    "     Total:           $0.0163                                                                       ",
+    "     Average:         $0.0082                                                                       ",
+    "   Errors by category:                                                                              ",
+    "     timeout: 1                                                                                     ",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  ],
+}
+`;
+
+exports[`report lines-modal goldens (D9) > Secrets Exposure Report renders identically 1`] = `
+{
+  "colorCalls": [
+    [
+      "accent",
+      "Secrets Exposure Report",
+    ],
+    [
+      "dim",
+      "Secrets Exposure Report (3 findings)",
+    ],
+    [
+      "dim",
+      "",
+    ],
+    [
+      "dim",
+      "  HIGH SEVERITY:",
+    ],
+    [
+      "dim",
+      "    credentials.json",
+    ],
+    [
+      "dim",
+      "      Run: run-2",
+    ],
+    [
+      "dim",
+      "    .env",
+    ],
+    [
+      "dim",
+      "      Run: run-1",
+    ],
+    [
+      "dim",
+      "",
+    ],
+    [
+      "dim",
+      "  MEDIUM SEVERITY:",
+    ],
+    [
+      "dim",
+      "    task:secret",
+    ],
+    [
+      "dim",
+      "      Run: run-2",
+    ],
+    [
+      "dim",
+      "",
+    ],
+    [
+      "accent",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    ],
+    [
+      "accent",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    ],
+  ],
+  "lines": [
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    " Secrets Exposure Report                                                                            ",
+    " Secrets Exposure Report (3 findings)                                                               ",
+    "   HIGH SEVERITY:                                                                                   ",
+    "     credentials.json                                                                               ",
+    "       Run: run-2                                                                                   ",
+    "     .env                                                                                           ",
+    "       Run: run-1                                                                                   ",
+    "   MEDIUM SEVERITY:                                                                                 ",
+    "     task:secret                                                                                    ",
+    "       Run: run-2                                                                                   ",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  ],
+}
+`;

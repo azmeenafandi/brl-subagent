@@ -147,6 +147,12 @@ export function finalizeRunRecord(
  * `retryOnTimeout` is deliberately explicit-only: it arms a deadline for THIS
  * call, so it is never inherited. `template`, `chain`, `tasks`, `graph` and
  * `params` are not carried — a retried multi-step run degrades to a single task.
+ *
+ * `task` falls back to `originalParams.task` BEFORE `run.task` (issue #401/#411):
+ * the resume preamble now rides the system-prompt side, so a retry's record has
+ * a clean `task`; the fallback is a defensive invariant that also resolves a
+ * legacy pre-#411 record whose `task` still carries the preamble. Fresh records
+ * carry no `originalParams.task` and resolve from `run.task` exactly as before.
  */
 export function resolveRetryParams(
 	params: {
@@ -173,12 +179,17 @@ export function resolveRetryParams(
 		gitMode?: string;
 		approvalMode?: string;
 		force?: boolean;
+		/** The call-level Jev-line bypass (issue #412) — kept so an explicit
+		 * noJev on a retry call still reaches the validation seam; it is never
+		 * inherited from the original (a bypass is per dispatch, and the
+		 * original's line already rides the recorded task). */
+		noJev?: string;
 	},
 	run: SubagentRun,
 ): typeof params {
 	const orig = run.originalParams;
 	return {
-		task: params.task || run.task,
+		task: params.task || orig?.task || run.task,
 		label: params.label ?? run.label,
 		model: params.model ?? orig?.model,
 		preset: params.preset ?? orig?.preset,
@@ -197,6 +208,7 @@ export function resolveRetryParams(
 		gitMode: params.gitMode ?? orig?.gitMode,
 		approvalMode: params.approvalMode ?? orig?.approvalMode,
 		force: params.force ?? orig?.force,
+		noJev: params.noJev,
 	};
 }
 

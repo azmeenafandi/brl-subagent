@@ -48,3 +48,16 @@ export {
 export function parseTexts(
 	entries: readonly { path: string; text: string }[],
 ): Map<string, SourceFile>;
+
+/**
+ * Placeholder standing in for a `${…}` substitution when a template literal is
+ * flattened to its static text.
+ */
+export const SUBSTITUTION: string;
+
+/**
+ * Flatten a string-ish expression (literal, no-substitution template, or `+`
+ * concatenation) to the text its static parts produce. Substitutions and
+ * unknown operands collapse to `SUBSTITUTION`.
+ */
+export function flattenLiteralText(node: import("typescript/unstable/ast").Node): string;

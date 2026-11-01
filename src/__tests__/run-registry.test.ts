@@ -171,12 +171,37 @@ describe("registry lifecycle", () => {
 		}
 	});
 
+	it("repairs a PRE-EXISTING 0o755 registry dir on write (issue #408)", () => {
+		// `mkdirSync(..., { mode: 0o700 })` never chmods an existing dir, so a
+		// registry created before F6 stayed world-readable. Deleting the repair
+		// in ensureOwnerOnlyDir makes this fail.
+		if (process.platform === "win32") return;
+		fs.mkdirSync(registryDir(), { recursive: true, mode: 0o755 });
+		fs.chmodSync(registryDir(), 0o755);
+
+		const id = crypto.randomUUID();
+		expect(registerInflightRun({ id, kind: "unit", startedAt: ISO })).toBe(true);
+
+		expect(fs.statSync(registryDir()).mode & 0o777).toBe(0o700);
+	});
+
 	it("update never resurrects a cleared entry", () => {
 		const id = crypto.randomUUID();
 		registerInflightRun({ id, kind: "unit", startedAt: ISO });
 		clearInflightRun(id);
 		expect(updateInflightRun({ id, kind: "unit", startedAt: ISO })).toBe(false);
 		expect(readEntry(id)).toBeNull();
+	});
+
+	// Issue #368 mutation sample: without the early return in `markInterrupted`, a
+	// second boot scan overwrites the FIRST interruption timestamp — the recovery
+	// surface's "how long has this been interrupted" age would silently reset.
+	it("markInterrupted is idempotent — a second mark preserves the first timestamp", () => {
+		const id = crypto.randomUUID();
+		registerInflightRun({ id, kind: "unit", startedAt: ISO });
+		expect(markInterrupted(id, "2026-10-09T01:00:00.000Z")).toBe(true);
+		expect(markInterrupted(id, "2026-10-10T02:00:00.000Z")).toBe(true);
+		expect(readEntry(id)?.interruptedAt).toBe("2026-10-09T01:00:00.000Z");
 	});
 
 	it("tolerates malformed and unsafe entries without throwing", () => {

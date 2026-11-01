@@ -7,6 +7,50 @@
 import { Type } from "typebox";
 import { MAX_CHAIN_STEPS, MAX_PARALLEL_TASKS, MAX_GRAPH_TASKS } from "./types";
 
+/**
+ * Issue #381 (audit D7): the per-unit fields registered for `chain[]` steps,
+ * `tasks[]` items and `graph[]` nodes — defined once here, spread into the
+ * three `Type.Object` literals below.
+ *
+ * The modes differ only in their `task` wording, whether the unit carries a
+ * per-unit `priority` (chain[] does not: its steps never compete for a
+ * concurrency slot, array order IS the priority), and graph's node-only
+ * `id`/`dependsOn`. Those differences are slotted at their existing positions
+ * because the registered key ORDER is part of the contract — the schema is the
+ * LLM contract, so this extraction must not reorder a single field.
+ */
+const STEP_HEAD_FIELDS = {
+	label: Type.Optional(Type.String({})),
+	model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
+};
+
+const STEP_THINKING_LEVEL_FIELD = {
+	thinkingLevel: Type.Optional(Type.String({})),
+};
+
+/** Per-unit concurrency priority — tasks[] and graph[] only (issue #114). */
+const STEP_PRIORITY_FIELD = {
+	priority: Type.Optional(
+		Type.Union([
+			Type.Literal("critical"),
+			Type.Literal("high"),
+			Type.Literal("normal"),
+			Type.Literal("low"),
+		], { description: "Concurrency priority for this subtask (overrides the call-level default)." }),
+	),
+};
+
+const STEP_TAIL_FIELDS = {
+	cwd: Type.Optional(Type.String({})),
+	timeout: Type.Optional(Type.Number({})),
+	outputFile: Type.Optional(Type.String({})),
+	tools: Type.Optional(Type.Array(Type.String({}))),
+	excludeTools: Type.Optional(Type.Array(Type.String({}))),
+	noBuiltinTools: Type.Optional(Type.Boolean({})),
+	systemPrompt: Type.Optional(Type.String({})),
+	inheritSystemPrompt: Type.Optional(Type.Boolean({})),
+};
+
 export const delegateTaskParamsSchema = Type.Object({
 			task: Type.Optional(Type.String({
 				description: "Detailed description of the task for the subagent to complete (required for single mode, optional for chain/tasks/graph)",
@@ -143,7 +187,7 @@ export const delegateTaskParamsSchema = Type.Object({
 					description:
 						"If true and a FOREGROUND subagent times out, automatically retry with the same parameters. " +
 						"Only retries once — the second timeout is treated as a final failure. " +
-						"Background runs are not auto-retried; re-dispatch with retryRunId.",
+						"A background run is not retried on its deadline, but it is retried once automatically on a transport-class error; any other background failure needs an explicit retryRunId.",
 				}),
 			),
 			approvalMode: Type.Optional(
@@ -162,6 +206,16 @@ export const delegateTaskParamsSchema = Type.Object({
 						"Warnings are surfaced either way. force never suppresses outputFile-without-write conflicts.",
 				}),
 			),
+			noJev: Type.Optional(
+				Type.String({
+					minLength: 1,
+					description:
+						"Stated bypass for the Jev dispatch-line pre-flight, which is active ONLY in a project whose package.json sets the `brl-subagent.processChecks` field (this repository). " +
+						"A NON-EMPTY reason string: the dispatch proceeds and the reason is surfaced as a warning in the result, so the bypass is never silent. " +
+						"It bypasses ONLY the line check — capability conflicts still reject (unlike force). " +
+						"Append `jev: unavailable` to the task instead when the classifier did not run.",
+				}),
+			),
 			background: Type.Optional(
 				Type.Boolean({
 					description:
@@ -170,7 +224,7 @@ export const delegateTaskParamsSchema = Type.Object({
 						"The conductor is woken with a completion message; use get_subagent_result for post-wake retrieval and stall checks. " +
 						"Supports a single task or the tasks array (a fan-out that starts one background agent per task; with tasks the call returns one ID per task and the conductor is woken once per agent as each finishes); combining background with chain or graph is rejected. " +
 						"Default: conditional. Omitted, a single task or tasks fan-out runs in the BACKGROUND when the effective approvalMode is 'auto' (call param, else config); it stays foreground for 'writes'/'always' (a background run has no approval dialog, so the gate must stay in front of the user) and for chain/graph, which block by definition. " +
-						"Pass background: false for a quick probe whose answer the next step needs inline. Explicit true/false always wins. " +
+						"Pass background: false for a quick probe whose answer the next step needs inline. Explicit true/false wins. ONE pre-flight exception exists, and only in a project that opted into its own process checks (package.json `brl-subagent.processChecks: true`; this repository): a high/xhigh-thinking dispatch with background: false AND an explicit timeout is switched to background and the explicit timeout is dropped, because a foreground run loses its whole work at a timeout while a background run keeps its session and is retried on a transport error; pass force: true to keep it foreground. Without that project opt-in the explicit shape and its timeout stand. " +
 						"A background run defaults to a 30-minute deadline when no timeout is given.",
 				}),
 			),
@@ -189,67 +243,29 @@ export const delegateTaskParamsSchema = Type.Object({
 			// duration); array order IS the priority.
 			chain: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description. Use {previous} to reference the previous step output." }),
-				label: Type.Optional(Type.String({})),
-				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
-				thinkingLevel: Type.Optional(Type.String({})),
-				cwd: Type.Optional(Type.String({})),
-				timeout: Type.Optional(Type.Number({})),
-				outputFile: Type.Optional(Type.String({})),
-				tools: Type.Optional(Type.Array(Type.String({}))),
-				excludeTools: Type.Optional(Type.Array(Type.String({}))),
-				noBuiltinTools: Type.Optional(Type.Boolean({})),
-				systemPrompt: Type.Optional(Type.String({})),
-				inheritSystemPrompt: Type.Optional(Type.Boolean({})),
+				...STEP_HEAD_FIELDS,
+				...STEP_THINKING_LEVEL_FIELD,
+				...STEP_TAIL_FIELDS,
 			}), {
 				description: "Sequential chain of tasks. Each step receives the previous step output via {previous} placeholder in the task string. Chain stops at the first failure. Max " + MAX_CHAIN_STEPS + " steps."
 			})),
 			tasks: Type.Optional(Type.Array(Type.Object({
 				task: Type.String({ description: "Task description for this parallel subtask" }),
-				label: Type.Optional(Type.String({})),
-				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
-				thinkingLevel: Type.Optional(Type.String({})),
-				priority: Type.Optional(
-					Type.Union([
-						Type.Literal("critical"),
-						Type.Literal("high"),
-						Type.Literal("normal"),
-						Type.Literal("low"),
-					], { description: "Concurrency priority for this subtask (overrides the call-level default)." })
-				),
-				cwd: Type.Optional(Type.String({})),
-				timeout: Type.Optional(Type.Number({})),
-				outputFile: Type.Optional(Type.String({})),
-				tools: Type.Optional(Type.Array(Type.String({}))),
-				excludeTools: Type.Optional(Type.Array(Type.String({}))),
-				noBuiltinTools: Type.Optional(Type.Boolean({})),
-				systemPrompt: Type.Optional(Type.String({})),
-				inheritSystemPrompt: Type.Optional(Type.Boolean({})),
+				...STEP_HEAD_FIELDS,
+				...STEP_THINKING_LEVEL_FIELD,
+				...STEP_PRIORITY_FIELD,
+				...STEP_TAIL_FIELDS,
 			}), {
 				description: "Parallel tasks to execute concurrently. All tasks run regardless of individual failures. Max " + MAX_PARALLEL_TASKS + " tasks."
 			})),
 			graph: Type.Optional(Type.Array(Type.Object({
 				id: Type.String({ description: "Unique identifier for this task node" }),
 				task: Type.String({ description: "Task description. Use {<nodeId>} to reference output from another task (the referenced node's own id, which must be a word-character id - letters, digits, underscore; ids like 'step-1' or 'node.a' are not matched and the braces are left as literal text)." }),
-				label: Type.Optional(Type.String({})),
-				model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
+				...STEP_HEAD_FIELDS,
 				dependsOn: Type.Optional(Type.Array(Type.String({}), { description: "IDs of tasks that must complete before this one starts" })),
-				thinkingLevel: Type.Optional(Type.String({})),
-				priority: Type.Optional(
-					Type.Union([
-						Type.Literal("critical"),
-						Type.Literal("high"),
-						Type.Literal("normal"),
-						Type.Literal("low"),
-					], { description: "Concurrency priority for this subtask (overrides the call-level default)." })
-				),
-				cwd: Type.Optional(Type.String({})),
-				timeout: Type.Optional(Type.Number({})),
-				outputFile: Type.Optional(Type.String({})),
-				tools: Type.Optional(Type.Array(Type.String({}))),
-				excludeTools: Type.Optional(Type.Array(Type.String({}))),
-				noBuiltinTools: Type.Optional(Type.Boolean({})),
-				systemPrompt: Type.Optional(Type.String({})),
-				inheritSystemPrompt: Type.Optional(Type.Boolean({})),
+				...STEP_THINKING_LEVEL_FIELD,
+				...STEP_PRIORITY_FIELD,
+				...STEP_TAIL_FIELDS,
 			}), {
 				description: "Declare tasks with dependencies. The scheduler parallelizes independent tasks and sequences dependent ones. Max " + MAX_GRAPH_TASKS + " tasks."
 			})),

@@ -5,6 +5,7 @@
  * See AGENT.md for the conductor-facing capability reference.
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
 	AgentToolResult,
@@ -54,6 +55,7 @@ import {
 	type RecoveryMode,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
+import { runModePrologue } from "./mode-prologue";
 import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates, validateTemplatePresetRefs, extractParamNames } from "./templates";
 import { pkgPath } from "./paths";
 
@@ -69,21 +71,26 @@ import {
 	type HeadState,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { gateSessionCost, rejectApprovalAlwaysInBackground, runPreTaskValidation, validateDelegationTargets, formatValidationWarnings } from "./prelude";
+import { depthLimitRejection, formatValidationWarnings, gateSessionCost, modelNotConfiguredRejection, rejectApprovalAlwaysInBackground, rejection, resolveModeModel, resolveSubagentModelPrecedence, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, type SubagentModelResolution } from "./prelude";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
-import { modelIsAvailable } from "./model-availability";
+import { modelIsAvailable, parseModelString } from "./model-availability";
 import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
 import {
 	defaultBackgroundFor,
 	findUnknownParams,
 	KNOWN_DELEGATE_KEYS,
+	resolveDispatchPreset,
 	resolveEffectiveApprovalMode,
 	resolveSubagentParams,
+	resolveThinkingDispatchSwitch,
 	shouldRejectBackgroundForBatch,
 	snapshotOriginalParams,
+	THINKING_SWITCH_NOTICE,
 	type DispatchShape,
+	type ResolveInputParams,
 } from "./params";
 import { delegateTaskParamsSchema } from "./schema";
+import { readProcessChecks } from "./project-flags";
 import { createSessionState, resolveTerminalRunEntry, type SessionState } from "./state";
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
@@ -146,6 +153,7 @@ import {
 	claimTerminalNotice,
 	resolveRunEntry,
 } from "./notify-completion";
+import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "./transport-retry";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -219,6 +227,53 @@ export function cleanupSessionState(state: SessionState): void {
 	state.pendingQueue.length = 0;
 }
 
+/**
+ * Issue #401/#411: the resume preamble a transport auto-retry builds and delivers
+ * as a `<resume-context>` section on the child's system prompt — never inside
+ * the `<task>` fence. A dropped connection costs the child its context, not its
+ * files: the retry spawns into the same directory, so the work it already did
+ * (commits, written files, a bank) is still there. The preamble turns a blind
+ * replay into a resume by naming what to inspect first.
+ *
+ * Kept bounded (5 lines max) and deliberately vetted for runtime vocabulary —
+ * it is prompt text a user can see in the child's system prompt.
+ *
+ * Issue #404: it also names the retained SDK session directory when one exists.
+ * That is the only artifact that holds attempt 1's CONVERSATION — the output log
+ * is a start/steering stub — and the settle path retains it for exactly this
+ * class of run. The pointer is absolute and computed conductor-side at build
+ * time: the retry's child can run in a different cwd (worktree/branch mode), so
+ * a relative path would point at the wrong tree. The exists gate is deliberate:
+ * an attempt whose session was not retained (size floor, marker failure, a
+ * legacy run) gets the bank-only preamble, never a dead path.
+ */
+function buildRetryResumePreamble(
+	run: SubagentRun,
+	nextAttempt: number,
+	retainedSessionDir?: string,
+): string {
+	const sanitize = (value: string): string => value.replace(/[^A-Za-z0-9._-]/g, "-");
+	const label = sanitize(run.label ?? "");
+	// A label made only of separators ("---") is not a filename; fall back to the
+	// (UUID-shaped, hence already safe) id.
+	const bankLabel = /[A-Za-z0-9]/.test(label) ? label : sanitize(run.id);
+	const lines = [
+		`[attempt ${nextAttempt} — the previous attempt (${run.id}) died on a transport failure.`,
+		"This directory may already contain its uncommitted edits.",
+		`Before acting, inspect: \`git status --short\`, \`git log --oneline -8\`, and the progress bank at /tmp/brl-${bankLabel}-bank.md if it exists.`,
+		"Continue from what exists; do NOT redo committed, written, or banked work.]",
+	];
+	if (retainedSessionDir) {
+		// Insert before the closing line so the block still reads as one unit.
+		lines.splice(
+			lines.length - 1,
+			0,
+			`The previous attempt's session is retained at ${retainedSessionDir} — read the newest .jsonl inside (ISO-prefixed names sort lexicographically) to recover what it had worked out.`,
+		);
+	}
+	return lines.join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
@@ -233,6 +288,87 @@ export function cleanupSessionState(state: SessionState): void {
 type _KnownDelegateKey = (typeof KNOWN_DELEGATE_KEYS extends Set<infer K> ? K : never) & string;
 type _ExpectNever<T extends never> = T;
 type _DelegateParamCoverage = _ExpectNever<Exclude<_KnownDelegateKey, keyof DelegateTaskParams>>;
+
+/**
+ * Issue #379: `ResolveInputParams` derives from the schema via `Pick`, so a
+ * params field ADDED to the schema is not in the resolver's input until the
+ * key list names it — and a missed field is invisible at runtime (the key
+ * reaches execute and is silently unused). Only the compiler can catch it.
+ *
+ * The excluded keys are the ones resolution deliberately does not read: the
+ * execution-shape inputs (`chain`/`tasks`/`graph`), the template machinery
+ * (`template` is the exception — it IS read, so it stays in the resolver;
+ * `params` is not), the retry inputs, and the per-dispatch fields
+ * (`model`/`priority`/`background`) that resolve outside this merge.
+ */
+type _NonResolutionDelegateKey =
+	| "chain"
+	| "tasks"
+	| "graph"
+	| "params"
+	| "retryRunId"
+	| "retryOnTimeout"
+	| "model"
+	| "priority"
+	| "background"
+	// Issue #412: `force`/`noJev` are consumed at the validation seam (they
+	// reach `validatePreTask`, not the merge), so `force` stays in the resolver's
+	// key list while `noJev` — never read by resolution — is excluded here.
+	| "noJev";
+type _ResolveInputCoverage = _ExpectNever<
+	Exclude<_KnownDelegateKey, keyof ResolveInputParams | _NonResolutionDelegateKey>
+>;
+
+/**
+ * Issue #381 (audit D4): the one graph-node → SubTaskParams mapping, shared by
+ * the graph pre-pass and the per-wave dispatch. GraphTask is a structural
+ * superset of SubTaskParams, so the node-only scheduling fields are dropped by
+ * destructuring instead of re-listing every per-subtask field — a field added
+ * to either type can no longer be silently forgotten at one of the two sites.
+ */
+function graphTaskToSubTaskParams(node: GraphTask): SubTaskParams {
+	const { id: _id, dependsOn: _dependsOn, ...subTask } = node;
+	return subTask;
+}
+
+/**
+ * Issue #376 (audit D3): the one `SubagentResult` → `SubTaskResult` field
+ * mapping, shared by every dispatch mode (chain, parallel, graph). The ten
+ * assignments plus the error classification were copied per mode, so a field
+ * added to `SubTaskResult` could be silently forgotten at one of the sites —
+ * and `errorCategory` could be passed through unclassified. Callers add their
+ * own mode-specific fields (`step`/`task`/`label`) around this mapping.
+ */
+function toSubTaskResult(
+	result: SubagentResult,
+): Pick<
+	SubTaskResult,
+	| "exitCode"
+	| "messages"
+	| "stderr"
+	| "usage"
+	| "model"
+	| "stopReason"
+	| "errorMessage"
+	| "errorCategory"
+	| "gitBranch"
+	| "gitDiff"
+> {
+	return {
+		exitCode: result.exitCode,
+		messages: result.messages,
+		stderr: result.stderr,
+		usage: result.usage,
+		model: result.model,
+		stopReason: result.stopReason,
+		errorMessage: result.errorMessage,
+		// The classification path is part of the mapping: every mode derives the
+		// category from the raw result, never from the runner's own field.
+		errorCategory: classifyError(result),
+		gitBranch: result.gitBranch,
+		gitDiff: result.gitDiff,
+	};
+}
 
 export default function (pi: ExtensionAPI) {
 	const log = createLogger("brl-subagent");
@@ -288,73 +424,16 @@ export default function (pi: ExtensionAPI) {
 	// Parameter resolution (extracted to src/params.ts — issue #59)
 	// -------------------------------------------------------------------
 
-	/** Parse "provider/model-id" into {provider, id}. Returns null on bad format. */
-	function parseModelString(s: string): { provider: string; id: string } | null {
-		const trimmed = s.trim();
-		const idx = trimmed.indexOf("/");
-		if (idx <= 0 || idx === trimmed.length - 1) return null;
-		return { provider: trimmed.slice(0, idx), id: trimmed.slice(idx + 1) };
-	}
-
+	// The model-precedence chain lives in prelude.ts (issue #379) so the batch
+	// modes' tail (`resolveModeModel`) and these single/background paths resolve
+	// identically; this wrapper keeps their call shape (context + preset +
+	// per-call override) unchanged.
 	function resolveSubagentModel(
 		ctx: ExtensionContext,
 		preset: SubagentPreset | undefined,
 		perCallModel?: string, // NEW: top-level delegate_task model param (issue #96)
-	):
-		| { ok: true; model: { provider: string; id: string } }
-		| { ok: false; error: ToolResult<SubagentResult | undefined> } {
-		// Precedence: per-call model > preset.model > state.config.model > conductor model
-		let subagentModel: { provider: string; id: string } | undefined;
-
-		if (perCallModel) {
-			const parsed = parseModelString(perCallModel);
-			if (!parsed) {
-				log.warn("Model override is not a valid provider/model-id, falling back", { model: perCallModel });
-			} else if (modelIsAvailable(ctx.modelRegistry, parsed)) {
-				log.info("Using per-call model override", { model: perCallModel });
-				return { ok: true, model: parsed };
-			} else {
-				log.warn("Model override unavailable, falling back", { model: perCallModel });
-			}
-		}
-
-		if (preset?.model) {
-			const parsed = parseModelString(preset.model);
-			if (parsed && modelIsAvailable(ctx.modelRegistry, parsed)) {
-				subagentModel = parsed;
-				log.info("Using preset model", { preset: preset.name, model: preset.model });
-			} else {
-				// Fallback: preset model unavailable → configured model
-				log.warn("Preset model unavailable, falling back to configured model", {
-					preset: preset.name,
-					model: preset.model,
-				});
-			}
-		}
-
-		if (!subagentModel) {
-			subagentModel =
-				state.config.model ||
-				(ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined);
-		}
-
-		if (!subagentModel) {
-			return {
-				ok: false,
-				error: {
-					content: [
-						{
-							type: "text" as const,
-							text: "No model available. Configure API keys first, then use /brl-subagent to set a model.",
-						},
-					],
-					details: undefined,
-					isError: true,
-				},
-			};
-		}
-
-		return { ok: true, model: subagentModel };
+	): SubagentModelResolution {
+		return resolveSubagentModelPrecedence({ state, ctx, log, preset, perCallModel });
 	}
 
 	// C3: Resolve a step's model override (step.model > global resolved model).
@@ -475,115 +554,22 @@ export default function (pi: ExtensionAPI) {
 		// startedAt (captured once, at mode entry, not at completion).
 		const chainModeStartedAt = new Date().toISOString();
 
-		// R5: Check session cost limit before spawning
-		const costError = gateSessionCost({
+		// Mode prologue (issue #379): cost → depth → resolve → targets →
+		// preflight → H1, the sequence every batch mode shares (mode-prologue.ts).
+		// Chain's per-mode inputs are only the label and the unit count; H1 here
+		// validates the MODE-level params (top-level tasks are empty, so only the
+		// hard outputFile-vs-write conflict applies), while every step's own
+		// cwd/outputFile/tools belong to the per-step pass below (issue #222).
+		const pro = runModePrologue({
+			params,
 			state,
 			ctx,
 			log,
+			label: "Chain",
 			units: chainSteps.length,
-			label: "Chain delegation",
 		});
-		if (costError) return costError;
-
-		// Reject delegation if recursion depth exceeds configured max
-		const currentDepth = getCurrentDepth();
-		if (currentDepth >= state.config.maxSubagentDepth) {
-			log.warn("Chain delegation rejected: max depth reached", {
-				currentDepth,
-				maxDepth: state.config.maxSubagentDepth,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate further: subagent recursion depth limit reached ` +
-							`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// Resolve global params once
-		const globalParams = resolveSubagentParams(
-			params as {
-				task: string;
-				label?: string;
-				preset?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-				gitMode?: string;
-			},
-			state,
-			ctx,
-			log,
-		);
-
-		// Validate CWD once
-		const cwdResult = validateCwd(globalParams.effectiveCwd, ctx.cwd);
-		if (!cwdResult.ok) {
-			return {
-				content: [
-					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-		const resolvedCwd = cwdResult.value;
-
-		// Pre-flight checks — fail fast before consuming resources
-		const pfResult = preflightCheck(resolvedCwd);
-		if (!pfResult.ok) {
-			log.warn("Chain pre-flight check failed", { error: pfResult.error });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Pre-flight check failed: ${pfResult.error}`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// H1: Pre-task validation at mode entry — deterministic check that
-		// tools/thinking match the task (mirrors single/background modes, issue
-		// #32). Chain top-level tasks are empty (modeCount forbids task+chain), so
-		// keyword warnings skip on empty text and only the hard outputFile-vs-write
-		// conflict applies (issue #34). The mode-level outputFile on globalParams is
-		// the one validated here; every step's own cwd/outputFile/tools are
-		// validated by the per-step pre-pass below (issue #222).
-		const validation = validatePreTask({
-			task: globalParams.task,
-			toolOptions: globalParams.toolOptions,
-			thinkingLevel: globalParams.thinkingLevel,
-			gitMode: globalParams.resolvedGitMode,
-			outputFile: globalParams.outputFile,
-		});
-		if (validation.warnings.length > 0) {
-			log.warn("Chain pre-task validation warnings", { warnings: validation.warnings });
-		}
-		if (!validation.valid) {
-			const errText = validation.errors.join("; ");
-			log.warn("Chain pre-task validation failed", { errors: validation.errors });
-			return {
-				content: [{ type: "text" as const, text: errText }],
-				details: undefined,
-				isError: true,
-			};
-		}
+		if (!pro.ok) return pro.error;
+		const { globalParams, resolvedCwd, currentDepth } = pro;
 
 		// Per-step pre-pass (issue #222): resolve + validate EVERY step before
 		// any spawn, so a single bad step rejects the chain with nothing
@@ -593,72 +579,38 @@ export default function (pi: ExtensionAPI) {
 		// step's output (only its TASK text consumes {previous}), so the pass
 		// can run up front — and must, because discovering step 5's bad cwd
 		// after four steps already ran would waste their whole budget.
-		const stepCwds: string[] = [];
-		const stepWarnings: string[] = [];
-		for (let i = 0; i < chainSteps.length; i++) {
-			const merged = mergeSubTaskParams(globalParams, chainSteps[i]);
-			const stepPrefix = `Step ${i + 1} ("${displayTaskName(merged)}")`;
-
-			const stepTargets = validateDelegationTargets({
-				ctx,
-				effectiveCwd: merged.effectiveCwd,
-				outputFile: merged.outputFile,
-				prefix: stepPrefix,
-			});
-			if (!stepTargets.ok) return stepTargets.error;
-			stepCwds.push(stepTargets.cwd);
-
-			const stepValidation = runPreTaskValidation({
-				log,
-				label: "Chain",
-				prefix: stepPrefix,
+		const stepPass = validateUnitPrePass({
+			units: chainSteps,
+			label: "Chain",
+			gitMode: globalParams.resolvedGitMode,
+			ctx,
+			log,
+			force: params.force as boolean | undefined,
+			noJev: params.noJev,
+			merge: (step) => mergeSubTaskParams(globalParams, step),
+			describe: (_step, merged, i) => ({
+				prefix: `Step ${i + 1} ("${displayTaskName(merged)}")`,
 				logContext: { step: i + 1 },
-				preTask: {
-					task: merged.task,
-					toolOptions: merged.toolOptions,
-					thinkingLevel: merged.thinkingLevel,
-					gitMode: globalParams.resolvedGitMode,
-					outputFile: merged.outputFile,
-					force: params.force as boolean | undefined,
-				},
-			});
-			if (stepValidation.error) return stepValidation.error;
-			for (const w of stepValidation.warnings) stepWarnings.push(`${stepPrefix}: ${w}`);
-		}
+			}),
+		});
+		if (!stepPass.ok) return stepPass.error;
+		const stepCwds = stepPass.units.map((u) => u.cwd);
+		const stepWarnings = stepPass.warnings;
 
-		// Resolve model once (per-call top-level model override beats preset)
-		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
-		if (!modelResult.ok) return modelResult.error;
-		const subagentModel = modelResult.model;
-
-		const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
-		if (!modelStr || modelStr === "/") {
-			log.warn("Model string is empty after resolution", { model: subagentModel });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							"Subagent model is not configured. " +
-							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// R1: Circuit breaker check — reject if circuit is open
-		const circuitCheck = state.checkCircuit();
-		if (circuitCheck.isOpen) {
-			return {
-				content: [
-					{ type: "text" as const, text: circuitCheck.message! },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		// Mode tail (issue #379): resolve the model (preset + per-call override,
+		// auto-route included in `resolvedPreset`), reject an empty resolution,
+		// then the circuit breaker. It runs AFTER the per-step pass — IN8 keeps
+		// a bad step's rejection ahead of an unconfigured model.
+		const tail = resolveModeModel({
+			state,
+			ctx,
+			log,
+			preset: globalParams.resolvedPreset,
+			perCallModel: params.model,
+		});
+		if (!tail.ok) return tail.error;
+		const subagentModel = tail.model;
+		const modelStr = tail.modelStr;
 
 		// Resolve priority (issue #114: no config knob — the call-level default)
 		const chainPriority: Priority = (
@@ -825,17 +777,8 @@ export default function (pi: ExtensionAPI) {
 				// shape finalizeRunRecord expects, errorCategory included).
 				finalizeUnitRun(state, pi, ctx, run, result, log);
 
-				// Fill SubTaskResult
-				subTaskResult.exitCode = result.exitCode;
-				subTaskResult.messages = result.messages;
-				subTaskResult.stderr = result.stderr;
-				subTaskResult.usage = result.usage;
-				subTaskResult.model = result.model;
-				subTaskResult.stopReason = result.stopReason;
-				subTaskResult.errorMessage = result.errorMessage;
-				subTaskResult.errorCategory = classifyError(result);
-				subTaskResult.gitBranch = result.gitBranch;
-				subTaskResult.gitDiff = result.gitDiff;
+				// Fill SubTaskResult (one shared field mapping — issue #376/D3).
+				Object.assign(subTaskResult, toSubTaskResult(result));
 
 				chainResults.push(subTaskResult);
 
@@ -998,101 +941,22 @@ export default function (pi: ExtensionAPI) {
 	): Promise<ToolResult<SubagentResult | ParallelDetails | undefined>> {
 		const taskList: SubTaskParams[] = params.tasks!;
 
-		// R5: Check session cost limit before spawning
-		const costError = gateSessionCost({
+		// Mode prologue (issue #379): cost → depth → resolve → targets →
+		// preflight → H1, the sequence every batch mode shares (mode-prologue.ts).
+		// Parallel's per-mode inputs are only the label and the unit count; H1
+		// validates the MODE-level params (top-level tasks are empty, so only the
+		// hard outputFile-vs-write conflict applies — issue #34), while every
+		// task's own cwd/outputFile/tools belong to the per-task pass below.
+		const pro = runModePrologue({
+			params,
 			state,
 			ctx,
-			log,
-			units: taskList.length,
-			label: "Parallel delegation",
-		});
-		if (costError) return costError;
-
-		// Reject delegation if recursion depth exceeds configured max
-		const currentDepth = getCurrentDepth();
-		if (currentDepth >= state.config.maxSubagentDepth) {
-			log.warn("Parallel delegation rejected: max depth reached", {
-				currentDepth,
-				maxDepth: state.config.maxSubagentDepth,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate further: subagent recursion depth limit reached ` +
-							`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// Resolve global params once
-		const globalParams = resolveSubagentParams(
-			params as {
-				task: string;
-				label?: string;
-				preset?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-				gitMode?: string;
-			},
-			state,
-			ctx,
-			log,
-		);
-
-		// Validate CWD once
-		const targets = validateDelegationTargets({ ctx, effectiveCwd: globalParams.effectiveCwd });
-		if (!targets.ok) return targets.error;
-		const resolvedCwd = targets.cwd;
-
-		// Pre-flight checks — fail fast before consuming resources
-		const pfResult = preflightCheck(resolvedCwd);
-		if (!pfResult.ok) {
-			log.warn("Parallel pre-flight check failed", { error: pfResult.error });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Pre-flight check failed: ${pfResult.error}`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// H1: Pre-task validation at mode entry — deterministic check that
-		// tools/thinking match the task (mirrors single/background modes, issue
-		// #32). Parallel top-level tasks are empty (modeCount forbids task+tasks),
-		// so keyword warnings skip on empty text and only the hard
-		// outputFile-vs-write conflict applies (issue #34). The mode-level
-		// outputFile on globalParams is the one validated here; every task's own
-		// cwd/outputFile/tools are validated by the per-task pre-pass below
-		// (issue #222).
-		const preTask = runPreTaskValidation({
 			log,
 			label: "Parallel",
-			preTask: {
-				task: globalParams.task,
-				toolOptions: globalParams.toolOptions,
-				thinkingLevel: globalParams.thinkingLevel,
-				gitMode: globalParams.resolvedGitMode,
-				outputFile: globalParams.outputFile,
-			},
+			units: taskList.length,
 		});
-		if (preTask.error) return preTask.error;
+		if (!pro.ok) return pro.error;
+		const { globalParams, resolvedCwd, currentDepth } = pro;
 
 		// Per-task pre-pass (issue #220, extended by #222): validate EVERY task
 		// before any spawn, so a single bad task rejects the batch with nothing
@@ -1104,73 +968,38 @@ export default function (pi: ExtensionAPI) {
 		// mode-level cwd. Per-task warnings are prefixed with their unit and
 		// collected here to ride the final result. The mode-entry validation
 		// above stays for the mode-level outputFile (issue #34).
-		const taskWarnings: string[] = [];
-		// Parallel index → the task's own validated cwd (issue #222).
-		const taskCwds: string[] = [];
-		for (let i = 0; i < taskList.length; i++) {
-			const merged = mergeSubTaskParams(globalParams, taskList[i]);
-			const taskPrefix = `Task ${i + 1} ("${displayTaskName(merged)}")`;
-
-			const taskTargets = validateDelegationTargets({
-				ctx,
-				effectiveCwd: merged.effectiveCwd,
-				outputFile: merged.outputFile,
-				prefix: taskPrefix,
-			});
-			if (!taskTargets.ok) return taskTargets.error;
-			taskCwds.push(taskTargets.cwd);
-
-			const unitValidation = runPreTaskValidation({
-				log,
-				label: "Parallel",
-				prefix: taskPrefix,
+		const taskPass = validateUnitPrePass({
+			units: taskList,
+			label: "Parallel",
+			gitMode: globalParams.resolvedGitMode,
+			ctx,
+			log,
+			force: params.force as boolean | undefined,
+			noJev: params.noJev,
+			merge: (task) => mergeSubTaskParams(globalParams, task),
+			describe: (_task, merged, i) => ({
+				prefix: `Task ${i + 1} ("${displayTaskName(merged)}")`,
 				logContext: { task: i + 1 },
-				preTask: {
-					task: merged.task,
-					toolOptions: merged.toolOptions,
-					thinkingLevel: merged.thinkingLevel,
-					gitMode: globalParams.resolvedGitMode,
-					outputFile: merged.outputFile,
-					force: params.force as boolean | undefined,
-				},
-			});
-			if (unitValidation.error) return unitValidation.error;
-			for (const w of unitValidation.warnings) taskWarnings.push(`${taskPrefix}: ${w}`);
-		}
+			}),
+		});
+		if (!taskPass.ok) return taskPass.error;
+		// Parallel index → the task's own validated cwd (issue #222).
+		const taskCwds = taskPass.units.map((u) => u.cwd);
+		const taskWarnings = taskPass.warnings;
 
-		// Resolve model once (per-call top-level model override beats preset)
-		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
-		if (!modelResult.ok) return modelResult.error;
-		const subagentModel = modelResult.model;
-
-		const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
-		if (!modelStr || modelStr === "/") {
-			log.warn("Model string is empty after resolution", { model: subagentModel });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							"Subagent model is not configured. " +
-							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// R1: Circuit breaker check — reject if circuit is open
-		const circuitCheck = state.checkCircuit();
-		if (circuitCheck.isOpen) {
-			return {
-				content: [
-					{ type: "text" as const, text: circuitCheck.message! },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		// Mode tail (issue #379): model resolution (preset + per-call override,
+		// auto-route included in `resolvedPreset`), the empty-model rejection and
+		// the circuit check. Runs AFTER the per-task pass (IN8).
+		const tail = resolveModeModel({
+			state,
+			ctx,
+			log,
+			preset: globalParams.resolvedPreset,
+			perCallModel: params.model,
+		});
+		if (!tail.ok) return tail.error;
+		const subagentModel = tail.model;
+		const modelStr = tail.modelStr;
 
 		// Build base prompt once
 		const basePrompt = ctx.getSystemPrompt();
@@ -1281,17 +1110,8 @@ export default function (pi: ExtensionAPI) {
 					run.childMarker,
 				);
 
-				// Fill SubTaskResult
-				subTaskResult.exitCode = result.exitCode;
-				subTaskResult.messages = result.messages;
-				subTaskResult.stderr = result.stderr;
-				subTaskResult.usage = result.usage;
-				subTaskResult.model = result.model;
-				subTaskResult.stopReason = result.stopReason;
-				subTaskResult.errorMessage = result.errorMessage;
-				subTaskResult.errorCategory = classifyError(result);
-				subTaskResult.gitBranch = result.gitBranch;
-				subTaskResult.gitDiff = result.gitDiff;
+				// Fill SubTaskResult (one shared field mapping — issue #376/D3).
+				Object.assign(subTaskResult, toSubTaskResult(result));
 
 				results[index] = subTaskResult;
 				completedCount++;
@@ -1473,166 +1293,43 @@ export default function (pi: ExtensionAPI) {
 		// startedAt (captured once, at mode entry, not at completion).
 		const graphModeStartedAt = new Date().toISOString();
 
-		// Validate graph
-		const errors = validateGraph(graphTasks);
-		if (errors.length > 0) {
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Graph validation failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// R5: Check session cost limit before spawning
-		const costError = gateSessionCost({
+		// Mode prologue (issue #379): cost → depth → resolve → targets →
+		// preflight → H1, with the DAG check as the graph-only pre-cost hook — a
+		// malformed graph (empty / over-limit / duplicate id / missing dep) is
+		// rejected before the session spends anything (IN1 boundary). Cycles are
+		// NOT caught here; topologicalSort rejects them after the tail.
+		const pro = runModePrologue({
+			params,
 			state,
 			ctx,
 			log,
+			label: "Graph",
 			units: graphTasks.length,
-			label: "Graph delegation",
-		});
-		if (costError) return costError;
-
-		// Reject delegation if recursion depth exceeds configured max
-		const currentDepth = getCurrentDepth();
-		if (currentDepth >= state.config.maxSubagentDepth) {
-			log.warn("Graph delegation rejected: max depth reached", {
-				currentDepth,
-				maxDepth: state.config.maxSubagentDepth,
-			});
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							`Cannot delegate further: subagent recursion depth limit reached ` +
-							`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-							`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// Resolve global params once
-		const globalParams = resolveSubagentParams(
-			params as {
-				task: string;
-				label?: string;
-				preset?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-				gitMode?: string;
-				approvalMode?: string;
+			beforeCost: () => {
+				const errors = validateGraph(graphTasks);
+				return errors.length === 0
+					? undefined
+					: rejection(`Graph validation failed:\n${errors.map((e) => `  - ${e}`).join("\n")}`);
 			},
+		});
+		if (!pro.ok) return pro.error;
+		const { globalParams, resolvedCwd, currentDepth } = pro;
+
+		// Mode tail (issue #379): model resolution (preset + per-call override,
+		// auto-route included in `resolvedPreset`), the empty-model rejection and
+		// the circuit check. It runs BEFORE the topological sort and the per-node
+		// pass (IN8/IN11): a graph with a bad node AND an unconfigured model
+		// reports the MODEL error first.
+		const tail = resolveModeModel({
 			state,
 			ctx,
 			log,
-		);
-
-		// Validate CWD once
-		const cwdResult = validateCwd(globalParams.effectiveCwd, ctx.cwd);
-		if (!cwdResult.ok) {
-			return {
-				content: [
-					{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-		const resolvedCwd = cwdResult.value;
-
-		// Pre-flight checks
-		const pfResult = preflightCheck(resolvedCwd);
-		if (!pfResult.ok) {
-			log.warn("Graph pre-flight check failed", { error: pfResult.error });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Pre-flight check failed: ${pfResult.error}`,
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// H1: Pre-task validation at mode entry — deterministic check that
-		// tools/thinking match the task (mirrors single/background modes, issue
-		// #32). Graph top-level tasks are empty (modeCount forbids task+graph),
-		// so keyword warnings skip on empty text and only the hard
-		// outputFile-vs-write conflict applies (issue #34). The mode-level
-		// outputFile on globalParams is the one validated here; every node's own
-		// cwd/outputFile/tools are validated by the per-node pre-pass below
-		// (issue #222).
-		const validation = validatePreTask({
-			task: globalParams.task,
-			toolOptions: globalParams.toolOptions,
-			thinkingLevel: globalParams.thinkingLevel,
-			gitMode: globalParams.resolvedGitMode,
-			outputFile: globalParams.outputFile,
+			preset: globalParams.resolvedPreset,
+			perCallModel: params.model,
 		});
-		if (validation.warnings.length > 0) {
-			log.warn("Graph pre-task validation warnings", { warnings: validation.warnings });
-		}
-		if (!validation.valid) {
-			const errText = validation.errors.join("; ");
-			log.warn("Graph pre-task validation failed", { errors: validation.errors });
-			return {
-				content: [{ type: "text" as const, text: errText }],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// Resolve model once (per-call top-level model override beats preset)
-		const modelResult = resolveSubagentModel(ctx, globalParams.resolvedPreset, params.model as string | undefined);
-		if (!modelResult.ok) return modelResult.error;
-		const subagentModel = modelResult.model;
-
-		const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
-		if (!modelStr || modelStr === "/") {
-			log.warn("Model string is empty after resolution", { model: subagentModel });
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text:
-							"Subagent model is not configured. " +
-							"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
-					},
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
-
-		// R1: Circuit breaker check
-		const circuitCheck = state.checkCircuit();
-		if (circuitCheck.isOpen) {
-			return {
-				content: [
-					{ type: "text" as const, text: circuitCheck.message! },
-				],
-				details: undefined,
-				isError: true,
-			};
-		}
+		if (!tail.ok) return tail.error;
+		const subagentModel = tail.model;
+		const modelStr = tail.modelStr;
 
 		// Resolve priority — the FALLBACK for per-unit priority (issue #114): a
 		// task-level priority on graph[] items wins per slot; this is the floor.
@@ -1670,57 +1367,30 @@ export default function (pi: ExtensionAPI) {
 		// wording is still validated, and refusing to validate up front would
 		// mean a bad node in the LAST wave is discovered after every earlier
 		// wave already spent its budget.
-		const nodeCwds = new Map<string, string>();
-		const nodeWarnings: string[] = [];
-		for (const graphTask of graphTasks) {
-			const merged = mergeSubTaskParams(globalParams, {
-				task: graphTask.task,
-				label: graphTask.label,
-				model: graphTask.model,
-				thinkingLevel: graphTask.thinkingLevel,
-				priority: graphTask.priority,
-				cwd: graphTask.cwd,
-				timeout: graphTask.timeout,
-				outputFile: graphTask.outputFile,
-				tools: graphTask.tools,
-				excludeTools: graphTask.excludeTools,
-				noBuiltinTools: graphTask.noBuiltinTools,
-				systemPrompt: graphTask.systemPrompt,
-				inheritSystemPrompt: graphTask.inheritSystemPrompt,
-			});
-			const nodePrefix = `Node "${graphTask.id}"`;
-
-			const nodeTargets = validateDelegationTargets({
-				ctx,
-				effectiveCwd: merged.effectiveCwd,
-				outputFile: merged.outputFile,
-				prefix: nodePrefix,
-			});
-			if (!nodeTargets.ok) return nodeTargets.error;
-			nodeCwds.set(graphTask.id, nodeTargets.cwd);
-
-			const nodeValidation = runPreTaskValidation({
-				log,
-				label: "Graph",
-				prefix: nodePrefix,
-				logContext: { id: graphTask.id },
-				preTask: {
-					// Placeholder TOKENS stripped (issue #222 review): the rules
-					// read the declared string, so a `{<id>}` whose dependency id
-					// is a blocking keyword would block on a token, not on text
-					// the host wrote. The declared wording around it is unchanged
-					// and still validated.
-					task: merged.task.replace(GRAPH_OUTPUT_PLACEHOLDER_RE, " "),
-					toolOptions: merged.toolOptions,
-					thinkingLevel: merged.thinkingLevel,
-					gitMode: globalParams.resolvedGitMode,
-					outputFile: merged.outputFile,
-					force: params.force as boolean | undefined,
-				},
-			});
-			if (nodeValidation.error) return nodeValidation.error;
-			for (const w of nodeValidation.warnings) nodeWarnings.push(`${nodePrefix}: ${w}`);
-		}
+		const nodePass = validateUnitPrePass({
+			units: graphTasks,
+			label: "Graph",
+			gitMode: globalParams.resolvedGitMode,
+			ctx,
+			log,
+			force: params.force as boolean | undefined,
+			noJev: params.noJev,
+			merge: (node) => mergeSubTaskParams(globalParams, graphTaskToSubTaskParams(node)),
+			describe: (node, merged) => ({
+				prefix: `Node "${node.id}"`,
+				logContext: { id: node.id },
+				// Placeholder TOKENS stripped (issue #222 review): the rules
+				// read the declared string, so a `{<id>}` whose dependency id
+				// is a blocking keyword would block on a token, not on text
+				// the host wrote. The declared wording around it is unchanged
+				// and still validated. Graph policy — it stays here, not in
+				// the shared helper.
+				task: merged.task.replace(GRAPH_OUTPUT_PLACEHOLDER_RE, " "),
+			}),
+		});
+		if (!nodePass.ok) return nodePass.error;
+		const nodeCwds = new Map(nodePass.units.map((u) => [u.unit.id, u.cwd] as const));
+		const nodeWarnings = nodePass.warnings;
 
 		// Build base prompt once
 		const basePrompt = ctx.getSystemPrompt();
@@ -1776,21 +1446,7 @@ export default function (pi: ExtensionAPI) {
 					// sibling node advances the counter (same-wave siblings run
 					// concurrently, so the value must be pinned here).
 					const globalNode = ++globalNodeCounter;
-					const subTaskParams: SubTaskParams = {
-						task: graphTask.task,
-						label: graphTask.label,
-						model: graphTask.model,
-						thinkingLevel: graphTask.thinkingLevel,
-						priority: graphTask.priority,
-						cwd: graphTask.cwd,
-						timeout: graphTask.timeout,
-						outputFile: graphTask.outputFile,
-						tools: graphTask.tools,
-						excludeTools: graphTask.excludeTools,
-						noBuiltinTools: graphTask.noBuiltinTools,
-						systemPrompt: graphTask.systemPrompt,
-						inheritSystemPrompt: graphTask.inheritSystemPrompt,
-					};
+					const subTaskParams = graphTaskToSubTaskParams(graphTask);
 
 					const merged = mergeSubTaskParams(globalParams, subTaskParams);
 					// Issue #222: the node's OWN validated cwd (pre-pass);
@@ -1897,19 +1553,12 @@ export default function (pi: ExtensionAPI) {
 							run.childMarker,
 						);
 
+						// One shared field mapping — issue #376/D3 (the graph literal was a
+						// third copy of it).
 						const subTaskResult: SubTaskResult = {
 							task: merged.task,
 							label: merged.label,
-							exitCode: result.exitCode,
-							messages: result.messages,
-							stderr: result.stderr,
-							usage: result.usage,
-							model: result.model,
-							stopReason: result.stopReason,
-							errorMessage: result.errorMessage,
-							errorCategory: classifyError(result),
-							gitBranch: result.gitBranch,
-							gitDiff: result.gitDiff,
+							...toSubTaskResult(result),
 						};
 
 						// Issue #133: finalize the per-node run entry — status, duration,
@@ -2085,26 +1734,7 @@ export default function (pi: ExtensionAPI) {
 		if (costError) return costError;
 
 		// Resolve global params once — same call shape as runParallelMode.
-		const globalParams = resolveSubagentParams(
-			params as {
-				task: string;
-				label?: string;
-				preset?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-				gitMode?: string;
-			},
-			state,
-			ctx,
-			log,
-		);
+		const globalParams = resolveSubagentParams(params, state, ctx, log);
 
 		// Resolve the global model once (per-call model beats preset/config).
 		const globalModelResult = resolveSubagentModel(
@@ -2189,6 +1819,8 @@ export default function (pi: ExtensionAPI) {
 					gitMode: globalParams.resolvedGitMode,
 					outputFile: merged.outputFile,
 					force: params.force as boolean | undefined,
+					cwd: targets.cwd,
+					noJev: params.noJev,
 				},
 			});
 			if (preTask.error) return preTask.error;
@@ -2327,6 +1959,9 @@ export default function (pi: ExtensionAPI) {
 			thinkingLevel: ThinkingLevel;
 			priority?: string;
 			systemPrompt: string;
+			/** Issue #411: conductor-authored resume context for an auto-retry,
+			 *  delivered on the system-prompt side (never inside the task fence). */
+			resumeContext?: string;
 			cwd: string;
 			toolOptions?: SubagentToolOptions;
 			timeout?: number;
@@ -2359,6 +1994,7 @@ export default function (pi: ExtensionAPI) {
 			// run entry + drill-in header carry it like foreground runs.
 			priority: spawn.priority,
 			systemPrompt: spawn.systemPrompt,
+			resumeContext: spawn.resumeContext,
 			cwd: spawn.cwd,
 			toolOptions: spawn.toolOptions,
 			timeout: spawn.timeout,
@@ -2601,16 +2237,29 @@ export default function (pi: ExtensionAPI) {
 	async function spawnBackgroundRun(
 		pi: ExtensionAPI,
 		ctx: ExtensionContext,
-		params: Omit<Parameters<typeof resolveSubagentParams>[0], "task"> & {
-			task?: string;
-			model?: string;
-			priority?: string;
-		},
+		/**
+		 * Two shapes, both passed WITHOUT an assertion (issue #379):
+		 *  - `DelegateTaskParams` — a fresh dispatch, schema-validated;
+		 *  - the `resolveRetryParams` bag — rebuilt from a run record, whose
+		 *    `priority` is the unvalidated persisted string. It is the only field
+		 *    the two shapes disagree on, and claiming the recorded value was
+		 *    schema-validated would be a lie: records are read back from disk.
+		 */
+		params: (DelegateTaskParams & { noJev?: string }) | ReturnType<typeof resolveRetryParams>,
 		singleTask: string,
 		// Option B U1: the spawn entry a retryRunId resolved to, so a retried
 		// background run inherits dispatchId/resumeOf/attempt (record identity,
 		// not a delegate param — D4).
 		retrySourceRun?: SubagentRun,
+		/**
+		 * Issue #401/#411: the resume preamble for a TRANSPORT auto-retry. It rides
+		 * the child's system prompt only (as a `<resume-context>` section) — never
+		 * inside the `<task>` fence. `resolveSubagentParams`, every gate and every
+		 * H1 check above still see `singleTask` (which stays byte-identical to the
+		 * recorded original), so routing, capability warnings and pre-flight checks
+		 * cannot be steered by the preamble's wording.
+		 */
+		attemptContext?: string,
 	): Promise<ToolResult<undefined>> {
 		// Phase 6.5: Background execution — spawn session and return ID immediately.
 		// Resolve the preset and its model BEFORE the background branch so the
@@ -2676,6 +2325,8 @@ export default function (pi: ExtensionAPI) {
 					gitMode: bgResolved.resolvedGitMode,
 					outputFile: bgResolvedOutputFile,
 					force: params.force,
+					cwd: targets.cwd,
+					noJev: params.noJev,
 				},
 			});
 			if (bgPreTask.error) return bgPreTask.error;
@@ -2694,7 +2345,12 @@ export default function (pi: ExtensionAPI) {
 			// Option B U1: durability identity (retry inherits the original dispatch).
 			const bgIdentity = newDispatchIdentity(retrySourceRun);
 			const agent = await startBackgroundAgent(pi, ctx, {
+				// Issue #411: the preamble rides the system-prompt side
+				// (`resumeContext`), never the task. The task stays the recorded
+				// original, and the snapshot keeps it too, so a later retry of this
+				// retry resolves from the un-prefixed text and never compounds.
 				task: singleTask,
+				resumeContext: attemptContext,
 				type: params.preset || 'general-purpose',
 				description: params.label,
 				model: bgModel,
@@ -2705,7 +2361,9 @@ export default function (pi: ExtensionAPI) {
 				toolOptions: bgResolved.toolOptions,
 				timeout: bgResolved.timeout,
 				gitMode: bgResolved.resolvedGitMode,
-				originalParams: snapshotOriginalParams(params),
+				originalParams: attemptContext
+					? { ...snapshotOriginalParams(params), task: singleTask }
+					: snapshotOriginalParams(params),
 				sanitizeCwd: bgResolved.effectiveCwd,
 				dispatchId: bgIdentity.dispatchId,
 				resumeOf: bgIdentity.resumeOf,
@@ -2862,7 +2520,7 @@ export default function (pi: ExtensionAPI) {
 			`Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: ${presetRestrictionSummary}. Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.`,
 			buildTemplateGuideline(templateSummary),
 			"To retry a failed subagent, pass its run ID as retryRunId. The retry restores the recorded params - including background, gitMode, approvalMode, force - with explicit values on this call winning. Multi-step runs degrade to a single task. See the retryRunId description for the full field list.",
-			"Set retryOnTimeout: true to automatically retry a FOREGROUND subagent that times out. Only retries once — the second timeout is treated as a final failure. Background runs are not auto-retried; re-dispatch with retryRunId.",
+			"Set retryOnTimeout: true to automatically retry a FOREGROUND subagent that times out. Only retries once — the second timeout is treated as a final failure. A background run is not retried on its deadline, but it IS retried once automatically when it dies on a transport-class error (a dropped connection before the work started), recorded as attempt 2 and announced with a warning toast — do not re-dispatch it yourself. Any other background failure needs an explicit retryRunId.",
 			"Background is the CONDITIONAL default for delegate_task. With background omitted, a single task or a tasks fan-out runs in the BACKGROUND when the effective approvalMode is 'auto' (call param, else config): the tool returns an agent ID immediately, and with tasks it fans out — every task starts as its own background agent, one ID per task in task order, and the conductor is woken once per agent as each finishes. It stays FOREGROUND when the effective approvalMode is 'writes' or 'always' (a background run has no approval dialog, so a gate that needs the user must keep blocking), and for chain and graph (they block by definition; an explicit background: true with chain/graph is rejected). Pass background: false for a quick probe whose answer the next step needs inline; pass background: true to force a background run where the default would block. Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate. A background run defaults to a 30-minute deadline when no timeout is given.",
 			"",
 			"## Conductor Guardrails",
@@ -3081,6 +2739,68 @@ export default function (pi: ExtensionAPI) {
 			// self-evident (issue #361 review).
 			const explicitBackground = params.background;
 
+			// Issue #412 (rule 2: "no deadline ⇒ durable path") — the dispatch-shape
+			// pre-flight. A high/xhigh-thinking run the conductor asked to run
+			// FOREGROUND with an explicit timeout is the shape that lost 14 minutes of
+			// plan critique on 2026-10-31: foreground runs persist nothing, so the
+			// deadline kills the work outright, while a background run keeps its
+			// session and is retried on a transport error. The switch is applied HERE
+			// — after template/retry resolution and BEFORE `useBackground` is resolved
+			// and before any run record is written — so the shape every downstream
+			// reader sees (the spawn, the retry snapshot, the pending-work record) is
+			// the switched one. Moving it after `snapshotOriginalParams` would record
+			// `background:false` and silently cost the run its transport auto-retry
+			// (`transport-retry.ts` classifies off that snapshot).
+			// Issue #415: the switch is OUR process (a conductor decision rule), not
+			// product behavior — a user's explicit foreground timeout is usually a
+			// budget cap, so a GLOBAL switch could triple time and cost against
+			// their instruction. The umbrella project-local `processChecks` flag
+			// gates it (fail-open: no/malformed manifest → off). Resolve the
+			// dispatch cwd ONCE, the way the target validation below will.
+			const processChecksCwd =
+				params.cwd === undefined ? ctx.cwd : path.resolve(ctx.cwd, params.cwd);
+			const processChecks = readProcessChecks(processChecksCwd);
+			// The preset the dispatch will actually run with — an auto-routed
+			// `code-reviewer`/`debugger` is a high-thinking run even though the
+			// caller declared no level, so the pre-flight resolves the SAME preset
+			// the merge below will (one rule, `resolveDispatchPreset`).
+			const declaredPresetForSwitch = resolveDispatchPreset(params, state).preset;
+			const thinkingSwitch = resolveThinkingDispatchSwitch({
+				processChecks,
+				thinkingLevel: (params.thinkingLevel ?? declaredPresetForSwitch?.thinkingLevel) as
+					| ThinkingLevel
+					| undefined,
+				explicitBackground,
+				timeout: params.timeout,
+				force: params.force,
+				shape: dispatchShape,
+			});
+			if (thinkingSwitch === "switch") {
+				params.background = true;
+				// Drop the foreground deadline: the 30-minute background default
+				// (DEFAULT_BACKGROUND_DEADLINE_MS) applies instead. Recorded as
+				// undefined, so a retry re-derives it rather than restoring the cap.
+				params.timeout = undefined;
+				log.info("Dispatch pre-flight: high-thinking foreground switched to background", {
+					thinkingLevel: params.thinkingLevel,
+					timeout: "dropped (background default applies)",
+				});
+				pi.sendMessage({
+					customType: "delegate-notification",
+					content: THINKING_SWITCH_NOTICE,
+					display: true,
+					details: { thinkingLevel: params.thinkingLevel, previousTimeout: "dropped" },
+				}, { deliverAs: "followUp" });
+				ctx.ui.notify(THINKING_SWITCH_NOTICE, "warning");
+			} else if (thinkingSwitch === "forced") {
+				// The override is recorded, not silent: the dispatch text is the reason
+				// (`force` has no reason field — ADR 0007's contract stays unchanged).
+				log.info("Dispatch pre-flight: high-thinking foreground forced", {
+					thinkingLevel: params.thinkingLevel,
+					timeout: params.timeout,
+				});
+			}
+
 			// background: true with chain/graph was silently ignored — the batch ran
 			// foreground (blocking until every unit finished) while the caller believed
 			// it was background. Both remain rejected loudly at dispatch validation;
@@ -3185,19 +2905,7 @@ export default function (pi: ExtensionAPI) {
 					currentDepth,
 					maxDepth: state.config.maxSubagentDepth,
 				});
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text:
-								`Cannot delegate further: subagent recursion depth limit reached ` +
-								`(depth ${currentDepth}/${state.config.maxSubagentDepth}). ` +
-								`Subagents can delegate up to ${state.config.maxSubagentDepth} levels deep (configurable via /brl-subagent depth). Complete the remaining work directly.`,
-						},
-					],
-					details: undefined,
-					isError: true,
-				};
+				return depthLimitRejection(currentDepth, state.config.maxSubagentDepth);
 			}
 
 			const {
@@ -3264,6 +2972,8 @@ export default function (pi: ExtensionAPI) {
 				gitMode: resolvedGitMode,
 				outputFile: resolvedOutputFile,
 				force: params.force,
+				cwd: resolvedCwd,
+				noJev: params.noJev,
 			});
 			if (validation.warnings.length > 0) {
 				log.warn("Pre-task validation warnings", { warnings: validation.warnings });
@@ -3293,18 +3003,7 @@ export default function (pi: ExtensionAPI) {
 			const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
 			if (!modelStr || modelStr === "/") {
 				log.warn("Model string is empty after resolution", { model: subagentModel });
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text:
-								"Subagent model is not configured. " +
-								"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
-						},
-					],
-					details: undefined,
-					isError: true,
-				};
+				return modelNotConfiguredRejection();
 			}
 
 			// Create run record
@@ -3850,19 +3549,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(
-			args: {
-				task?: string;
-				label?: string;
-				systemPrompt?: string;
-				inheritSystemPrompt?: boolean;
-				thinkingLevel?: string;
-				outputFile?: string;
-				timeout?: number;
-				cwd?: string;
-				tools?: string[];
-				excludeTools?: string[];
-				noBuiltinTools?: boolean;
-			},
+			args: DelegateTaskParams,
 			theme: Theme,
 			_context: unknown,
 		) {
@@ -3889,6 +3576,8 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Check the status of a background agent and retrieve its result.",
 			"The conductor is woken with a completion message when the agent finishes; use this for post-wake retrieval, stall checks, and detail access — not for polling.",
+			"Accepts a full agent id or a unique 8-character id prefix.",
+			"When the id belongs to a retried run, the answer names the latest attempt; a finished run that was superseded also reports its successor.",
 			"Returns the agent's status, result (if completed), and transcript path.",
 		].join(" "),
 		parameters: Type.Object({
@@ -3902,14 +3591,64 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		execute: async (toolCallId, params) => {
-			const { getAgent } = await import('./session-manager');
+			const { getAgent, resolveAgentId, findRetryLineage, isTerminalAgentStatus, RETRY_SCAN_WINDOW_MS, RETRY_SCAN_WINDOW_DAYS } = await import('./session-manager');
 			const { getTranscript } = await import('./transcript');
-			
-			const agent = getAgent(params.agent_id);
-			
-			if (!agent) {
+
+			// The notices render the first 8 hex characters of an id; resolve a
+			// unique prefix before both the record read and the lineage lookup.
+			// Ambiguity fails closed — a guess here could report the wrong run.
+			const resolution = resolveAgentId(params.agent_id);
+			if (resolution.kind === 'ambiguous') {
+				return {
+					content: [{
+						type: "text" as const,
+						text: `Agent id prefix "${params.agent_id}" is ambiguous — matches: ${resolution.matches.join(', ')}`,
+					}],
+					details: undefined,
+					isError: true,
+				};
+			}
+			// Anything that is not a full id or a matching 8-hex prefix keeps
+			// today's message — there is no id to resolve against the stores.
+			if (resolution.kind === 'unresolved') {
 				return {
 					content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
+					details: undefined,
+					isError: true,
+				};
+			}
+			const agentId = resolution.id;
+
+			const agent = getAgent(agentId);
+			
+			if (!agent) {
+				const lineage = findRetryLineage(agentId);
+				if (lineage.latest && lineage.latest.id !== agentId) {
+					const latest = lineage.latest;
+					return {
+						content: [{
+							type: "text" as const,
+							text: `Agent ${params.agent_id} not found — run ${params.agent_id} was retried as ${latest.id} (attempt ${latest.attempt}, ${latest.status}, started ${new Date(latest.startedAt).toISOString()}).`,
+						}],
+						details: undefined,
+						isError: true,
+					};
+				}
+
+				const registryRun = lineage.inflight.find((run) => run.id === agentId);
+				const registryStarted = registryRun
+					? (Number.isFinite(Date.parse(registryRun.startedAt))
+						? new Date(registryRun.startedAt).toISOString()
+						: registryRun.startedAt)
+					: undefined;
+				const registryText = registryRun
+					? `no recent retry lineage recorded, but the registry still lists run ${registryRun.id} (attempt ${registryRun.attempt ?? 1}, started ${registryStarted}).`
+					: `no recent retry lineage recorded (scanned the last ${RETRY_SCAN_WINDOW_DAYS} days), and no registry record either.`;
+				return {
+					content: [{
+						type: "text" as const,
+						text: `Agent ${params.agent_id} not found — ${registryText}`,
+					}],
 					details: undefined,
 					isError: true,
 				};
@@ -3926,6 +3665,22 @@ export default function (pi: ExtensionAPI) {
 			
 			if (agent.error) {
 				resultText += `Error: ${agent.error}\n`;
+			}
+
+			// A terminal source can be the WRONG run to act on: the retry that
+			// actually finished is a later attempt of the same dispatch. Name it
+			// so a terminal status is not read as the final word.
+			if (isTerminalAgentStatus(agent.status)) {
+				const lineage = findRetryLineage(agentId, agent);
+				if (lineage.latest && lineage.latest.id !== agentId) {
+					const latest = lineage.latest;
+					resultText += `Superseded by ${latest.id} (attempt ${latest.attempt}, ${latest.status}, started ${new Date(latest.startedAt).toISOString()})\n`;
+				} else if (agent.startedAt < Date.now() - RETRY_SCAN_WINDOW_MS) {
+					// The lineage scan is windowed: an older run cannot be shown a
+					// later attempt that fell outside it. Say so instead of implying
+					// there is none.
+					resultText += `Retry lineage not checked: this run started more than ${RETRY_SCAN_WINDOW_DAYS} days ago.\n`;
+				}
 			}
 			
 			if (agent.result) {
@@ -3953,7 +3708,7 @@ export default function (pi: ExtensionAPI) {
 			
 			// Include transcript if verbose
 			if (params.verbose) {
-				const transcript = getTranscript(params.agent_id);
+				const transcript = getTranscript(agentId);
 				if (transcript.length > 0) {
 					resultText += `\n\nTranscript (${transcript.length} entries):\n`;
 					for (const entry of transcript.slice(-10)) { // Last 10 entries
@@ -3963,7 +3718,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			
 			// Include transcript path
-			resultText += `\nTranscript: ${transcriptDisplayPath(params.agent_id)}`;
+			resultText += `\nTranscript: ${transcriptDisplayPath(agentId)}`;
 			
 			return {
 				content: [{ type: "text" as const, text: resultText }],
@@ -4313,6 +4068,76 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	/**
+	 * Issue #365: re-dispatch a background run that settled with a transport-class
+	 * failure, using the `retryRunId` machinery. `resolveRetryParams({}, run)`
+	 * restores the recorded params and `spawnBackgroundRun(..., run)` mints the
+	 * lineage (`resumeOf` + `attempt: 2`), so the retry re-runs the normal gates
+	 * (cost, approval, pre-task) and is visible in the record.
+	 *
+	 * Issue #401/#411: the retry carries a resume preamble (`attemptContext`) that
+	 * is injected into the child's system prompt only (as a `<resume-context>`
+	 * section), never inside the `<task>` fence. The task handed to
+	 * `resolveSubagentParams` stays the recorded original, so auto-routing, H1
+	 * keyword warnings and the capability checks behave exactly as they did on
+	 * attempt 1.
+	 *
+	 * Returns TRUE when the retry was actually spawned — the caller then SUPPRESSES
+	 * the source run's completion notice, because the retry's own terminal settle
+	 * is the wake. A gate rejection or a throwing spawn returns FALSE and the
+	 * caller reports the original failure exactly as before (no silent drop).
+	 */
+	async function scheduleTransportRetry(
+		ctx: ExtensionContext,
+		run: SubagentRun,
+	): Promise<boolean> {
+		const sourceAttempt = run.attempt ?? 1;
+		try {
+			const retryParams = resolveRetryParams({}, run);
+			// Issue #404: point at the retained session ONLY when it is really
+			// there. Resolve this conductor-side: the child may run in another cwd.
+			// An invalid id cannot have a session dir (and `backgroundSessionDir`
+			// throws on one) — no pointer, no throw.
+			let retainedSessionDir: string | undefined;
+			try {
+				const { retainedSessionPointer } = await import('./session-manager');
+				const candidate = retainedSessionPointer(run.id);
+				if (fs.existsSync(candidate)) retainedSessionDir = candidate;
+			} catch {
+				retainedSessionDir = undefined;
+			}
+			const result = await spawnBackgroundRun(
+				pi,
+				ctx,
+				retryParams,
+				retryParams.task!,
+				run,
+				buildRetryResumePreamble(run, sourceAttempt + 1, retainedSessionDir),
+			);
+			if (result.isError) {
+				log.warn("Transport auto-retry spawn rejected — surfacing the original failure", {
+					sourceId: run.id,
+					attempt: sourceAttempt,
+					error: result.content[0]?.type === "text" ? result.content[0].text : undefined,
+				});
+				return false;
+			}
+		} catch (err) {
+			log.warn("Transport auto-retry spawn failed — surfacing the original failure", {
+				sourceId: run.id,
+				attempt: sourceAttempt,
+				error: (err as Error).message,
+			});
+			return false;
+		}
+		log.info("Background run settled — transport auto-retry scheduled", {
+			sourceId: run.id,
+			attempt: sourceAttempt + 1,
+		});
+		ctx.ui.notify(TRANSPORT_RETRY_TOAST, "warning");
+		return true;
+	}
+
 	async function deliverCompletionAlert(event: SubagentEvent): Promise<void> {
 		const id = event.agentId;
 		if (!claimTerminalNotice(id)) return;
@@ -4324,6 +4149,14 @@ export default function (pi: ExtensionAPI) {
 			if (!agent) return; // pruned or foreign id — nothing to notify
 			const knob = state.config.completionNotify ?? "all";
 			const run = resolveRunEntry(state.getRunEntries(ctx), id);
+			// Issue #365: a transport-class background failure is re-dispatched once
+			// and the source notice is suppressed (the retry's settle is the wake).
+			// Every other terminal type — and every non-retryable failure — keeps the
+			// existing path unchanged.
+			if (event.type === "subagent:failed" && run && isTransportRetryable(run)) {
+				const retried = await scheduleTransportRetry(ctx, run);
+				if (retried) return;
+			}
 			const message = buildCompletionMessage(agent, run);
 			// Issue #179 (D2): resolve delivery from the CLASSIFIED notification
 			// status, not the raw agent status — otherwise a run whose completion

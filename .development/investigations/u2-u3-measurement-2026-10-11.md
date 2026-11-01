@@ -36,7 +36,7 @@ Interruption evidence = registry entries carrying `interruptedAt`, agent records
 - **Rolling:** append a snapshot after each observed interruption AND at least weekly (next due ~2026-10-18), same enumeration command.
 - **Extension policy (2026-10-14):** if a snapshot still reads zero interruptions across all projects, EXTEND the window rather than conclude (zero observed = insufficient exposure); record the new due date here.
 - **Assess per interruption:** would resume have avoided meaningful re-work? (task size, how far the run got, whether a cold re-dispatch repeated it). Record the judgment — this is the "re-work meaningful" criterion.
-- **Debris check:** session dirs left behind by terminal/abandoned runs (should be none; U2 prunes), registry entries for settled runs (should be retired).
+- **Debris check:** session dirs left behind by terminal/abandoned runs (should be none; U2 prunes), registry entries for settled runs (should be retired). **Retention exception (issue #404):** up to 5 marked `.transport-retained` dirs / 50 MB / 14 days are by design — these are the auto-retry's input, not debris. Interrupted-run dirs are also unmarked and deliberately kept. Judge a stray dir by the marker file, not by a non-empty sessions count.
 
 ## Gate status
 
@@ -47,3 +47,34 @@ Interruption evidence = registry entries carrying `interruptedAt`, agent records
 | Re-work meaningful | **No data** — nothing to assess yet. |
 
 **U4 dispatch remains parked until at least one real interruption (or a recorded maintainer decision to waive).**
+
+## Snapshot — 2026-10-25 (window extended; gate disposition: superseded)
+
+Enumeration re-run (same command, all projects):
+
+| Project | Records | Registry | Session dirs | Interrupted evidence |
+|---|---|---|---|---|
+| `brl-subagent-dev` | 1139 (terminal history) | 0 settled / 1 active | 1 active | 0 |
+| `spelling_bee` | 8 (terminal) | 0 | 0 | 0 |
+| `deep-research-agent` | 3 (terminal) | 0 | 0 | 0 |
+| `ephemeral-rp` | 11 (terminal) | 0 | 0 | 0 |
+
+**`interruptedAt` entries anywhere: 0.** No debris; the stores stay bounded.
+
+**Retention exception (issue #404):** the store's bounded state now includes up to 5 marked
+`.transport-retained` session dirs (50 MB / 14 days caps), retained for the transport auto-retry's resume
+preamble. Those are not debris; the settle-time sweep reclaims them. Interrupted-run dirs remain unmarked
+and exempt. The "should be none" reading above applies to unmarked dirs of settled runs.
+
+**But the transport class is now measured, not assumed** — the durable counter is the extension log line
+`Background run settled — transport auto-retry scheduled` (exact-message parse; a raw `grep` overcounts because
+task specs quote the string). On 2026-10-25: **5 transport interruptions, all auto-recovered** as attempt 2 —
+`b69bceb9` 12:02Z (#378 impl), `c6382ffb` 12:16Z (#380 impl), `afbe2bb3` 12:26Z (PR #387 fix), `e1bbe143` 13:25Z
+(#379 commit 3), `99f4e815` 13:39Z (#379 commit 4) — all with zero re-work (fresh retry, trees untouched; the
+affected PRs merged). Whole log span 2026-09-20 → 2026-10-25: these 5 are the only ones, all on the day #365's
+auto-retry was first exercised in quantity.
+
+**Disposition:** the U2/U3 gate's decisive criterion ("would resume have avoided meaningful re-work?") still reads
+**no** — the retry starts a fresh run and loses nothing; the banking convention covers mid-run evidence. The
+mitigation that shipped (#365 bounded auto-retry + banking) supersedes U4 (A₂ resume), which stays parked. The
+window needs no further snapshots; this note is closed as superseded, not satisfied.

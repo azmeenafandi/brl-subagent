@@ -130,6 +130,9 @@ never re-type their logic by hand. Full design:
       `codegraph-refresh.sh` at every merge (lifecycle step 7);
       `codegraph-check.py --repo-root <path>` for freshness. CLI-only,
       conductor-side, watcher off, never a hook (#230).
+      **Enforced for refactor PRs** via the review brief's `Structural closure`
+      (`review-dispatch.md`): moved/renamed/deleted exports carry `recon.sh` callers +
+      impact, reconciled against the PR diff.
     - **Doc concept / cross-document questions → grep + `docs-arch` + the ADRs**
       — the deterministic fallback. graphify is retired (ADR 0016); no LLM sits
       on the doc-navigation path.
@@ -148,6 +151,18 @@ never re-type their logic by hand. Full design:
     | General work (no match) | dev-agent | — |
 
     Default: dev-agent + no template — the safe fallback, never wrong.
+
+    **Every brief banks its state (issue #401).** An IMPLEMENTATION brief names
+    the bank `/tmp/brl-<label>-bank.md` (`<label>` = the dispatch label) and
+    instructs: "append your working state before each major step / commit".
+    Reviews already bank `/tmp/review-<unit>-findings.md`
+    (`references/review-dispatch.md`) and plan critiques bank the same
+    `/tmp/brl-<label>-bank.md` shape. The bank is what a drop leaves behind: the
+    transport auto-retry's resume block points the replayed run at it, so a
+    reconnect re-reads instead of redoing. Implementation briefs also restate
+    **commit-per-step**: commit + push each green step, so the retry's
+    `git log` is the progress report (the 2026-10-06 `connection-drop-grind`
+    lesson — eight dead runs, ~3 minutes lost).
 15. **Spec environment verification (Rule 15).** Before dispatching any
     delegation, verify that every file, directory, and resource referenced in
     the spec exists in the subagent's WORKTREE (the cockpit is a different
@@ -242,16 +257,64 @@ never re-type their logic by hand. Full design:
 22. **Thinking-level calibration (Rule 22 — advisory, Jev).** Before writing a spec or
     dispatch, classify the task **blind** (task text only) with the Jev classifier and
     record the result in the spec and the dispatch:
-    `jev: <level> (<conf>) · risk <C1|C2|C3> · worktree <y|n>`. Deviations **≥2
+    `jev: <level> (<conf>) · <C1|C2|C3> · worktree <y|n>`. Deviations **≥2
     levels**, and **any level below Jev on a review**, carry a one-line reason. Clamps:
     artifact-producing dispatches floor at `low`; reviews floor at `medium`. If
     `codemode`/Jev is unavailable, record `jev: unavailable` and proceed — never block
-    a dispatch on the classifier. Advisory only: the conductor (and the maintainer's
-    spec approval) still decide. Snippet + the 2026-10-10 backtest (98 dispatches,
+    a dispatch on the classifier. **Advisory on the LEVEL** — the conductor (and the
+    maintainer's spec approval) still decide — but **blocking on PRESENCE** in a project
+    that opts in: a `package.json` carrying `{"brl-subagent": {"processChecks": true}}`
+    makes `delegate_task` reject a dispatch whose task has no usable line (the rejection
+    carries the exact form and the command that prints it), for foreground and background
+    alike. `jev: unavailable` is an accepted form; the stated escape is
+    `noJev: "<reason>"`, which proceeds and surfaces the reason as a warning. Print every
+    line with `--line '<json>' --label <name>` so the provenance log records that a
+    CLASSIFIER produced it — `--log --require-provenance` (run by `merge-guard.sh`) fails a
+    line nobody printed, because the format check alone passes an invented confidence
+    (2026-10-31: `medium (0.70)` dispatched, the classifier had said `high (0.32)`).
+    Snippet + the 2026-10-10 backtest (98 dispatches,
     $0.0034: it flags over-leveling, raises reviews — `review-test-hygiene-r2`, which
     caught the #308 regression, was called high→xhigh) live in
     `references/jev-advisory.md` — **build the task text from its input template and record
     the outcome in its calibration log** (`.development/investigations/jev-calibration-log.md`).
+    **The ritual is checkable (issue #366):** `jev-check.mjs --line '<classifier-json>'`
+    prints the exact line (a level without a confidence is rejected), and
+    `jev-check.mjs --ledger <log>` fails any row dated on/after 2026-10-12 whose Jev cell
+    carries neither a confidence nor a gap marker — **a bare level is a finding**. CI runs
+    both beside the test-budget guard; a review brief that omits the jev-line check is
+    itself a process gap (`references/review-dispatch.md`).
+    **The dispatch itself is audited too:** `jev-check.mjs --log` reads the local subagent log
+    and fails every `Background agent spawned` task dated on/after 2026-10-28 whose payload has
+    no valid line — the ledger cannot see a skip because its rows are written afterwards. It is
+    conductor/merge-time only (the log is local, not CI-visible) and `merge-guard.sh` runs it.
+
+## Conductor decision rules
+
+Where a check is a **chokepoint** (the verdict parser, the merge guard, the pins) it holds; where
+enforcement is a **prose reminder or a conductor step** it drifts. The 2026-10-31 audit of ADRs
+0001/0003/0009 found the decisions that still failed were exactly the ones left to conductor
+discretion — so they are written here, in substance and with their chokepoint named. These are
+process rules: they live in `.pi/skills/**` and `.development/`, **never in `AGENT.md`** (which
+ships as product documentation — see `CONTRIBUTING.md`).
+
+1. **No unprompted releases.** The cycle-end ritual ends at *"cycle complete — ready when you
+   say"*. A version is named only when the maintainer asks for one, or a defect forces it. The
+   `§STATE` Next actions say "release on the maintainer's go" (`references/handoff.md`), and the
+   close row says `release: the maintainer's call` (`references/sprint-end-ritual.md`) — the
+   *proposal* is what we removed, never the tag.
+2. **No deadline ⇒ durable path.** A missing deadline is not permission to move fast; it means
+   verify first, act once: background, banked, commit-per-step. Foreground is only for a probe
+   whose answer the next step needs inline. This is enforced in code, not just here, in a project
+   that opted into its own process checks: a `high`/`xhigh` dispatch with `background: false` and an
+   explicit `timeout` is auto-switched to background (the 30-minute default applies) unless
+   `force: true` — a short foreground timeout loses the run's work, because foreground runs persist
+   nothing (ADR 0018, scoped by ADR 0019). This checkout opts in via its tracked `package.json`
+   (`brl-subagent.processChecks: true`); users' projects have no such field, so their explicit
+   shape and timeout stand. The flag is maintainer process tooling and is never documented as a
+   user-facing feature.
+3. **"Done" carries its falsifier.** Every completion names the check that would prove it wrong,
+   or says "unverified". The PR body's `Verification:` line is where that is written (`pr` skill
+   §2); the review record cites it.
 
 ## Lifecycle
 
@@ -268,10 +331,15 @@ never re-type their logic by hand. Full design:
 4. DELEGATE     task with cwd = <path>; subagent commits, pushes, opens PR (body per the pr skill)
 5. REVIEW       adversarial review (REVIEW_*.md lives in worktree, gitignored)
 6. USER LOOP    review → revisions → approve
-7. MERGE        merge commit to `dev` (PRs target `dev`; `dev → main` is the
-                release-time merge commit. Never squash — per-issue commits
-                must survive so release notes can read them. Never merge a
-                task PR straight to `main`.) Then run
+7. MERGE        **run `merge-guard.sh <pr> <review-record.md>` first — it is the gate:**
+                (a) `gh pr checks` has no failing/pending check, (b) the record names
+                `#<pr>`, (c) its last `Verdict:` is approve/approve-with-nits, (d) the
+                PR's CURRENT head sha is in the record or a `conductor-verified:` line
+                says how the post-verdict commit was verified, (e) `jev-check --log` is
+                green. Any failure blocks and lists every reason. Then merge commit to
+                `dev` (PRs target `dev`; `dev → main` is the release-time merge commit.
+                Never squash — per-issue commits must survive so release notes can read
+                them. Never merge a task PR straight to `main`.) Then run
                 `codegraph-refresh.sh` — the canonical structural index
                 (cockpit/dev) is refreshed AT EVERY MERGE; explicit invocation
                 only, never a hook (#230). The refresh asserts coverage AND
@@ -316,7 +384,9 @@ mechanics, verdict format: `references/review-dispatch.md`.
   lockfiles match, isolated `npm ci` otherwise) and smoke-tests vitest, running
   the pre-flight itself. **Do not delegate until the smoke test passes.** Pass
   `--force-isolated` for a dependency-bump task (rule 2); `--include-dev-docs`
-  is redundant since #247.
+  is redundant since #247. The full vitest output is teed to
+  `.pi/worktree-prep-<worktree>-<UTC>.log` (gitignored, printed on failure) — a
+  flaky verdict always has an artifact to inspect.
 - **`worktree-cleanup.sh <path> [--branch <name>]`** — after the PR is merged OR
   closed. Removes the worktree; deletes the branch (auto-derived when `--branch`
   is omitted) from local and `origin` (never `dev`/`main`); then syncs the
@@ -342,6 +412,31 @@ mechanics, verdict format: `references/review-dispatch.md`.
   boundaries (what it does NOT check). Exits non-zero on any discrepancy —
   catching the silent refresh failures that issues #173 (missing module) and
   #189 (missing symbols) record. Run from the cockpit.
+- **`jev-check.mjs`** — the Rule 22 gate (issue #366). `--line '<classifier-json>'`
+  validates the codemode answer and prints the exact
+  `jev: <level> (<conf>) · Cx · worktree <y|n>` line (a missing/invalid confidence
+  is rejected, exit 1 — the skipped form); `--ledger [path]` audits the calibration
+  log — rows dated on/after 2026-10-12 need a confidence or an explicit gap marker,
+  offenders print `date + dispatch + cell` and exit 1, and zero parsed rows is a
+  hard error (never a silent pass); `--log [path] [--since YYYY-MM-DD]` audits the
+  **dispatch artifact** in `.pi/subagent-logs/brl-subagent.log` — every
+  `Background agent spawned` task dated on/after 2026-10-28 must carry a valid Rule 22
+  line, offenders print `timestamp + task head + reason` and exit 1, zero parsed
+  dispatch events is exit 2. `--log` is conductor/merge-time (the log is local and
+  gitignored, so it is NOT CI-visible; `--since` re-audits legacy dispatches).
+  `--line ... --label <name>` appends the printed line to the gitignored provenance log
+  (`.pi/jev-lines.log`), and `--log --require-provenance` additionally fails a dispatch
+  line with no such row — fail-closed (exit 2) when the log is missing or empty. That is
+  the check the format cannot make: a hand-typed confidence passes the shape.
+  `--selftest` proves every path with fixtures. CI runs `--selftest` and `--ledger`
+  beside the test-budget guard.
+- **`merge-guard.sh <pr-number> <review-record-path>`** — the mechanical merge gate
+  (lifecycle step 7), wired to the `unreviewed final fix` friction entry (#395
+  `77338bf`): CI green, the record names the PR, its last `Verdict:` is
+  approve/approve-with-nits, the PR's **current head** is in the record (or a
+  `conductor-verified:` line documents the post-verdict commit), and `jev-check --log`
+  passes. Exit 1 lists every failed reason at once; run it from the cockpit.
+  `--selftest` covers the record parsing with temp fixtures.
 
 ## Notes
 
@@ -351,7 +446,15 @@ mechanics, verdict format: `references/review-dispatch.md`.
 - Scripts are bash and run from the cockpit checkout (they resolve the repo root
   from their own location; `--repo-root` overrides); `worktree-prep.sh` runs
   from the cockpit, not the worktree. `sprint-metrics.py` is python3 and derives
-  its own session-log source.
+  its own session-log source. `jev-check.mjs` is Node ESM and resolves its ledger
+  path from the current directory — run it from the repo/worktree root.
+- **Notification channel** (owner decisions during AFK runs):
+  `brl-notifications-fa9@clawmail.me` (claimed). Send with
+  `POST https://api.clawmail.me/v1/inboxes/$CLAWMAIL_INBOX_ID/messages`,
+  `Authorization: Bearer $CLAWMAIL_TOKEN`, JSON `{"to","subject","text"}` — the
+  body field is **`text`**, not `body` (400 otherwise). Env:
+  `~/.config/brl-notifications/clawmail.env`; never echo the token. Owner:
+  `azmeen.afandi@gmail.com`.
 - If a script fails, read its output — it states the mode chosen and why. That
   output is the audit trail.
 - The skill is the playbook, the scripts are the enforcement, the docs are the

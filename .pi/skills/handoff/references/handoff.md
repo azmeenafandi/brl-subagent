@@ -35,6 +35,11 @@ is open, and what is next.
 5. **Absolute dates** (`2026-10-17`), not "yesterday" or "last week".
 6. **No narrative.** What happened belongs in git, `.development/investigations/`
    or the friction log — not in the handoff.
+7. **No unprompted release.** `## STATE` never proposes a version. The `### Next actions`
+   line says *"release on the maintainer's go"* (or names the release as the maintainer's
+   call); a version number appears only after the maintainer has asked for one or a defect
+   forced it. This is the durable home of the rule — `HANDOFF.md` is regenerated at every
+   handover, so a sentence that lives only there is one rewrite away from being lost.
 
 ## The `Verified:` protocol
 
@@ -42,13 +47,21 @@ is open, and what is next.
 - `<sha>` is the **dev HEAD the snapshot describes** — short (7) or full, either
   parses. The extension compares it to `git rev-parse HEAD` in the cockpit and
   prints `matches HEAD`, `RECONCILE …` or `no Verified: line`.
+- **The handoff's own commit is not drift.** `Verified:` can never name the commit
+  that writes it — that commit moves HEAD by one — so the extension resolves the
+  range `Verified..HEAD` and reports `matches HEAD (ignoring the handoff's own
+  commit)` when **every** commit in that range touches only
+  `.development/HANDOFF.md` and/or `.development/HANDOFF-ARCHIVE-*.md`. One commit
+  touching anything else → `RECONCILE` (interleaved ranges are real drift). A
+  `Verified:` that is not an ancestor of HEAD is drift too — rebase, amend, another
+  branch — and always `RECONCILE`s.
 - Update it at **every handover** and **whenever the STATE materially changes**
   (a merge, a release, a state change that the file now describes).
 - `/handoff mark` rewrites the sha to HEAD for you — it does **not** reconcile
   the content. Marking a stale snapshot as current is a false claim.
-- A doc-only commit after `Verified:` does not invalidate it (the sha check is a
-  prefix match against the described tree, not a byte-level audit); a merge that
-  changes what STATE says does.
+- The ignore list is exactly the handoff and its archives. A doc-only commit
+  elsewhere (an investigation, a CHANGELOG entry) still `RECONCILE`s — re-mark if
+  it changed what `§STATE` describes, and tolerate the banner as noise if not.
 
 ## Pre-compaction checklist
 

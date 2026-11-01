@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Updated: 2026-10-24 | Released: **v2.6.0** (2026-10-24) | Integration: `dev` @ the v2.6.0 release commit (tag `v2.6.0`); see "Shipped (2026-10-24, v2.6.0)" below. Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
+> Updated: 2026-11-01 | Released: **v2.7.0** (2026-11-01) | Integration: `dev` @ the v2.7.0 release commit (tag `v2.7.0`); see "Shipped (2026-11-01, v2.7.0)" below. Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -279,6 +279,25 @@ Goal: ship brl-subagent as a first-class pi package so installation and updates 
 **Outcome:** `brl-subagent@2.3.5` published to npm — installable via `pi install npm:brl-subagent`, updated via `pi update --extensions`, released through a token-free staged pipeline. 979 tests across 45 files; board clean.
 
 **Deferred → RESOLVED in v2.3.6:** pin doc version strings to `package.json` (the README ×2 and the AGENT.md header shipped stale in 2.3.5). Now enforced mechanically (#166).
+
+### Shipped (2026-11-01, v2.7.0)
+
+The durability + dispatch-integrity cycle.
+
+| Issue | What shipped | PR |
+|---|---|---|
+| #365 | **Transport auto-retry:** a background run that dies on a connection-class failure is replayed once through the retry machinery (recorded task/params restored, all gates re-run); the source completion is replaced by a warning toast. | #367 |
+| #401 | **Resume, not restart:** the one auto-retry carries a bounded resume block (previous attempt, uncommitted-edits note, `git status`/`git log`, the progress bank, the retained session) so it continues from what survived the drop instead of redoing it. | #403 |
+| #404 | **Retained session:** the transport-failed run's SDK session directory is kept (marked, bounded to 5 dirs / 50 MB / 14 days) and named by absolute path in the resume block, so attempt 2 can read attempt 1's conversation. | #409 |
+| #411 | **System-side resume context (ADR 0017):** the resume block moved out of the `<task>` fence onto the child's system prompt as a `<resume-context>` section; the wrapped task stays byte-identical, so routing isolation and the attempt-3 non-compounding invariant hold. | #413 |
+| #396 | **Lineage:** `get_subagent_result` accepts the 8-hex ids the notices render, names the latest attempt, and reports "superseded by"; lookups are 7-day / 200-record bounded. | #406 |
+| #408 | **Owner-only stores:** every persistent store repairs `0o700` on write (and per-run session files `0o600` best-effort); repair failures log, never throw. | #410 |
+| #407 + #412 + #415 | **Dispatch pre-flight (ADR 0018/0019):** rule 2's durable-shape auto-switch and the Jev-line check, both behind one project-local opt-in (`brl-subagent.processChecks`, fail-open, single reader, ratchet-tested). The line is proven, not just formatted (`--line --label` → provenance log; merge-gate check (e)). Users keep exactly the shape they ask for. | #414/#416 |
+| #368 | **Test-suite stewardship:** CI budget guard (wall ≤ 60 s, LOC ratio ≤ 2.0) + the first mutation-sampled audit (one survivor found and pinned; no tests removed). | — |
+| #372 + #374 | **Smell audit + duplication sweep (6/6):** jscpd 10-line/70-token clusters 28 → **0**; one batch-mode prologue + per-unit pre-pass; structural guards pin the shapes. | #392 and the sweep PRs |
+| #393/#394/#375/#398 | **Gate fixes:** handoff staleness ignores its own commit; `.pi/extensions/**` typechecked; the smell vocabulary unified (one sentence-guard); the structural-closure review line. | #395/#397/#400/#405 |
+
+Cycle close: **Rule 11 = 6 escalations**, all with a mechanical fix shipped or filed (transport drops → #365/#401/#404; Jev-line misses → #407/#412; merge-guard prose verdicts → #400; the CodeGraph merge gate → refreshed). Suite **1940 tests / 96 files**; 15 transport auto-retries in the window (log-derived). ADRs 0017–0019.
 
 ### Shipped (2026-10-24, v2.6.0)
 
