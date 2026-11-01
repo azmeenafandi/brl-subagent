@@ -1,6 +1,6 @@
 # brl-subagent — Audit: Strengths & Weaknesses
 
-> Generated: 2026-08-03 | Version: 2.6.0 (released 2026-10-24). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.6.0 (see the follow-up sections below).
+> Generated: 2026-08-03 | Version: 2.7.0 (released 2026-11-01). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.7.0 (see the follow-up sections below).
 
 ## What's Been Fixed (since v1.3.0)
 
@@ -607,6 +607,13 @@ A follow-on sweep in which **every item traces to something the 2.3.5 release ex
 - **#164 CLOSED — the obsolete update notifier removed.** It duplicated pi's native notice, misdirected users to the GitHub release, and — under staged publishing — could announce a version npm did not yet have. `src/update.ts` and its test deleted; the module count drops **31 → 30**. The C2 focused review proved backwards compatibility **empirically** (legacy session keys ignored, not rejected; the guard did not go soft elsewhere) and mutation-tested the README pinning test four ways.
 - **Corrections**: module count 31 → **30** (update.ts removed). Two spec-scoping gaps were surfaced by the **implementer**, not the conductor — an e2e fixture list referencing the deleted module by *name* (symbol greps cannot see it) and a self-contradictory grep check. Both logged; the name-vs-symbol lesson is the second instance this sprint of *'the query did not cover the evidence'*.
 - **Toolchain**: vitest 4 → 5 (major; CI-verified) and typebox 1.3.25 → 1.3.29. The typebox dev/runtime divergence from pi's bundled **1.3.7** was verified **inert** for our nine-primitive-builder surface (byte-identical schema output across 1.3.7/1.3.25/1.3.29) and is now recorded in the Distribution & Packaging section so it need not be re-investigated.
+
+## v2.7.0 Audit Follow-up (2026-11-01)
+
+- **Durability:** the transport-drop class that recurred all cycle now has a full chain — one automatic replay (#365), a resume block that names what survived (#401), the retained attempt-1 session (#404), and the resume block moved to the system prompt so it stops training the model to follow instruction text inside the `<task>` fence (#411, ADR 0017). Lineage is visible (#396). Every link is pinned; the #415 implementer's own transport death mid-cycle exercised the chain in production.
+- **Dispatch integrity:** two conductor decision rules became chokepoints at `delegate_task` — shape (rule 2) and the Jev line (#407 absorbed into #412). Both are **project-local opt-in** (ADR 0018 → 0019): the first implementation shipped the shape switch globally, overriding a user's explicit `background: false` + timeout; the changelog audit caught it before release and #415 scoped both behind one fail-open `processChecks` flag with a single reader and a ratchet test. Provenance makes the line's confidence checkable at merge.
+- **Security:** the persistent stores are now actually owner-only (#408) — the create-time `mode` had never applied to existing directories; every write repairs, never throws.
+- **Process:** the ADR audit found three drift classes (0001 × #401, 0016's skipped refresh, 0003's metrics/lineage split); 0017–0019 record the corrections. The merge gate gained verdict-fence tolerance (#400) and provenance (e), and the "completed with no verdict" failure produced the file-first review record. Test suite: **1940 tests / 96 files**, budget-pinned, one mutation survivor pinned.
 
 ## v2.6.0 Audit Follow-up (2026-10-24)
 
