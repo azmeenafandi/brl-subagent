@@ -1,3 +1,26 @@
+## STATE
+Verified: 98bd36e (2026-11-01)
+
+- **dev** @ `98bd36e` — fast-forwarded to the release commit. Only `dev` + `main`; worktrees: the cockpit pair only.
+- **Released:** **v2.7.0** prepared 2026-11-01 — `main` @ `98bd36e` (tag `v2.7.0`); **npm not yet live**: the draft GitHub release awaits the maintainer's publish, which triggers the staged publish → npm approval (2FA) is what makes it live.
+- **Running install:** the DEV checkout (dogfood) — switch back to `npm:brl-subagent` **only after** the staging approval (ritual step 9), then `/reload`.
+- **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415 closed.
+- **Suite:** 96 files / **1940**; tsc clean; release PR #417 CI green; CodeGraph fresh at `98bd36e`.
+- **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`.
+- **Dispatch models (never guess):** implementers **`deepseek/deepseek-flash`**; reviewers **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic the `project-plan-critic` preset (qwen3.8-max-0902).
+- **Jev provenance:** every line printed by `node .pi/skills/worktree/jev-check.mjs --line '<json>' --label <label>` (rows in `.pi/jev-lines.log`).
+- **Project flag:** `{"brl-subagent": {"processChecks": true}}` in the cockpit manifest — gates the Jev line + the shape switch; fail-open; single reader (ratchet). Local templates require `${jev}`; the reviewer preset allows `/tmp/REVIEW_<n>.md`.
+
+### Release checklist (v2.7.0)
+- [x] Inventory + `.development/` docs (ROADMAP/AUDIT/TASKS/METRICS) on dev
+- [x] Release PR #417 (dev→main) merged (`d8b375d`); dev preserved
+- [x] Bump `98bd36e`; **tarball smoke passed** (user path `false` / our path `true`)
+- [x] Tag `v2.7.0` pushed; dev fast-forwarded
+- [x] Draft GitHub release created
+- [ ] Maintainer publishes the draft → CI stages → npm approval
+- [ ] Switch the running install back to npm + `/reload`
+- [ ] Update STATE to "live" after npm approval
+
 # Handoff
 
 > **How to use:** read §STATE → run its verify commands → work `## Open items` → follow `## Pointers`.
