@@ -52,7 +52,12 @@ because nothing checked them and no test pins them.
 4. **Bump** — `npm version <X> --no-git-tag-version` (updates `package.json`
    **and** `package-lock.json`).
 5. **Docs that ship** — `README.md` version header; `CHANGELOG.md` release entry
-   (newest-first, project voice). *(The git-install example tag was dropped in
+   (newest-first, project voice). **The heading is load-bearing:** move the
+   `## Unreleased` entries under `## [X.Y.Z] - YYYY-MM-DD` (h2, **no `v` prefix**).
+   pi 1.5.0+ reads package changelogs for its "Extension Updates" notice and
+   matches only `## ` version headings; `### vX` parses as nothing
+   (`docs/packages.md#show-a-changelog`). `src/__tests__/changelog-format.test.ts`
+   pins the format. *(The git-install example tag was dropped in
    #171 — npm is the sole user-facing install/update path.)*
 
    **Tarball smoke, user path (issue #415):** before publishing, `npm pack` the

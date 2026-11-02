@@ -6,7 +6,7 @@ Release history for brl-subagent. Newest first. The full narrative for each rele
 
 _No unreleased changes._
 
-### v2.7.0
+## [2.7.0] - 2026-11-01
 
 - **A project's process checks are one opt-in flag; the durable-shape pre-flight applies only where they are enabled (issues #412, #415):** in a project whose `package.json` sets `{"brl-subagent": {"processChecks": true}}` (this repository), a `thinkingLevel: "high"`/`"xhigh"` dispatch with `background: false` and an explicit `timeout` is auto-switched to a background run with the explicit timeout **dropped** (the 30-minute background default applies) and a notice stating why: foreground runs persist nothing, so a timeout there loses the run's whole work, while a background run keeps its session and is retried on a transport error. `force: true` keeps it foreground (logged — the dispatch text is the reason; `force` gains no reason field), and when enabled the switch is recorded before the retry snapshot so the run keeps its transport auto-retry. **Without the field nothing happens**: `background: false` and the explicit timeout stand exactly as passed, because an explicit foreground timeout is usually the caller's budget cap and the switch is a maintainer decision rule, not product behavior. **Fail-open**: a missing, unreadable or malformed `package.json` means the checks are off, so a user's dispatch is never rejected or reshaped. Everything else is untouched even when enabled: `medium`/lower, a dispatch with no explicit timeout, an omitted `background` (the #361 default already accounts for approval modes), and `chain`/`graph`. ADR 0019 records the opt-in decision and supersedes ADR 0018's global scope.
 
@@ -32,7 +32,7 @@ _No unreleased changes._
 
 - **Test-suite stewardship (issue #368):** a CI **budget guard** now pins the suite's wall time (≤ 60 s; ~16 s today) and its test:source LOC ratio (≤ 2.0; 1.62 today) — ceilings, not targets. The first mutation-sampled audit mutated six modules across hazard classes: five were killed by existing tests, one genuine survivor (an interrupted run's first timestamp could be silently overwritten by a second boot scan) is now pinned. **No tests were removed.** The audit repeats one module per cycle.
 
-### v2.6.0
+## [2.6.0] - 2026-10-24
 
 - **`background` is the conditional default (issue #361):** omitted, a single task or a `tasks` fan-out now runs in the **background** when the *effective* approval mode is `auto` (per-call param, else config) — the tool returns an agent id immediately and the conductor is woken on terminal state — and stays **foreground** under `writes`/`always` or for `chain`/`graph`. The fallback is the safety property: a background run has no approval dialog, so a gate that needs the user can never be reached by a default (`always` was a hard rejection, `writes` silently auto-approved). Explicit `true`/`false` keeps exactly today's semantics, including the verbatim `background: true` + chain/graph rejection; the effective value is recorded on the run so a retry restores the shape it actually had. A background run still defaults to the 30-minute deadline; pass `background: false` for a quick probe whose answer the next step needs inline.
 - **Toolchain — Pi 1.4.0 parity (issue #359):** the `@earendil-works/*` devDependencies move to `^1.4.0` (`typebox` stays at the host pin 1.3.27; the peer ranges stay `*`), so the type surface the extension compiles against matches the host it runs on. No source change was needed: 1.4.0 has no breaking section, every symbol we import still resolves to the same signature, and the notable changes (`generateSummary()` ignoring `reserveTokens`, `before_provider_headers` attribution, the new `pi-ai/models` subpath) are all outside our call paths — the dialog-concurrency fix only makes our stacked `custom()` overlays behave correctly. The lockfile gains one transitive dependency (`marked-cjk-friendly`, pulled by pi-tui's Markdown renderer).
@@ -42,7 +42,7 @@ _No unreleased changes._
 - **Dependency hygiene:** vitest 5.0.5 adopted (dev tooling only; the local suite drops from ~29 s to ~17 s). `typebox` stays at the host pin 1.3.27 — the dependabot 1.4.2 proposal is held and stays visible as the signal.
 - 1701 tests across 82 files.
 
-### v2.5.2
+## [2.5.2] - 2026-10-17
 
 - **Gate rejections no longer leave phantom runs (issue #340):** a foreground dispatch rejected by the circuit breaker — or cancelled while waiting for a concurrency slot — used to leave a `running` record behind, surfacing at the next boot as an interrupted run that never started (and, on a retry, as a dangling twin beside the source). Both pre-start paths now finalize the persisted record before returning: terminal `failed`/`aborted` with the exact gate message, the inflight registry row cleared, and the live entry released; the retry-source retention is unchanged. Found by the FGP review, mutation-verified and live-probed.
 - **Toolchain — Pi 1.3.0 parity (issue #337):** the `@earendil-works/*` devDependencies move to `^1.3.0` (`typebox` stays at the host pin 1.3.27); the 1.3.0 changes were checked against our paths — no breaking changes, and two upstream fixes (the overlay `done()` fix, transient-provider retries) land in them.
@@ -50,7 +50,7 @@ _No unreleased changes._
 - **Dependency hygiene:** vitest 5.0.4 adopted (dev tooling); `typebox` is held at the pi host pin (1.3.27) and was split out of dependabot's combined group — a held version never rides along with an adopted one, and no `ignore` entries are used (every proposal stays visible).
 - 1509 tests across 74 files.
 
-### v2.5.1
+## [2.5.1] - 2026-10-13
 
 - **Interrupted runs are recoverable (issue #296 — U2 + U3):** after a conductor crash the next boot names what was lost — one notice lists every unresolved interrupted run with its task and age, Run History shows an `Interrupted` row, and the retry menu offers a one-key re-dispatch through `retryRunId` (or an abandon). Background sessions are file-backed (per-run `.pi/subagents/sessions/<id>/`, pruned at the single finalize choke point; interrupted files retained until resolved), and a registry-union visibility bridge makes all four surfaces agree even on a genuine fresh boot.
 - **A crashed foreground run keeps its task and dispatch shape (O3):** after a conductor crash + fresh boot a FOREGROUND/unit run's durable registry entry carried only identity, so the recovery notice showed `(task unavailable)` and `retryRunId` could neither restore the task nor the execution shape (it silently defaulted to the current session config). The registry now persists the run summary — `task`, `label`, `model`, `thinkingLevel` and the full `originalParams` snapshot — at the single write choke point, and the U3 bridge consumes it: a post-crash retry restores the same 17 fields a same-session retry restores (including `force`, per the 2026-10-11 decision), with explicit caller values still winning. Reads are lenient — a tampered enrichment field degrades to absent rather than dropping the entry and losing the interruption mark. Additive/optional, so old entries read as before.
@@ -60,7 +60,7 @@ _No unreleased changes._
 - **Orphan-tree reaping reaches the process group (issue #299):** POSIX runs spawn detached and the kill paths signal the whole group (stat-prefix membership contract, signal-time marker verification, honest survivor reporting); Windows keeps the child-only fallback.
 - **Toolchain — Pi 1.2.0 parity (issue #333):** the `@earendil-works/*` devDependencies move to `^1.2.0` and `typebox` is pinned to the host's 1.3.27; the 1.2.0 breaking changes were checked one-by-one and none touch the extension.
 
-### v2.5.0
+## [2.5.0] - 2026-10-10
 
 - **Conductor-death recovery (issue #296):** a run that was in flight when the conductor died is now recovered at the next boot — the orphaned subagent process is reaped (identity-verified via its `/proc` marker before any signal) and the run is marked interrupted. Built on a durable `.pi/run-registry/` mirror written before every run's effect and cleared on finalize; the boot scan reads only that registry (no full agent-store parse), waits one grace window total, and skips entries it cannot verify.
 - **Abort/timeout escalation now force-kills (issue #303):** the single-child death check is the real process exit, not `child.killed` (true the moment the signal is *sent*) — a child that ignores SIGTERM is SIGKILLed at the grace boundary, and cooperative children finish early.
@@ -69,7 +69,7 @@ _No unreleased changes._
 - **Renderer predicate centralization (issue #298) + review polish (issue #306):** the overloaded `exitCode === -1` partial-vs-settled decision lives in one architecture-ratcheted predicate; the escalation timing seam is unreachable outside tests.
 - **Tooling:** ADR 0015 splits the knowledge layers — CodeGraph as the structural index, graphify as the semantic layer — with a measured dogfood window in progress.
 
-### v2.4.0
+## [2.4.0] - 2026-10-03
 
 - **Explicit timeouts are honored (issue #240):** the 30-minute "hard cap" silently shortened any explicit `timeout`, so a legitimate long background run could not be given one. An explicit timeout is now honored verbatim — 30 minutes is the default for a background run that passes none (the orphan protection for unattended runs), never a ceiling.
 - **One deadline timer per run (issue #244):** with an explicit timeout, two timers armed at the same deadline; the session-manager now owns it and the index-level timer arms only on the no-timeout default path. User-visible wording says "deadline", and `retryOnTimeout` is documented as foreground-only.
@@ -80,7 +80,7 @@ _No unreleased changes._
 - **For contributors (issues #247, #249, #251, #253 — GitHub-visible):** development docs and tooling are tracked on `dev` (see `CONTRIBUTING.md`); `ARCHITECTURE.md` is a lean current-state document whose module map is generated and CI-guarded; seven architecture rules execute as tests; thirteen ADRs record the load-bearing decisions behind a guarded index.
 - 1212 tests across 58 files.
 
-### v2.3.9
+## [2.3.9] - 2026-09-27
 
 - **A running subagent no longer flashes ✗ (issue #206):** while a foreground run was using tools, its rendered line showed the failure icon (and before the first turn, ✓) because every live partial update was classified with the *settled-result* predicate — a mid-run `stopReason: "toolUse"` reads as an error there. Live partials now carry the unsettled sentinel (`exitCode: -1`), so a streaming run renders as running until the real result lands; a run that genuinely *ends* on a tool turn still renders ✗. This is the release's only user-visible runtime change. It also adds the first tests for the live-render path (level-1 emitted partials through the real paths; level-2 renderer assertions) — mutation-verified: reverting the one-line fix fails exactly the two partial assertions.
 - **Dispatch capability guards (issue #216):** the pre-task check now models **directory exploration** (`search`/`grep`/`find`/`list`/`locate`/`glob` → any of `find`/`ls`/`grep`/`bash`) alongside the existing requirements, and an unambiguous capability mismatch — `run`/`execute`/`test`/`compile`/`benchmark` without `bash`, or an exploration task with no reader — **blocks before any spawn** with the fix named in the error. A new `force: true` parameter downgrades a **capability** block to a warning (never an `outputFile`-without-write conflict, which stays a hard error). Pre-task **warnings are now surfaced in the result** in every mode (foreground success and failure, background spawn, fan-out with per-task prefixes) instead of being log-only, and auto-routing states its evidence (`[auto-routed to preset 'x' (matched keyword 'y') — tools: …]`). +24 tests; two independent mutation probes confirmed the block/override teeth.
@@ -92,7 +92,7 @@ _No unreleased changes._
 - **Shipped docs made accurate — and audited (issues #204, #205, #217 + the v2.3.9 accuracy pass):** the built-in templates now carry the coverage-statement requirements (any search/read-derived claim states its query, count/range and reconciliation) and the probe/mutation target rules (name the target by unique context; state the expected failure before running); AGENT.md gained claim-verification guidance (ground run-state/liveness/time claims in observed results; records are finalized at settle) and lost a leftover internal rule reference. Then a systematic README/AGENT.md/schema-text audit against the code corrected the remaining gaps: the `stop_subagent` terminal contract (idempotent success, not an error), the `code-review` template example's slot (`${target}`), the timeout wording and the disclosed **30-minute background cap**, the missing parameter rows and the whole capability pre-flight section, the graph placeholder wording, and removal of `get_subagent_result`'s never-implemented `wait` parameter.
 - **Development:** `@earendil-works/*` devDependencies to 0.87.1 (the runtime had moved ahead — now aligned with the type-check gate) and typebox 1.3.34; the shared delegation guard/validation prelude extracted into `src/prelude.ts` (#201 — the cost-gate shape now has a single construction site); the per-step-model suite no longer leaks a `/tmp` directory per test (#195). 1167 tests across 53 files.
 
-### v2.3.8
+## [2.3.8] - 2026-09-23
 
 - **Background fan-out — `tasks` finally runs in the background (issues #196, #198):** `delegate_task({ tasks: [...], background: true })` now starts one independent background agent per task. The call returns immediately with **one id per task in task order**, and you are woken **once per agent** as each finishes. Before this, `background: true` combined with a batch mode was *silently ignored* — the call ran foreground and blocked while the caller believed it was background; that combination now rejects loudly, and for `tasks` it became the feature. The whole batch is resolved and validated **before any spawn**: a bad `cwd`, `outputFile`, or pre-task check rejects the call naming the task, with nothing started. Per-task overrides are honored (`model`, `thinkingLevel`, tools, prompts, `outputFile`, `timeout`, `cwd`, `priority`, `label`), and each agent's run entry snapshots its *own* params, so retrying one member restores that member — not the batch. Three checks reject up front: `approvalMode: 'always'`; `gitMode: 'branch'` (the per-repository git lock is awaited inside the first spawn and held until that agent settles, so a fan-out would block the call); and the session cost limit, now checked as per-task estimate × N. A spawn failure or abort mid-loop stops further spawns and reports the failed task plus the ids already started — those agents stay detached and still wake the conductor. `chain` and `graph` cannot be combined with `background: true` (they need sequential and dependency state) and are rejected loudly.
 - **Run-entry lookups are explicit (issue #185):** every run appends two entries sharing its id — a spawn entry (`status: "running"`, carrying `originalParams`) and a terminal entry at settle. `findRunById` returned the *first* match, so finished runs were looked up as running: the TUI's stale-foreground fallback lost terminal output, and the #52 staleness sweep never reclaimed a poller-dead live entry. The terminal-preference rule now lives once in `resolveTerminalRunEntry`, with `findSpawnRunById` (retry params) and `findTerminalRunById` (finalized entry) used by intent at each call site.
@@ -100,7 +100,7 @@ _No unreleased changes._
 - **Two new ratchets (issues #183, #186):** every runtime string literal under `src/**` is now AST-scanned for internal process vocabulary (`Rule <n>`, `retry taxonomy`, `friction log`, `handoff`, `worktree`, `E<nn>`) and issue references — the exact leak class #174 shipped for months, including terms split across string concatenation. The terminal-status ratchet was a line-regex that matched one of eight spellings and ignored `exitCode`-as-success; it is now an AST walk covering comparisons (any quote style or alias), membership tests, failure-list definitions, and numeric exit-code comparisons, with recorded allow-list reasons for genuine exemptions.
 - **Development:** `@earendil-works/*` devDependencies to 0.87.0 — the runtime had been ahead of the type-check gate; all five 0.87 breaking changes were verified to miss us, and a live probe on the new runtime confirmed the background settle path. 1102 tests across 50 files.
 
-### v2.3.7
+## [2.3.7] - 2026-09-20
 
 - **A died run is no longer reported as a success (issue #179):** the SDK resolves `session.prompt()` on a mid-run provider death — `handleRunFailure` records an assistant message carrying `stopReason: "error"`, then the run *resolves*. Our settle path had no `error` branch: it derived status from `exitCode` alone and set `completed` unconditionally, so a death landed as `completed` / `exitCode: 0`. Three such deaths were observed in a single day, one of them *while implementing this very fix*. Status is now classified from the terminal `stopReason` — `stop` → completed, `aborted` → stopped, and `error`/`length`/`toolUse`/`deferred`/`pending` → **failed**, with `truncated`/`incomplete` distinguishing the non-error endings. The reason is carried into the run entry *and* the notification; work volume (`turns`, `tokensOut`, `finalTurnError`) is persisted so "did nothing" is distinguishable from "did work then died"; the failure headline is re-added after tail truncation instead of being pushed out of the body; and every failure verdict routes through one shared predicate — the TUI renderers and the parallel/chain/graph aggregates had private copies that stamped a green success on units recorded failed.
 - **The extension finally writes its log file (issue #179, D6):** `createLogger(prefix, cwd?)` enables file output only when given a `cwd`, and **both call sites omitted it** — so `.pi/subagent-logs/brl-subagent.log` had never been written in the project's history. A `setLogCwd` setter now points it at the session cwd on session start, and a settle line records status, stopReason, turns, tokens and error. The 0o700/0o600 modes and rotation are preserved. This is the forensic trail whose absence made the day's deaths unexplainable.
@@ -109,7 +109,7 @@ _No unreleased changes._
 - **The release pipeline verifies the artifact before staging (process, issue #176):** `publish.yml` gated on `tsc` and `vitest`, both against the dev checkout, then staged — so nothing exercised what npm actually installs. A model-free, deterministic smoke test now packs the tarball, asserts the runtime assets `pkgPath()` resolves (including `AGENT.md`, the #158 regression), loads the packed entry via jiti, and checks every runtime import against the packed dependency declarations — all **before** `npm stage publish`, so a broken artifact cannot be staged.
 - **Development:** the `@earendil-works/*` SDK devDependencies moved to 0.86.0 (type-only API changes; the peer range stays `*`, so nothing ships differently), alongside typebox 1.3.31 and a vitest bump. 1034 tests across 46 files.
 
-### v2.3.6
+## [2.3.6] - 2026-09-12
 
 - **The 2.3.5 lessons became guards (issue #166):** the shipped docs' version claims are now pinned to `package.json` — the README `**Version:**` line must match it, and AGENT.md's H1 must stay version-free. That makes the release ritual's version inventory **mechanical**: a forgotten step now fails CI instead of shipping quietly, which is exactly how 2.3.5 shipped three stale strings. A forward-compat ratchet mirrors the existing #114 precedent.
 - **Maintainer content out of the shipped AGENT.md (issue #165):** AGENT.md is in the package `files` allowlist, so its `## Local development` section — local-path installs, worktree pointing, the `sync-extension.sh` retirement — reached every user's conductor as part of the capability reference. It moved to the worktree skill (gitignored dev tooling), and the skill's cross-reference to it was repointed so nothing dangles.
@@ -117,7 +117,7 @@ _No unreleased changes._
 - **The obsolete update notifier is gone (issue #164):** it duplicated pi's native *"Package updates are available. Run `pi update --extensions`"* notice, sent users to a GitHub release that updates nothing, and — because our pipeline publishes the GitHub release *before* the npm version goes live — could announce a version that `pi update --extensions` could not yet install. `src/update.ts` and its tests are deleted, the command/config-knob/state fields removed; the module count drops 31 → 30. Existing sessions carrying the old keys still load — they are ignored, not rejected.
 - **Development:** dependabot bumped vitest 4 → 5 (a major, CI-verified) and typebox 1.3.25 → 1.3.29. The typebox dev/runtime divergence — pi bundles **1.3.7** — was verified **inert** for our surface (nine primitive builders; byte-identical schema output across 1.3.7, 1.3.25 and 1.3.29) and is now recorded in `ARCHITECTURE.md` so it need not be re-investigated. 979 tests across 44 files.
 
-### v2.3.5
+## [2.3.5] - 2026-09-11
 
 - **brl-subagent is now a published pi package (npm):** install with `pi install npm:brl-subagent` (global) or `pi install -l npm:brl-subagent` (project-local), update with `pi update --extensions`, remove with `pi remove npm:brl-subagent`. The manifest gains `peerDependencies` for the five pi-bundled core packages (declared with `"*"` — pi supplies them, we do not bundle) so production installs (`--omit=dev`) resolve correctly, plus the `license`/`repository` metadata npm requires. Verified end-to-end: a sandboxed `pi install npm:brl-subagent` lands the extension and pulls exactly one package. Git installs remain supported and are documented as the pinned alternative.
 - **AGENT.md now ships and resolves (issue #158):** the capability reference was omitted from the published tarball, and the `delegate_task` guideline hardcoded the retired sync-copy path — so npm-installed conductors were pointed at a file that did not exist. AGENT.md is now in `files`, and its path is derived from the extension's own directory (correct for npm-store, git-store, and local-path installs alike).
@@ -125,18 +125,18 @@ _No unreleased changes._
 - **Guideline path contract pinned (issue #162):** the AGENT.md guidance test asserted only the filename, so a reverted hardcoded path would have stayed green. It now pins that the guideline interpolates the computed helper result, and asserts the retired path cannot return.
 - **Development:** the release pipeline is token-free — `publish.yml` uses OIDC trusted publishing and **stages** each version for maintainer approval (npm's recommended posture; this trusted publisher is not permitted to publish directly). The changelog moved out of the README into this file, and the README's installation section is now npm-first. 979 tests across 45 files.
 
-### v2.3.4
+## [2.3.4] - 2026-09-04
 
 - **The conductor knowledge gap closed (issue #154):** the LLM's only standing knowledge channel — the tool schema — was current for mechanics but stale at the behavioral layer, and two places actively taught the polling anti-pattern (pre-#147 text). The fix package: a new **AGENT.md** at the repo root (the authoritative agent-facing reference — execution models, the completion contract, delegation judgment, canonical shapes); **schema rewrites** replacing the poll-teaching text with the wake contract + the `completionNotify` knob dependency; a **generated template summary** in the guidance (mirroring the preset summary); a **pinning test** so behavioral features can't ship without their LLM-facing text. An adversarial review caught a critical interpolation bug (a `${…}` placeholder in a double-quoted string — dead code that shipped a literal placeholder, pre-existing in the preset line too) and a knob-inaccurate AGENT.md claim; both fixed, with the pinning test break-verified to genuinely catch regressions. The acceptance behavior — a conductor waiting for the wake instead of polling — was demonstrated live.
 - **Development:** pi-sdk group aligned to ^0.85.0 (harness parity). The bump gate caught an upstream packaging gap — pi-coding-agent@0.85.0's main entry statically imports the undeclared `@earendil-works/pi-server`; a direct devDependency bridges it until pi declares the dep (filed upstream). 976 tests across 44 files.
 
-### v2.3.3
+## [2.3.3] - 2026-09-02
 
 - **Completion-push wake (issue #147):** the extension now pushes a structured completion message into the conductor's session when a background run reaches a terminal state — `pi.sendMessage` with `triggerTurn: true` wakes an idle conductor, so the user no longer relays "subagent has completed its work". The message carries id · duration · cost · error category + output tail + a soft directive; delivery mode follows the urgency split (failed/stopped → steer, completed → followUp); the `completionNotify` knob (`all` / `failed` / `off`) controls the wake while delivery stays always-on. Verified live end-to-end (completed, stopped, and mid-turn delivery) — the first milestone of the conductor-autonomy arc.
 - **One notification per run (issue #149):** the poller's pre-existing short completion echoes (`Background agent "X" completed.`) are removed — they duplicated the #147 wake with strictly less information and bypassed the knob. Crash notices (the poller-unique edges) stay. Reviewed and merged after the double-notification was discovered live during the #147 probes.
 - **Development:** toolchain aligned with pi itself — TypeScript 5.9.3 (pi's published compiler line) and the pi-sdk group at 0.84.4 (the running harness). The proposed TypeScript 7.0.2 major was declined: we follow the published SDK's line, not the dev-branch experiment. 971 tests across 43 files.
 
-### v2.3.2
+## [2.3.2] - 2026-08-27
 
 - **Honest termination records (issue #120):** user-cancelled and timed-out subagent runs no longer record an empty, indistinguishable failure — the kill paths stamp the abort source (`Subagent aborted by user` / `Timed out after Xms`) with honest error categories (`aborted` / `timeout`), foreground and background alike (including the catch-all path). Failure diagnostics also enrich the record with the model-error turn count. The status bar and SLA breakdown now tell the truth about how runs ended. (The dominant provider-side connection-error class is external — diagnosed and mitigated, not fixable here.)
 - **Intercom [TO:] extraction only matches standalone lines (issue #129):** subagents that quoted the message format mid-sentence no longer have their instruction-quotes extracted as real messages — the anchored pattern + sender guidance keep the E10 channel clean, verified live with the exact adversarial shape (deepseek-v4-flash emitted both quote and real line; only the real line arrived).
@@ -144,24 +144,24 @@ _No unreleased changes._
 - **Dead code removed (issue #141):** the unused `stripMessageLines` function, its export, and its tests.
 - **Process:** Rule 18 codified (termination triage + retry taxonomy + no time limits on implementers); every fix verified at point of use; all subagent dispatches background-by-default. 944 tests across 42 files.
 
-### v2.3.1
+## [2.3.1] - 2026-08-25
 
 - **Graph and chain runs visible in the live monitor (issue #130):** nodes and steps register with `/brl-subagent monitor` for the first time — each row shows label, model, and per-unit priority (the call-level floor now applies in chain mode too), and the drill-in streams the node's current work exactly like parallel subtasks. Registration follows issue #119's crash-protected pattern — a spawn throw finalizes the entry, so no stuck `running` ghosts.
 - **Run records + status-bar breakdown for graph/chain (issue #133):** the reason #130's entries were invisible: the monitor's staleness sweep treats a foreground live entry without a persisted run entry as stale and finalizes it on the first render. Graph/chain now get the full run-record lifecycle (persist `running` at spawn → finalize with status/cost/tokens/output at completion → crash-protected), restoring the sweep's invariant with zero changes to the sweep. New surfaces: **aggregate dispatch entries** in run history ("Graph dispatch: N tasks in M waves") and a live **mode breakdown in the status bar** — `graph wave x/y · node x/y` and `chain step x/y` — composed with the background counters.
 - **Process:** PR #134 was reviewed (adversarial, approve-with-nits → 3 findings fixed pre-merge), reviewed by the user before merge, and verified end-to-end at point of use — the monitor/status-bar/history ritual that failed three times during #130's verification now passes for both graph and chain probes. 912 tests across 41 files.
 
-### v2.3.0
+## [2.3.0] - 2026-08-23
 
 - **Parallel subtasks get run entries (issue #119):** the monitor's per-run drill-in now shows parallel subtasks like any other run — each subtask persists a `SubagentRun` at spawn (with its **per-unit priority** from issue #114) and finalizes at completion with status, model, duration, cost, tokens, and sanitized output. The prior known limitation (parallel priority was arbitration-only, invisible in the monitor) is closed. Crash-path finalize mirrors single mode (a spawn throw can no longer leave a stuck `running` entry).
 - **Background run entries carry real cost + output (issue #122):** the finalized background run entry now populates `cost`/`tokensIn`/`tokensOut`/`outputSummary`/`fullOutput` — usage is extracted from the session's assistant messages (`accumulateUsage`, the same fold foreground uses) on every terminal path (completed, aborted, failed, catch-all). Timed-out runs no longer report zero tokens. The record's shape is fully honest (no undefined required fields).
 - **Typecheck gate + 85 pre-existing type errors fixed (issue #117):** CI now runs `tsc --noEmit` (strict) between install and tests; a `typecheck` script and repo `tsconfig.json` (strict, bundler resolution, tests excluded) land with it. The 85 errors the gate surfaced — schema-vs-annotation drift, handler signatures mismatched to the SDK contract, a UI file written against a different SDK surface — are fixed at the root (17 remaining sites in the TUI are SDK-surface drift deliberately deferred to issue #124, marker-bridged with `@ts-expect-error` + issue refs). The pre-flight (`check-repo.sh`) runs the same gate locally, so drift is caught before a worktree builds on it.
 - **Process:** PR #125 was reviewed in tiers (runtime-relevant adversarial tier → second opinion → checkpoint classification → config/markers), with the tiered protocol catching a dead-guard lie and three flaws in the proposed fix before merge. 892 tests across 40 files.
 
-### v2.2.1
+## [2.2.1] - 2026-08-18
 
 - **Priority: from config knob to per-unit arbitration (issue #114):** the `/brl-subagent priority` menu item is removed — priority is decomposition-relative (a unit's importance is unknowable until the conductor plans), so it belongs in the conversation, not configuration. In its place: **per-unit `priority` on `tasks[]`/`graph[]` items** (the units that actually compete for concurrency slots; `chain[]` deliberately excluded — the array order IS the priority). Retries now **preserve priority** (the retry snapshot was missing it — a per-call `critical` delegation silently lost its priority on retry). The drill-in monitor shows `p:<priority>` on runs that declare it. Known limitation: parallel subtasks have no per-subtask run entries (pre-existing), so their priority is arbitration-only, not yet visible in the monitor.
 
-### v2.2.0
+## [2.2.0] - 2026-08-16
 
 - **Foreground drill-in parity (issue #105):** the full-screen transcript overlay now works for **foreground** delegations too — the streaming `message_update` deltas (thinking/text/toolCall) that were previously discarded are captured and rendered through the same planner as the background path. Foreground runs also finalize + persist failed run entries on crash (no more stuck "running" rows) and fall back to the run entry's full output on stale selection. The monitor is now category-agnostic.
 - **Background runs are retry-able (issue #98):** `spawnBackgroundSession` now persists a session run entry (`id == agent.id`) with an `originalParams` snapshot, finalized on every settle path — so `retryRunId: <agent-id>` resolves for background runs instead of silently no-oping. Unknown retry ids now fail loudly instead of warning quietly.
@@ -171,7 +171,7 @@ _No unreleased changes._
 - **CI hardening (issue #104):** concurrency group with `cancel-in-progress` + 15-minute job timeout.
 - **DRY (issue #108):** the 11-field `originalParams` snapshot is a single `snapshotOriginalParams` helper shared by both run-record creation sites.
 
-### v2.1.7
+## [2.1.7] - 2026-08-14
 
 - **Monitor drill-in — full-screen transcript overlay (issue #89):** in `/brl-subagent monitor`, select a row (↑/↓) and press enter for a **full-screen live view of the subagent's chain of thought** — the last ~6 messages rendered from the live session: 🧠 thinking blocks (dimmed tail), 🛠 tool calls, 💬 user messages, 📝 assistant text, plus the in-progress streaming message, refreshing every 200ms. Esc returns to the list. Prototype-first: built on a branch, tested live against a real background review, then promoted.
 - **Top-level `model` param (issue #96):** `delegate_task` now accepts `model: "provider/model-id"` to override the model per call — previously only per-step (chain/tasks) had this, and a top-level `model:` was silently ignored (running the default instead). Precedence: per-call > preset > config > conductor; an invalid or unavailable override falls back with a warning.
@@ -179,7 +179,7 @@ _No unreleased changes._
 - **README commands table pinned (issue #92):** a test now asserts the documented commands match the real dispatch in both directions — it already caught a stale row and an undocumented command.
 - Shipped as 5 commits (#90, #93, #94, #97 + docs). 846 tests across 39 files.
 
-### v2.1.6
+## [2.1.6] - 2026-08-09
 
 - **Preset/template precedence fixed (issue #84):** the documented intent (PROJECT-LOCAL > USER-GLOBAL > BUILTIN) is now the actual behavior — both loaders dedup by name with project-first scanning. Previously a user-global override silently beat a project-local one; a test that had pinned the buggy behavior was inverted.
 - **Builtin task templates (issue #66 follow-up):** 9 companion templates ship with the extension (`code-review`, `security-audit`, `write-tests`, `debug-issue`, `refactor`, `write-docs`, `analyze-data`, `implement-feature`, `prototype`) — one per builtin preset, each a thin teaching example with a `${param}` slot. The template architecture is now fully symmetric with presets: three tiers (builtin / user-global / project-local), identical precedence, same load lifecycle.
@@ -187,7 +187,7 @@ _No unreleased changes._
 - **Dangling preset references warn at load (issue #81):** a template whose `preset:` names a nonexistent preset no longer fails silently — a session-start cross-check warns naming the template, the dangling reference, and the consequence. Warn-not-skip: the run still proceeds preset-less, but the footgun is visible.
 - Shipped as 4 commits (#85, #86, #87, #88). 827 tests across 38 files.
 
-### v2.1.5
+## [2.1.5] - 2026-08-08
 
 - **DevDeps aligned with the pi runtime (issue #69):** all four `@earendil-works/*` packages bumped to `^0.84.1` — the caret on a 0.x range previously forbade the running version, so the contract tests verified the wrong SDK. The delta was pre-investigated safe (abort contract byte-identical); the contract-test tripwire passes.
 - **Dependabot live (issue #69 part 2):** grouped weekly updates (`pi-sdk` lockstep group + `other` group); every bump PR runs the full test suite as the tripwire. First PR merged (typebox 1.3.10).
@@ -198,7 +198,7 @@ _No unreleased changes._
 - **Crash-result builder (issue #68):** the 3× duplicated crash-catch envelope is now one `buildCrashResult`; `steer_subagent`/`stop_subagent` error paths pass `ctx.cwd` so sibling-project paths are properly masked.
 - Shipped as 8 commits (#72, #73, #74, #76, #77, #78, #79, #80). 792 tests across 37 files.
 
-### v2.1.4
+## [2.1.4] - 2026-08-07
 
 - **Monitor liveness self-healing (issue #52):** the live monitor no longer shows stale "running" entries after the background poller dies mid-run (extension reload, crash). Both render loops sweep the live map and finalize entries that are provably terminal; `finalizeLiveSubagent` returns its claim so the sweep and a delayed poller can never double-decrement the active counter. Test storage is now injectable, so unit tests no longer pollute real `.pi/subagents` state.
 - **Error & secret hygiene (issues #29 #30 #65):** persisted run data is written with owner-only permissions; error messages are sanitized before persist/echo (paths, trailing slashes, Windows boundaries), closing the residual raw-echo class across foreground, background tool-level, chain/graph, and runner paths.
@@ -208,7 +208,7 @@ _No unreleased changes._
 - **Monitor row disambiguation (issue #55):** the live monitor shows a short agent id per row, so same-named subagents are distinguishable.
 - Shipped as 8 commits (#58, #60, #62, #63, #64, #67, #70, #71). 732 tests across 35 files.
 
-### v2.1.3
+## [2.1.3] - 2026-08-06
 
 - **Real abort for background agents (issue #28):** the `stop_subagent` tool and async `stopAgent()` abort the live session via `session.abort()` — the pending `prompt()` resolves with `stopReason: "aborted"` and the agent is marked `stopped`. Previously steering/stopping only flipped a status flag and the session kept running.
 - **Per-agent timeout + hard cap:** a deadline is armed before the prompt runs; when exceeded the session is aborted and the agent ends `stopped` with the timeout reason. The hard cap actually aborts now (was an orphaned-session leak). Timeouts are normalized (`0`/negative/`NaN`/`Infinity`/`≥2^31` → no timeout) and a double-fire guard prevents acting on an already-settled agent.
@@ -217,7 +217,7 @@ _No unreleased changes._
 - **Crash fix (incidental):** transcript completion no-ops on a missing transcript file (was an uncaughtException killing pi); defensive settle-handler wrappers across the background lifecycle.
 - Shipped as 4 PRs (#47 real abort, #49 timeouts, #50 safety controls, #51 Gate A) + incidentals (#48 CI flake, #54 crash fix). Live-verified 2026-08-06 — foreground, background, timeout abort (stopped @ 20s), gitMode=branch lifecycle (branch created/discarded, diff rendered), stop_subagent — all pass. 684 tests across 34 files.
 
-### v2.1.2
+## [2.1.2] - 2026-08-01
 
 - **Per-step model override:** chain/parallel/graph steps can declare their own `model` (`step.model > global preset > config > conductor`), availability-checked with fallback to the global model. Resolves issue #3 (per-step presets intentionally not implemented — see design decision).
 - **Security hardening:** agent ids validated as UUIDs before any filesystem access (`assertSafeAgentId` — closes agent-id path traversal); background sessions never import extension/skill code from the target cwd (loader built with `noExtensions`/`noSkills` — closes cwd→code-execution RCE).
@@ -229,7 +229,7 @@ _No unreleased changes._
 - **SDK contract tests:** new `sdk-contract.test.ts` guards against silent SDK drift (real ModelRegistry, env-independent).
 - 646 tests across 31 files.
 
-### v2.1.1
+## [2.1.1] - 2026-07-29
 
 - **Background agent notifications:** the conductor sees a notification when a background agent completes, crashes, or times out (via `deliverAs: "followUp"`).
 - **Custom preset discovery:** custom presets survive `pi install` updates — `.pi/brl-subagent/presets/` (project-local) and `~/.pi/agent/brl-subagent/presets/` (global), same YAML frontmatter format, override built-ins with the same name.
@@ -237,7 +237,7 @@ _No unreleased changes._
 - **Tool system fixes:** `edit` auto-includes `write` (pi tool dependency chain); subagent prompt clarifies exactly which tools are available.
 - **Removed:** sandbox system, backend system (dead code), 12 dead exports, 80K lines of bloat from git tracking.
 
-### v2.1.0
+## [2.1.0] - 2026-07-20
 
 - **Footer live counters:** Footer now shows background subagent activity with live counters.
 - **Background subagent concurrency fix:** Fixed dynamic import and serialization queue for reliable parallel execution.
