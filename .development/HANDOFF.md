@@ -1,5 +1,5 @@
 ## STATE
-Verified: 8fee9cb (2026-11-02)
+Verified: f677c3b (2026-11-02)
 
 - **dev** @ `8fee9cb` — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle: PR #418 (toolchain/changelog) and PR #420 (the `noJev` coercion guard, ADR 0020). Only `dev` + `main`; worktrees: the cockpit pair only.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e` (tag `v2.7.0`), npm `latest` = 2.7.0 (tarball verified; the moment it appeared, installs switched).
