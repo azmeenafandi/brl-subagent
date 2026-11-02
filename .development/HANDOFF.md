@@ -1,7 +1,7 @@
 ## STATE
-Verified: 2e0ead2 (2026-11-02)
+Verified: 8fee9cb (2026-11-02)
 
-- **dev** @ `2e0ead2` — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity unit (PR #418) and the release docs. Only `dev` + `main`; worktrees: the cockpit pair only.
+- **dev** @ `8fee9cb` — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle: PR #418 (toolchain/changelog) and PR #420 (the `noJev` coercion guard, ADR 0020). Only `dev` + `main`; worktrees: the cockpit pair only.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e` (tag `v2.7.0`), npm `latest` = 2.7.0 (tarball verified; the moment it appeared, installs switched).
 - **Running install:** **`npm:brl-subagent` 2.7.0** — the shipped package, reloaded and live in this session (dev path removed; the dev checkout stays on disk for the next cycle).
 - **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415 closed.
@@ -35,13 +35,14 @@ Verified: 7118862 (2026-10-31)
 - **Released:** v2.6.0 (2026-10-24, `main` @ `ef9f6be`, npm `latest`). **v2.7.0 NOT taken.** **Release checkpoint open.**
 - **Running install:** DEV checkout (dogfood), pi **1.4.0**; deps ^1.4.0; typebox **1.3.27** (host pin). **Reloaded after #415** — the running build reads `processChecks`; live-verified both ways (a line-less cockpit dispatch is rejected; a `high` + foreground + timeout dispatch in a cwd without the manifest stays foreground).
 - **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415 closed (folded/merged).
-- **Cycle: `Pi 1.5.0 parity`** (opened 2026-11-02; first unit merged — PR #418). Previous cycle (post-v2.6.0) closed 2026-10-31. **Suite:** 98 files / **1945**; tsc clean; CodeGraph indexed at `2e0ead2` (refresh at the next merge).
+- **Cycle: `Pi 1.5.0 parity`** (opened 2026-11-02; units: PR #418, PR #420). Previous cycle (post-v2.6.0) closed 2026-10-31. **Suite:** 98 files / **1959**; tsc clean; CodeGraph fresh at `8fee9cb`.
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`.
 - **Dispatch models (never guess):** implementers **`deepseek/deepseek-flash`**; reviewers **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic the `project-plan-critic` preset (qwen3.8-max-0902).
 - **Jev provenance:** every line printed by `node .pi/skills/worktree/jev-check.mjs --line '<json>' --label <label>` (rows in `.pi/jev-lines.log`).
 - **Project flag:** the cockpit's `package.json` opts in: `{"brl-subagent": {"processChecks": true}}` — the single umbrella (ADR 0019) gating the Jev line + the shape switch; fail-open; single reader (ratchet-tested). Local templates require `${jev}`; the reviewer preset allows `/tmp/REVIEW_<n>.md`.
 
 ### Since the last handover
+- **#419 merged** (PR #420, `8fee9cb`): the `noJev` bypass is read through a handler-level runtime guard — non-strings and coerced primitives are refused (no bypass, no TypeError); ADR 0020 supersedes ADR 0018 §2's schema-layer claim. The ts-ast exit-hook race that made green runs exit 1 and blocked a worktree pre-flight is fixed (`5761736`).
 - **pi 1.5.0 parity merged** (PR #418, `2e0ead2`): devDeps `^1.5.0`; the CHANGELOG's 26 version headings converted to pi-parsable `## [X.Y.Z] - date` (pi 1.5.0's "Extension Updates" notice; verified: the real parser now reads 26 entries, newest 2.7.0); two ratchets — changelog heading vs package version, and JSON-Schema-only tool schemas (pi-schema ignores TypeBox features outside JSON Schema). #402 stays held: pi 1.5.0 still bundles typebox 1.3.27.
 - **#415 merged** (PR #416, `7118862`): #412's global shape switch scoped behind `processChecks`; the user path is pinned (explicit foreground + timeout stand, no notice); ADR 0019 supersedes the global scope of 0018.
 - The #415 implementer's first attempt died on transport; the auto-retry resumed and completed (the #401/#404/#411 machinery, now with the system-side resume context).
