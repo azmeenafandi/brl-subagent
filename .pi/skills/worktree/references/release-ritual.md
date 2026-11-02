@@ -86,8 +86,10 @@ because nothing checked them and no test pins them.
    ```
 
    The check verifies module coverage AND exported-symbol coverage against `src/*.ts` on disk, asserts
-   declared freshness (`indexed_at_commit == HEAD`, `index_state = complete` — stronger than the retired
-   mtime comparison), prints its coverage boundaries, and exits non-zero on any discrepancy. It is
+   freshness (`indexed_at_commit == HEAD`, **or** the commits since it touch no indexed source — a
+   docs/tooling/records commit is not staleness, and the check names the changed files when a `src/`
+   change is real), requires `index_state = complete`, prints its coverage boundaries, and exits
+   non-zero on any discrepancy. It is
    mechanical because the old failure was silent (a refresh missing `src/paths.ts`, issue #173; a rewrite
    that lost the day's symbols, issue #189) — and that whole failure class left with the LLM layer: a
    `codegraph sync` on a docs-only tree is a no-op.

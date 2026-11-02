@@ -343,8 +343,10 @@ ships as product documentation — see `CONTRIBUTING.md`).
                 `codegraph-refresh.sh` — the canonical structural index
                 (cockpit/dev) is refreshed AT EVERY MERGE; explicit invocation
                 only, never a hook (#230). The refresh asserts coverage AND
-                freshness (`indexed_at_commit == HEAD`, `index_state =
-                complete`). CodeGraph is the SOLE structural index (ADR 0016);
+                freshness (`indexed_at_commit == HEAD`, OR the delta since it
+                touches no `src/**/*.ts` — docs/tooling commits are not
+                staleness; `index_state = complete`). CodeGraph is the SOLE
+                structural index (ADR 0016);
                 graphify is retired.
 8. CHECKPOINT   release checkpoint for extension-code changes — conductor
                 pauses for the user (rule #6; docs/tests/tooling: none)
