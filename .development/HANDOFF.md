@@ -49,6 +49,7 @@ Verified: 7118862 (2026-10-31)
 - The #415 implementer's first attempt died on transport; the auto-retry resumed and completed (the #401/#404/#411 machinery, now with the system-side resume context).
 
 ### Next actions
+- **Revisit 2026-11-06:** complexity/CRAP measurement — decide no-gate vs changed-functions advisory vs soft ceiling (`.development/investigations/complexity-crap-2026-11-02.md`; real candidates: `execute` 116 cx/72% cov, `skipJsonValue` 7% cov, `resolveSubagentParams` 61% cov).
 1. **v2.7.0** — the maintainer's decision (no calendar pressure).
 2. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
 
