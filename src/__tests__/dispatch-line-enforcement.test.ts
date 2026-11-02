@@ -453,6 +453,36 @@ describe("noJev — the stated, logged bypass", () => {
 		expect(withoutBypass.isError).toBe(true);
 	});
 
+	// Issue #419: the harness coerces `noJev: true` to the string `"true"` before
+	// this handler runs, so the handler is where the stated-reason property has to
+	// hold. A coerced primitive must neither spawn a run nor surface as a bypass.
+	it("a harness-coerced boolean reason is refused before anything spawns", async () => {
+		optIn();
+		const result = await execute({
+			task: "Implement the thing.",
+			background: false,
+			noJev: "true",
+		});
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("missing Jev dispatch line");
+		expect(result.content[0].text).not.toContain("noJev override");
+		expect(h.runSubagent).not.toHaveBeenCalled();
+	});
+
+	it("a non-string reason is refused with a clean error, never a crash", async () => {
+		optIn();
+		const result = await execute({
+			task: "Implement the thing.",
+			background: false,
+			noJev: { reason: "captured from the rollout" },
+		});
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("missing Jev dispatch line");
+		expect(h.runSubagent).not.toHaveBeenCalled();
+	});
+
 	it("noJev does not rescue a real capability conflict (it bypasses the line check only)", async () => {
 		optIn();
 		const result = await execute({
