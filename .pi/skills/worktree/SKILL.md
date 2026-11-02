@@ -361,6 +361,14 @@ ships as product documentation — see `CONTRIBUTING.md`).
                 tagged commit), not after every merge.
 ```
 
+## Dispatch presets (never guess)
+
+Implementation dispatches use the repo-local **`project-implementer`** preset — it carries the SOLID/DRY
+quality bar (S/O/L/I/D + the two-occurrence DRY threshold) and the "flag, never fix, code you were not asked
+to touch" rule. The shipped **`dev-agent`** preset has no quality bar; do not use it for implementation work.
+Reviews use **`project-reviewer`** (its mirror of the same bar, with the required
+`SOLID/DRY violations flagged: N` verdict line); plan critiques use **`project-plan-critic`**.
+
 ## Adversarial review dispatch (rule #7 + #8 + #10)
 
 **Classify BEFORE reviewing (Rule 10).** Every change gets a risk class first;

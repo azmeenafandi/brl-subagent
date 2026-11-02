@@ -7,7 +7,7 @@ Verified: 8fee9cb (2026-11-02)
 - **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415 closed.
 - **Suite:** 98 files / **1945**; tsc clean; release PR #417 CI green; CodeGraph fresh at `98bd36e`.
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`.
-- **Dispatch models (never guess):** implementers **`deepseek/deepseek-flash`**; reviewers **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic the `project-plan-critic` preset (qwen3.8-max-0902).
+- **Dispatch models + presets (never guess):** implementers — preset **`project-implementer`** (the local one with the SOLID/DRY quality bar; `dev-agent` ships without one — do not use it) and model **`deepseek/deepseek-flash`**; reviewers — preset **`project-reviewer`** and model **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic — preset **`project-plan-critic`** (qwen3.8-max-0902).
 - **Jev provenance:** every line printed by `node .pi/skills/worktree/jev-check.mjs --line '<json>' --label <label>` (rows in `.pi/jev-lines.log`).
 - **Project flag:** `{"brl-subagent": {"processChecks": true}}` in the cockpit manifest — gates the Jev line + the shape switch; fail-open; single reader (ratchet). Local templates require `${jev}`; the reviewer preset allows `/tmp/REVIEW_<n>.md`.
 
