@@ -1,11 +1,11 @@
 ## STATE
-Verified: 85beda4 (2026-11-01)
+Verified: 2e0ead2 (2026-11-02)
 
-- **dev** @ `85beda4` — the release commit `98bd36e` (tag `v2.7.0`) plus two docs-only commits (STATE + the npm-propagation friction row). Only `dev` + `main`; worktrees: the cockpit pair only.
+- **dev** @ `2e0ead2` — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity unit (PR #418) and the release docs. Only `dev` + `main`; worktrees: the cockpit pair only.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e` (tag `v2.7.0`), npm `latest` = 2.7.0 (tarball verified; the moment it appeared, installs switched).
 - **Running install:** **`npm:brl-subagent` 2.7.0** — the shipped package, reloaded and live in this session (dev path removed; the dev checkout stays on disk for the next cycle).
 - **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415 closed.
-- **Suite:** 96 files / **1940**; tsc clean; release PR #417 CI green; CodeGraph fresh at `98bd36e`.
+- **Suite:** 98 files / **1945**; tsc clean; release PR #417 CI green; CodeGraph fresh at `98bd36e`.
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`.
 - **Dispatch models (never guess):** implementers **`deepseek/deepseek-flash`**; reviewers **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic the `project-plan-critic` preset (qwen3.8-max-0902).
 - **Jev provenance:** every line printed by `node .pi/skills/worktree/jev-check.mjs --line '<json>' --label <label>` (rows in `.pi/jev-lines.log`).
@@ -42,6 +42,7 @@ Verified: 7118862 (2026-10-31)
 - **Project flag:** the cockpit's `package.json` opts in: `{"brl-subagent": {"processChecks": true}}` — the single umbrella (ADR 0019) gating the Jev line + the shape switch; fail-open; single reader (ratchet-tested). Local templates require `${jev}`; the reviewer preset allows `/tmp/REVIEW_<n>.md`.
 
 ### Since the last handover
+- **pi 1.5.0 parity merged** (PR #418, `2e0ead2`): devDeps `^1.5.0`; the CHANGELOG's 26 version headings converted to pi-parsable `## [X.Y.Z] - date` (pi 1.5.0's "Extension Updates" notice; verified: the real parser now reads 26 entries, newest 2.7.0); two ratchets — changelog heading vs package version, and JSON-Schema-only tool schemas (pi-schema ignores TypeBox features outside JSON Schema). #402 stays held: pi 1.5.0 still bundles typebox 1.3.27.
 - **#415 merged** (PR #416, `7118862`): #412's global shape switch scoped behind `processChecks`; the user path is pinned (explicit foreground + timeout stand, no notice); ADR 0019 supersedes the global scope of 0018.
 - The #415 implementer's first attempt died on transport; the auto-retry resumed and completed (the #401/#404/#411 machinery, now with the system-side resume context).
 
