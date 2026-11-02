@@ -4,7 +4,7 @@ Release history for brl-subagent. Newest first. The full narrative for each rele
 
 ## Unreleased
 
-_No unreleased changes._
+- **A `noJev` bypass has to state a reason in words (issue #419):** `delegate_task`'s bypass for the Jev dispatch-line pre-flight was declared a non-empty reason string and described as refusing `true` and an empty string at the schema layer (ADR 0018 §2). That held only for the empty string. The harness validates tool arguments with coercion on, and pi-schema's string rule stringifies booleans and numbers before the handler is called, so `noJev: true` arrived as the string `"true"`, satisfied `Type.String({ minLength: 1 })`, and dispatched a run whose warning named "true" as the reason (live probe, 2026-11-02) — while a value with no text form, such as `{}`, reached `config.noJev.trim()` and threw `TypeError: config.noJev.trim is not a function` instead of being rejected. The reason is now read through a runtime guard: a string, trimmed non-empty, and **not** a coerced primitive (`true`/`false`/a bare number). Anything else is a clean **error** — the normal missing-line refusal plus an `invalid noJev: …` diagnostic — so a boolean can neither bypass the check nor crash it, and a genuine reason still downgrades the rejection to a warning that names it. The read stays inside the project's `processChecks` opt-in (ADR 0019), so a user's dispatch is never examined; the schema's description now says the reason is validated in the handler, ADR 0020 records why, and the suite pins the coercion through the real validator rather than the declared JSON shape. ADR 0018 is untouched — superseded on this one claim, not edited.
 
 ## [2.7.0] - 2026-11-01
 
