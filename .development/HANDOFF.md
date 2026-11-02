@@ -35,7 +35,7 @@ Verified: 7118862 (2026-10-31)
 - **Released:** v2.6.0 (2026-10-24, `main` @ `ef9f6be`, npm `latest`). **v2.7.0 NOT taken.** **Release checkpoint open.**
 - **Running install:** DEV checkout (dogfood), pi **1.4.0**; deps ^1.4.0; typebox **1.3.27** (host pin). **Reloaded after #415** — the running build reads `processChecks`; live-verified both ways (a line-less cockpit dispatch is rejected; a `high` + foreground + timeout dispatch in a cwd without the manifest stays foreground).
 - **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415 closed (folded/merged).
-- **Cycle (post-v2.6.0): COMPLETE** (ritual 2026-10-31); #411/#412/#415 landed after it and shipped in v2.7.0. **Next cycle: not opened** — declare `Cycle: <theme>` here when chosen. **Suite:** 96 files / **1940**; tsc clean; CodeGraph indexed at `7118862` (no `src/` change since — the release added manifest/docs only); refresh at the next merge.
+- **Cycle: `Pi 1.5.0 parity`** (opened 2026-11-02; first unit merged — PR #418). Previous cycle (post-v2.6.0) closed 2026-10-31. **Suite:** 98 files / **1945**; tsc clean; CodeGraph indexed at `2e0ead2` (refresh at the next merge).
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`.
 - **Dispatch models (never guess):** implementers **`deepseek/deepseek-flash`**; reviewers **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic the `project-plan-critic` preset (qwen3.8-max-0902).
 - **Jev provenance:** every line printed by `node .pi/skills/worktree/jev-check.mjs --line '<json>' --label <label>` (rows in `.pi/jev-lines.log`).
