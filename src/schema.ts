@@ -211,7 +211,8 @@ export const delegateTaskParamsSchema = Type.Object({
 					minLength: 1,
 					description:
 						"Stated bypass for the Jev dispatch-line pre-flight, which is active ONLY in a project whose package.json sets the `brl-subagent.processChecks` field (this repository). " +
-						"A NON-EMPTY reason string: the dispatch proceeds and the reason is surfaced as a warning in the result, so the bypass is never silent. " +
+						"A reason string that states WHY the line is missing: the dispatch proceeds and the reason is surfaced as a warning in the result, so the bypass is never silent. " +
+						"The reason is validated when the dispatch is handled, not by this schema: the argument validator coerces loosely typed input, so a boolean or a number arrives as its text (`true` becomes \"true\") and is REFUSED exactly like an absent bypass. " +
 						"It bypasses ONLY the line check — capability conflicts still reject (unlike force). " +
 						"Append `jev: unavailable` to the task instead when the classifier did not run.",
 				}),
