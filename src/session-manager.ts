@@ -19,6 +19,7 @@ import { currentProcessOwner } from './recovery';
 import { persistRunRecord, listInflightRuns, type InflightRun } from './run-registry';
 import { isTransportRetryable } from './transport-retry';
 import { ensureOwnerOnlyDir, repairOwnerOnlyFiles } from './store-permissions';
+import { buildEngineeringBarSection } from './engineering-bar';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -1245,6 +1246,15 @@ export async function spawnBackgroundSession(
   if (params.resumeContext?.trim()) {
     sections.push(`\n<resume-context>\n${params.resumeContext.trim()}\n</resume-context>\n`);
   }
+  // Issue #421: the project's engineering bar is the LAST section, so a retry's
+  // resume preamble stays adjacent to the system prompt it qualifies. It is
+  // injected here — not chosen by the conductor — so no preset selection can
+  // drop it. Gated by the project flag (ADR 0019); `engineering-bar.ts` owns the
+  // read, the failure warning and the framing, so this builder still
+  // interpolates only the two caller fields pinned by the neutralization ratchet
+  // in session-manager.test.ts.
+  const barSection = buildEngineeringBarSection(effectiveCwd, log);
+  if (barSection) sections.push(barSection);
   //
   // F25: ALWAYS build our own loader (even without a systemPrompt). If
   // resourceLoader is undefined, createAgentSession constructs its own
