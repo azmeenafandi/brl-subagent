@@ -11,7 +11,7 @@ Verified: 940d386 (2026-11-02)
 - **dev** @ `940d386` — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle (PR #418, PR #420) and docs/tooling commits. Only `dev` + `main`; worktrees: the cockpit pair only.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e` (tag `v2.7.0`), npm `latest` = 2.7.0.
 - **Running install:** **`npm:brl-subagent` 2.7.0**, reloaded and live in this session (dev path removed; the dev checkout stays on disk).
-- **Board:** **#421 open** (engineering bar injected at the spawn seam; design decided, not started) · **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415/#419 closed.
+- **Board:** **#421 in flight** (engineering bar injected at the spawn seam; worktree `impl-421`, agent `066a38d6`) · **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415/#419 closed.
 - **Cycle: `Pi 1.5.0 parity`** (opened 2026-11-02; units PR #418, PR #420 merged; #421 queued). Previous cycle closed 2026-10-31.
 - **Suite:** 98 files / **1959**; `tsc --noEmit` clean; **CodeGraph freshness = `src/` unchanged since the indexed commit** (docs/tooling/records deltas are not staleness; the check names changed `src/` files when it is real).
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`.
@@ -26,12 +26,12 @@ Verified: 940d386 (2026-11-02)
 - **#421 filed** from the drift audit: inject the engineering bar at spawn (tracked `.pi/` content, `processChecks`-gated, pinned both ways). The lost assumptions checklist is folded into it.
 
 ### Next actions
-1. **#421** — engineering bar injection (the next unit; see the issue for design + acceptance).
+1. **#421** — in flight (agent `066a38d6`, worktree `../brl-subagent-421-engineering-bar`): engineering-bar file + gated injection in the shared prompt builder + both-direction pins.
 2. **2026-11-06** — complexity/CRAP decision: no gate vs changed-functions advisory vs soft ceiling.
 3. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
 
 ## Open items
-- **#421** (in flight next) · **#402 held** — re-evaluate only when pi's typebox pin moves.
+- **#421** (in flight) · **#402 held** — re-evaluate only when pi's typebox pin moves.
 - **Sweep candidates (advisory):** wire the CodeGraph freshness check into `merge-guard` as check (f) (the rule is fixed, the *enforcement* is manual); `sprint-metrics` auto-retry accounting; `stop_subagent`'s bare not-found; Jev exceptions ↔ ledger cross-check; plan-critic cost discipline.
 - **ADR amendments still pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
 
