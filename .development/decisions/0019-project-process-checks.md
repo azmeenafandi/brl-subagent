@@ -5,6 +5,8 @@
 - **Issues:** #415, #412, #407
 - **Supersedes:** the GLOBAL scope of ADR 0018's decision 1 (rule 2's shape auto-switch). ADR 0018 stays
   Accepted for the Jev-line check, its transitions, and the provenance rule.
+- **Addendum:** 2026-11-03 — the engineering-bar injection (issue #421) extends this umbrella; see the
+  addendum at the end.
 
 ## Context
 
@@ -78,3 +80,48 @@ user path is verified at every release rather than assumed.
   ratchet's approval. That is deliberate — the umbrella prevents a third per-rule field from appearing
   quietly.
 - The Jev-line format, the provenance log, and the merge gate are untouched.
+
+## Addendum (2026-11-03) — the umbrella also injects process content (issue #421)
+
+This ADR's umbrella covered two *checks*. Issue #421 added a third mechanism that is not a check: the
+project's engineering bar, read from `.pi/skills/worktree/references/engineering-bar.md` and appended to
+every child's system prompt as a conductor-authored `<engineering-bar>` section when `processChecks` is
+true. It reuses the field deliberately; no new `PROCESS_CHECK_KEYS` entry was added.
+
+Facts the decision rests on (verified in PR #422):
+
+- **One reader, unchanged.** `src/engineering-bar.ts` asks `isProcessChecksEnabled(cwd)`; no module reads
+  the manifest key a second time, and the ratchet in §3 still holds.
+- **Inert off, unread off.** In a project without the field, the section is not built and the reference is
+  not read (pinned with a filesystem read log). The `processChecks: false` sentence in §1 extends to this
+  mechanism: no section, no read, no warning.
+- **Content is the project's own.** The reader loads the file from the dispatch cwd; the bar's text is
+  outside `package.json.files`, so nothing of this repository's bar ships in the tarball (pinned against a
+  real `npm pack`).
+- **Failure is loud but non-fatal.** A missing or empty reference logs one warning and skips the section;
+  it never throws into a spawn and never passes silently.
+
+Why extend this flag instead of adding a per-mechanism field:
+
+- The field's only realistic setter is this repository (§4: dev-only, never marketed). A second field
+  would be a second per-rule switch of exactly the kind §1 exists to prevent, bought for a population
+  that does not exist yet.
+- An enabling project decides *what* the bar says by writing its own reference file — the opt-in grants a
+  channel, not this repository's methodology. A project with no file gets a warning and no section.
+- Splitting the field later is additive and non-breaking: `processChecks` is frozen by v2.7.0, but a new
+  boolean can arrive if a consumer needs one mechanism without the other.
+
+Accepted coupling, with falsifiers (when to reverse this):
+
+- The path `.pi/skills/worktree/references/engineering-bar.md` names this repository's skill layout, so a
+  third-party opt-in must recreate it (or eat one warning per spawn).
+- **A real third-party project setting `processChecks` → split the field (`engineeringBar`) or neutralize
+  the path.** That is the trigger, not a hypothetical preference.
+- A consumer wanting the mechanical checks without injected content → the same split.
+- The bar text becoming portable/generic (no `recon.sh` / `review-dispatch.md` references) → the split's
+  value rises.
+
+Clarification of the Consequences bullet "Adding a process mechanism now has a visible cost": that cost
+is a new **field** (whitelist entry + ADR + ratchet). Extending an existing field with a new mechanism
+needs this addendum and the ratchet's continued approval, not a new key — the distinction the bar forced
+into the open.
