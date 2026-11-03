@@ -10,7 +10,7 @@ Verified: ce63df2 (2026-11-03)
 
 - **dev** @ `ce63df2` — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle (PR #418, PR #420, PR #422 merged as merge commits). Only `dev` + `main`; worktrees: the cockpit pair only.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e` (tag `v2.7.0`), npm `latest` = 2.7.0. **Release checkpoint OPEN**: #422 is extension code merged and unreleased.
-- **Running install:** **`npm:brl-subagent` 2.7.0**, live in this session — it **predates #422**, so the engineering bar is not injected yet.
+- **Running install:** **the dev checkout** (`pi install /…/brl-subagent-dev`), live after a reload — the npm 2.7.0 copy was removed (never two). It includes #422, so the bar is injected. Users still get published 2.7.0; `pi remove <dev> && pi install npm:brl-subagent` returns to the artifact.
 - **Board:** **#421 closed** (PR #422, `ce63df2`) · **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415/#419 closed.
 - **Cycle: `Pi 1.5.0 parity`** — closed 2026-11-03 (units PR #418, PR #420, PR #422). Previous cycle closed 2026-10-31.
 - **Suite:** 99 files / **1976**; `tsc --noEmit` clean; CodeGraph refreshed at `ce63df2` (47 modules, 535 symbols, complete); **freshness = `src/` unchanged since the indexed commit**.
@@ -20,19 +20,17 @@ Verified: ce63df2 (2026-11-03)
 - **Project flag:** `{"brl-subagent": {"processChecks": true}}` in the cockpit manifest — now gates three mechanisms: Jev line, shape switch, engineering-bar injection (ADR 0019 addendum); fail-open; single reader (ratchet). Local templates require `${jev}`; the reviewer preset allows `/tmp/REVIEW_<n>.md`.
 
 ### Since the last handover
-- **#421 merged** (PR #422, `ce63df2`): a tracked `.pi/skills/worktree/references/engineering-bar.md` is injected as `<engineering-bar>` at **both** seams (background `appendSystemPrompt` after `<resume-context>`; foreground `--append-system-prompt` at `runSubagent`) behind `processChecks`; 17 tests pin both directions, incl. "disabled → the file is never read" and the packed tarball excludes it. ADR 0019 carries an addendum + falsifier (first real third-party setter → split the field). No adversarial review was dispatched (maintainer instruction); a C2 conductor verification cleared it, and an independent glm-5.3 design opinion recommended keeping the umbrella.
+- **#421 merged** (PR #422, `ce63df2`): a tracked `.pi/skills/worktree/references/engineering-bar.md` is injected as `<engineering-bar>` at **both** seams (background `appendSystemPrompt` after `<resume-context>`; foreground `--append-system-prompt` at `runSubagent`) behind `processChecks`; 17 tests pin both directions, incl. "disabled → the file is never read" and the packed tarball excludes it. ADR 0019 carries an addendum + falsifier (first real third-party setter → split the field). No adversarial review was dispatched (maintainer instruction); a C2 conductor verification cleared it, and an independent glm-5.3 design opinion recommended keeping the umbrella. **Live-verified on the dev build:** a `dev-agent` probe reported the injected section; after trimming the duplicated bar text from the local `project-implementer`/`project-reviewer` presets, a `project-implementer` probe still reported it (and the old preset heading was gone) — the bar now arrives solely through the injection.
 - **#419 merged** (PR #420): the `noJev` bypass is validated in the handler — coerced primitives/non-strings are refused (ADR 0020 supersedes ADR 0018 §2's schema claim).
 - **Tooling**: ts-ast exit-hook race fixed; CodeGraph freshness now means "`src/` unchanged"; the dispatch presets are pinned in STATE + SKILL.
 - **Complexity/CRAP measured** (`.development/investigations/complexity-crap-2026-11-02.md`) — decision queued for **2026-11-06**.
 
 ### Next actions
-1. **Preset trim** (after an install carries #422): delete the duplicated bar text from the local `project-implementer`/`project-reviewer` presets — `.pi/brl-subagent/` is gitignored, so it is a local edit. Doing it earlier would silently drop the bar from every dispatch until the running install injects.
-2. **2026-11-06** — complexity/CRAP decision: no gate vs changed-functions advisory vs soft ceiling.
-3. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
+1. **2026-11-06** — complexity/CRAP decision: no gate vs changed-functions advisory vs soft ceiling.
+2. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
 
 ## Open items
 - **#402 held** — re-evaluate only when pi's typebox pin moves.
-- **Preset trim** (after the install carries #422) — the local presets still duplicate the bar; see Next actions.
 - **Sweep candidates (advisory):** wire the CodeGraph freshness check into `merge-guard` as check (f) (the rule is fixed, the *enforcement* is manual); `sprint-metrics` auto-retry accounting; `stop_subagent`'s bare not-found; Jev exceptions ↔ ledger cross-check; plan-critic cost discipline.
 - **ADR amendments still pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
 
