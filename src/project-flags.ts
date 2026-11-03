@@ -3,9 +3,9 @@
  * The umbrella project-local flag: `{"brl-subagent": {"processChecks": true}}`.
  *
  * `processChecks` gates OUR process mechanisms — the Jev dispatch-line check
- * (#407/#412) and rule 2's durable-shape auto-switch (#412). It replaces the
- * merged-but-unreleased `requireJevLine`: one flag, one reader, no per-rule
- * fields.
+ * (#407/#412), rule 2's durable-shape auto-switch (#412), and the
+ * engineering-bar injection (#421). It replaces the merged-but-unreleased
+ * `requireJevLine`: one flag, one reader, no per-rule fields.
  *
  * Why one reader (issue #415): the shape rule shipped GLOBAL, so a user's
  * explicit `background: false` + timeout was overridden by our conductor
