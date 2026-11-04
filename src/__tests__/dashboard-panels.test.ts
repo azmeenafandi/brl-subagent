@@ -19,6 +19,7 @@ import {
 	showDashboard,
 } from "../tui";
 import { computeCostTrend, computeSLAMetrics } from "../metrics";
+import { sortLiveSessions } from "../tui-format";
 import { CUSTOM_ENTRY_TYPES, type LiveSubagent, type SubagentRun } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -53,6 +54,8 @@ const NOW = new Date("2026-01-02T03:10:00.000Z").getTime();
 
 const RUNNING_A = "11111111-aaaa";
 const RUNNING_B = "22222222-bbbb";
+/** Issue #423: settled-but-lingering — must not appear on any display surface. */
+const FINALIZED_C = "33333333-cccc";
 
 function run(over: Partial<SubagentRun> & { id: string }): SubagentRun {
 	return {
@@ -103,13 +106,28 @@ function richRuns(): SubagentRun[] {
 	];
 }
 
-/** The live map behind the Active Subagents panel (two rows: labelled and task-named). */
+/**
+ * The live map behind the Active Subagents panel: a FINALIZED row inserted
+ * first with the soonest deadline (an unfiltered panel would both count it and
+ * sort it to the top), then a task-named row with NO timer (RUNNING_B), then a
+ * labelled row with a 10m budget (RUNNING_A) — so the rendered order is the
+ * reverse of the insertion order and the budget segment is exercised both ways
+ * (issue #423).
+ */
 function liveSessions(ctx: ExtensionContext): Map<string, LiveSubagent> {
 	const base = { model: "m", thinkingLevel: "low", liveOutput: "", ctx } as const;
 	return new Map<string, LiveSubagent>([
 		[
-			RUNNING_A,
-			{ ...base, id: RUNNING_A, label: "my-label", task: "some task", startedAt: NOW - 65_000, usage: { input: 1234, output: 567 } },
+			FINALIZED_C,
+			{
+				...base,
+				id: FINALIZED_C,
+				label: "settled-but-lingering",
+				task: "settled task",
+				startedAt: NOW - 90_000,
+				deadlineAt: NOW + 10_000,
+				usage: { input: 1, output: 1 },
+			},
 		],
 		[
 			RUNNING_B,
@@ -121,7 +139,26 @@ function liveSessions(ctx: ExtensionContext): Map<string, LiveSubagent> {
 				usage: { input: 10, output: 20 },
 			},
 		],
+		[
+			RUNNING_A,
+			{
+				...base,
+				id: RUNNING_A,
+				label: "my-label",
+				task: "some task",
+				startedAt: NOW - 65_000,
+				deadlineAt: NOW + 535_000, // a 10m budget, 8m55s of it left
+				usage: { input: 1234, output: 567 },
+			},
+		],
 	]);
+}
+
+/** The ordered array the composer passes to the panel: finalized filtered, deadline-sorted. */
+function orderedLive(ctx: ExtensionContext): Array<[string, LiveSubagent]> {
+	return sortLiveSessions(
+		Array.from(liveSessions(ctx).entries()).filter(([id]) => id !== FINALIZED_C),
+	);
 }
 
 function makeCtx(entries: () => SubagentRun[]): ExtensionContext {
@@ -146,6 +183,9 @@ function richState(): { state: SessionState; ctx: ExtensionContext } {
 	const ctx = makeCtx(richRuns);
 	const state = new SessionState();
 	for (const [id, session] of liveSessions(ctx)) state.subagentSessions.set(id, session);
+	// The real claim (not a mocked predicate): the row lingers in the map for the
+	// 3 s reset window, which is exactly what the display surfaces must ignore.
+	state.finalizeLiveSubagent(FINALIZED_C);
 	return { state, ctx };
 }
 
@@ -217,8 +257,8 @@ const RICH_HEADER = [
 /** Panel 2 — active subagents: title carrying the count, one row per live entry. */
 const RICH_ACTIVE = [
 	" Active Subagents (2)                                                           ",
-	"   ⠋ my-label  [11111111]  ↑1.2k ↓567  1m 5s                                    ",
-	"   ⠋ another task with no label at all and a   [22222222]  ↑10 ↓20  4s          ",
+	"   ⠋ my-label  [11111111]  ↑1.2k ↓567  1m 5s · 1m 5s / 10m (89% left)           ",
+	"   ⠋ another task with no label at all and a   [22222222]  ↑10 ↓20  4s · —      ",
 ];
 
 /** Panel 3 — SLA summary: success rate, p50/p95/p99, cost. */
@@ -309,9 +349,9 @@ const RICH_FG_CALLS: Array<[string, string]> = [
 	["dim", "  refreshing · <time>"],
 	["accent", "Active Subagents (2)"],
 	["accent", "  ⠋ my-label"],
-	["dim", "  [11111111]  ↑1.2k ↓567  1m 5s"],
+	["dim", "  [11111111]  ↑1.2k ↓567  1m 5s · 1m 5s / 10m (89% left)"],
 	["accent", "  ⠋ another task with no label at all and a "],
-	["dim", "  [22222222]  ↑10 ↓20  4s"],
+	["dim", "  [22222222]  ↑10 ↓20  4s · —"],
 	["accent", "SLA Summary (last 9 runs)"],
 	["dim", "  Success: "],
 	["error", "33.3%"],
@@ -474,6 +514,10 @@ describe("showDashboard — rendered screen (issue #356)", () => {
 
 /** The rich fixture's data slices, exactly as the composer samples them. */
 function richSlices() {
+	// The finalize claim arms a real 3 s delete; fake timers keep it from
+	// firing mid-file and the panel's `now` is injected anyway.
+	vi.useFakeTimers();
+	vi.setSystemTime(NOW);
 	const ctx = makeCtx(richRuns);
 	const allRuns = richRuns();
 	const recentRuns = allRuns.slice(0, 50);
@@ -483,7 +527,7 @@ function richSlices() {
 		allRuns,
 		recentRuns,
 		metrics,
-		live: liveSessions(ctx),
+		live: orderedLive(ctx),
 	};
 }
 
@@ -495,7 +539,7 @@ describe("dashboard panels — each renders its own slice (issue #356)", () => {
 	it("panel 2 — active subagents, populated and empty", () => {
 		const { live } = richSlices();
 		expect(panelLines(renderDashboardActivePanel(PLAIN_THEME, live, () => NOW))).toEqual(RICH_ACTIVE);
-		expect(panelLines(renderDashboardActivePanel(PLAIN_THEME, new Map(), () => NOW))).toEqual(EMPTY_ACTIVE);
+		expect(panelLines(renderDashboardActivePanel(PLAIN_THEME, [], () => NOW))).toEqual(EMPTY_ACTIVE);
 	});
 
 	it("panel 3 — SLA summary, populated and empty", () => {
