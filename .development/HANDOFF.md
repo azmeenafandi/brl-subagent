@@ -28,7 +28,7 @@ Verified: 2b0e158 (2026-11-04)
 ### Next actions
 1. **2026-11-06** — complexity/CRAP decision: no gate vs changed-functions advisory vs soft ceiling.
 2. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
-3. **#423** — in flight (`7add6be5`): plan v5 at `/tmp/PLAN_423.md`; decisions on the issue; review with `project-reviewer` when it lands.
+3. **#423** — in flight (`7add6be5`): plan v5 at `/tmp/PLAN_423.md`; decisions on the issue; **review tier C1** (full adversarial + Gate A) — the Jev re-check corrected the dispatched C2.
 
 ## Open items
 - **#423 design-open** — subagent timeouts: visible budget, soft stage, stall watchdog vs
