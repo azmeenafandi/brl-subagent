@@ -412,6 +412,25 @@ describe("get_subagent_result — the budget line (issue #423)", () => {
 		expect(result.content[0].text).not.toContain("(exhausted)");
 	});
 
+	it("keeps the plain form for a COMPLETED run whose error stamp says Timed out (status gates the form)", async () => {
+		// Mutation M15 (2026-11-04): passing `undefined` instead of the classified
+		// status to formatBudgetLine survived every test — a completed record with a
+		// timeout-shaped stamp was unpinned. The status guard is the difference
+		// between "it ran out of budget" and "it completed, with a stale error".
+		writeAgent(BUDGET_ID, {
+			status: "completed",
+			startedAt: START,
+			completedAt: START + 252_000,
+			timeoutMs: BUDGET,
+			error: "Timed out (1800000ms deadline)",
+		});
+
+		const result = await invoke(BUDGET_ID);
+
+		expect(result.content[0].text).toContain("Budget: 30m — 4m 12s used, 25m 48s left");
+		expect(result.content[0].text).not.toContain("(exhausted)");
+	});
+
 	it("omits the line entirely for a record written before the field existed", async () => {
 		writeAgent(BUDGET_ID, {
 			status: "failed",
