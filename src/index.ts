@@ -727,7 +727,7 @@ export default function (pi: ExtensionAPI) {
 				// parallel mode's issue #119 registration). Fall back to
 				// "Step N" when the step carries no label (liveRowName would
 				// otherwise show the truncated task).
-				registerLiveRun(state, run, ctx, merged.label ?? `Step ${i + 1}`);
+				registerLiveRun(state, run, ctx, merged.label ?? `Step ${i + 1}`, merged.timeout);
 
 				// Wrap onUpdate so the live monitor sees per-step progress
 				// (mirrors parallel mode's taskOnUpdate).
@@ -1055,8 +1055,9 @@ export default function (pi: ExtensionAPI) {
 			pruneHistoryIfNeeded(state, ctx, log);
 
 			// Register for live monitor — parallel subtasks now appear in the
-			// drill-in with their per-unit priority (issue #119).
-			registerLiveRun(state, run, ctx);
+			// drill-in with their per-unit priority (issue #119). The merged
+			// timeout rides along as the display deadline (issue #423).
+			registerLiveRun(state, run, ctx, undefined, merged.timeout);
 
 			log.debug("Parallel subtask run registered", { runId, index });
 
@@ -1525,7 +1526,8 @@ export default function (pi: ExtensionAPI) {
 					// is host-global, so raw graph-task ids would collide across
 					// concurrent graph runs (the intercom namespace is per-run and
 					// stays untouched).
-					registerLiveRun(state, run, ctx);
+					// Issue #423: the merged timeout rides along as the display deadline.
+					registerLiveRun(state, run, ctx, undefined, merged.timeout);
 
 					let nodeSuccess = false;
 					try {
@@ -2033,6 +2035,11 @@ export default function (pi: ExtensionAPI) {
 			thinkingLevel: agent.thinkingLevel,
 			priority: agent.priority,
 			startedAt: agent.startedAt,
+			// Issue #423: the persisted EFFECTIVE budget, anchored on the record's
+			// own start clock — the same clock the deadline timers use.
+			...(agent.timeoutMs !== undefined
+				? { deadlineAt: agent.startedAt + agent.timeoutMs }
+				: {}),
 			ctx,
 		});
 		
@@ -3038,7 +3045,9 @@ export default function (pi: ExtensionAPI) {
 			pruneHistoryIfNeeded(state, ctx, log);
 
 			// Register for live monitor
-			registerLiveRun(state, run, ctx);
+			// Issue #423: the merged timeout is the display deadline (absent → no
+			// deadline; a foreground run has no 30m default).
+			registerLiveRun(state, run, ctx, undefined, timeout);
 
 			// P3: Git integration — set up work branch if gitMode is "branch"
 			let headState: HeadState | undefined;
@@ -3252,6 +3261,12 @@ export default function (pi: ExtensionAPI) {
 					result.errorMessage?.includes("timed out")
 				) {
 					log.info("Auto-retrying after timeout", { runId });
+					// Issue #423: the retry restarts the clock, so its display deadline is
+					// re-anchored on it (the same clock `startedAt` carries). Registering
+					// also clears the finalize claim, so the row is live again.
+					const retryStartedAt = Date.now();
+					const retryDeadlineAt =
+						timeout && timeout > 0 ? retryStartedAt + timeout : undefined;
 					state.registerLiveSubagent(runId, {
 						id: runId,
 						label,
@@ -3259,7 +3274,8 @@ export default function (pi: ExtensionAPI) {
 						model: run.model,
 						thinkingLevel,
 						priority: params.priority,
-						startedAt: Date.now(),
+						startedAt: retryStartedAt,
+						...(retryDeadlineAt !== undefined ? { deadlineAt: retryDeadlineAt } : {}),
 						ctx,
 					});
 

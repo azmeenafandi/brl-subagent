@@ -509,4 +509,50 @@ describe("registerLiveRun", () => {
 		const live = state.subagentSessions.get(run.id)!;
 		expect(live.label).toBe("unit-b");
 	});
+
+	// Issue #423 — the display deadline, from the MERGED timeout the caller passes.
+	it("derives deadlineAt from the passed timeout, anchored on run.startedAt", () => {
+		const state = createSessionState();
+		const ctx = {} as ExtensionContext;
+		const run: SubagentRun = {
+			id: "live-reg-5",
+			task: "t",
+			status: "running",
+			model: "provider/model",
+			thinkingLevel: "low",
+			startedAt: "2023-06-15T10:20:30.000Z",
+			originalParams: {},
+		};
+
+		registerLiveRun(state, run, ctx, undefined, 90_000);
+
+		const live = state.subagentSessions.get(run.id)!;
+		expect(live.deadlineAt).toBe(new Date(run.startedAt).getTime() + 90_000);
+	});
+
+	it("leaves deadlineAt absent when no timeout is passed or it is non-positive", () => {
+		const ctx = {} as ExtensionContext;
+		const mk = (id: string): SubagentRun => ({
+			id,
+			task: "t",
+			status: "running",
+			model: "provider/model",
+			thinkingLevel: "low",
+			startedAt: "2023-06-15T10:20:30.000Z",
+			originalParams: {},
+		});
+
+		for (const [id, timeout] of [
+			["live-reg-6", undefined],
+			["live-reg-7", 0],
+			["live-reg-8", -1],
+		] as Array<[string, number | undefined]>) {
+			const state = createSessionState();
+			registerLiveRun(state, mk(id), ctx, undefined, timeout);
+
+			const live = state.subagentSessions.get(id)!;
+			expect(live.deadlineAt, String(timeout)).toBeUndefined();
+			expect("deadlineAt" in live, String(timeout)).toBe(false);
+		}
+	});
 });

@@ -217,6 +217,14 @@ export class SessionState {
 	 */
 	private _finalizedLiveIds = new Set<string>();
 
+	/**
+	 * The pending deferred-delete handle per finalized id (issue #423). Kept so
+	 * a RE-registration can cancel it: a retry inside the 3 s window re-claims
+	 * the id, and a stale delete would otherwise evict the fresh live row that
+	 * the display surfaces just started rendering again.
+	 */
+	private _finalizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 	/** Loaded built-in presets */
 	builtinPresets = new Array<import("./types").SubagentPreset>();
 
@@ -430,6 +438,11 @@ export class SessionState {
 	// -------------------------------------------------------------------
 
 	registerLiveSubagent(id: string, data: Omit<LiveSubagent, "liveOutput" | "usage">): void {
+		// Issue #423: a registration means the id is live AGAIN — a retry
+		// re-registers inside the 3 s linger window, and every display surface
+		// filters finalized ids, so the claim (and its pending delete) must not
+		// survive the re-registration.
+		this.clearLiveFinalize(id);
 		this.subagentSessions.set(id, { ...data, liveOutput: "", usage: { input: 0, output: 0 } });
 	}
 
@@ -459,11 +472,28 @@ export class SessionState {
 		// review: the poller must not decrement when the sweep already did).
 		if (this._finalizedLiveIds.has(id)) return false;
 		this._finalizedLiveIds.add(id);
-		setTimeout(() => {
-			this.subagentSessions.delete(id);
-			this._finalizedLiveIds.delete(id);
-		}, FINALIZE_RESET_WINDOW_MS);
+		this._finalizeTimers.set(
+			id,
+			setTimeout(() => {
+				this._finalizeTimers.delete(id);
+				this.subagentSessions.delete(id);
+				this._finalizedLiveIds.delete(id);
+			}, FINALIZE_RESET_WINDOW_MS),
+		);
 		return true;
+	}
+
+	/**
+	 * Drop a pending finalize claim AND its deferred delete (issue #423). Called
+	 * by {@link registerLiveSubagent} when an id is registered again.
+	 */
+	private clearLiveFinalize(id: string): void {
+		const handle = this._finalizeTimers.get(id);
+		if (handle !== undefined) {
+			clearTimeout(handle);
+			this._finalizeTimers.delete(id);
+		}
+		this._finalizedLiveIds.delete(id);
 	}
 
 	/** True when the live entry has been finalized (deferred delete pending). */
@@ -509,6 +539,8 @@ export class SessionState {
 	 * would no-op on an id a stale claim still remembers (PR #71 review).
 	 */
 	resetLiveFinalizeClaims(): void {
+		for (const handle of this._finalizeTimers.values()) clearTimeout(handle);
+		this._finalizeTimers.clear();
 		this._finalizedLiveIds.clear();
 	}
 

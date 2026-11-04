@@ -14,7 +14,7 @@ import { wrapTask } from './prompt';
 import { createLogger } from './logging';
 import { getCurrentBranch, getHeadState, restoreHead, createWorkBranch, captureDiff, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
 import type { HeadState } from './git';
-import { normalizeTimeout, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
+import { normalizeTimeout, effectiveBackgroundBudget, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
 import { currentProcessOwner } from './recovery';
 import { persistRunRecord, listInflightRuns, type InflightRun } from './run-registry';
 import { isTransportRetryable } from './transport-retry';
@@ -1327,6 +1327,11 @@ export async function spawnBackgroundSession(
     description: params.description || params.task.slice(0, 50),
     status: 'running',
     startedAt: Date.now(),
+    // Issue #423: the EFFECTIVE budget (explicit timeout, else the 30m default),
+    // stamped BEFORE persistAgent so the initial record already carries it — a
+    // result/wake read after the spawn closure is gone must not fall back to
+    // "unknown".
+    timeoutMs: effectiveBackgroundBudget(params.timeout),
     task: params.task,
     model: params.model || 'unknown',
     thinkingLevel: params.thinkingLevel || 'medium',

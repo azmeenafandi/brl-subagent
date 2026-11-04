@@ -108,4 +108,34 @@ describe("live subagent lifecycle — register → update → finalize (issue #1
 		vi.advanceTimersByTime(FINALIZE_RESET_WINDOW_MS + 1);
 		expect(state.subagentSessions.size).toBe(0);
 	});
+
+	// Issue #423: a retry inside the linger window re-registers the SAME id. Every
+	// display surface filters finalized ids, so a re-registration must clear the
+	// claim — and cancel the pending delete, or the fresh row is evicted 3 s later.
+	it("re-registering a finalized id clears the claim and survives the reset window", () => {
+		vi.useFakeTimers();
+		const state = createSessionState();
+		state.registerLiveSubagent("retry-1", makeLiveEntry("retry-1", {} as ExtensionContext));
+		state.finalizeLiveSubagent("retry-1");
+		expect(state.isLiveEntryFinalized("retry-1")).toBe(true);
+
+		state.registerLiveSubagent("retry-1", {
+			...makeLiveEntry("retry-1", {} as ExtensionContext),
+			label: "attempt-2",
+			startedAt: Date.now(),
+			deadlineAt: Date.now() + 60_000,
+		});
+
+		expect(state.isLiveEntryFinalized("retry-1")).toBe(false);
+
+		// The pre-registration delete timer must be gone: the row is live again.
+		vi.advanceTimersByTime(FINALIZE_RESET_WINDOW_MS + 1);
+		const entry = state.subagentSessions.get("retry-1");
+		expect(entry).toBeDefined();
+		expect(entry?.label).toBe("attempt-2");
+		expect(entry?.deadlineAt).toBeDefined();
+
+		// And it can still be finalized normally afterwards.
+		expect(state.finalizeLiveSubagent("retry-1")).toBe(true);
+	});
 });
