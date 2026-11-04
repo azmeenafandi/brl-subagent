@@ -11,7 +11,7 @@ Verified: 2b0e158 (2026-11-04)
 - **dev** @ `2b0e158` — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle (PR #418, PR #420, PR #422 merged as merge commits). Only `dev` + `main`; worktrees: the cockpit pair only.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e` (tag `v2.7.0`), npm `latest` = 2.7.0. **Release checkpoint OPEN**: #422 is extension code merged and unreleased.
 - **Running install:** **the dev checkout** (`pi install /…/brl-subagent-dev`), live after a reload — the npm 2.7.0 copy was removed (never two). It includes #422, so the bar is injected. Users still get published 2.7.0; `pi remove <dev> && pi install npm:brl-subagent` returns to the artifact.
-- **Board:** **#423 in flight** (timeout visibility, plan v5 through 3 critique rounds; worktree `impl-423`, agent `7add6be5`) · **#421 closed** (PR #422, `ce63df2`) · **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415/#419 closed.
+- **Board:** **#423 PR #425 open** (timeout visibility; implementation done, **C1 review pending**; 100 files / 2042 tests; mutation suite 15/15 red after the M15 pin) · **#421 closed** (PR #422, `ce63df2`) · **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415/#419 closed.
 - **Cycle: `Pi 1.5.0 parity`** — closed 2026-11-03 (units PR #418, PR #420, PR #422). Previous cycle closed 2026-10-31.
 - **Suite:** 99 files / **1976**; `tsc --noEmit` clean; CodeGraph refreshed at `a57dcd4` / src unchanged since `ce63df2` (47 modules, 535 symbols, complete); **freshness = `src/` unchanged since the indexed commit**.
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`, (f) `jev-recheck:` + `Risk class:` with a `recheck-<pr>` provenance row and a tier no weaker than the recheck. PRs to `dev` do not auto-close issues — close by hand.
@@ -28,7 +28,7 @@ Verified: 2b0e158 (2026-11-04)
 ### Next actions
 1. **2026-11-06** — complexity/CRAP decision: no gate vs changed-functions advisory vs soft ceiling.
 2. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
-3. **#423** — in flight (`7add6be5`): plan v5 at `/tmp/PLAN_423.md`; decisions on the issue; **review tier C1** (full adversarial + Gate A) — the Jev re-check corrected the dispatched C2.
+3. **#423 PR #425** — C1 review pending. The review record must carry `jev-recheck:` + `Risk class: C1` (merge check (f)); print the recheck with `jev-check --classifier '<raw answers>' --label recheck-425`.
 
 ## Open items
 - **#423 design-open** — subagent timeouts: visible budget, soft stage, stall watchdog vs
