@@ -33,6 +33,8 @@ Verified: ce63df2 (2026-11-03)
 - **#423 design-open** — subagent timeouts: visible budget, soft stage, stall watchdog vs
   cliff, extension, calibration. Filed 2026-11-03 from a discussion; no direction chosen
   (the maintainer is deciding the priority order). Do not implement from it yet.
+- **#424 tooling** — CodeGraph-first on every exploration (Rule 13 amended in `5004f78`);
+  remaining: `recon.sh --explore`, a command-selection cheat-line, optional ADR 0015 addendum.
 - **#402 held** — re-evaluate only when pi's typebox pin moves.
 - **Sweep candidates (advisory):** wire the CodeGraph freshness check into `merge-guard` as check (f) (the rule is fixed, the *enforcement* is manual); `sprint-metrics` auto-retry accounting; `stop_subagent`'s bare not-found; Jev exceptions ↔ ledger cross-check; plan-critic cost discipline.
 - **ADR amendments still pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
