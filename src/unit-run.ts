@@ -269,13 +269,21 @@ export function pruneHistoryIfNeeded(
  * `labelOverride` supplies the live entry's label when the caller wants one
  * that differs from `run.label` (e.g. chain's unlabeled-step fallback).
  * When omitted the live label defaults to `run.label`.
+ *
+ * `timeoutMs` is the run's MERGED timeout (param/preset/template) — never the
+ * raw caller param (issue #423). It becomes the live entry's absolute
+ * `deadlineAt`, anchored on the run's own start clock. Absent or non-positive
+ * means "no deadline": a foreground run has no default deadline.
  */
 export function registerLiveRun(
 	state: SessionState,
 	run: SubagentRun,
 	ctx: ExtensionContext,
 	labelOverride?: string,
+	timeoutMs?: number,
 ): void {
+	const startedAt = new Date(run.startedAt).getTime();
+	const deadlineAt = timeoutMs && timeoutMs > 0 ? startedAt + timeoutMs : undefined;
 	state.registerLiveSubagent(run.id, {
 		id: run.id,
 		label: labelOverride ?? run.label,
@@ -283,7 +291,8 @@ export function registerLiveRun(
 		model: run.model,
 		thinkingLevel: run.thinkingLevel,
 		priority: run.priority,
-		startedAt: new Date(run.startedAt).getTime(),
+		startedAt,
+		...(deadlineAt !== undefined ? { deadlineAt } : {}),
 		ctx,
 	});
 }

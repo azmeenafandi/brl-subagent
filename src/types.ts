@@ -406,6 +406,13 @@ export interface LiveSubagent {
 	// Issue #114: per-unit priority for the drill-in header (`p:critical` etc.).
 	priority?: string;
 	startedAt: number;
+	/**
+	 * Issue #423: absolute deadline (epoch ms) for this run, when it has a timer.
+	 * Absent for a foreground run with no explicit timeout (foreground has no
+	 * default deadline) and for a background run with no persisted budget (an
+	 * old record). Display only — the kill remains the timer owner's business.
+	 */
+	deadlineAt?: number;
 	liveOutput: string;
 	usage: { input: number; output: number };
 	ctx: ExtensionContext;
@@ -769,6 +776,13 @@ export interface BackgroundAgent {
 	status: AgentStatus;
 	startedAt: number;
 	completedAt?: number;
+	/**
+	 * Issue #423: the EFFECTIVE budget of this background run (explicit timeout,
+	 * else the 30 m default), persisted at spawn so the result and wake can
+	 * state it after the closure that armed the timer is gone. Absent on records
+	 * written before the field existed — read as "no budget known".
+	 */
+	timeoutMs?: number;
 	task: string;
 	model: string;
 	thinkingLevel: ThinkingLevel;

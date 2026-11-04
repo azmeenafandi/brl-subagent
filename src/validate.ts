@@ -521,3 +521,17 @@ export function normalizeTimeout(timeout: number | undefined): number | undefine
 	if (timeout >= 2 ** 31 - 1) return undefined;
 	return timeout;
 }
+
+/**
+ * The EFFECTIVE budget of a BACKGROUND run: the normalized explicit `timeout`,
+ * or {@link DEFAULT_BACKGROUND_DEADLINE_MS} when there is none (issue #423).
+ *
+ * The single definition of "30 m default" for the background path — the W3
+ * timer, the persisted record's `timeoutMs` and every display of the budget
+ * derive from here, so a displayed deadline cannot drift from the armed timer.
+ * Not used by the foreground path: a foreground run has NO default deadline,
+ * so an absent timeout there means "no deadline", not 30 m.
+ */
+export function effectiveBackgroundBudget(timeout: number | undefined): number {
+	return normalizeTimeout(timeout) ?? DEFAULT_BACKGROUND_DEADLINE_MS;
+}

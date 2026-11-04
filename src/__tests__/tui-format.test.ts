@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+	computeProgressTimes,
+	formatBudget,
+	formatBudgetDuration,
 	formatElapsed,
 	formatLiveRowDim,
 	formatMenuValue,
@@ -12,6 +15,7 @@ import {
 	MENU_VALUE_TOKENS,
 	menuSection,
 	runDisplayName,
+	sortLiveSessions,
 	type MenuValueKind,
 } from "../tui-format";
 import { DEFAULT_SLA_WINDOW_SIZE, formatMaxParallel, formatModel } from "../types";
@@ -102,6 +106,18 @@ describe("formatLiveRowDim", () => {
 	it("matches the exact row shape", () => {
 		const dim = formatLiveRowDim("deadbeef00", { input: 123, output: 456 }, "1m 5s");
 		expect(dim).toBe("  [deadbeef]  ↑123 ↓456  1m 5s");
+	});
+
+	// Issue #423 — the budget segment is optional and appended, so every row
+	// without a known deadline keeps the pre-#423 bytes exactly.
+	it("appends an optional budget segment", () => {
+		const dim = formatLiveRowDim(
+			"deadbeef00",
+			{ input: 1, output: 2 },
+			"4m 12s",
+			"4m 12s / 30m (86% left)",
+		);
+		expect(dim).toBe("  [deadbeef]  ↑1 ↓2  4m 12s · 4m 12s / 30m (86% left)");
 	});
 });
 
@@ -427,5 +443,169 @@ describe("formatOutcomeSymbol", () => {
 
 		expect(linger(1, 0).startsWith(formatOutcomeSymbol("success", PLAIN))).toBe(true);
 		expect(linger(0, 1).startsWith(formatOutcomeSymbol("failure", PLAIN))).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #423 — budget display helpers (footer clocks, monitor/dashboard rows)
+// ---------------------------------------------------------------------------
+
+describe("computeProgressTimes (issue #423)", () => {
+	it("returns nothing for an empty live list (caller falls back to activeSinceMs)", () => {
+		expect(computeProgressTimes([], 50_000)).toEqual({});
+	});
+
+	it("derives ranMs from the oldest entry", () => {
+		expect(computeProgressTimes([{ startedAt: 10_000 }], 74_000)).toEqual({ ranMs: 64_000 });
+	});
+
+	it("uses the OLDER startedAt, not the newest or the sum", () => {
+		// Mutation target: using the newest startedAt (or the last entry) reads 4s.
+		const times = computeProgressTimes(
+			[
+				{ startedAt: 70_000 },
+				{ startedAt: 10_000 },
+			],
+			74_000,
+		);
+
+		expect(times.ranMs).toBe(64_000);
+	});
+
+	it("takes the SOONEST deadline as next, measured against that entry's own budget", () => {
+		const times = computeProgressTimes(
+			[
+				{ startedAt: 0, deadlineAt: 600_000 }, // 10m budget, 9m left of it
+				{ startedAt: 60_000, deadlineAt: 120_000 }, // 1m budget, 0 left
+			],
+			60_000,
+		);
+
+		// Soonest deadline wins even though the other entry started earlier.
+		expect(times.next).toEqual({ remainingMs: 60_000, fraction: 1 });
+	});
+
+	it("computes the remaining fraction from the deadline's own budget", () => {
+		expect(
+			computeProgressTimes([{ startedAt: 0, deadlineAt: 1_800_000 }], 252_000).next,
+		).toEqual({ remainingMs: 1_548_000, fraction: 0.86 });
+	});
+
+	it("clamps an exhausted deadline to zero remaining and zero fraction", () => {
+		expect(
+			computeProgressTimes([{ startedAt: 0, deadlineAt: 60_000 }], 90_000).next,
+		).toEqual({ remainingMs: 0, fraction: 0 });
+	});
+
+	it("does not divide by a non-positive budget (deadline at or before start)", () => {
+		expect(computeProgressTimes([{ startedAt: 60_000, deadlineAt: 60_000 }], 60_000).next).toEqual({
+			remainingMs: 0,
+			fraction: 0,
+		});
+	});
+
+	it("clamps a backwards clock jump at zero instead of going negative", () => {
+		const times = computeProgressTimes(
+			[{ startedAt: 100_000, deadlineAt: 200_000 }],
+			40_000,
+		);
+
+		expect(times.ranMs).toBe(0);
+		expect(times.next).toEqual({ remainingMs: 160_000, fraction: 1 });
+	});
+
+	it("ignores entries with no deadline for `next` but still counts them for `ranMs`", () => {
+		const times = computeProgressTimes(
+			[{ startedAt: 0 }, { startedAt: 10_000, deadlineAt: 70_000 }],
+			20_000,
+		);
+
+		expect(times.ranMs).toBe(20_000);
+		expect(times.next).toEqual({ remainingMs: 50_000, fraction: 50_000 / 60_000 });
+	});
+});
+
+describe("formatBudgetDuration (issue #423)", () => {
+	it("renders a whole number of minutes without the zero seconds", () => {
+		expect(formatBudgetDuration(30 * 60_000)).toBe("30m");
+		expect(formatBudgetDuration(60_000)).toBe("1m");
+		expect(formatBudgetDuration(45 * 60_000)).toBe("45m");
+	});
+
+	it("falls back to the compact elapsed form for a non-whole-minute value", () => {
+		expect(formatBudgetDuration(4 * 60_000 + 12_000)).toBe("4m 12s");
+		expect(formatBudgetDuration(90_000)).toBe("1m 30s");
+		expect(formatBudgetDuration(34_000)).toBe("34s");
+	});
+
+	it("handles zero and a negative value without inventing a budget", () => {
+		expect(formatBudgetDuration(0)).toBe("0s");
+		expect(formatBudgetDuration(-5_000)).toBe("0s");
+	});
+});
+
+describe("formatBudget (issue #423)", () => {
+	it("renders used / budget (percent left)", () => {
+		expect(formatBudget(0, 1_800_000, 252_000)).toBe("4m 12s / 30m (86% left)");
+	});
+
+	it("states 0% left when the deadline has passed", () => {
+		expect(formatBudget(0, 1_800_000, 1_800_000)).toBe("30m / 30m (0% left)");
+		expect(formatBudget(0, 1_800_000, 1_900_000)).toBe("31m 40s / 30m (0% left)");
+	});
+
+	it("renders an em dash when the run has no deadline", () => {
+		expect(formatBudget(0, undefined, 5_000)).toBe("—");
+	});
+
+	it("floors the percentage so it never overstates what is left", () => {
+		// 19.99% left floors to 19, not rounds to 20.
+		expect(formatBudget(0, 10_000, 8_001)).toBe("8s / 10s (19% left)");
+	});
+});
+
+describe("sortLiveSessions (issue #423)", () => {
+	const entry = (startedAt: number, deadlineAt?: number) =>
+		deadlineAt === undefined ? { startedAt } : { startedAt, deadlineAt };
+
+	it("orders by soonest deadline, then oldest start, then id", () => {
+		const sorted = sortLiveSessions<string, { startedAt: number; deadlineAt?: number }>([
+			["b", entry(0, 200_000)],
+			["a", entry(0, 100_000)],
+			["c", entry(0, 100_000)],
+			["d", entry(0, 100_000)],
+		]);
+
+		expect(sorted.map(([id]) => id)).toEqual(["a", "c", "d", "b"]);
+	});
+
+	it("puts undated entries last, ordered by start", () => {
+		const sorted = sortLiveSessions<string, { startedAt: number; deadlineAt?: number }>([
+			["undated-new", entry(50_000)],
+			["dated", entry(100_000, 300_000)],
+			["undated-old", entry(10_000)],
+		]);
+
+		expect(sorted.map(([id]) => id)).toEqual(["dated", "undated-old", "undated-new"]);
+	});
+
+	it("breaks an equal deadline AND equal start by id (a total order, so paints are stable)", () => {
+		const a = sortLiveSessions([["zzz", entry(0, 5)], ["aaa", entry(0, 5)]]);
+		const b = sortLiveSessions([["aaa", entry(0, 5)], ["zzz", entry(0, 5)]]);
+
+		expect(a.map(([id]) => id)).toEqual(["aaa", "zzz"]);
+		expect(b).toEqual(a);
+	});
+
+	it("returns a new array and leaves the input order untouched", () => {
+		const input: Array<[string, { startedAt: number; deadlineAt?: number }]> = [
+			["b", entry(0, 200_000)],
+			["a", entry(0, 100_000)],
+		];
+
+		const sorted = sortLiveSessions(input);
+
+		expect(sorted).not.toBe(input);
+		expect(input.map(([id]) => id)).toEqual(["b", "a"]);
 	});
 });

@@ -23,6 +23,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	readdirSync,
 	rmSync,
 	statSync,
@@ -82,6 +83,7 @@ import {
 	stopAgent,
 } from "../session-manager";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_BACKGROUND_DEADLINE_MS } from "../validate";
 
 const fakePi = { appendEntry: vi.fn() };
 const fakeCtx = {
@@ -158,6 +160,49 @@ describe("U2 T1 — the session file exists during a live background run", () =>
 		expect(readdirSync(dir).filter((f) => f.endsWith(".jsonl"))).toHaveLength(1);
 		// Sandbox proof: the real repo store was never used for this id.
 		expect(existsSync(join(process.cwd(), ".pi/subagents/sessions", agent.id))).toBe(false);
+	});
+});
+
+describe("issue #423 — the INITIAL persisted record carries the effective budget", () => {
+	/** The record as `persistAgent` wrote it — NOT the in-memory agent object. */
+	function persistedRecord(id: string): Record<string, unknown> {
+		return JSON.parse(readFileSync(join(env.storageDir, `${id}.json`), "utf8"));
+	}
+
+	it("persists the 30m default when the spawn passes no timeout", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {})); // stays running
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "no explicit timeout",
+		});
+
+		expect(agent.timeoutMs).toBe(DEFAULT_BACKGROUND_DEADLINE_MS);
+		// The mutation target: computing timeoutMs AFTER persistAgent leaves the
+		// on-disk record without it, so this read (not the returned object) is the pin.
+		const record = persistedRecord(agent.id);
+		expect(record.timeoutMs).toBe(DEFAULT_BACKGROUND_DEADLINE_MS);
+		expect(record.startedAt).toBe(agent.startedAt);
+	});
+
+	it("persists an explicit timeout verbatim", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "explicit timeout",
+			timeout: 90_000,
+		});
+
+		expect(agent.timeoutMs).toBe(90_000);
+		expect(persistedRecord(agent.id).timeoutMs).toBe(90_000);
+	});
+
+	it("normalizes an instantly-firing timeout to the 30m default, not to ~1ms", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "overflow timeout",
+			timeout: 2 ** 31,
+		});
+
+		expect(agent.timeoutMs).toBe(DEFAULT_BACKGROUND_DEADLINE_MS);
+		expect(persistedRecord(agent.id).timeoutMs).toBe(DEFAULT_BACKGROUND_DEADLINE_MS);
 	});
 });
 

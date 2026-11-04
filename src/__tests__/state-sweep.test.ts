@@ -376,6 +376,19 @@ describe("sweepStaleLiveSubagents — idempotency and poller racing", () => {
 		expect(state.activeSubagents).toBe(0); // no double decrement
 	});
 
+	it("resetLiveFinalizeClaims clears the pending deferred deletes (timer count returns to zero)", () => {
+		vi.useFakeTimers();
+		const state = createSessionState();
+		state.registerLiveSubagent("bg-1", makeLiveEntry("bg-1", {} as ExtensionContext));
+
+		expect(state.finalizeLiveSubagent("bg-1")).toBe(true);
+		expect(vi.getTimerCount()).toBe(1);
+
+		state.resetLiveFinalizeClaims();
+		// S1 (review 425): dropping the timer-clear lines kept every test green.
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
 	it("resetLiveFinalizeClaims drops pending claims (previously-claimed id claimable again)", () => {
 		vi.useFakeTimers();
 		const state = createSessionState();

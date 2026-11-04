@@ -41,6 +41,14 @@ class MockSessionState {
 	builtinPresets: any[] = [];
 	customPresets: any[] = [];
 	pendingQueue: Array<{ run: () => void; signal: AbortSignal | undefined; ctx: any }> = [];
+	// Issue #423: the footer's clock slice — the paint chokepoint reads the live
+	// map and its finalize claims, so the mock carries both (empty/never-claimed).
+	subagentSessions = new Map<string, any>();
+	modeContext: any;
+	activeSinceMs: number | undefined;
+	isLiveEntryFinalized(): boolean {
+		return false;
+	}
 
 	constructor() {
 		this.config = {
