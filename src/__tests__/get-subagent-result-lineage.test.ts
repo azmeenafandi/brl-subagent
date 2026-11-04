@@ -357,3 +357,71 @@ describe("get_subagent_result description (issue #396)", () => {
 		expect(getResult.description).toContain("superseded");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Issue #423 — the budget line in the result block
+// ---------------------------------------------------------------------------
+
+describe("get_subagent_result — the budget line (issue #423)", () => {
+	const BUDGET_ID = "b0d9e70a-1111-4111-8111-111111111111";
+	const START = startedMs(ISO);
+	const BUDGET = 30 * 60_000;
+
+	it("states used and left, anchored on completedAt (not on the read clock)", async () => {
+		// The store is read "now" (2026 or later); an implementation that anchored
+		// on `Date.now()` would report years of use, not 4m 12s.
+		writeAgent(BUDGET_ID, {
+			status: "completed",
+			startedAt: START,
+			completedAt: START + 252_000,
+			timeoutMs: BUDGET,
+		});
+
+		const result = await invoke(BUDGET_ID);
+
+		expect(result.content[0].text).toContain("\nBudget: 30m — 4m 12s used, 25m 48s left\n");
+	});
+
+	it("states exhaustion only on timeout evidence", async () => {
+		writeAgent(BUDGET_ID, {
+			status: "stopped",
+			startedAt: START,
+			completedAt: START + BUDGET,
+			timeoutMs: BUDGET,
+			error: "Timed out (1800000ms deadline)",
+		});
+
+		const result = await invoke(BUDGET_ID);
+
+		expect(result.content[0].text).toContain("\nBudget: 30m (exhausted)\n");
+		expect(result.content[0].text).not.toContain(" left\n");
+	});
+
+	it("keeps the plain form for a failure that is not a timeout", async () => {
+		writeAgent(BUDGET_ID, {
+			status: "failed",
+			startedAt: START,
+			completedAt: START + 252_000,
+			timeoutMs: BUDGET,
+			error: "provider died",
+		});
+
+		const result = await invoke(BUDGET_ID);
+
+		expect(result.content[0].text).toContain("Budget: 30m — 4m 12s used, 25m 48s left");
+		expect(result.content[0].text).not.toContain("(exhausted)");
+	});
+
+	it("omits the line entirely for a record written before the field existed", async () => {
+		writeAgent(BUDGET_ID, {
+			status: "failed",
+			startedAt: START,
+			completedAt: START + 252_000,
+			error: "provider died",
+		});
+
+		const result = await invoke(BUDGET_ID);
+
+		expect(result.content[0].text).not.toContain("Budget:");
+	});
+});

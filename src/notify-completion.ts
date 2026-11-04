@@ -26,6 +26,7 @@ import type {
 } from "./types";
 import { truncateTail } from "./transcript-tail";
 import { formatRunDuration } from "./history";
+import { formatBudgetDuration } from "./tui-format";
 import { classifyTerminalOutcome } from "./types";
 import { resolveTerminalRunEntry } from "./state";
 
@@ -115,6 +116,49 @@ function buildSummaryLine(
 }
 
 /**
+ * The ONE timeout predicate (issue #423): a run hit its deadline when the
+ * classified category says so or the agent's error is the deadline stamp. The
+ * wake, the result renderer and the budget line all read it, so the two
+ * exhaustion surfaces cannot disagree.
+ */
+export function isTimeoutEvidence(agent: BackgroundAgent, run?: SubagentRun): boolean {
+	const category = run?.errorCategory ?? run?.originalParams?.errorCategory;
+	return category === "timeout" || /^Timed out/.test(agent.error ?? "");
+}
+
+/**
+ * One line stating a run's budget (issue #423). PURE. Returns undefined when the
+ * record carries no budget — an old record written before `timeoutMs` existed
+ * has nothing to state, so no line is better than an invented 30 m.
+ *
+ * Shapes:
+ * - timeout:  `Budget: 30m (exhausted)`
+ * - otherwise `Budget: 30m — 4m 12s used, 25m 48s left`
+ *
+ * `status` guards the exhausted form: a run classified `completed` never claims
+ * to have exhausted its budget (the evidence predicate alone would otherwise be
+ * enough to downgrade a late-but-successful settle). `run` is optional because
+ * the result path (`get_subagent_result`) has only the agent record; both read
+ * the SAME predicate.
+ */
+export function formatBudgetLine(
+	agent: BackgroundAgent,
+	status: CompletionStatus | undefined,
+	run: SubagentRun | undefined,
+	now: number = Date.now(),
+): string | undefined {
+	if (agent.timeoutMs === undefined) return undefined;
+	const budget = formatBudgetDuration(agent.timeoutMs);
+	if (status !== "completed" && isTimeoutEvidence(agent, run)) {
+		return `Budget: ${budget} (exhausted)`;
+	}
+	const endMs = agent.completedAt ?? now;
+	const usedMs = Math.max(0, endMs - agent.startedAt);
+	const remainingMs = Math.max(0, agent.startedAt + agent.timeoutMs - endMs);
+	return `Budget: ${budget} — ${formatBudgetDuration(usedMs)} used, ${formatBudgetDuration(remainingMs)} left`;
+}
+
+/**
  * PURE builder — no pi SDK, no side effects, never throws. Returns the
  * sendMessage payload shape per D3.
  *
@@ -169,6 +213,13 @@ export function buildCompletionMessage(
 			: stored;
 	const tail = truncateTail(body, 15);
 	const parts = [summary];
+	// Issue #423: the budget rides its own part, and ONLY on a failed/stopped
+	// wake — a completed run's message is unchanged (the human reads the budget
+	// when something went wrong, not on every success).
+	if (status !== "completed") {
+		const budgetLine = formatBudgetLine(agent, status, run);
+		if (budgetLine) parts.push(budgetLine);
+	}
 	if (headline) parts.push(headline);
 	if (tail) parts.push(tail);
 	parts.push(COMPLETION_DIRECTIVE);

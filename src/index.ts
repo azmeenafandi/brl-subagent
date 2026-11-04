@@ -148,6 +148,8 @@ import { Intercom } from "./messaging";
 import * as eventBus from "./event-bus";
 import {
 	buildCompletionMessage,
+	formatBudgetLine,
+	normalizeCompletionStatus,
 	resolveDelivery,
 	sendCompletionNotification,
 	claimTerminalNotice,
@@ -3678,6 +3680,17 @@ export default function (pi: ExtensionAPI) {
 				resultText += `Completed: ${new Date(agent.completedAt).toISOString()}\n`;
 				resultText += `Duration: ${agent.completedAt - agent.startedAt}ms\n`;
 			}
+
+			// Issue #423: the budget the run actually ran under — from the PERSISTED
+			// record, so it survives the closure that armed the timer. The result
+			// path has no run entry to consult, so the timeout evidence is the
+			// agent's own error stamp (one shared predicate owns both paths).
+			const budgetLine = formatBudgetLine(
+				agent,
+				normalizeCompletionStatus(agent.status),
+				undefined,
+			);
+			if (budgetLine) resultText += `${budgetLine}\n`;
 			
 			if (agent.error) {
 				resultText += `Error: ${agent.error}\n`;
