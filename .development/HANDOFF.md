@@ -6,14 +6,14 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: ce63df2 (2026-11-03)
+Verified: 2b0e158 (2026-11-04)
 
-- **dev** @ `ce63df2` — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle (PR #418, PR #420, PR #422 merged as merge commits). Only `dev` + `main`; worktrees: the cockpit pair only.
+- **dev** @ `2b0e158` — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle (PR #418, PR #420, PR #422 merged as merge commits). Only `dev` + `main`; worktrees: the cockpit pair only.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e` (tag `v2.7.0`), npm `latest` = 2.7.0. **Release checkpoint OPEN**: #422 is extension code merged and unreleased.
 - **Running install:** **the dev checkout** (`pi install /…/brl-subagent-dev`), live after a reload — the npm 2.7.0 copy was removed (never two). It includes #422, so the bar is injected. Users still get published 2.7.0; `pi remove <dev> && pi install npm:brl-subagent` returns to the artifact.
 - **Board:** **#421 closed** (PR #422, `ce63df2`) · **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415/#419 closed.
 - **Cycle: `Pi 1.5.0 parity`** — closed 2026-11-03 (units PR #418, PR #420, PR #422). Previous cycle closed 2026-10-31.
-- **Suite:** 99 files / **1976**; `tsc --noEmit` clean; CodeGraph refreshed at `ce63df2` (47 modules, 535 symbols, complete); **freshness = `src/` unchanged since the indexed commit**.
+- **Suite:** 99 files / **1976**; `tsc --noEmit` clean; CodeGraph refreshed at `a57dcd4` / src unchanged since `ce63df2` (47 modules, 535 symbols, complete); **freshness = `src/` unchanged since the indexed commit**.
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`. PRs to `dev` do not auto-close issues — close by hand.
 - **Dispatch models + presets (never guess):** implementers — preset **`project-implementer`** (carries the SOLID/DRY bar; `dev-agent` ships without one — do not use it) + model **`deepseek/deepseek-flash`**; reviewers — preset **`project-reviewer`** + model **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic — preset **`project-plan-critic`** (qwen3.8-max-0902); design second opinions — `project-proposer`, `inheritSystemPrompt: false`.
 - **Jev provenance:** every line printed by `node .pi/skills/worktree/jev-check.mjs --line '<json>' --label <label>` (rows in `.pi/jev-lines.log`).
