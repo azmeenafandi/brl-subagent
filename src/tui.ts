@@ -1572,14 +1572,8 @@ export async function showMonitor(
 			// render pass. Idempotent, so racing the poller is safe.
 			sweepStaleLiveSubagents(state, getAgent);
 
-			// Issue #423: settled ids are filtered out (a lingering row must not show
-			// a live deadline) and the rows are ordered by the soonest deadline —
-			// the same order the dashboard uses.
-			const entries = sortLiveSessions(
-				Array.from(state.subagentSessions.entries()).filter(
-					([id]) => !state.isLiveEntryFinalized(id),
-				),
-			);
+			// Issue #423: the shared display projection (settled ids out, deadline order).
+			const entries = liveDisplayEntries(state);
 			lastRenderedIds = entries.map(([id]) => id);
 
 			const container = new Container();
@@ -2036,6 +2030,20 @@ export function renderDashboardHeader(theme: Theme, refreshStr: string): Compone
  * `now` is injected (the composer passes the wall clock) so the spinner frame,
  * the elapsed suffix and the budget stay testable; it is sampled per render.
  */
+/**
+ * Issue #423: the monitor and the dashboard render the same projection — settled
+ * ids removed (a 3 s lingering row must not show a live deadline) and rows
+ * ordered by the soonest deadline. One definition, so the surfaces cannot
+ * disagree (review 425, DRY).
+ */
+export function liveDisplayEntries(state: SessionState): Array<[string, LiveSubagent]> {
+	return sortLiveSessions(
+		Array.from(state.subagentSessions.entries()).filter(
+			([id]) => !state.isLiveEntryFinalized(id),
+		),
+	);
+}
+
 export function renderDashboardActivePanel(
 	theme: Theme,
 	sessions: ReadonlyArray<readonly [string, ActiveSubagentSlice]>,
@@ -2273,20 +2281,8 @@ export async function showDashboard(
 			append(renderDashboardHeader(theme, refreshStr));
 
 			// ---- Panel 2: Active subagents ----
-			// Issue #423: the panel takes an ORDERED array — finalized ids are
-			// filtered out (a 3 s lingering row must not show a live deadline) and
-			// the rows are sorted by the soonest deadline, the monitor's order.
-			append(
-				renderDashboardActivePanel(
-					theme,
-					sortLiveSessions(
-						Array.from(state.subagentSessions.entries()).filter(
-							([id]) => !state.isLiveEntryFinalized(id),
-						),
-					),
-					Date.now,
-				),
-			);
+			// Issue #423: the panel takes the same ordered projection as the monitor.
+			append(renderDashboardActivePanel(theme, liveDisplayEntries(state), Date.now));
 
 			// ---- Panel 3: SLA Summary ----
 			const allRuns = state.getRunEntries(ctx);
