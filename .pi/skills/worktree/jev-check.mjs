@@ -9,9 +9,14 @@
 // as a BARE LEVEL (no confidence) or a missing line; both are checkable here, and in CI.
 //
 // Modes:
-//   --line '<classifier-json>'  validate {level, conf, risk, worktree} and print the exact dispatch
-//                               line. A missing/invalid confidence is rejected (exit 1) — that is the
-//                               skipped form this check exists to kill.
+//   --classifier '<raw-answers>'  THE HONEST PATH: paste the classifier's raw response
+//                               ({"answers":{level:{choice,confidence},risk:{choice},worktree:{probability}}})
+//                               and derive the dispatch line from it. The answer object cannot be
+//                               "a level I chose" without also inventing the rest of the response.
+//   --line '<json>'             validate {level, conf, risk, worktree} and print the exact dispatch
+//                               line. Format-only: a conductor-assigned JSON passes, so `--label`
+//                               with `--line` now REQUIRES `--legacy-line` to acknowledge it. A
+//                               missing/invalid confidence is rejected (exit 1) — the skipped form.
 //   --ledger [path]             audit the calibration log (default below): every row dated on/after
 //                               STRICT_JEV_CUTOFF must carry a confidence `(0.xx)` in the Jev cell OR
 //                               an explicit gap marker. Offenders print date + dispatch + cell, exit 1.
@@ -628,24 +633,27 @@ function reportDispatchLog(path, since, exceptionsPath, requireProvenance = fals
 function parseLineArgs(args) {
 	let raw;
 	let label;
+	let legacy = false;
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index];
-		if (arg === "--label") {
+		if (arg === "--legacy-line") {
+			legacy = true;
+		} else if (arg === "--label") {
 			if (index + 1 >= args.length) throw new StructuralError("--label needs a dispatch name");
 			label = args[index + 1];
 			index += 1;
 		} else if (arg.startsWith("--") && raw !== undefined) {
-			throw new StructuralError(`unknown --line option ${JSON.stringify(arg)}\n\n${USAGE}`);
+			throw new StructuralError(`unknown option ${JSON.stringify(arg)}\n\n${USAGE}`);
 		} else if (raw === undefined) {
 			raw = arg;
 		} else {
 			raw = `${raw} ${arg}`;
 		}
 	}
-	return { raw: raw ?? "", label };
+	return { raw: raw ?? "", label, legacy };
 }
 
-function reportLine(raw, label) {
+function reportLine(raw, label, legacy = false) {
 	if (raw.trim() === "") {
 		throw new StructuralError(
 			`--line needs the classifier JSON, e.g. --line '{"level":"medium","conf":0.84,"risk":"C2","worktree":true}' --label <name>`,
@@ -658,9 +666,63 @@ function reportLine(raw, label) {
 		throw new StructuralError(`--line: the argument is not JSON (${describe(error)})`);
 	}
 	const line = formatDispatchLine(payload);
+	if (label !== undefined && !legacy) {
+		throw new StructuralError(
+			"--line is format-only: it accepts a conductor-assigned JSON, so a provenance row would " +
+				"claim a classifier that never ran (2026-10-31, 2026-11-04). Use --classifier '<raw answers>' " +
+				"--label <name>; add --legacy-line only to acknowledge a conductor-assigned line.",
+		);
+	}
 	console.log(line);
 	if (label !== undefined) {
 		// Provenance: the ONLY writer of this log. A line without a row was not printed here.
+		appendProvenanceEntry(DEFAULT_PROVENANCE_LOG, line, label);
+		console.error(`jev-check: provenance row appended to ${DEFAULT_PROVENANCE_LOG} (label ${JSON.stringify(label)})`);
+	}
+	return 0;
+}
+
+/**
+ * Derive the dispatch line from the classifier's RAW response. This is the only
+ * mode whose input is a classifier output rather than a hand-chosen summary:
+ * the shape check is the point, not decoration.
+ */
+function classifierPayloadToLine(raw) {
+	if (raw.trim() === "") {
+		throw new StructuralError(
+			"--classifier needs the raw answers JSON: " +
+				`'{"answers":{"level":{"choice":"medium","confidence":0.84},"risk":{"choice":"C2"},"worktree":{"probability":0.9}}}'`,
+		);
+	}
+	let payload;
+	try {
+		payload = JSON.parse(raw);
+	} catch (error) {
+		throw new StructuralError(`--classifier: the argument is not JSON (${describe(error)})`);
+	}
+	const answers = payload && typeof payload === "object" ? payload.answers : undefined;
+	if (answers === null || typeof answers !== "object" || Array.isArray(answers)) {
+		throw new SkippedFormError(
+			"--classifier: expected the raw classifier response object with an \"answers\" key — " +
+				"the level/conf/risk/worktree summary is NOT this input (use --line --legacy-line to acknowledge that)",
+		);
+	}
+	const probability = answers.worktree && answers.worktree.probability;
+	if (typeof probability !== "number" || Number.isNaN(probability)) {
+		throw new SkippedFormError("--classifier: answers.worktree.probability is missing or not a number");
+	}
+	return formatDispatchLine({
+		level: answers.level && answers.level.choice,
+		conf: answers.level && answers.level.confidence,
+		risk: answers.risk && answers.risk.choice,
+		worktree: probability > 0.5,
+	});
+}
+
+function reportClassifier(raw, label) {
+	const line = classifierPayloadToLine(raw);
+	console.log(line);
+	if (label !== undefined) {
 		appendProvenanceEntry(DEFAULT_PROVENANCE_LOG, line, label);
 		console.error(`jev-check: provenance row appended to ${DEFAULT_PROVENANCE_LOG} (label ${JSON.stringify(label)})`);
 	}
@@ -1093,6 +1155,65 @@ const SELFTEST_CASES = [
 		},
 	},
 	{
+		name: "--classifier: derives the line from the raw answers object",
+		run() {
+			const line = classifierPayloadToLine(
+				JSON.stringify({
+					answers: {
+						level: { choice: "medium", confidence: 0.63 },
+						risk: { choice: "C1" },
+						worktree: { probability: 0.85 },
+					},
+				}),
+			);
+			assertEqual(line, "jev: medium (0.63) \u00b7 C1 \u00b7 worktree y", "derived line");
+		},
+	},
+	{
+		name: "--classifier: a summary object (not the raw answers) is the skipped form",
+		run() {
+			let message = "";
+			try {
+				classifierPayloadToLine('{"level":"medium","conf":0.63,"risk":"C1","worktree":true}');
+			} catch (error) {
+				message = error.message;
+			}
+			if (!/raw classifier response/.test(message)) {
+				throw new Error(`expected a raw-response rejection, got ${JSON.stringify(message)}`);
+			}
+		},
+	},
+	{
+		name: "--classifier: a missing worktree probability is rejected",
+		run() {
+			let message = "";
+			try {
+				classifierPayloadToLine('{"answers":{"level":{"choice":"medium","confidence":0.63},"risk":{"choice":"C1"}}}');
+			} catch (error) {
+				message = error.message;
+			}
+			if (!/answers\.worktree\.probability/.test(message)) {
+				throw new Error(`expected a probability rejection, got ${JSON.stringify(message)}`);
+			}
+		},
+	},
+	{
+		name: "--line --label without --legacy-line is refused (format-only cannot claim a classifier)",
+		run() {
+			let message = "";
+			try {
+				reportLine('{"level":"medium","conf":0.63,"risk":"C1","worktree":true}', "impl", false);
+			} catch (error) {
+				message = error.message;
+			}
+			if (!/format-only/.test(message)) {
+				throw new Error(`expected the format-only refusal, got ${JSON.stringify(message)}`);
+			}
+			const parsed = parseLineArgs(['{"level":"medium","conf":0.63,"risk":"C1","worktree":true}', "--label", "impl", "--legacy-line"]);
+			assertEqual(parsed.legacy, true, "legacy acknowledged");
+		},
+	},
+	{
 		name: "--require-provenance: a formatted line with NO provenance row is an offender",
 		run() {
 			const { offenders } = analyzeDispatchLog(
@@ -1244,7 +1365,7 @@ function runSelftest() {
 // ---------------------------------------------------------------------------
 
 const USAGE = [
-	"usage: jev-check.mjs --line '<classifier-json>' [--label <name>] | --ledger [path] | --log [path] [--since YYYY-MM-DD] [--require-provenance] | --selftest",
+	"usage: jev-check.mjs --classifier '<raw-answers>' [--label <name>] | --line '<json>' [--label <name>] [--legacy-line] | --ledger [path] | --log [path] [--since YYYY-MM-DD] [--require-provenance] | --selftest",
 	"",
 	"  --line '<json>'   validate {level, conf, risk, worktree} and print",
 	'                    `jev: <level> (<conf>) · <Cx> · worktree <y|n>`',
@@ -1253,7 +1374,9 @@ const USAGE = [
 	`                    every \`${DISPATCH_EVENT_MESSAGE}\` event dated >= ${STRICT_DISPATCH_CUTOFF}`,
 	"                    must carry a valid Rule 22 line. Conductor/merge-time (local log).",
 	"  --since YYYY-MM-DD  with --log: override the dispatch cutoff (legacy audit)",
-	"  --label <name>    with --line: append the printed line to the provenance log",
+	"  --classifier '<raw answers JSON>'  derive the line from the classifier response (the honest path)",
+	"  --legacy-line     with --line --label: acknowledge a conductor-assigned (non-classified) line",
+	"  --label <name>    with --classifier/--line: append the printed line to the provenance log",
 	`                    (${DEFAULT_PROVENANCE_LOG}) so the dispatch line is machine-produced`,
 	"  --require-provenance  with --log: every dispatch line since the provenance cutoff must",
 	"                    have a provenance row. Fail-closed (exit 2) when the log is missing.",
@@ -1294,9 +1417,13 @@ function parseLogArgs(args) {
 function main(argv) {
 	const [mode, ...rest] = argv;
 	try {
-		if (mode === "--line") {
+		if (mode === "--classifier") {
 			const { raw, label } = parseLineArgs(rest);
-			return reportLine(raw, label);
+			return reportClassifier(raw, label);
+		}
+		if (mode === "--line") {
+			const { raw, label, legacy } = parseLineArgs(rest);
+			return reportLine(raw, label, legacy);
 		}
 		if (mode === "--ledger") {
 			if (rest.length > 1) throw new StructuralError(`--ledger takes at most one path (got ${rest.length})`);

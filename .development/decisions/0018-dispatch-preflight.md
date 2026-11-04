@@ -73,6 +73,13 @@ whose header records the cutoff date. `jev-check --log --require-provenance` (ru
 a dispatch line with no row, and fails closed (exit 2) when the log is missing or empty. Dispatches before the
 cutoff are exempt — no history is rewritten.
 
+**Addendum (2026-11-04).** `--line` alone is format-only: it accepts a conductor-assigned JSON, so a
+provenance row could claim a classifier that never ran (2026-10-31: `medium (0.70)` typed while the
+classifier said `high (0.32)`; 2026-11-04: the same shortcut, plus a wrong risk class). The
+provenance writer is therefore `--classifier '<raw answers>' --label <name>`, whose input is the
+classifier's response object rather than a hand-built summary; `--line --label` now requires
+`--legacy-line` to acknowledge a conductor-assigned line explicitly.
+
 ## Consequences
 
 - A high-thinking foreground dispatch with a deadline can no longer be created by accident; the durable shape is

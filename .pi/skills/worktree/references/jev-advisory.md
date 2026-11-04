@@ -39,27 +39,28 @@ const r = await models.classify(jev, {
       true: "It modifies src/ or presets/", false: "It does not modify src/ or presets/" } },
   },
 });
-return { level: r.answers.level.choice, conf: r.answers.level.confidence,
-         risk: r.answers.risk.choice, worktree: r.answers.worktree.probability > 0.5 };
+return r;   // the RAW response — this is what --classifier consumes (never a hand-built summary)
 ```
 
 ## The line — format it with the helper, never by hand
 
-The classifier JSON above is the input to `.pi/skills/worktree/jev-check.mjs --line`, which
-prints the **exact** dispatch line and refuses a level without a confidence:
+The classifier's **raw response** is the input to `.pi/skills/worktree/jev-check.mjs --classifier`,
+which derives and prints the exact dispatch line (and refuses a level without a confidence):
 
 ```bash
-$ node .pi/skills/worktree/jev-check.mjs --line \
-    '{"level":"medium","conf":0.84,"risk":"C2","worktree":true}'
+$ node .pi/skills/worktree/jev-check.mjs --classifier \
+    '{"answers":{"level":{"choice":"medium","confidence":0.84},"risk":{"choice":"C2"},"worktree":{"probability":0.9}}}'
 jev: medium (0.84) · C2 · worktree y          # paste this into the spec and the dispatch
 
-$ node .pi/skills/worktree/jev-check.mjs --line '{"level":"medium","risk":"C2","worktree":true}'
-jev-check: missing "conf" — a level without its classifier confidence is the skipped form (#366); …
-                                              # exit 1
+$ node .pi/skills/worktree/jev-check.mjs --line '{"level":"medium","conf":0.84,"risk":"C2","worktree":true}' --label impl-1
+jev-check: --line is format-only: …            # exit 2 — use --classifier, or --legacy-line to acknowledge
 ```
 
-**Pipeline:** codemode block → `--line` → paste. Three steps, one command after the query; no
-hand-formatting, no rounding drift, no missing confidence.
+**Pipeline:** codemode `return r` → `--classifier` → paste. The `--classifier` step is the only
+one that writes provenance: `--line --label` is refused unless `--legacy-line` acknowledges a
+conductor-assigned line, because a format-only check cannot tell a classified confidence from an
+invented one (2026-10-31: `medium (0.70)` typed, classifier said `high (0.32)`; 2026-11-04: the
+same shortcut, and the risk class was wrong — C2 dispatched, C1 classified).
 
 **A bare level is a finding.** `jev: medium · C2 · worktree y` records no query — it is the exact
 form the 2026-10-13 and 2026-10-23 skips produced. Every spec and dispatch carries the full line

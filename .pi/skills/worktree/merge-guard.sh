@@ -22,7 +22,8 @@
 #       dispatch audit + provenance) — fail-closed: a missing/empty log OR provenance log is
 #       exit 2 and blocks the merge. Provenance is the Goodhart fix: a line in the right FORMAT
 #       can be invented (2026-10-31: a dispatched `medium (0.70)` was really `high (0.32)`), so a
-#       dispatch line must have a row written by `jev-check --line '<json>' --label <name>`.
+#       dispatch line must have a row written by `jev-check --classifier '<raw answers>' --label <name>`
+#       (`--line --label` requires `--legacy-line`: format-only input cannot claim a classifier).
 #
 # Run it from the COCKPIT (dev) checkout: the subagent log lives in the cockpit's local,
 # gitignored `.pi/subagent-logs/`. `JEV_LOG` overrides the log path.
@@ -197,7 +198,7 @@ check_dispatch_audit() {
             fail_line "(e) dispatch audit: a dispatch since the cutoff carries no valid Rule 22 line or no provenance row"
             printf '%s\n' "${out}" | sed 's/^/      /' ;;
         *)
-            fail_line "(e) dispatch audit: jev-check --log could not run (exit ${rc}) — never a silent pass. A missing provenance log means no dispatch line was ever printed by \`--line --label\`; run it for every dispatch since the cutoff."
+            fail_line "(e) dispatch audit: jev-check --log could not run (exit ${rc}) — never a silent pass. A missing provenance log means no dispatch line was ever printed by \`--classifier --label\`; run it for every dispatch since the cutoff."
             printf '%s\n' "${out}" | sed 's/^/      /' ;;
     esac
 }

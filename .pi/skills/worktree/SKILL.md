@@ -289,8 +289,9 @@ never re-type their logic by hand. Full design:
     carries the exact form and the command that prints it), for foreground and background
     alike. `jev: unavailable` is an accepted form; the stated escape is
     `noJev: "<reason>"`, which proceeds and surfaces the reason as a warning. Print every
-    line with `--line '<json>' --label <name>` so the provenance log records that a
-    CLASSIFIER produced it — `--log --require-provenance` (run by `merge-guard.sh`) fails a
+    line from the classifier's **raw response**: `--classifier '<raw answers>' --label <name>`
+    (a hand-built `--line '<json>' --label` is refused without `--legacy-line`, which acknowledges a
+    conductor-assigned line), so the provenance log records that a CLASSIFIER produced it — `--log --require-provenance` (run by `merge-guard.sh`) fails a
     line nobody printed, because the format check alone passes an invented confidence
     (2026-10-31: `medium (0.70)` dispatched, the classifier had said `high (0.32)`).
     Snippet + the 2026-10-10 backtest (98 dispatches,
