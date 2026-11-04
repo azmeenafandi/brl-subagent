@@ -38,6 +38,9 @@ Verified: ce63df2 (2026-11-03)
 - **ADR amendments still pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
 
 ## Operating notes
+- **CodeGraph first, no exception:** every code-exploration task starts with `codegraph`
+  (`explore`, `node`, `callers`, `callees`, `impact`, `affected`); `grep`/`rg` only when the
+  graph cannot answer (a text/prose/config pattern, or a gap recorded as a finding) — and say why.
 - **Dispatch line:** in this repo (`processChecks`) a line-less dispatch is rejected before spawn; print every line with `--line --label` (provenance). `jev-check --log --require-provenance` runs in the merge gate; historical misses live in `.pi/jev-dispatch-exceptions.txt`.
 - **Presets:** implementation = `project-implementer` (SOLID/DRY/Liskov bar); review = `project-reviewer`; plan = `project-plan-critic`. Never `dev-agent` for implementation.
 - **Banking:** implementation and plan-critique briefs name `/tmp/brl-<label>-bank.md`; commit per step. A transport auto-retry resumes from the worktree, the bank and the retained session.

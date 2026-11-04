@@ -100,8 +100,17 @@ never re-type their logic by hand. Full design:
     currency, the session log / run entries audit trail), THEN theorize about
     code. When delegating a debugging task, instruct the subagent to check the
     environment first.
-13. **Graph-first scoping (Rule 13) — the Recon checkpoint.** Before writing a
-    spec for any C1/C2 change, the CONDUCTOR runs
+13. **Graph-first scoping (Rule 13) — code exploration starts with CodeGraph.**
+    **No exception.** Any code-exploration task — a C1/C2 spec, an ad-hoc
+    question, a design discussion, a review — starts with CodeGraph, not grep.
+    Manual `grep`/`rg`/`find` is allowed only when CodeGraph cannot answer with
+    sufficient detail: a text pattern, a doc/prose string, a config value, or a
+    gap you record as a finding. Say which case it is; **"grep is faster" is not
+    a case** — on 2026-11-04 a grep recon missed the four `LiveSubagent` test
+    fixtures that `codegraph explore` named in one call, and the miss surfaced
+    at red-test time instead of design time.
+
+    Before writing a spec for any C1/C2 change, the CONDUCTOR also runs
     `bash .pi/skills/worktree/recon.sh <symbol|file> [--file <src>] --grep`
     (conductor-side only; subagents never see the index, rule 4) and PASTES its
     output into a `## Recon` section at the top of the spec. **No C1/C2 spec
@@ -130,6 +139,14 @@ never re-type their logic by hand. Full design:
       `codegraph-refresh.sh` at every merge (lifecycle step 7);
       `codegraph-check.py --repo-root <path>` for freshness. CLI-only,
       conductor-side, watcher off, never a hook (#230).
+    - **Interactive recon — the commands that are not artifacts.**
+      `codegraph explore <area>` for a first pass over an unfamiliar area
+      (blast radius + verbatim source in one call — cap the output);
+      `codegraph node <symbol>` for source + the caller/callee trail in one
+      call; `codegraph callees <symbol>` for what a function does downstream
+      (`callers`/`impact` only see who calls it); `codegraph context <task>` to
+      build a task map. These are for reading; anything `recon.sh` prints, or a
+      test pins, still uses the `-j` commands.
       **Enforced for refactor PRs** via the review brief's `Structural closure`
       (`review-dispatch.md`): moved/renamed/deleted exports carry `recon.sh` callers +
       impact, reconciled against the PR diff.
