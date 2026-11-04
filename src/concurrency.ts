@@ -13,7 +13,8 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Priority } from "./types";
 import { PRIORITY_ORDER } from "./types";
 import type { SessionState } from "./state";
-import { LIVE_SPINNER_FRAME_MS, formatProgressStatus } from "./tui-format";
+import { LIVE_SPINNER_FRAME_MS, computeProgressTimes, formatProgressStatus } from "./tui-format";
+import type { LiveBudgetInput } from "./tui-format";
 
 // ---------------------------------------------------------------------------
 // Slot management
@@ -121,9 +122,31 @@ const STATUS_RESET_DELAY_MS = 3000;
 
 /** Repaint the footer from the current counters (issue #354). */
 function renderProgressStatus(state: SessionState, ctx: ExtensionContext): void {
+	const now = Date.now();
+	// Issue #423: the footer's clocks come from the LIVE map, with settled ids
+	// excluded — a finalized row must not keep a deadline on screen. The input
+	// is built explicitly (the formatter no longer reads the whole state) so the
+	// counter slice and the clock slice stay separable.
+	const live: LiveBudgetInput[] = [];
+	for (const [id, session] of state.subagentSessions) {
+		if (state.isLiveEntryFinalized(id)) continue;
+		live.push(session);
+	}
 	ctx.ui.setStatus(
 		"brl-subagent",
-		formatProgressStatus(state, Date.now(), ctx.ui.theme),
+		formatProgressStatus(
+			{
+				activeSubagents: state.activeSubagents,
+				completedSubagents: state.completedSubagents,
+				failedSubagents: state.failedSubagents,
+				unseenSubagents: state.unseenSubagents,
+				modeContext: state.modeContext,
+				activeSinceMs: state.activeSinceMs,
+				times: computeProgressTimes(live, now),
+			},
+			now,
+			ctx.ui.theme,
+		),
 	);
 }
 

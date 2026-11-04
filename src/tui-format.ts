@@ -82,6 +82,73 @@ export interface ProgressStatusInput {
 	modeContext?: ModeContext;
 	/** Epoch ms at which the oldest active run started; absent → no elapsed suffix. */
 	activeSinceMs?: number;
+	/**
+	 * Issue #423: the live map's own clock, when the caller has one. Supersedes
+	 * `activeSinceMs` for the age (it is the age of the OLDEST still-running
+	 * agent, not the burst anchor) and adds the nearest deadline.
+	 */
+	times?: ProgressTimes;
+}
+
+/** The one live-entry clock {@link computeProgressTimes} needs. */
+export interface LiveBudgetInput {
+	startedAt: number;
+	deadlineAt?: number;
+}
+
+/** The footer's two derived clocks, both already filtered of settled runs. */
+export interface ProgressTimes {
+	/** Age of the OLDEST still-running entry (ms), clamped at 0. */
+	ranMs?: number;
+	/** The soonest deadline: time left, and the fraction of its budget left. */
+	next?: { remainingMs: number; fraction: number };
+}
+
+/** Clamp a fraction into [0, 1]; a non-positive budget has nothing left. */
+function clampFraction(value: number): number {
+	if (!Number.isFinite(value)) return 0;
+	return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * Derive the footer's clocks from the live entries (issue #423). Pure.
+ *
+ * `ranMs` is the age of the OLDEST still-running agent — `now - min(startedAt)`
+ * — not the burst anchor: with a queue, the burst anchor predates the row the
+ * human is watching. An EMPTY list yields no `ranMs` so the caller can fall back
+ * to `activeSinceMs` (the pre-#423 line).
+ *
+ * `next` is the SOONEST deadline, and its `fraction` is measured against that
+ * entry's own budget, so a long-running agent with a long budget does not read
+ * as nearly-exhausted. Remaining time clamps at 0; a backwards clock jump makes
+ * the age 0 rather than negative.
+ */
+export function computeProgressTimes(
+	live: ReadonlyArray<LiveBudgetInput>,
+	now: number,
+): ProgressTimes {
+	if (live.length === 0) return {};
+
+	let oldestStartedAt = Infinity;
+	let soonest: LiveBudgetInput | undefined;
+	for (const entry of live) {
+		oldestStartedAt = Math.min(oldestStartedAt, entry.startedAt);
+		if (entry.deadlineAt === undefined) continue;
+		if (soonest?.deadlineAt === undefined || entry.deadlineAt < soonest.deadlineAt) {
+			soonest = entry;
+		}
+	}
+
+	const times: ProgressTimes = { ranMs: Math.max(0, now - oldestStartedAt) };
+	if (soonest?.deadlineAt !== undefined) {
+		const remainingMs = Math.max(0, soonest.deadlineAt - now);
+		const budgetMs = soonest.deadlineAt - soonest.startedAt;
+		times.next = {
+			remainingMs,
+			fraction: budgetMs > 0 ? clampFraction(remainingMs / budgetMs) : 0,
+		};
+	}
+	return times;
 }
 
 /** One coloured run of text on the footer line. */
@@ -95,6 +162,24 @@ const DONE_SYMBOL = "\u2713";
 const FAILED_SYMBOL = "\u2717";
 /** Separator before the elapsed suffix — " · ", muted with the duration. */
 const ELAPSED_SEPARATOR = " \u00b7 ";
+/** Issue #423 — the labels of the two clock segments, in one place. */
+const RAN_LABEL = "ran: ";
+const DEADLINE_LABEL = "deadline in ";
+const DEADLINE_STOPPING = "deadline: stopping";
+/**
+ * Issue #423 — the deadline segment's colour bands, by the fraction of budget
+ * left. The text always carries the value, so colour is redundant, never
+ * load-bearing.
+ */
+const DEADLINE_ERROR_FRACTION = 0.05;
+const DEADLINE_WARNING_FRACTION = 0.2;
+
+/** The deadline clock's colour: exhausted/almost → error, tight → warning. */
+function deadlineColor(next: { remainingMs: number; fraction: number }): ProgressStatusColor {
+	if (next.remainingMs <= 0 || next.fraction <= DEADLINE_ERROR_FRACTION) return "error";
+	if (next.fraction <= DEADLINE_WARNING_FRACTION) return "warning";
+	return "muted";
+}
 
 /** The verdict a run or step settled on — the input to {@link formatOutcomeSymbol}. */
 export type OutcomeKind = "success" | "failure";
@@ -189,10 +274,29 @@ export function formatProgressSegments(
 		});
 	}
 
-	if (active && state.activeSinceMs !== undefined) {
-		// Clamp at zero: a clock jump backwards must never print a negative age.
-		const elapsed = formatElapsed(Math.max(0, now - state.activeSinceMs));
-		segments.push({ color: "muted", text: `${ELAPSED_SEPARATOR}${elapsed}` });
+	if (active) {
+		const times = state.times;
+		if (times?.ranMs !== undefined) {
+			// Clamp again here: the formatter is public and may be handed a raw age.
+			segments.push({
+				color: "muted",
+				text: `${ELAPSED_SEPARATOR}${RAN_LABEL}${formatElapsed(Math.max(0, times.ranMs))}`,
+			});
+		} else if (state.activeSinceMs !== undefined) {
+			// Pre-#423 fallback (no live clock known): the burst anchor, unchanged.
+			// Clamp at zero: a clock jump backwards must never print a negative age.
+			const elapsed = formatElapsed(Math.max(0, now - state.activeSinceMs));
+			segments.push({ color: "muted", text: `${ELAPSED_SEPARATOR}${elapsed}` });
+		}
+		if (times?.next !== undefined) {
+			segments.push({
+				color: deadlineColor(times.next),
+				text:
+					times.next.remainingMs <= 0
+						? `${ELAPSED_SEPARATOR}${DEADLINE_STOPPING}`
+						: `${ELAPSED_SEPARATOR}${DEADLINE_LABEL}${formatElapsed(times.next.remainingMs)}`,
+			});
+		}
 	}
 
 	return segments;
@@ -213,13 +317,77 @@ export function formatProgressStatus(
 		.join("");
 }
 
-/** Dim section of a live row: short id + token counts + elapsed. */
+/** Dim section of a live row: short id + token counts + elapsed (+ budget). */
 export function formatLiveRowDim(
 	id: string,
 	usage: { input: number; output: number },
 	elapsedStr: string,
+	// Issue #423: the budget segment, when the run has a known deadline.
+	budget?: string,
 ): string {
-	return `  [${id.slice(0, 8)}]  \u2191${formatTokens(usage.input)} \u2193${formatTokens(usage.output)}  ${elapsedStr}`;
+	return `  [${id.slice(0, 8)}]  \u2191${formatTokens(usage.input)} \u2193${formatTokens(usage.output)}  ${elapsedStr}${budget ? ` \u00b7 ${budget}` : ""}`;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #423 — budget display (footer, monitor rows, dashboard)
+// ---------------------------------------------------------------------------
+
+/**
+ * A budget/used/left duration: a whole number of minutes as `30m` (a budget is
+ * read as a round number), otherwise the compact `4m 12s` form. Pure.
+ */
+export function formatBudgetDuration(ms: number): string {
+	const safe = Math.max(0, ms);
+	const minutes = safe / 60_000;
+	return Number.isInteger(minutes) && minutes > 0 ? `${minutes}m` : formatElapsed(safe);
+}
+
+/** The no-deadline token: the run has no timer, so there is nothing to state. */
+const NO_BUDGET = "\u2014";
+
+/**
+ * One live row's budget: `4m 12s / 30m (86% left)`. Pure.
+ *
+ * `startedAt` + `deadlineAt` are the entry's own clocks; a missing deadline
+ * renders {@link NO_BUDGET} (a foreground run with no timeout, or an old
+ * record) rather than inventing a 30m default the run does not have. An
+ * exhausted budget states `0% left` — the remaining time is clamped, never
+ * negative.
+ */
+export function formatBudget(
+	startedAt: number,
+	deadlineAt: number | undefined,
+	now: number,
+): string {
+	if (deadlineAt === undefined) return NO_BUDGET;
+	const budgetMs = deadlineAt - startedAt;
+	const usedMs = Math.max(0, now - startedAt);
+	const remainingMs = Math.max(0, deadlineAt - now);
+	const percentLeft =
+		budgetMs > 0 ? Math.max(0, Math.min(100, Math.floor((remainingMs / budgetMs) * 100))) : 0;
+	return `${formatBudgetDuration(usedMs)} / ${formatBudgetDuration(budgetMs)} (${percentLeft}% left)`;
+}
+
+/**
+ * Order live rows for display: soonest deadline first (undated last), then
+ * oldest first, then id for a stable total order. Pure; returns a copy.
+ *
+ * Ordering by `deadlineAt` IS ordering by remaining time (same `now`), so the
+ * list does not reorder between paints as the clock advances — only a
+ * registration or a deadline change moves a row.
+ */
+export function sortLiveSessions<T extends LiveBudgetInput>(
+	entries: ReadonlyArray<readonly [string, T]>,
+): Array<[string, T]> {
+	return entries
+		.map(([id, entry]) => [id, entry] as [string, T])
+		.sort(([aId, a], [bId, b]) => {
+			const aDeadline = a.deadlineAt ?? Number.POSITIVE_INFINITY;
+			const bDeadline = b.deadlineAt ?? Number.POSITIVE_INFINITY;
+			if (aDeadline !== bDeadline) return aDeadline - bDeadline;
+			if (a.startedAt !== b.startedAt) return a.startedAt - b.startedAt;
+			return aId < bId ? -1 : aId > bId ? 1 : 0;
+		});
 }
 
 /**
