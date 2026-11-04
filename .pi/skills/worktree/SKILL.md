@@ -139,6 +139,9 @@ never re-type their logic by hand. Full design:
       `codegraph-refresh.sh` at every merge (lifecycle step 7);
       `codegraph-check.py --repo-root <path>` for freshness. CLI-only,
       conductor-side, watcher off, never a hook (#230).
+    - **Enforced for refactor PRs** via the review brief's `Structural closure`
+      (`review-dispatch.md`): moved/renamed/deleted exports carry `recon.sh` callers +
+      impact, reconciled against the PR diff.
     - **Interactive recon — the commands that are not artifacts.**
       `codegraph explore <area>` for a first pass over an unfamiliar area
       (blast radius + verbatim source in one call — cap the output);
@@ -147,9 +150,10 @@ never re-type their logic by hand. Full design:
       (`callers`/`impact` only see who calls it); `codegraph context <task>` to
       build a task map. These are for reading; anything `recon.sh` prints, or a
       test pins, still uses the `-j` commands.
-      **Enforced for refactor PRs** via the review brief's `Structural closure`
-      (`review-dispatch.md`): moved/renamed/deleted exports carry `recon.sh` callers +
-      impact, reconciled against the PR diff.
+      **Selection:** area/first pass → `explore` (or `recon.sh --explore "<area>"`
+      for the freshness gate + a cap); one symbol → `node`; upstream →
+      `callers`/`impact`; downstream → `callees`; test set → `affected <changed
+      files>` (not a whole-module basename); task map → `context`.
     - **Doc concept / cross-document questions → grep + `docs-arch` + the ADRs**
       — the deterministic fallback. graphify is retired (ADR 0016); no LLM sits
       on the doc-navigation path.
