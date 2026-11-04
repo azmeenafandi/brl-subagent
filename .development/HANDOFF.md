@@ -45,7 +45,7 @@ Verified: 2b0e158 (2026-11-04)
 - **Dispatch line:** in this repo (`processChecks`) a line-less dispatch is rejected before spawn; print every line with `--line --label` (provenance). `jev-check --log --require-provenance` runs in the merge gate; historical misses live in `.pi/jev-dispatch-exceptions.txt`.
 - **Presets:** implementation = `project-implementer` (SOLID/DRY/Liskov bar); review = `project-reviewer`; plan = `project-plan-critic`. Never `dev-agent` for implementation.
 - **Banking:** implementation and plan-critique briefs name `/tmp/brl-<label>-bank.md`; commit per step. A transport auto-retry resumes from the worktree, the bank and the retained session.
-- **Reviews:** C1 adversarial, C2 focused, C3 conductor read (Rule 10). After a verdict: re-review the new head, or record `conductor-verified: <sha> — <evidence>` for nits.
+- **Reviews:** C1 adversarial, C2 focused, C3 conductor read (Rule 10). **Before dispatching one, re-run the classifier on the dispatch text** and print it `jev-check --classifier '<raw answers>' --label recheck-<pr>`; the record carries `jev-recheck:` + `Risk class:` (merge check (f) refuses a weaker tier). After a verdict: re-review the new head, or record `conductor-verified: <sha> — <evidence>` for nits.
 - **Releases:** no calendar pressure; never propose one unprompted.
 - **Gates:** `npx vitest run` · `npx tsc --noEmit` · `node scripts/docs-arch.mjs` · `node scripts/docs-decisions.mjs` · `git diff --check` · merge step 7 `codegraph-refresh.sh` (+ `codegraph-check.py`).
 - **Never `npm install` in the cockpit** — `worktree-prep.sh` only. `.pi/brl-subagent/{presets,templates}` are gitignored local config.

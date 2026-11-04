@@ -86,6 +86,8 @@ record carries three machine-checked facts. Miss one and the gate blocks the mer
 | PR number | `#<pr>` somewhere in the record (title is fine) | (b) the guard |
 | `Verdict: approve` / `Verdict: approve-with-nits` | one **final** disposition line; `changes-requested` may not merge | (c) the guard |
 | `Reviewed head: <sha>` | the commit the verdict covers (`@ <sha>` in the title also counts; a >=7-char prefix of the head is accepted) | (d) the guard |
+| `Risk class: C1`/`C2`/`C3` | the review depth the record claims | (f) the guard |
+| `jev-recheck: jev: <level> (<conf>) · Cx · worktree <y|n>` | the classifier's answer on the **dispatch text**, run at review time | (f) the guard |
 | `Structural closure:` | present for refactor PRs, or an explicit `n/a` | **informational** in this unit — not merge-gated |
 
 Format the head line explicitly, e.g.
@@ -113,6 +115,27 @@ Rules the parser assumes:
 - `approve-with-nits` is a mergeable verdict; `changes-requested` is not, and an
   unrecognised/absent verdict is not either.
 - Markdown decoration is fine (`**Verdict: approve**`, `## Verdict:`, backticks) — it is stripped before the line-start check.
+
+### `jev-recheck:` + `Risk class:` — the review-time classification
+
+The dispatch line is a **prediction** made before the work; the review-time recheck is the
+**fact**. Run the classifier (codemode, blind) on the dispatch text again, print it through the
+provenance writer, and paste the line into the record:
+
+```bash
+jev-check --classifier '<raw answers>' --label recheck-<pr>
+# jev: medium (0.63) · C1 · worktree y
+```
+
+```
+jev-recheck: jev: medium (0.63) · C1 · worktree y
+Risk class: C1
+```
+
+Merge check (f) requires a provenance row for that exact line under `recheck-<pr>`, and refuses
+when the declared `Risk class` is **weaker** than the recheck (C1 strongest). A record carrying
+only the dispatch-time line cannot show the tier was right — the 2026-11-04 miss was dispatched
+`C2`, classified `C1`, and would have merged under the old gate.
 
 ### `conductor-verified:` — the post-verdict commit
 

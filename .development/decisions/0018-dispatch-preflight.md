@@ -78,7 +78,10 @@ provenance row could claim a classifier that never ran (2026-10-31: `medium (0.7
 classifier said `high (0.32)`; 2026-11-04: the same shortcut, plus a wrong risk class). The
 provenance writer is therefore `--classifier '<raw answers>' --label <name>`, whose input is the
 classifier's response object rather than a hand-built summary; `--line --label` now requires
-`--legacy-line` to acknowledge a conductor-assigned line explicitly.
+`--legacy-line` to acknowledge a conductor-assigned line explicitly. The gate was moved to review
+time as well: the review record carries `jev-recheck:` (a fresh classification of the dispatch
+text, provenance row under `recheck-<pr>`) and `Risk class:`, and `merge-guard` check (f) refuses a
+record whose declared tier is weaker than the recheck.
 
 ## Consequences
 

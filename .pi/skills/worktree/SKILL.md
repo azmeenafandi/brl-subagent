@@ -358,7 +358,10 @@ ships as product documentation — see `CONTRIBUTING.md`).
                 `#<pr>`, (c) its last `Verdict:` is approve/approve-with-nits, (d) the
                 PR's CURRENT head sha is in the record or a `conductor-verified:` line
                 says how the post-verdict commit was verified, (e) `jev-check --log` is
-                green. Any failure blocks and lists every reason. Then merge commit to
+                green, (f) the record carries a `jev-recheck:` line (the classifier's
+                answer on the DISPATCH text, run at review time) with a `recheck-<pr>`
+                provenance row, and a `Risk class:` no weaker than the recheck. Any
+                failure blocks and lists every reason. Then merge commit to
                 `dev` (PRs target `dev`; `dev → main` is the release-time merge commit.
                 Never squash — per-issue commits must survive so release notes can read
                 them. Never merge a task PR straight to `main`.) Then run
@@ -403,7 +406,12 @@ no ritual without a classification:
 | **C3 — Minor** | Display, docs, config, comments, dead code | Conductor diff read only (no subagent review) |
 
 Reversibility is the tiebreaker when the class is ambiguous; new evidence found
-during review can reclassify. If unsure, default UP. Brief content, dispatch
+during review can reclassify. If unsure, default UP. **Before dispatching the
+review, re-run the classifier on the dispatch text** (codemode, blind) and print
+it with `jev-check --classifier '<raw answers>' --label recheck-<pr>`; the record
+carries that line plus `Risk class: <Cx>`, and merge check (f) refuses a record
+whose declared tier is weaker than the recheck. The dispatch-time line is a
+prediction; the recheck is the merge-time fact. Brief content, dispatch
 mechanics, verdict format: `references/review-dispatch.md`.
 
 ## When to use each script
