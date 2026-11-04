@@ -6,14 +6,14 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: 2b0e158 (2026-11-04)
+Verified: 87ac4ee (2026-11-04)
 
-- **dev** @ `2b0e158` — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle (PR #418, PR #420, PR #422 merged as merge commits). Only `dev` + `main`; worktrees: the cockpit pair only.
+- **dev** @ `87ac4ee` — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle (PR #418, PR #420, PR #422 merged as merge commits). Only `dev` + `main`; worktrees: the cockpit pair only.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e` (tag `v2.7.0`), npm `latest` = 2.7.0. **Release checkpoint OPEN**: #422 is extension code merged and unreleased.
-- **Running install:** **the dev checkout** (`pi install /…/brl-subagent-dev`), live after a reload — the npm 2.7.0 copy was removed (never two). It includes #422, so the bar is injected. Users still get published 2.7.0; `pi remove <dev> && pi install npm:brl-subagent` returns to the artifact.
-- **Board:** **#423 PR #425 open** (timeout visibility; implementation done, **C1 review pending**; 100 files / 2042 tests; mutation suite 15/15 red after the M15 pin) · **#421 closed** (PR #422, `ce63df2`) · **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415/#419 closed.
+- **Running install:** **the dev checkout** (`pi install /…/brl-subagent-dev`), live after a reload — the npm 2.7.0 copy was removed (never two). It includes #422 (bar injection); **#425 is on disk but not in the loaded process until the next `/reload`**. Users still get published 2.7.0.
+- **Board:** **#423 merged** (PR #425, `87ac4ee`; #426 tracks the surviving candidates B–E) · **#421 closed** (PR #422, `ce63df2`) · **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415/#419 closed.
 - **Cycle: `Pi 1.5.0 parity`** — closed 2026-11-03 (units PR #418, PR #420, PR #422). Previous cycle closed 2026-10-31.
-- **Suite:** 99 files / **1976**; `tsc --noEmit` clean; CodeGraph refreshed at `a57dcd4` / src unchanged since `ce63df2` (47 modules, 535 symbols, complete); **freshness = `src/` unchanged since the indexed commit**.
+- **Suite:** 100 files / **2043**; `tsc --noEmit` clean; CodeGraph refreshed at `87ac4ee` (47 modules, 545 symbols, complete). **Release checkpoint OPEN**: #425 is extension code merged and unreleased; the running install predates it until a reload.
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`, (f) `jev-recheck:` + `Risk class:` with a `recheck-<pr>` provenance row and a tier no weaker than the recheck. PRs to `dev` do not auto-close issues — close by hand.
 - **Dispatch models + presets (never guess):** implementers — preset **`project-implementer`** (carries the SOLID/DRY bar; `dev-agent` ships without one — do not use it) + model **`deepseek/deepseek-flash`**; reviewers — preset **`project-reviewer`** + model **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic — preset **`project-plan-critic`** (qwen3.8-max-0902); design second opinions — `project-proposer`, `inheritSystemPrompt: false`.
 - **Jev provenance:** run the classifier via codemode (`~typesafe/jev-latest`, blind), then `node .pi/skills/worktree/jev-check.mjs --classifier '<raw answers>' --label <label>` (rows in `.pi/jev-lines.log`). `--line --label` is refused without `--legacy-line` — format-only input cannot claim a classifier.
@@ -23,12 +23,14 @@ Verified: 2b0e158 (2026-11-04)
 - **#421 merged** (PR #422, `ce63df2`): a tracked `.pi/skills/worktree/references/engineering-bar.md` is injected as `<engineering-bar>` at **both** seams (background `appendSystemPrompt` after `<resume-context>`; foreground `--append-system-prompt` at `runSubagent`) behind `processChecks`; 17 tests pin both directions, incl. "disabled → the file is never read" and the packed tarball excludes it. ADR 0019 carries an addendum + falsifier (first real third-party setter → split the field). No adversarial review was dispatched (maintainer instruction); a C2 conductor verification cleared it, and an independent glm-5.3 design opinion recommended keeping the umbrella. **Live-verified on the dev build:** a `dev-agent` probe reported the injected section; after trimming the duplicated bar text from the local `project-implementer`/`project-reviewer` presets, a `project-implementer` probe still reported it (and the old preset heading was gone) — the bar now arrives solely through the injection.
 - **#419 merged** (PR #420): the `noJev` bypass is validated in the handler — coerced primitives/non-strings are refused (ADR 0020 supersedes ADR 0018 §2's schema claim).
 - **Tooling**: ts-ast exit-hook race fixed; CodeGraph freshness now means "`src/` unchanged"; the dispatch presets are pinned in STATE + SKILL. **CodeGraph-first is now Rule 13 for ALL exploration**; `recon.sh --explore` + the command cheat-line + the ADR 0015 addendum landed in `9a07273` (#424).
+- **#423 merged** (PR #425, `87ac4ee`): the budget is visible on the footer (`ran:` / `deadline in`), monitor and dashboard (per-row `elapsed / budget`, deadline order, settled rows filtered, drill-in identity via the painted list), and result/wake (`Budget: … used, … left` / `(exhausted)` on timeout evidence). C1 review approve-with-nits; both nits fixed in `a94af63`; the new merge check **(f)** cleared its first real merge (provenance-bound `jev-recheck:` + tier).
 - **Complexity/CRAP measured** (`.development/investigations/complexity-crap-2026-11-02.md`) — decision queued for **2026-11-06**.
 
 ### Next actions
 1. **2026-11-06** — complexity/CRAP decision: no gate vs changed-functions advisory vs soft ceiling.
 2. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
-3. **#423 PR #425** — C1 review pending. The review record must carry `jev-recheck:` + `Risk class: C1` (merge check (f)); print the recheck with `jev-check --classifier '<raw answers>' --label recheck-425`.
+3. **#426 design-open** — timeout follow-ups (soft stage, stall watchdog, extension, calibration); no priority recorded yet.
+4. **Live verification pending** for #425: after the next `/reload`, two background runs with different timeouts should show `ran:` + `deadline in` on the footer and per-row budgets in the monitor.
 
 ## Open items
 - **#423 design-open** — subagent timeouts: visible budget, soft stage, stall watchdog vs
