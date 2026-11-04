@@ -22,7 +22,7 @@ Verified: ce63df2 (2026-11-03)
 ### Since the last handover
 - **#421 merged** (PR #422, `ce63df2`): a tracked `.pi/skills/worktree/references/engineering-bar.md` is injected as `<engineering-bar>` at **both** seams (background `appendSystemPrompt` after `<resume-context>`; foreground `--append-system-prompt` at `runSubagent`) behind `processChecks`; 17 tests pin both directions, incl. "disabled → the file is never read" and the packed tarball excludes it. ADR 0019 carries an addendum + falsifier (first real third-party setter → split the field). No adversarial review was dispatched (maintainer instruction); a C2 conductor verification cleared it, and an independent glm-5.3 design opinion recommended keeping the umbrella. **Live-verified on the dev build:** a `dev-agent` probe reported the injected section; after trimming the duplicated bar text from the local `project-implementer`/`project-reviewer` presets, a `project-implementer` probe still reported it (and the old preset heading was gone) — the bar now arrives solely through the injection.
 - **#419 merged** (PR #420): the `noJev` bypass is validated in the handler — coerced primitives/non-strings are refused (ADR 0020 supersedes ADR 0018 §2's schema claim).
-- **Tooling**: ts-ast exit-hook race fixed; CodeGraph freshness now means "`src/` unchanged"; the dispatch presets are pinned in STATE + SKILL.
+- **Tooling**: ts-ast exit-hook race fixed; CodeGraph freshness now means "`src/` unchanged"; the dispatch presets are pinned in STATE + SKILL. **CodeGraph-first is now Rule 13 for ALL exploration**; `recon.sh --explore` + the command cheat-line + the ADR 0015 addendum landed in `9a07273` (#424).
 - **Complexity/CRAP measured** (`.development/investigations/complexity-crap-2026-11-02.md`) — decision queued for **2026-11-06**.
 
 ### Next actions
@@ -33,8 +33,6 @@ Verified: ce63df2 (2026-11-03)
 - **#423 design-open** — subagent timeouts: visible budget, soft stage, stall watchdog vs
   cliff, extension, calibration. Filed 2026-11-03 from a discussion; no direction chosen
   (the maintainer is deciding the priority order). Do not implement from it yet.
-- **#424 tooling** — CodeGraph-first on every exploration (Rule 13 amended in `5004f78`);
-  remaining: `recon.sh --explore`, a command-selection cheat-line, optional ADR 0015 addendum.
 - **#402 held** — re-evaluate only when pi's typebox pin moves.
 - **Sweep candidates (advisory):** wire the CodeGraph freshness check into `merge-guard` as check (f) (the rule is fixed, the *enforcement* is manual); `sprint-metrics` auto-retry accounting; `stop_subagent`'s bare not-found; Jev exceptions ↔ ledger cross-check; plan-critic cost discipline.
 - **ADR amendments still pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
