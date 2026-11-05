@@ -69,3 +69,52 @@ Three of four pass; the fourth is the one that matters. **Park.**
 Reopen only if: (a) CodeGraph adds no type/reference capability and a refactor PR's `Structural
 closure` misses a type-only reference in a way that matters, **or** (b) a second MCP-based tool
 becomes necessary for another reason, making the lane split free rather than a new cost.
+
+## Addendum (2026-11-05) — interface correction and the editing surface
+
+Added after reading the official tools page (`01-about/035_tools.html`), which was not consulted
+before the first write-up.
+
+### The cost numbers measured the classic interface, not v2's default
+
+The bake-off forced `--agent-interface tools` (one tool per operation). v2's **default is the REPL**:
+one tool executes Python, the agent composes operations ("find symbol → inspect members → find
+their references") in a **single call**, and intermediate results stay in the Python runtime. So:
+
+- 5–6 s/query is an artifact of this client starting a server per call **and** of the one-operation
+  interface — not an inherent cost;
+- 1.8–3 k chars/output is the classic interface returning everything; the REPL returns only what the
+  agent asked for ("summary vs thousands of tokens").
+
+The **answer-quality** results (Q3/Q5/Q1) are unaffected — they are about what the LSP knows, not how
+it is called. The cost comparison in the table above is therefore **conservative**, and the REPL was
+not evaluated.
+
+### Editing / refactoring tools (not evaluated in the bake-off)
+
+| tool | note |
+|---|---|
+| `rename_symbol` | LSP-wide rename incl. type references — the `Structural closure` blind spot |
+| `safe_delete_symbol` | refuses when references remain |
+| `get_diagnostics_for_symbol` (optional) | diagnostics for a symbol and its referrers |
+| `replace_in_files` | dry-run preview + per-occurrence selection (safer bulk edit than one-at-a-time `edit`) |
+| `replace_symbol_body` | still judged risky for large functions (whole-body replacement) |
+| `query_project` (optional) | read-only queries across *other* projects |
+
+**Exposure fact (verified):** `--tools` does **not** remove MCP tools — "it does not remove MCP
+tools, whose reach is set by their exposure"; a restricted preset can still call them via `codemode`.
+Removal requires `--exclude-tools 'mcp__*'` or `--no-mcp`. Any editing adoption is therefore a harness
+change, not a `.pi/mcp.json` entry.
+
+### Why the verdict is unchanged
+
+- The lane problem gets **worse**, not better, when the second source is cheaper to use: "what
+  references this?" still has two answers (call graph vs LSP).
+- The agent that would edit is a child; the exposure hole above is unresolved.
+- GPL/Python/CI costs are unchanged.
+
+### Conditional trigger added
+
+If the **2026-11-06 complexity/CRAP decision** starts real refactoring, run a **refactoring bake-off**
+before any adoption: scratch branch, one real rename and one move, tests, classic vs REPL. That
+experiment measures modification cost and safety — a different question from the retrieval bake-off.
