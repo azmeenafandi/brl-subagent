@@ -6,12 +6,12 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: 8d0fced (2026-11-05)
+Verified: 08c75ba (2026-11-06)
 
 - **dev** @ `8d0fced` (docs after the #425 merge `87ac4ee`) — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle (PR #418, PR #420, PR #422 merged as merge commits). Only `dev` + `main`; worktrees: the cockpit pair only.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e` (tag `v2.7.0`), npm `latest` = 2.7.0. **Release checkpoint OPEN**: #422 is extension code merged and unreleased.
 - **Running install:** **the dev checkout** (`pi install /…/brl-subagent-dev`), live after a reload — the npm 2.7.0 copy was removed (never two). It includes #422 (bar injection) and #425 (deadline visibility); reloaded and live-verified. Users still get published 2.7.0.
-- **Board:** **#423 merged** (PR #425, `87ac4ee`; #426 tracks the surviving candidates B–E) · **#427 Serena bake-off closed/parked** (findings in `.development/investigations/serena-bakeoff-2026-11-05/`) · **#421 closed** (PR #422, `ce63df2`) · **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415/#419 closed.
+- **Board:** **#423 merged** (PR #425, `87ac4ee`; #426 tracks the surviving candidates B–E) · **#427 Serena bake-off closed** (findings + addendum in `.development/investigations/serena-bakeoff-2026-11-05/`) · **#428/#429/#430 open** (CRAP follow-ups) · **#421 closed** (PR #422, `ce63df2`) · **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415/#419 closed.
 - **Cycle: `Pi 1.5.0 parity`** — closed 2026-11-03 (units PR #418, PR #420, PR #422). Previous cycle closed 2026-10-31.
 - **Suite:** 100 files / **2043**; `tsc --noEmit` clean; CodeGraph src unchanged since `87ac4ee` (47 modules, 545 symbols, complete). **Release checkpoint OPEN**: #422 + #425 are extension code merged and unreleased (the dev install is live; users get 2.7.0).
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`, (f) `jev-recheck:` + `Risk class:` with a `recheck-<pr>` provenance row and a tier no weaker than the recheck. PRs to `dev` do not auto-close issues — close by hand.
@@ -25,12 +25,12 @@ Verified: 8d0fced (2026-11-05)
 - **Tooling**: ts-ast exit-hook race fixed; CodeGraph freshness now means "`src/` unchanged"; the dispatch presets are pinned in STATE + SKILL. **CodeGraph-first is now Rule 13 for ALL exploration**; `recon.sh --explore` + the command cheat-line + the ADR 0015 addendum landed in `9a07273` (#424).
 - **#423 merged** (PR #425, `87ac4ee`): the budget is visible on the footer (`ran:` / `deadline in`), monitor and dashboard (per-row `elapsed / budget`, deadline order, settled rows filtered, drill-in identity via the painted list), and result/wake (`Budget: … used, … left` / `(exhausted)` on timeout evidence). C1 review approve-with-nits; both nits fixed in `a94af63`; the new merge check **(f)** cleared its first real merge (provenance-bound `jev-recheck:` + tier). **Live-verified after `/reload`:** two concurrent probes (3 m / 8 m) printed `Budget: 3m — 2m 18s used, 42s left` and `Budget: 8m — 2m 2s used, 5m 58s left` (the 3 m one also showed its budget mid-run), and the maintainer confirmed the footer's `ran:`/`deadline in` and the monitor's deadline order.
 - **Serena bake-off (#427, 2026-11-05): parked.** LSP-backed Serena (16 s setup; 5–6 s/query) does answer what CodeGraph structurally cannot — type-position references, implementations, bash symbols — but adoption creates a second "what references this?" lane, which is the ambiguity ADR 0016 closed. No dependency added; scratch + tool uninstalled; findings + reopen trigger recorded. **Addendum (docs review):** the bake-off measured the classic `--agent-interface tools`; v2's REPL (composition, context economy) is untested, so the 5–6 s/query and 1.8–3 k-char costs are interface-specific. Editing tools (rename, safe delete, symbol diagnostics, dry-run `replace_in_files`) were not evaluated; `--tools` does **not** remove MCP tools (`--exclude-tools 'mcp__*'`/`--no-mcp` required). **If the complexity decision starts refactoring, run the refactoring bake-off first.**
-- **Complexity/CRAP measured** (`.development/investigations/complexity-crap-2026-11-02.md`) — decision queued for **2026-11-06**.
+- **Complexity/CRAP decided (2026-11-06): A** — no CRAP gate, smell vocabulary unchanged (ADR 0021). The three genuine findings are scheduled: #428 tests for `skipJsonValue` (7% cov), #429 tests for `resolveSubagentParams` (61%), #430 behavior-preserving `execute` split (116 cx). Falsifier: a changed-function regression that escapes review → adopt B (report-only, TUI-excluded).
 
 ### Next actions
-1. **2026-11-06 (today)** — complexity/CRAP decision: no gate vs changed-functions advisory vs soft ceiling. If it starts refactoring → refactoring bake-off first (#427 findings addendum).
-2. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
-3. **#426 design-open** — timeout follow-ups (soft stage, stall watchdog, extension, calibration); no priority recorded yet.
+1. **#428 → #429 → #430** — the CRAP follow-ups (tests, tests, behavior-preserving `execute` split). #430 uses our tools; the Serena refactoring bake-off is a precondition for *adopting* Serena, not for the refactor itself.
+2. **#426 design-open** — timeout follow-ups (soft stage, stall watchdog, extension, calibration); no priority recorded yet.
+3. **#402 held** (dependabot typebox; host pins 1.3.27); the "bare `Verdict:` line" doc nit remains optional. **Release checkpoint OPEN** — a 2.7.1/2.8.0 cut is available when wanted.
 
 ## Open items
 - **#423 design-open** — subagent timeouts: visible budget, soft stage, stall watchdog vs
