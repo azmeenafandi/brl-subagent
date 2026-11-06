@@ -44,21 +44,14 @@ import * as path from "node:path";
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
-import { findRetryLineage, readJsonStringAt, scanTopLevelScalars, skipJsonValue } from "../session-manager";
+import {
+	RETRY_IDENTITY_KEYS,
+	findRetryLineage,
+	readJsonStringAt,
+	scanTopLevelScalars,
+	skipJsonValue,
+} from "../session-manager";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
-
-/**
- * Mirrors `RETRY_IDENTITY_KEYS` (`session-manager.ts`), which is not exported:
- * the six fields the shallow reader is allowed to touch.
- */
-const IDENTITY_KEYS: ReadonlySet<string> = new Set([
-	"id",
-	"dispatchId",
-	"resumeOf",
-	"attempt",
-	"status",
-	"startedAt",
-]);
 
 interface StringCase {
 	/** Doubles as the test name; the A-ID comes from the plan critique. */
@@ -251,7 +244,7 @@ const WHITESPACE_CASES: ScanCase[] = [
 
 describe("scanTopLevelScalars — the whitespace alphabet is /\\s/ (#428 D, kills M11)", () => {
 	it.each(WHITESPACE_CASES)("$id", ({ text, entries }) => {
-		expect([...scanTopLevelScalars(text, IDENTITY_KEYS)]).toEqual(entries);
+		expect([...scanTopLevelScalars(text, RETRY_IDENTITY_KEYS)]).toEqual(entries);
 	});
 });
 
@@ -382,7 +375,7 @@ const SCAN_CASES: ScanCase[] = [
 
 describe("scanTopLevelScalars — nested payloads are skipped, never read (#428 E, kills M4/M11/M17/M18)", () => {
 	it.each(SCAN_CASES)("$id", ({ text, entries }) => {
-		expect([...scanTopLevelScalars(text, IDENTITY_KEYS)]).toEqual(entries);
+		expect([...scanTopLevelScalars(text, RETRY_IDENTITY_KEYS)]).toEqual(entries);
 	});
 
 	it("E12 a ~200 KB record still yields only the identity fields", () => {
@@ -397,7 +390,7 @@ describe("scanTopLevelScalars — nested payloads are skipped, never read (#428 
 			result: { messages, finalOutput: "done" },
 		});
 		expect(record.length).toBeGreaterThan(200_000);
-		expect([...scanTopLevelScalars(record, IDENTITY_KEYS)]).toEqual([
+		expect([...scanTopLevelScalars(record, RETRY_IDENTITY_KEYS)]).toEqual([
 			["id", NESTED_SOURCE_ID],
 			["status", "completed"],
 			["startedAt", 1762345678901],

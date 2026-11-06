@@ -504,7 +504,11 @@ export const RETRY_SCAN_WINDOW_DAYS = RETRY_SCAN_WINDOW_MS / (24 * 60 * 60 * 100
 /** The short form rendered by notices: the first 8 hex characters of a UUID. */
 const SHORT_AGENT_ID_RE = /^[0-9a-f]{8}$/i;
 
-const RETRY_IDENTITY_KEYS: ReadonlySet<string> = new Set([
+/**
+ * The single source of the retry-identity key set, shared with the scanner tests
+ * (`src/__tests__/json-scanner.test.ts`).
+ */
+export const RETRY_IDENTITY_KEYS: ReadonlySet<string> = new Set([
   'id',
   'dispatchId',
   'resumeOf',
@@ -644,7 +648,9 @@ function skipWhitespace(text: string, index: number): number {
  *
  * Contract (pinned by `src/__tests__/json-scanner.test.ts`, issue #428):
  *  - precondition: `start` is the `"` that opens the value.
- *  - never throws; `end` is always a number in [start, text.length].
+ *  - never throws; `end` is always a number in
+ *    `[start, max(start, text.length)]` (when `start` is past the end, it
+ *    returns `start`).
  *  - unterminated string -> `end === text.length` and `value` is the raw
  *    remainder (D1): a corrupt record is skipped by the caller, never surfaced
  *    as an error.
@@ -692,7 +698,9 @@ export function readJsonStringAt(text: string, start: number): { value: string; 
  * Contract (pinned by `src/__tests__/json-scanner.test.ts`, issue #428):
  *  - precondition: `start` is the value's FIRST character; the caller has
  *    already skipped whitespace (`scanTopLevelScalars` does, via `skipWhitespace`).
- *  - never throws; always returns a number in [start, text.length].
+ *  - never throws; always returns a number in
+ *    `[start, max(start, text.length)]` (when `start` is past the end, it
+ *    returns `start`).
  *  - unterminated container or string -> `text.length` (D1: corrupt records are
  *    dropped upstream by `readAgentIdentity`, never surfaced as an error).
  *  - containers are depth-counted on a single pass, +1 for `{`/`[` and -1 for
