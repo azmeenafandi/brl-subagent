@@ -876,6 +876,37 @@ describe("drop-timeout: foreground keeps its shape, loses its deadline (issue #4
 		expect(h.runSubagent.mock.calls[0]?.[8]).toBeUndefined();
 	});
 
+	it("config tier: seeded 'always' + explicit background:false is not switched into a rejection (M13)", async () => {
+		// The omitted-background rows cannot tell a config-resolved mode from a raw
+		// `undefined` call param: both 'writes' and 'always' resolve foreground, and
+		// a raw undefined is not 'auto' either — the verdict is `drop-timeout`
+		// either way. This row CAN: with the effective mode resolved (always), the
+		// pre-flight keeps the shape and drops the deadline; a call site that fed
+		// the predicate the raw param would take the `switch` arm and be REJECTED
+		// at the background gate (#433 all over again, through the config tier).
+		optIn();
+		const ctx = makeCtx();
+		await seedConfig(ctx, { approvalMode: "always" });
+		const result = await dispatch(
+			{
+				task: `critique the plan\n\n${VALID_LINE}`,
+				thinkingLevel: "high",
+				background: false,
+				timeout: 600_000,
+			},
+			ctx,
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).not.toContain(
+			"Cannot spawn background agent with approvalMode 'always'",
+		);
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		expect(h.runSubagent.mock.calls[0]?.[8]).toBeUndefined();
+		expect(notified(THINKING_TIMEOUT_DROP_NOTICE)).toBe(true);
+	});
+
 	it("force:true overrides the drop — the explicit timeout is preserved, and only the log records it", async () => {
 		optIn();
 		const result = await dispatch({
