@@ -157,6 +157,7 @@ interface CapturedMessage {
 	customType?: string;
 	content?: string;
 	display?: boolean;
+	details?: Record<string, unknown>;
 }
 
 let tool: ToolEntry;
@@ -284,6 +285,18 @@ function notices(): CapturedMessage[] {
 /** Whether a notice carrying `text` went out on the UI channel. */
 function notified(text: string): boolean {
 	return notifySpy.mock.calls.some((call) => String(call[0]).includes(text));
+}
+
+/**
+ * The drop notice's `details` payload — the only place the dropped ms value and
+ * the mode the predicate was fed are recorded. Distinguished from the switch
+ * arm's payload by the type of `previousTimeout` (a number here, "dropped"
+ * there).
+ */
+function dropNoticeDetails(): Record<string, unknown> | undefined {
+	return notices()
+		.map((m) => m.details)
+		.find((d) => typeof d?.previousTimeout === "number");
 }
 
 /**
@@ -800,9 +813,7 @@ describe("drop-timeout: foreground keeps its shape, loses its deadline (issue #4
 
 		// The dropped value is the ACTUAL ms, not the switch arm's "dropped": a
 		// friction-log reader needs the number to tell a budget cap from a clock.
-		const details = (sendMessageSpy.mock.calls as Array<[{ details?: Record<string, unknown> }]>)
-			.map((call) => call[0].details)
-			.find((d) => d?.previousTimeout === 600_000);
+		const details = dropNoticeDetails();
 		expect(details?.previousTimeout).toBe(600_000);
 		expect(details?.effectiveApprovalMode).toBe("writes");
 	});
@@ -856,6 +867,12 @@ describe("drop-timeout: foreground keeps its shape, loses its deadline (issue #4
 		expect(h.runSubagent).toHaveBeenCalledTimes(1);
 		expect(h.runSubagent.mock.calls[0]?.[8]).toBeUndefined();
 		expect(notified(THINKING_TIMEOUT_DROP_NOTICE)).toBe(true);
+		// M7: the notice records the mode the predicate ACTUALLY judged. The verdict
+		// on the omitted row is the same for a raw `undefined` and for 'writes'
+		// (both resolve foreground), so the verdict alone cannot tell them apart —
+		// the recorded mode can. A call site that fed the raw call param leaves this
+		// empty while the dispatch still looks right.
+		expect(dropNoticeDetails()?.effectiveApprovalMode).toBe("writes");
 	});
 
 	it("config tier: a seeded 'always' mode is not rejected — foreground, no deadline (acceptance B, #433)", async () => {
