@@ -6,11 +6,11 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` and `-2026-11-06.md` — not current state.
 
 ## STATE
-Verified: 137b396 (2026-11-06)
+Verified: ff15d7c (2026-11-06)
 
-- **dev** @ `137b396` (PR #441 merge, #437 listener-lifecycle fix) — `git log -1 --oneline dev`. Branches `dev` + `main` only; worktrees are the cockpit pair only — `git worktree list`.
+- **dev** @ `ff15d7c` (handoff update following PR #441 merge `137b396`) — `git log -1 --oneline dev`. Branches `dev` + `main` only; worktrees are the cockpit pair only — `git worktree list`.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e`, tag `v2.7.0`, npm `latest` 2.7.0 (`gh release list`). **Release checkpoint OPEN** (rule #6): **#422 + #425 + #435 + #441** are extension code, merged and unreleased. Release on the maintainer's go only — never propose a version unprompted.
-- **Running install:** the **dev checkout** (`pi list`); last activation preceded #441, so **#437 fix is not yet loaded or live-verified**. Maintainer-triggered `/reload` is needed before an isolated startup → `/new` → new-run wake → `/reload` → new-run wake probe; never automate the reload. #422, #425 and #435 were live-verified. Users get published 2.7.0.
+- **Running install:** the **dev checkout** (`pi list`), reloaded by the maintainer after #441 merged. #437 success wakes live-verified on startup, after `/new` and after `/reload` (issue #437 comment; isolated probe IDs `b71db04c`, `9ab40e75`, `77fa0430`); transport retry after replacement is unit-tested, not live-probed. #422, #425 and #435 were also live-verified. Users get published 2.7.0.
 - **Board** (`gh issue list`): open **#439** (retry-start ambiguity), **#440** (terminal-claim overflow duplicate), **#430** (`execute` split), **#434** (per-unit pre-flight bypass), **#436** (preset frontmatter field parity), **#426** (timeout design-open); **PR #402** held (typebox 1.4.3 vs the host's 1.3.27 pin). Merged 2026-11-06: #428 (PR #432), #431 + #433 (PR #435), #429 (PR #438), #437 (PR #441).
 - **Cycle:** `Pi 1.5.0 parity` closed 2026-11-03; none open. The current thread is the CRAP follow-ups (#429, #430) from ADR 0021.
 - **Suite:** 103 files / **2191** (`npx vitest run`, independently verified by reviewer on PR #441 head); typecheck clean on PR head; CodeGraph complete at `137b396`, 552 exports (`python3 .pi/skills/worktree/codegraph-check.py`).
@@ -28,16 +28,15 @@ Verified: 137b396 (2026-11-06)
 - **#435 live-verified** (2026-11-06, probes `probe-435a`/`probe-435b`): both drop-arm shapes confirmed in the running install — 600 s timeout dropped, run stayed foreground with no deadline, notice on followUp + toast (maintainer-confirmed), run snapshots carry no `timeout` and `background:false`; the `background:false`+`always` twin was **not rejected** (the #433 bug). Provenance rows in `.pi/jev-lines.log`.
 - **#429 kicked off**: issue amended (coverage % → branch checklist + named mutants), plan doc `test-plan-429-2026-11-06.md` (`51f5971`); plan critique ran (`critique-429`, xhigh/terra, 7m56s) — verdict **needs-work**, 31/31 mutants killed (none equivalent), plan corrections: R-anchors are :370-398, integration §1 uses a `MockSessionState` (real default `maxThinkingLevel: off`). Transcribed to `plan-critique-429-2026-11-06.md` (`6be07d0`).
 - **#429 merged** (PR #438, `7f85096`): 29 tests; C2 review approve-with-nits, 10/10 specified mutants killed; issue closed, worktree cleaned. Review record `/tmp/REVIEW_438.md` contains a mistyped full SHA; the reviewer final identifies `e1568fc`, matching the actual PR head. Corrected merge-gate record was in the cleaned worktree.
-- **#437 merged** (PR #441, `137b396`): per-runtime terminal listeners are removed synchronously on shutdown; C1 review approve-with-nits, two mutations killed, 2191 tests green. Issue closed; worktree cleaned. Maintainer chose not to guarantee delivery for runs already active during `/new`; broader retry and dedupe problems are #439 and #440. Live verification pending activation. Five `.development/investigations/issue-437-*` reports remain untracked; key reports are also posted to #437.
+- **#437 merged** (PR #441, `137b396`): per-runtime terminal listeners are removed synchronously on shutdown; C1 review approve-with-nits, two mutations killed, 2191 tests green. Issue closed; worktree cleaned. Maintainer chose not to guarantee delivery for runs already active during `/new`; broader retry and dedupe problems are #439 and #440. Success wakes live-verified on startup, after `/new`, and after `/reload` (issue #437 comment). Five `.development/investigations/issue-437-*` reports remain untracked; key reports are also posted to #437.
 - **Two critique escalations, UNFILED** (need maintainer triage): (a) `tools: []` — resolver returns it, pre-flight reads write-as-unavailable, but foreground spawn args carry no restriction while background forwards `[]` (`session-manager.ts:1355`); critic's SDK probe: omitted → `read,bash,edit,write`, `[]` → none. (b) schema-valid bogus `thinkingLevel` resolves to `undefined` and reaches spawn args. Evidence in the critique doc.
 
 ### Next actions
-1. **#437 live verification** — on maintainer-triggered activation, verify visible wakes for new runs in an isolated session after startup, `/new` and `/reload`; do not start a run across `/new`.
-2. **#439 / #440** — unscheduled follow-ups (retry-start ambiguity; terminal-claim overflow).
-3. **File the two #429 escalations** (tools:[] inconsistency; bogus thinking level) once the maintainer gives direction.
-4. **#430** — the behavior-preserving `execute` split (C1; needs a CodeGraph structural map and a closure block).
-5. **#434** and **#436** — unscheduled; #436 is the cheaper of the two.
-6. **#426** needs the maintainer's priority call before any design work.
+1. **#439 / #440** — unscheduled follow-ups (retry-start ambiguity; terminal-claim overflow).
+2. **File the two #429 escalations** (tools:[] inconsistency; bogus thinking level) once the maintainer gives direction.
+3. **#430** — the behavior-preserving `execute` split (C1; needs a CodeGraph structural map and a closure block).
+4. **#434** and **#436** — unscheduled; #436 is the cheaper of the two.
+5. **#426** needs the maintainer's priority call before any design work.
 
 ## Open items
 - **#429 escalations unfiled** — `tools: []` foreground/background toolset inconsistency (critic flags security-adjacent) + bogus `thinkingLevel` → `undefined`; both measured in `plan-critique-429-2026-11-06.md`, awaiting triage.
