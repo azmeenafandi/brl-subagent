@@ -1,7 +1,8 @@
 # Complexity / CRAP re-measurement — 2026-11-02
 
-> **REVISIT 2026-11-06.** Decide then: keep the current smell vocabulary (no CRAP gate), adopt CRAP as a
-> changed-functions **advisory**, or a soft ceiling on new/changed functions only. Inputs below.
+> **DECIDED 2026-11-06: option A** — keep the smell vocabulary, no CRAP gate; the genuine findings are
+> scheduled as #428 (skipJsonValue tests), #429 (resolveSubagentParams tests), #430 (split `execute`).
+> See ADR 0021. Inputs below.
 
 ## Why
 

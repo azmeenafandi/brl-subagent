@@ -28,8 +28,9 @@ _Generated from each `.development/decisions/NNNN-*.md` record by `npm run docs:
 | 0018 | [The dispatch pre-flight: shape auto-switch, and the opt-in Jev-line gate](./0018-dispatch-preflight.md) | Accepted | 2026-10-31 |
 | 0019 | [Project-local process checks: one umbrella `processChecks` flag](./0019-project-process-checks.md) | Accepted | 2026-10-31 |
 | 0020 | [The `noJev` bypass is validated in the handler, not the schema](./0020-nojev-handler-validation.md) | Accepted | 2026-11-02 |
+| 0021 | [No CRAP gate: complexity stays a smell, coverage debt is paid as targeted follow-ups](./0021-no-crap-gate-targeted-followups.md) | Accepted | 2026-11-06 |
 
-**20 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
+**21 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
 
 <!-- END GENERATED: adr-index -->
 
