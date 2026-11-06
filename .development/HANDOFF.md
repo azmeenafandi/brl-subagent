@@ -6,9 +6,9 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
 
 ## STATE
-Verified: 3b668dc (2026-11-06)
+Verified: 02ea23a (2026-11-06)
 
-- **dev** @ `3b668dc` (after the #428 merge; #425 at `87ac4ee`) — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle (PR #418, PR #420, PR #422 merged as merge commits). Only `dev` + `main`; worktrees: the cockpit pair only.
+- **dev** @ `02ea23a` (after the #428 merge `3b668dc`; #425 at `87ac4ee`) — v2.7.0 (tag `98bd36e`) plus the pi 1.5.0 parity cycle (PR #418, PR #420, PR #422 merged as merge commits). Only `dev` + `main`; worktrees: the cockpit pair + `../brl-subagent-431-preflight-arm` (`fix/431-preflight-second-arm`).
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e` (tag `v2.7.0`), npm `latest` = 2.7.0. **Release checkpoint OPEN**: #422 is extension code merged and unreleased.
 - **Running install:** **the dev checkout** (`pi install /…/brl-subagent-dev`), live after a reload — the npm 2.7.0 copy was removed (never two). It includes #422 (bar injection) and #425 (deadline visibility); reloaded and live-verified. Users still get published 2.7.0.
 - **Board:** **#423 merged** (PR #425, `87ac4ee`; #426 tracks the surviving candidates B–E) · **#427 Serena bake-off closed** (findings + addendum in `.development/investigations/serena-bakeoff-2026-11-05/`) · **#428 merged** (PR #432, `3b668dc`) · **#429/#430 open** (CRAP follow-ups) · **#431 in design-critique** (pre-flight second arm, design B chosen by the maintainer; classifier C1) · **#433 open** (pre-flight can turn a valid dispatch into a rejection; folded into #431) · **#421 closed** (PR #422, `ce63df2`) · **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415/#419 closed.
