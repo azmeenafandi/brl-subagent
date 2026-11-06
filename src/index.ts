@@ -36,6 +36,7 @@ import type {
 	TaskTemplate,
 	ToolResult,
 	SubagentEvent,
+	SubagentEventListener,
 } from "./types";
 import {
 	resolveThinkingLevel,
@@ -4092,6 +4093,17 @@ export default function (pi: ExtensionAPI) {
 
 	// F7: Clean up session-bound state on shutdown
 	pi.on("session_shutdown", async (_event, _ctx) => {
+		// Issue #437: release THIS runtime's terminal subscribers FIRST — before
+		// any await or fallible cleanup. A clean replacement (/new, /resume,
+		// /fork, /reload, quit) tears this runtime down and loads a new factory
+		// instance; the old listeners used to survive and win the shared terminal
+		// claim for the NEW session's run, delivering (or throwing) through dead
+		// pi/ctx handles. Only our three exact identities are removed, and the
+		// release is idempotent, so other subscribers and a later runtime are
+		// untouched. `releaseTerminalSubscriptions` is a hoisted declaration
+		// below (the subscription block is registered after this handler).
+		releaseTerminalSubscriptions();
+
 		log.info("Session shutting down", {
 			activeSubagents: state.activeSubagents,
 		});
@@ -4129,10 +4141,41 @@ export default function (pi: ExtensionAPI) {
 	// the point; details are best-effort — the notification must never throw or
 	// block on their absence.
 	const terminalTypes = ["subagent:completed", "subagent:failed", "subagent:stopped"] as const;
+
+	// Issue #437: keep the EXACT listener references this factory instance owns.
+	// Anonymous subscriptions could never be released, so a shut-down runtime's
+	// listeners stayed on the shared bus forever. Ownership is per factory
+	// invocation: the array and the released flag are this runtime's alone, so a
+	// replacement's listeners are never in the removal set.
+	const terminalSubscriptions: Array<{
+		type: (typeof terminalTypes)[number];
+		listener: SubagentEventListener;
+	}> = [];
+	let terminalSubscriptionsReleased = false;
+
+	/**
+	 * Issue #437: unsubscribe exactly the listeners registered above.
+	 *
+	 * Idempotent — a repeated/double `session_shutdown` (or a late one after the
+	 * replacement runtime is already live) is a no-op. Synchronous, so it can run
+	 * as the first statement of `session_shutdown`, before any await or fallible
+	 * cleanup. Never touches another subscriber or another runtime's listeners.
+	 */
+	function releaseTerminalSubscriptions(): void {
+		if (terminalSubscriptionsReleased) return;
+		terminalSubscriptionsReleased = true;
+		for (const { type, listener } of terminalSubscriptions) {
+			eventBus.off(type, listener);
+		}
+		terminalSubscriptions.length = 0;
+	}
+
 	for (const type of terminalTypes) {
-		eventBus.on(type, (event) => {
+		const listener: SubagentEventListener = (event) => {
 			void deliverCompletionAlert(event);
-		});
+		};
+		terminalSubscriptions.push({ type, listener });
+		eventBus.on(type, listener);
 	}
 
 	/**

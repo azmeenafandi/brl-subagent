@@ -28,6 +28,16 @@ export function on(type: SubagentEventType, listener: SubagentEventListener): vo
 }
 
 /**
+ * TEST-ONLY (issue #437): the listener identities currently registered for a
+ * type, in registration order. Read-only snapshot — the lifecycle suite uses it
+ * to assert that a shut-down runtime removed exactly its own listeners and that
+ * repeated clean generations do not accumulate.
+ */
+export function __listenerIdentities(type: SubagentEventType): SubagentEventListener[] {
+	return [...(listeners.get(type) ?? [])];
+}
+
+/**
  * Unsubscribe a listener from a specific event type.
  *
  * @param type - The event type to unsubscribe from
