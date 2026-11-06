@@ -327,13 +327,20 @@ ships as product documentation — see `CONTRIBUTING.md`).
 2. **No deadline ⇒ durable path.** A missing deadline is not permission to move fast; it means
    verify first, act once: background, banked, commit-per-step. Foreground is only for a probe
    whose answer the next step needs inline. This is enforced in code, not just here, in a project
-   that opted into its own process checks: a `high`/`xhigh` dispatch with `background: false` and an
-   explicit `timeout` is auto-switched to background (the 30-minute default applies) unless
-   `force: true` — a short foreground timeout loses the run's work, because foreground runs persist
-   nothing (ADR 0018, scoped by ADR 0019). This checkout opts in via its tracked `package.json`
-   (`brl-subagent.processChecks: true`); users' projects have no such field, so their explicit
-   shape and timeout stand. The flag is maintainer process tooling and is never documented as a
-   user-facing feature.
+   that opted into its own process checks — two outcomes, one rule (the run must not be killable by
+   its own deadline):
+   - **the shape can move**: a `high`/`xhigh` dispatch with `background: false` and an explicit
+     `timeout` is auto-switched to background (the 30-minute default applies) — ADR 0018;
+   - **the shape cannot move** (an effective `always`, or an omitted `background` that the
+     `writes`/`always` default keeps foreground): the explicit `timeout` is dropped and the run
+     STAYS foreground, where there is no default deadline, so nothing kills it — ADR 0022. This is
+     Rule 18's dispatch-parameter clause mechanized: foreground dispatches omit the timeout.
+
+   `force: true` keeps the explicit timeout on either arm. A short foreground timeout loses the
+   run's work, because foreground runs persist nothing. This checkout opts in via its tracked
+   `package.json` (`brl-subagent.processChecks: true`); users' projects have no such field, so their
+   explicit shape and timeout stand. The flag is maintainer process tooling and is never documented
+   as a user-facing feature.
 3. **"Done" carries its falsifier.** Every completion names the check that would prove it wrong,
    or says "unverified". The PR body's `Verification:` line is where that is written (`pr` skill
    §2); the review record cites it.
