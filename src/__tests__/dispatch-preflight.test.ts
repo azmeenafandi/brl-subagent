@@ -30,7 +30,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 
 const h = vi.hoisted(() => ({
@@ -76,7 +76,10 @@ import { isTransportRetryable } from "../transport-retry";
 import {
 	resolveThinkingDispatchSwitch,
 	THINKING_SWITCH_NOTICE,
+	THINKING_TIMEOUT_DROP_NOTICE,
 } from "../params";
+import { CUSTOM_ENTRY_TYPES } from "../types";
+import { setLogCwd } from "../logging";
 import type { SubagentResult, ThinkingLevel } from "../types";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 
@@ -159,6 +162,14 @@ interface CapturedMessage {
 let tool: ToolEntry;
 let sendMessageSpy: ReturnType<typeof vi.fn>;
 let notifySpy: ReturnType<typeof vi.fn>;
+/**
+ * Every `pi.appendEntry(customType, data)` the handler made this dispatch — the
+ * seam `persistRunRecord` (run-registry.ts) writes the FOREGROUND run record
+ * through. The record's `originalParams` is the retry snapshot, so this is the
+ * only observable that can see the timeout/background the retry would restore
+ * (a spawn-arg assertion cannot: the drop arm never spawns).
+ */
+let capturedEntries: Array<{ type?: string; customType?: string; data?: unknown }>;
 let sessionStartHandler:
 	| ((_event: unknown, ctx: Record<string, unknown>) => Promise<void>)
 	| undefined;
@@ -173,7 +184,9 @@ function setupExtension(): ToolEntry {
 		on: (event: string, handler: (_event: unknown, ctx: Record<string, unknown>) => Promise<void>) => {
 			if (event === "session_start") sessionStartHandler = handler;
 		},
-		appendEntry: () => {},
+		appendEntry: (customType: string, data: unknown) => {
+			capturedEntries.push({ type: "custom", customType, data });
+		},
 		sendMessage: sendMessageSpy,
 		ctx: {
 			getState: () => undefined,
@@ -207,8 +220,11 @@ function makeCtx(): Record<string, unknown> {
 			theme: { fg: (_c: string, t: string) => t, bold: (t: string) => t },
 		},
 		sessionManager: {
-			getEntries: () => [] as unknown[],
-			appendCustomEntry: () => {},
+			// The run records `state.persistRun` writes through `pi.appendEntry`
+			// are the entries a `retryRunId` re-dispatch resolves from, and the
+			// `originalParams` on them is the retry snapshot under test.
+			getEntries: () => capturedEntries,
+			appendCustomEntry: (entry: unknown) => capturedEntries.push(entry as never),
 		},
 		hasUI: false,
 	};
@@ -241,15 +257,67 @@ function capturedOriginalParams(call = 0): Record<string, unknown> {
 	return recorded;
 }
 
+/**
+ * The FOREGROUND run record's `originalParams` (the retry snapshot), read from
+ * the `pi.appendEntry` seam `state.persistRun` writes through.
+ *
+ * Distinct from `capturedOriginalParams` above: that one reads the BACKGROUND
+ * spawn site. A foreground dispatch never reaches it, so the drop arm (#431)
+ * has no other way to prove what a retry would restore.
+ */
+function foregroundSnapshot(): Record<string, unknown> {
+	const runs = capturedEntries.filter(
+		(e) => e.customType === CUSTOM_ENTRY_TYPES.run,
+	);
+	if (runs.length === 0) throw new Error("no foreground run record was persisted");
+	const record = runs[runs.length - 1]?.data as { originalParams?: Record<string, unknown> } | undefined;
+	const recorded = record?.originalParams;
+	if (!recorded) throw new Error("the foreground run record carried no originalParams");
+	return recorded;
+}
+
 /** Every notice the handler emitted this dispatch (pi.sendMessage channel). */
 function notices(): CapturedMessage[] {
 	return (sendMessageSpy.mock.calls as Array<[CapturedMessage, unknown]>).map((call) => call[0]);
 }
 
+/** Whether a notice carrying `text` went out on the UI channel. */
+function notified(text: string): boolean {
+	return notifySpy.mock.calls.some((call) => String(call[0]).includes(text));
+}
+
+/**
+ * Parse the shared log sink for this test's temp project. `beforeEach` points
+ * the logger at `env.testCwd`, so the pre-flight's own log lines (the forced
+ * arm has no notice — the log is its only observable) land here.
+ */
+function logEntries(): Array<{ message: string; data?: Record<string, unknown> }> {
+	const file = path.join(env.testCwd, ".pi", "subagent-logs", "brl-subagent.log");
+	if (!existsSync(file)) return [];
+	return readFileSync(file, "utf-8")
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line));
+}
+
+/**
+ * Seed the session-persisted config (the session_start restore path) so a
+ * dispatch sees a CONFIGURED approval mode — the config tier of
+ * `resolveEffectiveApprovalMode`, with no call param (issue #361's harness).
+ */
+async function seedConfig(ctx: Ctx, data: Record<string, unknown>): Promise<void> {
+	(ctx.sessionManager as { getEntries: () => unknown[] }).getEntries = () => [
+		{ type: "custom", customType: CUSTOM_ENTRY_TYPES.state, data },
+	];
+	if (sessionStartHandler) await sessionStartHandler({}, ctx as never);
+}
+
 beforeEach(() => {
 	env.setUp();
+	setLogCwd(env.testCwd);
 	sendMessageSpy = vi.fn();
 	notifySpy = vi.fn();
+	capturedEntries = [];
 	h.runSubagent.mockReset();
 	h.runSubagent.mockImplementation(
 		async (_cwd: string, _prompt: string, model: { provider: string; id: string }) =>
@@ -286,11 +354,38 @@ describe("resolveThinkingDispatchSwitch (rule 2's decision, pure)", () => {
 		timeout: 900_000,
 		force: undefined,
 		shape: "single" as const,
+		effectiveApprovalMode: "writes" as const,
 	};
 
-	it("switches a high/xhigh foreground dispatch that carries an explicit timeout", () => {
-		expect(resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "high" })).toBe("switch");
-		expect(resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "xhigh" })).toBe("switch");
+	it("switches a high/xhigh explicit-foreground dispatch when background is possible", () => {
+		for (const mode of ["auto", "writes"] as const) {
+			expect(
+				resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "high", effectiveApprovalMode: mode }),
+			).toBe("switch");
+			expect(
+				resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "xhigh", effectiveApprovalMode: mode }),
+			).toBe("switch");
+		}
+	});
+
+	it("drops the timeout instead of switching when the effective mode blocks background (#433)", () => {
+		// 'always' has no approval dialog in background, so the switch arm would be
+		// REJECTED at the spawn gate. The pre-flight must never turn a valid
+		// dispatch into an error: keep the foreground shape, remove the deadline.
+		expect(
+			resolveThinkingDispatchSwitch({
+				...base,
+				thinkingLevel: "high",
+				effectiveApprovalMode: "always",
+			}),
+		).toBe("drop-timeout");
+		expect(
+			resolveThinkingDispatchSwitch({
+				...base,
+				thinkingLevel: "xhigh",
+				effectiveApprovalMode: "always",
+			}),
+		).toBe("drop-timeout");
 	});
 
 	it("never switches below high", () => {
@@ -299,46 +394,139 @@ describe("resolveThinkingDispatchSwitch (rule 2's decision, pure)", () => {
 		}
 	});
 
-	it("never switches without an explicit timeout (there is nothing to drop)", () => {
+	it("never acts without an explicit timeout (there is nothing to drop)", () => {
 		expect(
 			resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "high", timeout: undefined }),
-		).toBe("none");
-	});
-
-	it("never switches an omitted or explicit-true background (the caller did not ask foreground)", () => {
-		expect(
-			resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "high", explicitBackground: undefined }),
-		).toBe("none");
-		expect(
-			resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "high", explicitBackground: true }),
-		).toBe("none");
-	});
-
-	it("never switches a batch shape (chain/graph block by definition)", () => {
-		expect(
-			resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "high", shape: "chain" }),
-		).toBe("none");
-		expect(
-			resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "high", shape: "graph" }),
-		).toBe("none");
-	});
-
-	it("force:true keeps the foreground shape, as a distinguishable outcome", () => {
-		expect(
-			resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "high", force: true }),
-		).toBe("forced");
-	});
-
-	it("never switches when the project has not opted in (issue #415: the user's shape stands)", () => {
-		expect(
-			resolveThinkingDispatchSwitch({ ...base, processChecks: false, thinkingLevel: "high" }),
 		).toBe("none");
 		expect(
 			resolveThinkingDispatchSwitch({
 				...base,
-				processChecks: false,
-				thinkingLevel: "xhigh",
-				force: true,
+				thinkingLevel: "high",
+				explicitBackground: undefined,
+				effectiveApprovalMode: "always",
+				timeout: undefined,
+			}),
+		).toBe("none");
+	});
+
+	it("never touches an explicit-true background (the caller already asked for background)", () => {
+		expect(
+			resolveThinkingDispatchSwitch({
+				...base,
+				thinkingLevel: "high",
+				explicitBackground: true,
+			}),
+		).toBe("none");
+		expect(
+			resolveThinkingDispatchSwitch({
+				...base,
+				thinkingLevel: "high",
+				explicitBackground: true,
+				effectiveApprovalMode: "auto",
+			}),
+		).toBe("none");
+	});
+
+	it("follows the #361 default for an omitted background: only the foreground default drops the deadline", () => {
+		// Omitted + effective auto → the default is background: nothing to remove.
+		expect(
+			resolveThinkingDispatchSwitch({
+				...base,
+				thinkingLevel: "high",
+				explicitBackground: undefined,
+				effectiveApprovalMode: "auto",
+			}),
+		).toBe("none");
+		// Omitted + writes/always → the default is FOREGROUND, so the explicit
+		// deadline is the only thing standing between the run and its work.
+		for (const mode of ["writes", "always"] as const) {
+			expect(
+				resolveThinkingDispatchSwitch({
+					...base,
+					thinkingLevel: "high",
+					explicitBackground: undefined,
+					effectiveApprovalMode: mode,
+				}),
+			).toBe("drop-timeout");
+		}
+	});
+
+	it("never touches a batch shape (an uncapped batch multiplies the hang — #434)", () => {
+		for (const shape of ["chain", "graph"] as const) {
+			expect(
+				resolveThinkingDispatchSwitch({ ...base, thinkingLevel: "high", shape }),
+			).toBe("none");
+			expect(
+				resolveThinkingDispatchSwitch({
+					...base,
+					thinkingLevel: "high",
+					shape,
+					explicitBackground: undefined,
+				}),
+			).toBe("none");
+		}
+	});
+
+	it("never acts when the project has not opted in (issue #415: the user's shape stands)", () => {
+		expect(
+			resolveThinkingDispatchSwitch({ ...base, processChecks: false, thinkingLevel: "high" }),
+		).toBe("none");
+		for (const explicitBackground of [false, undefined] as const) {
+			expect(
+				resolveThinkingDispatchSwitch({
+					...base,
+					processChecks: false,
+					thinkingLevel: "xhigh",
+					explicitBackground,
+					effectiveApprovalMode: "always",
+					force: true,
+				}),
+			).toBe("none");
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// force precedence (issue #431, D1) — force overrides an ACTING arm only
+// ---------------------------------------------------------------------------
+
+describe("force precedence: override an acting arm, never invent one (issue #431)", () => {
+	const base = {
+		processChecks: true,
+		timeout: 900_000,
+		force: true,
+		shape: "single" as const,
+		thinkingLevel: "high" as const,
+	};
+
+	it("maps every acting arm (switch and drop-timeout) to 'forced'", () => {
+		for (const effectiveApprovalMode of ["auto", "writes", "always"] as const) {
+			expect(
+				resolveThinkingDispatchSwitch({ ...base, explicitBackground: false, effectiveApprovalMode }),
+			).toBe("forced");
+		}
+		for (const effectiveApprovalMode of ["writes", "always"] as const) {
+			expect(
+				resolveThinkingDispatchSwitch({ ...base, explicitBackground: undefined, effectiveApprovalMode }),
+			).toBe("forced");
+		}
+	});
+
+	it("leaves a 'none' arm as 'none' regardless of force", () => {
+		// Nothing to override: a background run must never emit the "foreground
+		// forced" log line (there is no foreground to keep).
+		expect(
+			resolveThinkingDispatchSwitch({ ...base, explicitBackground: true, effectiveApprovalMode: "writes" }),
+		).toBe("none");
+		expect(
+			resolveThinkingDispatchSwitch({ ...base, explicitBackground: undefined, effectiveApprovalMode: "auto" }),
+		).toBe("none");
+		expect(
+			resolveThinkingDispatchSwitch({
+				...base,
+				explicitBackground: false,
+				effectiveApprovalMode: "writes",
+				thinkingLevel: "medium",
 			}),
 		).toBe("none");
 	});
@@ -484,10 +672,14 @@ describe("auto-switch: shapes it must NOT touch (issue #412)", () => {
 		// judges the declared/routed level rather than the cap.)
 	});
 
-	it("high thinking with an omitted background keeps the existing default (no switch notice)", async () => {
-		// Config default is 'writes' in this harness → omitted background resolves
-		// foreground by the #361 default; the #412 switch does not fire because the
-		// caller never asked for foreground explicitly.
+	it("processChecks OFF: an omitted background keeps the #361 default and its explicit timeout", async () => {
+		// This test never calls optIn(), so the temp project has NO manifest and
+		// `processChecks` is off (fail-open). The pre-flight is therefore inert for
+		// BOTH shapes: the #361 default resolves the omitted background to
+		// foreground ('writes' is this harness's configured default), and the
+		// explicit timeout survives untouched because the project never opted in.
+		// (It is NOT evidence about what happens when opted in — that is the
+		// drop-timeout arm below, issue #431.)
 		const result = await dispatch({
 			task: "review this change",
 			thinkingLevel: "high",
@@ -497,7 +689,10 @@ describe("auto-switch: shapes it must NOT touch (issue #412)", () => {
 		expect(result.isError).toBeFalsy();
 		expect(h.runSubagent).toHaveBeenCalledTimes(1);
 		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+		// The user's cap survives the dispatch verbatim.
+		expect(h.runSubagent.mock.calls[0]?.[8]).toBe(900_000);
 		expect(notices().some((m) => m.content?.includes(THINKING_SWITCH_NOTICE))).toBe(false);
+		expect(notices().some((m) => m.content?.includes(THINKING_TIMEOUT_DROP_NOTICE))).toBe(false);
 	});
 });
 
@@ -548,5 +743,224 @@ describe("the switch is opt-in per project (issue #415)", () => {
 		expect(h.runSubagent).not.toHaveBeenCalled();
 		expect(spawnArg().timeout).toBeUndefined();
 		expect(notices().some((m) => m.content?.includes(THINKING_SWITCH_NOTICE))).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #431 — the second arm: keep the shape, drop the deadline
+//
+// The incident: a `high` plan critique was dispatched with `background`
+// OMITTED and `timeout: 600000`. The effective mode was `writes`, so the #361
+// default kept it FOREGROUND — and the #412 switch, which requires an explicit
+// `background: false`, never fired. The run was killed at 10m0s and the work was
+// lost. The hazard was never the foreground shape; it was the DEADLINE on an
+// unpersisted run.
+//
+// So the pre-flight gains a second outcome: when the effective shape is
+// foreground and background is impossible (or was never asked for), drop the
+// explicit timeout. Foreground has NO default deadline (issue #423), so the
+// run becomes unkillable by its own clock while its approval gate stays exactly
+// where the user put it.
+// ---------------------------------------------------------------------------
+
+describe("drop-timeout: foreground keeps its shape, loses its deadline (issue #431)", () => {
+	it("omitted background + effective 'writes' → foreground, timeout dropped, notice on both channels", async () => {
+		optIn();
+		const result = await dispatch({
+			task: `critique the plan\n\n${VALID_LINE}`,
+			thinkingLevel: "high",
+			approvalMode: "writes",
+			timeout: 600_000,
+		});
+
+		// C: the approval gate is observably unchanged. The run never reached the
+		// background spawn (where `writes` logs its "auto-approving" warning), so
+		// the diff is still gated on approval.
+		expect(result.isError).toBeFalsy();
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		expect(result.content[0].text).not.toContain("Background agent started");
+		expect(
+			logEntries().some((e) => e.message.includes("auto-approving")),
+			"the background auto-approve warning must not fire for a foreground run",
+		).toBe(false);
+
+		// The explicit foreground timeout is DROPPED — foreground has no default
+		// deadline, so nothing can kill the run (arg 8 of runSubagent).
+		expect(h.runSubagent.mock.calls[0]?.[8]).toBeUndefined();
+
+		// F: the drop arm's OWN notice, exactly, on BOTH channels the switch arm
+		// uses — and never the switch notice, whose "the run is now background"
+		// sentence would be a lie here.
+		const dropNotices = notices().filter((m) => m.content?.includes(THINKING_TIMEOUT_DROP_NOTICE));
+		expect(dropNotices, "the drop must emit its notice").toHaveLength(1);
+		expect(notified(THINKING_TIMEOUT_DROP_NOTICE), "the human channel needs the notice too").toBe(true);
+		expect(notices().some((m) => m.content?.includes(THINKING_SWITCH_NOTICE))).toBe(false);
+		expect(notified(THINKING_SWITCH_NOTICE)).toBe(false);
+
+		// The dropped value is the ACTUAL ms, not the switch arm's "dropped": a
+		// friction-log reader needs the number to tell a budget cap from a clock.
+		const details = (sendMessageSpy.mock.calls as Array<[{ details?: Record<string, unknown> }]>)
+			.map((call) => call[0].details)
+			.find((d) => d?.previousTimeout === 600_000);
+		expect(details?.previousTimeout).toBe(600_000);
+		expect(details?.effectiveApprovalMode).toBe("writes");
+	});
+
+	it("records the dropped deadline in the FOREGROUND run record before the snapshot (acceptance A)", async () => {
+		// The order mutant (clear the timeout AFTER `snapshotOriginalParams`) keeps
+		// the RUN deadline-free, so a runSubagent-arg assertion cannot see it: only
+		// the recorded `originalParams` can. A retry would restore the cap from
+		// here (ADR 0009).
+		optIn();
+		await dispatch({
+			task: `critique the plan\n\n${VALID_LINE}`,
+			thinkingLevel: "xhigh",
+			approvalMode: "writes",
+			timeout: 600_000,
+		});
+
+		const snapshot = foregroundSnapshot();
+		expect(snapshot.timeout).toBeUndefined();
+		expect(snapshot.background).toBe(false);
+
+		// Stronger twin: a retry of that record re-derives the same shape and
+		// deadline (foreground, no timeout) instead of restoring the cap.
+		const runId = (capturedEntries.find((e) => e.customType === CUSTOM_ENTRY_TYPES.run)?.data as {
+			id: string;
+		}).id;
+		const retried = await dispatch({ retryRunId: runId });
+
+		expect(retried.isError).toBeFalsy();
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+		expect(h.runSubagent).toHaveBeenCalledTimes(2);
+		expect(h.runSubagent.mock.calls[1]?.[8]).toBeUndefined();
+		// Idempotent: the restored `timeout: undefined` exits the pre-flight
+		// early, so the retry emits no second notice.
+		expect(
+			notices().filter((m) => m.content?.includes(THINKING_TIMEOUT_DROP_NOTICE)),
+		).toHaveLength(1);
+	});
+
+	it("config tier: a seeded 'writes' mode reaches the predicate with no call param (acceptance B)", async () => {
+		optIn();
+		const ctx = makeCtx();
+		await seedConfig(ctx, { approvalMode: "writes" });
+		const result = await dispatch(
+			{ task: `critique the plan\n\n${VALID_LINE}`, thinkingLevel: "high", timeout: 600_000 },
+			ctx,
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		expect(h.runSubagent.mock.calls[0]?.[8]).toBeUndefined();
+		expect(notified(THINKING_TIMEOUT_DROP_NOTICE)).toBe(true);
+	});
+
+	it("config tier: a seeded 'always' mode is not rejected — foreground, no deadline (acceptance B, #433)", async () => {
+		optIn();
+		const ctx = makeCtx();
+		await seedConfig(ctx, { approvalMode: "always" });
+		const result = await dispatch(
+			{ task: `critique the plan\n\n${VALID_LINE}`, thinkingLevel: "high", timeout: 600_000 },
+			ctx,
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).not.toContain(
+			"Cannot spawn background agent with approvalMode 'always'",
+		);
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		expect(h.runSubagent.mock.calls[0]?.[8]).toBeUndefined();
+	});
+
+	it("force:true overrides the drop — the explicit timeout is preserved, and only the log records it", async () => {
+		optIn();
+		const result = await dispatch({
+			task: `critique the plan\n\n${VALID_LINE}`,
+			thinkingLevel: "high",
+			approvalMode: "writes",
+			timeout: 600_000,
+			force: true,
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		expect(h.runSubagent.mock.calls[0]?.[8]).toBe(600_000);
+		// The override is logged, never silent — and never announced as a notice
+		// (a notice would imply the dispatch changed something, and it did not).
+		expect(
+			logEntries().some((e) => e.message.includes("high-thinking foreground forced")),
+		).toBe(true);
+		expect(notices()).toHaveLength(0);
+		expect(notified(THINKING_TIMEOUT_DROP_NOTICE)).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #433 — the pre-flight must never switch a valid dispatch into a
+// rejection. `approvalMode: 'always'` cannot run in background (W5, issue #28:
+// no dialog there), so the shipped switch arm turned an explicit
+// `background: false` dispatch into a loud "Cannot spawn background agent"
+// error. The durable-path intent is satisfied the other way instead: keep the
+// run foreground and drop the explicit timeout (the #431 second arm).
+// ---------------------------------------------------------------------------
+
+describe("issue #433: never switch into a rejection (approvalMode 'always')", () => {
+	it("does not reject an explicit-foreground 'always' dispatch — it runs foreground with no deadline", async () => {
+		optIn();
+		const result = await dispatch({
+			task: `critique the plan\n\n${VALID_LINE}`,
+			thinkingLevel: "high",
+			background: false,
+			approvalMode: "always",
+			timeout: 600_000,
+		});
+
+		// The dispatch is NOT converted into an error by its own pre-flight.
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).not.toContain(
+			"Cannot spawn background agent with approvalMode 'always'",
+		);
+		// Foreground, with the explicit timeout dropped — no clock kills it.
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		expect(h.runSubagent.mock.calls[0]?.[8]).toBeUndefined();
+
+		// The retry snapshot records the shape that actually ran and drops the
+		// cap, so a retry re-derives instead of restoring the foreground deadline.
+		const snapshot = foregroundSnapshot();
+		expect(snapshot.background).toBe(false);
+		expect(snapshot.timeout).toBeUndefined();
+
+		// The drop arm's notice, not the switch arm's (whose text says the run is
+		// now background — false here).
+		expect(notified(THINKING_TIMEOUT_DROP_NOTICE)).toBe(true);
+		expect(notified(THINKING_SWITCH_NOTICE)).toBe(false);
+	});
+
+	it("the shipped explicit-false 'switch' arm is unchanged for auto/writes", async () => {
+		// Non-regression for #433's scope: only `always` changes arms.
+		optIn();
+		for (const mode of ["auto", "writes"] as const) {
+			h.spawnBackgroundSession.mockClear();
+			h.runSubagent.mockClear();
+			const result = await dispatch({
+				task: `critique the plan\n\n${VALID_LINE}`,
+				thinkingLevel: "high",
+				background: false,
+				approvalMode: mode,
+				timeout: 600_000,
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+			expect(h.runSubagent).not.toHaveBeenCalled();
+			expect(spawnArg().timeout).toBeUndefined();
+			expect(notified(THINKING_SWITCH_NOTICE)).toBe(true);
+			expect(notified(THINKING_TIMEOUT_DROP_NOTICE)).toBe(false);
+		}
 	});
 });

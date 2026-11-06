@@ -24,7 +24,7 @@ import type {
 	SnapshotParams,
 	DelegateTaskParams,
 } from "./types";
-import { resolveThinkingLevel } from "./types";
+import { approvalBlocksBackground, resolveThinkingLevel } from "./types";
 import { getAllPresets, getPreset } from "./presets";
 import { classifyTask } from "./router";
 import { normalizeTimeout } from "./validate";
@@ -199,42 +199,90 @@ export const THINKING_SWITCH_NOTICE =
 	"The run is now background; the conductor is woken on terminal state. Pass force: true to keep it foreground (state the reason in the task text).";
 
 /** The pre-flight's verdict for one dispatch. */
-export type ThinkingDispatchSwitch = "switch" | "forced" | "none";
+export type ThinkingDispatchSwitch = "switch" | "drop-timeout" | "forced" | "none";
 
 /**
- * Issue #412 (rule 2: "no deadline ⇒ durable path") — should the pre-flight
- * change this dispatch's shape?
+ * The notice the dispatch emits on the SECOND arm (issue #431): the run was
+ * going to be killed by its own explicit foreground timeout, but its approval
+ * mode makes a background run impossible (or it never asked for one), so the
+ * deadline is dropped and the shape stays foreground.
+ *
+ * Deliberately NOT `THINKING_SWITCH_NOTICE`: that text says "the run is now
+ * background", which is a lie on this arm. The trade-off (no clock on a hung
+ * child) is stated rather than hidden — a dropped deadline removes the only
+ * bound the runner had.
+ */
+export const THINKING_TIMEOUT_DROP_NOTICE =
+	"Dispatch pre-flight (no deadline means the durable path): a high/xhigh-thinking run carried an explicit timeout, but its effective approval mode needs the interactive approval dialog — a background run would be rejected ('always') or would silently auto-approve ('writes'), so the shape cannot move. " +
+	"The explicit timeout was dropped and the run stays FOREGROUND: foreground runs have no default deadline, so no clock kills it, and the conductor's call blocks until the child settles. " +
+	"The trade-off is explicit — a dropped deadline also removes the only clock on a child that hangs. Pass force: true to keep the explicit timeout.";
+
+/**
+ * Issue #412 (rule 2: "no deadline ⇒ durable path") — what should the
+ * pre-flight do with this dispatch?
  *
  * The 2026-10-31 incident: a plan critique ran foreground under a 15-minute
  * timeout, was killed at ~14 minutes ("almost done"), and lost everything —
  * the background re-run then cost another 17 minutes. The decision was
  * conductor discretion; this predicate makes the durable shape the only one
- * for the runs where losing the context is expensive:
+ * for the runs where losing the context is expensive.
+ *
+ * One rule, two arms — the run must not be killable by its own deadline:
  *
  *   processChecks (the project opted into OUR process — issue #415)
  *     + thinkingLevel high|xhigh
- *     + background EXPLICITLY false (the caller asked for foreground)
  *     + an explicit timeout (the deadline that would kill it)
- *     → switch to background and drop the timeout.
+ *     + an effective FOREGROUND shape
+ *
+ *     → "switch": move to background and drop the timeout (the 30-minute
+ *       background default applies) — used when a background run is possible.
+ *     → "drop-timeout": keep foreground and drop the timeout (a foreground
+ *       run has no default deadline since #423) — used when it is not:
+ *         · `background: false` + effective `always`: switching there would be
+ *           REJECTED (no dialog in background), and a pre-flight must never
+ *           turn a valid dispatch into an error (#433);
+ *         · `background` omitted where the #361 default resolved FOREGROUND
+ *           (effective `writes`/`always`): the default already judged the
+ *           approval mode, so the deadline is all that is left to remove.
  *
  * Deliberately exempt:
  *   - `processChecks: false` — this is a CONDUCTOR decision rule, not product
  *     behavior. A user's explicit foreground timeout is usually a budget cap,
  *     so overriding it could triple time and cost against their instruction.
- *     The umbrella flag (ADR 0019) is what makes the switch opt-in; the
+ *     The umbrella flag (ADR 0019) is what makes the pre-flight opt-in; the
  *     predicate has no global mode.
- *   - `chain`/`graph` — they block by definition and `background: true` is
- *     rejected at dispatch; the decision cannot apply to them.
- *   - an omitted `background` — the #361 default already decided, and it knows
- *     about approval modes (a `writes`/`always` run must stay in front of the
- *     user); second-guessing it here would silently move a gated run into a
- *     context with no approval dialog.
- *   - no explicit timeout — there is no deadline to lose; the background
- *     default is a deadline too, so switching would not make the run safer.
+ *   - `chain`/`graph` — an uncapped batch multiplies a hang across N units and
+ *     has no per-unit pre-flight (#434); the exemption is about the BATCH now,
+ *     not about `background: true` being rejected (which motivated it for the
+ *     switch arm only).
+ *   - an explicit `background: true` — the caller asked for background; there
+ *     is no foreground deadline to lose.
+ *   - an omitted `background` whose effective shape is background (`auto`) —
+ *     the #361 default already chose the durable shape.
+ *   - no explicit timeout — there is no deadline to drop.
  *   - `force: true` — the override, reported as `forced` (not `none`) so the
- *     caller can tell "kept foreground by request" from "never applied".
- *     `force` carries no reason field (ADR 0007): the dispatch text is the
- *     reason.
+ *     caller can tell "kept by request" from "never applied". `force` carries
+ *     no reason field (ADR 0007): the dispatch text is the reason.
+ *     PRECEDENCE: force maps `switch`/`drop-timeout` → `forced`; an arm that
+ *     computes `none` stays `none` REGARDLESS of force — there is nothing to
+ *     override, and the call site's "foreground forced" log line must never
+ *     print for a run that is already background.
+ *
+ * The omitted-background arm keys on the EFFECTIVE SHAPE via
+ * `defaultBackgroundFor`, never on a re-spelled mode list — the same helper the
+ * #361 default uses, so the two cannot disagree. `effectiveApprovalMode` is
+ * resolved by `resolveEffectiveApprovalMode(params.approvalMode, state)` at the
+ * call site, never read from the raw call param: a config-tier mode must reach
+ * this predicate, and the `always` guard goes through `approvalBlocksBackground`
+ * — the same helper the background gates reject with.
+ *
+ * INVARIANT (MAJ-7): "drop the timeout" is `params.timeout = undefined`, which
+ * `resolveSubagentParams` merges as `params.timeout ?? preset?.timeout`. The
+ * drop arm's no-deadline guarantee therefore holds ONLY because no preset can
+ * carry a `timeout` at runtime (`presetFromFrontmatter` maps none, so
+ * `SubagentPreset.timeout` is dead). If preset timeouts ever map, the drop
+ * silently re-merges one, no test fails, and the notice becomes a lie — merge
+ * or skip the preset value here first.
  *
  * `thinkingLevel` is the DECLARED level (per-call, else the named preset's),
  * not the capped one: `maxThinkingLevel` defaults to `off` for an unconfigured
@@ -248,13 +296,25 @@ export function resolveThinkingDispatchSwitch(input: {
 	timeout: number | undefined;
 	force: boolean | undefined;
 	shape: DispatchShape;
+	/** The mode the child will actually run with (call param, else config). */
+	effectiveApprovalMode: ApprovalMode;
 }): ThinkingDispatchSwitch {
 	if (!input.processChecks) return "none";
 	if (input.shape === "chain" || input.shape === "graph") return "none";
 	if (input.thinkingLevel !== "high" && input.thinkingLevel !== "xhigh") return "none";
-	if (input.explicitBackground !== false) return "none";
 	if (input.timeout === undefined) return "none";
-	return input.force === true ? "forced" : "switch";
+	const base: ThinkingDispatchSwitch =
+		input.explicitBackground === true
+			? "none"
+			: input.explicitBackground === false
+				? approvalBlocksBackground(input.effectiveApprovalMode)
+					? "drop-timeout"
+					: "switch"
+				: defaultBackgroundFor(input.shape, input.effectiveApprovalMode)
+					? "none"
+					: "drop-timeout";
+	if (base === "none") return "none";
+	return input.force === true ? "forced" : base;
 }
 
 /**

@@ -86,6 +86,7 @@ import {
 	shouldRejectBackgroundForBatch,
 	snapshotOriginalParams,
 	THINKING_SWITCH_NOTICE,
+	THINKING_TIMEOUT_DROP_NOTICE,
 	type DispatchShape,
 	type ResolveInputParams,
 } from "./params";
@@ -2774,6 +2775,14 @@ export default function (pi: ExtensionAPI) {
 			// caller declared no level, so the pre-flight resolves the SAME preset
 			// the merge below will (one rule, `resolveDispatchPreset`).
 			const declaredPresetForSwitch = resolveDispatchPreset(params, state).preset;
+			// The EFFECTIVE approval mode (call param, else the configured default) —
+			// the same resolver `resolveSubagentParams` and the #361 default use, so the
+			// pre-flight cannot judge a mode the child will not run with. Reading
+			// `params.approvalMode` raw here would miss a config-tier mode entirely.
+			const effectiveApprovalModeForSwitch = resolveEffectiveApprovalMode(
+				params.approvalMode,
+				state,
+			);
 			const thinkingSwitch = resolveThinkingDispatchSwitch({
 				processChecks,
 				thinkingLevel: (params.thinkingLevel ?? declaredPresetForSwitch?.thinkingLevel) as
@@ -2783,6 +2792,7 @@ export default function (pi: ExtensionAPI) {
 				timeout: params.timeout,
 				force: params.force,
 				shape: dispatchShape,
+				effectiveApprovalMode: effectiveApprovalModeForSwitch,
 			});
 			if (thinkingSwitch === "switch") {
 				params.background = true;
@@ -2801,6 +2811,34 @@ export default function (pi: ExtensionAPI) {
 					details: { thinkingLevel: params.thinkingLevel, previousTimeout: "dropped" },
 				}, { deliverAs: "followUp" });
 				ctx.ui.notify(THINKING_SWITCH_NOTICE, "warning");
+			} else if (thinkingSwitch === "drop-timeout") {
+				// Issue #431 — the second arm: the shape cannot move (an effective
+				// 'always'/'writes' run needs the interactive gate, and switching an
+				// explicit-foreground 'always' dispatch would be REJECTED — #433), so
+				// the only thing the pre-flight can remove is the deadline. Clearing it
+				// HERE, before `snapshotOriginalParams` records the run (:3035
+				// foreground, :2374 background), is what makes a retry re-derive an
+				// absent deadline instead of restoring the cap (ADR 0009).
+				const previousTimeout = params.timeout;
+				params.timeout = undefined;
+				log.info("Dispatch pre-flight: high-thinking foreground timeout dropped, shape kept", {
+					thinkingLevel: params.thinkingLevel,
+					previousTimeout,
+					effectiveApprovalMode: effectiveApprovalModeForSwitch,
+				});
+				pi.sendMessage({
+					customType: "delegate-notification",
+					content: THINKING_TIMEOUT_DROP_NOTICE,
+					display: true,
+					details: {
+						thinkingLevel: params.thinkingLevel,
+						// The ACTUAL ms value, not "dropped": the friction log needs the
+						// number to tell a budget cap from a tight clock.
+						previousTimeout,
+						effectiveApprovalMode: effectiveApprovalModeForSwitch,
+					},
+				}, { deliverAs: "followUp" });
+				ctx.ui.notify(THINKING_TIMEOUT_DROP_NOTICE, "warning");
 			} else if (thinkingSwitch === "forced") {
 				// The override is recorded, not silent: the dispatch text is the reason
 				// (`force` has no reason field — ADR 0007's contract stays unchanged).
