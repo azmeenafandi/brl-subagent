@@ -10,7 +10,7 @@ Verified: fb0991f (2026-11-06)
 
 - **dev** @ `fb0991f` (the PR #435 merge) — `git log -1 --oneline dev`. Branches `dev` + `main` only; worktrees are the cockpit pair only — `git worktree list`.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e`, tag `v2.7.0`, npm `latest` 2.7.0 (`gh release list`). **Release checkpoint OPEN** (rule #6): **#422 + #425 + #435** are extension code, merged and unreleased. Release on the maintainer's go only — never propose a version unprompted.
-- **Running install:** the **dev checkout** (`pi list`), reloaded by the maintainer on 2026-11-06 — so the process now carries #422 (bar injection), #425 (budget visibility) and #435 (pre-flight drop arm). #422 and #425 are live-verified; **#435 is not** — that probe is Next action 1. Users get published 2.7.0.
+- **Running install:** the **dev checkout** (`pi list`), reloaded by the maintainer on 2026-11-06 — so the process now carries #422 (bar injection), #425 (budget visibility) and #435 (pre-flight drop arm). All three live-verified (#435 on 2026-11-06 via both drop-arm probes — `grep "timeout dropped" .pi/subagent-logs/brl-subagent.log`). Users get published 2.7.0.
 - **Board** (`gh issue list`): open **#429** (`resolveSubagentParams` tests), **#430** (`execute` split), **#434** (per-unit pre-flight bypass), **#436** (preset frontmatter field parity), **#426** (timeout design-open); **PR #402** held (typebox 1.4.3 vs the host's 1.3.27 pin). Merged 2026-11-06: #428 (PR #432), #431 + #433 (PR #435).
 - **Cycle:** `Pi 1.5.0 parity` closed 2026-11-03; none open. The current thread is the CRAP follow-ups (#429, #430) from ADR 0021.
 - **Suite:** 101 files / **2152** (`npx vitest run`, verified on dev at the merge); `npx tsc --noEmit` clean; CodeGraph complete at `fb0991f`, 551 exports (`python3 .pi/skills/worktree/codegraph-check.py`).
@@ -25,13 +25,13 @@ Verified: fb0991f (2026-11-06)
 - **#431 + #433 merged** (PR #435, `fb0991f`): the pre-flight gained a second arm. Where a background run is impossible (`always`) or the omitted-`background` default keeps a `writes`/`always` run foreground, it **drops the explicit timeout instead of switching shape**, so the approval gate never moves; the same rule closed a bug where the switch turned a valid `background:false` + `always` dispatch into a rejection. ADR 0022 supersedes ADR 0018's omitted-background exemption and records the budget-cap and hang trade-offs. Suite → 2152. C1 review: 1728-cell predicate cross-product, 0 mismatches; 13 mutants re-applied, 0 survivors.
 - **Three transport drops on that unit** (impl, review, nit) — all auto-retried and recovered from the banked `/tmp` findings + commit-per-step; no conductor re-dispatch.
 - **New investigations:** `test-plan-428-2026-11-06.md`, `plan-critique-431-2026-11-06.md`, and the Serena addendum in `serena-bakeoff-2026-11-05/findings.md`.
+- **#435 live-verified** (2026-11-06, probes `probe-435a`/`probe-435b`): both drop-arm shapes confirmed in the running install — 600 s timeout dropped, run stayed foreground with no deadline, notice on followUp + toast (maintainer-confirmed), run snapshots carry no `timeout` and `background:false`; the `background:false`+`always` twin was **not rejected** (the #433 bug). Provenance rows in `.pi/jev-lines.log`.
 
 ### Next actions
-1. **Live-verify #435** (rule #9/#10 — the reload is done, the probe is not). Dispatch with `background` **omitted**, `thinkingLevel: high`, an explicit `timeout`, under the effective `writes` mode → expect the drop notice on **both** channels, a **foreground** run, **no deadline**, and a snapshot recording `timeout: undefined` + `background: false`. Then the #433 twin: `background: false` + `approvalMode: 'always'` + high + timeout → **not rejected**.
-2. **#429** — amend the acceptance **before** dispatching: `≥90% statement coverage` is unmeasurable here (no coverage provider, no `coverage` script) and contradicts ADR 0021 §1. Replace with a branch checklist + named mutants, as #428 and #431 were. Then plan critic (on `gpt-6.1-terra`) → implementer → review.
-3. **#430** — the behavior-preserving `execute` split (C1; needs a CodeGraph structural map and a closure block).
-4. **#434** and **#436** — unscheduled; #436 is the cheaper of the two.
-5. **#426** needs the maintainer's priority call before any design work.
+1. **#429** — amend the acceptance **before** dispatching: `≥90% statement coverage` is unmeasurable here (no coverage provider, no `coverage` script) and contradicts ADR 0021 §1. Replace with a branch checklist + named mutants, as #428 and #431 were. Then plan critic (on `gpt-6.1-terra`) → implementer → review.
+2. **#430** — the behavior-preserving `execute` split (C1; needs a CodeGraph structural map and a closure block).
+3. **#434** and **#436** — unscheduled; #436 is the cheaper of the two.
+4. **#426** needs the maintainer's priority call before any design work.
 
 ## Open items
 - **#426 design-open** — subagent timeouts: soft stage, stall watchdog vs cliff, extension, calibration. Filed 2026-11-03; no direction chosen. Do not implement from it.
