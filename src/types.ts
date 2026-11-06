@@ -820,6 +820,18 @@ export interface BackgroundAgent {
 // Helper functions
 // ---------------------------------------------------------------------------
 
+/**
+ * The approval modes that make a background spawn impossible (W5, issue #28).
+ *
+ * ONE definition, two consumers — `rejectApprovalAlwaysInBackground`
+ * (prelude.ts, the background gates) and `resolveThinkingDispatchSwitch`
+ * (params.ts, the dispatch pre-flight that must not switch a dispatch into a
+ * rejection — issue #433). A re-spelled `=== "always"` at either site is the
+ * drift this helper exists to prevent: widening or narrowing what background
+ * can accept must change the pre-flight's verdict in the same edit.
+ */
+export const approvalBlocksBackground = (m: ApprovalMode): boolean => m === "always";
+
 export function resolveThinkingLevel(
 	requested: ThinkingLevel | undefined,
 	maxAllowed: ThinkingLevel,

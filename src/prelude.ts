@@ -47,6 +47,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ApprovalMode, GitMode, SubagentPreset, SubagentToolOptions, ThinkingLevel, ToolResult } from "./types";
+import { approvalBlocksBackground } from "./types";
 import type { SessionState } from "./state";
 import type { Logger } from "./logging";
 import { validateCwd, validateOutputFile } from "./sanitize";
@@ -142,7 +143,7 @@ export function gateSessionCost(input: {
 export function rejectApprovalAlwaysInBackground(
 	approvalMode: ApprovalMode,
 ): ToolResult<undefined> | undefined {
-	if (approvalMode !== "always") return undefined;
+	if (!approvalBlocksBackground(approvalMode)) return undefined;
 	return rejection(
 		`Cannot spawn background agent with approvalMode 'always': background agents run unattended ` +
 		`and cannot present the approval dialog. Use approvalMode 'auto' (default) or 'writes'.`,
