@@ -638,8 +638,25 @@ function skipWhitespace(text: string, index: number): number {
   return i;
 }
 
-/** Read one JSON string starting at `start` (which must be `"`). */
-function readJsonStringAt(text: string, start: number): { value: string; end: number } {
+/**
+ * Read one JSON string starting at `start`; returns the decoded `value` and the
+ * offset just past the closing quote. Offsets are UTF-16 code units.
+ *
+ * Contract (pinned by `src/__tests__/json-scanner.test.ts`, issue #428):
+ *  - precondition: `start` is the `"` that opens the value.
+ *  - never throws; `end` is always a number in [start, text.length].
+ *  - unterminated string -> `end === text.length` and `value` is the raw
+ *    remainder (D1): a corrupt record is skipped by the caller, never surfaced
+ *    as an error.
+ *  - the value is `JSON.parse`'s when it parses. When it does not (an invalid
+ *    escape), the fallback returns the RAW text between the quotes with a
+ *    correct `end` (D5) — best-effort: an invalid escape inside `"id"` yields a
+ *    value `assertSafeAgentId` rejects, so the record leaves retry lineage.
+ *  - an escape consumes exactly one following character, including `\\` and
+ *    `\"`; a `"` reached after an escape is content, not a terminator.
+ * Exposed for tests; not part of the reader API (architecture-rules.test.ts).
+ */
+export function readJsonStringAt(text: string, start: number): { value: string; end: number } {
   let i = start + 1;
   let escaped = false;
   while (i < text.length) {
@@ -668,8 +685,25 @@ function readJsonStringAt(text: string, start: number): { value: string; end: nu
   return { value: text.slice(start + 1), end: i };
 }
 
-/** Skip one JSON value (scalar, object, or array) without parsing it. */
-function skipJsonValue(text: string, start: number): number {
+/**
+ * Skip one JSON value (scalar, object, or array) without parsing it; returns the
+ * offset just past the value. Offsets are UTF-16 code units.
+ *
+ * Contract (pinned by `src/__tests__/json-scanner.test.ts`, issue #428):
+ *  - precondition: `start` is the value's FIRST character; the caller has
+ *    already skipped whitespace (`scanTopLevelScalars` does, via `skipWhitespace`).
+ *  - never throws; always returns a number in [start, text.length].
+ *  - unterminated container or string -> `text.length` (D1: corrupt records are
+ *    dropped upstream by `readAgentIdentity`, never surfaced as an error).
+ *  - containers are depth-counted on a single pass, +1 for `{`/`[` and -1 for
+ *    `}`/`]`; the counting is bracket-TYPE-AGNOSTIC, so `'[1}'` ends at 3.
+ *    Strictness is `JSON.parse`'s job (D3).
+ *  - the scalar branch scans to the first `,` or `}` or EOF — it does NOT stop
+ *    at `]` (D4), so `'1]'` returns 2. Both call sites sit in an object's
+ *    top-level value position, so `]` is unreachable on valid input.
+ * Exposed for tests; not part of the reader API (architecture-rules.test.ts).
+ */
+export function skipJsonValue(text: string, start: number): number {
   if (text[start] === '"') return readJsonStringAt(text, start).end;
   if (text[start] === '{' || text[start] === '[') {
     let depth = 0;
@@ -709,8 +743,23 @@ function parseJsonScalar(raw: string): JsonScalar {
  * Extract top-level scalar fields from a record's JSON text. Nested values
  * (notably `result.messages` and `finalOutput`) are skipped, not parsed — the
  * reader only ever touches the six identity keys.
+ *
+ * Contract (pinned by `src/__tests__/json-scanner.test.ts`, issue #428):
+ *  - never throws; a record with no leading `{` yields an empty map.
+ *  - whitespace around the braces, keys, `:` and values is skipped with
+ *    `/\s/` — deliberately WIDER than JSON's four whitespace characters, so a
+ *    BOM- or NBSP-prefixed record is still read instead of silently vanishing
+ *    from retry lineage (D2).
+ *  - a wanted key holding a container is skipped, not read (the key stays
+ *    absent); a wanted key holding a scalar is parsed with `parseJsonScalar`.
+ *  - a non-wanted key's value is skipped with `skipJsonValue`, whole — a nested
+ *    `"status"` or `"attempt"` inside `result.messages` is never mistaken for a
+ *    top-level one.
+ *  - a duplicate key keeps the last value; a malformed byte stops the scan
+ *    rather than hanging it.
+ * Exposed for tests; not part of the reader API (architecture-rules.test.ts).
  */
-function scanTopLevelScalars(text: string, wanted: ReadonlySet<string>): Map<string, JsonScalar> {
+export function scanTopLevelScalars(text: string, wanted: ReadonlySet<string>): Map<string, JsonScalar> {
   const out = new Map<string, JsonScalar>();
   let i = skipWhitespace(text, 0);
   if (text[i] !== '{') return out;
