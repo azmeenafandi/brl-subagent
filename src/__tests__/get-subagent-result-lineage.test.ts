@@ -127,15 +127,30 @@ function startedMs(iso: string): number {
 	return Date.parse(iso);
 }
 
+/**
+ * Write one record file verbatim — for payloads `JSON.stringify` cannot
+ * express (raw escapes, deliberate damage).
+ */
+function writeAgentText(id: string, text: string, mtime?: Date): void {
+	fs.mkdirSync(env.storageDir, { recursive: true });
+	const file = path.join(env.storageDir, `${id}.json`);
+	fs.writeFileSync(file, text);
+	if (mtime) fs.utimesSync(file, mtime, mtime);
+}
+
+/**
+ * Write one well-formed record. `result` (issue #428) is the nested payload a
+ * real run persists — `result.messages`. The module under test must SKIP it,
+ * never read identity fields out of it, which the flat fixture could not express.
+ */
 function writeAgent(
 	id: string,
 	overrides: Record<string, unknown> = {},
 	mtime?: Date,
+	result?: unknown,
 ): void {
-	fs.mkdirSync(env.storageDir, { recursive: true });
-	const file = path.join(env.storageDir, `${id}.json`);
-	fs.writeFileSync(
-		file,
+	writeAgentText(
+		id,
 		JSON.stringify({
 			id,
 			sessionId: `sess-${id.slice(0, 8)}`,
@@ -147,9 +162,10 @@ function writeAgent(
 			model: "test/model",
 			thinkingLevel: "medium",
 			...overrides,
+			...(result === undefined ? {} : { result }),
 		}),
+		mtime,
 	);
-	if (mtime) fs.utimesSync(file, mtime, mtime);
 }
 
 function retryPair(): void {
@@ -347,6 +363,71 @@ describe("get_subagent_result retry lineage (issue #396)", () => {
 		expect(result.isError).toBeFalsy();
 		expect(result.content[0].text).toContain("Status: completed");
 		expect(result.content[0].text).not.toContain("Superseded by");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #428 — the record's nested `result` payload, through the real handler
+// ---------------------------------------------------------------------------
+
+describe("get_subagent_result over a record with a nested result payload (issue #428)", () => {
+	it("reads the record's own identity, never a decoy inside result.messages", async () => {
+		writeAgent(
+			SOURCE_ID,
+			{
+				status: "failed",
+				error: "Connection error.",
+				attempt: 1,
+				dispatchId: DISPATCH_ID,
+				startedAt: startedMs("2026-10-27T13:37:00.000Z"),
+			},
+			undefined,
+			{
+				messages: [
+					{
+						role: "assistant",
+						content: [{ type: "text", text: '{"status":"completed","attempt":99,"startedAt":1}' }],
+					},
+				],
+				finalOutput: 'done } "quoted" , ok',
+			},
+		);
+		writeAgent(RETRY_ID, {
+			status: "completed",
+			attempt: 2,
+			dispatchId: DISPATCH_ID,
+			resumeOf: SOURCE_ID,
+			startedAt: startedMs("2026-10-27T13:39:49.000Z"),
+		});
+
+		const result = await invoke(SOURCE_ID);
+
+		expect(result.isError).toBeFalsy();
+		// The nested text is a complete identity triple. Reading it instead of
+		// skipping it would print `Status: completed` and a 1970 `Started:`.
+		expect(result.content[0].text).toContain("Status: failed");
+		expect(result.content[0].text).toContain("Started: 2026-10-27T13:37:00.000Z");
+		expect(result.content[0].text).toContain(`Superseded by ${RETRY_ID}`);
+	});
+
+	it("drops a record whose id carries an invalid escape, without throwing (D5)", async () => {
+		// `\q` is not a JSON escape: the reader's fallback keeps the raw value,
+		// `assertSafeAgentId` rejects it, and the record leaves the family.
+		writeAgentText(
+			SOURCE_ID,
+			`{"id":"${SOURCE_ID.slice(0, -2)}\\q","status":"failed","startedAt":${startedMs("2026-10-27T13:37:00.000Z")},"attempt":1,"dispatchId":"${DISPATCH_ID}"}`,
+		);
+		writeAgent(RETRY_ID, {
+			status: "completed",
+			attempt: 2,
+			dispatchId: DISPATCH_ID,
+			resumeOf: SOURCE_ID,
+		});
+
+		const result = await invoke(SOURCE_ID);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain(`was retried as ${RETRY_ID}`);
 	});
 });
 
