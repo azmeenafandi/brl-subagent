@@ -494,7 +494,9 @@ function parseProvenanceLog(text) {
 		const parts = raw.split("\t");
 		// #456: a fourth `stated:<field>` column is allowed (see formatProvenanceEntry);
 		// anything else is still fail-closed.
-		const statedOk = parts.length === 4 && /^stated:[a-z]+$/.test(parts[3].trim());
+		// Only `worktree` can be stated today; a hand-crafted row claiming any other
+		// field was stated is rejected rather than silently accepted (review nit).
+		const statedOk = parts.length === 4 && /^stated:worktree$/.test(parts[3].trim());
 		if ((parts.length !== 3 && !statedOk) || parts[2].trim() === "" || parts[1].trim() === "") {
 			throw new StructuralError(
 				`provenance log line ${index + 1} is malformed — expected <iso>\\t<label>\\t<line>[\\tstated:<field>]`,
