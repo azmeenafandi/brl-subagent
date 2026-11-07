@@ -15,7 +15,7 @@ import { wrapTask } from './prompt';
 import { createLogger } from './logging';
 import { getCurrentBranch, getHeadState, restoreHead, createWorkBranch, captureDiff, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
 import type { HeadState } from './git';
-import { normalizeTimeout, effectiveBackgroundBudget, DEFAULT_BACKGROUND_DEADLINE_MS } from './validate';
+import { effectiveBackgroundBudget } from './validate';
 import { currentProcessOwner } from './recovery';
 import { persistRunRecord, listInflightRuns, type InflightRun } from './run-registry';
 import { isTransportRetryable } from './transport-retry';
@@ -1204,6 +1204,15 @@ export async function spawnBackgroundSession(
     toolOptions?: SubagentToolOptions;
     /** Per-agent deadline in ms — the session is aborted when exceeded (issue #28 W3). */
     timeout?: number;
+    /** Issue #448: who owns this run's NO-TIMEOUT deadline.
+     *  - `"caller"` — the caller (index.ts' dispatch path) arms and clears the
+     *    30 m default itself; this function arms nothing for an absent timeout
+     *    (arming here too would DOUBLE-arm the run).
+     *  - `"spawn"` (default) — this function arms exactly one default deadline
+     *    so a direct spawn cannot run unbounded.
+     *  An EXPLICIT positive `timeout` is always this function's W3 timer,
+     *  whatever the owner: the caller delegates explicit deadlines here. */
+    deadlineOwner?: "caller" | "spawn";
     /** Git isolation for the background run — "branch" creates a work branch (issue #28 W4). */
     gitMode?: GitMode;
     /** Issue #98: snapshot of the caller's raw params — lets retryRunId restore
@@ -1896,6 +1905,68 @@ export async function spawnBackgroundSession(
   // The session will run independently
   // F27: wrap in the task-as-data fence — the user message is DATA, not
   // instructions (see SUBAGENT_INSTRUCTIONS Task Boundary).
+  //
+  // Issue #448 (defect 1): the deadline timer is ABORT-ONLY — status 'stopped',
+  // the transcript note, session.abort() — and NOTHING else: no run-entry
+  // finalization and no session-dir pruning, because a non-settling prompt may
+  // still be writing the session file (#453). The abort is attempted OUTSIDE the
+  // fallible bookkeeping: a throwing status/transcript write must never leave
+  // the record saying 'stopped' while the child keeps running. The status flip
+  // stays BEFORE the abort — the settle path classifies the run from it.
+  const armDeadline = (budgetMs: number): ReturnType<typeof setTimeout> =>
+    setTimeout(() => {
+      if (agent.completedAt) return; // already settled — nothing to abort
+      const reason = `Timed out after ${budgetMs}ms`;
+      let bookkeepingFailure: unknown;
+      try {
+        updateAgentStatus(id, 'stopped', reason);
+        transcript.completeTranscript(id, 'stopped');
+      } catch (err) {
+        bookkeepingFailure = err;
+      }
+      // Independent of the bookkeeping above (#448) — exactly one abort attempt.
+      try {
+        session.abort().catch((err: Error) => {
+          // Abort can reject if the session is mid-dispose; the status flip
+          // above is already recorded, so this is non-fatal — but a rejected
+          // abort must not be silent (#448 review nit).
+          log.warn(`spawnBackgroundSession: abort rejected for ${id}`, { error: err.message });
+        });
+      } catch (err) {
+        // abort() threw synchronously — a timer callback must never throw
+        // uncaught (that would crash the host process).
+        log.warn(`spawnBackgroundSession: abort failed to start for ${id}`, {
+          error: (err as Error).message,
+        });
+      }
+      if (bookkeepingFailure) {
+        // Surfaced through the log (the same audit surface the settle paths
+        // use) — never absorbed into silence.
+        log.warn(`spawnBackgroundSession: deadline bookkeeping failed for ${id}`, {
+          error:
+            bookkeepingFailure instanceof Error
+              ? bookkeepingFailure.message
+              : String(bookkeepingFailure),
+        });
+      }
+    }, budgetMs);
+
+  // Issue #448 (defect 2): deadline ownership. The 30 m default is armed HERE —
+  // before prompt(), so a direct spawn is bounded even when prompt() throws
+  // synchronously (the catch below clears it) — UNLESS the caller owns it
+  // (`deadlineOwner: "caller"`, the index.ts dispatch path, which arms the same
+  // default itself and must not be double-armed). An explicit positive timeout
+  // is always this function's W3 timer, honoured verbatim after normalizeTimeout:
+  // a raw value >= 2^31 normalizes to "no timeout", so the default applies
+  // (issue #240 — never an instant kill). `effectiveBackgroundBudget` is the
+  // single definition of the 30 m default; it is never re-spelled here.
+  let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
+  if (params.timeout !== undefined && params.timeout > 0) {
+    deadlineHandle = armDeadline(effectiveBackgroundBudget(params.timeout));
+  } else if ((params.deadlineOwner ?? 'spawn') === 'spawn') {
+    deadlineHandle = armDeadline(effectiveBackgroundBudget(undefined));
+  }
+
   // NOTE: if prompt() throws SYNCHRONOUSLY, the .then/.catch below never
   // attach and cleanupWorkBranch would never run — catch here so the work
   // branch is not orphaned (it is a real filesystem branch).
@@ -1903,6 +1974,9 @@ export async function spawnBackgroundSession(
   try {
     runPromise = session.prompt(wrapTask(params.task));
   } catch (err) {
+    // No settle handler attaches on this path, so the deadline armed above must
+    // be cleared HERE — BEFORE this catch's own fallible cleanup (#448).
+    if (deadlineHandle) clearTimeout(deadlineHandle);
     cleanupWorkBranch();
     // Issue #98 (review F1): a synchronous prompt() throw never reaches the
     // settle handlers — finalize the run entry so no zombie 'running' entry
@@ -1912,41 +1986,8 @@ export async function spawnBackgroundSession(
     throw err;
   }
 
-  // W3 (issue #28): per-agent deadline — abort the session when exceeded.
-  // Armed immediately after the prompt call so in-prompt preflight (auth
-  // check, model resolution) counts toward the deadline; the abort lands in
-  // the .then below as an aborted run (probe contract). We pre-set the status
-  // so the .then keeps 'stopped' with the timeout reason recorded. The raw
-  // value is normalized here (issue #240): a raw >=2^31 or Infinity would make
-  // Node fire the timer at ~1ms (instant kill), so normalizeTimeout maps it to
-  // undefined. An explicit timeout is HONORED verbatim (no ceiling); only the
-  // no-timeout fallback uses the 30m background default. The `params.timeout`
-  // guard below keeps this timer unarmed on the no-timeout path, where the
-  // index.ts deadline timer owns the no-timeout default (no redundant timer).
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  if (params.timeout && params.timeout > 0) {
-    timeoutHandle = setTimeout(() => {
-      try {
-        if (agent.completedAt) return; // already settled — nothing to abort
-        updateAgentStatus(id, 'stopped', `Timed out after ${params.timeout}ms`);
-        transcript.completeTranscript(id, 'stopped');
-        session.abort().catch(() => {
-          // Abort can reject if the session is mid-dispose; the status flip
-          // above is already recorded, so this is non-fatal.
-        });
-      } catch (err) {
-        // Timer callbacks must never throw uncaught — that crashes the host
-        // process. updateAgentStatus/completeTranscript can throw (persist
-        // fs failure, transcript deleted); the abort is best-effort.
-        log.warn(`spawnBackgroundSession: timeout handler error for ${id}`, {
-          error: (err as Error).message,
-        });
-      }
-    }, normalizeTimeout(params.timeout) ?? DEFAULT_BACKGROUND_DEADLINE_MS);
-  }
-
   runPromise.then(() => {
-    if (timeoutHandle) clearTimeout(timeoutHandle);
+    if (deadlineHandle) clearTimeout(deadlineHandle);
     try {
       // Probe contract (sdk-abort-contract.test.ts): prompt() RESOLVES on abort
       // — the SDK's runWithLifecycle catches the AbortError and converts it into
@@ -2096,7 +2137,7 @@ export async function spawnBackgroundSession(
       markTerminalBestEffort('completed');
     }
   }).catch((err: Error) => {
-    if (timeoutHandle) clearTimeout(timeoutHandle);
+    if (deadlineHandle) clearTimeout(deadlineHandle);
     try {
       // W4: capture partial work + discard the work branch on failure — a failed
       // background agent may still have produced reviewable changes.

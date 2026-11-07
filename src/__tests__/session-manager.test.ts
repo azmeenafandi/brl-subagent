@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { existsSync, statSync, readFileSync } from "node:fs";
+import { existsSync, statSync, readFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 // Mocks must exist before vi.mock factory runs (hoisted).
@@ -94,13 +94,14 @@ vi.mock("../event-bus", () => ({
 	createEvent: eventBusMock.createEvent,
 }));
 
-import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus } from "../session-manager";
+import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, backgroundSessionDir } from "../session-manager";
 import { listInflightRuns } from "../run-registry";
 import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
 import { CUSTOM_ENTRY_TYPES, NO_ASSISTANT_OUTPUT_REASON } from "../types";
 import { buildCompletionMessage } from "../notify-completion";
 import { isTransportRetryable } from "../transport-retry";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
+import { setLogCwd } from "../logging";
 
 // Issue #98: spawnBackgroundSession persists session run entries via
 // pi.appendEntry (same store the foreground path writes to).
@@ -738,6 +739,235 @@ function resetGitMocks() {
 	mocks.git.captureWorkingDiff.mockReturnValue("diff --git a/y.ts b/y.ts");
 }
 
+// ---------------------------------------------------------------------------
+// Issue #448: the deadline abort must be INDEPENDENT of fallible bookkeeping
+// (a throwing status/transcript write must never leave the record 'stopped'
+// while the child keeps running), and a DIRECT spawn must arm the 30 m default
+// itself unless the caller explicitly owns it. These tests drive the real
+// timer path: fake timers, real transcript filesystem.
+// ---------------------------------------------------------------------------
+
+/** The single shared log file, once a test points the logger at a temp cwd. */
+function readLog(): string {
+	try {
+		return readFileSync(join(env.baseDir, ".pi", "subagent-logs", "brl-subagent.log"), "utf-8");
+	} catch {
+		return "";
+	}
+}
+
+/** Agent ids observed in the per-test transcript dir (agent-<id>.jsonl). */
+function transcriptIds(): string[] {
+	return readdirSync(env.outputDir)
+		.map((name) => /^agent-(.+)\.jsonl$/.exec(name)?.[1])
+		.filter((id): id is string => id !== undefined);
+}
+
+describe("spawnBackgroundSession deadline independence (#448)", () => {
+	/** A never-settling prompt keeps the run 'running' so the deadline can fire. */
+	function hangPrompt(): void {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+	}
+
+	it("aborts exactly once when the transcript write fails (real EISDIR) (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			mocks.session.abort.mockClear();
+			setLogCwd(env.baseDir);
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a broken transcript",
+				timeout: 5000,
+			});
+
+			// A REAL transcript failure: the recorded path is made a DIRECTORY, so
+			// completeTranscript's appendFileSync throws EISDIR inside the timer.
+			const transcriptPath = transcriptGetTranscriptPath(agent.id);
+			rmSync(transcriptPath, { force: true });
+			mkdirSync(transcriptPath);
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			// Status BEFORE abort (the settle path classifies 'stopped' from it),
+			// the abort is not suppressed by the throwing write, and the failure is
+			// surfaced in the log rather than absorbed.
+			const after = getAgent(agent.id);
+			expect(after?.status).toBe("stopped");
+			expect(after?.error).toContain("Timed out after 5000ms");
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(readLog()).toContain("deadline bookkeeping failed");
+			expect(readLog()).toContain("EISDIR");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("aborts exactly once when the status write fails (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			mocks.session.abort.mockClear();
+			setLogCwd(env.baseDir);
+			// Make updateAgentStatus itself throw: its emit is the fallible step (the
+			// REAL bus swallows listener errors, so only a mock can force this).
+			eventBusMock.emit.mockImplementation((event: { type: string }) => {
+				if (event.type === "subagent:stopped") throw new Error("emit boom");
+			});
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a throwing status write",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(readLog()).toContain("deadline bookkeeping failed");
+			expect(readLog()).toContain("emit boom");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("survives a REJECTING abort() and records the deadline stop once (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			// Abort can reject when the session is mid-dispose. The deadline must
+			// still record the stop, call it once, and never surface an unhandled
+			// rejection (the .catch in armDeadline exists for exactly this).
+			setLogCwd(env.baseDir);
+			mocks.session.abort.mockRejectedValue(new Error("session disposing"));
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a rejecting abort",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+			// The rejection is surfaced, not silently swallowed — this is what makes
+			// the test discriminate the guard from a missing `.catch`.
+			expect(readLog()).toContain("abort rejected");
+			expect(readLog()).toContain("session disposing");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("survives a SYNCHRONOUSLY throwing abort() and logs it (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			setLogCwd(env.baseDir);
+			// A timer callback must never throw uncaught — that crashes the host.
+			mocks.session.abort.mockImplementation(() => {
+				throw new Error("abort exploded sync");
+			});
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a sync-throwing abort",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+			expect(readLog()).toContain("abort failed to start");
+			expect(readLog()).toContain("abort exploded sync");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("arms one default deadline for a direct spawn and only aborts (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			mocks.session.abort.mockClear();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "direct spawn, no explicit timeout",
+			});
+
+			// Exactly one deadline — and it is the 30 m default.
+			expect(vi.getTimerCount()).toBe(1);
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 1);
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+
+			// A live session dir the timer must NOT prune, and a run entry it must
+			// NOT finalize (abort-only, #453). The SDK's per-run dir is stubbed out
+			// by the mocked SessionManager, so create it here.
+			const sessionDir = backgroundSessionDir(agent.id);
+			mkdirSync(sessionDir, { recursive: true });
+			const runWritesBefore = fakePi.appendEntry.mock.calls.length;
+
+			await vi.advanceTimersByTimeAsync(1);
+
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			const after = getAgent(agent.id);
+			expect(after?.status).toBe("stopped");
+			expect(after?.error).toContain("Timed out after 1800000ms");
+			expect(fakePi.appendEntry.mock.calls.length).toBe(runWritesBefore);
+			expect(existsSync(sessionDir)).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a caller-owned spawn arms no default of its own (no double arm) (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			mocks.session.abort.mockClear();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "caller owns the deadline",
+				deadlineOwner: "caller",
+			});
+
+			// The caller's timer (index.ts) is the run's ONLY deadline.
+			expect(vi.getTimerCount()).toBe(0);
+			await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+			expect(getAgent(agent.id)?.status).toBe("running");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("clears a deadline armed before prompt() when the spawn throws synchronously (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			let timersAtPrompt = -1;
+			mocks.session.prompt.mockImplementation(() => {
+				// Observe the arm ORDER: the deadline must already be armed here.
+				timersAtPrompt = vi.getTimerCount();
+				throw new Error("sync spawn boom");
+			});
+			mocks.session.abort.mockClear();
+
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync spawn throw" }),
+			).rejects.toThrow("sync spawn boom");
+
+			// Armed BEFORE prompt() (an arm-after ordering leaves 0 here)...
+			expect(timersAtPrompt).toBe(1);
+			// ...and cleared in the sync-throw catch, before its own cleanup.
+			expect(vi.getTimerCount()).toBe(0);
+
+			const [id] = transcriptIds();
+			expect(id).toBeDefined();
+			const statusAfterThrow = getAgent(id)?.status;
+
+			await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+			expect(getAgent(id)?.status).toBe(statusAfterThrow);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 	const VALID_UUID = "9a8b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d";
 
@@ -796,20 +1026,25 @@ describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 		}
 	});
 
-	it("ignores a zero/undefined timeout (no timer armed)", async () => {
+	it("a zero timeout is 'no explicit timeout' — the default applies to a direct spawn (#448)", async () => {
 		vi.useFakeTimers();
 		try {
 			mocks.session.prompt.mockReturnValue(new Promise(() => {}));
 			mocks.session.abort.mockClear();
 			const { spawnBackgroundSession } = await import("../session-manager");
+			// Pre-#448 a zero timeout armed NO timer, because the index caller owned
+			// the no-timeout default. A DIRECT spawn now owns that default unless
+			// told otherwise (#448), so 0 means "no explicit timeout" → 30 m.
 			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
-				task: "test no timeout",
+				task: "test zero timeout",
 				timeout: 0,
 			});
 
-			await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
-
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 1);
 			expect(mocks.session.abort).not.toHaveBeenCalled();
+
+			await vi.advanceTimersByTimeAsync(1);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
 		} finally {
 			vi.useRealTimers();
 		}
