@@ -2034,25 +2034,43 @@ export async function spawnBackgroundSession(
   // The session will run independently
   // F27: wrap in the task-as-data fence — the user message is DATA, not
   // instructions (see SUBAGENT_INSTRUCTIONS Task Boundary).
-  //
-  // Issue #448 (defect 1) + #453 (ADR 0023 decisions 2/3): the deadline timer is
-  // COOPERATIVE and prune-free. It flips the status to `stopped`, notes the
-  // transcript, aborts, and writes a terminal-run SNAPSHOT (`failed/timeout`) — it
-  // owns no filesystem or git resource, waits for no settle, never prunes the
-  // session dir and never releases the branch lock. Those stay with the settle.
-  //
-  // Ordering is deliberate: status → abort → snapshot. A throwing status or
-  // transcript write must never leave the record saying 'stopped' while the child
-  // keeps running, and a throwing APPEND must never suppress the abort — so each
-  // step has its own containment and the abort sits between the two. The status
-  // flip stays BEFORE the abort because the settle path classifies the run from it.
-  ///
-  /// Time origin (issue #453 / ADR 0023 decision 5): the TWO arguments are
-  /// deliberately separate. `budgetMs` is the run's budget and is the ONLY value
-  /// the reason may name; `delayMs` is the REMAINDER still owed at arm time. One
-  /// argument for both is the defect this replaces: the timer fired at arm+budget
-  /// (drifting past the displayed `startedAt + timeoutMs`) and, once the remainder
-  /// was used as the delay, the reason would report a truncated budget.
+
+  /**
+   * The ONE place a background deadline is created — and its written contract
+   * (issue #453, ADR 0023).
+   *
+   * OWNERSHIP. The session-manager owns the deadline on every path (explicit
+   * timeout and the 30 m default); no caller arms or clears one. It is installed
+   * before `prompt()`, so no statement anywhere after this call — a caller throw
+   * included — can leave the run unbounded. The only thing that clears it is the
+   * run's own settlement.
+   *
+   * WHAT THE DEADLINE OWNS: nothing that outlives the call. The deadline owns no
+   * filesystem or git resource, waits for no settle, never prunes the run's
+   * session dir and never releases the branch lock; ONLY A SETTLE DOES. What it
+   * does is bounded and idempotent: flip the agent to `stopped` (which also sets
+   * `completedAt`, so the caller's poller releases the live row on its next
+   * tick), note the transcript, attempt ONE cooperative abort, and write the
+   * classification SNAPSHOT (`failed` + `timeout`, `prune: false`).
+   *
+   * ORDERING IS THE CONTRACT. status → abort → snapshot. A throwing status or
+   * transcript write must never leave the record saying 'stopped' while the child
+   * keeps running, and a throwing append must never suppress the abort — each
+   * step is contained and the abort sits between the other two. The status flip
+   * stays BEFORE the abort because the settle classifies the run from it.
+   *
+   * TIME ORIGIN. The two arguments are deliberately separate: `budgetMs` is the
+   * run's budget and is the ONLY value the reason may name; `delayMs` is the
+   * REMAINDER still owed at arm time (the budget is anchored at record creation).
+   * One argument for both is the defect this replaced: the timer fired at
+   * arm + budget (drifting past the displayed `startedAt + timeoutMs`), and using
+   * the remainder as the reason would truncate the budget a user asked for.
+   *
+   * STATED LIMITS (unchanged, and in the CHANGELOG): the abort is COOPERATIVE. A
+   * prompt that ignores it keeps running; its run then keeps its session dir, its
+   * branch lock until process exit, and no registry entry (the terminal snapshot
+   * retires that claim). Nothing here can force it, and nothing here pretends to.
+   */
   const armDeadline = (budgetMs: number, delayMs: number): ReturnType<typeof setTimeout> =>
     setTimeout(() => {
       if (agent.completedAt) return; // already settled — nothing to abort

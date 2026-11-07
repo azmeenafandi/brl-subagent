@@ -1224,9 +1224,14 @@ describe("spawnBackgroundSession deadline record (#453)", () => {
 			// The child kept working until the abort landed: a real assistant turn
 			// (and its usage) arrives AFTER the deadline. Today's shipped settle
 			// finalized BEFORE capturing, so the amendment would persist "".
+			//
+			// `stopReason: "length"` is deliberate: it makes this settle's OWN
+			// classification differ from the snapshot's (`length`, not `aborted`), so
+			// an amendment that re-derived the classification from this call instead
+			// of the snapshot would be visible below (mutant M7).
 			mocks.session.messages = [
 				{ role: "user", content: "probe task" },
-				{ role: "assistant", content: [{ type: "text", text: "work done past the deadline" }], stopReason: "stop" },
+				{ role: "assistant", content: [{ type: "text", text: "work done past the deadline" }], stopReason: "length" },
 			];
 			prompt.settle();
 			await vi.advanceTimersByTimeAsync(0);
@@ -1241,6 +1246,9 @@ describe("spawnBackgroundSession deadline record (#453)", () => {
 			expect(amendment.status).toBe("failed");
 			expect(amendment.errorCategory).toBe("timeout");
 			expect(amendment.errorMessage).toBe("Timed out after 5000ms");
+			// The snapshot's 'aborted', NOT this settle's 'length' — a payload
+			// amendment never re-opens the classification.
+			expect(amendment.stopReason).toBe("aborted");
 			expect(amendment.stopReason).toBe(snapshot.stopReason);
 			expect(amendment.id).toBe(agent.id);
 			expect(isSubagentRunShape(amendment)).toBe(true);
