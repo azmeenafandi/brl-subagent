@@ -51,6 +51,10 @@ describe("escalateKill (one SIGTERM → grace → SIGKILL sequence)", () => {
 
 		const result = await escalateKill([survivor, exits], {
 			graceMs: 5000,
+			// #455: this test pins the GRACE window alone. The post-SIGKILL drain is
+			// pinned by its own tests below, so it is disabled here rather than
+			// folding a second sleep shape into this assertion.
+			drainMs: 0,
 			sleep: async (ms) => {
 				sleeps.push(ms);
 			},
@@ -444,5 +448,91 @@ describe("three-state group membership (#299 fix A.2)", () => {
 	it("an ABSENT reader keeps the documented leader-liveness fallback", () => {
 		const target = groupTarget(9, () => {}, () => {}, () => false);
 		expect(target.verifyDeath()).toBe(true); // leader dead, no reader → dead
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #455 — a SIGKILL that has not landed yet is not a survivor
+// ---------------------------------------------------------------------------
+
+/** Fake clock that advances exactly by each sleep, recording the pass order. */
+function drainRun(graceMs: number, drainMs: number) {
+	const order: string[] = [];
+	const clock = { now: 0 };
+	const sleep = async (ms: number) => {
+		order.push(`sleep:${ms}`);
+		clock.now += ms;
+	};
+	return { order, clock, options: { graceMs, drainMs, now: () => clock.now, sleep } };
+}
+
+describe("#455 — the bounded post-SIGKILL drain", () => {
+	it("A: a target that dies during the drain is NOT a survivor", async () => {
+		const { order, clock, options } = drainRun(0, 100);
+		let samples = 0;
+		const target = fakeTarget({
+			forceKill: () => order.push("kill"),
+			verifyDeath: () => {
+				const dead = ++samples > 3; // two drain samples still read alive
+				order.push(dead ? "dead" : "alive");
+				return dead;
+			},
+		});
+
+		expect(await escalateKill([target], options)).toEqual([]);
+		// ONE SIGKILL, dispatched BEFORE the first drain sample: grace, phase-A
+		// sample, kill, alive, sleep, alive, sleep, dead, dead (phase C).
+		expect(order).toEqual(["sleep:0", "alive", "kill", "alive", "sleep:10", "alive", "sleep:10", "dead", "dead"]);
+		expect(clock.now).toBe(20); // stopped well inside drainMs
+	});
+
+	it("B: a genuinely unkillable target survives, and the drain is BOUNDED", async () => {
+		const { clock, options } = drainRun(0, 100);
+		const target = fakeTarget({ verifyDeath: () => false });
+
+		expect(await escalateKill([target], options)).toEqual([target]);
+		expect(clock.now).toBe(100); // the deadline caps it — never "poll until dead"
+	});
+
+	it("C: drainMs 0 reproduces the legacy single-sample classification", async () => {
+		const { clock, options } = drainRun(0, 0);
+		const target = fakeTarget({ verifyDeath: () => false });
+
+		// Classified in the same instant as the SIGKILL — the mutant-B baseline.
+		expect(await escalateKill([target], options)).toEqual([target]);
+		expect(clock.now).toBe(0); // no post-SIGKILL window at all
+	});
+
+	it("D: every SIGKILL is dispatched before the first drain sample", async () => {
+		const { order, clock, options } = drainRun(0, 100);
+		const mk = (name: string) =>
+			fakeTarget({
+				forceKill: () => order.push(`kill:${name}`),
+				verifyDeath: () => {
+					const dead = clock.now >= 10; // both confirm dead after one drain sleep
+					order.push(`${dead ? "dead" : "alive"}:${name}`);
+					return dead;
+				},
+			});
+
+		expect(await escalateKill([mk("a"), mk("b")], options)).toEqual([]);
+		// Phase A issues BOTH SIGKILLs; the first drain sample only follows them.
+		expect(order).toEqual([
+			"sleep:0", "alive:a", "kill:a", "alive:b", "kill:b", "alive:a",
+			"sleep:10", "dead:a", "dead:b", "dead:a", "dead:b",
+		]);
+	});
+
+	it("E: no drain when the liveness gate issued NO SIGKILL (the D5 group tripwire)", async () => {
+		const sleeps: number[] = [];
+		const target = fakeTarget({
+			verifyDeath: () => false, // group still non-empty
+			verifyProcessAlive: () => false, // but the leader already exited → no KILL
+			forceKillGroup: () => {},
+		});
+		const opts = { graceMs: 0, drainMs: 100, sleep: async (ms: number) => void sleeps.push(ms) };
+
+		expect(await escalateKill([target], opts)).toEqual([]); // ended by the group SIGKILL
+		expect(sleeps).toEqual([0]); // the grace wait only — nothing in flight to drain
 	});
 });
