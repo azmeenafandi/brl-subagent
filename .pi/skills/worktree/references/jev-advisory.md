@@ -209,3 +209,21 @@ one `<agent-id-prefix>  <reason>` per line. A matching offender is reported as
 `acknowledged: <reason>` — never as clean, never as failing — and the ledger row for that
 dispatch is the record of record. An exception without a reason is rejected by review, not by
 the script.
+
+**Provenance misses need evidence, not prose.** A line that is *format-valid* but has no provenance
+row was typed, invented or copied — the 2026-10-31 `medium (0.70)` case. Such a dispatch can also be
+acknowledged, but only by an exception whose reason carries `retro:<label>`, where `<label>` is a real
+row in `.pi/jev-lines.log`. The report then prints it as an acknowledged **`[provenance miss]`**, so
+the offence stays visible; an exception that names no label, or names one that does not exist, leaves
+the dispatch an offender and says why.
+
+**A line cannot be its own evidence.** `--line --legacy-line --label` prints the line but writes **no**
+provenance row; only `--classifier … --label` does. Before 2026-11-07 it wrote one, so a conductor could
+mint the row that validates their own hand-typed line and then cite it in a `retro:` exception — the
+spoof chain a #452 review demonstrated live. The retrospective row must therefore come from the
+classifier, which is the whole point of naming it.
+
+Why a label and not a sentence: an invented confidence plus a persuasive paragraph would otherwise
+clear the gate. The retrospective row must be printed with `--classifier … --label <name>` *after*
+the fact, and naming it forces the evidence into the log (2026-11-07: a hand-typed `high (0.62)` whose
+classifier answer was `xhigh (0.63)`).
