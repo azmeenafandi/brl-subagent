@@ -114,7 +114,8 @@ export const delegateTaskParamsSchema = Type.Object({
 			tools: Type.Optional(
 				Type.Array(Type.String(), {
 					description:
-						"Explicit allowlist of tool names for the subagent. Maps to pi's --tools flag.",
+						"Explicit allowlist of tool names for the subagent. Maps to pi's --tools flag. " +
+						"An EMPTY array means no child tools (pi --no-tools); omitting the field keeps pi's defaults.",
 				}),
 			),
 			excludeTools: Type.Optional(
