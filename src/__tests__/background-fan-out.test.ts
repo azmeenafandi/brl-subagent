@@ -93,7 +93,23 @@ vi.mock("@earendil-works/pi-tui", () => {
 });
 
 import initExtension from "../index";
+import { DEFAULT_BACKGROUND_DEADLINE_MS } from "../validate";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
+
+/**
+ * Record every `setTimeout` delay the code under test arms (issue #453 [c 8]).
+ * The deadline census counts ARMS by delay — a run has a poller and a footer too,
+ * so a raw timer count cannot answer "how many deadlines did this path create".
+ */
+function recordTimeoutDelays(): { delays: number[]; restore: () => void } {
+	const delays: number[] = [];
+	const realSetTimeout = globalThis.setTimeout;
+	const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
+		delays.push(ms ?? 0);
+		return realSetTimeout(fn, ms as never);
+	}) as unknown as typeof setTimeout);
+	return { delays, restore: () => spy.mockRestore() };
+}
 
 // ---------------------------------------------------------------------------
 // Harness (background-run-extraction pattern)
@@ -113,8 +129,6 @@ interface SpawnParams {
 	cwd?: string;
 	toolOptions?: unknown;
 	timeout?: number;
-	/** Issue #448: who arms the no-timeout default deadline. */
-	deadlineOwner?: string;
 	gitMode?: string;
 	originalParams?: Record<string, unknown>;
 }
@@ -561,10 +575,9 @@ describe("background fan-out for tasks mode (#198 phase 2)", () => {
 describe("background deadline is a default, not a ceiling (#240)", () => {
 	/**
 	 * A fake agent with a live session ref, so the 2s poller never takes its
-	 * nulled-ref crash path (which would clear the deadline timer first) and the
-	 * deadline abort is observable. The mocked spawn does not populate the
-	 * session-manager agent map, so `updateAgentStatus` on an unknown id is a
-	 * no-op — the abort call on the fake session ref is the firing signal.
+	 * nulled-ref crash path. Issue #453: with the spawn stubbed, NOTHING in this
+	 * suite arms a deadline — that is exactly what the caller-side census asserts.
+	 * The spawn's own single arm is pinned in session-manager.test.ts.
 	 */
 	function stubLiveSpawn(abort: ReturnType<typeof vi.fn>): void {
 		h.spawnBackgroundSession.mockImplementation(
@@ -579,53 +592,59 @@ describe("background deadline is a default, not a ceiling (#240)", () => {
 		);
 	}
 
-	it("fires the default deadline at 30m when no timeout is given", async () => {
+	it("arms ONE deadline per dispatch — the caller arms none (#453)", async () => {
 		const abort = vi.fn().mockResolvedValue(undefined);
 		stubLiveSpawn(abort);
 		vi.useFakeTimers();
+		const census = recordTimeoutDelays();
 		try {
+			vi.setSystemTime(1_700_000_000_000);
 			await tool.execute(
-				"call-240-default",
+				"call-453-census",
 				{ task: "no explicit timeout", background: true },
 				undefined,
 				undefined,
 				makeCtx(),
 			);
-			// Not before the 30m default.
-			await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 1);
+
+			// Issue #453 [c 8]: count deadline ARMS, not timers. The caller's tail
+			// arms ZERO (the poller it does arm is an interval, not a timeout). The
+			// run's one arm is the spawn's, pinned in session-manager.test.ts —
+			// together: exactly one arm per dispatch. A re-introduced caller timer
+			// (mutant M1) makes this 1 and the total 2.
+			expect(census.delays.filter((ms) => ms === DEFAULT_BACKGROUND_DEADLINE_MS)).toEqual([]);
+			expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+
+			// ...and the caller can no longer stop the run: however long the clock
+			// runs, nothing here aborts (the stub spawn owns that decision).
+			await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1000);
 			expect(abort).not.toHaveBeenCalled();
-			// Fires at the 30m default.
-			await vi.advanceTimersByTimeAsync(1);
-			expect(abort).toHaveBeenCalledTimes(1);
 		} finally {
+			census.restore();
 			vi.clearAllTimers();
 			vi.useRealTimers();
 		}
 	});
 
-	it("hands the no-timeout deadline to the caller-owned spawn flag (#448)", async () => {
+	it("passes the budget to the spawn and no ownership flag (#453)", async () => {
 		const abort = vi.fn().mockResolvedValue(undefined);
 		stubLiveSpawn(abort);
 		vi.useFakeTimers();
 		try {
 			await tool.execute(
-				"call-448-owner",
+				"call-453-owner",
 				{ task: "no explicit timeout", background: true },
 				undefined,
 				undefined,
 				makeCtx(),
 			);
-			// Omission would make the REAL spawn arm a SECOND 30m default (the
-			// caller's timer plus the spawn's) — #448's double arm. The flag is
-			// asserted here so the one production call site cannot drop it silently.
-			expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+			// #448's ownership flag is deleted with the split it arbitrated: the
+			// spawn owns the deadline on every path, so the dispatch passes the raw
+			// budget only. Omission of the budget (timeout) would silently override
+			// a user timeout, so it is asserted here too.
 			const spawnParams = h.spawnBackgroundSession.mock.calls[0][2] as SpawnParams;
-			expect(spawnParams.deadlineOwner).toBe("caller");
+			expect(spawnParams).not.toHaveProperty("deadlineOwner");
 			expect(spawnParams.timeout).toBeUndefined();
-
-			// Exactly one deadline in the run: the caller's, firing at 30m.
-			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
-			expect(abort).toHaveBeenCalledTimes(1);
 		} finally {
 			vi.clearAllTimers();
 			vi.useRealTimers();

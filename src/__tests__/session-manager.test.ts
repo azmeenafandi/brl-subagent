@@ -782,6 +782,25 @@ function transcriptIds(): string[] {
 		.filter((id): id is string => id !== undefined);
 }
 
+/**
+ * Record every `setTimeout` delay armed while the clock is frozen, and return the
+ * (append-only) list. Issue #453 [c 8]: the deadline test counts ARMS by delay, not
+ * timers — a normal run arms a poller and a footer too, so a raw timer count can
+ * never answer "how many deadlines does this path create".
+ */
+function recordTimeoutDelays(): { delays: number[]; restore: () => void } {
+	const delays: number[] = [];
+	const realSetTimeout = globalThis.setTimeout;
+	const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
+		delays.push(ms ?? 0);
+		return realSetTimeout(fn, ms as never);
+	}) as unknown as typeof setTimeout);
+	return { delays, restore: () => spy.mockRestore() };
+}
+
+/** The census's delay list for the CURRENT run — the only deadline budget used. */
+const DEFAULT_BUDGET_MS = 30 * 60 * 1000;
+
 describe("spawnBackgroundSession deadline independence (#448)", () => {
 	/** A never-settling prompt keeps the run 'running' so the deadline can fire. */
 	function hangPrompt(): void {
@@ -899,8 +918,13 @@ describe("spawnBackgroundSession deadline independence (#448)", () => {
 		}
 	});
 
-	it("arms one default deadline for a direct spawn and only aborts (#448)", async () => {
+	it("arms exactly one default deadline for a direct spawn, at delay == budget (#453)", async () => {
 		vi.useFakeTimers();
+		// [c 8] Arm CENSUS, not a timer count: a normal run arms other timers too
+		// (poller, footer), so count only the arms whose delay is the budget — with
+		// the clock frozen, elapsed == 0 and the arm delay IS the budget.
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
 		try {
 			hangPrompt();
 			mocks.session.abort.mockClear();
@@ -908,8 +932,7 @@ describe("spawnBackgroundSession deadline independence (#448)", () => {
 				task: "direct spawn, no explicit timeout",
 			});
 
-			// Exactly one deadline — and it is the 30 m default.
-			expect(vi.getTimerCount()).toBe(1);
+			expect(census.delays.filter((ms) => ms === DEFAULT_BUDGET_MS)).toHaveLength(1);
 			await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 1);
 			expect(mocks.session.abort).not.toHaveBeenCalled();
 
@@ -929,25 +952,52 @@ describe("spawnBackgroundSession deadline independence (#448)", () => {
 			expect(fakePi.appendEntry.mock.calls.length).toBe(runWritesBefore);
 			expect(existsSync(sessionDir)).toBe(true);
 		} finally {
+			census.restore();
 			vi.useRealTimers();
 		}
 	});
 
-	it("a caller-owned spawn arms no default of its own (no double arm) (#448)", async () => {
+	it("arms exactly one deadline for an explicit timeout, at delay == budget (#453)", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
+		try {
+			hangPrompt();
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "direct spawn, explicit timeout",
+				timeout: 5000,
+			});
+
+			// ONE arm, and no second one hiding behind the default: an explicit
+			// budget must not also arm a 30 m one.
+			expect(census.delays.filter((ms) => ms === 5000)).toHaveLength(1);
+			expect(census.delays.filter((ms) => ms === DEFAULT_BUDGET_MS)).toHaveLength(0);
+		} finally {
+			census.restore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("arms the deadline before it returns, so a CALLER throw cannot unbounded the run (#453)", async () => {
 		vi.useFakeTimers();
 		try {
 			hangPrompt();
 			mocks.session.abort.mockClear();
 			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
-				task: "caller owns the deadline",
-				deadlineOwner: "caller",
+				task: "caller tail throws after the spawn",
 			});
 
-			// The caller's timer (index.ts) is the run's ONLY deadline.
-			expect(vi.getTimerCount()).toBe(0);
-			await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
-			expect(mocks.session.abort).not.toHaveBeenCalled();
-			expect(getAgent(agent.id)?.status).toBe("running");
+			// F1.4's measured hole: while the caller owned the deadline, a throw
+			// between the spawn returning and the caller's arm left the run
+			// UNBOUNDED. The arm now precedes the return, so the same throw is
+			// harmless — the timer is already installed.
+			expect(() => {
+				throw new Error("caller tail boom");
+			}).toThrow("caller tail boom");
+
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.status).toBe("stopped");
 		} finally {
 			vi.useRealTimers();
 		}

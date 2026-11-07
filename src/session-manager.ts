@@ -1204,15 +1204,6 @@ export async function spawnBackgroundSession(
     toolOptions?: SubagentToolOptions;
     /** Per-agent deadline in ms — the session is aborted when exceeded (issue #28 W3). */
     timeout?: number;
-    /** Issue #448: who owns this run's NO-TIMEOUT deadline.
-     *  - `"caller"` — the caller (index.ts' dispatch path) arms and clears the
-     *    30 m default itself; this function arms nothing for an absent timeout
-     *    (arming here too would DOUBLE-arm the run).
-     *  - `"spawn"` (default) — this function arms exactly one default deadline
-     *    so a direct spawn cannot run unbounded.
-     *  An EXPLICIT positive `timeout` is always this function's W3 timer,
-     *  whatever the owner: the caller delegates explicit deadlines here. */
-    deadlineOwner?: "caller" | "spawn";
     /** Git isolation for the background run — "branch" creates a work branch (issue #28 W4). */
     gitMode?: GitMode;
     /** Issue #98: snapshot of the caller's raw params — lets retryRunId restore
@@ -2009,20 +2000,18 @@ export async function spawnBackgroundSession(
       }
     }, budgetMs);
 
-  // Issue #448 (defect 2): deadline ownership. The 30 m default is armed HERE —
-  // before prompt(), so a direct spawn is bounded even when prompt() throws
-  // synchronously (the catch below clears it) — UNLESS the caller owns it
-  // (`deadlineOwner: "caller"`, the index.ts dispatch path, which arms the same
-  // default itself and must not be double-armed). An explicit positive timeout
-  // is always this function's W3 timer, honoured verbatim after normalizeTimeout:
-  // a raw value >= 2^31 normalizes to "no timeout", so the default applies
-  // (issue #240 — never an instant kill). `effectiveBackgroundBudget` is the
-  // single definition of the 30 m default; it is never re-spelled here.
-  if (params.timeout !== undefined && params.timeout > 0) {
-    deadlineHandle = armDeadline(effectiveBackgroundBudget(params.timeout));
-  } else if ((params.deadlineOwner ?? 'spawn') === 'spawn') {
-    deadlineHandle = armDeadline(effectiveBackgroundBudget(undefined));
-  }
+  // Issue #453 (ADR 0023, decision 1): ONE owner. This function arms the run's
+  // deadline on EVERY path — the explicit timeout when there is one, else the
+  // 30 m default — and no caller arms a second one (`deadlineOwner` is gone with
+  // the caller's timer). It is armed HERE, before prompt(), so the run is
+  // bounded even when prompt() throws synchronously (the catch below clears it).
+  //
+  // `effectiveBackgroundBudget` is the single definition of the default and of
+  // the normalization (never re-spelled here): a raw value that is 0, negative,
+  // NaN, Infinity or >= 2^31 means "no explicit timeout", so the default applies
+  // (issue #240 — never an instant kill) and an explicit 45 m is honored verbatim
+  // (it is not a ceiling).
+  deadlineHandle = armDeadline(effectiveBackgroundBudget(params.timeout));
 
   // Issue #447: the ACCEPTANCE marker — ONE write, immediately before the
   // prompt, that turns `acceptedAt: null` into a timestamp on both durable
