@@ -2129,6 +2129,13 @@ export default function (pi: ExtensionAPI) {
 		 * taken there (PR #71 review). The first gate is what keeps the ordering in
 		 * G1 honest — without it, a row registered before the increment let the
 		 * sweep's decrement land on a SIBLING's count.
+		 *
+		 * Stated limit: the decrement is only reachable from a monitor that a run
+		 * owns. If G1, G2 and G3 ALL fail for the same run (counted, no row, no
+		 * poller, no deadline) nothing can release its count, so the footer's active
+		 * count stays one high for the session. That is the honest reading — the run
+		 * is real and unmonitored — and the alternative (releasing from a group that
+		 * never attached) is how a sibling's count gets stolen.
 		 */
 		const releaseLiveCount = (): void => {
 			if (!countedForThisRun) return;
