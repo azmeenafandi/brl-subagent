@@ -87,7 +87,11 @@ vi.mock("@earendil-works/pi-tui", () => {
 
 import * as eventBus from "../event-bus";
 import initExtension from "../index";
-import { __resetTerminalClaims } from "../notify-completion";
+import {
+	MONITORING_DEGRADED_CUSTOM_TYPE,
+	__resetTerminalClaims,
+} from "../notify-completion";
+import { SessionState } from "../state";
 import { backgroundSessionDir } from "../session-manager";
 import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "../transport-retry";
 import { CUSTOM_ENTRY_TYPES } from "../types";
@@ -909,6 +913,120 @@ describe("transport auto-retry — resume context is system-side (issue #411)", 
 			expect(spawn.resumeContext).toBeUndefined();
 			expect((spawn.originalParams as Record<string, unknown>).task).toBeUndefined();
 		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 4. A started-but-degraded retry (issue #439)
+//
+// The retry reuses `spawnBackgroundRun`, so it inherits #439's classification:
+// a tail fault AFTER the retry's spawn returned is a STARTED run with degraded
+// monitoring. `scheduleTransportRetry` reads only `isError`, so it must treat
+// that as a spawned retry (source notice suppressed) — reading it as "did not
+// start" would surface the source failure for a run that is live.
+// ---------------------------------------------------------------------------
+
+/** Terminal notices for ONE run id — filtered by type AND id (not by prose). */
+function terminalFor(id: string, entries: Captured[] = captured): Captured[] {
+	return entries.filter((c) => {
+		const type = c.message.customType;
+		if (type !== "subagent-completion" && type !== "subagent-notification") return false;
+		const details = (c.message.details ?? {}) as { id?: string; agentId?: string };
+		return details.id === id || details.agentId === id;
+	});
+}
+
+function advisories(entries: Captured[] = captured): Captured[] {
+	return entries.filter((c) => c.message.customType === MONITORING_DEGRADED_CUSTOM_TYPE);
+}
+
+describe("transport auto-retry — a started-but-degraded retry (#439)", () => {
+	it("T5 — a contained tail fault still counts as a real retry spawn: one advisory, source notice suppressed", async () => {
+		vi.useFakeTimers();
+		try {
+			registerSettledAgent(SOURCE_ID, "Connection error.");
+			persistRunEntry(settledRun());
+			// The retry's own post-spawn tail faults (live-monitor bookkeeping).
+			vi.spyOn(SessionState.prototype, "registerLiveSubagent").mockImplementation(() => {
+				throw new Error("registry offline");
+			});
+
+			await settle(SOURCE_ID);
+
+			// The real retry spawn happened, exactly once.
+			expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+			const retryId = (await h.spawnBackgroundSession.mock.results[0].value).id as string;
+			expect(retryId).not.toBe(SOURCE_ID);
+
+			// ONE advisory, about the RETRY (asserted by id, not by prose).
+			const advisory = advisories();
+			expect(advisory).toHaveLength(1);
+			expect((advisory[0].message.details as { agentId: string }).agentId).toBe(retryId);
+			expect(notified.map((n) => n.message)).toContain(TRANSPORT_RETRY_TOAST);
+
+			// The source notice is suppressed — the retry's wake is the notice.
+			expect(terminalFor(SOURCE_ID)).toHaveLength(0);
+			expect(terminalFor(retryId)).toHaveLength(0);
+			expect(
+				logEntries().filter((e) => e.message === RETRY_SCHEDULED),
+			).toHaveLength(1);
+		} finally {
+			vi.restoreAllMocks();
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("T5b — a rejecting retry spawn is still a failure: no advisory, the source failure surfaces", async () => {
+		vi.useFakeTimers();
+		try {
+			registerSettledAgent(SOURCE_ID, "Connection error.");
+			persistRunEntry(settledRun());
+			h.spawnBackgroundSession.mockRejectedValue(new Error("no session slot"));
+
+			await settle(SOURCE_ID);
+
+			expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+			expect(advisories()).toHaveLength(0);
+			expect(notified).toEqual([]);
+			const completions = messagesOfType("subagent-completion");
+			expect(completions).toHaveLength(1);
+			expect(String(completions[0].message.content)).toContain("— failed");
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("T8 — a throwing retry toast is caught after the source claim: no second source notice", async () => {
+		vi.useFakeTimers();
+		const ui = activeCtx.ui as { notify: (message: string, level?: string) => void };
+		const originalNotify = ui.notify;
+		try {
+			registerSettledAgent(SOURCE_ID, "Connection error.");
+			persistRunEntry(settledRun());
+			ui.notify = () => {
+				throw new Error("toast channel closed");
+			};
+
+			await settle(SOURCE_ID);
+
+			// The retry was spawned and scheduled (the log precedes the toast), so
+			// the handler considered it a spawned retry and never reaches the
+			// source-notice branch.
+			expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+			expect(
+				logEntries().filter((e) => e.message === RETRY_SCHEDULED),
+			).toHaveLength(1);
+			// No terminal notice at all — in particular no SECOND source notice
+			// behind the toast throw.
+			expect(terminalMessages()).toHaveLength(0);
+			expect(terminalFor(SOURCE_ID)).toHaveLength(0);
+		} finally {
+			ui.notify = originalNotify;
 			vi.clearAllTimers();
 			vi.useRealTimers();
 		}
