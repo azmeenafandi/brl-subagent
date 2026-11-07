@@ -48,7 +48,7 @@ Verified: 78feb6e (2026-11-07)
 - **Watch-CI** — PR #444 initially failed `recovery.test.ts` group-empty fast-path timing (1021 ms vs <500 ms); passed subsequent CI and isolated runs. Cause unconfirmed; do not assume a PR regression or dismiss a recurrence.
 - **Sweep candidates (advisory):** wire the CodeGraph freshness check into `merge-guard` (the rule is fixed, the enforcement is manual); `sprint-metrics` auto-retry accounting (it counts only explicit `retryRunId`, so transport auto-retries read as 0); `stop_subagent`'s bare not-found; Jev exceptions ↔ ledger cross-check.
 - **ADR amendments pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
-- **Optional doc nit:** the reviewer preset's bare `Verdict:` line guidance.
+- **Reviewer record format (recurring, 2 hits):** reviewers write `- Verdict: approve` as a bullet, which `merge-guard` rejects at check (c); #446 needed a conductor normalization line. Fix the preset/reference guidance to demand a **line-start** `Verdict:`, so the record clears the gate without an edit.
 
 ## Operating notes
 - **CodeGraph first, no exception (Rule 13):** every exploration starts with `codegraph` (`explore`, `node`, `callers`, `callees`, `impact`, `affected`) or `recon.sh <symbol> --grep`; `grep`/`rg` only for what the graph cannot answer (prose, config, a recorded gap) — and say why. Note the index is cockpit-only, so PR-branch symbols don't resolve there.
