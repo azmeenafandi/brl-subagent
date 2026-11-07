@@ -102,6 +102,14 @@ export const SUBAGENT_ABORTED_MESSAGE = "Subagent aborted by user";
 // SUBAGENT_ABORTED_MESSAGE match) — keep the literal in sync with classifyError.
 export const SUBAGENT_SIGNAL_KILLED_MESSAGE = "Subagent killed by external signal";
 
+// Issue #447: the honest stamp for a dispatch that never reached
+// `session.prompt()`. Shared by the in-process pre-start cleanup
+// (session-manager) and the boot scan's never-started finalize (recovery) so
+// the two surfaces cannot describe the same non-event differently. It carries
+// no classifyError keyword on purpose — a pre-start failure is `unknown`, not a
+// timeout, an abort, or an exit error.
+export const PROMPT_NEVER_ISSUED_MESSAGE = "Subagent prompt was never issued";
+
 /**
  * Classify a subagent result into an error category based on its errorMessage,
  * stopReason, exitCode, and stderr content. Inspects patterns in priority order.
@@ -404,6 +412,20 @@ export interface SubagentRun {
 	// Option B U3 (D4): the recovery posture in force when this run was
 	// dispatched. Additive: a pre-U3 record lacks it and reads as "offer".
 	recoveryPosture?: RecoveryMode;
+	/**
+	 * Issue #447: the acceptance marker. `null` at creation — the dispatch is
+	 * TRACKED (agent record + run entry + registry entry written) but has not
+	 * reached `session.prompt()`; an ISO timestamp written immediately before
+	 * the prompt; absent on records written before the field existed.
+	 *
+	 * The tri-state IS the compatibility contract: `null` cannot be produced by
+	 * a pre-upgrade record (JSON keeps `null`, where `undefined` would vanish),
+	 * so the boot scan reads `null` as never-started without taking the retry
+	 * offer away from a legacy record. It is NOT a display status — the
+	 * vocabulary stays running | completed | failed | stopped, and "started,
+	 * outcome unknown" remains #439's business (see `isInterruptedRun`).
+	 */
+	acceptedAt?: string | null;
 	startedAt: string;
 	finishedAt?: string;
 	durationMs?: number;

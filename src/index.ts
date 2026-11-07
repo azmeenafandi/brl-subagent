@@ -4282,11 +4282,25 @@ export default function (pi: ExtensionAPI) {
 					if (record.kind === "agent") markAgentInterrupted(record.id, interruptedAt);
 					return durable;
 				},
+				// Issue #447: a dispatch whose acceptance marker is still `null` never
+				// reached `session.prompt()`. It is finalized `failed` here — a
+				// terminal write, so `persistRunRecord` retires the registry entry in
+				// the same call and no interrupted/retry surface can pick it up.
+				finalizeNeverStarted: (run) => {
+					state.persistRun(pi, run);
+				},
 			});
 			// Report the scan whenever it did anything durable OR attempted a mark
 			// that failed — a failure-only boot must not be silent (issue #304).
 			if (summary.marked > 0 || summary.markFailures > 0) {
 				log.warn("Boot recovery marked interrupted runs", { ...summary });
+			}
+			// Issue #447: never-started dispatches are finalized, not marked — a
+			// separate line so the two outcomes cannot be read as one another.
+			if (summary.neverStarted > 0) {
+				log.info("Boot recovery finalized never-started dispatches", {
+					count: summary.neverStarted,
+				});
 			}
 		} catch (err) {
 			// Recovery is best-effort hygiene — it must never break session start.
