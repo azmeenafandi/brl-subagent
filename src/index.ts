@@ -85,12 +85,15 @@ import {
 	resolveEffectiveApprovalMode,
 	resolveSubagentParams,
 	resolveThinkingDispatchSwitch,
+	shouldDropUnitTimeout,
 	shouldRejectBackgroundForBatch,
 	snapshotOriginalParams,
 	THINKING_SWITCH_NOTICE,
 	THINKING_TIMEOUT_DROP_NOTICE,
+	THINKING_UNIT_TIMEOUT_DROP_NOTICE,
 	type DispatchShape,
 	type ResolveInputParams,
+	type UnitShape,
 } from "./params";
 import { delegateTaskParamsSchema } from "./schema";
 import { readProcessChecks } from "./project-flags";
@@ -337,6 +340,38 @@ function graphTaskToSubTaskParams(node: GraphTask): SubTaskParams {
 }
 
 /**
+ * Issue #434: what every unit of ONE dispatch needs from the dispatch-level
+ * pre-flight — threaded from `execute` into the four batch handlers, never
+ * re-derived at a unit site.
+ *
+ *   - `processChecks` is the project opt-in `execute` already resolved from the
+ *     dispatch's OWN cwd. Re-reading it per unit (from a relative
+ *     `params.cwd`) judges a different directory than the dispatch did.
+ *   - `dispatchDeclaredLevel` is the declared (uncapped) level the dispatch arm
+ *     judged, so a unit that declares only a `timeout` is still judged against
+ *     the thinking level it actually inherits.
+ *   - `force` and `unitShape` are the dispatch-level facts the unit projection
+ *     asks for; `params` is in scope at every unit site, so passing them here is
+ *     what keeps the predicate's inputs in ONE place.
+ *   - `noticeEmitted` is the one-shot flag on this shared object (all handlers
+ *     received the same reference): the unit projection emits AT MOST one
+ *     additional notice per dispatch, and a dispatch-arm notice starts it true
+ *     (the drop still happens — the deadline is the hazard, the notice is the
+ *     report). A flag on the shared context, not a boolean copy, because the
+ *     first unit to reach its run is whichever won the slot, not the first in
+ *     the array.
+ */
+interface BatchGuardContext {
+	processChecks: boolean;
+	dispatchDeclaredLevel: ThinkingLevel | undefined;
+	/** The dispatch's `force` — the override applies to every unit of it. */
+	force: boolean | undefined;
+	unitShape: UnitShape;
+	/** True once any notice for this dispatch went out — mutated at the unit site. */
+	noticeEmitted: boolean;
+}
+
+/**
  * Issue #376 (audit D3): the one `SubagentResult` → `SubTaskResult` field
  * mapping, shared by every dispatch mode (chain, parallel, graph). The ten
  * assignments plus the error classification were copied per mode, so a field
@@ -543,6 +578,74 @@ export default function (pi: ExtensionAPI) {
 		merged.label ??
 		(merged.task.length > 60 ? `${merged.task.slice(0, 57)}...` : merged.task);
 
+	/**
+	 * Issue #434: apply the dispatch pre-flight's UNIT projection to one merged
+	 * unit — `merged.timeout = undefined` before the unit's run record exists, so
+	 * the retry snapshot records an absent deadline (ADR 0009) and no
+	 * `createUnitRun`/`startBackgroundAgent` ever sees it. The decision itself
+	 * lives in `shouldDropUnitTimeout` (params.ts): re-stating the condition here
+	 * is the drift #361's resolver extraction exists to prevent.
+	 *
+	 * EVERY input is threaded (`ctx`'s guard) or the unit's own declaration
+	 * (`step`) — the unit site reads no config, no manifest and no cap of its
+	 * own. `merged.thinkingLevel` is deliberately not an input: it is the capped
+	 * level, and the default cap would silently disable the guard.
+	 *
+	 * Emission discipline (issue #434 [c2]): called from the unit's dispatch
+	 * point, AFTER its slot is held and immediately BEFORE its run — a pre-pass
+	 * would announce a unit that a cancellation can still skip. At most ONE
+	 * notice per dispatch: a dispatch-arm notice suppresses this one entirely
+	 * (the drop still happens — the deadline is the hazard, the notice is the
+	 * report), and the first unit to reach its run claims it.
+	 */
+	function applyUnitShapeGuard(
+		ctx: ExtensionContext,
+		guard: BatchGuardContext,
+		step: SubTaskParams,
+		merged: ReturnType<typeof mergeSubTaskParams>,
+	): void {
+		const shouldDrop = shouldDropUnitTimeout({
+			processChecks: guard.processChecks,
+			force: guard.force,
+			dispatchDeclaredLevel: guard.dispatchDeclaredLevel,
+			unitShape: guard.unitShape,
+			declaredLevel: step.thinkingLevel as ThinkingLevel | "" | undefined,
+			declaredTimeout: step.timeout,
+			mergedTimeout: merged.timeout,
+		});
+		if (!shouldDrop) return;
+
+		const previousTimeout = merged.timeout;
+		const unit = displayTaskName(merged);
+		const effectiveLevel = step.thinkingLevel || guard.dispatchDeclaredLevel;
+		// The drop precedes `createUnitRun`: that is what makes the recorded
+		// `originalParams.timeout` absent, so a retry re-derives instead of
+		// restoring the cap (ADR 0009). A drop after it passes every
+		// runner-argument assertion and still restores the deadline on retry.
+		merged.timeout = undefined;
+		log.info("Dispatch pre-flight: unit-declared timeout dropped, unit stays foreground", {
+			unit,
+			thinkingLevel: effectiveLevel,
+			previousTimeout,
+		});
+		if (!guard.noticeEmitted) {
+			guard.noticeEmitted = true;
+			pi.sendMessage({
+				customType: "delegate-notification",
+				content: THINKING_UNIT_TIMEOUT_DROP_NOTICE,
+				display: true,
+				details: {
+					unit,
+					thinkingLevel: effectiveLevel,
+					// The ACTUAL ms value, mirroring the dispatch drop arm: the
+					// friction log needs the number to tell a budget cap from a clock.
+					previousTimeout,
+				},
+			}, { deliverAs: "followUp" });
+			ctx.ui.notify(THINKING_UNIT_TIMEOUT_DROP_NOTICE, "warning");
+		}
+	}
+
 	// -------------------------------------------------------------------
 	// P1: runChainMode
 	// -------------------------------------------------------------------
@@ -552,6 +655,7 @@ export default function (pi: ExtensionAPI) {
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
+		guard: BatchGuardContext,
 	): Promise<ToolResult<SubagentResult | ChainDetails | undefined>> {
 		const chainSteps: SubTaskParams[] = params.chain!;
 
@@ -653,6 +757,12 @@ export default function (pi: ExtensionAPI) {
 
 				// Merge params for this step
 				const merged = mergeSubTaskParams(globalParams, step);
+
+				// Issue #434: the unit projection of the dispatch pre-flight (#412/#431).
+				// A chain holds its ONE mode-level slot across the whole loop, so the
+				// slot is already held here; the drop lands BEFORE `createUnitRun`
+				// below, or the retry snapshot would restore the deadline (ADR 0009).
+				applyUnitShapeGuard(ctx, guard, step, merged);
 
 				// C3: Resolve this step's model override (step.model > global resolved model)
 				const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
@@ -945,6 +1055,7 @@ export default function (pi: ExtensionAPI) {
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
+		guard: BatchGuardContext,
 	): Promise<ToolResult<SubagentResult | ParallelDetails | undefined>> {
 		const taskList: SubTaskParams[] = params.tasks!;
 
@@ -1026,6 +1137,14 @@ export default function (pi: ExtensionAPI) {
 			merged: ReturnType<typeof mergeSubTaskParams>,
 			unitCwd: string,
 		): Promise<boolean> => {
+
+			// Issue #434: the unit projection of the dispatch pre-flight. Applied
+			// HERE, not in the launcher's pre-merge: the launcher awaits
+			// `acquireSlot` and only then calls this, so a unit cancelled while
+			// waiting for its slot is never announced (and never dropped). The
+			// drop still precedes `createUnitRun` below, so the retry snapshot
+			// records an absent deadline rather than restoring the cap.
+			applyUnitShapeGuard(ctx, guard, taskList[index], merged);
 
 			// C3: Resolve this step's model override (step.model > global resolved model)
 			const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
@@ -1296,6 +1415,7 @@ export default function (pi: ExtensionAPI) {
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
+		guard: BatchGuardContext,
 	): Promise<ToolResult<SubagentResult | GraphDetails | undefined>> {
 		const graphTasks: GraphTask[] = params.graph!;
 
@@ -1507,6 +1627,12 @@ export default function (pi: ExtensionAPI) {
 
 					const subagentId = graphTask.id;
 					intercom.register(subagentId);
+
+					// Issue #434: the unit projection of the dispatch pre-flight, applied
+					// after this node's slot is held (a node cancelled above never
+					// reaches here) and BEFORE `createUnitRun` below, so the retry
+					// snapshot records the dropped deadline (ADR 0009).
+					applyUnitShapeGuard(ctx, guard, subTaskParams, merged);
 
 					// Issue #133: status-bar breakdown — the node's dispatch-wide
 					// position (globalNode, not the wave-local nodeIndex) so a later
@@ -1732,6 +1858,7 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		params: DelegateTaskParams,
 		signal: AbortSignal | undefined,
+		guard: BatchGuardContext,
 	): Promise<ToolResult<SubagentResult | undefined>> {
 		const taskList: SubTaskParams[] = params.tasks!;
 
@@ -1876,6 +2003,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const { merged, model, cwd, outputFile } = fanOutTasks[i];
+			// Issue #434: called with the dispatch's `unitShape`, which is
+			// "background" here — a detached unit's deadline is the legitimate
+			// 30-minute budget, so nothing is dropped and no unit notice is ever
+			// emitted on this path. The call is here (not omitted) so the exclusion
+			// is visible at the spawn site instead of hidden in a never-taken branch.
+			applyUnitShapeGuard(ctx, guard, taskList[i], merged);
 			const name = displayTaskName(merged);
 			const subagentPrompt = buildSubagentPrompt(
 				ctx.getSystemPrompt(),
@@ -2934,6 +3067,26 @@ export default function (pi: ExtensionAPI) {
 			// unit retries as a single foreground run (issue #229), unaffected here.
 			params.background ??= useBackground;
 
+			// Issue #434: the unit projection's inputs, resolved ONCE here so no
+			// unit site can re-derive them (a relative `params.cwd` re-read of the
+			// manifest measured `false` where this resolution measured `true`).
+			// `noticeEmitted` starts true when the DISPATCH arm announced its own
+			// change: the drop still reaches every eligible unit, but the dispatch
+			// already spoke, and a second notice would double-report one decision.
+			// (`forced` emits nothing — the caller asked for the explicit pair, so
+			// there is nothing to announce and no arm acted.)
+			const batchGuard: BatchGuardContext = {
+				processChecks,
+				dispatchDeclaredLevel: effectiveDeclaredThinkingLevel as ThinkingLevel | undefined,
+				force: params.force as boolean | undefined,
+				// A `tasks` fan-out spawns detached background units (their deadline is
+				// the legitimate budget); every other batch handler runs its units
+				// foreground. Chain/graph can never be background: an explicit
+				// `background: true` batch was rejected above.
+				unitShape: isParallel && useBackground ? "background" : "foreground",
+				noticeEmitted: thinkingSwitch === "switch" || thinkingSwitch === "drop-timeout",
+			};
+
 			if (isChain) {
 				if (params.chain!.length > MAX_CHAIN_STEPS) {
 					return {
@@ -2947,7 +3100,7 @@ export default function (pi: ExtensionAPI) {
 						isError: true,
 					};
 				}
-				return runChainMode(params, signal, onUpdate, ctx);
+				return runChainMode(params, signal, onUpdate, ctx, batchGuard);
 			}
 
 			if (isParallel) {
@@ -2963,12 +3116,12 @@ export default function (pi: ExtensionAPI) {
 						isError: true,
 					};
 				}
-				if (useBackground) return runBackgroundFanOut(pi, ctx, params, signal);
-				return runParallelMode(params, signal, onUpdate, ctx);
+				if (useBackground) return runBackgroundFanOut(pi, ctx, params, signal, batchGuard);
+				return runParallelMode(params, signal, onUpdate, ctx, batchGuard);
 			}
 
 			if (isGraph) {
-				return runGraphMode(params, signal, onUpdate, ctx);
+				return runGraphMode(params, signal, onUpdate, ctx, batchGuard);
 			}
 
 			// Single mode: isSingle is true (modeCount===1, none of chain/parallel/graph),
