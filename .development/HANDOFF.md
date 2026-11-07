@@ -31,14 +31,14 @@ Verified: 78feb6e (2026-11-07)
 - **#437 merged** (PR #441, `137b396`): per-runtime terminal listeners are removed synchronously on shutdown; C1 review approve-with-nits, two mutations killed, 2191 tests green. Issue closed; worktree cleaned. Maintainer chose not to guarantee delivery for runs already active during `/new`; broader retry and dedupe problems are #439 and #440. Success wakes live-verified on startup, after `/new`, and after `/reload` (issue #437 comment). Five `.development/investigations/issue-437-*` reports remain untracked; key reports are also posted to #437.
 - **#442 merged** (PR #444, `e4a83fa`): explicit `tools: []` maps to foreground `--no-tools`; omitted and nonempty cases preserved. Real-child extension and MCP canaries, background SDK tests, two mutants and C1 review passed. Foreground extensions/MCP still start; no sandbox claim. Issue closed, worktree cleaned; live verification pending maintainer activation. Its brief `.development/investigations/issue-442-implementation-brief-2026-11-07.md` is untracked.
 - **PR #445 merged** (`490cf94`): lockfile-only Vitest 5.0.5 → 5.1.0; 24 changed packages all dev-only, integrated-dev isolated suite 107/2226 green. Pi 1.5.0's own dev pin is Vitest 4.1.12; no runtime pin conflict found. Cockpit dependencies refreshed with `npm ci` after isolated-worktree cleanup; TypeBox remains 1.3.27.
+- **#443 live-verified after the reload** (2026-11-07, issue comment): `"bogus"`/`"max"` rejected at the tool boundary naming the whole set; real background dispatches with `""` → `xhigh` (cap), `"off"` → `off`, omitted → `xhigh` (`9c67f01d`, `cc0e7c8a`, `0c425de0`). The runtime guard's bypass paths have no live route and stay test-covered.
 - **#443 merged** (PR #446, `78feb6e`): unknown non-empty `thinkingLevel` is rejected before any launch at every seam — per-call/template/preset (named + auto-routed), per-unit batches, restored `retryRunId`, inline `retryOnTimeout`, transport auto-retry (original failure surfaced, no SDK session); the schema `enum` (incl. `""`) is only the first line. C2 review: approve, no findings; mutants A/B/C/D2 killed, D reported surviving then replaced by an observable order pin. **Test LOC budget is 1.97/2.0** — the next test-heavy PR must trim.
 
 ### Next actions
-1. **#443 live verification** — after maintainer-triggered activation, dispatch an unknown level (expect rejection before launch) plus a valid level and `""` (expect unchanged). Never automate `/reload`.
-2. **#439 / #440** — unscheduled follow-ups (retry-start ambiguity; terminal-claim overflow).
-3. **#430** — the behavior-preserving `execute` split (C1; needs a CodeGraph structural map and a closure block).
-4. **#434** and **#436** — unscheduled; #436 is the cheaper of the two.
-5. **#426** needs the maintainer's priority call before any design work.
+1. **#439 / #440** — unscheduled follow-ups (retry-start ambiguity; terminal-claim overflow).
+2. **#430** — the behavior-preserving `execute` split (C1; needs a CodeGraph structural map and a closure block).
+3. **#434** and **#436** — unscheduled; #436 is the cheaper of the two.
+4. **#426** needs the maintainer's priority call before any design work.
 
 ## Open items
 - **#426 design-open** — subagent timeouts: soft stage, stall watchdog vs cliff, extension, calibration. Filed 2026-11-03; no direction chosen. Do not implement from it.
