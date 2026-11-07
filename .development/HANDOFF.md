@@ -6,6 +6,36 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md`, `-2026-11-06.md`, `-2026-11-07b.md` (the pre-sweep snapshot) — not current state.
 
 ## STATE
+Verified: 729c51a (2026-11-07)
+
+- **dev** @ `729c51a` (PR #467 merge). Merged today, in order: #457 (#440), #458 (#436), #459 (#455), #461 (#434), #462 (#439), #463 (#456), #464 (#447), #467 (#453). Docs: ADR 0023 (deadline ownership), ADR 0024 (unit projection), the #453 and #460 dossiers, `12a722e` (a bulleted `Verdict:` is invisible to the merge gate). **No worktrees beyond the cockpit pair**; `git worktree list` = `main` + `dev`.
+- **Released:** **v2.7.0 LIVE** — `main` @ `98bd36e`, tag `v2.7.0`, npm `latest` 2.7.0. **Release checkpoint OPEN** (rule #6): every fix from this sweep is extension code, merged and unreleased. Release on the maintainer's go only — never propose a version unprompted.
+- **Board:** the autonomous bug sweep closed **eight** issues — #440, #436, #455, #434, #439, #447, #453, #460 — plus #456 (filed and closed inside the sweep). Open now: **#465** (fix, decided from the #460 dossier: narrow the spawn queue + refuse an unsettled branch-lock owner), **#466** (design: durable `headState` + boot repair after an orphan work branch), **#450** (harden, low), **#430** (refactor), **#426** (design-open), PR #402 held.
+- **Suite:** 110 files / **2358** green on dev; typecheck clean; docs guards current (47 modules, 24 ADRs); budget **1.98** (49,528 test / 24,998 source, ceiling 2.0 → ~470 test lines of headroom — thin again, the next test-heavy PR must trim or add source).
+- **Merge gate:** `merge-guard.sh <pr> <record>` from the **cockpit**. (a) CI runs the **merge ref** (a branch-green PR can be red on README count drift); (b) `#<pr>`; (c) **line-start** `Verdict:` (a bullet is invisible); (d) reviewed head **or** `conductor-verified:`; (e) exact-text provenance match; (f) `recheck-<pr>` + its own `Risk class:`. Merge commits; PRs to `dev` never auto-close — close by hand.
+- **Merge-conflict routine (three hits today):** the conflict is **CHANGELOG ordering only** — keep both entries newest-first, commit the merge, re-run the gates, add a `Post-review merge:` line naming the merge commit and the re-verified numbers to the record, then push.
+- **Dispatch models + presets:** implementer `project-implementer` + `deepseek/deepseek-flash`; reviewer `project-reviewer` + `openrouter/meta/muse-spark-1.3-contributor`; plan critic `project-plan-critic` + `openrouter/openai/gpt-6.1-terra` + **`thinkingLevel: "medium"` always**; design investigation `project-proposer` + `inheritSystemPrompt: false`. Non-probe work: explicit `background: true` + `timeout: 7200000`.
+- **Jev provenance:** print the line with `--classifier … --worktree y|n --label`, then **paste it verbatim** (never hand-type). Since #456 the `worktree` field is a **stated** process fact recorded as `stated:worktree` in the row, so a src dispatch needs no exception; `level`/`risk` stay classifier answers. 24 historical exceptions remain in `.pi/jev-dispatch-exceptions.txt`.
+- **Project flag:** `{"brl-subagent": {"processChecks": true}}` gates the Jev line, the two-arm dispatch-shape pre-flight and engineering-bar injection; fail-open, one reader.
+
+### Since the last handover
+- **Every fix was measured, none by assertion.** #455 was a *producer* bug (SIGKILL death sampled in the same instant as the signal — 40/40 probes read alive). #439 contained the post-spawn tail through result construction and fixed a sibling-count theft (an unregistered finalize claim decremented a live sibling, 1 → 0). #434 judged the **declared** level (the capped one is `off` and would have silently disabled it). #447 added a tri-state acceptance marker (`null`/ISO/absent) with a fail-safe write. #453 collapsed the deadline to one owner, split `entryWritten`/`pruned`, and added a logical-run projection (raw 3 runs/$5 → logical 1 run/$3).
+- **Plan critiques earned their cost five times.** #434 and #439 needed **three** brief revisions each; the #453 critique found **three blockers** in my draft (no `stopped` run status; the timer's write clears the registry and keeps the dir; `findLast` alone does not stop raw-consumer double counting). The #460 dossier then measured that releasing the branch lock at the deadline **strands the repository**, which is why #465 refuses instead.
+- **Four subagent deaths + one stall** (connection errors): two left mutants in worktrees (`impl-436`'s reversed precedence, `impl-434`'s partial work), one stalled with zero transcript, one died after committing all five steps of #453. **Never trust a killed agent's worktree** — read `git diff` for a reversed condition, and re-derive the verification it never produced (the #453 reviewer rebuilt the whole mutant table).
+- **My own process debt, twice:** two hand-typed Jev lines (both wrong on level) and 16 `worktree n` exceptions — both now cheap to avoid via `--worktree`, and the failure is documented where the next session will hit it.
+
+### Next actions
+1. **#465** — decided and briefed in its body; implement when scheduled (`(b)` refusal + `(d)` one-line queue narrowing). Not a release blocker.
+2. **#466** — design-open; needs a durable `headState` decision before any code.
+3. **#450 / #430 / #426** — unchanged priorities; #450 is low hardening, #430 the `execute` split, #426 needs the maintainer's call.
+4. **Release checkpoint** — the sweep's eight fixes are merged and unreleased; the call is the maintainer's.
+
+## Open items` → follow `## Pointers`.
+> §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
+> `Verified:` staleness line; the write contract is `.pi/skills/handoff/references/handoff.md`.
+> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md`, `-2026-11-06.md`, `-2026-11-07b.md` (the pre-sweep snapshot) — not current state.
+
+## STATE
 Verified: ba06e95 (2026-11-07)
 
 - **dev** @ `ba06e95` (PR #464 merge). Merged today, in order: #457 (#440 terminal-claim eviction), #458 (#436 preset field parity), #459 (#455 survivor drain), #461 (#434 per-unit shape guard), #462 (#439 post-spawn containment), #463 (#456 Jev `--worktree` stated field), #464 (#447 acceptance marker). Docs: ADR 0023 (deadline ownership), ADR 0024 (unit projection), the #453 dossier, and `12a722e` (review-dispatch note: a bulleted `Verdict:` is invisible to the gate). Worktrees live: **`453`** (implementing).
