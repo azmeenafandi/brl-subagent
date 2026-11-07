@@ -546,8 +546,7 @@ describe("boot scan wait-once", () => {
 		// drain then samples these never-dying fake pids, bounded by its own
 		// iteration cap (drainMs 100 / pollMs 10 = 10 samples) — so the total is
 		// bounded, not "one". The grace window is still shared by all N orphans.
-		expect(sleep.mock.calls[0]).toEqual([50]);
-		expect(sleep.mock.calls.length).toBeLessThanOrEqual(11);
+		expect(sleep.mock.calls).toEqual([[50], ...Array<[number]>(10).fill([10])]);
 	});
 
 	it("bounds elapsed time to ~one grace window", async () => {

@@ -356,9 +356,9 @@ export interface EscalationOptions {
 	/**
 	 * #455: bounded post-SIGKILL confirmation window (ms) — how long the helper
 	 * re-samples `verifyDeath()` for the targets it just force-killed before it
-	 * classifies survivors. Defaults to {@link DEFAULT_DRAIN_MS}; `0` disables it
-	 * and restores the legacy single-sample classification (the documented
-	 * escape). Ignored when no `forceKill` was issued: a target that died during
+	 * classifies survivors. Defaults to {@link DEFAULT_DRAIN_MS}; `0` (any
+	 * non-positive value) disables it and restores the legacy single-sample
+	 * classification (the documented escape). Ignored when no `forceKill` was issued: a target that died during
 	 * the grace window has no signal in flight to confirm.
 	 */
 	drainMs?: number;
@@ -439,7 +439,13 @@ export async function escalateKill(
 		if (pollMs > 0) {
 			const now = options.now ?? Date.now;
 			const deadline = now() + options.graceMs;
-			while (now() < deadline && !targets.every((target) => target.verifyDeath())) {
+			// #455 review: the SAME two-bound rule as the drain below — a sleep that
+			// does not advance an injected clock must not turn this into a hot spin.
+			// With a real clock the iteration cap is exactly the number of polls the
+			// window can hold, so it never truncates a legitimate wait.
+			const maxPolls = Math.max(1, Math.ceil(options.graceMs / pollMs));
+			for (let poll = 0; poll < maxPolls; poll++) {
+				if (now() >= deadline || targets.every((target) => target.verifyDeath())) break;
 				const remaining = Math.max(deadline - now(), 1);
 				await options.sleep(Math.min(pollMs, remaining));
 			}

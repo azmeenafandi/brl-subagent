@@ -536,6 +536,24 @@ describe("#455 — the bounded post-SIGKILL drain", () => {
 		expect(sleeps).toEqual([0]); // the grace wait only — nothing in flight to drain
 	});
 
+	it("G: a frozen clock cannot spin the GRACE window either (same two-bound rule)", async () => {
+		// The grace loop had the drain's old shape: clock-only termination. A no-op
+		// sleep plus a clock that never advances would spin for the whole test timeout.
+		const sleeps: number[] = [];
+		const target = fakeTarget({ verifyDeath: () => false, forceKill: () => {} });
+		const opts = {
+			graceMs: 50,
+			pollMs: 10,
+			drainMs: 0, // isolate the grace window
+			now: () => 0, // frozen
+			sleep: async (ms: number) => void sleeps.push(ms),
+		};
+
+		expect(await escalateKill([target], opts)).toEqual([target]);
+		// ceil(50 / 10) = 5 polls, each sleeping min(10, remaining=50) = 10.
+		expect(sleeps).toEqual(Array<number>(5).fill(10));
+	});
+
 	it("F: a no-op sleep cannot turn the drain into a hot spin (iteration bound)", async () => {
 		// The clock is NOT advanced by this sleep — the shape an injected no-op
 		// sleep has. A drain bounded only by `now()` spins for the whole wall-clock
