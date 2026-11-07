@@ -289,6 +289,16 @@ export const THINKING_TIMEOUT_DROP_NOTICE =
  * session, so applying the cap here would disable the pre-flight exactly where
  * nobody configured anything — the drift this rule exists to remove.
  */
+/**
+ * #434 review (DRY): the two levels the pre-flight treats as "high thinking".
+ * ONE member test, used by the dispatch predicate and by its unit projection —
+ * the literal pair is shared core, not a documented divergence, and U10 pins
+ * that the two predicates agree on the same declared pair.
+ */
+export function isHighDeclaredLevel(level: ThinkingLevel | string | undefined): boolean {
+	return level === "high" || level === "xhigh";
+}
+
 export function resolveThinkingDispatchSwitch(input: {
 	processChecks: boolean;
 	thinkingLevel: ThinkingLevel | undefined;
@@ -301,7 +311,7 @@ export function resolveThinkingDispatchSwitch(input: {
 }): ThinkingDispatchSwitch {
 	if (!input.processChecks) return "none";
 	if (input.shape === "chain" || input.shape === "graph") return "none";
-	if (input.thinkingLevel !== "high" && input.thinkingLevel !== "xhigh") return "none";
+	if (!isHighDeclaredLevel(input.thinkingLevel)) return "none";
 	if (input.timeout === undefined) return "none";
 	const base: ThinkingDispatchSwitch =
 		input.explicitBackground === true
@@ -411,7 +421,7 @@ export function shouldDropUnitTimeout(input: {
 	if (input.force === true) return false;
 	if (input.unitShape !== "foreground") return false;
 	const effectiveDeclaredLevel = input.declaredLevel || input.dispatchDeclaredLevel;
-	if (effectiveDeclaredLevel !== "high" && effectiveDeclaredLevel !== "xhigh") return false;
+	if (!isHighDeclaredLevel(effectiveDeclaredLevel)) return false;
 	if (input.mergedTimeout === undefined || input.mergedTimeout <= 0) return false;
 	return Boolean(input.declaredLevel) || input.declaredTimeout !== undefined;
 }
