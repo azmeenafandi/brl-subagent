@@ -2036,6 +2036,11 @@ export async function spawnBackgroundSession(
   try {
     persistRunRecord(pi, run, "background");
   } catch (err) {
+    // The stamp above never became durable, so the in-memory value must not ride
+    // into the terminal record this cleanup writes: the entry would claim
+    // `acceptedAt=<ISO>` while its message says the prompt was never issued
+    // (2026-11-07 review). Back to the creation sentinel before settling.
+    run.acceptedAt = null;
     failPreStart(neverIssued(err));
     throw err;
   }

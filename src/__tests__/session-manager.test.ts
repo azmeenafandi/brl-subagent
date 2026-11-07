@@ -2941,6 +2941,10 @@ describe("issue #447 — never-started dispatches", () => {
 		const live = await scanBoot();
 		expect(live.neverStarted).toBe(0);
 		expect(listInflightRuns()).toHaveLength(1);
+		// ... and the hold must be invisible at the surface too: a held entry is
+		// skipped only because it carries no `interruptedAt`, which is worth pinning
+		// rather than assuming (2026-11-07 review).
+		expect(interruptedViews()).toEqual([]);
 
 		// The CRASH case the issue is about: the conductor is gone, so the residue
 		// is provably dead weight — settled failed, retired, never offered.
