@@ -145,7 +145,8 @@ export function projectLogicalRuns(entries: SubagentRun[]): SubagentRun[] {
  * "running") first, then the terminal entry at settle — so a raw entry list
  * renders every run twice and the spawn row shows a stale "running" forever.
  * This collapses each id to its terminal-preferred entry via the ONE shared
- * rule (`resolveTerminalRunEntry`). Runs still in flight (spawn entry, no
+ * rule (`resolveTerminalRunEntry`). Callers pass the LOGICAL list
+ * (`getLogicalRunEntries`) since #453, so an amended run is already one entry. Runs still in flight (spawn entry, no
  * terminal entry yet) are omitted: live state belongs to the monitor. U3 (D1)
  * carves ONE exception — an INTERRUPTED run (running + `interruptedAt`, per
  * `isInterruptedRun`) is surfaced, because the human must see it to recover or
@@ -494,7 +495,10 @@ export class SessionState {
 	 * `fullOutput`, `cost`, `durationMs`, `errorCategory`.
 	 */
 	findTerminalRunById(ctx: ExtensionContext, id: string): SubagentRun | undefined {
-		return resolveTerminalRunEntry(this.getRunEntries(ctx), id);
+		// #453 review: the LOGICAL view, not the raw capped list — at the
+		// `maxHistoryEntries` edge a raw read can return the deadline snapshot while
+		// every other surface shows the later amendment (the run's real payload).
+		return resolveTerminalRunEntry(this.getLogicalRunEntries(ctx), id);
 	}
 
 	// -------------------------------------------------------------------

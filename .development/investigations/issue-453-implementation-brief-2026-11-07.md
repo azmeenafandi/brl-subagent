@@ -84,7 +84,7 @@ So:
 - The amendment itself must remain a valid full entry (`isSubagentRunShape` passes): same id, same
   classification fields, payload updated; never a second classification *claim*.
 
-**Tests:** snapshot $2 + amendment $3 → one logical run, $5 total (metrics, cost, history, report);
+**Tests:** snapshot $2 + amendment $3 → one logical run, **$3** total (the amendment SUPERSEDES: usage is cumulative, so $2+$3=$5 was the defect; metrics, cost, history, report);
 three-entry resolution picks the amendment; a capped history keeps snapshot+amendment together; a
 two-entry run is unchanged; `status`/`errorCategory` are not rewritten by the amendment; `[c 4]` a late
 settle with output produced **after** the deadline carries that output in the amendment (the stopped
@@ -119,7 +119,7 @@ registry entry. #448's "a caller throw leaves the run unbounded" limit is remove
 | M3 | `entryWritten` set before the append resolves | later cooperative settle does not write the terminal entry (append-throw test) |
 | M4 | collapse `entryWritten`/`pruned` into one flag | a successful timer write suppresses the settle's prune |
 | M5 | `find` instead of `findLast` | three-entry resolution |
-| M6 | drop the projection (raw entries) | one-logical-run: 1 run/$5 vs 2-3 runs |
+| M6 | drop the projection (raw entries) | one-logical-run: 1 run/$3 vs 3 runs/$5 |
 | M7 | amendment is a second classification claim | exactly one `failed/timeout` classification across entries |
 | M8 | origin = now (ignore elapsed) | injected-setup-delay |
 | M9 | reason reports the remainder | zero-remainder reason still names the full budget |
@@ -138,3 +138,16 @@ fourth display status, the foreground path.
 `node scripts/check-test-budget.mjs /tmp/vitest-453.json`,
 `node scripts/check-readme-test-count.mjs /tmp/vitest-453.json`, `npm run typecheck`,
 `node scripts/docs-arch.mjs`, `node scripts/docs-decisions.mjs`, `git diff --check`.
+
+## Review addendum (2026-11-07, post-implementation)
+
+The acceptance text above originally said "one logical run, $5 total", which contradicted its own
+definition of the defect: usage counters are **cumulative** (`agent.result.usage` read at the deadline
+and again at settle), so the amendment carries the run's TOTAL payload. The correct reading — and what
+the code does — is **supersede**: one logical run, **$3**, where the raw list would have shown 3 runs
+and summed $2 + $3 = $5. Fixed here; the code was right and the brief was wrong.
+
+Deferred, stated: the DISPATCH arm census is compositional today (a stubbed spawn proves the caller arms
+zero deadline timers; the real-spawn tests prove the spawn arms exactly one at the budget delay). A single
+end-to-end census through a real background dispatch needs a real-spawn dispatch harness and is recorded
+as coverage debt rather than asserted. M1 still kills the double-arm mutant through the composed pair.

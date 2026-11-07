@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import { existsSync, statSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { recordTimeoutDelays } from "./fixtures/deadline-census";
 
 // Mocks must exist before vi.mock factory runs (hoisted).
 const mocks = vi.hoisted(() => ({
@@ -788,15 +789,6 @@ function transcriptIds(): string[] {
  * timers — a normal run arms a poller and a footer too, so a raw timer count can
  * never answer "how many deadlines does this path create".
  */
-function recordTimeoutDelays(): { delays: number[]; restore: () => void } {
-	const delays: number[] = [];
-	const realSetTimeout = globalThis.setTimeout;
-	const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
-		delays.push(ms ?? 0);
-		return realSetTimeout(fn, ms as never);
-	}) as unknown as typeof setTimeout);
-	return { delays, restore: () => spy.mockRestore() };
-}
 
 /** The census's delay list for the CURRENT run — the only deadline budget used. */
 const DEFAULT_BUDGET_MS = 30 * 60 * 1000;

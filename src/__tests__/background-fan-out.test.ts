@@ -43,6 +43,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
+import { recordTimeoutDelays } from "./fixtures/deadline-census";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing the extension
@@ -101,15 +102,6 @@ import { createTempEnv } from "./fixtures/temp-lifecycle";
  * The deadline census counts ARMS by delay — a run has a poller and a footer too,
  * so a raw timer count cannot answer "how many deadlines did this path create".
  */
-function recordTimeoutDelays(): { delays: number[]; restore: () => void } {
-	const delays: number[] = [];
-	const realSetTimeout = globalThis.setTimeout;
-	const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
-		delays.push(ms ?? 0);
-		return realSetTimeout(fn, ms as never);
-	}) as unknown as typeof setTimeout);
-	return { delays, restore: () => spy.mockRestore() };
-}
 
 // ---------------------------------------------------------------------------
 // Harness (background-run-extraction pattern)
