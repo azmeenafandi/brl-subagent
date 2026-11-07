@@ -51,6 +51,31 @@ which derives and prints the exact dispatch line (and refuses a level without a 
 $ node .pi/skills/worktree/jev-check.mjs --classifier \
     '{"answers":{"level":{"choice":"medium","confidence":0.84},"risk":{"choice":"C2"},"worktree":{"probability":0.9}}}'
 jev: medium (0.84) · C2 · worktree y          # paste this into the spec and the dispatch
+```
+
+### The `worktree` field is a process fact — state it (issue #456)
+
+`level` and `risk` are model answers. `worktree` is not: the classifier's own criterion is
+mechanical ("it modifies `src/` or `presets/`"), yet it answers with a *probability*, and the line
+thresholds it at 0.5. Measured 2026-11-07: 16 of 16 src dispatches printed `worktree n` while
+**every one** correctly ran in a worktree (Rule 5), so each became an exact-text provenance miss
+and needed an exceptions-file entry — the audit turned into paperwork.
+
+State the fact instead:
+
+```bash
+$ node .pi/skills/worktree/jev-check.mjs --classifier '<raw answers>' --worktree y --label impl-447
+jev-check: worktree y STATED by the conductor (the classifier said n, p=0.26) — recorded as stated, not as a model answer
+jev: medium (0.64) · C1 · worktree y
+jev-check: provenance row appended to .pi/jev-lines.log (label "impl-447")
+```
+
+The printed line is unchanged in shape and still matches exactly at the merge gate; the provenance
+row gains a fourth column, `stated:worktree`, so the artifact stays honest about which field the
+model produced. `--worktree` is refused with `--line` (that mode takes the field you already
+decided, so stating it twice would have no source of truth). The flag does not raise or lower
+`level`/`risk` — those remain classifier answers, and hand-typing them is still the Goodhart
+failure the log exists to prevent.
 
 $ node .pi/skills/worktree/jev-check.mjs --line '{"level":"medium","conf":0.84,"risk":"C2","worktree":true}' --label impl-1
 jev-check: --line is format-only: …            # exit 2 — use --classifier, or --legacy-line to acknowledge

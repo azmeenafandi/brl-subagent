@@ -452,8 +452,13 @@ function loadDispatchExceptions(path) {
  * contain anything else (the middle dot is not a separator risk; a tab cannot appear in a shell
  * label without quoting).
  */
-function formatProvenanceEntry(line, label, now) {
-	return `${now.toISOString()}\t${label}\t${line}`;
+function formatProvenanceEntry(line, label, now, stated) {
+	const base = `${now.toISOString()}\t${label}\t${line}`;
+	// #456: an optional fourth column records that a field the classifier answered was
+	// STATED by the conductor (`worktree`, a process fact under Rule 5). It never changes
+	// the matched line, so `--require-provenance` stays an exact-text check; it only keeps
+	// the artifact honest about which fields the model produced. Absent = all model answers.
+	return stated ? `${base}\tstated:${stated}` : base;
 }
 
 /**
@@ -487,12 +492,22 @@ function parseProvenanceLog(text) {
 			continue;
 		}
 		const parts = raw.split("\t");
-		if (parts.length !== 3 || parts[2].trim() === "" || parts[1].trim() === "") {
+		// #456: a fourth `stated:<field>` column is allowed (see formatProvenanceEntry);
+		// anything else is still fail-closed.
+		// Only `worktree` can be stated today; a hand-crafted row claiming any other
+		// field was stated is rejected rather than silently accepted (review nit).
+		const statedOk = parts.length === 4 && /^stated:worktree$/.test(parts[3].trim());
+		if ((parts.length !== 3 && !statedOk) || parts[2].trim() === "" || parts[1].trim() === "") {
 			throw new StructuralError(
-				`provenance log line ${index + 1} is malformed — expected <iso>\\t<label>\\t<line>`,
+				`provenance log line ${index + 1} is malformed — expected <iso>\\t<label>\\t<line>[\\tstated:<field>]`,
 			);
 		}
-		entries.push({ at: parts[0].trim(), label: parts[1].trim(), line: parts[2].trim() });
+		entries.push({
+			at: parts[0].trim(),
+			label: parts[1].trim(),
+			line: parts[2].trim(),
+			stated: statedOk ? parts[3].trim().slice("stated:".length) : null,
+		});
 	}
 	return { cutoff, entries };
 }
@@ -501,7 +516,7 @@ function parseProvenanceLog(text) {
  * Append one provenance row, creating the file (and its cutoff header) on first use. The cutoff is
  * the creation DATE, which is what exempts every dispatch that predates the log.
  */
-function appendProvenanceEntry(path, line, label, now = new Date()) {
+function appendProvenanceEntry(path, line, label, now = new Date(), stated = null) {
 	let existing = "";
 	try {
 		existing = readFileSync(path, "utf8");
@@ -510,7 +525,7 @@ function appendProvenanceEntry(path, line, label, now = new Date()) {
 	}
 	const header = existing.trim() === "" ? `${PROVENANCE_CUTOFF_PREFIX}${now.toISOString()}\n` : "";
 	mkdirSync(dirname(path), { recursive: true });
-	appendFileSync(path, `${header}${formatProvenanceEntry(line, label, now)}\n`);
+	appendFileSync(path, `${header}${formatProvenanceEntry(line, label, now, stated)}\n`);
 }
 
 /** Read the provenance log, fail-closed: a missing/empty log cannot verify anything. */
@@ -690,10 +705,19 @@ function parseLineArgs(args) {
 	let raw;
 	let label;
 	let legacy = false;
+	let worktree;
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index];
 		if (arg === "--legacy-line") {
 			legacy = true;
+		} else if (arg === "--worktree") {
+			if (index + 1 >= args.length) throw new StructuralError("--worktree needs y or n");
+			const value = args[index + 1];
+			if (value !== "y" && value !== "n") {
+				throw new StructuralError(`--worktree must be y or n (got ${JSON.stringify(value)})`);
+			}
+			worktree = value === "y";
+			index += 1;
 		} else if (arg === "--label") {
 			if (index + 1 >= args.length) throw new StructuralError("--label needs a dispatch name");
 			label = args[index + 1];
@@ -706,7 +730,7 @@ function parseLineArgs(args) {
 			raw = `${raw} ${arg}`;
 		}
 	}
-	return { raw: raw ?? "", label, legacy };
+	return { raw: raw ?? "", label, legacy, worktree };
 }
 
 function reportLine(raw, label, legacy = false) {
@@ -747,7 +771,7 @@ function reportLine(raw, label, legacy = false) {
  * mode whose input is a classifier output rather than a hand-chosen summary:
  * the shape check is the point, not decoration.
  */
-function classifierPayloadToLine(raw) {
+function classifierPayloadToLine(raw, worktreeOverride) {
 	if (raw.trim() === "") {
 		throw new StructuralError(
 			"--classifier needs the raw answers JSON: " +
@@ -771,19 +795,27 @@ function classifierPayloadToLine(raw) {
 	if (typeof probability !== "number" || Number.isNaN(probability)) {
 		throw new SkippedFormError("--classifier: answers.worktree.probability is missing or not a number");
 	}
+	const classified = probability > 0.5;
+	if (worktreeOverride !== undefined && worktreeOverride !== classified) {
+		console.error(
+			`jev-check: worktree ${worktreeOverride ? "y" : "n"} STATED by the conductor ` +
+				`(the classifier said ${classified ? "y" : "n"}, p=${probability}) — recorded as stated, ` +
+				"not as a model answer",
+		);
+	}
 	return formatDispatchLine({
 		level: answers.level && answers.level.choice,
 		conf: answers.level && answers.level.confidence,
 		risk: answers.risk && answers.risk.choice,
-		worktree: probability > 0.5,
+		worktree: worktreeOverride === undefined ? classified : worktreeOverride,
 	});
 }
 
-function reportClassifier(raw, label, provenancePath = DEFAULT_PROVENANCE_LOG) {
-	const line = classifierPayloadToLine(raw);
+function reportClassifier(raw, label, provenancePath = DEFAULT_PROVENANCE_LOG, worktreeOverride) {
+	const line = classifierPayloadToLine(raw, worktreeOverride);
 	console.log(line);
 	if (label !== undefined) {
-		appendProvenanceEntry(provenancePath, line, label);
+		appendProvenanceEntry(provenancePath, line, label, new Date(), worktreeOverride === undefined ? null : "worktree");
 		console.error(`jev-check: provenance row appended to ${provenancePath} (label ${JSON.stringify(label)})`);
 	}
 	return 0;
@@ -1230,6 +1262,90 @@ const SELFTEST_CASES = [
 		},
 	},
 	{
+		name: "--classifier --worktree: a stated process fact wins over the probability (#456)",
+		run() {
+			const raw = JSON.stringify({
+				answers: {
+					level: { choice: "medium", confidence: 0.64 },
+					risk: { choice: "C2" },
+					worktree: { probability: 0.14 },
+				},
+			});
+			// The classifier says n (p=0.14); Rule 5 says a src change runs in a worktree.
+			assertEqual(
+				classifierPayloadToLine(raw, true),
+				"jev: medium (0.64) \u00b7 C2 \u00b7 worktree y",
+				"stated y wins",
+			);
+			// No override = the model answer, unchanged.
+			assertEqual(
+				classifierPayloadToLine(raw, undefined),
+				"jev: medium (0.64) \u00b7 C2 \u00b7 worktree n",
+				"no override",
+			);
+			// A stated value that AGREES is still recorded as stated (it is the conductor's claim).
+			assertEqual(
+				classifierPayloadToLine(raw, false),
+				"jev: medium (0.64) \u00b7 C2 \u00b7 worktree n",
+				"stated n",
+			);
+		},
+	},
+	{
+		name: "--classifier --worktree: the provenance row marks the field as STATED, line unchanged",
+		run() {
+			const dir = mkdtempSync(join(tmpdir(), "jev-stated-"));
+			try {
+				const path = join(dir, "prov.log");
+				const raw = JSON.stringify({
+					answers: {
+						level: { choice: "high", confidence: 0.71 },
+						risk: { choice: "C1" },
+						worktree: { probability: 0.22 },
+					},
+				});
+				const line = classifierPayloadToLine(raw, true);
+				appendProvenanceEntry(path, line, "impl-456", new Date("2026-11-07T13:00:00.000Z"), "worktree");
+				const text = readFileSync(path, "utf8");
+				const row = text.split("\n").find((l) => l.includes("impl-456"));
+				assertEqual(
+					row,
+					"2026-11-07T13:00:00.000Z\timpl-456\tjev: high (0.71) \u00b7 C1 \u00b7 worktree y\tstated:worktree",
+					"row carries the stated marker",
+				);
+				const parsed = parseProvenanceLog(text);
+				assertEqual(parsed.entries.length, 1, "row parses");
+				assertEqual(parsed.entries[0].line, line, "parsed line is the exact printed line");
+				assertEqual(parsed.entries[0].stated, "worktree", "stated field recorded");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	},
+	{
+		name: "--worktree: only y|n is accepted, and --line refuses it",
+		run() {
+			let rejected = false;
+			try {
+				parseLineArgs(["{}", "--worktree", "maybe"]);
+			} catch (error) {
+				rejected = /must be y or n/.test(error.message);
+			}
+			assertEqual(rejected, true, "invalid value rejected");
+			// A provenance row without the marker still parses (backwards compatible).
+			const parsed = parseProvenanceLog("2026-11-07T13:00:00.000Z\timpl\tjev: low (0.9) \u00b7 C2 \u00b7 worktree n\n");
+			assertEqual(parsed.entries[0].stated, null, "no marker = null");
+			// Garbage in the fourth column is still fail-closed.
+			let malformed = false;
+			try {
+				parseProvenanceLog("2026-11-07T13:00:00.000Z\timpl\tjev: low (0.9) \u00b7 C2 \u00b7 worktree n\tnonsense\n");
+			} catch (error) {
+				malformed = /malformed/.test(error.message);
+			}
+			assertEqual(malformed, true, "garbage fourth column rejected");
+		},
+	},
+	{
 		name: "--classifier: a summary object (not the raw answers) is the skipped form",
 		run() {
 			let message = "";
@@ -1543,6 +1659,8 @@ const USAGE = [
 	"                    must carry a valid Rule 22 line. Conductor/merge-time (local log).",
 	"  --since YYYY-MM-DD  with --log: override the dispatch cutoff (legacy audit)",
 	"  --classifier '<raw answers JSON>'  derive the line from the classifier response (the honest path)",
+	"  --worktree y|n     with --classifier: STATE the worktree field as a process fact (#456); the",
+	"                     provenance row records it as stated instead of a model answer",
 	"  --legacy-line     with --line --label: acknowledge a conductor-assigned (non-classified) line",
 	"  --label <name>    with --classifier/--line: append the printed line to the provenance log",
 	`                    (${DEFAULT_PROVENANCE_LOG}) so the dispatch line is machine-produced`,
@@ -1586,11 +1704,17 @@ function main(argv) {
 	const [mode, ...rest] = argv;
 	try {
 		if (mode === "--classifier") {
-			const { raw, label } = parseLineArgs(rest);
-			return reportClassifier(raw, label);
+			const { raw, label, worktree } = parseLineArgs(rest);
+			return reportClassifier(raw, label, DEFAULT_PROVENANCE_LOG, worktree);
 		}
 		if (mode === "--line") {
-			const { raw, label, legacy } = parseLineArgs(rest);
+			const { raw, label, legacy, worktree } = parseLineArgs(rest);
+			if (worktree !== undefined) {
+				throw new StructuralError(
+					"--worktree is a --classifier option: --line takes the worktree field you already decided, " +
+						"so stating it twice would have no source of truth",
+				);
+			}
 			return reportLine(raw, label, legacy);
 		}
 		if (mode === "--ledger") {
