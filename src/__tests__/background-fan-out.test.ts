@@ -113,6 +113,8 @@ interface SpawnParams {
 	cwd?: string;
 	toolOptions?: unknown;
 	timeout?: number;
+	/** Issue #448: who arms the no-timeout default deadline. */
+	deadlineOwner?: string;
 	gitMode?: string;
 	originalParams?: Record<string, unknown>;
 }
@@ -594,6 +596,35 @@ describe("background deadline is a default, not a ceiling (#240)", () => {
 			expect(abort).not.toHaveBeenCalled();
 			// Fires at the 30m default.
 			await vi.advanceTimersByTimeAsync(1);
+			expect(abort).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("hands the no-timeout deadline to the caller-owned spawn flag (#448)", async () => {
+		const abort = vi.fn().mockResolvedValue(undefined);
+		stubLiveSpawn(abort);
+		vi.useFakeTimers();
+		try {
+			await tool.execute(
+				"call-448-owner",
+				{ task: "no explicit timeout", background: true },
+				undefined,
+				undefined,
+				makeCtx(),
+			);
+			// Omission would make the REAL spawn arm a SECOND 30m default (the
+			// caller's timer plus the spawn's) — #448's double arm. The flag is
+			// asserted here so the one production call site cannot drop it silently.
+			expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+			const spawnParams = h.spawnBackgroundSession.mock.calls[0][2] as SpawnParams;
+			expect(spawnParams.deadlineOwner).toBe("caller");
+			expect(spawnParams.timeout).toBeUndefined();
+
+			// Exactly one deadline in the run: the caller's, firing at 30m.
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
 			expect(abort).toHaveBeenCalledTimes(1);
 		} finally {
 			vi.clearAllTimers();

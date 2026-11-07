@@ -2021,6 +2021,10 @@ export default function (pi: ExtensionAPI) {
 			cwd: spawn.cwd,
 			toolOptions: spawn.toolOptions,
 			timeout: spawn.timeout,
+			// Issue #448: the caller OWNS the no-timeout default deadline below —
+			// without this flag the spawn would arm a second default (double arm).
+			// An explicit timeout still rides the spawn's W3 timer.
+			deadlineOwner: "caller",
 			gitMode: spawn.gitMode,
 			// Issue #98/#108: snapshotOriginalParams is the single source of truth
 			// for the caller params a later retry restores.
@@ -2190,9 +2194,9 @@ export default function (pi: ExtensionAPI) {
 		// deadline DEFAULTS to 30m only when no timeout is given. It is a
 		// default, not a ceiling. Issue #244: exactly ONE deadline timer per
 		// run — an explicit timeout is owned by the session-manager W3 timer,
-		// so this index timer arms ONLY on the no-timeout path, mirroring
-		// spawnBackgroundSession's `params.timeout && params.timeout > 0` guard
-		// (with no timeout, it owns the 30m default, #28).
+		// so this index timer arms ONLY on the no-timeout path. Issue #448: the
+		// spawn is told `deadlineOwner: "caller"` so it does NOT arm a second
+		// default for the same run (an omission here double-arms).
 		const hasExplicitDeadline = spawn.timeout !== undefined && spawn.timeout > 0;
 		const hardCapMs = spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS;
 		const hardCapHandle: ReturnType<typeof setTimeout> | undefined =
