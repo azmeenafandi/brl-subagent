@@ -24,7 +24,7 @@ import type {
 	SnapshotParams,
 	DelegateTaskParams,
 } from "./types";
-import { approvalBlocksBackground, resolveThinkingLevel } from "./types";
+import { approvalBlocksBackground, declaredThinkingLevel, resolveThinkingLevel } from "./types";
 import { getAllPresets, getPreset } from "./presets";
 import { classifyTask } from "./router";
 import { normalizeTimeout } from "./validate";
@@ -429,9 +429,13 @@ export function resolveSubagentParams(
 		: undefined;
 	const autoRoutedPreset = wasAutoRouted ? preset : undefined;
 
-	const mergedThinkingLevel =
-		(params.thinkingLevel as ThinkingLevel | undefined) ??
-		(preset?.thinkingLevel as ThinkingLevel | undefined);
+	// The DECLARED level (per-call, else the selected preset's) — read through the
+	// shared helper so both dispatch guards (issue #443) judge exactly the value
+	// this merge resolves, not a second interpretation of it.
+	const mergedThinkingLevel = declaredThinkingLevel(
+		params.thinkingLevel,
+		preset?.thinkingLevel,
+	) as ThinkingLevel | undefined;
 	const mergedSystemPrompt = params.systemPrompt ?? preset?.systemPrompt;
 	const mergedInheritSP = params.inheritSystemPrompt ?? preset?.inheritSystemPrompt;
 	const mergedOutputFile = params.outputFile ?? preset?.outputFile;

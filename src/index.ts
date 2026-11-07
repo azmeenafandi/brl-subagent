@@ -39,6 +39,7 @@ import type {
 	SubagentEventListener,
 } from "./types";
 import {
+	declaredThinkingLevel,
 	resolveThinkingLevel,
 	EMPTY_USAGE,
 	getFinalOutput,
@@ -72,7 +73,7 @@ import {
 	type HeadState,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { depthLimitRejection, formatValidationWarnings, gateSessionCost, modelNotConfiguredRejection, rejectApprovalAlwaysInBackground, rejection, resolveModeModel, resolveSubagentModelPrecedence, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, type SubagentModelResolution } from "./prelude";
+import { depthLimitRejection, formatValidationWarnings, gateSessionCost, invalidThinkingLevelRejection, modelNotConfiguredRejection, rejectApprovalAlwaysInBackground, rejection, resolveModeModel, resolveSubagentModelPrecedence, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, type SubagentModelResolution } from "./prelude";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable, parseModelString } from "./model-availability";
 import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
@@ -591,6 +592,8 @@ export default function (pi: ExtensionAPI) {
 			log,
 			force: params.force as boolean | undefined,
 			noJev: params.noJev,
+			// Issue #443: the DECLARED per-step level (the merged one is resolved).
+			declaredThinkingLevel: (step) => step.thinkingLevel,
 			merge: (step) => mergeSubTaskParams(globalParams, step),
 			describe: (_step, merged, i) => ({
 				prefix: `Step ${i + 1} ("${displayTaskName(merged)}")`,
@@ -980,6 +983,8 @@ export default function (pi: ExtensionAPI) {
 			log,
 			force: params.force as boolean | undefined,
 			noJev: params.noJev,
+			// Issue #443: the DECLARED per-task level (the merged one is resolved).
+			declaredThinkingLevel: (task) => task.thinkingLevel,
 			merge: (task) => mergeSubTaskParams(globalParams, task),
 			describe: (_task, merged, i) => ({
 				prefix: `Task ${i + 1} ("${displayTaskName(merged)}")`,
@@ -1380,6 +1385,8 @@ export default function (pi: ExtensionAPI) {
 			log,
 			force: params.force as boolean | undefined,
 			noJev: params.noJev,
+			// Issue #443: the DECLARED per-node level (the merged one is resolved).
+			declaredThinkingLevel: (node) => node.thinkingLevel,
 			merge: (node) => mergeSubTaskParams(globalParams, graphTaskToSubTaskParams(node)),
 			describe: (node, merged) => ({
 				prefix: `Node "${node.id}"`,
@@ -1802,6 +1809,16 @@ export default function (pi: ExtensionAPI) {
 			const merged = mergeSubTaskParams(globalParams, taskList[i]);
 			const name = displayTaskName(merged);
 			const taskPrefix = `Task ${i + 1} ("${name}")`;
+			// Issue #443: the DECLARED per-task level — `merged.thinkingLevel` is
+			// already resolved, so an unknown declaration is indistinguishable from
+			// an omitted one by the time the spawn pass reads it. Checked here, in
+			// the all-before-any-spawn pass, so a bad SECOND task rejects the whole
+			// batch with nothing started.
+			const declaredThinkingError = invalidThinkingLevelRejection(
+				taskList[i].thinkingLevel,
+				taskPrefix,
+			);
+			if (declaredThinkingError) return declaredThinkingError;
 			// Per-task model override wins; the global model is the fallback.
 			const stepModel = resolveStepModel(ctx, merged.model, globalModel);
 
@@ -2272,6 +2289,19 @@ export default function (pi: ExtensionAPI) {
 		 */
 		attemptContext?: string,
 	): Promise<ToolResult<undefined>> {
+		// Issue #443: the DECLARED level, guarded before `bgResolved` clamps it.
+		// This is the seam for the TRANSPORT auto-retry (`scheduleTransportRetry`
+		// re-enters here with `resolveRetryParams`' rebuilt bag and never passes
+		// through `execute`), and the reason a restored record carrying an unknown
+		// level cannot launch a session at pi's default. A rejection here surfaces
+		// as the ORIGINAL failure's notice — the caller reports it unchanged.
+		const bgDeclaredThinkingLevel = declaredThinkingLevel(
+			params.thinkingLevel,
+			resolveDispatchPreset({ ...params, task: singleTask }, state).preset?.thinkingLevel,
+		);
+		const bgDeclaredThinkingError = invalidThinkingLevelRejection(bgDeclaredThinkingLevel);
+		if (bgDeclaredThinkingError) return bgDeclaredThinkingError;
+
 		// Phase 6.5: Background execution — spawn session and return ID immediately.
 		// Resolve the preset and its model BEFORE the background branch so the
 		// preset's model (and system prompt) are honored in background mode.
@@ -2776,6 +2806,21 @@ export default function (pi: ExtensionAPI) {
 			// caller declared no level, so the pre-flight resolves the SAME preset
 			// the merge below will (one rule, `resolveDispatchPreset`).
 			const declaredPresetForSwitch = resolveDispatchPreset(params, state).preset;
+			// Issue #443: guard the EFFECTIVE DECLARED level here — the per-call value
+			// or the selected preset's (named, or auto-routed by the line above) —
+			// BEFORE `resolveSubagentParams` clamps it. `params.thinkingLevel` is
+			// already the post-template, post-`retryRunId` value by this point, so a
+			// level restored from a run record is judged too; a preset object injected
+			// in memory never passed a schema or the preset-file validator, so this
+			// is its only check. Everything below runs through this one seam: the
+			// single, background, chain, parallel and graph handlers are all reached
+			// from here, and the per-unit declarations are guarded by the pre-passes.
+			const effectiveDeclaredThinkingLevel = declaredThinkingLevel(
+				params.thinkingLevel,
+				declaredPresetForSwitch?.thinkingLevel,
+			);
+			const declaredThinkingError = invalidThinkingLevelRejection(effectiveDeclaredThinkingLevel);
+			if (declaredThinkingError) return declaredThinkingError;
 			// The EFFECTIVE approval mode (call param, else the configured default) —
 			// the same resolver `resolveSubagentParams` and the #361 default use, so the
 			// pre-flight cannot judge a mode the child will not run with. Reading
@@ -2786,9 +2831,7 @@ export default function (pi: ExtensionAPI) {
 			);
 			const thinkingSwitch = resolveThinkingDispatchSwitch({
 				processChecks,
-				thinkingLevel: (params.thinkingLevel ?? declaredPresetForSwitch?.thinkingLevel) as
-					| ThinkingLevel
-					| undefined,
+				thinkingLevel: effectiveDeclaredThinkingLevel as ThinkingLevel | undefined,
 				explicitBackground,
 				timeout: params.timeout,
 				force: params.force,
