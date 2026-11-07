@@ -34,7 +34,7 @@
 import { listInflightRuns, type InflightRun } from "./run-registry";
 import { assertSafeAgentId } from "./sanitize";
 import { isProcAvailable, defaultRecoveryDeps } from "./proc";
-import { decideRecovery, reapPids, type RecoveryDeps, type RecoveryRecord } from "./recovery-engine";
+import { decideRecovery, classifyOwner, reapPids, type RecoveryDeps, type RecoveryRecord } from "./recovery-engine";
 import type { Logger } from "./logging";
 import type { SubagentRun } from "./types";
 import { PROMPT_NEVER_ISSUED_MESSAGE } from "./types";
@@ -64,8 +64,11 @@ export interface BootScanSummary {
 	/** Registry entries skipped fail-closed because their id failed the write guard. */
 	skippedUnsafeIds: number;
 	/**
-	 * Issue #447: dispatches classified NEVER STARTED (`acceptedAt: null`) and
-	 * finalized `failed` instead of being offered as interrupted runs.
+	 * Issue #447: registry entries classified NEVER STARTED (`acceptedAt:
+	 * null`) and settled `failed` instead of being offered as an interrupted,
+	 * retryable run. Counted per FINALIZE attempt: an entry held back because its
+	 * owner is still live (or unverifiable) is not counted, and a failed terminal
+	 * write is warned — either way the entry stays out of the interrupted class.
 	 */
 	neverStarted: number;
 }
@@ -369,6 +372,8 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 	}
 
 	const now = options.now?.() ?? new Date();
+	/** Entries this scan actually SETTLED (see `BootScanSummary.neverStarted`). */
+	let settledNeverStarted = 0;
 	for (const entry of neverStarted) {
 		if (!options.finalizeNeverStarted) {
 			options.log?.debug("Recovery: left a never-started dispatch untouched (no finalizer wired)", {
@@ -377,6 +382,28 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 			});
 			continue;
 		}
+		// A never-started entry is acted on ONLY when its owner is provably dead,
+		// the same ownership rule the decision engine applies before it marks
+		// anything. A LIVE owner may still be inside its own pre-start window (the
+		// git-branch lock, a slow transcript start) and will write its acceptance
+		// marker momentarily — finalizing it here would stamp a false `failed`
+		// terminal record that the run's real terminal entry could never outrank
+		// (`resolveTerminalRunEntry` prefers the FIRST terminal entry). No owner or
+		// an unverifiable one ⇒ no write, exactly as for the mark path.
+		const owner = entry.owner;
+		const ownerDead =
+			!!owner &&
+			Number.isInteger(owner.pid) &&
+			owner.pid > 0 &&
+			classifyOwner(owner, options.deps) === "dead";
+		if (!ownerDead) {
+			options.log?.debug("Recovery: left a never-started dispatch with a live/unverified owner", {
+				id: entry.id,
+				kind: entry.kind,
+			});
+			continue;
+		}
+		settledNeverStarted++;
 		try {
 			options.finalizeNeverStarted(
 				neverStartedRunRecord(entry, now.toISOString()),
@@ -407,7 +434,7 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 		log: options.log,
 	});
 	summary.skippedUnsafeIds = unsafeIds.length;
-	summary.neverStarted = neverStarted.length;
+	summary.neverStarted = settledNeverStarted;
 	return summary;
 }
 
