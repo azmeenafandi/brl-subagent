@@ -85,6 +85,52 @@ export function parseFrontmatter(content: string): { meta: Record<string, unknow
 }
 
 // ---------------------------------------------------------------------------
+// Field-mapper tables
+// ---------------------------------------------------------------------------
+
+/**
+ * The non-frontmatter inputs a field mapper may read: the resolved name (which
+ * comes from the file/validator, not always from `meta`) and the markdown body.
+ * Shared by both tiers' tables — presets read `name`/`body`, templates too.
+ */
+export interface FrontmatterMapContext {
+	name: string;
+	body: string;
+}
+
+/**
+ * One row of a tier's field-mapper table: frontmatter plus context in, ONE
+ * record field out. `R` is the field's declared type, so a table declared as
+ * `{[K in keyof T]: FrontmatterFieldMapper<T[K]>}` makes a mapper that returns
+ * the wrong type a compile error at the row, not a silent cast at the assembly.
+ */
+export type FrontmatterFieldMapper<R> = (
+	meta: Record<string, unknown>,
+	ctx: FrontmatterMapContext,
+) => R;
+
+/**
+ * Build a record from a field-mapper table and one parsed frontmatter pair.
+ * Single-source for both tiers (`presetFromFrontmatter`, `templateFromFrontmatter`),
+ * which had byte-identical assemblies.
+ *
+ * The `as unknown as R` bridge is the compensating cast: `Object.fromEntries`
+ * hands back `{ [k: string]: unknown }`, and the record types are interfaces
+ * (no implicit index signature), so no narrower assertion compiles. Its safety
+ * is the table it is handed: `satisfies { [K in keyof T]: … }` pins the key set
+ * to exactly the record's fields, and the per-key return type pins each value.
+ */
+export function applyFrontmatterMappers<R>(
+	mappers: Record<string, FrontmatterFieldMapper<unknown>>,
+	meta: Record<string, unknown>,
+	ctx: FrontmatterMapContext,
+): R {
+	return Object.fromEntries(
+		Object.entries(mappers).map(([field, mapper]) => [field, mapper(meta, ctx)]),
+	) as unknown as R;
+}
+
+// ---------------------------------------------------------------------------
 // Tier loading
 // ---------------------------------------------------------------------------
 

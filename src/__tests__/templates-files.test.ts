@@ -108,6 +108,36 @@ describe("loadCustomTemplates", () => {
 		expect(t.inheritSystemPrompt).toBe(false);
 	});
 
+	// #436 review nit: `templateFromFrontmatter` was a hand literal with no pin
+	// (1:1 by luck). The table is now `satisfies`-pinned; this is its runtime
+	// counterpart — one row per declared field, and the loaded record's key set
+	// must be exactly the rows, so a mapped field cannot go unasserted.
+	it("maps every declared field — table-driven round-trip, one row per TaskTemplate key (#436)", () => {
+		const BODY = "Every field, one row.";
+		// [field, frontmatter line, expected value]; `task` has no line — the body is the task.
+		const rows: Array<[keyof TaskTemplate, string, unknown]> = [
+			["name", "name: all-fields", "all-fields"],
+			["description", "description: Every field set", "Every field set"],
+			["task", "", BODY],
+			["preset", "preset: security-auditor", "security-auditor"],
+			["thinkingLevel", "thinkingLevel: high", "high"],
+			["outputFile", "outputFile: audit-${file}.md", "audit-${file}.md"],
+			["timeout", "timeout: 60000", 60000],
+			["tools", "tools:\n  - read", ["read"]],
+			["excludeTools", "excludeTools:\n  - write", ["write"]],
+			["noBuiltinTools", 'noBuiltinTools: "true"', true],
+			["inheritSystemPrompt", 'inheritSystemPrompt: "false"', false],
+		];
+
+		const cwd = makeTempDir();
+		const frontmatter = rows.map(([, line]) => line).filter(Boolean);
+		writeProjectTemplate(cwd, "all-fields.md", ["---", ...frontmatter, "---", BODY].join("\n"));
+
+		const [t] = loadCustomTemplates(cwd);
+		expect(Object.keys(t).sort()).toEqual(rows.map(([field]) => field).sort());
+		for (const [field, , value] of rows) expect([field, t[field]]).toEqual([field, value]);
+	});
+
 	it("maps defaulted fields to undefined (noBuiltinTools true-only, inheritSystemPrompt false-only)", () => {
 		const cwd = makeTempDir();
 		writeProjectTemplate(
