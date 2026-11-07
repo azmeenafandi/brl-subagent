@@ -113,6 +113,21 @@ const fakeCtx = {
 	},
 };
 
+/**
+ * Issue #447: a background dispatch appends THREE run entries — the spawn
+ * record (`acceptedAt: null`), the acceptance record (an ISO timestamp,
+ * written immediately before the prompt) and the terminal record. Tests that
+ * read "the finalized entry" go through this accessor so the added write
+ * cannot silently shift an index, and `SETTLED_RUN_WRITES` names the count.
+ */
+function lastRunEntry(): Record<string, unknown> {
+	const calls = fakePi.appendEntry.mock.calls;
+	return calls[calls.length - 1][1] as Record<string, unknown>;
+}
+
+/** Issue #447: spawn + acceptance + terminal = three run-entry writes. */
+const SETTLED_RUN_WRITES = 3;
+
 // Issue #52: isolate EVERY test from the real repo .pi/ — the agent-record
 // storage dir and the transcript output dir are redirected to throwaway temp
 // dirs (fresh per test) by the shared lifecycle helper, which also owns the
@@ -2019,8 +2034,8 @@ describe("issue #31 — terminal paths release agent._sessionRef", () => {
 		// 'aborted' reason (there is no last assistant message to narrow it from
 		// on this path). Pinned here so the shared helper cannot drift from the
 		// .then branch's finalize semantics.
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		expect(run.stopReason).toBe("aborted");
 		expect(run.errorMessage).toBe("Subagent aborted by user");
@@ -2052,7 +2067,8 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 			thinkingLevel: "high",
 		});
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(1);
+		// Issue #447: the spawn record and the acceptance record — no terminal yet.
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
 		const [customType, run] = fakePi.appendEntry.mock.calls[0];
 		expect(customType).toBe(CUSTOM_ENTRY_TYPES.run);
 		// id == agent id — the id the caller holds IS the retry-able run id.
@@ -2100,8 +2116,8 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		// Let the .then settle handler run.
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.id).toBe(agent.id);
 		expect(run.status).toBe("done");
 		expect(run.finishedAt).toBeDefined();
@@ -2116,8 +2132,8 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		// Let the .catch settle handler run.
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.id).toBe(agent.id);
 		expect(run.status).toBe("failed");
 		expect(run.errorMessage).toBe("auth failed");
@@ -2135,8 +2151,8 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		});
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.id).toBe(agent.id);
 		expect(run.status).toBe("failed");
 		// Issue #120 (Track 1): a user cancel now stamps the honest source instead
@@ -2168,8 +2184,8 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		resolvePrompt();
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		expect(run.errorMessage).toBe("Timed out after 5000ms");
 		expect(run.originalParams?.errorCategory).toBe("timeout");
@@ -2203,12 +2219,13 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		const runEntries = fakePi.appendEntry.mock.calls
 			.filter(([t]) => t === CUSTOM_ENTRY_TYPES.run)
 			.map(([, run]) => run);
-		// Exactly two: the spawn entry + ONE terminal entry.
-		expect(runEntries).toHaveLength(2);
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		// Exactly three: spawn, acceptance, and ONE terminal entry.
+		expect(runEntries).toHaveLength(SETTLED_RUN_WRITES);
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
 		expect(runEntries[0].status).toBe("running");
-		expect(runEntries[1].status).toBe("done");
-		expect(runEntries[1].id).toBe(agent.id);
+		expect(runEntries[1].status).toBe("running");
+		expect(runEntries[2].status).toBe("done");
+		expect(runEntries[2].id).toBe(agent.id);
 		// The record still settled as completed (the catch-all keeps the status).
 		expect(getAgent(agent.id)?.status).toBe("completed");
 	});
@@ -2225,10 +2242,10 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync-throws" })
 		).rejects.toThrow("sync preflight failure");
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
 		const spawnRun = fakePi.appendEntry.mock.calls[0][1];
 		expect(spawnRun.status).toBe("running");
-		const finalRun = fakePi.appendEntry.mock.calls[1][1];
+		const finalRun = lastRunEntry();
 		expect(finalRun.id).toBe(spawnRun.id);
 		expect(finalRun.status).toBe("failed");
 		expect(finalRun.errorMessage).toBe("sync preflight failure");
@@ -2276,8 +2293,8 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 		// Let the completion settle handler run.
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.status).toBe("done");
 		// Folded from BOTH assistant turns: input 1000+500, output 200+250,
 		// cacheRead 300, cacheWrite 50, cost 0.5+0.25, turns 2, contextTokens
@@ -2337,8 +2354,8 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 		// Let the aborted settle handler run.
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		// Issue #120 (Track 1): honest user-abort stamp + category (see above).
 		expect(run.errorMessage).toBe("Subagent aborted by user");
@@ -2375,8 +2392,8 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 		// Let the .catch settle handler run.
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		expect(run.cost).toBe(0);
 		expect(run.tokensIn).toBe(0);
@@ -2398,8 +2415,8 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync-throws-audit" })
 		).rejects.toThrow("sync preflight failure");
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const finalRun = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const finalRun = lastRunEntry();
 		expect(finalRun.status).toBe("failed");
 		expect(finalRun.cost).toBe(0);
 		expect(finalRun.tokensIn).toBe(0);
@@ -2461,7 +2478,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 			expect(after?.status).toBe(status);
 
 			// D2: the finalized run entry carries the CLASSIFIED reason.
-			const run = fakePi.appendEntry.mock.calls[1][1];
+			const run = lastRunEntry();
 			expect(run.status).toBe(runStatus);
 			expect(run.stopReason).toBe(stopReason);
 			if (category) expect(run.errorCategory).toBe(category);
@@ -2497,7 +2514,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 		// The reason leads; the earlier prose is still available below it.
 		expect(after?.finalOutput?.startsWith("provider died")).toBe(true);
 		expect(after?.finalOutput).toContain("planned the work");
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		const run = lastRunEntry();
 		expect(run.outputSummary).toContain("provider died");
 	});
 
@@ -2513,7 +2530,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 		});
 		await new Promise((r) => setTimeout(r, 0));
 
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		expect(run.turns).toBe(0);
 		expect(run.finalTurnError).toBe(true);
@@ -2533,7 +2550,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 		await new Promise((r) => setTimeout(r, 0));
 
 		// Before the fix this entry said "done" — invisible to the retry menu.
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		expect(run.stopReason).toBe("error");
 		const { resolveRetryParams } = await import("../history");
@@ -2775,7 +2792,7 @@ describe("background settle with an empty assistant projection (issue #449)", ()
 		expect(String(run.errorMessage)).toContain(NO_ASSISTANT_OUTPUT_REASON);
 		expect(run).not.toHaveProperty("exitCode");
 		expect(run.stopReason).not.toBe("stop");
-		expect(runStatuses).toEqual(["running", "failed"]); // no 'done' record
+		expect(runStatuses).toEqual(["running", "running", "failed"]); // no 'done' record
 
 		// completion message — built from the persisted record, exactly as the wake is
 		const completion = buildCompletionMessage(agent, run as never);
@@ -2813,7 +2830,7 @@ describe("background settle with an empty assistant projection (issue #449)", ()
 		await new Promise((r) => setTimeout(r, 0));
 
 		expect(getAgent(agent.id)?.status).toBe("stopped");
-		const run = fakePi.appendEntry.mock.calls[1][1] as Record<string, unknown>;
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		expect(run.originalParams?.errorCategory).toBe("aborted");
 	});

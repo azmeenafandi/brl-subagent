@@ -64,6 +64,13 @@ export interface InflightRun {
 	// run record, so a post-crash retry restores the same 17-field shape a
 	// same-session retry does (including `force`; decision 2026-10-11).
 	originalParams?: SubagentRun["originalParams"];
+	/**
+	 * Issue #447: the acceptance marker, mirrored from the run record.
+	 * `null` = tracked but never accepted (never reached `session.prompt()`),
+	 * ISO string = accepted, absent = legacy entry written before the field.
+	 * The boot scan classifies on this tri-state (`recoverInflightRuns`).
+	 */
+	acceptedAt?: string | null;
 	startedAt: string;
 	cwd: string;
 	interruptedAt?: string;
@@ -83,6 +90,7 @@ export interface InflightRunInput {
 	model?: string;
 	thinkingLevel?: string;
 	originalParams?: SubagentRun["originalParams"];
+	acceptedAt?: string | null;
 	startedAt: string;
 	cwd?: string;
 }
@@ -161,6 +169,14 @@ function normalizeEnrichment(value: InflightRun, raw: Record<string, unknown>): 
 	} else {
 		delete entry.originalParams;
 	}
+	// Issue #447: keep the tri-state intact and treat anything else as LEGACY
+	// (absent) rather than inventing a fourth state. A mistyped marker must
+	// never downgrade a real run into the never-started class.
+	if (raw.acceptedAt === null || typeof raw.acceptedAt === "string") {
+		entry.acceptedAt = raw.acceptedAt;
+	} else {
+		delete entry.acceptedAt;
+	}
 	return entry;
 }
 
@@ -205,6 +221,9 @@ function mergeInput(base: InflightRun, input: InflightRunInput): InflightRun {
 	if (input.model !== undefined) next.model = input.model;
 	if (input.thinkingLevel !== undefined) next.thinkingLevel = input.thinkingLevel;
 	if (input.originalParams !== undefined) next.originalParams = input.originalParams;
+	// Issue #447: `null` MUST copy (it is the never-started sentinel); only
+	// `undefined` is skipped, so a refresh without the marker cannot erase it.
+	if (input.acceptedAt !== undefined) next.acceptedAt = input.acceptedAt;
 	return next;
 }
 
@@ -309,6 +328,7 @@ function toRegistryInput(run: SubagentRun, kind: InflightRunKind): InflightRunIn
 		model: run.model,
 		thinkingLevel: run.thinkingLevel,
 		originalParams: run.originalParams,
+		acceptedAt: run.acceptedAt,
 		startedAt: run.startedAt,
 		cwd: process.cwd(),
 	};

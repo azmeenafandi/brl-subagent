@@ -36,6 +36,8 @@ import { assertSafeAgentId } from "./sanitize";
 import { isProcAvailable, defaultRecoveryDeps } from "./proc";
 import { decideRecovery, reapPids, type RecoveryDeps, type RecoveryRecord } from "./recovery-engine";
 import type { Logger } from "./logging";
+import type { SubagentRun } from "./types";
+import { PROMPT_NEVER_ISSUED_MESSAGE } from "./types";
 
 // Re-export the pure engine and the production wiring so existing importers
 // (`index.ts`, the recovery/registry suites) keep their single entry point.
@@ -61,6 +63,11 @@ export interface BootScanSummary {
 	skippedNoOwner: number;
 	/** Registry entries skipped fail-closed because their id failed the write guard. */
 	skippedUnsafeIds: number;
+	/**
+	 * Issue #447: dispatches classified NEVER STARTED (`acceptedAt: null`) and
+	 * finalized `failed` instead of being offered as interrupted runs.
+	 */
+	neverStarted: number;
 }
 
 /** The all-zero summary (a skipped scan / an empty registry). */
@@ -75,6 +82,7 @@ export function emptyBootScanSummary(): BootScanSummary {
 		skippedUnverifiable: 0,
 		skippedNoOwner: 0,
 		skippedUnsafeIds: 0,
+		neverStarted: 0,
 	};
 }
 
@@ -211,8 +219,64 @@ export async function runBootScan(options: BootScanOptions): Promise<BootScanSum
 export interface PersistedAgentLike {
 	status: string;
 	interruptedAt?: string;
+	/**
+	 * Issue #447: the acceptance marker, when the record carries one. Only the
+	 * registry entry and the run entry write it today; this read keeps a record
+	 * that DOES carry it authoritative (the entry is the fallback, not the
+	 * override) — see `acceptanceState`.
+	 */
+	acceptedAt?: string | null;
 	owner?: RecoveryRecord["owner"];
 	childMarker?: string;
+}
+
+/**
+ * Issue #447: the tri-state read of the acceptance marker. `undefined` is the
+ * LEGACY/untracked state, and it must stay distinguishable from `null` (never
+ * started) — which is why this is an explicit `!== undefined` probe and never
+ * `??` (`null ?? agent` would silently reclassify every never-started entry as
+ * accepted and bring the false positive straight back).
+ */
+function acceptanceState(
+	entry: InflightRun,
+	agent: PersistedAgentLike | null,
+): string | null | undefined {
+	if (entry.acceptedAt !== undefined) return entry.acceptedAt;
+	return agent?.acceptedAt;
+}
+
+/**
+ * The terminal `failed` record written for a dispatch that never reached the
+ * prompt: the durable summary the entry already holds, stamped with the honest
+ * reason. Projected here (next to the classification that decides it) so the
+ * caller only has to persist what it is handed. Deliberately does NOT carry
+ * `interruptedAt` — a never-started run is not an interrupted run, and the
+ * recovery surface keys on that mark alone.
+ */
+export function neverStartedRunRecord(
+	entry: InflightRun,
+	finishedAt: string,
+	reason: string = PROMPT_NEVER_ISSUED_MESSAGE,
+): SubagentRun {
+	return {
+		id: entry.id,
+		task: entry.task ?? "",
+		...(entry.label !== undefined ? { label: entry.label } : {}),
+		...(entry.dispatchId !== undefined ? { dispatchId: entry.dispatchId } : {}),
+		...(entry.attempt !== undefined ? { attempt: entry.attempt } : {}),
+		status: "failed",
+		model: entry.model ?? "unknown",
+		thinkingLevel: entry.thinkingLevel ?? "unknown",
+		startedAt: entry.startedAt,
+		finishedAt,
+		errorCategory: "unknown",
+		errorMessage: reason,
+		...(entry.recoveryPosture !== undefined ? { recoveryPosture: entry.recoveryPosture } : {}),
+		...(entry.originalParams !== undefined ? { originalParams: entry.originalParams } : {}),
+		// The marker stays `null` on the terminal record: this run never accepted
+		// the prompt, and the record must not claim otherwise after the fact.
+		acceptedAt: null,
+	};
 }
 
 export interface RegistryScanOptions {
@@ -222,6 +286,13 @@ export interface RegistryScanOptions {
 	 * background). Returns `false` when the durable write did not land.
 	 */
 	mark(record: RecoveryRecord, interruptedAt: string): boolean | void;
+	/**
+	 * Issue #447: persist the terminal record of a dispatch that never reached
+	 * the prompt (`acceptedAt: null`). Absent ⇒ the entry is left untouched —
+	 * it is still never offered as interrupted, so the fail-closed direction is
+	 * "no write", never "offer a retry".
+	 */
+	finalizeNeverStarted?(run: SubagentRun, reason: string): boolean | void;
 	/**
 	 * Read ONE background run's agent record by id (never the whole store).
 	 * Returns null when the record is absent; absent defaults to an in-flight
@@ -269,10 +340,19 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 	}
 
 	const records: RecoveryRecord[] = [];
+	// Issue #447: `acceptedAt: null` = tracked but the prompt was never issued.
+	// Such an entry is NOT a recovery candidate: nothing was started, so there
+	// is nothing to reap, nothing to interrupt, and nothing to retry. It is
+	// finalized `failed` below instead of being handed to the decision engine.
+	const neverStarted: InflightRun[] = [];
 	for (const entry of addressable) {
 		if (entry.kind === "background") {
 			const agent = options.readAgentRecord?.(entry.id) ?? null;
 			if (agent && agent.status !== "running") continue;
+			if (acceptanceState(entry, agent) === null) {
+				neverStarted.push(entry);
+				continue;
+			}
 			records.push({
 				id: entry.id,
 				kind: "agent",
@@ -283,6 +363,10 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 				source: entry,
 			});
 		} else {
+			if (entry.acceptedAt === null) {
+				neverStarted.push(entry);
+				continue;
+			}
 			records.push({
 				id: entry.id,
 				kind: "run",
@@ -294,6 +378,38 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 			});
 		}
 	}
+
+	const now = options.now?.() ?? new Date();
+	for (const entry of neverStarted) {
+		if (!options.finalizeNeverStarted) {
+			options.log?.debug("Recovery: left a never-started dispatch untouched (no finalizer wired)", {
+				id: entry.id,
+				kind: entry.kind,
+			});
+			continue;
+		}
+		try {
+			options.finalizeNeverStarted(
+				neverStartedRunRecord(entry, now.toISOString()),
+				PROMPT_NEVER_ISSUED_MESSAGE,
+			);
+			options.log?.info("Recovery: finalized a never-started dispatch as failed", {
+				id: entry.id,
+				kind: entry.kind,
+			});
+		} catch (err) {
+			// Best-effort, exactly like the mark path: a failed finalize must not
+			// abort the scan for the OTHER candidates. The registry entry is cleared
+			// before the append lands (`persistRunRecord`), so the residue is gone
+			// even when the terminal entry cannot be written.
+			options.log?.warn("Recovery: never-started finalize failed", {
+				id: entry.id,
+				kind: entry.kind,
+				error: (err as Error).message,
+			});
+		}
+	}
+
 	const summary = await runBootScan({
 		records,
 		deps: options.deps,
@@ -302,6 +418,7 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 		log: options.log,
 	});
 	summary.skippedUnsafeIds = unsafeIds.length;
+	summary.neverStarted = neverStarted.length;
 	return summary;
 }
 
@@ -314,6 +431,8 @@ export interface ProductionRecoveryOptions {
 	deps?: RecoveryDeps;
 	/** Persist the D3 mark for this record; `false` = the durable write failed. */
 	mark(record: RecoveryRecord, interruptedAt: string): boolean | void;
+	/** Issue #447: persist the terminal record of a never-started dispatch. */
+	finalizeNeverStarted?(run: SubagentRun, reason: string): boolean | void;
 	readAgentRecord?(id: string): PersistedAgentLike | null;
 	now?: () => Date;
 	log?: Pick<Logger, "debug" | "info" | "warn">;
@@ -336,6 +455,7 @@ export async function recoverProduction(options: ProductionRecoveryOptions): Pro
 	return recoverInflightRuns({
 		deps: options.deps ?? defaultRecoveryDeps(),
 		mark: options.mark,
+		finalizeNeverStarted: options.finalizeNeverStarted,
 		readAgentRecord: options.readAgentRecord,
 		now: options.now,
 		log: options.log,

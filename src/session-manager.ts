@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from 'path';
 import { writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync } from 'fs';
 import type { Dirent } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, RecoveryMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
-import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE, NO_ASSISTANT_OUTPUT_REASON } from './types';
+import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE, NO_ASSISTANT_OUTPUT_REASON, PROMPT_NEVER_ISSUED_MESSAGE } from './types';
 import type { AssistantEvidence } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
@@ -17,7 +17,7 @@ import { getCurrentBranch, getHeadState, restoreHead, createWorkBranch, captureD
 import type { HeadState } from './git';
 import { effectiveBackgroundBudget } from './validate';
 import { currentProcessOwner } from './recovery';
-import { persistRunRecord, listInflightRuns, type InflightRun } from './run-registry';
+import { persistRunRecord, listInflightRuns, clearInflightRun, type InflightRun } from './run-registry';
 import { isTransportRetryable } from './transport-retry';
 import { ensureOwnerOnlyDir, repairOwnerOnlyFiles } from './store-permissions';
 import { buildEngineeringBarSection } from './engineering-bar';
@@ -1442,6 +1442,12 @@ export async function spawnBackgroundSession(
     attempt,
     owner,
     recoveryPosture: params.recoveryPosture,
+    // Issue #447: the acceptance marker starts `null` — the dispatch is
+    // TRACKED from here on (agent record + registry entry) but the prompt has
+    // not been issued. Only the write immediately above `session.prompt()`
+    // turns it into a timestamp; a boot scan that finds `null` knows nothing
+    // was started (a pre-upgrade record simply lacks the field instead).
+    acceptedAt: null,
   };
   persistRunRecord(pi, run, "background");
 
@@ -1567,77 +1573,10 @@ export async function spawnBackgroundSession(
     });
   };
 
-  // Start transcript for this agent
-  transcript.startTranscript(agent.id, params.task);
-
-  // Store session ref for live monitor polling
-  agent._sessionRef = session;
-
-  // Issue #31 (PR #76 review, DRY): every terminal branch must capture the
-  // final output while the session is still live, THEN release the ref — the
-  // capture must always precede the release or the output dies with the
-  // session graph. Single helper for all four settlement paths.
-  //
-  // Issue #179 (D4): an optional failureHeadline is prepended when the run did
-  // NOT complete — the extracted prose may come from an earlier turn, so it
-  // must not be presented as the run's output unqualified.
-  const captureAndReleaseSession = (failureHeadline?: string): void => {
-    const output = extractFinalOutput(session);
-    setAgentFinalOutput(
-      id,
-      failureHeadline ? buildFailureHeadline(failureHeadline, output) : output,
-    );
-    agent._sessionRef = undefined;
-  };
-
-  // Issue #122: the session's REAL usage lives on the assistant messages in
-  // session.messages — each turn carries the same usage shape accumulateUsage
-  // folds (the runner's single source of truth for usage semantics: turns++,
-  // sum input/output/cache, cost.total, contextTokens from totalTokens). Fold
-  // the session's assistant turns into a fresh stats object and MERGE it onto
-  // the agent's result record — never replace: the git-diff branches may have
-  // already set exitCode/messages/stderr/gitBranch/gitDiff, and the aborted/
-  // failed branches previously OVERWROTE usage with the empty fallback. Runs
-  // on every terminal path right before the finalize; must never throw
-  // (best-effort, same discipline as markTerminalBestEffort).
-  const recordSessionUsage = (): void => {
-    try {
-      const usage: UsageStats = { ...EMPTY_USAGE };
-      for (const msg of session.messages ?? []) {
-        if (msg.role === 'assistant') {
-          accumulateUsage(usage, msg.usage as Parameters<typeof accumulateUsage>[1]);
-        }
-      }
-      agent.result = {
-        // Issue #122: seed the FULL required SubagentResult shape (messages /
-        // exitCode / stderr) BEFORE the existing record is spread — the seed
-        // only fills fields the record doesn't already have, so real values
-        // from the git-diff branches (exitCode 1 on aborted/failed, 0 on
-        // completed, plus messages/stderr) always win. A seed AFTER the spread
-        // would clobber a real exitCode: 1 back to 0. usage is folded below
-        // and merged last so the REAL session usage replaces the branches'
-        // EMPTY_USAGE placeholder.
-        messages: [],
-        exitCode: 0,
-        stderr: '',
-        ...(agent.result ?? {}),
-        usage,
-      } as SubagentResult;
-    } catch {
-      // Usage extraction is best-effort — it must never block the terminal
-      // flip, the finalize, or the ref release.
-    }
-  };
-
-  // W4 (issue #28): git isolation — create a work branch BEFORE the prompt so
-  // the background agent's file writes land on the branch, never on the
-  // working tree's base branch. There is no interactive approval in background
-  // mode, so on completion the diff is captured and the branch is DISCARDED
-  // (the diff is recorded on the agent for review); on failure/abort the
-  // branch is discarded the same way. A branch that cannot be created is a
-  // hard failure — never spawn an unisolated background agent that was asked
-  // for isolation (fail-loud, same principle as foreground's fallback but
-  // background cannot warn-and-continue safely).
+  // Issue #447: git teardown state + the teardown itself, declared BEFORE the
+  // pre-start region (the closures do nothing at declaration time) so the ONE
+  // pre-start cleanup below can reach them; the branch is only CREATED later,
+  // in the `gitMode === 'branch'` block further down.
   let headState: HeadState | undefined;
   let workBranchName: string | undefined;
   let releaseGitLock: (() => void) | undefined;
@@ -1647,73 +1586,6 @@ export async function spawnBackgroundSession(
   // would re-restore/re-delete and log spurious warnings.
   let gitCleanupDone = false;
   const gitCwd = params.cwd ?? ctx.cwd;
-  if (params.gitMode === 'branch') {
-    // C2: serialize the FULL branch lifecycle per repo. The spawnQueue only
-    // covers setup; without this lock, a second concurrent branch-mode spawn
-    // would read the first's work branch as its base and both teardowns would
-    // fight over the shared working tree (stranding the repo on an orphan
-    // branch). The lock is released in cleanupWorkBranch (or on setup throw).
-    // Key: resolved repository root, cwd fallback for non-repo paths (#224).
-    const lockKey = getRepoRoot(gitCwd) ?? gitCwd;
-    const prev = gitBranchLocks.get(lockKey) ?? Promise.resolve();
-    let release!: () => void;
-    const gate = new Promise<void>(r => { release = r; });
-    const entry = prev.then(() => gate);
-    gitBranchLocks.set(lockKey, entry);
-    await prev;
-    releaseGitLock = () => {
-      // Delete the map entry ONLY if we are still the head of the chain — a
-      // queued spawn behind us replaced the entry with its own.
-      if (gitBranchLocks.get(lockKey) === entry) gitBranchLocks.delete(lockKey);
-      release();
-    };
-
-    try {
-      // C1: isolation is only real when the base tree is clean. A dirty tree
-      // would ride onto the work branch, get clobbered by the agent's writes,
-      // and leak back into the base working tree on switch — refuse loudly.
-      if (hasUncommittedChanges(gitCwd)) {
-        throw new Error(
-          'working tree has uncommitted changes; commit or stash before ' +
-          'requesting background gitMode=branch isolation'
-        );
-      }
-      headState = getHeadState(gitCwd);
-      const branchResult = createWorkBranch(gitCwd, headState.sha);
-      if (branchResult.ok) {
-        workBranchName = branchResult.branch;
-        log.info('Created work branch for background agent', {
-          branch: workBranchName,
-          base: headState.branch,
-          agentId: id,
-        });
-      } else {
-        throw new Error(`createWorkBranch failed: ${branchResult.error}`);
-      }
-    } catch (err) {
-      // The agent record was already persisted as 'running' above — flip it
-      // to 'failed' so no zombie 'running' record survives the refused spawn
-      // (get_subagent_result would otherwise report 'running' forever).
-      releaseGitLock?.();
-      releaseGitLock = undefined;
-      // Sanitize ONCE and reuse for the status update and the thrown error.
-      const sanitizedError = sanitizeErrorMessage((err as Error).message, effectiveCwd);
-      try {
-        updateAgentStatus(id, 'failed',
-          `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}`);
-        // Issue #98: the refused spawn is a failure — finalize the run entry so
-        // no zombie 'running' entry survives (lockstep with the record flip).
-        finalizeRunEntry('failed',
-          `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}`);
-        transcript.completeTranscript(id, 'failed');
-      } catch { /* ignore */ }
-      throw new Error(
-        `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}. ` +
-        `Refusing to spawn the background agent unisolated.`,
-        { cause: err }
-      );
-    }
-  }
 
   // Branch teardown — commit the agent's work (so the diff is real), capture
   // the diff, switch back to the original branch, delete the work branch, and
@@ -1790,6 +1662,192 @@ export async function spawnBackgroundSession(
     }
     return info;
   };
+
+  // Issue #447: the deadline handle is declared HERE, above the pre-start
+  // region, so the pre-start cleanup can clear it. It is only ARMED below
+  // (just before prompt()), so on the earlier throw sites clearing it is a
+  // no-op by construction.
+  let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * Issue #447: the pre-start cleanup. Every throw between the durable
+   * dispatch records (agent record + run entry + registry entry, written
+   * above) and `session.prompt()` funnels here: the transcript start, the
+   * acceptance write, and the prompt call itself each rethrow through it.
+   *
+   * PRUNING IS PROVABLY SAFE HERE — and only here. `finalizeRunEntry` prunes
+   * the run's session dir per its #404 retention gate; for a run whose prompt
+   * was never issued nothing can be writing to that dir and no retry will be
+   * offered for it, so there is no reader to retain it for.
+   *
+   * The terminal write is best-effort so a throw in the cleanup cannot mask
+   * the original spawn error: `persistRunRecord` retires the registry entry
+   * BEFORE appending the entry, and `clearInflightRun` is idempotent, so the
+   * residue is gone either way.
+   */
+  const failPreStart = (message: string): void => {
+    if (deadlineHandle) clearTimeout(deadlineHandle);
+    cleanupWorkBranch();
+    try {
+      finalizeRunEntry('failed', message);
+    } catch (err) {
+      log.warn(`spawnBackgroundSession: pre-start finalize failed for ${id}`, {
+        error: (err as Error).message,
+      });
+    }
+    clearInflightRun(id);
+  };
+
+  /** The pre-start failure stamp: the issue's honest reason plus the cause. */
+  const neverIssued = (err: unknown): string =>
+    `${PROMPT_NEVER_ISSUED_MESSAGE}: ` +
+    sanitizeErrorMessage(err instanceof Error ? err.message : String(err), effectiveCwd);
+
+  // Start transcript for this agent. Issue #447 (S2): a throw here used to
+  // leave a `running` run entry and a live registry entry that the next boot
+  // offered as an interrupted, retryable run — clean it and rethrow.
+  try {
+    transcript.startTranscript(agent.id, params.task);
+  } catch (err) {
+    failPreStart(neverIssued(err));
+    throw err;
+  }
+
+  // Store session ref for live monitor polling
+  agent._sessionRef = session;
+
+  // Issue #31 (PR #76 review, DRY): every terminal branch must capture the
+  // final output while the session is still live, THEN release the ref — the
+  // capture must always precede the release or the output dies with the
+  // session graph. Single helper for all four settlement paths.
+  //
+  // Issue #179 (D4): an optional failureHeadline is prepended when the run did
+  // NOT complete — the extracted prose may come from an earlier turn, so it
+  // must not be presented as the run's output unqualified.
+  const captureAndReleaseSession = (failureHeadline?: string): void => {
+    const output = extractFinalOutput(session);
+    setAgentFinalOutput(
+      id,
+      failureHeadline ? buildFailureHeadline(failureHeadline, output) : output,
+    );
+    agent._sessionRef = undefined;
+  };
+
+  // Issue #122: the session's REAL usage lives on the assistant messages in
+  // session.messages — each turn carries the same usage shape accumulateUsage
+  // folds (the runner's single source of truth for usage semantics: turns++,
+  // sum input/output/cache, cost.total, contextTokens from totalTokens). Fold
+  // the session's assistant turns into a fresh stats object and MERGE it onto
+  // the agent's result record — never replace: the git-diff branches may have
+  // already set exitCode/messages/stderr/gitBranch/gitDiff, and the aborted/
+  // failed branches previously OVERWROTE usage with the empty fallback. Runs
+  // on every terminal path right before the finalize; must never throw
+  // (best-effort, same discipline as markTerminalBestEffort).
+  const recordSessionUsage = (): void => {
+    try {
+      const usage: UsageStats = { ...EMPTY_USAGE };
+      for (const msg of session.messages ?? []) {
+        if (msg.role === 'assistant') {
+          accumulateUsage(usage, msg.usage as Parameters<typeof accumulateUsage>[1]);
+        }
+      }
+      agent.result = {
+        // Issue #122: seed the FULL required SubagentResult shape (messages /
+        // exitCode / stderr) BEFORE the existing record is spread — the seed
+        // only fills fields the record doesn't already have, so real values
+        // from the git-diff branches (exitCode 1 on aborted/failed, 0 on
+        // completed, plus messages/stderr) always win. A seed AFTER the spread
+        // would clobber a real exitCode: 1 back to 0. usage is folded below
+        // and merged last so the REAL session usage replaces the branches'
+        // EMPTY_USAGE placeholder.
+        messages: [],
+        exitCode: 0,
+        stderr: '',
+        ...(agent.result ?? {}),
+        usage,
+      } as SubagentResult;
+    } catch {
+      // Usage extraction is best-effort — it must never block the terminal
+      // flip, the finalize, or the ref release.
+    }
+  };
+
+  // W4 (issue #28): git isolation — create a work branch BEFORE the prompt so
+  // the background agent's file writes land on the branch, never on the
+  // working tree's base branch. There is no interactive approval in background
+  // mode, so on completion the diff is captured and the branch is DISCARDED
+  // (the diff is recorded on the agent for review); on failure/abort the
+  // branch is discarded the same way. A branch that cannot be created is a
+  // hard failure — never spawn an unisolated background agent that was asked
+  // for isolation (fail-loud, same principle as foreground's fallback but
+  // background cannot warn-and-continue safely).
+  if (params.gitMode === 'branch') {
+    // C2: serialize the FULL branch lifecycle per repo. The spawnQueue only
+    // covers setup; without this lock, a second concurrent branch-mode spawn
+    // would read the first's work branch as its base and both teardowns would
+    // fight over the shared working tree (stranding the repo on an orphan
+    // branch). The lock is released in cleanupWorkBranch (or on setup throw).
+    // Key: resolved repository root, cwd fallback for non-repo paths (#224).
+    const lockKey = getRepoRoot(gitCwd) ?? gitCwd;
+    const prev = gitBranchLocks.get(lockKey) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const entry = prev.then(() => gate);
+    gitBranchLocks.set(lockKey, entry);
+    await prev;
+    releaseGitLock = () => {
+      // Delete the map entry ONLY if we are still the head of the chain — a
+      // queued spawn behind us replaced the entry with its own.
+      if (gitBranchLocks.get(lockKey) === entry) gitBranchLocks.delete(lockKey);
+      release();
+    };
+
+    try {
+      // C1: isolation is only real when the base tree is clean. A dirty tree
+      // would ride onto the work branch, get clobbered by the agent's writes,
+      // and leak back into the base working tree on switch — refuse loudly.
+      if (hasUncommittedChanges(gitCwd)) {
+        throw new Error(
+          'working tree has uncommitted changes; commit or stash before ' +
+          'requesting background gitMode=branch isolation'
+        );
+      }
+      headState = getHeadState(gitCwd);
+      const branchResult = createWorkBranch(gitCwd, headState.sha);
+      if (branchResult.ok) {
+        workBranchName = branchResult.branch;
+        log.info('Created work branch for background agent', {
+          branch: workBranchName,
+          base: headState.branch,
+          agentId: id,
+        });
+      } else {
+        throw new Error(`createWorkBranch failed: ${branchResult.error}`);
+      }
+    } catch (err) {
+      // The agent record was already persisted as 'running' above — flip it
+      // to 'failed' so no zombie 'running' record survives the refused spawn
+      // (get_subagent_result would otherwise report 'running' forever).
+      releaseGitLock?.();
+      releaseGitLock = undefined;
+      // Sanitize ONCE and reuse for the status update and the thrown error.
+      const sanitizedError = sanitizeErrorMessage((err as Error).message, effectiveCwd);
+      try {
+        updateAgentStatus(id, 'failed',
+          `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}`);
+        // Issue #98: the refused spawn is a failure — finalize the run entry so
+        // no zombie 'running' entry survives (lockstep with the record flip).
+        finalizeRunEntry('failed',
+          `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}`);
+        transcript.completeTranscript(id, 'failed');
+      } catch { /* ignore */ }
+      throw new Error(
+        `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}. ` +
+        `Refusing to spawn the background agent unisolated.`,
+        { cause: err }
+      );
+    }
+  }
 
   // Issue #376 (audit D8): the aborted settle path is reached from BOTH
   // handlers — the .then (probe contract: an abort RESOLVES the prompt) and the
@@ -1960,11 +2018,26 @@ export async function spawnBackgroundSession(
   // a raw value >= 2^31 normalizes to "no timeout", so the default applies
   // (issue #240 — never an instant kill). `effectiveBackgroundBudget` is the
   // single definition of the 30 m default; it is never re-spelled here.
-  let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
   if (params.timeout !== undefined && params.timeout > 0) {
     deadlineHandle = armDeadline(effectiveBackgroundBudget(params.timeout));
   } else if ((params.deadlineOwner ?? 'spawn') === 'spawn') {
     deadlineHandle = armDeadline(effectiveBackgroundBudget(undefined));
+  }
+
+  // Issue #447: the ACCEPTANCE marker — ONE write, immediately before the
+  // prompt, that turns `acceptedAt: null` into a timestamp on both durable
+  // records (run entry + registry entry, in lockstep through the single
+  // `persistRunRecord` choke point). Past this line a run that dies is
+  // genuinely "started, outcome unknown" (#439); before it, it is provably
+  // never-started. A run whose acceptance cannot be recorded must NOT start —
+  // otherwise the residue problem returns — so a throw here cleans up and
+  // rethrows instead of prompting.
+  run.acceptedAt = new Date().toISOString();
+  try {
+    persistRunRecord(pi, run, "background");
+  } catch (err) {
+    failPreStart(neverIssued(err));
+    throw err;
   }
 
   // NOTE: if prompt() throws SYNCHRONOUSLY, the .then/.catch below never
@@ -1974,15 +2047,12 @@ export async function spawnBackgroundSession(
   try {
     runPromise = session.prompt(wrapTask(params.task));
   } catch (err) {
-    // No settle handler attaches on this path, so the deadline armed above must
-    // be cleared HERE — BEFORE this catch's own fallible cleanup (#448).
-    if (deadlineHandle) clearTimeout(deadlineHandle);
-    cleanupWorkBranch();
     // Issue #98 (review F1): a synchronous prompt() throw never reaches the
     // settle handlers — finalize the run entry so no zombie 'running' entry
     // survives (findSpawnRunById would otherwise resolve and retry a run that
-    // never started).
-    finalizeRunEntry('failed', sanitizeErrorMessage((err as Error).message, effectiveCwd));
+    // never started). #447: the same cleanup also clears the deadline armed
+    // above and retires the registry entry.
+    failPreStart(sanitizeErrorMessage((err as Error).message, effectiveCwd));
     throw err;
   }
 
