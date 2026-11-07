@@ -318,6 +318,105 @@ export function resolveThinkingDispatchSwitch(input: {
 }
 
 /**
+ * The notice a batch dispatch emits when the UNIT projection of the same rule
+ * (issue #434) removes a unit's own declared deadline.
+ *
+ * Emitted at most once per dispatch, at the first affected unit's run — so the
+ * wording deliberately claims NO completeness: it names that one unit and says
+ * when the others are judged. A unit cancelled before its run is never named,
+ * and a unit whose own declaration is not eligible gets no line at all.
+ *
+ * Deliberately NOT `THINKING_TIMEOUT_DROP_NOTICE`: that text reasons about the
+ * DISPATCH's effective approval mode, which says nothing about a unit that
+ * declared its own pair inside a batch the caller already shaped.
+ */
+export const THINKING_UNIT_TIMEOUT_DROP_NOTICE =
+	"Dispatch pre-flight (no deadline means the durable path): a batch unit declares its own high/xhigh thinking level with an explicit timeout, so that unit's timeout is dropped and it runs FOREGROUND — a foreground run has no default deadline, so no clock kills it. " +
+	"Only the unit this notice is attached to is reported here; the other units are judged when each reaches its run, so a unit that has not started yet is not covered. " +
+	"Pass force: true to keep the units' declared timeouts.";
+
+/**
+ * Whether a UNIT runs foreground or background — the unit's own shape, which
+ * decides whether its declared deadline is a foreground hazard at all (issue
+ * #434).
+ *
+ * Background units are excluded by construction: a `tasks` fan-out spawns its
+ * units as detached background agents, where the deadline is the legitimate
+ * 30-minute budget and dropping it would REMOVE a bound instead of adding
+ * durability. Chain/graph units are always foreground (an explicit
+ * `background: true` batch is rejected at dispatch).
+ */
+export type UnitShape = "foreground" | "background";
+
+/**
+ * Issue #434 — the UNIT projection of `resolveThinkingDispatchSwitch`.
+ *
+ * The dispatch rule only judges the DISPATCH-level pair (`params.thinkingLevel`
+ * + `params.timeout`). Batch units carry their own (`schema.ts`
+ * `STEP_HEAD_FIELDS`/`STEP_THINKING_LEVEL_FIELD`/`STEP_TAIL_FIELDS`) and
+ * `mergeSubTaskParams` lets the unit win per field, so a unit declaring
+ * `thinkingLevel: "high"` + `timeout: 600000` under no top-level pair
+ * reproduced the 2026-11-06 incident for that unit alone: the dispatch
+ * predicate exits early on `params.timeout === undefined`.
+ *
+ * Only ONE arm is available per unit — a unit cannot become its own background
+ * dispatch (it is one spawn inside a batch the caller already shaped), so the
+ * projection answers a boolean and never re-states the switch/drop-timeout
+ * approval arms that decide a DISPATCH's shape.
+ *
+ * Eligible when ALL hold:
+ *
+ *   1. `processChecks` — threaded from `execute` so a unit is judged by the
+ *      same project opt-in as its dispatch. NEVER re-read at the unit site: a
+ *      relative `params.cwd` re-read (against the process cwd instead of
+ *      `ctx.cwd`) measured `false` where the dispatch resolved `true`.
+ *   2. `force !== true` — the override reaches units too; it is the caller's
+ *      statement that the declared pair is intentional.
+ *   3. the unit's EFFECTIVE DECLARED level is high/xhigh: its own declaration,
+ *      else the dispatch's declared level, which the unit inherits. NOT
+ *      `merged.thinkingLevel`: that value is CAPPED, and the default cap is
+ *      `off`, so judging it would silently disable this guard exactly where
+ *      nobody configured anything — the same drift #443 removed one level up.
+ *   4. the MERGED timeout is defined and `> 0`. Only a positive timeout arms a
+ *      foreground timer (`runner.ts`: `if (timeout && timeout > 0)`), and
+ *      `mergeSubTaskParams` merges with `??`, so a declared `timeout: 0`
+ *      OVERRIDES an inherited timeout and arms nothing — never eligible.
+ *   5. the unit DECLARES the pair — a non-empty `thinkingLevel`, or `timeout`
+ *      present (a `0` included: it is a declaration, it just never arms a
+ *      timer). This is the #434/#431 boundary: a unit that declares NEITHER
+ *      and inherits the dispatch's pair was already judged at dispatch level,
+ *      including the chain/graph exemption — so inherited pairs stay exempt
+ *      (pinned, not accidental) while unit-declared ones do not.
+ *   6. the unit's shape is FOREGROUND (`unitShape`, passed explicitly so the
+ *      exclusion is visible at the call site).
+ *
+ * The caller applies the effect — `merged.timeout = undefined` — before the
+ * unit's run record is created, so the retry snapshot records an absent
+ * deadline instead of restoring the cap (ADR 0009).
+ */
+export function shouldDropUnitTimeout(input: {
+	processChecks: boolean;
+	force: boolean | undefined;
+	/** The DISPATCH's declared level, threaded from `execute` (clause 3). */
+	dispatchDeclaredLevel: ThinkingLevel | undefined;
+	unitShape: UnitShape;
+	/** The unit's OWN declaration: `""`/`undefined` both mean "inherit". */
+	declaredLevel: ThinkingLevel | "" | undefined;
+	/** The unit's OWN timeout declaration (`undefined` = inherit). */
+	declaredTimeout: number | undefined;
+	/** `mergeSubTaskParams`' result: the deadline the unit would actually run with. */
+	mergedTimeout: number | undefined;
+}): boolean {
+	if (!input.processChecks) return false;
+	if (input.force === true) return false;
+	if (input.unitShape !== "foreground") return false;
+	const effectiveDeclaredLevel = input.declaredLevel || input.dispatchDeclaredLevel;
+	if (effectiveDeclaredLevel !== "high" && effectiveDeclaredLevel !== "xhigh") return false;
+	if (input.mergedTimeout === undefined || input.mergedTimeout <= 0) return false;
+	return Boolean(input.declaredLevel) || input.declaredTimeout !== undefined;
+}
+
+/**
  * The resolver's input: the dispatch-param fields resolution actually reads,
  * derived from the registered schema (issue #379) instead of re-spelled here.
  *
