@@ -35,6 +35,28 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 
 export const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
+/**
+ * Issue #443: the ONE membership test for a thinking level — the guard every
+ * seam that can launch a subagent calls before a DECLARED level is resolved.
+ *
+ * Why it is not `resolveThinkingLevel`: that function CLAMPS, and it cannot
+ * report failure. An unknown value (`"bogus"`, `"MAX"`, `" high"`) has index
+ * -1, so `THINKING_LEVELS[Math.min(-1, maxIdx)]` is `undefined` — the level is
+ * then erased into argv as `--thinking undefined`, pi warns and runs at ITS OWN
+ * default, and the configured cap is bypassed rather than a launch refused.
+ * Callers therefore check membership first and keep `resolveThinkingLevel`
+ * exactly as it is for valid input.
+ *
+ * Case- and whitespace-exact by construction (`THINKING_LEVELS.includes`), so
+ * `"High"` and `" high"` are rejected too. `""` is NOT a level: the dispatch
+ * seams preserve its existing meaning (top level → the configured maximum,
+ * per unit → the global level), so the empty string is handled by them, not
+ * here. pi's own `max` is not a delegated level.
+ */
+export function isThinkingLevel(value: unknown): value is ThinkingLevel {
+	return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
+}
+
 export type Priority = "critical" | "high" | "normal" | "low";
 
 export const PRIORITY_ORDER: Record<Priority, number> = {
@@ -840,6 +862,26 @@ export function resolveThinkingLevel(
 	const requestedIdx = THINKING_LEVELS.indexOf(requested);
 	const maxIdx = THINKING_LEVELS.indexOf(maxAllowed);
 	return THINKING_LEVELS[Math.min(requestedIdx, maxIdx)];
+}
+
+/**
+ * Issue #443: the value that actually REACHES resolution — the per-call
+ * declaration, else the selected preset's — before any clamping.
+ *
+ * ONE spelling, three readers: `resolveSubagentParams` merges it, and both
+ * dispatch seams guard it (`execute` and `spawnBackgroundRun`, the latter for
+ * the transport auto-retry). A guard that computed this differently would
+ * judge a value the merge never uses, which is the silent-drift class this
+ * helper removes; `resolveThinkingLevel` then clamps what it returns.
+ *
+ * `undefined` (omitted) and `""` are returned unchanged on purpose — they are
+ * existing declarations, not values to judge (see `isThinkingLevel`).
+ */
+export function declaredThinkingLevel(
+	callLevel: string | undefined,
+	presetLevel: string | undefined,
+): string | undefined {
+	return callLevel ?? presetLevel;
 }
 
 export function formatTokens(count: number): string {

@@ -88,7 +88,7 @@ All settings persist across sessions.
 | `params` | object | — | Values for `${param}` slots in the template. All slots must be filled; missing ones error. |
 | `systemPrompt` | string | — | Extra instructions or a different persona for the subagent. |
 | `inheritSystemPrompt` | boolean | `true` | Whether to inherit the main agent's system prompt. Set `false` to save tokens. |
-| `thinkingLevel` | string | — | `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. Capped at user's configured max. |
+| `thinkingLevel` | string | — | `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. Capped at user's configured max. Matched **exactly** (case and whitespace matter): an unknown value is rejected before anything launches — including pi's own `max`, which is not a delegated level. `""` or an omitted field uses the configured max. |
 | `outputFile` | string | — | Path for the subagent to write full findings. Returns only a summary. |
 | `timeout` | number | — | Max milliseconds. Foreground: exceeded → SIGTERM (5s grace) → SIGKILL. Background: the session is aborted and the run ends `stopped` with the timeout reason. A background run with no explicit `timeout` gets the 30-minute default deadline — an explicit timeout is honored as given (a default, not a ceiling). A raw value `≥ 2^31-1` normalizes to no timeout (for a background run, the 30-minute default then applies). |
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
@@ -328,7 +328,7 @@ The approval-aware fallback is the safety property: background runs have no appr
 
 `background: true` with `tasks: [...]` fans out: every task starts as its own background agent, the call returns immediately with **one ID per task** in task order, and the conductor is woken with **one completion message per agent** as each finishes — no coalescing, no batch wake. `chain` and `graph` cannot be combined with `background: true` (rejected loudly): sequential dependencies and dependency waves do not survive fan-out.
 
-Fan-out validates the entire batch before spawning anything. Any invalid task — `cwd`, `outputFile`, or a pre-task check — rejects the whole batch before a single spawn starts, and the error names the task (`Task N ("label")`). Per-task overrides are honoured: `model`, `thinkingLevel`, `tools` / `excludeTools` / `noBuiltinTools`, `systemPrompt` / `inheritSystemPrompt`, `outputFile`, `timeout`, `cwd`, `priority`, `label`.
+Fan-out validates the entire batch before spawning anything. Any invalid task — `cwd`, `outputFile`, an unsupported `thinkingLevel`, or a pre-task check — rejects the whole batch before a single spawn starts, and the error names the task (`Task N ("label")`). Per-task overrides are honoured: `model`, `thinkingLevel`, `tools` / `excludeTools` / `noBuiltinTools`, `systemPrompt` / `inheritSystemPrompt`, `outputFile`, `timeout`, `cwd`, `priority`, `label`.
 
 Three checks reject the fan-out up front, before any spawn: `approvalMode: 'always'`; `gitMode: 'branch'` for the batch (the git lock is awaited inside the first spawn and held until that agent settles, so branch-mode spawns targeting the same repository would serialize and block the call — the rule is blanket because the lock is keyed by the resolved repository root, so any two units of the same repo contend); and the session cost limit, checked as per-task estimate × N.
 

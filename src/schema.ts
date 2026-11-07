@@ -5,7 +5,7 @@
  * Static<typeof delegateTaskParamsSchema>, so schema and types cannot drift.
  */
 import { Type } from "typebox";
-import { MAX_CHAIN_STEPS, MAX_PARALLEL_TASKS, MAX_GRAPH_TASKS } from "./types";
+import { MAX_CHAIN_STEPS, MAX_PARALLEL_TASKS, MAX_GRAPH_TASKS, THINKING_LEVELS } from "./types";
 
 /**
  * Issue #381 (audit D7): the per-unit fields registered for `chain[]` steps,
@@ -24,8 +24,34 @@ const STEP_HEAD_FIELDS = {
 	model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
 };
 
+/**
+ * Issue #443: the accepted thinking levels as a schema `enum`, derived from
+ * `THINKING_LEVELS` so the declaration cannot drift from the runtime guard
+ * (`isThinkingLevel`).
+ *
+ * The EMPTY STRING is a member on purpose: it is an existing declaration with a
+ * meaning (call level → the configured maximum, per unit → inherit the global
+ * level), so the enum must not turn it into a validation failure. An `enum`
+ * beats a union of literals here because pi-schema's error names the whole set
+ * (`thinkingLevel: expected one of [...]`) instead of only the first branch.
+ *
+ * This is the FIRST line of defence only: pi validates raw tool arguments, so
+ * a preset object, a restored `retryRunId` value, the transport retry's rebuilt
+ * params and every per-unit declaration reach the handler WITHOUT passing here.
+ * `invalidThinkingLevelRejection` (prelude.ts) is the runtime guard.
+ */
+const THINKING_LEVEL_ENUM = [...THINKING_LEVELS, ""];
+
 const STEP_THINKING_LEVEL_FIELD = {
-	thinkingLevel: Type.Optional(Type.String({})),
+	thinkingLevel: Type.Optional(
+		Type.String({
+			enum: THINKING_LEVEL_ENUM,
+			description:
+				"Thinking level override for this subtask. Same values and rules as the call-level thinkingLevel: " +
+				`${THINKING_LEVELS.join(", ")} (exact match). An unknown value rejects the whole batch before anything starts. ` +
+				"Empty inherits the call-level level.",
+		}),
+	),
 };
 
 /** Per-unit concurrency priority — tasks[] and graph[] only (issue #114). */
@@ -73,10 +99,12 @@ export const delegateTaskParamsSchema = Type.Object({
 			),
 			thinkingLevel: Type.Optional(
 				Type.String({
+					enum: THINKING_LEVEL_ENUM,
 					description:
 						"Requested thinking level for this subagent call. " +
-						"One of: off, minimal, low, medium, high, xhigh. " +
-						"Capped at the user's configured maximum. If omitted, the user's configured level is used.",
+						`One of: ${THINKING_LEVELS.join(", ")} — matched exactly, so case and whitespace matter. ` +
+						"An unknown value is rejected (pi's own `max` is not a delegated level). " +
+						"Capped at the user's configured maximum. If omitted, or an empty string, the user's configured level is used.",
 				}),
 			),
 			outputFile: Type.Optional(
