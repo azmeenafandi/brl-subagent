@@ -88,6 +88,13 @@ export interface RecoveryDeps {
 	 * the historical wait-the-full-grace-once shape.
 	 */
 	pollMs?: number;
+	/**
+	 * #455: bounded post-SIGKILL confirmation window (ms) threaded into
+	 * `escalateKill` — the reap does not classify a pid it just SIGKILLed as a
+	 * survivor until this window expires. Omitted → `escalateKill`'s default
+	 * (100 ms); `0` restores the legacy single-sample classification.
+	 */
+	drainMs?: number;
 }
 
 /** Which persisted store a candidate record came from. */
@@ -291,6 +298,9 @@ export async function reapPids(
 		graceMs: deps.graceMs,
 		pollMs: deps.pollMs,
 		sleep: deps.sleep,
+		// #455: the survivors below are pids, not samples — a SIGKILL that has not
+		// landed yet must not be reported as a surviving orphan.
+		drainMs: deps.drainMs,
 	});
 	const survivedSet = new Set(survivors);
 	return unique.filter((_, index) => survivedSet.has(targets[index]));

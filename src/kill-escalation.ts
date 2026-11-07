@@ -329,6 +329,17 @@ export function processTarget(
 		: pidTarget(pid, kill, pidAlive, guard);
 }
 
+/**
+ * #455: the default post-SIGKILL confirmation window. SIGKILL delivery is
+ * ASYNCHRONOUS — sampling death in the same pass that signalled reads `R`
+ * (signal pending) or `Z` (awaiting reap) and calls a dying process a survivor.
+ * 100 ms is a bounded confirmation window, not a wait for a kill to work.
+ */
+const DEFAULT_DRAIN_MS = 100;
+
+/** #455: drain poll interval when the caller set no `pollMs`. */
+const DEFAULT_DRAIN_POLL_MS = 10;
+
 export interface EscalationOptions {
 	/** Grace window between SIGTERM and SIGKILL (ms). */
 	graceMs: number;
@@ -337,11 +348,45 @@ export interface EscalationOptions {
 	/**
 	 * Poll interval for the early-exit wait (B4). When > 0 the helper returns as
 	 * soon as every target verifies dead, bounded by `graceMs`; when omitted the
-	 * helper waits the full `graceMs` once.
+	 * helper waits the full `graceMs` once. Also used as the #455 drain interval.
 	 */
 	pollMs?: number;
 	/** Injectable clock for the deadline (defaults to Date.now). */
 	now?(): number;
+	/**
+	 * #455: bounded post-SIGKILL confirmation window (ms) — how long the helper
+	 * re-samples `verifyDeath()` for the targets it just force-killed before it
+	 * classifies survivors. Defaults to {@link DEFAULT_DRAIN_MS}; `0` disables it
+	 * and restores the legacy single-sample classification (the documented
+	 * escape). Ignored when no `forceKill` was issued: a target that died during
+	 * the grace window has no signal in flight to confirm.
+	 */
+	drainMs?: number;
+}
+
+/**
+ * #455 phase B: re-sample `verifyDeath()` for the targets that were force-killed
+ * until every one confirms dead or the drain deadline passes. SIGKILL delivery
+ * and reaping are asynchronous, so the classification below must not be decided
+ * by the sample taken in the same instant as the signal.
+ *
+ * Bounded by `now() + drainMs` (never "poll until dead") and cheap when nothing
+ * is in flight: zero force-killed targets ⇒ no sleep, no clock read.
+ */
+async function drainForceKilled(
+	forceKilled: EscalationTarget[],
+	options: EscalationOptions,
+): Promise<void> {
+	const drainMs = options.drainMs ?? DEFAULT_DRAIN_MS;
+	if (forceKilled.length === 0 || drainMs <= 0) return;
+	const pollMs = options.pollMs && options.pollMs > 0 ? options.pollMs : DEFAULT_DRAIN_POLL_MS;
+	const now = options.now ?? Date.now;
+	const deadline = now() + drainMs;
+	while (forceKilled.some((target) => !target.verifyDeath())) {
+		const remaining = deadline - now();
+		if (remaining <= 0) break;
+		await options.sleep(Math.min(pollMs, remaining));
+	}
 }
 
 /**
@@ -361,6 +406,15 @@ export interface EscalationOptions {
  * whose final group signal was REFUSED while its group still had live members is
  * appended to the survivors (`refusedForceKillGroup`), so a refined guard
  * decision can never report a clean result over a live group we targeted.
+ *
+ * #455: the SIGKILL pass is three phases — (A) dispatch `forceKill` to every
+ * target still verifying alive, (B) a BOUNDED post-SIGKILL drain of
+ * `verifyDeath` for exactly those targets, (C) classify survivors. Phases A and
+ * C were one pass before, which decided the survivor list from a sample taken
+ * in the same instant as the signal: SIGKILL is asynchronous, so a dying process
+ * (state `R`, or `Z` awaiting reap) read as a survivor every time. The refused
+ * group rule and the unconditional final group SIGKILL stay AFTER phase C — a
+ * refusal is a decision, not a timing window.
  */
 export async function escalateKill(
 	targets: EscalationTarget[],
@@ -388,19 +442,33 @@ export async function escalateKill(
 		}
 	}
 
-	const survivors: EscalationTarget[] = [];
+	// Phase A — force-kill pass. Only force-kill the DIRECT process while it is
+	// still alive; a group whose leader already exited is ended by the
+	// unconditional group SIGKILL below.
+	const forceKilled: EscalationTarget[] = [];
 	for (const target of targets) {
 		if (target.verifyDeath()) continue;
-		// Only force-kill the DIRECT process while it is still alive; a group whose
-		// leader already exited is ended by the unconditional group SIGKILL below.
 		if (target.verifyProcessAlive?.() ?? true) {
 			try {
 				target.forceKill();
+				forceKilled.push(target);
 			} catch {
-				// Exited between the liveness check and the signal.
+				// Exited between the liveness check and the signal: nothing in flight.
 			}
 		}
-		if (!target.verifyDeath() && (target.verifyProcessAlive?.() ?? true)) survivors.push(target);
+	}
+
+	// Phase B — bounded drain (#455): let the SIGKILLs that were just dispatched
+	// land and be reaped before anything is classified as a survivor.
+	await drainForceKilled(forceKilled, options);
+
+	// Phase C — classify. A survivor is a target that is still not dead AND still
+	// process-alive, exactly as before — only now the sample is not taken in the
+	// same instant as the signal.
+	const survivors: EscalationTarget[] = [];
+	for (const target of targets) {
+		if (target.verifyDeath()) continue;
+		if (target.verifyProcessAlive?.() ?? true) survivors.push(target);
 	}
 
 	// D5 (option b): the final GROUP SIGKILL is UNCONDITIONAL. `verifyDeath` is
