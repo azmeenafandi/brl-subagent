@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { existsSync, statSync, readFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, statSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Mocks must exist before vi.mock factory runs (hoisted).
@@ -97,11 +97,15 @@ vi.mock("../event-bus", () => ({
 import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, backgroundSessionDir } from "../session-manager";
 import { listInflightRuns } from "../run-registry";
 import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
-import { CUSTOM_ENTRY_TYPES, NO_ASSISTANT_OUTPUT_REASON } from "../types";
+import { CUSTOM_ENTRY_TYPES, NO_ASSISTANT_OUTPUT_REASON, PROMPT_NEVER_ISSUED_MESSAGE, type SubagentRun } from "../types";
 import { buildCompletionMessage } from "../notify-completion";
 import { isTransportRetryable } from "../transport-retry";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 import { setLogCwd } from "../logging";
+import { __setOutputDir } from "../transcript";
+import { persistRunRecord } from "../run-registry";
+import { recoverInflightRuns, defaultRecoveryDeps } from "../recovery";
+import { collectInterruptedRuns, offeredInterruptedRuns } from "../recovery-surface";
 
 // Issue #98: spawnBackgroundSession persists session run entries via
 // pi.appendEntry (same store the foreground path writes to).
@@ -2876,5 +2880,130 @@ describe("background settle with an empty assistant projection (issue #449)", ()
 		expect(agent.status).toBe("completed");
 		expect(run.status).toBe("done");
 		expect(run.turns).toBe(0);
+	});
+});
+
+// =========================================================================
+// Issue #447: a dispatch that never reached `session.prompt()` must not be
+// presented at the next boot as an interrupted, retryable run. The tri-state
+// `acceptedAt` (null ⇒ never accepted, ISO ⇒ accepted, absent ⇒ legacy) plus
+// the pre-start cleanup is what draws that line.
+// =========================================================================
+describe("issue #447 — never-started dispatches", () => {
+	/** A boot scan over the durable registry with the PRODUCTION finalize wiring. */
+	function scanBoot(): ReturnType<typeof recoverInflightRuns> {
+		return recoverInflightRuns({
+			deps: { ...defaultRecoveryDeps(), sleep: async () => {}, graceMs: 0 },
+			// A never-started dispatch is never a recovery candidate: a mark here
+			// IS the false positive this issue is about.
+			mark: () => {
+				throw new Error("must not mark a never-started dispatch as interrupted");
+			},
+			finalizeNeverStarted: (run) => persistRunRecord(fakePi as never, run),
+		});
+	}
+
+	/** The recovery surface's view of the registry (empty ⇒ nothing is offered). */
+	function interruptedViews(): ReturnType<typeof collectInterruptedRuns> {
+		return collectInterruptedRuns({
+			listInflight: () => listInflightRuns(),
+			getAgent: () => null,
+			findRun: () => undefined,
+		});
+	}
+
+	afterEach(() => {
+		fakePi.appendEntry.mockReset();
+	});
+
+	it("A1 (S1): a registry write that throws at dispatch ends `failed`, and the boot scan offers NOTHING", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		fakePi.appendEntry.mockImplementationOnce(() => {
+			throw new Error("append-fs-boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "never accepted" })
+		).rejects.toThrow("append-fs-boom");
+		expect(mocks.session.prompt).not.toHaveBeenCalled();
+
+		// The durable residue is exactly "tracked, not accepted" — the sentinel a
+		// pre-upgrade record can never carry, which is what keeps it classifiable.
+		const residue = listInflightRuns();
+		expect(residue).toHaveLength(1);
+		expect(residue[0].acceptedAt).toBeNull();
+
+		const summary = await scanBoot();
+		expect(summary.neverStarted).toBe(1);
+		expect(summary.marked).toBe(0);
+		const terminal = lastRunEntry();
+		expect(terminal.id).toBe(residue[0].id);
+		expect(terminal.status).toBe("failed");
+		expect(String(terminal.errorMessage)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+		// Retired by the terminal write, so no interrupted offer can survive it.
+		expect(listInflightRuns()).toHaveLength(0);
+		expect(interruptedViews()).toEqual([]);
+	});
+
+	it("A2 (S2): a transcript-start throw is cleaned in-process — no residue reaches a boot", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		// A REAL ENOTDIR: the transcript dir's parent is a file.
+		const blocker = join(env.baseDir, "blocker-file");
+		writeFileSync(blocker, "not a directory");
+		__setOutputDir(join(blocker, "output"));
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "transcript dies" })
+		).rejects.toThrow(/ENOTDIR/);
+		expect(mocks.session.prompt).not.toHaveBeenCalled();
+
+		const terminal = lastRunEntry();
+		expect(terminal.status).toBe("failed");
+		expect(String(terminal.errorMessage)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+		// In-process cleanup: the registry entry is gone, so a later boot has
+		// nothing to classify — and nothing to offer.
+		expect(listInflightRuns()).toHaveLength(0);
+		expect((await scanBoot()).neverStarted).toBe(0);
+		expect(interruptedViews()).toEqual([]);
+	});
+
+	it("A3: an acceptance write that throws means the prompt is NEVER issued (M7)", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		let writes = 0;
+		fakePi.appendEntry.mockImplementation(() => {
+			writes++;
+			if (writes === 2) throw new Error("accept-boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "acceptance dies" })
+		).rejects.toThrow("accept-boom");
+		expect(mocks.session.prompt).not.toHaveBeenCalled();
+		expect(writes).toBe(SETTLED_RUN_WRITES); // spawn, refused acceptance, terminal
+
+		const terminal = lastRunEntry();
+		expect(terminal.status).toBe("failed");
+		expect(String(terminal.errorMessage)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+		expect(String(terminal.errorMessage)).toContain("accept-boom");
+		expect(listInflightRuns()).toHaveLength(0);
+		expect(interruptedViews()).toEqual([]);
+	});
+
+	it("A4: the acceptance marker is written AFTER the spawn record and BEFORE the prompt (M6)", async () => {
+		const order: string[] = [];
+		fakePi.appendEntry.mockImplementation((_type: string, run: SubagentRun) => {
+			order.push(run.acceptedAt === null ? "spawn" : "acceptance");
+		});
+		mocks.session.prompt.mockImplementation(() => {
+			order.push("prompt");
+			return new Promise(() => {});
+		});
+
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "ordered" });
+
+		expect(order).toEqual(["spawn", "acceptance", "prompt"]);
+		const accepted = fakePi.appendEntry.mock.calls[1][1] as SubagentRun;
+		expect(typeof accepted.acceptedAt).toBe("string");
+		expect(Number.isNaN(Date.parse(accepted.acceptedAt as string))).toBe(false);
 	});
 });
