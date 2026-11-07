@@ -12,7 +12,8 @@ import * as path from "node:path";
 import type { SubagentPreset, ThinkingLevel } from "./types";
 import { THINKING_LEVELS } from "./types";
 import type { Logger } from "./logging";
-import { loadMarkdownRecords } from "./loader";
+import { applyFrontmatterMappers, loadMarkdownRecords } from "./loader";
+import type { FrontmatterFieldMapper, FrontmatterMapContext } from "./loader";
 
 // `parseFrontmatter` moved to loader.ts when the four loader copies collapsed
 // into one walk (issue #380). Re-exported so the existing import sites keep
@@ -24,8 +25,8 @@ export { parseFrontmatter } from "./loader";
 // ---------------------------------------------------------------------------
 
 /**
- * Validate that a parsed preset has the required name field
- * and its thinkingLevel (if set) is a valid value.
+ * Validate that a parsed preset has the required name field, its thinkingLevel
+ * (if set) is a valid value, and its outputFile (if set) is a string.
  * Returns validation errors, or empty array if valid.
  */
 export function validatePreset(meta: Record<string, unknown>, fileName: string): string[] {
@@ -64,8 +65,86 @@ export function validatePreset(meta: Record<string, unknown>, fileName: string):
 		}
 	}
 
+	// outputFile is MAPPED (#436), so a non-string here would reach the resolved
+	// params as a broken path — refuse it at load, like thinkingLevel above.
+	if (meta.outputFile !== undefined && typeof meta.outputFile !== "string") {
+		errors.push(
+			`Preset "${meta.name}" (${fileName}): outputFile must be a string, got "${String(meta.outputFile)}".`,
+		);
+	}
+
 	return errors;
 }
+
+// ---------------------------------------------------------------------------
+// Frontmatter → SubagentPreset mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Preset fields that are DELIBERATELY not mapped from frontmatter. This is the
+ * only sanctioned escape hatch from the parity pin below — every entry must
+ * name its reason.
+ *
+ * `timeout` (ADR 0022 §6): `resolveSubagentParams` merges
+ * `params.timeout ?? preset?.timeout`, so a preset-supplied deadline would
+ * silently re-merge the value the dispatch pre-flight's `drop-timeout` arm
+ * believes it dropped, and `THINKING_TIMEOUT_DROP_NOTICE`'s "no clock kills it"
+ * sentence would become false — with no other test failing. Mapping it requires
+ * re-deriving that arm first (issue #431).
+ */
+type OmittedPresetField = "timeout";
+
+/**
+ * Compile-time pin on the allowlist being EXACTLY `"timeout"` (#436 review
+ * nit): the `satisfies` below only notices a field that is missing from the
+ * table, so adding a new field to BOTH `SubagentPreset` and this union used to
+ * compile cleanly — the reviewed bypass. A tuple-wrapped union extends a
+ * one-element tuple only when it is that member, so a second entry turns this
+ * into `never` and the assignment under it fails with TS2322.
+ */
+type OmittedMustStayTimeout = [OmittedPresetField] extends ["timeout"] ? true : never;
+
+/** Kept live by the export; its only job is to fail `tsc` when the pin flips. */
+export const PRESET_OMIT_PIN: OmittedMustStayTimeout = true;
+
+/** Every preset field that frontmatter MUST be able to populate (issue #436). */
+type MappedPresetField = Exclude<keyof SubagentPreset, OmittedPresetField>;
+
+/**
+ * Per-key return types: the mapper for `outputFile` must return
+ * `SubagentPreset["outputFile"]` (a string | undefined), so a mapper that
+ * returns `42` — previously blessed by the `unknown` value type plus the
+ * assembly cast — is now a compile error at the row.
+ */
+type PresetFieldMappers = {
+	[K in MappedPresetField]: FrontmatterFieldMapper<SubagentPreset[K]>;
+};
+
+/**
+ * THE declaration of which frontmatter keys reach a `SubagentPreset` — one
+ * table, so a field cannot be declared in the type and forgotten here.
+ *
+ * `satisfies PresetFieldMappers` is the parity pin: adding a field to
+ * `SubagentPreset` without a mapper is a COMPILE error (the record is missing a
+ * key), a mapper for a field the type no longer declares is an excess-property
+ * error, and a mapper returning the wrong field type is a third. Before #436
+ * the object was a hand-written literal, so a declared field (`outputFile`)
+ * could be dropped in total silence.
+ */
+const PRESET_FIELD_MAPPERS = {
+	name: (_meta, ctx) => ctx.name,
+	description: (meta) => (meta.description as string) || undefined,
+	systemPrompt: (_meta, ctx) => ctx.body || undefined,
+	thinkingLevel: (meta) => (meta.thinkingLevel as string) || undefined,
+	model: (meta) => (meta.model as string) || undefined,
+	inheritSystemPrompt: (meta) => (meta.inheritSystemPrompt === "false" ? false : undefined),
+	outputFile: (meta) => (meta.outputFile as string) || undefined,
+	tools: (meta) => (Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined),
+	excludeTools: (meta) =>
+		Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
+	noBuiltinTools: (meta) => (meta.noBuiltinTools === "true" ? true : undefined),
+	promptGuideline: (meta) => (meta.promptGuideline as string) || undefined,
+} satisfies PresetFieldMappers;
 
 // ---------------------------------------------------------------------------
 // Loading
@@ -80,18 +159,8 @@ function presetFromFrontmatter(
 	body: string,
 	name: string,
 ): SubagentPreset {
-	return {
-		name,
-		description: (meta.description as string) || undefined,
-		systemPrompt: body || undefined,
-		thinkingLevel: (meta.thinkingLevel as string) || undefined,
-		model: (meta.model as string) || undefined,
-		inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
-		tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
-		excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
-		noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
-		promptGuideline: (meta.promptGuideline as string) || undefined,
-	};
+	const ctx: FrontmatterMapContext = { name, body };
+	return applyFrontmatterMappers<SubagentPreset>(PRESET_FIELD_MAPPERS, meta, ctx);
 }
 
 /**

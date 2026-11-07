@@ -1,4 +1,4 @@
-# 0023. The unit projection of the pre-flight: a batch unit's own declared deadline is dropped
+# 0024. The unit projection of the pre-flight: a batch unit's own declared deadline is dropped
 
 - **Status:** Accepted
 - **Date:** 2026-11-07

@@ -188,9 +188,13 @@ model: anthropic/claude-opus-4-6
 tools:
   - read
   - bash
+# optional — capture the run's findings to this path; needs the write tool
+outputFile: findings.md
 thinkingLevel: high
 ---
 ```
+
+A preset `outputFile` is validated at dispatch exactly like the `outputFile` parameter — it requires the `write` tool, so a preset that excludes `write` is a hard conflict. `timeout` is deliberately **not** a preset field: the deadline belongs to the call/template tier, not the persona (ADR 0022 §6).
 
 Custom presets override built-ins with the same name and survive `pi install` updates.
 
