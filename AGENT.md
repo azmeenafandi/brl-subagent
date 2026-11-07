@@ -79,7 +79,7 @@ delegation-heavy work.
 ## Deadlines and retries
 
 - `timeout` (ms) is a **deadline, not a ceiling** — an explicit value is honored as given; 30 minutes is only the default for a background run that passes none (a foreground run is not capped). Background expiry aborts the session (the run ends `stopped`); foreground expiry kills the process. Because background is now the default under `auto`, remember the 30-minute deadline: pass an explicit `timeout` for anything expected to run longer.
-- `retryOnTimeout` applies to **foreground runs only**. A timed-out background run is not auto-retried on the deadline: re-dispatch it with `retryRunId` if that is the right call. The one automatic retry is the **transport-class** one above — a background run that died on a dropped connection is replayed once. The same applies to an interrupted run — recovery is always an explicit `retryRunId` call, never automatic (auto mode is not yet accepted).
+- `retryOnTimeout` applies to **foreground runs only**. A timed-out background run is not auto-retried on the deadline: re-dispatch it with `retryRunId` if that is the right call. The one automatic retry is the **transport-class** one above — a background run that died on a dropped connection is replayed once. The same applies to an interrupted run — recovery is always an explicit `retryRunId` call, never automatic (auto mode is not yet accepted). A run recorded before its prompt was ever issued is settled as **failed**, so the retry menu never lists it as interrupted.
 
 ## Mechanics pointer
 
