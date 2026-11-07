@@ -2934,6 +2934,9 @@ describe("issue #447 — never-started dispatches", () => {
 		expect(residue[0].acceptedAt).toBeNull();
 
 		const summary = await scanBoot();
+		// A never-started dispatch is not even a recovery CANDIDATE (M5): nothing
+		// was started, so nothing may be scanned, reaped, or marked.
+		expect(summary.scanned).toBe(0);
 		expect(summary.neverStarted).toBe(1);
 		expect(summary.marked).toBe(0);
 		const terminal = lastRunEntry();
