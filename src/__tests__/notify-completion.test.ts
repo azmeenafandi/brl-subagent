@@ -407,6 +407,13 @@ describe("markTerminalSeen", () => {
 		expect(markTerminalSeen(seen, "run-2")).toBe(true); // new id → delivered
 	});
 
+	it.each([0, 1])("keeps the claim just made when cap is %i", (cap) => {
+		const seen = new Set<string>();
+		expect(markTerminalSeen(seen, "run-1", cap)).toBe(true);
+		expect(markTerminalSeen(seen, "run-1", cap)).toBe(false);
+		expect(seen.size).toBe(1);
+	});
+
 	it("caps the set by evicting the oldest claim when it exceeds the default cap", () => {
 		const seen = new Set<string>();
 		for (let i = 0; i < 200; i++) seen.add(`id-${i}`);

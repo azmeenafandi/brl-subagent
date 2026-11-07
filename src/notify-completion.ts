@@ -271,6 +271,7 @@ export function resolveDelivery(
  * forgot the claim entirely, so the very next duplicate was delivered twice (#440).
  */
 export function markTerminalSeen(seen: Set<string>, id: string, cap = DEDUPE_CAP): boolean {
+	cap = Math.max(cap, 1); // a cap below 1 evicts the claim just made — retention must keep it
 	if (seen.has(id)) return false;
 	seen.add(id);
 	if (seen.size > cap) {
