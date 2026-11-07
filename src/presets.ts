@@ -24,8 +24,8 @@ export { parseFrontmatter } from "./loader";
 // ---------------------------------------------------------------------------
 
 /**
- * Validate that a parsed preset has the required name field
- * and its thinkingLevel (if set) is a valid value.
+ * Validate that a parsed preset has the required name field, its thinkingLevel
+ * (if set) is a valid value, and its outputFile (if set) is a string.
  * Returns validation errors, or empty array if valid.
  */
 export function validatePreset(meta: Record<string, unknown>, fileName: string): string[] {
@@ -64,8 +64,75 @@ export function validatePreset(meta: Record<string, unknown>, fileName: string):
 		}
 	}
 
+	// outputFile is MAPPED (#436), so a non-string here would reach the resolved
+	// params as a broken path — refuse it at load, like thinkingLevel above.
+	if (meta.outputFile !== undefined && typeof meta.outputFile !== "string") {
+		errors.push(
+			`Preset "${meta.name}" (${fileName}): outputFile must be a string, got "${String(meta.outputFile)}".`,
+		);
+	}
+
 	return errors;
 }
+
+// ---------------------------------------------------------------------------
+// Frontmatter → SubagentPreset mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Preset fields that are DELIBERATELY not mapped from frontmatter. This is the
+ * only sanctioned escape hatch from the parity pin below — every entry must
+ * name its reason.
+ *
+ * `timeout` (ADR 0022 §6): `resolveSubagentParams` merges
+ * `params.timeout ?? preset?.timeout`, so a preset-supplied deadline would
+ * silently re-merge the value the dispatch pre-flight's `drop-timeout` arm
+ * believes it dropped, and `THINKING_TIMEOUT_DROP_NOTICE`'s "no clock kills it"
+ * sentence would become false — with no other test failing. Mapping it requires
+ * re-deriving that arm first (issue #431).
+ */
+type OmittedPresetField = "timeout";
+
+/** Every preset field that frontmatter MUST be able to populate (issue #436). */
+type MappedPresetField = Exclude<keyof SubagentPreset, OmittedPresetField>;
+
+/**
+ * The non-frontmatter inputs a mapper may read: the resolved name (which comes
+ * from the file/validator, not always from `meta`) and the markdown body.
+ */
+interface PresetMapContext {
+	name: string;
+	body: string;
+}
+
+type PresetFieldMapper = (meta: Record<string, unknown>, ctx: PresetMapContext) => unknown;
+
+/**
+ * THE declaration of which frontmatter keys reach a `SubagentPreset` — one
+ * table, so a field cannot be declared in the type and forgotten here.
+ *
+ * `satisfies Record<MappedPresetField, …>` is the parity pin: adding a field to
+ * `SubagentPreset` without a mapper is a COMPILE error (the record is missing a
+ * key), and a mapper for a field the type no longer declares is an
+ * excess-property error. Before #436 the object was a hand-written literal, so
+ * a declared field (`outputFile`) could be dropped in total silence. The value
+ * type is `PresetFieldMapper`, not `unknown`, because the assembly below CALLS
+ * these entries — the key pin is identical either way.
+ */
+const PRESET_FIELD_MAPPERS = {
+	name: (_meta, ctx) => ctx.name,
+	description: (meta) => (meta.description as string) || undefined,
+	systemPrompt: (_meta, ctx) => ctx.body || undefined,
+	thinkingLevel: (meta) => (meta.thinkingLevel as string) || undefined,
+	model: (meta) => (meta.model as string) || undefined,
+	inheritSystemPrompt: (meta) => (meta.inheritSystemPrompt === "false" ? false : undefined),
+	outputFile: (meta) => (meta.outputFile as string) || undefined,
+	tools: (meta) => (Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined),
+	excludeTools: (meta) =>
+		Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
+	noBuiltinTools: (meta) => (meta.noBuiltinTools === "true" ? true : undefined),
+	promptGuideline: (meta) => (meta.promptGuideline as string) || undefined,
+} satisfies Record<MappedPresetField, PresetFieldMapper>;
 
 // ---------------------------------------------------------------------------
 // Loading
@@ -80,18 +147,18 @@ function presetFromFrontmatter(
 	body: string,
 	name: string,
 ): SubagentPreset {
-	return {
-		name,
-		description: (meta.description as string) || undefined,
-		systemPrompt: body || undefined,
-		thinkingLevel: (meta.thinkingLevel as string) || undefined,
-		model: (meta.model as string) || undefined,
-		inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
-		tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
-		excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
-		noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
-		promptGuideline: (meta.promptGuideline as string) || undefined,
-	};
+	const ctx: PresetMapContext = { name, body };
+	// Widening the table's value type to `PresetFieldMapper` (it is a subtype of
+	// its inferred per-entry type) keeps the assembly free of per-entry casts.
+	const entries = Object.entries(PRESET_FIELD_MAPPERS as Record<string, PresetFieldMapper>);
+	// `Object.fromEntries` hands back `{ [k: string]: unknown }`, and an interface
+	// target has no implicit index signature, so the bridge through `unknown` is
+	// required. Its safety is the `satisfies` on PRESET_FIELD_MAPPERS: the table
+	// covers every mapped field of SubagentPreset and nothing else, so the built
+	// record has exactly that shape.
+	return Object.fromEntries(
+		entries.map(([field, mapper]) => [field, mapper(meta, ctx)]),
+	) as unknown as SubagentPreset;
 }
 
 /**
