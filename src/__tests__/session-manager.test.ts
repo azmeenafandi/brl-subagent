@@ -1249,6 +1249,70 @@ describe("spawnBackgroundSession deadline record (#453)", () => {
 		}
 	});
 
+	it("shortens the armed delay by the setup time already spent, and the reason still names the budget (#453 [c 8])", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
+		try {
+			heldPrompt();
+			mocks.session.abort.mockClear();
+			// Inject 1 234 ms of setup between record creation and the arm: the run
+			// entry persist is the statement that sits between them. A frozen clock
+			// plus this shift is the measured drift (F5.1).
+			fakePi.appendEntry.mockImplementationOnce(() => {
+				vi.setSystemTime(Date.now() + 1234);
+			});
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "setup delay",
+				timeout: 5000,
+			});
+
+			// The budget is 5000; the armed delay is the REMAINDER (mutant M8 arms
+			// the full budget and drifts past the displayed deadlineAt).
+			expect(census.delays.filter((ms) => ms === 5000)).toEqual([]);
+			expect(census.delays.filter((ms) => ms === 5000 - 1234)).toHaveLength(1);
+
+			await vi.advanceTimersByTimeAsync(5000 - 1234 - 1);
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			// Mutant M9: the reason reports the BUDGET, never the remainder.
+			expect(getAgent(agent.id)?.error).toContain("Timed out after 5000ms");
+			expect(getAgent(agent.id)?.error).not.toContain("3766");
+		} finally {
+			census.restore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("a zero remainder still aborts, immediately, with the full-budget reason (#453 [c 8])", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
+		try {
+			heldPrompt();
+			mocks.session.abort.mockClear();
+			// Setup took LONGER than the budget: the remainder clamps to 0 rather
+			// than going negative (a negative delay is an instant kill / an overflow,
+			// and normalizeTimeout would read 0 as "no timeout" — the wrong path).
+			fakePi.appendEntry.mockImplementationOnce(() => {
+				vi.setSystemTime(Date.now() + 6000);
+			});
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "over-budget setup",
+				timeout: 5000,
+			});
+
+			expect(census.delays.filter((ms) => ms === 0)).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.error).toContain("Timed out after 5000ms");
+		} finally {
+			census.restore();
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not retain for retry on the timeout classification, even when the settle is transport-shaped (#453)", async () => {
 		vi.useFakeTimers();
 		try {

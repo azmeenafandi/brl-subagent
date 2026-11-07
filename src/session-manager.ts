@@ -1377,6 +1377,11 @@ export async function spawnBackgroundSession(
   const attempt = params.attempt ?? 1;
   const owner = currentProcessOwner();
 
+  // Issue #453 (decision 5): the run's budget, computed ONCE. The record's
+  // `timeoutMs` (what the monitor displays as `deadlineAt`) and the armed timer
+  // derive from the same value, so the display cannot drift from the timer.
+  const budgetMs = effectiveBackgroundBudget(params.timeout);
+
   // Create agent record
   const agent: BackgroundAgent = {
     id,
@@ -1389,7 +1394,7 @@ export async function spawnBackgroundSession(
     // stamped BEFORE persistAgent so the initial record already carries it — a
     // result/wake read after the spawn closure is gone must not fall back to
     // "unknown".
-    timeoutMs: effectiveBackgroundBudget(params.timeout),
+    timeoutMs: budgetMs,
     task: params.task,
     model: params.model || 'unknown',
     thinkingLevel: params.thinkingLevel || 'medium',
@@ -2041,7 +2046,14 @@ export async function spawnBackgroundSession(
   // keeps running, and a throwing APPEND must never suppress the abort — so each
   // step has its own containment and the abort sits between the two. The status
   // flip stays BEFORE the abort because the settle path classifies the run from it.
-  const armDeadline = (budgetMs: number): ReturnType<typeof setTimeout> =>
+  ///
+  /// Time origin (issue #453 / ADR 0023 decision 5): the TWO arguments are
+  /// deliberately separate. `budgetMs` is the run's budget and is the ONLY value
+  /// the reason may name; `delayMs` is the REMAINDER still owed at arm time. One
+  /// argument for both is the defect this replaces: the timer fired at arm+budget
+  /// (drifting past the displayed `startedAt + timeoutMs`) and, once the remainder
+  /// was used as the delay, the reason would report a truncated budget.
+  const armDeadline = (budgetMs: number, delayMs: number): ReturnType<typeof setTimeout> =>
     setTimeout(() => {
       if (agent.completedAt) return; // already settled — nothing to abort
       const reason = `Timed out after ${budgetMs}ms`;
@@ -2098,7 +2110,7 @@ export async function spawnBackgroundSession(
               : String(bookkeepingFailure),
         });
       }
-    }, budgetMs);
+    }, delayMs);
 
   // Issue #453 (ADR 0023, decision 1): ONE owner. This function arms the run's
   // deadline on EVERY path — the explicit timeout when there is one, else the
@@ -2111,7 +2123,16 @@ export async function spawnBackgroundSession(
   // NaN, Infinity or >= 2^31 means "no explicit timeout", so the default applies
   // (issue #240 — never an instant kill) and an explicit 45 m is honored verbatim
   // (it is not a ceiling).
-  deadlineHandle = armDeadline(effectiveBackgroundBudget(params.timeout));
+  //
+  // Issue #453 / ADR 0023 decision 5: the budget is anchored at RECORD CREATION.
+  // `startedAtMs` is the agent record's own clock (epoch ms — the same field the
+  // monitor turns into `deadlineAt`), and the setup between that line and here
+  // (transcript start, record persist, branch setup, a branch-lock wait) is time
+  // the run has already spent, so it is subtracted. `Math.max(0, …)` is required:
+  // a negative remainder must fire immediately, not overflow. `normalizeTimeout`
+  // is the WRONG path for a remainder — it maps 0 or negative to "no timeout",
+  // which would silently disarm a run that is already over budget.
+  deadlineHandle = armDeadline(budgetMs, Math.max(0, budgetMs - (Date.now() - startedAtMs)));
 
   // Issue #447: the ACCEPTANCE marker — ONE write, immediately before the
   // prompt, that turns `acceptedAt: null` into a timestamp on both durable
