@@ -103,7 +103,7 @@ import { isTransportRetryable } from "../transport-retry";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 import { setLogCwd } from "../logging";
 import { __setOutputDir } from "../transcript";
-import { persistRunRecord } from "../run-registry";
+import { persistRunRecord, registerInflightRun } from "../run-registry";
 import { recoverInflightRuns, defaultRecoveryDeps } from "../recovery";
 import { collectInterruptedRuns, offeredInterruptedRuns } from "../recovery-surface";
 
@@ -2933,6 +2933,23 @@ describe("issue #447 — never-started dispatches", () => {
 		expect(residue).toHaveLength(1);
 		expect(residue[0].acceptedAt).toBeNull();
 
+		// OWNER-LIVE HOLD: while the dispatcher is alive it may be inside its own
+		// pre-start window and will write its acceptance marker momentarily.
+		// Settling it here would stamp a false `failed` terminal record that the
+		// run's real terminal entry could never outrank (`resolveTerminalRunEntry`
+		// prefers the first terminal entry) — so the scan must not touch it.
+		const live = await scanBoot();
+		expect(live.neverStarted).toBe(0);
+		expect(listInflightRuns()).toHaveLength(1);
+
+		// The CRASH case the issue is about: the conductor is gone, so the residue
+		// is provably dead weight — settled failed, retired, never offered.
+		registerInflightRun({
+			id: residue[0].id,
+			kind: "background",
+			owner: { pid: 999_999_999, start: "100" },
+			startedAt: residue[0].startedAt,
+		});
 		const summary = await scanBoot();
 		// A never-started dispatch is not even a recovery CANDIDATE (M5): nothing
 		// was started, so nothing may be scanned, reaped, or marked.
