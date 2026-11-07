@@ -535,4 +535,21 @@ describe("#455 — the bounded post-SIGKILL drain", () => {
 		expect(await escalateKill([target], opts)).toEqual([]); // ended by the group SIGKILL
 		expect(sleeps).toEqual([0]); // the grace wait only — nothing in flight to drain
 	});
+
+	it("F: a no-op sleep cannot turn the drain into a hot spin (iteration bound)", async () => {
+		// The clock is NOT advanced by this sleep — the shape an injected no-op
+		// sleep has. A drain bounded only by `now()` spins for the whole wall-clock
+		// window (measured: 61,657 samples inside 100 ms before the bound existed).
+		const sleeps: number[] = [];
+		const target = fakeTarget({ verifyDeath: () => false });
+		const opts = {
+			graceMs: 0,
+			drainMs: 100,
+			sleep: async (ms: number) => void sleeps.push(ms),
+		};
+
+		expect(await escalateKill([target], opts)).toEqual([target]);
+		// grace:0 once, then at most ceil(100 / 10) = 10 drain samples (default poll).
+		expect(sleeps).toEqual([0, ...Array<number>(10).fill(10)]);
+	});
 });

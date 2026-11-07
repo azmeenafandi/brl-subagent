@@ -382,9 +382,15 @@ async function drainForceKilled(
 	const pollMs = options.pollMs && options.pollMs > 0 ? options.pollMs : DEFAULT_DRAIN_POLL_MS;
 	const now = options.now ?? Date.now;
 	const deadline = now() + drainMs;
-	while (forceKilled.some((target) => !target.verifyDeath())) {
+	// TWO bounds, deliberately. The clock bound is the contract ("100 ms"); the
+	// iteration bound is what keeps a sleep that does not actually advance time
+	// (a no-op injected sleep) from turning the drain into a hot spin — measured
+	// at 61k samples inside one 100 ms window before this bound existed.
+	const maxPolls = Math.max(1, Math.ceil(drainMs / pollMs));
+	for (let poll = 0; poll < maxPolls; poll++) {
+		if (forceKilled.every((target) => target.verifyDeath())) return;
 		const remaining = deadline - now();
-		if (remaining <= 0) break;
+		if (remaining <= 0) return;
 		await options.sleep(Math.min(pollMs, remaining));
 	}
 }
