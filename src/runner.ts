@@ -490,7 +490,17 @@ export function buildSubagentArgs(
 		"--thinking",
 		thinkingLevel,
 	];
-	if (toolOptions?.noBuiltinTools) {
+	// Issue #442: an EXPLICITLY empty allowlist means "no child tools", which is
+	// neither of the two states pi already expresses. Omitted keeps pi's
+	// defaults (no restriction flag at all), and `--no-builtin-tools` keeps
+	// extension and custom tools. `tools !== undefined` is therefore the
+	// emptiness test, not `.length > 0`: `[]` must reach pi's blanket
+	// `--no-tools`, and it must win over `noBuiltinTools` so an empty allowlist
+	// can never widen into "built-ins off, extension tools on". `--exclude-tools`
+	// stays additive below — it only disables, so it cannot re-enable a tool.
+	if (toolOptions?.tools !== undefined && toolOptions.tools.length === 0) {
+		args.push("--no-tools");
+	} else if (toolOptions?.noBuiltinTools) {
 		args.push("--no-builtin-tools");
 	} else if (toolOptions?.tools && toolOptions.tools.length > 0) {
 		args.push("--tools", toolOptions.tools.join(","));

@@ -14,7 +14,7 @@
 - **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and a 30-minute default deadline for runs that don't set one. Nothing orphans; nothing leaks.
 - **Preset-driven tool scoping** — every subagent runs with exactly the tools its job needs, restricted by preset or per-call `tools`/`excludeTools`, with auto-route that picks the right preset when you don't.
 - **Templates with slots** — saved, file-backed task templates with `${param}` placeholders for workflows you run again and again.
-- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence (`0o700` stores, `0o600` files; the directory mode is repaired on every write and is the confidentiality boundary), and a 2100+ test suite pinning every contract against the real pi SDK.
+- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence (`0o700` stores, `0o600` files; the directory mode is repaired on every write and is the confidentiality boundary), and a 2200+ test suite pinning every contract against the real pi SDK.
 
 ---
 
@@ -94,7 +94,7 @@ All settings persist across sessions.
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
 | `background` | boolean | conditional | Spawn as an independent background session; returns an ID immediately. **Omitted**, a single task or a `tasks` fan-out runs in the background when the *effective* `approvalMode` is `auto` (call param, else config), and stays foreground under `writes`/`always` or for `chain`/`graph` — see [Background execution](#background-execution). With `tasks` it fans out (one background agent per task, one ID per task), and the conductor is woken once per agent as each finishes. Pass `false` for a quick probe whose answer the next step needs inline. |
 | `priority` | string | — | Concurrency priority: `critical` / `high` / `normal` / `low`. Defaults to `normal`; higher-priority delegations queue ahead. `tasks[]` / `graph[]` steps can set `priority` per unit (see below). |
-| `tools` | array | — | Explicit tool allowlist for the subagent. |
+| `tools` | array | — | Explicit tool allowlist for the subagent. **An empty array (`tools: []`) requests zero child tools** — it maps to pi's `--no-tools`, which also wins over `noBuiltinTools`. Omit the field to keep pi's defaults. |
 | `excludeTools` | array | — | Tool names to disable for the subagent. |
 | `noBuiltinTools` | boolean | — | Disable all pi built-in tools for the subagent. |
 
@@ -109,6 +109,10 @@ All settings persist across sessions.
 | `retryOnTimeout` | boolean | `false` | Retry once if a **foreground** subagent times out. The second timeout is a final failure. A **background** run is not retried on its deadline, but it *is* re-dispatched once automatically when it dies on a transport-class error — see [Transport auto-retry](#transport-auto-retry). Any other background failure is re-dispatched with `retryRunId`. |
 
 **Capability pre-flight:** before spawning, the extension checks that the resolved toolset can actually do the task — a run/execute/test/compile/benchmark task with no `bash`, or an exploration task (search/grep/find/list/locate/glob) with none of `find`/`ls`/`grep`/`bash`. Such a dispatch is **rejected** by default; `force: true` downgrades the rejection to a **warning**. `force` never suppresses an `outputFile`-without-write conflict — that stays a hard error. Warnings are surfaced in the returned result in every mode.
+
+**An empty tool list means no tools (`tools: []`):** `tools: []` is an explicit *restriction*, not an absent value. A foreground child is spawned with pi's `--no-tools`, so all built-in, extension, custom and MCP tools are inactive for that run, and it wins over `noBuiltinTools` (`[]` can never widen into "built-ins off, extension tools on"). A background run passes the same empty list to the SDK session, so it starts with zero active tools. When the resolved tool allowlist is omitted, Pi's normal selection applies unless `noBuiltinTools` or `excludeTools` restrict it; a preset may still supply an allowlist. Before this fix, a resolved empty allowlist alone incorrectly fell back to that selection in foreground runs. `[]` combined with `excludeTools` still has no tools; `excludeTools` can only disable.
+
+This is a **tool-access setting, not a security sandbox.** In the foreground, configured extensions and MCP servers still load and connect at child startup, because users deliberately rely on that startup (and on extension *hooks* such as permission gates) — `[]` denies the model their tools, it does not prevent the code from running, and it is no defence against an extension that reactivates tools on purpose. Background runs are unchanged: they never load extensions or skills (`noExtensions`/`noSkills`) and start no MCP servers at all, with or without `tools`. A dispatch that needs zero capabilities therefore still costs the child its extension initialisation time; if an `outputFile` is requested alongside `tools: []`, the dispatch is rejected before launch, because no write tool exists to write that file.
 
 **Retries (`retryRunId`):** a retry rebuilds the parameter object from a fixed set of fields, falling back to the original run's recorded values, with explicit values on the retry call winning: `task`, `label`, `model`, `preset`, `systemPrompt`, `inheritSystemPrompt`, `thinkingLevel`, `priority`, `outputFile`, `timeout`, `cwd`, `tools`, `excludeTools`, `noBuiltinTools`, plus the four **execution-shape** fields `background`, `gitMode`, `approvalMode` and `force`.
 
@@ -234,7 +238,7 @@ Supported frontmatter fields:
 | `thinkingLevel` | string | `off` / `minimal` / `low` / `medium` / `high` / `xhigh` |
 | `outputFile` | string | Output file path (may contain `${param}` slots) |
 | `timeout` | number | Max milliseconds for the delegated run |
-| `tools` | list | Tool allowlist |
+| `tools` | list | Tool allowlist (empty = no tools) |
 | `excludeTools` | list | Tools to exclude |
 | `noBuiltinTools` | `"true"` / `"false"` | Disable all pi built-in tools |
 | `inheritSystemPrompt` | `"true"` / `"false"` | Override system-prompt inheritance (default `true`) |
