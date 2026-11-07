@@ -3007,6 +3007,9 @@ describe("issue #447 — never-started dispatches", () => {
 
 		const terminal = lastRunEntry();
 		expect(terminal.status).toBe("failed");
+		// The in-memory ISO stamp must not ride into this record: the entry would claim
+		// the prompt was accepted while its message says it never was (review nit).
+		expect(terminal.acceptedAt).toBeNull();
 		expect(String(terminal.errorMessage)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
 		expect(String(terminal.errorMessage)).toContain("accept-boom");
 		expect(listInflightRuns()).toHaveLength(0);
