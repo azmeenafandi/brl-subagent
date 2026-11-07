@@ -342,3 +342,23 @@ dates, and historical framing. The binding rules (with their numbers) live in
 **The backtest (2026-10-10, 98 sprint-window dispatches, $0.0034).** Blind-classified every production dispatch with TypeSafe's **Jev** classifier ("System One" — typed choice questions over JSON state, `models.classify` via `codemode`): exact agreement 47%, adjacent 87%. The disagreement is systematic, not noise — it **discounts mechanical/plumbing work** (16/40 `high` and 19/40 `medium` downgraded, including `impl-codegraph-phase1` high→low and `impl-fix315` high→minimal) and it **raises reviews** (`review-test-hygiene-r2` — the review that caught the #308 regression — high→**xhigh**; `impl-299-probe` medium→xhigh). It also ignores operational burden entirely, so its `minimal` calls would under-provision worktree/suite/PR work.
 
 **Decision: advisory, with clamps.** Rule 22 records `jev: <level> (<conf>) · risk · worktree` in every spec/dispatch; ≥2-level deviations and below-Jev reviews need a reason; artifact work floors at `low`. Same doctrine as Rule 13: an intention with no artifact decays — the recorded line is the artifact, and the maintainer's spec approval is the gate. Phase 2 (classifier inside the extension) is deliberately unscheduled; the released package is untouched.
+
+## Rule 23
+
+23. **A dispatched agent's probes must be isolated from the host (Rule 23 — the probe-isolation class).**
+    A scratch directory is not isolation; the *environment* is what leaks. Provenance: 2026-11-07, the #449
+    plan critique inherited this harness's environment and ran a real agentic `pi` CLI against OpenRouter's
+    `anthropic/claude-fable-5` — four turns, **$0.0698915** — and its shell also ran `env | grep PI_`,
+    exposing seven `PI_*` values (none credential-shaped, but session ids and a session path) to that model.
+    The expensive model was a *symptom*: the failure was launching an agentic CLI unisolated to answer a
+    question that mostly needed reading the SDK.
+    - **Any command that can reach a provider** runs with `env -i`, an explicit `PATH`, a scratch `HOME`
+      **and** scratch `PI_CODING_AGENT_DIR`, fake credentials, and a provider base URL that is loopback-only.
+      `env -i` + `PI_OFFLINE=1` alone is **not** enough, measured: `env -i … node -p 'os.homedir()'` still
+      returns the real home (the SDK derives agent/auth paths from it) and `PI_OFFLINE` only disables
+      *startup* network operations.
+    - **Do not run an agentic CLI to answer a source question.** Read the code; if a probe is unavoidable,
+      it is a stub against a controlled session or a loopback fake provider — never a live model turn.
+    - When a probe could reach a provider, name the scratch env in the dispatch text (`env -i`, the two
+      scratch paths, the loopback URL) and require the agent to prove it — a probe whose isolation is
+      asserted but not shown is a finding, not a formality.
