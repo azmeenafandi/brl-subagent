@@ -6,14 +6,14 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` and `-2026-11-06.md` — not current state.
 
 ## STATE
-Verified: 490cf94 (2026-11-07)
+Verified: 78feb6e (2026-11-07)
 
-- **dev** @ `490cf94` (PR #445 merge, Vitest dev-dependency update) — `git log -1 --oneline dev`. Branches `dev` + `main` only; worktrees are the cockpit pair only — `git worktree list`.
-- **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e`, tag `v2.7.0`, npm `latest` 2.7.0 (`gh release list`). **Release checkpoint OPEN** (rule #6): **#422 + #425 + #435 + #441 + #444** are extension code, merged and unreleased. Release on the maintainer's go only — never propose a version unprompted.
+- **dev** @ `78feb6e` (PR #446 merge, #443 thinking-level rejection) — `git log -1 --oneline dev`. Branches `dev` + `main` only; worktrees are the cockpit pair only — `git worktree list`.
+- **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e`, tag `v2.7.0`, npm `latest` 2.7.0 (`gh release list`). **Release checkpoint OPEN** (rule #6): **#422 + #425 + #435 + #441 + #444 + #446** are extension code, merged and unreleased. Release on the maintainer's go only — never propose a version unprompted.
 - **Running install:** the **dev checkout** (`pi list`), reloaded by the maintainer after #441 merged. #437 success wakes live-verified on startup, after `/new` and after `/reload` (issue #437 comment; isolated probe IDs `b71db04c`, `9ab40e75`, `77fa0430`); transport retry after replacement is unit-tested, not live-probed. #422, #425 and #435 were also live-verified. **#444 is loaded and live-verified** (issue #442 comment, 2026-11-07): with `tools: []` the child had no read tool; the omitted-tools control read the file. Foreground extension/MCP startup under `[]` is covered by real-child tests only. Users get published 2.7.0.
-- **Board** (`gh issue list`): open **#443** (invalid thinking levels), **#439** (retry-start ambiguity), **#440** (terminal-claim overflow duplicate), **#430** (`execute` split), **#434** (per-unit pre-flight bypass), **#436** (preset frontmatter field parity), **#426** (timeout design-open); **PR #402** held (typebox 1.4.3 vs the host's 1.3.27 pin). Merged 2026-11-06: #428 (PR #432), #431 + #433 (PR #435), #429 (PR #438), #437 (PR #441); merged 2026-11-07: #442 (PR #444).
+- **Board** (`gh issue list`): open **#439** (retry-start ambiguity), **#440** (terminal-claim overflow duplicate), **#430** (`execute` split), **#434** (per-unit pre-flight bypass), **#436** (preset frontmatter field parity), **#426** (timeout design-open); **PR #402** held (typebox 1.4.3 vs the host's 1.3.27 pin). Merged 2026-11-06: #428 (PR #432), #431 + #433 (PR #435), #429 (PR #438), #437 (PR #441); merged 2026-11-07: #442 (PR #444), #443 (PR #446).
 - **Cycle:** `Pi 1.5.0 parity` closed 2026-11-03; none open. The current thread is the CRAP follow-ups (#429, #430) from ADR 0021.
-- **Suite:** 107 files / **2226** (`npx vitest run`, verified on current-dev + PR #445 lockfile in an isolated install); Vitest **5.1.0** installed in refreshed cockpit, typecheck clean; CodeGraph complete at `490cf94`, 552 exports (`python3 .pi/skills/worktree/codegraph-check.py`).
+- **Suite:** 108 files / **2261** (`npx vitest run`, verified locally on the PR #446 tree and by its reviewer; CI green); typecheck clean; CodeGraph complete at `78feb6e`, 555 exports (`python3 .pi/skills/worktree/codegraph-check.py`).
 - **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) reviewed head or a `conductor-verified:` line, (e) `--log --require-provenance`, (f) a provenance-bound `jev-recheck:` + a `Risk class:` no weaker. PRs to `dev` never auto-close issues — close by hand. Merge commits, never squash.
 - **Dispatch models + presets (never guess; after a compaction verify against `.pi/subagents/*.json`):** implementer = `project-implementer` + `deepseek/deepseek-flash` (never `dev-agent` — it ships no quality bar); reviewer = `project-reviewer` + `openrouter/meta/muse-spark-1.3-contributor`; plan critic = `project-plan-critic` + **`openrouter/openai/gpt-6.1-terra`** (STANDING since 2026-11-06 by maintainer instruction; supersedes `qwen/qwen3.8-max-0902`, which is **not** a fallback); design second opinions = `project-proposer` + `inheritSystemPrompt: false`. Presets cache at `session_start` (`src/index.ts:4000`), so a preset edit needs `/reload` or `/new`; a per-call `model:` overrides the cache.
 - **Dispatch shape — never rely on the conditional default:** non-probe work gets explicit `background: true` + `timeout: 7200000` (the 2 h maintainer cap). Foreground is only for a probe whose answer the next step needs inline, and then **omit the timeout** — foreground has no default cap, and a foreground deadline destroys the run (the 2026-11-06 600 s loss). ADR 0022's drop arm mechanizes this for high/xhigh under `processChecks` only; it cannot help a `medium` dispatch.
@@ -31,16 +31,16 @@ Verified: 490cf94 (2026-11-07)
 - **#437 merged** (PR #441, `137b396`): per-runtime terminal listeners are removed synchronously on shutdown; C1 review approve-with-nits, two mutations killed, 2191 tests green. Issue closed; worktree cleaned. Maintainer chose not to guarantee delivery for runs already active during `/new`; broader retry and dedupe problems are #439 and #440. Success wakes live-verified on startup, after `/new`, and after `/reload` (issue #437 comment). Five `.development/investigations/issue-437-*` reports remain untracked; key reports are also posted to #437.
 - **#442 merged** (PR #444, `e4a83fa`): explicit `tools: []` maps to foreground `--no-tools`; omitted and nonempty cases preserved. Real-child extension and MCP canaries, background SDK tests, two mutants and C1 review passed. Foreground extensions/MCP still start; no sandbox claim. Issue closed, worktree cleaned; live verification pending maintainer activation. Its brief `.development/investigations/issue-442-implementation-brief-2026-11-07.md` is untracked.
 - **PR #445 merged** (`490cf94`): lockfile-only Vitest 5.0.5 → 5.1.0; 24 changed packages all dev-only, integrated-dev isolated suite 107/2226 green. Pi 1.5.0's own dev pin is Vitest 4.1.12; no runtime pin conflict found. Cockpit dependencies refreshed with `npm ci` after isolated-worktree cleanup; TypeBox remains 1.3.27.
-- **#443 open:** invalid `thinkingLevel` can resolve to `undefined` (evidence in `plan-critique-429-2026-11-06.md`; original scratch probe unavailable).
+- **#443 merged** (PR #446, `78feb6e`): unknown non-empty `thinkingLevel` is rejected before any launch at every seam — per-call/template/preset (named + auto-routed), per-unit batches, restored `retryRunId`, inline `retryOnTimeout`, transport auto-retry (original failure surfaced, no SDK session); the schema `enum` (incl. `""`) is only the first line. C2 review: approve, no findings; mutants A/B/C/D2 killed, D reported surviving then replaced by an observable order pin. **Test LOC budget is 1.97/2.0** — the next test-heavy PR must trim.
 
 ### Next actions
-1. **#439 / #440 / #443** — unscheduled follow-ups (retry-start ambiguity; terminal-claim overflow; invalid thinking level).
-2. **#430** — the behavior-preserving `execute` split (C1; needs a CodeGraph structural map and a closure block).
-3. **#434** and **#436** — unscheduled; #436 is the cheaper of the two.
-4. **#426** needs the maintainer's priority call before any design work.
+1. **#443 live verification** — after maintainer-triggered activation, dispatch an unknown level (expect rejection before launch) plus a valid level and `""` (expect unchanged). Never automate `/reload`.
+2. **#439 / #440** — unscheduled follow-ups (retry-start ambiguity; terminal-claim overflow).
+3. **#430** — the behavior-preserving `execute` split (C1; needs a CodeGraph structural map and a closure block).
+4. **#434** and **#436** — unscheduled; #436 is the cheaper of the two.
+5. **#426** needs the maintainer's priority call before any design work.
 
 ## Open items
-- **#443** — invalid `thinkingLevel` → `undefined`; the original scratch probe is gone, so reproduce on current code.
 - **#426 design-open** — subagent timeouts: soft stage, stall watchdog vs cliff, extension, calibration. Filed 2026-11-03; no direction chosen. Do not implement from it.
 - **PR #402 held** — re-evaluate only when pi's typebox pin moves off 1.3.27.
 - **#434** — `tasks`/`chain`/`graph` units carry their own `timeout` + `thinkingLevel` and bypass the per-dispatch pre-flight; deferred from #431 by design, not by oversight.
