@@ -115,6 +115,14 @@ Rules the parser assumes:
 - `approve-with-nits` is a mergeable verdict; `changes-requested` is not, and an
   unrecognised/absent verdict is not either.
 - Markdown decoration is fine (`**Verdict: approve**`, `## Verdict:`, backticks) — it is stripped before the line-start check.
+- **A bullet is NOT decoration.** `- Verdict: approve` starts with `-`, so the line does
+  not *start* with `Verdict:` and the gate reads the record as having **no verdict** at
+  all. Reviewers reach for a bullet because the findings table above is a bulleted list,
+  and it has cost a conductor normalization on #446, #455 and #457 (three hits — a
+  recurring class, not a one-off). Reviewers: put the disposition on its own bare line.
+  Conductor: if a record arrives bulleted, fix the record (and say you did in the PR
+  body) rather than teaching the parser to accept it — a lenient parser would also accept
+  a findings bullet that merely quotes a verdict.
 
 ### `jev-recheck:` + `Risk class:` — the review-time classification
 
