@@ -542,8 +542,11 @@ describe("boot scan wait-once", () => {
 		const summary = await runBootScan({ records: orphanRecords(5), deps, mark: () => {} });
 		expect(summary.marked).toBe(5);
 		expect(summary.reaped).toBe(5);
-		expect(sleep).toHaveBeenCalledTimes(1);
-		expect(sleep).toHaveBeenCalledWith(50);
+		// #455: the ONE grace sleep comes first and is unchanged. The post-SIGKILL
+		// drain then samples these never-dying fake pids, bounded by its own
+		// iteration cap (drainMs 100 / pollMs 10 = 10 samples) — so the total is
+		// bounded, not "one". The grace window is still shared by all N orphans.
+		expect(sleep.mock.calls).toEqual([[50], ...Array<[number]>(10).fill([10])]);
 	});
 
 	it("bounds elapsed time to ~one grace window", async () => {
