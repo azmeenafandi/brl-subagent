@@ -495,7 +495,7 @@ export async function showSLAStats(
 	ctx: ExtensionContext,
 	state: SessionState,
 ): Promise<void> {
-	const runs = state.getRunEntries(ctx).slice(0, state.config.slaWindowSize);
+	const runs = state.getLogicalRunEntries(ctx).slice(0, state.config.slaWindowSize);
 	if (runs.length === 0) {
 		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
 		return;
@@ -542,7 +542,7 @@ export async function showFileAccessReport(
 	ctx: ExtensionContext,
 	state: SessionState,
 ): Promise<void> {
-	const runs = state.getRunEntries(ctx);
+	const runs = state.getLogicalRunEntries(ctx);
 	if (runs.length === 0) {
 		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
 		return;
@@ -577,7 +577,7 @@ export async function showSecretsExposureReport(
 	ctx: ExtensionContext,
 	state: SessionState,
 ): Promise<void> {
-	const runs = state.getRunEntries(ctx);
+	const runs = state.getLogicalRunEntries(ctx);
 	if (runs.length === 0) {
 		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
 		return;
@@ -634,7 +634,7 @@ export async function showFullComplianceSummary(
 	ctx: ExtensionContext,
 	state: SessionState,
 ): Promise<void> {
-	const runs = state.getRunEntries(ctx);
+	const runs = state.getLogicalRunEntries(ctx);
 	if (runs.length === 0) {
 		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
 		return;
@@ -1269,7 +1269,7 @@ export async function showConfigMenu(
  * run that exists only in the durable registry.
  */
 function recoverableRunEntries(ctx: ExtensionContext, state: SessionState): SubagentRun[] {
-	return visibleRunEntriesForSession(state.getRunEntries(ctx), getAgent);
+	return visibleRunEntriesForSession(state.getLogicalRunEntries(ctx), getAgent);
 }
 
 export async function showRunHistory(
@@ -2285,7 +2285,7 @@ export async function showDashboard(
 			append(renderDashboardActivePanel(theme, liveDisplayEntries(state), Date.now));
 
 			// ---- Panel 3: SLA Summary ----
-			const allRuns = state.getRunEntries(ctx);
+			const allRuns = state.getLogicalRunEntries(ctx);
 			const recentRuns = allRuns.slice(0, state.config.slaWindowSize || 50);
 			const metrics = recentRuns.length > 0 ? computeSLAMetrics(recentRuns) : null;
 			append(renderDashboardSlaPanel(theme, metrics, recentRuns.length));

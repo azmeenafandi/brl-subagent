@@ -78,7 +78,7 @@ import { preflightCheck } from "./preflight";
 import { depthLimitRejection, formatValidationWarnings, gateSessionCost, invalidThinkingLevelRejection, modelNotConfiguredRejection, rejectApprovalAlwaysInBackground, rejection, resolveModeModel, resolveSubagentModelPrecedence, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, type SubagentModelResolution } from "./prelude";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable, parseModelString } from "./model-availability";
-import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
+import { validatePreTask, diagnoseFailure } from "./validate";
 import {
 	defaultBackgroundFor,
 	findUnknownParams,
@@ -421,7 +421,7 @@ export default function (pi: ExtensionAPI) {
 	let state = createSessionState(log);
 
 	// Issue #147: the completion-push subscriber needs the session context to
-	// resolve the run entry (state.getRunEntries(ctx)). The event-bus listener
+	// resolve the run entry (state.getLogicalRunEntries(ctx)). The event-bus listener
 	// receives no ctx, so capture it in session_start where it is available.
 	let sessionCtx: ExtensionContext | undefined;
 
@@ -2156,7 +2156,7 @@ export default function (pi: ExtensionAPI) {
 			recoveryPosture?: RecoveryMode;
 		},
 	): Promise<BackgroundAgentSpawnResult> {
-		const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
+		const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput } = await import('./session-manager');
 		// Issue #31 (PR #76 review, DRY): extract final output from a
 		// possibly-released ref — the poller may observe a terminal agent
 		// whose ref was already nulled by the settlement path.
@@ -2176,11 +2176,9 @@ export default function (pi: ExtensionAPI) {
 			resumeContext: spawn.resumeContext,
 			cwd: spawn.cwd,
 			toolOptions: spawn.toolOptions,
+			// Issue #453: the deadline rides the spawn's own timer (one owner). The
+			// caller passes the budget only — no ownership flag, no timer of its own.
 			timeout: spawn.timeout,
-			// Issue #448: the caller OWNS the no-timeout default deadline below —
-			// without this flag the spawn would arm a second default (double arm).
-			// An explicit timeout still rides the spawn's W3 timer.
-			deadlineOwner: "caller",
 			gitMode: spawn.gitMode,
 			// Issue #98/#108: snapshotOriginalParams is the single source of truth
 			// for the caller params a later retry restores.
@@ -2212,8 +2210,8 @@ export default function (pi: ExtensionAPI) {
 		//     registerLiveSubagent, a throwing scheduler, a rejecting spawn), which is
 		//     what the #439 tests do.
 		//   - `agent` (the live record from the spawn) is read ONLY by the identity
-		//     capture immediately below and by the deadline guard inside G3's
-		//     callback; every later statement reads `identity` and the captured
+		//     capture immediately below and by the poller's terminal-state guard;
+		//     every later statement reads `identity` and the captured
 		//     primitives instead. The capture itself sits before the outer try, so a
 		//     getter-backed `agent` (which the production spawn cannot produce but an
 		//     injected one can) would still escape to the caller's catch — that is the
@@ -2224,10 +2222,12 @@ export default function (pi: ExtensionAPI) {
 		// is void: the failing test is the one asserting a started run never reports
 		// "Failed to spawn".
 		//
-		// Three independently contained groups record into `tailFailures` — G1
-		// bookkeeping, G2 poller, G3 deadline — so a fault in one never skips the
-		// others. An outer catch backstops the ledger itself, and the degraded
-		// result is assembled from `identity` only.
+		// Two independently contained groups record into `tailFailures` — G1
+		// bookkeeping, G2 poller — so a fault in one never skips the other. The
+		// deadline is NOT one of them (issue #453): it is the spawn's, armed before
+		// the spawn returned, so no statement here can leave a run unbounded. An
+		// outer catch backstops the ledger itself, and the degraded result is
+		// assembled from `identity` only.
 		// -----------------------------------------------------------------
 		const identity: BackgroundAgentIdentity = {
 			id: agent.id,
@@ -2247,15 +2247,13 @@ export default function (pi: ExtensionAPI) {
 		};
 
 		let pollInterval: ReturnType<typeof setInterval> | undefined;
-		let hardCapHandle: ReturnType<typeof setTimeout> | undefined;
 		/** G1 completed the counter increment — the ONLY runs that may decrement. */
 		let countedForThisRun = false;
 		let completed = false;
 
-		/** Stop the poller and the deadline, whichever of the two was armed. */
-		const stopTailTimers = (): void => {
+		/** Stop the live-poll. The deadline is NOT the caller's to stop (issue #453). */
+		const stopTailPolling = (): void => {
 			if (pollInterval !== undefined) clearInterval(pollInterval);
-			if (hardCapHandle !== undefined) clearTimeout(hardCapHandle);
 		};
 
 		/**
@@ -2276,11 +2274,16 @@ export default function (pi: ExtensionAPI) {
 		 * sibling's count — M8 (reorder G1) fails T2b exactly because of it.
 		 *
 		 * Stated limit: the decrement is only reachable from a monitor that a run
-		 * owns. If G1, G2 and G3 ALL fail for the same run (counted, no row, no
-		 * poller, no deadline) nothing can release its count, so the footer's active
-		 * count stays one high for the session. That is the honest reading — the run
-		 * is real and unmonitored — and the alternative (releasing from a group that
-		 * never attached) is how a sibling's count gets stolen.
+		 * owns. If G1 AND G2 BOTH fail for the same run (counted, no row, no poller)
+		 * nothing can release its count, so the footer's active count stays one high
+		 * for the session. That is the honest reading — the run is real and
+		 * unmonitored — and the alternative (releasing from a group that never
+		 * attached) is how a sibling's count gets stolen.
+		 *
+		 * Issue #453: the deadline used to be a third releaser. It is not any more
+		 * and does not need to be — the poller sees the spawn's `stopped` +
+		 * `completedAt` on its next tick and releases there, which is exactly how an
+		 * explicit-timeout run has always been released.
 		 */
 		const releaseLiveCount = (): void => {
 			if (!countedForThisRun) return;
@@ -2340,6 +2343,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// ---- G2: live progress poller --------------------------------
+			// Issue #453: this poller is the CLEANUP OWNER for a deadline stop. The
+			// spawn's timer sets `status: 'stopped'` + `completedAt` (via
+			// updateAgentStatus) and aborts; on its next tick the poller below sees
+			// the terminal record and does every caller-owned step — output capture,
+			// the finalize claim, the counter decrement, the repaint — then stops
+			// itself. Nothing here arms or clears a deadline.
 			try {
 				pollInterval = setInterval(() => {
 					try {
@@ -2356,7 +2365,7 @@ export default function (pi: ExtensionAPI) {
 							// and is never nulled, so this is mostly unreachable — but keep the
 							// bookkeeping safe regardless.
 							completed = true;
-							stopTailTimers();
+							stopTailPolling();
 							// Capture whatever output exists (may be empty — fine).
 							setAgentFinalOutput(identity.id, state.subagentSessions.get(identity.id)?.liveOutput ?? '');
 							releaseLiveCount();
@@ -2389,7 +2398,7 @@ export default function (pi: ExtensionAPI) {
 						// preflight (auth check, model resolution) and for failed starts.
 						if (agent.completedAt) {
 							completed = true;
-							stopTailTimers();
+							stopTailPolling();
 
 							// Issue #31: prefer the output already captured at settlement;
 							// the ref may already be nulled on terminal agents, so never
@@ -2419,7 +2428,7 @@ export default function (pi: ExtensionAPI) {
 					} catch (err) {
 						if (!completed) {
 							completed = true;
-							stopTailTimers();
+							stopTailPolling();
 							try {
 								setAgentFinalOutput(identity.id, extractAgentFinalOutput(agent));
 							} catch { /* ignore */ }
@@ -2432,68 +2441,6 @@ export default function (pi: ExtensionAPI) {
 				}, 2000);
 			} catch (err) {
 				recordTailFailure("progress polling", err);
-			}
-
-			// ---- G3: default deadline -------------------------------------
-			// Default deadline: stop polling AND abort the session after the
-			// deadline. W2 (issue #28): previously this only stopped the poller —
-			// the pi session kept running forever (orphaned). Now it pre-sets
-			// 'stopped' (so the .then keeps it, per W1) and aborts the session.
-			// Issue #240: an explicit per-agent timeout is HONORED verbatim; this
-			// deadline DEFAULTS to 30m only when no timeout is given. It is a
-			// default, not a ceiling. Issue #244: exactly ONE deadline timer per
-			// run — an explicit timeout is owned by the session-manager W3 timer,
-			// so this index timer arms ONLY on the no-timeout path. Issue #448: the
-			// spawn is told `deadlineOwner: "caller"` so it does NOT arm a second
-			// default for the same run (an omission here double-arms).
-			try {
-				const hasExplicitDeadline = spawn.timeout !== undefined && spawn.timeout > 0;
-				const hardCapMs = spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS;
-				hardCapHandle = hasExplicitDeadline ? undefined : setTimeout(() => {
-					if (!completed && !agent.completedAt) {
-						try {
-							completed = true;
-							if (pollInterval !== undefined) clearInterval(pollInterval);
-							// Pre-set stopped BEFORE aborting so the .then in
-							// spawnBackgroundSession keeps the stopped state.
-							updateAgentStatus(identity.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
-							agent._sessionRef?.abort().catch(() => {
-								// Abort may reject if the session is mid-dispose;
-								// the status flip above is already recorded.
-							});
-							// Capture whatever final output exists in the session
-							const hardCapSession = agent._sessionRef;
-							const hardCapFinalOutput = hardCapSession ? extractFinalOutput(hardCapSession) : '';
-							setAgentFinalOutput(identity.id, hardCapFinalOutput);
-							releaseLiveCount();
-							// m6: deadline abort is a stop, not a completion — mirror the
-							// W3/poller stopped path (no completedSubagents increment).
-							repaintStatus(state, ctx);
-						} catch (err) {
-							// Defensive: never let the deadline timer throw uncaught — that would
-							// skip the finalize claim, the counter decrement, and the notification.
-							// Do all fallible work first (output capture), then mutate counters,
-							// then notify — a throw mid-path can't double-fire mutations.
-							completed = true;
-							if (pollInterval !== undefined) clearInterval(pollInterval);
-							// m3: the try may have thrown BEFORE updateAgentStatus ran (e.g.
-							// persistAgent fs failure) — leave the record terminal so
-							// get_subagent_result doesn't report 'running' and the W3 timer
-							// guard (!agent.completedAt) can't re-fire later.
-							try {
-								updateAgentStatus(identity.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
-							} catch { /* ignore */ }
-							try {
-								setAgentFinalOutput(identity.id, extractAgentFinalOutput(agent));
-							} catch { /* ignore */ }
-							releaseLiveCount();
-							state.failedSubagents++;
-							repaintStatus(state, ctx);
-						}
-					}
-				}, hardCapMs);
-			} catch (err) {
-				recordTailFailure("deadline timer", err);
 			}
 
 			try {
@@ -3824,7 +3771,7 @@ export default function (pi: ExtensionAPI) {
 
 				// E4: SLA tracking — compute metrics if enabled
 				if (state.config.slaTrackingEnabled) {
-					const recentRuns = state.getRunEntries(ctx).slice(0, state.config.slaWindowSize);
+					const recentRuns = state.getLogicalRunEntries(ctx).slice(0, state.config.slaWindowSize);
 					const metrics = computeSLAMetrics(recentRuns);
 					log.info("SLA metrics computed", {
 						totalRuns: metrics.totalRuns,
@@ -4321,7 +4268,7 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		getAgent: RecoveryAgentLookup,
 	): SubagentRun[] {
-		return visibleRunEntriesForSession(state.getRunEntries(ctx), getAgent);
+		return visibleRunEntriesForSession(state.getLogicalRunEntries(ctx), getAgent);
 	}
 
 	/**
@@ -4623,7 +4570,7 @@ export default function (pi: ExtensionAPI) {
 			const agent = getAgent(id);
 			if (!agent) return; // pruned or foreign id — nothing to notify
 			const knob = state.config.completionNotify ?? "all";
-			const run = resolveRunEntry(state.getRunEntries(ctx), id);
+			const run = resolveRunEntry(state.getLogicalRunEntries(ctx), id);
 			// Issue #365: a transport-class background failure is re-dispatched once
 			// and the source notice is suppressed (the retry's settle is the wake).
 			// Every other terminal type — and every non-retryable failure — keeps the

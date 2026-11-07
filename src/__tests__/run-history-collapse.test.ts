@@ -76,14 +76,18 @@ describe("collapseRunsForHistory (issue #259)", () => {
 		expect(rows[0]).toBe(terminal);
 	});
 
-	it("emits one row even when a run has multiple terminal entries (defensive)", () => {
+	it("emits one row even when a run has multiple terminal entries — the LAST one wins (#453)", () => {
+		// Issue #453: a deadline snapshot + a late settle's payload amendment are
+		// two terminal entries for ONE run, and the amendment (the last appended) is
+		// the amended record. `findLast` (not `find`) is what makes that true; this
+		// is mutant M5's killer at the history surface.
 		const firstTerminal = run("run-a", "done", { cost: 0.01 });
 		const secondTerminal = run("run-a", "failed", { errorMessage: "late failure" });
 
 		const rows = collapseRunsForHistory([firstTerminal, secondTerminal]);
 
 		expect(rows).toHaveLength(1);
-		expect(rows[0]).toBe(firstTerminal);
+		expect(rows[0]).toBe(secondTerminal);
 	});
 
 	it("preserves the source's newest-first ordering and drops in-flight runs in place", () => {

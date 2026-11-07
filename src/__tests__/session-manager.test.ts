@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import { existsSync, statSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { recordTimeoutDelays } from "./fixtures/deadline-census";
 
 // Mocks must exist before vi.mock factory runs (hoisted).
 const mocks = vi.hoisted(() => ({
@@ -97,7 +98,7 @@ vi.mock("../event-bus", () => ({
 import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, backgroundSessionDir } from "../session-manager";
 import { listInflightRuns } from "../run-registry";
 import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
-import { CUSTOM_ENTRY_TYPES, NO_ASSISTANT_OUTPUT_REASON, PROMPT_NEVER_ISSUED_MESSAGE, type SubagentRun } from "../types";
+import { CUSTOM_ENTRY_TYPES, NO_ASSISTANT_OUTPUT_REASON, PROMPT_NEVER_ISSUED_MESSAGE, isSubagentRunShape, type SubagentRun } from "../types";
 import { buildCompletionMessage } from "../notify-completion";
 import { isTransportRetryable } from "../transport-retry";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
@@ -782,6 +783,16 @@ function transcriptIds(): string[] {
 		.filter((id): id is string => id !== undefined);
 }
 
+/**
+ * Record every `setTimeout` delay armed while the clock is frozen, and return the
+ * (append-only) list. Issue #453 [c 8]: the deadline test counts ARMS by delay, not
+ * timers — a normal run arms a poller and a footer too, so a raw timer count can
+ * never answer "how many deadlines does this path create".
+ */
+
+/** The census's delay list for the CURRENT run — the only deadline budget used. */
+const DEFAULT_BUDGET_MS = 30 * 60 * 1000;
+
 describe("spawnBackgroundSession deadline independence (#448)", () => {
 	/** A never-settling prompt keeps the run 'running' so the deadline can fire. */
 	function hangPrompt(): void {
@@ -899,8 +910,13 @@ describe("spawnBackgroundSession deadline independence (#448)", () => {
 		}
 	});
 
-	it("arms one default deadline for a direct spawn and only aborts (#448)", async () => {
+	it("arms exactly one default deadline for a direct spawn, at delay == budget (#453)", async () => {
 		vi.useFakeTimers();
+		// [c 8] Arm CENSUS, not a timer count: a normal run arms other timers too
+		// (poller, footer), so count only the arms whose delay is the budget — with
+		// the clock frozen, elapsed == 0 and the arm delay IS the budget.
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
 		try {
 			hangPrompt();
 			mocks.session.abort.mockClear();
@@ -908,14 +924,12 @@ describe("spawnBackgroundSession deadline independence (#448)", () => {
 				task: "direct spawn, no explicit timeout",
 			});
 
-			// Exactly one deadline — and it is the 30 m default.
-			expect(vi.getTimerCount()).toBe(1);
+			expect(census.delays.filter((ms) => ms === DEFAULT_BUDGET_MS)).toHaveLength(1);
 			await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 1);
 			expect(mocks.session.abort).not.toHaveBeenCalled();
 
-			// A live session dir the timer must NOT prune, and a run entry it must
-			// NOT finalize (abort-only, #453). The SDK's per-run dir is stubbed out
-			// by the mocked SessionManager, so create it here.
+			// A live session dir the timer must NOT prune. The SDK's per-run dir is
+			// stubbed out by the mocked SessionManager, so create it here.
 			const sessionDir = backgroundSessionDir(agent.id);
 			mkdirSync(sessionDir, { recursive: true });
 			const runWritesBefore = fakePi.appendEntry.mock.calls.length;
@@ -926,28 +940,62 @@ describe("spawnBackgroundSession deadline independence (#448)", () => {
 			const after = getAgent(agent.id);
 			expect(after?.status).toBe("stopped");
 			expect(after?.error).toContain("Timed out after 1800000ms");
-			expect(fakePi.appendEntry.mock.calls.length).toBe(runWritesBefore);
+			// The timer NOW writes the classification snapshot (issue #453) — one
+			// append, `failed` + `timeout`, a valid full entry — and prunes nothing.
+			expect(fakePi.appendEntry.mock.calls.length).toBe(runWritesBefore + 1);
+			const deadlineEntry = lastRunEntry() as unknown as SubagentRun;
+			expect(deadlineEntry.status).toBe("failed");
+			expect(deadlineEntry.errorCategory).toBe("timeout");
+			expect(deadlineEntry.errorMessage).toContain("Timed out after 1800000ms");
+			expect(isSubagentRunShape(deadlineEntry)).toBe(true);
 			expect(existsSync(sessionDir)).toBe(true);
 		} finally {
+			census.restore();
 			vi.useRealTimers();
 		}
 	});
 
-	it("a caller-owned spawn arms no default of its own (no double arm) (#448)", async () => {
+	it("arms exactly one deadline for an explicit timeout, at delay == budget (#453)", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
+		try {
+			hangPrompt();
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "direct spawn, explicit timeout",
+				timeout: 5000,
+			});
+
+			// ONE arm, and no second one hiding behind the default: an explicit
+			// budget must not also arm a 30 m one.
+			expect(census.delays.filter((ms) => ms === 5000)).toHaveLength(1);
+			expect(census.delays.filter((ms) => ms === DEFAULT_BUDGET_MS)).toHaveLength(0);
+		} finally {
+			census.restore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("arms the deadline before it returns, so a CALLER throw cannot unbounded the run (#453)", async () => {
 		vi.useFakeTimers();
 		try {
 			hangPrompt();
 			mocks.session.abort.mockClear();
 			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
-				task: "caller owns the deadline",
-				deadlineOwner: "caller",
+				task: "caller tail throws after the spawn",
 			});
 
-			// The caller's timer (index.ts) is the run's ONLY deadline.
-			expect(vi.getTimerCount()).toBe(0);
-			await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
-			expect(mocks.session.abort).not.toHaveBeenCalled();
-			expect(getAgent(agent.id)?.status).toBe("running");
+			// F1.4's measured hole: while the caller owned the deadline, a throw
+			// between the spawn returning and the caller's arm left the run
+			// UNBOUNDED. The arm now precedes the return, so the same throw is
+			// harmless — the timer is already installed.
+			expect(() => {
+				throw new Error("caller tail boom");
+			}).toThrow("caller tail boom");
+
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.status).toBe("stopped");
 		} finally {
 			vi.useRealTimers();
 		}
@@ -981,6 +1029,326 @@ describe("spawnBackgroundSession deadline independence (#448)", () => {
 
 			expect(mocks.session.abort).not.toHaveBeenCalled();
 			expect(getAgent(id)?.status).toBe(statusAfterThrow);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #453 (ADR 0023 decisions 2/3): the deadline timer writes the terminal
+// run-record SNAPSHOT (`failed` + `timeout` — the run vocabulary has no
+// `stopped`) and prunes NOTHING. A still-writing SDK session holds its dir, so
+// the dir decision belongs to the settle, from the settle's own category.
+// ---------------------------------------------------------------------------
+
+/** Every run entry appended so far, in append order. */
+function runEntries(): SubagentRun[] {
+	return fakePi.appendEntry.mock.calls
+		.filter(([type]) => type === CUSTOM_ENTRY_TYPES.run)
+		.map(([, run]) => run as SubagentRun);
+}
+
+/** The run entries that carry a terminal classification. */
+function terminalRunEntries(): SubagentRun[] {
+	return runEntries().filter((run) => run.status !== "running");
+}
+
+describe("spawnBackgroundSession deadline record (#453)", () => {
+	/** A prompt that settles only when the test says so (a cooperative abort). */
+	function heldPrompt(): { settle: () => void; reject: (err: Error) => void } {
+		let settle!: () => void;
+		let reject!: (err: Error) => void;
+		mocks.session.prompt.mockReturnValue(
+			new Promise<void>((resolve, fail) => {
+				settle = resolve;
+				reject = fail;
+			}),
+		);
+		return { settle, reject };
+	}
+
+	/** The SDK's per-run dir is stubbed by the mock, so the test creates it. */
+	function liveSessionDir(id: string): string {
+		const dir = backgroundSessionDir(id);
+		mkdirSync(dir, { recursive: true });
+		return dir;
+	}
+
+	it("writes a failed/timeout snapshot, keeps the session dir, retires the registry entry (#453)", async () => {
+		vi.useFakeTimers();
+		try {
+			heldPrompt();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline snapshot",
+				timeout: 5000,
+			});
+			const sessionDir = liveSessionDir(agent.id);
+			// Tracked at spawn: the registry means "an owner may still be running".
+			expect(listInflightRuns().some((e) => e.id === agent.id)).toBe(true);
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			// Exactly ONE terminal entry, and it is the run vocabulary's shape:
+			// `failed` + `timeout` (a `SubagentRun` has no `stopped` status).
+			expect(terminalRunEntries()).toHaveLength(1);
+			const entry = terminalRunEntries()[0];
+			expect(entry.status).toBe("failed");
+			expect(entry.errorCategory).toBe("timeout");
+			expect(entry.errorMessage).toContain("Timed out after 5000ms");
+			expect(entry.originalParams?.errorCategory).toBe("timeout");
+			expect(isSubagentRunShape(entry)).toBe(true);
+			// The terminal classification ends the "an owner may still run" claim.
+			expect(listInflightRuns().some((e) => e.id === agent.id)).toBe(false);
+			// ...but it does NOT delete a directory a live child may still write.
+			expect(existsSync(sessionDir)).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a later cooperative settle prunes the dir from ITS OWN category and writes no second classification (#453)", async () => {
+		vi.useFakeTimers();
+		try {
+			const prompt = heldPrompt();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline then settle",
+				timeout: 5000,
+			});
+			const sessionDir = liveSessionDir(agent.id);
+
+			await vi.advanceTimersByTimeAsync(5001);
+			expect(terminalRunEntries()).toHaveLength(1);
+
+			// The abort finally lands: the run settles as an aborted stop.
+			prompt.settle();
+			await vi.advanceTimersByTimeAsync(0);
+
+			// The settle pruned with its own category (the pre-set timeout is not
+			// transport-retryable). One flag for write+prune would have skipped this
+			// prune entirely (mutant M4).
+			expect(existsSync(sessionDir)).toBe(false);
+			// TWO records now — the deadline snapshot and the settle's payload
+			// AMENDMENT (ADR 0023 decision 4) — but exactly ONE classification:
+			// the amendment must never re-open what the run was (mutant M7).
+			const terminal = terminalRunEntries();
+			expect(terminal).toHaveLength(2);
+			expect(new Set(terminal.map((run) => `${run.status}/${run.errorCategory}`))).toEqual(
+				new Set(["failed/timeout"]),
+			);
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a throwing deadline append neither escapes the timer nor suppresses the abort (#453)", async () => {
+		vi.useFakeTimers();
+		try {
+			const prompt = heldPrompt();
+			mocks.session.abort.mockClear();
+			setLogCwd(env.baseDir);
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a throwing append",
+				timeout: 5000,
+			});
+			const sessionDir = liveSessionDir(agent.id);
+			// The mock RECORDS a call even when it throws, so the honest witness for
+			// "the write landed" is a store of its own: the next run-entry append
+			// throws, and only the ones that return are collected.
+			let throwNext = true;
+			const landed: SubagentRun[] = [];
+			fakePi.appendEntry.mockImplementation((type: string, data: unknown) => {
+				if (type !== CUSTOM_ENTRY_TYPES.run) return;
+				if (throwNext) {
+					throwNext = false;
+					throw new Error("append boom");
+				}
+				landed.push(data as SubagentRun);
+			});
+			try {
+				await vi.advanceTimersByTimeAsync(5001);
+
+				// The abort is independent of the write (it precedes it), the failure is
+				// surfaced, and the timer callback did not throw into the event loop.
+				expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+				expect(getAgent(agent.id)?.status).toBe("stopped");
+				expect(readLog()).toContain("deadline record write failed");
+				expect(readLog()).toContain("append boom");
+				// Nothing landed: no terminal record, and no prune either.
+				expect(landed.filter((run) => run.status !== "running")).toHaveLength(0);
+				expect(existsSync(sessionDir)).toBe(true);
+				expect(readLog()).not.toContain("Background run settled");
+
+				// `entryWritten` was NOT set by the failed append, so the settle still
+				// CLASSIFIES the run (it does not amend a record that never landed).
+				prompt.settle();
+				await vi.advanceTimersByTimeAsync(0);
+				const terminal = landed.filter((run) => run.status !== "running");
+				expect(terminal).toHaveLength(1);
+				expect(terminal[0].status).toBe("failed");
+				expect(terminal[0].errorCategory).toBe("timeout");
+				expect(readLog()).toContain("Background run settled");
+				expect(readLog()).not.toContain("Background run amended");
+				expect(existsSync(sessionDir)).toBe(false);
+			} finally {
+				fakePi.appendEntry.mockReset();
+			}
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a late settle AMENDS the payload with output produced after the deadline (#453 [c 4])", async () => {
+		vi.useFakeTimers();
+		try {
+			const prompt = heldPrompt();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "late output",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+			const [snapshot] = terminalRunEntries();
+			expect(snapshot.fullOutput).toBeUndefined();
+			expect(snapshot.cost).toBe(0);
+
+			// The child kept working until the abort landed: a real assistant turn
+			// (and its usage) arrives AFTER the deadline. Today's shipped settle
+			// finalized BEFORE capturing, so the amendment would persist "".
+			//
+			// `stopReason: "length"` is deliberate: it makes this settle's OWN
+			// classification differ from the snapshot's (`length`, not `aborted`), so
+			// an amendment that re-derived the classification from this call instead
+			// of the snapshot would be visible below (mutant M7).
+			mocks.session.messages = [
+				{ role: "user", content: "probe task" },
+				{ role: "assistant", content: [{ type: "text", text: "work done past the deadline" }], stopReason: "length" },
+			];
+			prompt.settle();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const terminal = terminalRunEntries();
+			expect(terminal).toHaveLength(2);
+			const amendment = terminal[1];
+			// The payload moved...
+			expect(amendment.fullOutput).toBe("work done past the deadline");
+			expect(amendment.outputSummary).toBe("work done past the deadline");
+			// ...and the classification did not (same claim, no second one).
+			expect(amendment.status).toBe("failed");
+			expect(amendment.errorCategory).toBe("timeout");
+			expect(amendment.errorMessage).toBe("Timed out after 5000ms");
+			// The snapshot's 'aborted', NOT this settle's 'length' — a payload
+			// amendment never re-opens the classification.
+			expect(amendment.stopReason).toBe("aborted");
+			expect(amendment.stopReason).toBe(snapshot.stopReason);
+			expect(amendment.id).toBe(agent.id);
+			expect(isSubagentRunShape(amendment)).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("shortens the armed delay by the setup time already spent, and the reason still names the budget (#453 [c 8])", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
+		try {
+			heldPrompt();
+			mocks.session.abort.mockClear();
+			// Inject 1 234 ms of setup between record creation and the arm: the run
+			// entry persist is the statement that sits between them. A frozen clock
+			// plus this shift is the measured drift (F5.1).
+			fakePi.appendEntry.mockImplementationOnce(() => {
+				vi.setSystemTime(Date.now() + 1234);
+			});
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "setup delay",
+				timeout: 5000,
+			});
+
+			// The budget is 5000; the armed delay is the REMAINDER (mutant M8 arms
+			// the full budget and drifts past the displayed deadlineAt).
+			expect(census.delays.filter((ms) => ms === 5000)).toEqual([]);
+			expect(census.delays.filter((ms) => ms === 5000 - 1234)).toHaveLength(1);
+
+			await vi.advanceTimersByTimeAsync(5000 - 1234 - 1);
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			// Mutant M9: the reason reports the BUDGET, never the remainder.
+			expect(getAgent(agent.id)?.error).toContain("Timed out after 5000ms");
+			expect(getAgent(agent.id)?.error).not.toContain("3766");
+		} finally {
+			census.restore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("a zero remainder still aborts, immediately, with the full-budget reason (#453 [c 8])", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
+		try {
+			heldPrompt();
+			mocks.session.abort.mockClear();
+			// Setup took LONGER than the budget: the remainder clamps to 0 rather
+			// than going negative (a negative delay is an instant kill / an overflow,
+			// and normalizeTimeout would read 0 as "no timeout" — the wrong path).
+			fakePi.appendEntry.mockImplementationOnce(() => {
+				vi.setSystemTime(Date.now() + 6000);
+			});
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "over-budget setup",
+				timeout: 5000,
+			});
+
+			expect(census.delays.filter((ms) => ms === 0)).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.error).toContain("Timed out after 5000ms");
+		} finally {
+			census.restore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not retain for retry on the timeout classification, even when the settle is transport-shaped (#453)", async () => {
+		vi.useFakeTimers();
+		try {
+			const prompt = heldPrompt();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline then transport-shaped settle",
+				timeout: 5000,
+				// A retry-eligible dispatch: attempt 1, background, has originalParams.
+				originalParams: { background: true },
+			});
+			const sessionDir = liveSessionDir(agent.id);
+			// Big enough that the retention rule WOULD retain it (it refuses dirs
+			// under RETAINED_MIN_BYTES).
+			writeFileSync(join(sessionDir, "session.jsonl"), "x".repeat(4096));
+
+			await vi.advanceTimersByTimeAsync(5001);
+			const snapshot = terminalRunEntries()[0];
+			// The retention gate, evaluated on the snapshot's own fields: `timeout`
+			// is not a transport failure, so a deadline-stopped run is never retained.
+			expect(
+				isTransportRetryable({
+					status: snapshot.status,
+					errorCategory: snapshot.errorCategory,
+					errorMessage: snapshot.errorMessage,
+					attempt: snapshot.attempt,
+					originalParams: snapshot.originalParams,
+				}),
+			).toBe(false);
+			expect(existsSync(join(sessionDir, ".transport-retained"))).toBe(false);
+
+			// The settle arrives with a transport-shaped failure; the classification
+			// it settles on is still the pre-set timeout (F4.2), so it prunes.
+			prompt.reject(new Error("socket hang up"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(existsSync(sessionDir)).toBe(false);
+			expect(terminalRunEntries()[0].errorCategory).toBe("timeout");
 		} finally {
 			vi.useRealTimers();
 		}

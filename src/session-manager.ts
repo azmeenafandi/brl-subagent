@@ -1204,15 +1204,6 @@ export async function spawnBackgroundSession(
     toolOptions?: SubagentToolOptions;
     /** Per-agent deadline in ms — the session is aborted when exceeded (issue #28 W3). */
     timeout?: number;
-    /** Issue #448: who owns this run's NO-TIMEOUT deadline.
-     *  - `"caller"` — the caller (index.ts' dispatch path) arms and clears the
-     *    30 m default itself; this function arms nothing for an absent timeout
-     *    (arming here too would DOUBLE-arm the run).
-     *  - `"spawn"` (default) — this function arms exactly one default deadline
-     *    so a direct spawn cannot run unbounded.
-     *  An EXPLICIT positive `timeout` is always this function's W3 timer,
-     *  whatever the owner: the caller delegates explicit deadlines here. */
-    deadlineOwner?: "caller" | "spawn";
     /** Git isolation for the background run — "branch" creates a work branch (issue #28 W4). */
     gitMode?: GitMode;
     /** Issue #98: snapshot of the caller's raw params — lets retryRunId restore
@@ -1386,6 +1377,11 @@ export async function spawnBackgroundSession(
   const attempt = params.attempt ?? 1;
   const owner = currentProcessOwner();
 
+  // Issue #453 (decision 5): the run's budget, computed ONCE. The record's
+  // `timeoutMs` (what the monitor displays as `deadlineAt`) and the armed timer
+  // derive from the same value, so the display cannot drift from the timer.
+  const budgetMs = effectiveBackgroundBudget(params.timeout);
+
   // Create agent record
   const agent: BackgroundAgent = {
     id,
@@ -1398,7 +1394,7 @@ export async function spawnBackgroundSession(
     // stamped BEFORE persistAgent so the initial record already carries it — a
     // result/wake read after the spawn closure is gone must not fall back to
     // "unknown".
-    timeoutMs: effectiveBackgroundBudget(params.timeout),
+    timeoutMs: budgetMs,
     task: params.task,
     model: params.model || 'unknown',
     thinkingLevel: params.thinkingLevel || 'medium',
@@ -1458,45 +1454,70 @@ export async function spawnBackgroundSession(
   //
   // U2 (D2) retention: this is the SINGLE terminal choke point for a background
   // run — git-setup refusal, a synchronous prompt throw, the .then completed /
-  // provider-failed / aborted branches, the .catch stopped / failed branches and
-  // the markTerminalBestEffort catch-all ALL land here exactly once (the
-  // runFinalized guard). The session-dir decision below therefore covers every
-  // settle path. The index.ts poller crash notices are NOT settlements (they flip
-  // only the live UI state and leave the run/agent record to this settle); an
-  // interrupted run (U1 boot-scan mark) never reaches this function and KEEPS its
-  // file (D3).
-  let runFinalized = false;
+  // provider-failed / aborted branches, the .catch stopped / failed branches, the
+  // markTerminalBestEffort catch-all and (since #453) the deadline timer ALL land
+  // here. The session-dir decision below therefore covers every settle path. The
+  // index.ts poller crash notices are NOT settlements (they flip only the live UI
+  // state and leave the run/agent record to this settle); an interrupted run (U1
+  // boot-scan mark) never reaches this function and KEEPS its file (D3).
+  //
+  // Issue #453 (ADR 0023 decision 3): TWO once-only guards, not one.
+  //   - `entryWritten` — a terminal RECORD for this id is durable. The deadline
+  //     may write it first (a classification snapshot); every later write is then
+  //     a payload AMENDMENT of that snapshot, never a second classification.
+  //   - `pruned` — the session-dir decision has been made. Only a SETTLE makes it
+  //     (the deadline passes `prune: false`), and it is made even when the entry
+  //     already exists — otherwise a cooperative timeout would stop pruning.
+  // Collapsing the two is the M4 mutant the dir-survives test kills.
+  let entryWritten = false;
+  let pruned = false;
+  /**
+   * The DEADLINE's classification snapshot — the amendment's base, and ONLY the
+   * deadline ever sets it (see the arm site). A settle→settle re-entry (the
+   * catch-all after a throwing handler) therefore still writes nothing, which is
+   * the single-terminal-entry contract the old `runFinalized` guard enforced.
+   */
+  let snapshot: SubagentRun | undefined;
+
+  /**
+   * This call's OWN classification. The retention/prune gate reads THIS — never
+   * the snapshot's — because at the deadline a run looks like `timeout` (not
+   * transport-retryable) while its true settle category may decide otherwise
+   * (ADR 0023 decision 3).
+   *
+   * Issue #179 (D1/D2): the classifier's explicit category wins (it knows the
+   * terminal stopReason); otherwise fall back to the legacy message-based
+   * classification (refused spawns, sync throws, preflight rejections, the
+   * catch-all) so no failure is ever left uncategorized.
+   */
+  const classifyFailure = (
+    status: "done" | "failed",
+    error?: string,
+    terminal?: { errorCategory?: ErrorCategory },
+  ): ErrorCategory | undefined =>
+    status === "failed"
+      ? terminal?.errorCategory ??
+        (error
+          ? classifyError({
+              messages: [],
+              usage: { ...EMPTY_USAGE },
+              exitCode: 1,
+              stderr: "",
+              errorMessage: error,
+            })
+          : undefined)
+      : undefined;
+
+  /** Returns the entry it appended (the terminal record or the amendment), if any. */
   const finalizeRunEntry = (
     status: "done" | "failed",
     error?: string,
-    terminal?: { stopReason?: string; errorCategory?: ErrorCategory },
-  ): void => {
-    if (runFinalized) return;
-    runFinalized = true;
+    terminal?: { stopReason?: string; errorCategory?: ErrorCategory; prune?: boolean },
+  ): SubagentRun | undefined => {
     const usage = agent.result?.usage ?? EMPTY_USAGE;
     const finalOutput = agent.finalOutput ?? "";
-    // Issue #179 (D1/D2): the classifier's explicit category wins (it knows the
-    // terminal stopReason); otherwise fall back to the legacy message-based
-    // classification (refused spawns, sync throws, preflight rejections, the
-    // catch-all) so no failure is ever left uncategorized.
-    //
-    // Issue #404: HOISTED above the session-dir decision below — the retention
-    // gate must read the same category/value the run record is about to get, and
-    // that decision has to happen before the record write (see the invariant
-    // note there). `classifyError` is pure and total, so hoisting costs nothing.
-    const errorCategory =
-      status === "failed"
-        ? terminal?.errorCategory ??
-          (error
-            ? classifyError({
-                messages: [],
-                usage: { ...EMPTY_USAGE },
-                exitCode: 1,
-                stderr: "",
-                errorMessage: error,
-              })
-            : undefined)
-        : undefined;
+    // The TRUE category of THIS call — see the note on `classifyFailure`.
+    const errorCategory = classifyFailure(status, error, terminal);
     // U2 (D2) prune + #404 retention. THE INVARIANT: the prune/mark decision
     // precedes the run-record write, and everything above it is pure — so no
     // throw between the decision and the write can leave a terminal run's session
@@ -1506,7 +1527,12 @@ export async function spawnBackgroundSession(
     // run that will be re-dispatched has a reader for the retained session, and
     // it is built from the values this record is about to carry, so the reader
     // and the retainer can never disagree.
-    if (!agent.interruptedAt) {
+    //
+    // Issue #453: gated on `pruned` (not on `entryWritten`) and skipped when the
+    // CALLER asks (`prune: false` — the deadline). One flag for both would make a
+    // successful deadline write suppress this decision (mutant M4).
+    if ((terminal?.prune ?? true) && !pruned && !agent.interruptedAt) {
+      pruned = true;
       // The CAPTURED dir — tests swap STORAGE_DIR per case, and a mid-run change
       // of root must never mis-target the delete or the marker.
       const sessionDir = agent._sessionFile ? dirname(agent._sessionFile) : backgroundSessionDir(id);
@@ -1522,6 +1548,39 @@ export async function spawnBackgroundSession(
       if (!retained || !retainSessionDir(id, sessionDir)) {
         pruneSessionDir(id, sessionDir);
       }
+    }
+
+    // Issue #453 (ADR 0023 decision 4): a second write is an AMENDMENT — the
+    // deadline already wrote the classification, so only the PAYLOAD moves
+    // (cost/usage/output/final detail). `status`, `errorCategory`, `stopReason`
+    // and `errorMessage` are the snapshot's and are never rewritten: a late
+    // settle's real usage must not re-open what the run WAS (that would be a
+    // second classification claim — mutant M7).
+    if (entryWritten) {
+      // No snapshot => this is a settle RE-ENTRY (the settle already wrote the
+      // record); nothing new to say. Only a deadline snapshot is amendable.
+      if (!snapshot) return undefined;
+      const amended: SubagentRun = {
+        ...snapshot,
+        turns: usage.turns,
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - startedAtMs,
+        cost: usage.cost,
+        tokensIn: usage.input,
+        tokensOut: usage.output,
+        outputSummary: finalOutput.slice(0, 200),
+        fullOutput: finalOutput || undefined,
+      };
+      persistRunRecord(pi, amended);
+      log.info("Background run amended after a late settle", {
+        agentId: id,
+        status: amended.status,
+        errorCategory: amended.errorCategory,
+        turns: usage.turns,
+        tokensOut: usage.output,
+        cost: usage.cost,
+      });
+      return amended;
     }
     // Issue #187: capture the RAW terminal reason BEFORE coercion. `finalTurnError`
     // means "the final turn was a PROVIDER error" (isProviderError); deriving it
@@ -1560,6 +1619,10 @@ export async function spawnBackgroundSession(
           : run.originalParams,
     };
     persistRunRecord(pi, entry);
+    // Issue #453: set only AFTER the append resolved. A throwing write therefore
+    // leaves `entryWritten === false`, so a later settle still classifies the run
+    // instead of amending a record that was never written (mutant M3).
+    entryWritten = true;
     // Issue #179 (D6): the explicit settle line — the log's job is to record the
     // CLASSIFIED OUTCOME, which cwd alone can never convey.
     log.info("Background run settled", {
@@ -1571,6 +1634,7 @@ export async function spawnBackgroundSession(
       errorCategory,
       error: error ?? null,
     });
+    return entry;
   };
 
   // Issue #447: git teardown state + the teardown itself, declared BEFORE the
@@ -1884,15 +1948,22 @@ export async function spawnBackgroundSession(
     // Issue #122: a timed-out run burned tokens — record the real usage
     // (the git-diff block above must not leave the empty fallback).
     recordSessionUsage();
+    // Issue #31: capture the final output while the session is still live, then
+    // release the ref on the terminal path (memory retention; the poller treats
+    // a nulled ref on a terminal agent as expected).
+    //
+    // Issue #453 [c 4]: the CAPTURE now PRECEDES the record. These fields are the
+    // terminal entry's payload, and after a deadline stop this call writes the
+    // AMENDMENT — so output produced after the deadline (the child kept running
+    // until the abort landed, and the SDK may still deliver the final turn) must
+    // be in `agent.finalOutput` by the time the amendment reads it. It used to
+    // finalize first, which persisted the pre-deadline (usually empty) output.
+    captureAndReleaseSession();
     // Issue #120 (Track 1): agent.error carries the reason when the stop was a
     // deadline timeout ('Timed out after Xms' → 'timeout'); a user cancel
     // (stop_subagent) sets no error, so fall back to the honest user-abort
     // stamp (→ 'aborted') instead of the old ambiguous 'Aborted or timed out'.
     finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE, { stopReason });
-    // Issue #31: capture the final output while the session is still live,
-    // then release the ref on the terminal path (memory retention; the poller
-    // treats a nulled ref on a terminal agent as expected).
-    captureAndReleaseSession();
   };
 
   // Issue #53: the settle handlers (.then/.catch below) run in promise
@@ -1963,15 +2034,44 @@ export async function spawnBackgroundSession(
   // The session will run independently
   // F27: wrap in the task-as-data fence — the user message is DATA, not
   // instructions (see SUBAGENT_INSTRUCTIONS Task Boundary).
-  //
-  // Issue #448 (defect 1): the deadline timer is ABORT-ONLY — status 'stopped',
-  // the transcript note, session.abort() — and NOTHING else: no run-entry
-  // finalization and no session-dir pruning, because a non-settling prompt may
-  // still be writing the session file (#453). The abort is attempted OUTSIDE the
-  // fallible bookkeeping: a throwing status/transcript write must never leave
-  // the record saying 'stopped' while the child keeps running. The status flip
-  // stays BEFORE the abort — the settle path classifies the run from it.
-  const armDeadline = (budgetMs: number): ReturnType<typeof setTimeout> =>
+
+  /**
+   * The ONE place a background deadline is created — and its written contract
+   * (issue #453, ADR 0023).
+   *
+   * OWNERSHIP. The session-manager owns the deadline on every path (explicit
+   * timeout and the 30 m default); no caller arms or clears one. It is installed
+   * before `prompt()`, so no statement anywhere after this call — a caller throw
+   * included — can leave the run unbounded. The only thing that clears it is the
+   * run's own settlement.
+   *
+   * WHAT THE DEADLINE OWNS: nothing that outlives the call. The deadline owns no
+   * filesystem or git resource, waits for no settle, never prunes the run's
+   * session dir and never releases the branch lock; ONLY A SETTLE DOES. What it
+   * does is bounded and idempotent: flip the agent to `stopped` (which also sets
+   * `completedAt`, so the caller's poller releases the live row on its next
+   * tick), note the transcript, attempt ONE cooperative abort, and write the
+   * classification SNAPSHOT (`failed` + `timeout`, `prune: false`).
+   *
+   * ORDERING IS THE CONTRACT. status → abort → snapshot. A throwing status or
+   * transcript write must never leave the record saying 'stopped' while the child
+   * keeps running, and a throwing append must never suppress the abort — each
+   * step is contained and the abort sits between the other two. The status flip
+   * stays BEFORE the abort because the settle classifies the run from it.
+   *
+   * TIME ORIGIN. The two arguments are deliberately separate: `budgetMs` is the
+   * run's budget and is the ONLY value the reason may name; `delayMs` is the
+   * REMAINDER still owed at arm time (the budget is anchored at record creation).
+   * One argument for both is the defect this replaced: the timer fired at
+   * arm + budget (drifting past the displayed `startedAt + timeoutMs`), and using
+   * the remainder as the reason would truncate the budget a user asked for.
+   *
+   * STATED LIMITS (unchanged, and in the CHANGELOG): the abort is COOPERATIVE. A
+   * prompt that ignores it keeps running; its run then keeps its session dir, its
+   * branch lock until process exit, and no registry entry (the terminal snapshot
+   * retires that claim). Nothing here can force it, and nothing here pretends to.
+   */
+  const armDeadline = (budgetMs: number, delayMs: number): ReturnType<typeof setTimeout> =>
     setTimeout(() => {
       if (agent.completedAt) return; // already settled — nothing to abort
       const reason = `Timed out after ${budgetMs}ms`;
@@ -1997,6 +2097,27 @@ export async function spawnBackgroundSession(
           error: (err as Error).message,
         });
       }
+      // Issue #453: the durable classification SNAPSHOT. `timeout` is the run
+      // vocabulary's existing category (there is no `stopped` status for a run —
+      // `running | done | failed`), and `prune: false` is what keeps a
+      // still-writing SDK session's directory alive. Contained: a failed append
+      // must not escape the timer (it would kill the host), and it must NOT undo
+      // the abort above — `entryWritten` stays false, so the settle still writes
+      // the terminal record when (if) it arrives.
+      try {
+        // `snapshot` is assigned from the RETURNED entry, i.e. only after the
+        // append resolved — this is what makes the late settle an amendment
+        // rather than a second classification.
+        snapshot = finalizeRunEntry('failed', reason, {
+          stopReason: 'aborted',
+          errorCategory: 'timeout',
+          prune: false,
+        });
+      } catch (err) {
+        log.warn(`spawnBackgroundSession: deadline record write failed for ${id}`, {
+          error: (err as Error).message,
+        });
+      }
       if (bookkeepingFailure) {
         // Surfaced through the log (the same audit surface the settle paths
         // use) — never absorbed into silence.
@@ -2007,22 +2128,29 @@ export async function spawnBackgroundSession(
               : String(bookkeepingFailure),
         });
       }
-    }, budgetMs);
+    }, delayMs);
 
-  // Issue #448 (defect 2): deadline ownership. The 30 m default is armed HERE —
-  // before prompt(), so a direct spawn is bounded even when prompt() throws
-  // synchronously (the catch below clears it) — UNLESS the caller owns it
-  // (`deadlineOwner: "caller"`, the index.ts dispatch path, which arms the same
-  // default itself and must not be double-armed). An explicit positive timeout
-  // is always this function's W3 timer, honoured verbatim after normalizeTimeout:
-  // a raw value >= 2^31 normalizes to "no timeout", so the default applies
-  // (issue #240 — never an instant kill). `effectiveBackgroundBudget` is the
-  // single definition of the 30 m default; it is never re-spelled here.
-  if (params.timeout !== undefined && params.timeout > 0) {
-    deadlineHandle = armDeadline(effectiveBackgroundBudget(params.timeout));
-  } else if ((params.deadlineOwner ?? 'spawn') === 'spawn') {
-    deadlineHandle = armDeadline(effectiveBackgroundBudget(undefined));
-  }
+  // Issue #453 (ADR 0023, decision 1): ONE owner. This function arms the run's
+  // deadline on EVERY path — the explicit timeout when there is one, else the
+  // 30 m default — and no caller arms a second one (`deadlineOwner` is gone with
+  // the caller's timer). It is armed HERE, before prompt(), so the run is
+  // bounded even when prompt() throws synchronously (the catch below clears it).
+  //
+  // `effectiveBackgroundBudget` is the single definition of the default and of
+  // the normalization (never re-spelled here): a raw value that is 0, negative,
+  // NaN, Infinity or >= 2^31 means "no explicit timeout", so the default applies
+  // (issue #240 — never an instant kill) and an explicit 45 m is honored verbatim
+  // (it is not a ceiling).
+  //
+  // Issue #453 / ADR 0023 decision 5: the budget is anchored at RECORD CREATION.
+  // `startedAtMs` is the agent record's own clock (epoch ms — the same field the
+  // monitor turns into `deadlineAt`), and the setup between that line and here
+  // (transcript start, record persist, branch setup, a branch-lock wait) is time
+  // the run has already spent, so it is subtracted. `Math.max(0, …)` is required:
+  // a negative remainder must fire immediately, not overflow. `normalizeTimeout`
+  // is the WRONG path for a remainder — it maps 0 or negative to "no timeout",
+  // which would silently disarm a run that is already over budget.
+  deadlineHandle = armDeadline(budgetMs, Math.max(0, budgetMs - (Date.now() - startedAtMs)));
 
   // Issue #447: the ACCEPTANCE marker — ONE write, immediately before the
   // prompt, that turns `acceptedAt: null` into a timestamp on both durable

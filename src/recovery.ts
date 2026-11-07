@@ -387,8 +387,8 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 		// anything. A LIVE owner may still be inside its own pre-start window (the
 		// git-branch lock, a slow transcript start) and will write its acceptance
 		// marker momentarily — finalizing it here would stamp a false `failed`
-		// terminal record that the run's real terminal entry could never outrank
-		// (`resolveTerminalRunEntry` prefers the FIRST terminal entry). No owner or
+		// terminal record the run's real terminal entry could not outrank (the
+		// store keeps the earlier entry, and readers prefer the LAST one). No owner or
 		// an unverifiable one ⇒ no write, exactly as for the mark path.
 		const owner = entry.owner;
 		const ownerDead =

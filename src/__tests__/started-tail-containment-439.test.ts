@@ -9,7 +9,7 @@
  *
  * Three contracts are pinned: CONTAINMENT (a post-spawn fault is a started run
  * with degraded monitoring, and one group's fault never skips the others —
- * T1/T2/T3), ORDERING (counter → row → repaint, so the stale sweep cannot
+ * T1/T2), ORDERING (counter → row → repaint, so the stale sweep cannot
  * decrement a sibling — T2b/T2c), and ONE advisory that does not consume the
  * terminal claim (T6), plus the fan-out and rejected-spawn shapes (T4/T7). The
  * retry and toast halves live in transport-auto-retry.test.ts (T5/T8), which
@@ -285,15 +285,6 @@ function faultRegister(
 	});
 }
 
-/** Throw only for the index deadline timer — other timeouts arm normally. */
-function breakDeadlineTimer(): void {
-	const realSetTimeout = globalThis.setTimeout;
-	vi.stubGlobal("setTimeout", ((fn: never, ms?: number) => {
-		if (ms === DEFAULT_BACKGROUND_DEADLINE_MS) throw new Error("timer wheel full");
-		return realSetTimeout(fn, ms as never);
-	}) as unknown as typeof setTimeout);
-}
-
 /** Throw only for the 2s progress poller — other intervals arm normally. */
 function breakPoller(): void {
 	const realSetInterval = globalThis.setInterval;
@@ -385,13 +376,14 @@ describe("post-spawn containment (issue #439)", () => {
 		// G2 ran: the poller ticks for this run (a skipped group would never tick).
 		await vi.advanceTimersByTimeAsync(2000);
 		expect(ticks.mock.calls.map((call) => call[0])).toContain("bg-439-1");
-
-		// G3 ran: the deadline fires and stops the run.
+		// Issue #453: the deadline is NOT a caller group any more — the caller
+		// arms no deadline at all, so there is no G3 to observe here. The spawn's
+		// single arm (and its independence) is pinned in session-manager.test.ts.
 		await vi.advanceTimersByTimeAsync(DEFAULT_BACKGROUND_DEADLINE_MS);
-		expect(agentsById.get("bg-439-1")!._sessionRef!.abort).toHaveBeenCalledTimes(1);
+		expect(agentsById.get("bg-439-1")!._sessionRef!.abort).not.toHaveBeenCalled();
 	});
 
-	it("T2 — a G2 fault (poller not armed) still reports started and leaves G3 armed", async () => {
+	it("T2 — a G2 fault (poller not armed) still reports started and G1 still ran", async () => {
 		vi.useFakeTimers();
 		breakPoller();
 
@@ -406,32 +398,9 @@ describe("post-spawn containment (issue #439)", () => {
 		expect(text).not.toContain("Failed to spawn");
 		expect(advisories()).toHaveLength(1);
 
-		// G3 armed independently of G2.
-		await vi.advanceTimersByTimeAsync(DEFAULT_BACKGROUND_DEADLINE_MS);
-		expect(agentsById.get("bg-439-1")!._sessionRef!.abort).toHaveBeenCalledTimes(1);
-	});
-
-	it("T3 — a G3 fault (deadline not armed) still reports started and leaves no timer behind", async () => {
-		vi.useFakeTimers();
-		breakDeadlineTimer();
-		const ticks = vi.spyOn(SessionState.prototype, "updateLiveSubagent");
-
-		const result = await singleBackground({ task: "review the module", label: "review-module" });
-		const text = resultText(result);
-
-		expect(result.isError).toBe(false);
-		expect(text).toContain("Monitoring degraded");
-		expect(text).toContain("deadline timer");
-		expect(text).toContain("timer wheel full");
-		expect(text).not.toContain("Failed to spawn");
-		expect(advisories()).toHaveLength(1);
-
-		// G2 armed independently of G3...
-		await vi.advanceTimersByTimeAsync(2000);
-		expect(ticks.mock.calls.map((call) => call[0])).toContain("bg-439-1");
-		// ...and no deadline exists: the run is never force-stopped.
-		await vi.advanceTimersByTimeAsync(DEFAULT_BACKGROUND_DEADLINE_MS + 1);
-		expect(agentsById.get("bg-439-1")!._sessionRef!.abort).not.toHaveBeenCalled();
+		// G1 ran independently of G2: the counter + row + repaint landed, so the
+		// footer reports the run. (No caller deadline exists to arm — issue #453.)
+		expect(lastActiveCount()).toBe(1);
 	});
 });
 
@@ -440,27 +409,27 @@ describe("post-spawn containment (issue #439)", () => {
 // ---------------------------------------------------------------------------
 
 describe("counter/row ordering (issue #439)", () => {
-	it("T2b — a G1 fault next to a healthy sibling: the deadline releases only its own count", async () => {
+	it("T2b — a G1 fault next to a healthy sibling: the POLLER releases only its own count", async () => {
 		vi.useFakeTimers();
 		faultRegister((id) => id === "bg-439-2");
 
-		// The sibling owns an EXPLICIT timeout, so no index deadline is armed for it
-		// (issue #448: the session-manager owns that timer) — only the degraded run's
-		// default deadline fires below, which is what isolates the decrement.
 		const sibling = await singleBackground({ task: "unit one", label: "one", timeout: 600_000 });
 		expect(sibling.isError).toBe(false);
 		const degraded = await singleBackground({ task: "unit two", label: "two" });
 		expect(resultText(degraded)).toContain("Monitoring degraded");
 		expect(degraded.isError).toBe(false);
 
-		await vi.advanceTimersByTimeAsync(DEFAULT_BACKGROUND_DEADLINE_MS);
+		// Issue #453: the caller arms no deadline, so the release comes from the
+		// poller observing the terminal record — the same path an explicit-timeout
+		// run has always used (the spawn's timer sets both fields).
+		const degradedAgent = agentsById.get("bg-439-2")!;
+		degradedAgent.status = "stopped";
+		degradedAgent.completedAt = Date.now();
+		await vi.advanceTimersByTimeAsync(2000);
 
 		// The degraded run's own count is released; the healthy sibling keeps 1.
-		// (The deadline's externally visible act is the session abort; the status
-		// flip is session-manager-internal and its own tests own it.)
-		expect(agentsById.get("bg-439-2")!._sessionRef!.abort).toHaveBeenCalledTimes(1);
-		expect(agentsById.get("bg-439-1")!._sessionRef!.abort).not.toHaveBeenCalled();
 		expect(lastActiveCount()).toBe(1);
+		expect(agentsById.get("bg-439-1")!.completedAt).toBeUndefined();
 	});
 
 	it("T2c — a post-registration G1 fault cannot make the stale sweep release a sibling's count", async () => {
@@ -481,6 +450,73 @@ describe("counter/row ordering (issue #439)", () => {
 		// A third run repaints the footer from the live counters: 2 = sibling + new.
 		await singleBackground({ task: "unit three", label: "three", timeout: 600_000 });
 		expect(lastActiveCount()).toBe(2);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 2b. Deadline-stop cleanup is the POLLER's (issue #453)
+//
+// With one owner (the spawn) the caller arms no deadline, so every caller-owned
+// step a deadline stop needs — output capture, the finalize claim, the counter
+// decrement, the repaint — comes from the poller observing the terminal record,
+// exactly as it already does for an explicit-timeout run.
+// ---------------------------------------------------------------------------
+
+describe("deadline-stop cleanup is the poller's (issue #453 [c 5])", () => {
+	it("T2d — the poller releases the row, repaints, and then stops itself", async () => {
+		vi.useFakeTimers();
+		const ticks = vi.spyOn(SessionState.prototype, "updateLiveSubagent");
+
+		await singleBackground({ task: "deadline stopped", label: "stopped" });
+		expect(lastActiveCount()).toBe(1);
+
+		// The spawn's timer has fired: it flipped the record to `stopped` (which
+		// also sets `completedAt`) and aborted. Nothing else in the caller saw it.
+		const agent = agentsById.get("bg-439-1")!;
+		agent.status = "stopped";
+		agent.completedAt = Date.now();
+
+		await vi.advanceTimersByTimeAsync(2000);
+
+		// Released and repainted — and NOT reported as a crash (a deadline stop is
+		// a stop, not a failure).
+		expect(lastActiveCount()).toBe(0);
+		expect(notified).toEqual([]);
+		// Self-terminated: the ONLY timer left is the finalized live entry's 3 s
+		// deferred delete. A surviving 2 s poller would keep a second handle here
+		// forever (and re-arm nothing), so this is the "it does not spin" check.
+		const ticksAtStop = ticks.mock.calls.length;
+		expect(vi.getTimerCount()).toBe(1);
+		await vi.advanceTimersByTimeAsync(3001);
+		expect(vi.getTimerCount()).toBe(0);
+		expect(ticks.mock.calls.length).toBe(ticksAtStop);
+	});
+
+	it("T2e — a throwing registration cannot strand the counter: the poller still releases it", async () => {
+		vi.useFakeTimers();
+		// G1 counted the run, then threw BEFORE registering the row. The count is
+		// still releasable because the claim is per-id and needs no row — which is
+		// why the deadline no longer has to be the safety net for this shape.
+		faultRegister((id) => id === "bg-439-1");
+
+		await singleBackground({ task: "registration throws", label: "throws" });
+		// The fault skipped G1's repaint, so a healthy sibling's repaint is what
+		// makes the stranded count visible: 2 = the stranded run + the sibling.
+		await singleBackground({ task: "sibling", label: "sibling" });
+		expect(lastActiveCount()).toBe(2);
+
+		// Both runs stop (the spawn's deadline would have flipped the degradation
+		// run; a user stop does the same). The claim is per-id and needs no row, so
+		// the never-registered run's count is still releasable — the counter returns
+		// to zero without the deadline having to be a safety net.
+		for (const id of ["bg-439-1", "bg-439-2"]) {
+			const agent = agentsById.get(id)!;
+			agent.status = "stopped";
+			agent.completedAt = Date.now();
+		}
+		await vi.advanceTimersByTimeAsync(2000);
+
+		expect(lastActiveCount()).toBe(0);
 	});
 });
 
@@ -543,12 +579,14 @@ describe("degraded-monitoring advisory (issue #439)", () => {
 	it("T6 — one advisory with two failing groups; channel independence; the terminal notice still lands", async () => {
 		vi.useFakeTimers();
 
-		// Phase 1: G1 AND G3 fail → exactly ONE advisory naming both groups.
+		// Phase 1: G1 AND G2 fail → exactly ONE advisory naming both groups. (The
+		// deadline was the third group; issue #453 moved it into the spawn, so the
+		// caller's ledger has two.)
 		faultRegister((id) => id === "bg-439-1");
-		breakDeadlineTimer();
+		breakPoller();
 		const both = await singleBackground({ task: "unit one", label: "one" });
 		expect(resultText(both)).toContain("live-monitor bookkeeping");
-		expect(resultText(both)).toContain("deadline timer");
+		expect(resultText(both)).toContain("progress polling");
 		expect(advisories()).toHaveLength(1);
 		expect((advisories()[0].message.details as { tailFailures: string[] }).tailFailures).toHaveLength(2);
 		expect(notified).toHaveLength(1);
