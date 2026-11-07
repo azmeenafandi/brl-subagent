@@ -454,6 +454,73 @@ describe("counter/row ordering (issue #439)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2b. Deadline-stop cleanup is the POLLER's (issue #453)
+//
+// With one owner (the spawn) the caller arms no deadline, so every caller-owned
+// step a deadline stop needs — output capture, the finalize claim, the counter
+// decrement, the repaint — comes from the poller observing the terminal record,
+// exactly as it already does for an explicit-timeout run.
+// ---------------------------------------------------------------------------
+
+describe("deadline-stop cleanup is the poller's (issue #453 [c 5])", () => {
+	it("T2d — the poller releases the row, repaints, and then stops itself", async () => {
+		vi.useFakeTimers();
+		const ticks = vi.spyOn(SessionState.prototype, "updateLiveSubagent");
+
+		await singleBackground({ task: "deadline stopped", label: "stopped" });
+		expect(lastActiveCount()).toBe(1);
+
+		// The spawn's timer has fired: it flipped the record to `stopped` (which
+		// also sets `completedAt`) and aborted. Nothing else in the caller saw it.
+		const agent = agentsById.get("bg-439-1")!;
+		agent.status = "stopped";
+		agent.completedAt = Date.now();
+
+		await vi.advanceTimersByTimeAsync(2000);
+
+		// Released and repainted — and NOT reported as a crash (a deadline stop is
+		// a stop, not a failure).
+		expect(lastActiveCount()).toBe(0);
+		expect(notified).toEqual([]);
+		// Self-terminated: the ONLY timer left is the finalized live entry's 3 s
+		// deferred delete. A surviving 2 s poller would keep a second handle here
+		// forever (and re-arm nothing), so this is the "it does not spin" check.
+		const ticksAtStop = ticks.mock.calls.length;
+		expect(vi.getTimerCount()).toBe(1);
+		await vi.advanceTimersByTimeAsync(3001);
+		expect(vi.getTimerCount()).toBe(0);
+		expect(ticks.mock.calls.length).toBe(ticksAtStop);
+	});
+
+	it("T2e — a throwing registration cannot strand the counter: the poller still releases it", async () => {
+		vi.useFakeTimers();
+		// G1 counted the run, then threw BEFORE registering the row. The count is
+		// still releasable because the claim is per-id and needs no row — which is
+		// why the deadline no longer has to be the safety net for this shape.
+		faultRegister((id) => id === "bg-439-1");
+
+		await singleBackground({ task: "registration throws", label: "throws" });
+		// The fault skipped G1's repaint, so a healthy sibling's repaint is what
+		// makes the stranded count visible: 2 = the stranded run + the sibling.
+		await singleBackground({ task: "sibling", label: "sibling" });
+		expect(lastActiveCount()).toBe(2);
+
+		// Both runs stop (the spawn's deadline would have flipped the degradation
+		// run; a user stop does the same). The claim is per-id and needs no row, so
+		// the never-registered run's count is still releasable — the counter returns
+		// to zero without the deadline having to be a safety net.
+		for (const id of ["bg-439-1", "bg-439-2"]) {
+			const agent = agentsById.get(id)!;
+			agent.status = "stopped";
+			agent.completedAt = Date.now();
+		}
+		await vi.advanceTimersByTimeAsync(2000);
+
+		expect(lastActiveCount()).toBe(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // 3. Fan-out and the rejected spawn
 // ---------------------------------------------------------------------------
 

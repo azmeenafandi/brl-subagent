@@ -213,8 +213,11 @@ describe("one logical run for the raw-entry consumers (#453 [c 3])", () => {
 	const amended = [spawnEntry("run-a"), snapshotEntry("run-a", 2), amendmentEntry("run-a", 3)];
 
 	it("metrics: ONE run at the amendment's cost, not 3 runs at $5", () => {
-		const raw = computeSLAMetrics(amended);
-		const projected = computeSLAMetrics(projectLogicalRuns(amended));
+		const over = stateOverFor(amended);
+		const raw = computeSLAMetrics(over.state.getRunEntries(over.ctx));
+		// Through the REAL accessor every consumer uses, not the helper directly —
+		// so removing the projection from `getLogicalRunEntries` is visible here.
+		const projected = computeSLAMetrics(over.state.getLogicalRunEntries(over.ctx));
 
 		// The measured defect this projection removes: every entry is a "run".
 		expect(raw.totalRuns).toBe(3);
