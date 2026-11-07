@@ -32,7 +32,11 @@
 //                               passes the ledger. CONDUCTOR/MERGE-TIME ONLY — the log lives under the
 //                               local `.pi/` (gitignored), so it is NOT CI-visible; CI keeps running
 //                               `--selftest` + `--ledger`.
-//   --line ... --label <name>   ALSO append the printed line to the provenance log (default below):
+//   --line ... --legacy-line --label <name>
+//                               prints the line and writes NO provenance row. A conductor-assigned
+//                               line must never mint the row that proves a classifier produced it
+//                               (2026-11-07: it could, so a `retro:` exception cited spoofed evidence).
+//   --classifier ... --label <name>  the ONLY provenance writer:
 //                               `<iso>\t<label>\t<line>`. This is what makes the line
 //                               MACHINE-PRODUCED — the 2026-10-31 gap was a hand-typed `medium (0.70)`
 //                               line whose classifier answer was actually `high (0.32)`, and a
@@ -705,7 +709,7 @@ function parseLineArgs(args) {
 	return { raw: raw ?? "", label, legacy };
 }
 
-function reportLine(raw, label, legacy = false) {
+function reportLine(raw, label, legacy = false, provenancePath = DEFAULT_PROVENANCE_LOG) {
 	if (raw.trim() === "") {
 		throw new StructuralError(
 			`--line needs the classifier JSON, e.g. --line '{"level":"medium","conf":0.84,"risk":"C2","worktree":true}' --label <name>`,
@@ -726,10 +730,18 @@ function reportLine(raw, label, legacy = false) {
 		);
 	}
 	console.log(line);
-	if (label !== undefined) {
-		// Provenance: the ONLY writer of this log. A line without a row was not printed here.
-		appendProvenanceEntry(DEFAULT_PROVENANCE_LOG, line, label);
-		console.error(`jev-check: provenance row appended to ${DEFAULT_PROVENANCE_LOG} (label ${JSON.stringify(label)})`);
+	if (label !== undefined && !legacy) {
+		// Provenance: the ONLY writer of this log, and only from a CLASSIFIER answer. A legacy
+		// (conductor-assigned) line must never mint the row that proves a classifier produced it —
+		// 2026-11-07: `--line --legacy-line --label` wrote a row for a hand-typed line, so a `retro:`
+		// exception could cite spoofed evidence (#452 review).
+		appendProvenanceEntry(provenancePath, line, label);
+		console.error(`jev-check: provenance row appended to ${provenancePath} (label ${JSON.stringify(label)})`);
+	} else if (label !== undefined) {
+		console.error(
+			"jev-check: --legacy-line does NOT write provenance — a conductor-assigned line cannot be " +
+				"its own evidence. Run the classifier for a row (`--classifier '<raw answers>' --label <name>`).",
+		);
 	}
 	return 0;
 }
@@ -771,12 +783,12 @@ function classifierPayloadToLine(raw) {
 	});
 }
 
-function reportClassifier(raw, label) {
+function reportClassifier(raw, label, provenancePath = DEFAULT_PROVENANCE_LOG) {
 	const line = classifierPayloadToLine(raw);
 	console.log(line);
 	if (label !== undefined) {
-		appendProvenanceEntry(DEFAULT_PROVENANCE_LOG, line, label);
-		console.error(`jev-check: provenance row appended to ${DEFAULT_PROVENANCE_LOG} (label ${JSON.stringify(label)})`);
+		appendProvenanceEntry(provenancePath, line, label);
+		console.error(`jev-check: provenance row appended to ${provenancePath} (label ${JSON.stringify(label)})`);
 	}
 	return 0;
 }
@@ -1263,6 +1275,33 @@ const SELFTEST_CASES = [
 			}
 			const parsed = parseLineArgs(['{"level":"medium","conf":0.63,"risk":"C1","worktree":true}', "--label", "impl", "--legacy-line"]);
 			assertEqual(parsed.legacy, true, "legacy acknowledged");
+		},
+	},
+	{
+		name: "--line --legacy-line --label writes NO provenance row (#452: a line cannot be its own evidence)",
+		run() {
+			const dir = mkdtempSync(join(tmpdir(), "jev-legacy-"));
+			const path = join(dir, "jev-lines.log");
+			const read = () => {
+				try {
+					return readFileSync(path, "utf8");
+				} catch {
+					return "";
+				}
+			};
+			const payload = '{"level":"high","conf":0.62,"risk":"C2","worktree":false}';
+			reportLine(payload, "spoofed", true, path);
+			assertEqual(read(), "", "a legacy line must not mint a row");
+			// Control: the CLASSIFIER path DOES write one, so the assertion above discriminates.
+			reportClassifier(
+				JSON.stringify({ answers: { level: { choice: "high", confidence: 0.62 }, risk: { choice: "C2" }, worktree: { probability: 0.2 } } }),
+				"legit",
+				path,
+			);
+			if (!/\tlegit\t/.test(read())) {
+				throw new Error("the control row was not written — the assertion above proves nothing");
+			}
+			rmSync(dir, { recursive: true, force: true });
 		},
 	},
 	{

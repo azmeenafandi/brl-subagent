@@ -217,6 +217,12 @@ row in `.pi/jev-lines.log`. The report then prints it as an acknowledged **`[pro
 the offence stays visible; an exception that names no label, or names one that does not exist, leaves
 the dispatch an offender and says why.
 
+**A line cannot be its own evidence.** `--line --legacy-line --label` prints the line but writes **no**
+provenance row; only `--classifier … --label` does. Before 2026-11-07 it wrote one, so a conductor could
+mint the row that validates their own hand-typed line and then cite it in a `retro:` exception — the
+spoof chain a #452 review demonstrated live. The retrospective row must therefore come from the
+classifier, which is the whole point of naming it.
+
 Why a label and not a sentence: an invented confidence plus a persuasive paragraph would otherwise
 clear the gate. The retrospective row must be printed with `--classifier … --label <name>` *after*
 the fact, and naming it forces the evidence into the log (2026-11-07: a hand-typed `high (0.62)` whose
