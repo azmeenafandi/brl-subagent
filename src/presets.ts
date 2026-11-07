@@ -12,7 +12,8 @@ import * as path from "node:path";
 import type { SubagentPreset, ThinkingLevel } from "./types";
 import { THINKING_LEVELS } from "./types";
 import type { Logger } from "./logging";
-import { loadMarkdownRecords } from "./loader";
+import { applyFrontmatterMappers, loadMarkdownRecords } from "./loader";
+import type { FrontmatterFieldMapper, FrontmatterMapContext } from "./loader";
 
 // `parseFrontmatter` moved to loader.ts when the four loader copies collapsed
 // into one walk (issue #380). Re-exported so the existing import sites keep
@@ -93,31 +94,42 @@ export function validatePreset(meta: Record<string, unknown>, fileName: string):
  */
 type OmittedPresetField = "timeout";
 
+/**
+ * Compile-time pin on the allowlist being EXACTLY `"timeout"` (#436 review
+ * nit): the `satisfies` below only notices a field that is missing from the
+ * table, so adding a new field to BOTH `SubagentPreset` and this union used to
+ * compile cleanly — the reviewed bypass. A tuple-wrapped union extends a
+ * one-element tuple only when it is that member, so a second entry turns this
+ * into `never` and the assignment under it fails with TS2322.
+ */
+type OmittedMustStayTimeout = [OmittedPresetField] extends ["timeout"] ? true : never;
+
+/** Kept live by the export; its only job is to fail `tsc` when the pin flips. */
+export const PRESET_OMIT_PIN: OmittedMustStayTimeout = true;
+
 /** Every preset field that frontmatter MUST be able to populate (issue #436). */
 type MappedPresetField = Exclude<keyof SubagentPreset, OmittedPresetField>;
 
 /**
- * The non-frontmatter inputs a mapper may read: the resolved name (which comes
- * from the file/validator, not always from `meta`) and the markdown body.
+ * Per-key return types: the mapper for `outputFile` must return
+ * `SubagentPreset["outputFile"]` (a string | undefined), so a mapper that
+ * returns `42` — previously blessed by the `unknown` value type plus the
+ * assembly cast — is now a compile error at the row.
  */
-interface PresetMapContext {
-	name: string;
-	body: string;
-}
-
-type PresetFieldMapper = (meta: Record<string, unknown>, ctx: PresetMapContext) => unknown;
+type PresetFieldMappers = {
+	[K in MappedPresetField]: FrontmatterFieldMapper<SubagentPreset[K]>;
+};
 
 /**
  * THE declaration of which frontmatter keys reach a `SubagentPreset` — one
  * table, so a field cannot be declared in the type and forgotten here.
  *
- * `satisfies Record<MappedPresetField, …>` is the parity pin: adding a field to
+ * `satisfies PresetFieldMappers` is the parity pin: adding a field to
  * `SubagentPreset` without a mapper is a COMPILE error (the record is missing a
- * key), and a mapper for a field the type no longer declares is an
- * excess-property error. Before #436 the object was a hand-written literal, so
- * a declared field (`outputFile`) could be dropped in total silence. The value
- * type is `PresetFieldMapper`, not `unknown`, because the assembly below CALLS
- * these entries — the key pin is identical either way.
+ * key), a mapper for a field the type no longer declares is an excess-property
+ * error, and a mapper returning the wrong field type is a third. Before #436
+ * the object was a hand-written literal, so a declared field (`outputFile`)
+ * could be dropped in total silence.
  */
 const PRESET_FIELD_MAPPERS = {
 	name: (_meta, ctx) => ctx.name,
@@ -132,7 +144,7 @@ const PRESET_FIELD_MAPPERS = {
 		Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
 	noBuiltinTools: (meta) => (meta.noBuiltinTools === "true" ? true : undefined),
 	promptGuideline: (meta) => (meta.promptGuideline as string) || undefined,
-} satisfies Record<MappedPresetField, PresetFieldMapper>;
+} satisfies PresetFieldMappers;
 
 // ---------------------------------------------------------------------------
 // Loading
@@ -147,18 +159,8 @@ function presetFromFrontmatter(
 	body: string,
 	name: string,
 ): SubagentPreset {
-	const ctx: PresetMapContext = { name, body };
-	// Widening the table's value type to `PresetFieldMapper` (it is a subtype of
-	// its inferred per-entry type) keeps the assembly free of per-entry casts.
-	const entries = Object.entries(PRESET_FIELD_MAPPERS as Record<string, PresetFieldMapper>);
-	// `Object.fromEntries` hands back `{ [k: string]: unknown }`, and an interface
-	// target has no implicit index signature, so the bridge through `unknown` is
-	// required. Its safety is the `satisfies` on PRESET_FIELD_MAPPERS: the table
-	// covers every mapped field of SubagentPreset and nothing else, so the built
-	// record has exactly that shape.
-	return Object.fromEntries(
-		entries.map(([field, mapper]) => [field, mapper(meta, ctx)]),
-	) as unknown as SubagentPreset;
+	const ctx: FrontmatterMapContext = { name, body };
+	return applyFrontmatterMappers<SubagentPreset>(PRESET_FIELD_MAPPERS, meta, ctx);
 }
 
 /**
