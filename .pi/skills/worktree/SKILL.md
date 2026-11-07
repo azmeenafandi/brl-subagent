@@ -471,8 +471,9 @@ mechanics, verdict format: `references/review-dispatch.md`.
   line, offenders print `timestamp + task head + reason` and exit 1, zero parsed
   dispatch events is exit 2. `--log` is conductor/merge-time (the log is local and
   gitignored, so it is NOT CI-visible; `--since` re-audits legacy dispatches).
-  `--line ... --label <name>` appends the printed line to the gitignored provenance log
-  (`.pi/jev-lines.log`), and `--log --require-provenance` additionally fails a dispatch
+  `--classifier ... --label <name>` appends the printed line to the gitignored provenance log
+  (`.pi/jev-lines.log`); `--line` never appends (refused without `--legacy-line`, no-write with
+  it), and `--log --require-provenance` additionally fails a dispatch
   line with no such row — fail-closed (exit 2) when the log is missing or empty. That is
   the check the format cannot make: a hand-typed confidence passes the shape.
   `--selftest` proves every path with fixtures. CI runs `--selftest` and `--ledger`

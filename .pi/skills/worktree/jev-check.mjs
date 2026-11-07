@@ -709,7 +709,7 @@ function parseLineArgs(args) {
 	return { raw: raw ?? "", label, legacy };
 }
 
-function reportLine(raw, label, legacy = false, provenancePath = DEFAULT_PROVENANCE_LOG) {
+function reportLine(raw, label, legacy = false) {
 	if (raw.trim() === "") {
 		throw new StructuralError(
 			`--line needs the classifier JSON, e.g. --line '{"level":"medium","conf":0.84,"risk":"C2","worktree":true}' --label <name>`,
@@ -730,14 +730,10 @@ function reportLine(raw, label, legacy = false, provenancePath = DEFAULT_PROVENA
 		);
 	}
 	console.log(line);
-	if (label !== undefined && !legacy) {
-		// Provenance: the ONLY writer of this log, and only from a CLASSIFIER answer. A legacy
-		// (conductor-assigned) line must never mint the row that proves a classifier produced it —
-		// 2026-11-07: `--line --legacy-line --label` wrote a row for a hand-typed line, so a `retro:`
-		// exception could cite spoofed evidence (#452 review).
-		appendProvenanceEntry(provenancePath, line, label);
-		console.error(`jev-check: provenance row appended to ${provenancePath} (label ${JSON.stringify(label)})`);
-	} else if (label !== undefined) {
+	// `--line` NEVER writes provenance. The throw above means a labeled call reaching here is
+	// always a legacy one, so there is no append branch at all — a conductor-assigned line cannot
+	// be its own evidence (2026-11-07: it could, and a `retro:` exception cited the spoofed row).
+	if (label !== undefined) {
 		console.error(
 			"jev-check: --legacy-line does NOT write provenance — a conductor-assigned line cannot be " +
 				"its own evidence. Run the classifier for a row (`--classifier '<raw answers>' --label <name>`).",
@@ -1290,7 +1286,7 @@ const SELFTEST_CASES = [
 				}
 			};
 			const payload = '{"level":"high","conf":0.62,"risk":"C2","worktree":false}';
-			reportLine(payload, "spoofed", true, path);
+			reportLine(payload, "spoofed", true);
 			assertEqual(read(), "", "a legacy line must not mint a row");
 			// Control: the CLASSIFIER path DOES write one, so the assertion above discriminates.
 			reportClassifier(
@@ -1357,6 +1353,22 @@ const SELFTEST_CASES = [
 			assertEqual(excepted.length, 0, "nothing excused on an unusable excuse");
 			if (!/not usable/.test(offenders[0].reason)) {
 				throw new Error(`offender must say why the excuse failed: ${JSON.stringify(offenders[0].reason)}`);
+			}
+		},
+	},
+	{
+		name: "--require-provenance: a PROSE-ONLY exception (no retro: label) stays an offender",
+		run() {
+			const { offenders, excepted } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", "Triage.\n\njev: high (0.62) · C2 · worktree n")),
+				STRICT_DISPATCH_CUTOFF,
+				[{ prefix: "fixture-agent", reason: "I promise this was classified, sorry", retro: null }],
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set(), labels: new Set(["retro-triage"]) },
+			);
+			assertEqual(offenders.length, 1, "offenders");
+			assertEqual(excepted.length, 0, "prose alone never excuses");
+			if (!/no retro:<label>/.test(offenders[0].reason)) {
+				throw new Error(`offender must name the missing marker: ${JSON.stringify(offenders[0].reason)}`);
 			}
 		},
 	},
