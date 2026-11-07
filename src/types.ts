@@ -860,6 +860,43 @@ export interface BackgroundAgent {
 	recoveryPosture?: RecoveryMode;
 }
 
+/**
+ * Issue #439: the part of a spawned background run that is needed to REPORT it,
+ * captured as a plain record the instant the spawn returns.
+ *
+ * Why a separate record rather than the agent itself: everything after the
+ * spawn is contained (a fault there must classify the run as STARTED, never as
+ * a failed spawn), and a containment whose degraded path still formats from the
+ * live agent re-opens the window it exists to close. Callers format from these
+ * fields only; `label` is `description` under the name `delegate_task` takes it
+ * from the caller, so a fan-out can render its unit label from the same record.
+ */
+export interface BackgroundAgentIdentity {
+	id: string;
+	label?: string;
+	description: string;
+	task: string;
+	status: AgentStatus;
+	model: string;
+}
+
+/**
+ * Issue #439: what the background-spawn tail returns. `agent` is the live
+ * record the tail's own poller/deadline close over; `identity` is the plain
+ * reporting record (all callers format from it); `tailFailures` is the
+ * containments' ledger — empty when the whole tail attached.
+ *
+ * A non-empty `tailFailures` means exactly one thing: **the run started and its
+ * monitoring is degraded**. It is never a spawn failure, so no caller may
+ * classify it as an error (the transport retry reads `isError` as "did not
+ * start" and would surface a false source failure).
+ */
+export interface BackgroundAgentSpawnResult {
+	agent: BackgroundAgent;
+	identity: BackgroundAgentIdentity;
+	tailFailures: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------

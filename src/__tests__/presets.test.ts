@@ -179,6 +179,18 @@ describe("validatePreset", () => {
 		expect(errors[0]).toContain("noBuiltinTools");
 	});
 
+	it("rejects a non-string outputFile (#436)", () => {
+		// outputFile is MAPPED from frontmatter (#436), so a non-string would reach
+		// the resolved params as a broken path. Load-time refusal, same shape as the
+		// thinkingLevel check above — the frontmatter walker yields strings today,
+		// so this guards the exported validator's contract.
+		const errors = validatePreset({ name: "agent", outputFile: 42 }, "auditor.md");
+		expect(errors).toHaveLength(1);
+		expect(errors[0]).toContain("outputFile");
+		expect(errors[0]).toContain("agent");
+		expect(errors[0]).toContain("auditor.md");
+	});
+
 	it("accepts valid boolean string values", () => {
 		expect(
 			validatePreset(

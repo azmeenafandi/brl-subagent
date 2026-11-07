@@ -14,7 +14,7 @@
 - **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and a 30-minute default deadline for runs that don't set one. Nothing orphans; nothing leaks.
 - **Preset-driven tool scoping** — every subagent runs with exactly the tools its job needs, restricted by preset or per-call `tools`/`excludeTools`, with auto-route that picks the right preset when you don't.
 - **Templates with slots** — saved, file-backed task templates with `${param}` placeholders for workflows you run again and again.
-- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence (`0o700` stores, `0o600` files; the directory mode is repaired on every write and is the confidentiality boundary), and a 2200+ test suite pinning every contract against the real pi SDK.
+- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence (`0o700` stores, `0o600` files; the directory mode is repaired on every write and is the confidentiality boundary), and a 2300+ test suite pinning every contract against the real pi SDK.
 
 ---
 
@@ -188,9 +188,13 @@ model: anthropic/claude-opus-4-6
 tools:
   - read
   - bash
+# optional — capture the run's findings to this path; needs the write tool
+outputFile: findings.md
 thinkingLevel: high
 ---
 ```
+
+A preset `outputFile` is validated at dispatch exactly like the `outputFile` parameter — it requires the `write` tool, so a preset that excludes `write` is a hard conflict. `timeout` is deliberately **not** a preset field: the deadline belongs to the call/template tier, not the persona (ADR 0022 §6).
 
 Custom presets override built-ins with the same name and survive `pi install` updates.
 

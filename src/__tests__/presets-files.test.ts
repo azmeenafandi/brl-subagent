@@ -10,9 +10,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { loadCustomPresets, writePresetFile } from "../presets";
 import { resolveSubagentParams } from "../params";
+import type { ResolveInputParams } from "../params";
+import { validatePreTask } from "../validate";
 import { SessionState } from "../state";
 import type { Logger } from "../logging";
-import type { SubagentPreset } from "../types";
+import type { ResolvedParams, SubagentPreset } from "../types";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const tempDirs: string[] = [];
@@ -398,5 +400,90 @@ describe("writePresetFile + loadCustomPresets", () => {
 		expect(p.excludeTools).toEqual(preset.excludeTools);
 		expect(p.noBuiltinTools).toBe(true);
 		expect(p.inheritSystemPrompt).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #436 — `outputFile` parity: a preset field reaches the resolved params
+// ---------------------------------------------------------------------------
+
+/**
+ * `presetFromFrontmatter` re-stated the SubagentPreset field list by hand, so
+ * `outputFile` was declared, merged by `resolveSubagentParams`, and dropped by
+ * the loader in silence. These tests pin the three links: the load (T1), the
+ * precedence (T3) and the pre-flight a preset value must NOT be able to skip
+ * (T4). The `timeout` half of the omission is already pinned by the ADR 0022 §6
+ * block above, which this change leaves untouched.
+ */
+describe("#436: a preset's `outputFile` reaches the load and the merged params", () => {
+	const PRESET_NAME = "findings-writer";
+
+	function makeCtx(): ExtensionContext {
+		return { cwd: "/workspace/project", ui: { notify: vi.fn() } } as unknown as ExtensionContext;
+	}
+
+	function makeLogger(): Logger {
+		return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Logger;
+	}
+
+	/** Write + load the fixture preset (plus `extra` frontmatter lines) and resolve a dispatch through it. */
+	function dispatch(extra: string[] = [], params: Partial<ResolveInputParams> = {}) {
+		const cwd = makeTempDir();
+		writeProjectPreset(
+			cwd,
+			"findings-writer.md",
+			[
+				"---",
+				`name: ${PRESET_NAME}`,
+				"description: Writes findings to a file",
+				"outputFile: findings.md",
+				...extra,
+				"---",
+				"You write findings.",
+			].join("\n"),
+		);
+		const loaded = loadCustomPresets(cwd);
+		const state = new SessionState();
+		state.customPresets = loaded;
+		const resolved = resolveSubagentParams(
+			{ task: "write up the findings", preset: PRESET_NAME, ...params },
+			state,
+			makeCtx(),
+			makeLogger(),
+		);
+		return { loaded, resolved };
+	}
+
+	/** Resolve then validate, exactly as the dispatch chokepoint does. */
+	function validate(resolved: ResolvedParams) {
+		return validatePreTask({
+			task: resolved.task,
+			outputFile: resolved.outputFile,
+			toolOptions: resolved.toolOptions,
+			cwd: resolved.effectiveCwd,
+		});
+	}
+
+	it("T1: loads `outputFile` from the preset frontmatter", () => {
+		const { loaded } = dispatch();
+		expect(loaded).toHaveLength(1);
+		expect(loaded[0].outputFile).toBe("findings.md");
+	});
+
+	it("T3: the call param wins, and the preset supplies the value when the call omits it", () => {
+		expect(dispatch().resolved.outputFile).toBe("findings.md");
+		expect(dispatch([], { outputFile: "call.md" }).resolved.outputFile).toBe("call.md");
+	});
+
+	it("T4: a preset-derived outputFile hits validatePreTask's hard write conflict", () => {
+		const rejected = validate(dispatch(["excludeTools:", "  - write"]).resolved);
+		expect(rejected.valid).toBe(false);
+		expect(rejected.errors.join("\n")).toMatch(
+			/outputFile is set but the 'write' tool is not available/,
+		);
+
+		// Control: the same preset without the exclusion passes — the rejection is
+		// the tool conflict, not "a preset with an outputFile is refused".
+		expect(validate(dispatch().resolved).valid).toBe(true);
 	});
 });

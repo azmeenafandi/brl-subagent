@@ -3,7 +3,38 @@
 > **How to use:** read §STATE → run its verify commands → work `## Open items` → follow `## Pointers`.
 > §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
 > `Verified:` staleness line; the write contract is `.pi/skills/handoff/references/handoff.md`.
-> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` and `-2026-11-06.md` — not current state.
+> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md`, `-2026-11-06.md`, `-2026-11-07b.md` — not current state.
+
+## STATE
+Verified: 40f5f8e (2026-11-07)
+
+- **dev** @ `40f5f8e` (PR #459 merge). Merged today: #457 (`4c696de`, #440 terminal-claim eviction), #458 (`9599eaf`, #436 preset field parity), #459 (`40f5f8e`, #455 survivor drain). Docs: ADR 0023 (`997ee5b`) + the #453 dossier (`357f599`). Worktrees live: `434`, `439`, `447` (implementing) — the `455`/`436`/`440` pair is cleaned.
+- **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e`, tag `v2.7.0`, npm `latest` 2.7.0. **Release checkpoint OPEN** (rule #6): #422, #425, #435, #441, #444, #446, #440, #436, #455 are extension code, merged and unreleased. Release on the maintainer's go only.
+- **Board (bug sweep in flight).** Closed today: #440, #436, #455. Open `bug`: **#434** (per-unit shape guard — impl running, 3 brief revisions after 2 critique rounds), **#439** (post-spawn tail containment — impl retry running, 3 brief revisions), **#447** (acceptance marker — impl running), **#453** (deadline ownership — ADR 0023 accepted, brief under critique; impl after #439), **#456** (NEW: the Jev line's `worktree` field cannot be satisfied on any src dispatch), **#460** (NEW design: a never-settling branch-mode run wedges the git lock + spawn queue). Unchanged: #426, #430 (enhancement), #440/#436/#455 closed; PR #402 held.
+- **Suite:** 108 files / **2303** green on dev (`npx vitest run --reporter=json`); typecheck clean; budget **1.98** (47,539 test / 24,057 source, ceiling 2.0 → ~575 test lines of headroom); README says `2300+`. The pre-existing `recovery.test.ts:1350` load flake is **fixed** by #455 and verified under full-suite load.
+- **Merge gate:** `merge-guard.sh <pr> <record>` from the **cockpit** (the subagent log is cockpit-local): (a) CI — note CI runs the **merge ref**, so a README test-count drift can be red on a green branch; (b) `#<pr>`; (c) line-start `Verdict:`; (d) reviewed head **or** `conductor-verified:`; (e) `--log --require-provenance` — exact-text match against provenance rows; (f) a `recheck-<pr>` row plus its own line-start `Risk class:`. Merge commits, never squash; PRs to `dev` never auto-close — close by hand.
+- **Dispatch models + presets:** implementer `project-implementer` + `deepseek/deepseek-flash`; reviewer `project-reviewer` + `openrouter/meta/muse-spark-1.3-contributor`; plan critic `project-plan-critic` + `openrouter/openai/gpt-6.1-terra` + **`thinkingLevel: "medium"` always**; design investigations `project-proposer` + `inheritSystemPrompt: false`. Non-probe work: explicit `background: true` + `timeout: 7200000`.
+- **Jev provenance — today's lesson (16 exceptions):** the printed line's `worktree` field comes from the classifier's *probability* (< 0.5 → `n`), so nearly every src dispatch prints `worktree n` while Rule 5 mandates a worktree → an exact-text provenance miss. **Paste the printed line verbatim** (never hand-type: today's two hand-typed lines both got the level wrong, one too high and one too low) and add an exceptions entry whose reason ends `retro:<label> (evidence row)` — **no trailing period**, the label regex swallows it. All 22 rows are in `.pi/jev-dispatch-exceptions.txt`; the systemic fix is #456.
+- **Project flag:** `{"brl-subagent": {"processChecks": true}}` gates the Jev line, the two-arm dispatch-shape pre-flight and engineering-bar injection; fail-open, one reader.
+
+### Since the last handover
+- **#453 dossier (26 min, 11 probes):** six decisions measured; contradicts the issue body in three places — the caller's cleanup is **poller**-owned (not timer-owned), the residue is **permanently** unrepaired (the boot scan drops terminal-agent entries, so the run entry stays `running` forever), and the claim-not-proof-of-registration hazard disappears if the timer owns no caller work. D1 measured: a caller-throw leaves the run unbounded, which #453 closes structurally. The branch-lock convoy is split to **#460**.
+- **ADR 0023 accepted:** one owner = the spawn (delete the caller timer + `deadlineOwner`); abort is cooperative and owns no resource; the timer may write the terminal record but **never prune** (`entryWritten`/`pruned` split); a late settle **amends** the payload (`find` → `findLast`); origin = record creation.
+- **#455 was a producer bug, not a test bug** (amended on the issue): `escalateKill` sampled death in the same instant it sent SIGKILL; 40/40 probes read alive (`R` pending, `Z` awaiting reap). Now A/B/C phases with a bounded drain — and **both** the drain and the grace loop are bounded twice (clock + poll count), because a no-op injected sleep defeated the clock bound alone (61,657 samples in one 100 ms window; 787,234 on the reviewer's box).
+- **Two subagent deaths left mutants in worktrees:** `impl-436` died with the brief's M2 (reversed `outputFile` precedence) applied; `impl-434` died 5 min in with partial work (steered the retry to review it). **Never trust a killed agent's worktree state** — check `git diff` for a reversed condition before continuing.
+- **#440 review under-declared risk:** the classifier recheck says `high (0.47) C1` for a review dispatched at `low (0.95) C2`. Review depth was adequate in practice, but the recheck is the gate that catches it.
+
+### Next actions
+1. **#434** and **#439** — impls in flight; review each at C2/C1 with the brief's mutant table, then merge.
+2. **#447** — impl in flight; C1 review; independent of #453.
+3. **#453** — critique the brief, then implement **after #439 merges** (it deletes the tail #439 restructures). Steps 1-5, ADR 0023.
+4. **#456** — the Jev `worktree` field; the fix removes the per-dispatch exception tax.
+5. **#460** — design-open; do not implement from the body.
+
+## Open items` → follow `## Pointers`.
+> §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
+> `Verified:` staleness line; the write contract is `.pi/skills/handoff/references/handoff.md`.
+> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md`, `-2026-11-06.md`, `-2026-11-07b.md` — not current state.
 
 ## STATE
 Verified: 172a522 (2026-11-07)
@@ -45,9 +76,9 @@ Verified: 172a522 (2026-11-07)
 ## Open items
 - **#426 design-open** — subagent timeouts: soft stage, stall watchdog vs cliff, extension, calibration. Filed 2026-11-03; no direction chosen. Do not implement from it.
 - **PR #402 held** — re-evaluate only when pi's typebox pin moves off 1.3.27.
-- **#434** — `tasks`/`chain`/`graph` units carry their own `timeout` + `thinkingLevel` and bypass the per-dispatch pre-flight; deferred from #431 by design, not by oversight.
-- **#436** — `outputFile` is declared on `SubagentPreset` but unmapped, so frontmatter `outputFile:` is silently ignored; `timeout`'s omission is deliberate and now pinned (ADR 0022 §6). The structural cause is `presetFromFrontmatter` re-stating the interface's field list with no key-parity check (`src/presets.ts:86`).
-- **Watch-CI** — PR #444 initially failed `recovery.test.ts` group-empty fast-path timing (1021 ms vs <500 ms); passed subsequent CI and isolated runs. Cause unconfirmed; do not assume a PR regression or dismiss a recurrence.
+- **#434** — three brief revisions: the rule must judge the **declared** level (the capped one silently disables it at the default `off` cap), `""` inherits but `timeout: 0` **overrides**, `processChecks` must be **threaded** (a relative-cwd re-read measured the wrong flag), and the notice comes after slot acquisition so it cannot name an unrun unit.
+- **#439** — three brief revisions: containment must reach **result construction** (both callers format from the agent object), the counter must increment **before** the live row (a row without a count lets the sweep decrement a sibling), and the advisory is **not** a terminal claim (contract recorded on the issue).
+- **Watch-CI** — the `recovery.test.ts` family (#299 A1 load flake) is fixed by #455; the earlier group-empty fast-path note is superseded. The lesson stands: a load-only failure is a PRODUCT defect until a before-commit comparison proves otherwise.
 - **Sweep candidates (advisory):** wire the CodeGraph freshness check into `merge-guard` (the rule is fixed, the enforcement is manual); `sprint-metrics` auto-retry accounting (it counts only explicit `retryRunId`, so transport auto-retries read as 0); `stop_subagent`'s bare not-found; Jev exceptions ↔ ledger cross-check.
 - **ADR amendments pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
 - **Probe isolation incident (2026-11-07):** the #449 plan critique inherited the harness environment and ran a real agentic `pi` CLI against OpenRouter `anthropic/claude-fable-5` — 4 turns, **$0.0698915** — and `env | grep PI_` exposed seven `PI_*` values (none credential-shaped) to that model. Now Rule 23 in `references/rule-notes.md`: `env -i` + scratch `HOME` + scratch `PI_CODING_AGENT_DIR` + fake creds + loopback-only (`env -i` + `PI_OFFLINE=1` alone is measured insufficient), and never an agentic CLI for a source question.

@@ -17,9 +17,10 @@
  * controls the WAKE (D2). D1: failed/stopped → "steer", completed → "followUp".
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
 	BackgroundAgent,
+	BackgroundAgentIdentity,
 	SubagentRun,
 	CompletionNotifyMode,
 	AgentStatus,
@@ -60,7 +61,11 @@ export interface DeliveryResolution {
 	triggerTurn: boolean;
 }
 
-/** Default dedupe cap: the set is simply cleared when it exceeds this. */
+/**
+ * Default dedupe cap. The set stays bounded by evicting its oldest entry when it
+ * exceeds this — never the whole set (issue #440: a clear-all forgot the id it had
+ * just claimed, so that id could be delivered twice).
+ */
 const DEDUPE_CAP = 200;
 
 /**
@@ -260,13 +265,20 @@ export function resolveDelivery(
 
 /**
  * Dedupe guard — first terminal event per id wins. Returns true when the event
- * should be delivered, false when it is a duplicate. Capped simply (W1): the
- * set is cleared when it exceeds the cap.
+ * should be delivered, false when it is a duplicate. Retention is bounded (W1):
+ * once the set exceeds the cap its OLDEST entry is evicted (a `Set` iterates in
+ * insertion order, so that is exact). The id just claimed is the newest entry, so
+ * its own call evicts an EARLIER id — not the set, and not that claim. A clear-all
+ * forgot the claim entirely, so the very next duplicate was delivered twice (#440).
  */
 export function markTerminalSeen(seen: Set<string>, id: string, cap = DEDUPE_CAP): boolean {
+	cap = Math.max(cap, 1); // a cap below 1 evicts the claim just made — retention must keep it
 	if (seen.has(id)) return false;
 	seen.add(id);
-	if (seen.size > cap) seen.clear();
+	if (seen.size > cap) {
+		const oldest = seen.values().next().value;
+		if (oldest !== undefined) seen.delete(oldest);
+	}
 	return true;
 }
 
@@ -304,4 +316,82 @@ export function sendCompletionNotification(
 	delivery: DeliveryResolution,
 ): void {
 	pi.sendMessage(message, { deliverAs: delivery.deliverAs, triggerTurn: delivery.triggerTurn });
+}
+
+// ---------------------------------------------------------------------------
+// Started-but-degraded monitoring advisory (issue #439)
+//
+// A background spawn whose tail faulted is a STARTED run whose monitoring is
+// degraded — never a failed spawn. The conductor learns that from the spawn
+// result's paragraph; the user learns it from this advisory. The advisory is
+// deliberately NOT a terminal notice and never takes the terminal claim: the
+// run is live, and its genuine completion notice must still be delivered later
+// (the resolved contract on the issue). A run that emits the advisory and then
+// never delivers a terminal notice (no listener at settle time) degrades to
+// "advisory only" — a stated limitation, not a silent one.
+// ---------------------------------------------------------------------------
+
+/** The advisory's custom message type. NOT a terminal notice type. */
+export const MONITORING_DEGRADED_CUSTOM_TYPE = "subagent-monitoring-degraded";
+
+/** The user-facing half of the advisory (the footer/toast line). */
+export const MONITORING_DEGRADED_TOAST = "Background agent started — monitoring degraded";
+
+/**
+ * The conductor-facing paragraph a STARTED-but-degraded spawn result carries.
+ * Built from the identity record only — never from a property read on the live
+ * agent (see the boundary statement in `startBackgroundAgent`). EMPTY when the
+ * tail attached fully: callers append it unconditionally.
+ */
+export function buildMonitoringDegradedParagraph(
+	unit: Pick<BackgroundAgentIdentity, "id" | "label">,
+	tailFailures: string[],
+): string {
+	if (tailFailures.length === 0) return "";
+	const name = unit.label ? `"${unit.label}" ` : "";
+	return (
+		`\n\nMonitoring degraded: ${name}started, but its live monitoring could not be attached (${tailFailures.join("; ")}). ` +
+		`Do not re-dispatch — the run is live; retrieve with get_subagent_result({ agent_id: "${unit.id}" }).`
+	);
+}
+
+/** The advisory's message body — the same facts, phrased for the user's screen. */
+export function buildMonitoringDegradedAdvisory(
+	unit: Pick<BackgroundAgentIdentity, "id" | "label">,
+	tailFailures: string[],
+): string {
+	if (tailFailures.length === 0) return "";
+	const name = unit.label ? ` "${unit.label}"` : "";
+	return (
+		`Background agent${name} started, but its monitoring is degraded (${tailFailures.join("; ")}). ` +
+		`The run is live — do not re-dispatch it; retrieve with get_subagent_result({ agent_id: "${unit.id}" }).`
+	);
+}
+
+/**
+ * Emit the advisory on both channels, each in its own try: a throwing
+ * `sendMessage` must not swallow the footer line, and a missing UI must not
+ * swallow the message. Best-effort by design — this is the report of a
+ * degraded path and cannot itself fail the spawn.
+ */
+export function sendMonitoringDegradedAdvisory(
+	pi: ExtensionAPI,
+	ctx: Pick<ExtensionContext, "ui">,
+	identity: BackgroundAgentIdentity,
+	tailFailures: string[],
+): void {
+	try {
+		pi.sendMessage(
+			{
+				customType: MONITORING_DEGRADED_CUSTOM_TYPE,
+				content: buildMonitoringDegradedAdvisory(identity, tailFailures),
+				display: true,
+				details: { agentId: identity.id, tailFailures },
+			},
+			{ deliverAs: "followUp" },
+		);
+	} catch { /* best-effort */ }
+	try {
+		ctx.ui.notify(MONITORING_DEGRADED_TOAST, "warning");
+	} catch { /* best-effort */ }
 }

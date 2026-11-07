@@ -30,7 +30,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 
 const h = vi.hoisted(() => ({
@@ -75,8 +75,10 @@ import { DEFAULT_BACKGROUND_DEADLINE_MS } from "../validate";
 import { isTransportRetryable } from "../transport-retry";
 import {
 	resolveThinkingDispatchSwitch,
+	shouldDropUnitTimeout,
 	THINKING_SWITCH_NOTICE,
 	THINKING_TIMEOUT_DROP_NOTICE,
+	THINKING_UNIT_TIMEOUT_DROP_NOTICE,
 } from "../params";
 import { CUSTOM_ENTRY_TYPES } from "../types";
 import { setLogCwd } from "../logging";
@@ -91,10 +93,10 @@ const GLOBAL_MODEL = { provider: "test", id: "test/model" };
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const VALID_LINE = `jev: high (0.44) · C2 · worktree y`;
 
-/** Opt this test's temp project in via the umbrella flag (issue #415). */
-function optIn(): void {
+/** Opt a project directory in via the umbrella flag (issue #415). */
+function optIn(dir: string = env.testCwd): void {
 	writeFileSync(
-		path.join(env.testCwd, "package.json"),
+		path.join(dir, "package.json"),
 		JSON.stringify({ name: "fixture-project", "brl-subagent": { processChecks: true } }),
 		"utf8",
 	);
@@ -236,10 +238,11 @@ type Ctx = ReturnType<typeof makeCtx>;
 async function dispatch(
 	params: Record<string, unknown>,
 	ctx: Ctx = makeCtx(),
+	signal?: AbortSignal,
 ): Promise<Awaited<ReturnType<ToolEntry["execute"]>>> {
 	vi.useFakeTimers();
 	try {
-		return await tool.execute("call-412", params, undefined, undefined, ctx);
+		return await tool.execute("call-412", params, signal, undefined, ctx);
 	} finally {
 		vi.clearAllTimers();
 		vi.useRealTimers();
@@ -1009,6 +1012,291 @@ describe("issue #433: never switch into a rejection (approvalMode 'always')", ()
 			expect(spawnArg().timeout).toBeUndefined();
 			expect(notified(THINKING_SWITCH_NOTICE)).toBe(true);
 			expect(notified(THINKING_TIMEOUT_DROP_NOTICE)).toBe(false);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #434 — the pre-flight's UNIT projection: a batch unit's own pair
+//
+// #431 judged the DISPATCH-level pair, so a unit declaring `thinkingLevel:
+// "high"` + `timeout: 600000` under a dispatch with no top-level pair
+// reproduced the 2026-11-06 incident for that unit alone: the predicate exits
+// on `params.timeout === undefined`, and every unit site passed
+// `merged.timeout` to the runner. Seams used below: `runSubagent` arg 8 (arg 3
+// its level) and the persisted record's `originalParams` — the retry snapshot
+// (ADR 0009).
+// ---------------------------------------------------------------------------
+
+describe("unit shape guard: a batch unit's own declared pair (issue #434)", () => {
+	/** A task carrying the Jev line every opted-in unit is validated for. */
+	const TASK = `read one file and answer inline\n\n${VALID_LINE}`;
+	/** A unit declaring the incident's pair; `{ field: undefined }` inherits it. */
+	const unit = (over: Record<string, unknown> = {}) => ({
+		task: TASK, thinkingLevel: "high", timeout: 600_000, ...over,
+	});
+	const unitNotices = () =>
+		notices().filter((m) => m.content?.includes(THINKING_UNIT_TIMEOUT_DROP_NOTICE));
+	/** The deadline (arg 8) and level (arg 3) the unit actually ran with. */
+	const ranWith = (i = 0) => h.runSubagent.mock.calls[i]?.[8];
+	const ranLevel = (i = 0) => h.runSubagent.mock.calls[i]?.[3];
+	const reset = () => {
+		h.runSubagent.mockClear();
+		sendMessageSpy.mockClear();
+		notifySpy.mockClear();
+	};
+
+	it("U1/U1b (M8): cap `off` and `high` both drop a parallel unit's deadline", async () => {
+		optIn();
+		// U1: an unconfigured cap is `off`, so the unit RUNS at `off` while it
+		// DECLARED high — judging the capped `merged.thinkingLevel` misses it.
+		await dispatch({ tasks: [unit()], background: false });
+		expect([ranLevel(), ranWith()]).toEqual(["off", undefined]);
+		// U1b: with cap `high` the capped level agrees with the declaration, so
+		// this row alone cannot tell the two judgements apart; U1 does.
+		reset();
+		const ctx = makeCtx();
+		await seedConfig(ctx, { maxThinkingLevel: "high" });
+		await dispatch({ tasks: [unit()], background: false }, ctx);
+		expect([ranLevel(), ranWith()]).toEqual(["high", undefined]);
+	});
+
+	it("U2/U2b (M1): a chain step and a graph node declaring the pair are dropped", async () => {
+		optIn();
+		await dispatch({ chain: [unit()] });
+		expect(ranWith()).toBeUndefined();
+		expect(unitNotices()).toHaveLength(1); // one notice per DISPATCH, not per unit
+		reset();
+		await dispatch({ graph: [{ id: "n1", ...unit({ label: "n1" }) }] });
+		expect(ranWith()).toBeUndefined();
+		expect(unitNotices()).toHaveLength(1);
+	});
+
+	it("U3/U3b (M2): an INHERITED pair stays exempt in chain and graph (#431 boundary)", async () => {
+		optIn();
+		// Clause 5: the unit declares NEITHER field, so the dispatch already judged
+		// the pair — and a batch shape keeps the #431 exemption.
+		const inherited = { thinkingLevel: undefined, timeout: undefined };
+		const pair = { thinkingLevel: "high", timeout: 600_000 };
+		await dispatch({ chain: [unit(inherited)], ...pair });
+		expect(ranWith()).toBe(600_000);
+		reset();
+		await dispatch({ graph: [{ id: "n1", ...unit({ ...inherited, label: "n1" }) }], ...pair });
+		expect(ranWith()).toBe(600_000);
+		expect(unitNotices()).toHaveLength(0);
+	});
+
+	it('U3c-a/U3c-b: `""` inherits the level; `timeout: 0` overrides and arms nothing', async () => {
+		optIn();
+		// U3c-a: `""` is INHERITANCE (the level clause sees the dispatch's `high`),
+		// so a unit-declared deadline is still dropped and the notice says which
+		// level it was judged on.
+		const ctx = makeCtx();
+		await seedConfig(ctx, { maxThinkingLevel: "high" });
+		await dispatch(
+			{ chain: [unit({ thinkingLevel: "" })], thinkingLevel: "high", timeout: 600_000 },
+			ctx,
+		);
+		expect([ranLevel(), ranWith()]).toEqual(["high", undefined]);
+		expect(unitNotices()[0]?.details?.thinkingLevel).toBe("high");
+		// U3c-b: `0` is a declaration that OVERRIDES the inherited 600000 (the merge
+		// is `??`) and arms no timer at all — no hazard to drop, nothing to announce.
+		reset();
+		await dispatch({ tasks: [unit({ timeout: 0 })], timeout: 600_000 });
+		expect(ranWith()).toBe(0);
+		expect(unitNotices()).toHaveLength(0);
+	});
+
+	it("U3d (M9): EITHER field alone makes the pair unit-declared", async () => {
+		optIn();
+		// (a) level only: it declares high, the deadline is inherited.
+		await dispatch({ tasks: [unit({ timeout: undefined })], timeout: 600_000 });
+		expect(ranWith()).toBeUndefined();
+		// (b) timeout only: it declares the deadline, the LEVEL is the dispatch's —
+		// judging only the unit's own level leaves this row's 600000 in place.
+		reset();
+		await dispatch({ tasks: [unit({ thinkingLevel: undefined })], thinkingLevel: "high" });
+		expect(ranWith()).toBeUndefined();
+	});
+
+	it("U4 (M5): a background fan-out unit KEEPS its deadline — there it is the budget", async () => {
+		optIn();
+		await dispatch({ tasks: [unit()], background: true });
+		expect(spawnArg().timeout).toBe(600_000);
+		expect(unitNotices()).toHaveLength(0);
+	});
+
+	it("U5 (M6): ONE additional notice per dispatch, none once the dispatch arm spoke", async () => {
+		optIn();
+		await dispatch({ tasks: [unit({ label: "a" }), unit({ label: "b" })], background: false });
+		const emitted = unitNotices();
+		expect(emitted).toHaveLength(1);
+		expect(emitted[0]?.details?.unit).toMatch(/^(a|b)$/);
+		// The wording must not claim completeness: a later unit is judged later.
+		expect(emitted[0]?.content).toContain("not covered");
+		expect(emitted[0]?.content).not.toMatch(/all (affected )?(units|steps)/i);
+		expect(
+			notifySpy.mock.calls.filter((c) => String(c[0]).includes(THINKING_UNIT_TIMEOUT_DROP_NOTICE)),
+		).toHaveLength(1);
+		for (const call of h.runSubagent.mock.calls) expect(call[8]).toBeUndefined();
+		// Mixed: the DISPATCH arm drops the top-level pair and announces itself, so
+		// the unit's drop is silent — one notice in total, still the drop. (The
+		// explicit-foreground `always` shape is the one the drop arm owns; `writes`
+		// would switch a parallel dispatch into the fan-out instead.)
+		reset();
+		await dispatch({
+			tasks: [unit({ label: "c" })], background: false,
+			approvalMode: "always", thinkingLevel: "high", timeout: 600_000,
+		});
+		expect(notices().filter((m) => m.content?.includes(THINKING_TIMEOUT_DROP_NOTICE))).toHaveLength(1);
+		expect(unitNotices()).toHaveLength(0);
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		expect(ranWith()).toBeUndefined();
+	});
+
+	it("U6/U7 (M3/M4): force:true and an opted-OUT project both keep the deadline", async () => {
+		optIn();
+		await dispatch({ tasks: [unit()], background: false, force: true });
+		expect(ranWith()).toBe(600_000);
+		expect(unitNotices()).toHaveLength(0);
+		// U7: no manifest field (a user's project) — nothing is dropped.
+		rmSync(path.join(env.testCwd, "package.json"));
+		reset();
+		await dispatch({ tasks: [unit()], background: false });
+		expect(ranWith()).toBe(600_000);
+		expect(unitNotices()).toHaveLength(0);
+	});
+
+	it("U7b (M10): a RELATIVE cwd is judged by the dispatch's resolution, not a re-read", async () => {
+		// The dispatch resolves `proj` against `ctx.cwd`; a unit site that re-read
+		// the flag from the raw relative path would resolve it against the PROCESS
+		// cwd (this repository, where `proj` does not exist) and read `false`.
+		const projectDir = path.join(env.testCwd, "proj");
+		mkdirSync(projectDir, { recursive: true });
+		optIn(projectDir);
+		await dispatch({ tasks: [unit()], background: false, cwd: "proj" });
+		expect(ranWith()).toBeUndefined();
+	});
+
+	it("U8 (M7): the unit SNAPSHOT has no deadline, and the retry's run has none", async () => {
+		optIn();
+		await dispatch({ tasks: [unit()], background: false });
+		expect(foregroundSnapshot().timeout).toBeUndefined();
+		const runId = (capturedEntries.find((e) => e.customType === CUSTOM_ENTRY_TYPES.run)?.data as {
+			id: string;
+		}).id;
+		// The retry restores the unit's own snapshot, whose level is the CAPPED
+		// `off` and whose deadline is absent — so a second DISPATCH-level drop
+		// cannot be what makes this pass. Only the recorded snapshot can.
+		const retried = await dispatch({ retryRunId: runId });
+		expect(retried.isError).toBeFalsy();
+		expect(h.runSubagent).toHaveBeenCalledTimes(2);
+		expect(ranWith(1)).toBeUndefined();
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+	});
+
+	it("U9: an eligible unit that never reaches its run is never announced", async () => {
+		optIn();
+		// (a) a chain stops on the first failed step: the eligible SECOND step is
+		// absent from the run, and from the notice.
+		h.runSubagent.mockImplementationOnce(
+			async (_cwd: string, _prompt: string, model: { provider: string; id: string }) => ({
+				...makeResult(`${model.provider}/${model.id}`),
+				exitCode: 1,
+			}),
+		);
+		const stopped = await dispatch({
+			chain: [unit({ thinkingLevel: undefined, timeout: undefined }), unit()],
+		});
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		expect((stopped.details as { stoppedEarly?: boolean }).stoppedEarly).toBe(true);
+		expect(unitNotices()).toHaveLength(0);
+		// (b) a parallel unit cancelled while WAITING for its slot is never
+		// announced: the drop sits after acquisition, so a queued unit the caller
+		// aborts has not been judged at all.
+		h.runSubagent.mockReset();
+		let release: () => void = () => {};
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		h.runSubagent.mockImplementation(
+			async (_cwd: string, _prompt: string, model: { provider: string; id: string }) => {
+				await blocked;
+				return makeResult(`${model.provider}/${model.id}`);
+			},
+		);
+		const ctx = makeCtx();
+		await seedConfig(ctx, { maxParallel: 1 });
+		const controller = new AbortController();
+		const pending = dispatch(
+			{ tasks: [unit({ label: "first" }), unit({ label: "second" })], background: false },
+			ctx,
+			controller.signal,
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		controller.abort();
+		release();
+		await pending;
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		const emitted = unitNotices();
+		expect(emitted).toHaveLength(1);
+		expect(emitted[0]?.details?.unit).toBe("first");
+	});
+
+	it("U10 (drift pin): the unit projection agrees with the dispatch arm on the same pair", () => {
+		// One rule at two levels: a one-sided edit to either predicate must fail
+		// here rather than drift quietly.
+		const dispatchActs = (level: string, timeout: number | undefined) =>
+			resolveThinkingDispatchSwitch({
+				processChecks: true,
+				thinkingLevel: (level || undefined) as ThinkingLevel | undefined,
+				explicitBackground: false,
+				timeout,
+				force: undefined,
+				shape: "single",
+				effectiveApprovalMode: "writes",
+			}) !== "none";
+		const unitActs = (level: string, timeout: number | undefined) =>
+			shouldDropUnitTimeout({
+				processChecks: true,
+				force: undefined,
+				dispatchDeclaredLevel: undefined,
+				unitShape: "foreground",
+				declaredLevel: level as ThinkingLevel | "",
+				declaredTimeout: timeout,
+				mergedTimeout: timeout,
+			});
+		for (const level of ["high", "xhigh", "medium", "low", ""]) {
+			for (const timeout of [600_000, undefined, 0]) {
+				const label = `${level || '""'}/${timeout}`;
+				if (timeout === 0) {
+					// Documented divergence (clause 4): `0` is a declaration that arms
+					// no timer, so the unit guard must refuse it while the dispatch
+					// arm's "a timeout exists" clause is satisfied — the dispatch's drop
+					// is a no-op there, a unit notice would be a lie.
+					expect(unitActs(level, 0), label).toBe(false);
+					expect(dispatchActs(level, 0), label).toBe(level === "high" || level === "xhigh");
+					continue;
+				}
+				expect(unitActs(level, timeout), label).toBe(dispatchActs(level, timeout));
+			}
+		}
+		// Documented divergence (clause 5): a unit declaring NEITHER field inherits
+		// the dispatch's pair, already judged one level up.
+		for (const level of ["high", "xhigh"] as const) {
+			expect(dispatchActs(level, 600_000)).toBe(true);
+			expect(
+				shouldDropUnitTimeout({
+					processChecks: true,
+					force: undefined,
+					dispatchDeclaredLevel: level,
+					unitShape: "foreground",
+					declaredLevel: undefined,
+					declaredTimeout: undefined,
+					mergedTimeout: 600_000,
+				}),
+			).toBe(false);
 		}
 	});
 });

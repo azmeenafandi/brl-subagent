@@ -27,7 +27,8 @@ import * as path from "node:path";
 import type { TaskTemplate, ThinkingLevel, SubagentPreset } from "./types";
 import { TEMPLATE_PARAM_RE, THINKING_LEVELS } from "./types";
 import type { Logger } from "./logging";
-import { loadMarkdownRecords } from "./loader";
+import { applyFrontmatterMappers, loadMarkdownRecords } from "./loader";
+import type { FrontmatterFieldMapper, FrontmatterMapContext } from "./loader";
 import { sanitizeFileName } from "./presets";
 import { pkgPath } from "./paths";
 
@@ -175,6 +176,43 @@ export function validateTemplate(meta: Record<string, unknown>, fileName: string
 }
 
 // ---------------------------------------------------------------------------
+// Frontmatter → TaskTemplate mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-key return types: same shape as `PresetFieldMappers` (src/presets.ts), so
+ * a mapper that returns the wrong type — `timeout: () => "soon"` — fails at the
+ * row instead of at the assembly cast.
+ */
+type TemplateFieldMappers = {
+	[K in keyof TaskTemplate]: FrontmatterFieldMapper<TaskTemplate[K]>;
+};
+
+/**
+ * THE declaration of which frontmatter keys reach a `TaskTemplate` — every
+ * field (no omission allowlist), so a new declared field is a missing-key
+ * compile error and a stale key is an excess-property error.
+ *
+ * `task` comes from the markdown body (multiline by construction), and
+ * `timeout` is the one numeric coercion: frontmatter values are strings.
+ */
+const TEMPLATE_FIELD_MAPPERS = {
+	name: (_meta, ctx) => ctx.name,
+	description: (meta) => (meta.description as string) || undefined,
+	task: (_meta, ctx) => ctx.body,
+	preset: (meta) => (meta.preset as string) || undefined,
+	thinkingLevel: (meta) => (meta.thinkingLevel as string) || undefined,
+	outputFile: (meta) => (meta.outputFile as string) || undefined,
+	timeout: (meta) => (meta.timeout !== undefined ? Number(meta.timeout) : undefined),
+	tools: (meta) => (Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined),
+	excludeTools: (meta) =>
+		Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
+	noBuiltinTools: (meta) => (meta.noBuiltinTools === "true" ? true : undefined),
+	inheritSystemPrompt: (meta) =>
+		(meta.inheritSystemPrompt === "false" ? false : undefined),
+} satisfies TemplateFieldMappers;
+
+// ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
 
@@ -187,19 +225,8 @@ function templateFromFrontmatter(
 	body: string,
 	name: string,
 ): TaskTemplate {
-	return {
-		name,
-		description: (meta.description as string) || undefined,
-		task: body,
-		preset: (meta.preset as string) || undefined,
-		thinkingLevel: (meta.thinkingLevel as string) || undefined,
-		outputFile: (meta.outputFile as string) || undefined,
-		timeout: meta.timeout !== undefined ? Number(meta.timeout) : undefined,
-		tools: Array.isArray(meta.tools) ? (meta.tools as string[]) : undefined,
-		excludeTools: Array.isArray(meta.excludeTools) ? (meta.excludeTools as string[]) : undefined,
-		noBuiltinTools: meta.noBuiltinTools === "true" ? true : undefined,
-		inheritSystemPrompt: meta.inheritSystemPrompt === "false" ? false : undefined,
-	};
+	const ctx: FrontmatterMapContext = { name, body };
+	return applyFrontmatterMappers<TaskTemplate>(TEMPLATE_FIELD_MAPPERS, meta, ctx);
 }
 
 /**
