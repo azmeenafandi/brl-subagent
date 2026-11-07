@@ -4,7 +4,8 @@ import { basename, dirname, join, resolve } from 'path';
 import { writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync } from 'fs';
 import type { Dirent } from 'fs';
 import type { BackgroundAgent, AgentStatus, GitMode, RecoveryMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
-import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE } from './types';
+import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE, NO_ASSISTANT_OUTPUT_REASON } from './types';
+import type { AssistantEvidence } from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -1953,8 +1954,23 @@ export async function spawnBackgroundSession(
       // HERE, not in .catch. Two signals distinguish stop from completion:
       //   1. stopAgent pre-set status to 'stopped' before calling abort();
       //   2. the last assistant message carries stopReason "aborted".
-      const lastAssistant = [...(session.messages ?? [])].reverse().find(m => m.role === 'assistant');
+      //
+      // Issue #449: the projection is read ONCE here — `evidence` below is
+      // derived from the same read the stopReason comes from. The SDK can remove
+      // the only assistant message from this projection before settling (a
+      // recoverable-length omission: `_omitRecoveryAttempt`, then a compaction
+      // that never runs on a young branch), so "no assistant message" is real
+      // evidence about the settle and not a read failure.
+      const projectedMessages = session.messages;
+      const lastAssistant = [...(projectedMessages ?? [])].reverse().find(m => m.role === 'assistant');
       const terminalStopReason = lastAssistant?.stopReason;
+      // Issue #449: "absent" means exactly one thing — an array that was READ and
+      // holds no assistant message. A missing/unreadable projection is "unknown"
+      // (a throwing getter never reaches here; the settle catch-all owns it), and
+      // any assistant message is "present" whatever it contains.
+      const assistantEvidence: AssistantEvidence = Array.isArray(projectedMessages)
+        ? projectedMessages.some((m) => m.role === 'assistant') ? 'present' : 'absent'
+        : 'unknown';
       const aborted = agent.status === 'stopped' || terminalStopReason === 'aborted';
       if (aborted) {
         // Session was aborted — mark stopped. If stopAgent already flipped the
@@ -1983,16 +1999,29 @@ export async function spawnBackgroundSession(
       // classifyError for the provider-error case.
       const providerErrorMessage =
         lastAssistant?.errorMessage ?? session.state?.errorMessage;
-      const outcome = classifyTerminalOutcome(terminalStopReason, providerErrorMessage);
+      const outcome = classifyTerminalOutcome(terminalStopReason, providerErrorMessage, {
+        assistantEvidence,
+      });
 
       if (outcome.status === 'failed') {
         // Mid-run provider death / truncation / incomplete turn.
         agent.status = 'failed';
         agent.completedAt = Date.now();
-        const sanitizedError = sanitizeErrorMessage(
-          providerErrorMessage ?? defaultTerminalMessage(terminalStopReason),
-          effectiveCwd,
-        );
+        // Issue #449: `assistantEvidence === 'absent'` is exactly the case this
+        // classifier's formerly-default arm now fails on (a zero-assistant
+        // projection has no last assistant, so `terminalStopReason` is
+        // undefined). The omitted message cannot be recovered, so the reason
+        // states the observation and offers truncation only as a possibility —
+        // it never asserts truncation as fact. It also WINS over a stale
+        // `session.state.errorMessage`, which this branch used to prefer; the
+        // stale text may be appended, never substituted.
+        const failureReason =
+          assistantEvidence === 'absent'
+            ? providerErrorMessage
+              ? `${NO_ASSISTANT_OUTPUT_REASON}\n${providerErrorMessage}`
+              : NO_ASSISTANT_OUTPUT_REASON
+            : (providerErrorMessage ?? defaultTerminalMessage(terminalStopReason));
+        const sanitizedError = sanitizeErrorMessage(failureReason, effectiveCwd);
         agent.error = sanitizedError;
         const gitInfo = cleanupWorkBranch();
         agent.result = {
