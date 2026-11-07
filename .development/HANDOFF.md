@@ -10,7 +10,7 @@ Verified: 490cf94 (2026-11-07)
 
 - **dev** @ `490cf94` (PR #445 merge, Vitest dev-dependency update) — `git log -1 --oneline dev`. Branches `dev` + `main` only; worktrees are the cockpit pair only — `git worktree list`.
 - **Released:** **v2.7.0 LIVE** (2026-11-01) — `main` @ `98bd36e`, tag `v2.7.0`, npm `latest` 2.7.0 (`gh release list`). **Release checkpoint OPEN** (rule #6): **#422 + #425 + #435 + #441 + #444** are extension code, merged and unreleased. Release on the maintainer's go only — never propose a version unprompted.
-- **Running install:** the **dev checkout** (`pi list`), reloaded by the maintainer after #441 merged. #437 success wakes live-verified on startup, after `/new` and after `/reload` (issue #437 comment; isolated probe IDs `b71db04c`, `9ab40e75`, `77fa0430`); transport retry after replacement is unit-tested, not live-probed. #422, #425 and #435 were also live-verified. **#444 is merged but not loaded or live-verified**; activation is maintainer-triggered. Users get published 2.7.0.
+- **Running install:** the **dev checkout** (`pi list`), reloaded by the maintainer after #441 merged. #437 success wakes live-verified on startup, after `/new` and after `/reload` (issue #437 comment; isolated probe IDs `b71db04c`, `9ab40e75`, `77fa0430`); transport retry after replacement is unit-tested, not live-probed. #422, #425 and #435 were also live-verified. **#444 is loaded and live-verified** (issue #442 comment, 2026-11-07): with `tools: []` the child had no read tool; the omitted-tools control read the file. Foreground extension/MCP startup under `[]` is covered by real-child tests only. Users get published 2.7.0.
 - **Board** (`gh issue list`): open **#443** (invalid thinking levels), **#439** (retry-start ambiguity), **#440** (terminal-claim overflow duplicate), **#430** (`execute` split), **#434** (per-unit pre-flight bypass), **#436** (preset frontmatter field parity), **#426** (timeout design-open); **PR #402** held (typebox 1.4.3 vs the host's 1.3.27 pin). Merged 2026-11-06: #428 (PR #432), #431 + #433 (PR #435), #429 (PR #438), #437 (PR #441); merged 2026-11-07: #442 (PR #444).
 - **Cycle:** `Pi 1.5.0 parity` closed 2026-11-03; none open. The current thread is the CRAP follow-ups (#429, #430) from ADR 0021.
 - **Suite:** 107 files / **2226** (`npx vitest run`, verified on current-dev + PR #445 lockfile in an isolated install); Vitest **5.1.0** installed in refreshed cockpit, typecheck clean; CodeGraph complete at `490cf94`, 552 exports (`python3 .pi/skills/worktree/codegraph-check.py`).
@@ -34,11 +34,10 @@ Verified: 490cf94 (2026-11-07)
 - **#443 open:** invalid `thinkingLevel` can resolve to `undefined` (evidence in `plan-critique-429-2026-11-06.md`; original scratch probe unavailable).
 
 ### Next actions
-1. **#442 live verification** — after maintainer-triggered activation, verify `tools: []` actually exposes no child tools; preserve configured foreground extension/MCP startup. Never automate `/reload`.
-2. **#439 / #440 / #443** — unscheduled follow-ups (retry-start ambiguity; terminal-claim overflow; invalid thinking level).
-3. **#430** — the behavior-preserving `execute` split (C1; needs a CodeGraph structural map and a closure block).
-4. **#434** and **#436** — unscheduled; #436 is the cheaper of the two.
-5. **#426** needs the maintainer's priority call before any design work.
+1. **#439 / #440 / #443** — unscheduled follow-ups (retry-start ambiguity; terminal-claim overflow; invalid thinking level).
+2. **#430** — the behavior-preserving `execute` split (C1; needs a CodeGraph structural map and a closure block).
+3. **#434** and **#436** — unscheduled; #436 is the cheaper of the two.
+4. **#426** needs the maintainer's priority call before any design work.
 
 ## Open items
 - **#443** — invalid `thinkingLevel` → `undefined`; the original scratch probe is gone, so reproduce on current code.
