@@ -1926,9 +1926,11 @@ export async function spawnBackgroundSession(
       }
       // Independent of the bookkeeping above (#448) — exactly one abort attempt.
       try {
-        session.abort().catch(() => {
+        session.abort().catch((err: Error) => {
           // Abort can reject if the session is mid-dispose; the status flip
-          // above is already recorded, so this is non-fatal.
+          // above is already recorded, so this is non-fatal — but a rejected
+          // abort must not be silent (#448 review nit).
+          log.warn(`spawnBackgroundSession: abort rejected for ${id}`, { error: err.message });
         });
       } catch (err) {
         // abort() threw synchronously — a timer callback must never throw

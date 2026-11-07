@@ -829,6 +829,57 @@ describe("spawnBackgroundSession deadline independence (#448)", () => {
 		}
 	});
 
+	it("survives a REJECTING abort() and records the deadline stop once (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			// Abort can reject when the session is mid-dispose. The deadline must
+			// still record the stop, call it once, and never surface an unhandled
+			// rejection (the .catch in armDeadline exists for exactly this).
+			setLogCwd(env.baseDir);
+			mocks.session.abort.mockRejectedValue(new Error("session disposing"));
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a rejecting abort",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+			// The rejection is surfaced, not silently swallowed — this is what makes
+			// the test discriminate the guard from a missing `.catch`.
+			expect(readLog()).toContain("abort rejected");
+			expect(readLog()).toContain("session disposing");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("survives a SYNCHRONOUSLY throwing abort() and logs it (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			setLogCwd(env.baseDir);
+			// A timer callback must never throw uncaught — that crashes the host.
+			mocks.session.abort.mockImplementation(() => {
+				throw new Error("abort exploded sync");
+			});
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a sync-throwing abort",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+			expect(readLog()).toContain("abort failed to start");
+			expect(readLog()).toContain("abort exploded sync");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("arms one default deadline for a direct spawn and only aborts (#448)", async () => {
 		vi.useFakeTimers();
 		try {
