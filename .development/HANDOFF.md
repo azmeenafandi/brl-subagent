@@ -6,16 +6,16 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md`, `-2026-11-06.md`, `-2026-11-07b.md` (the pre-sweep snapshot) — not current state.
 
 ## STATE
-Verified: 2af09c6 (2026-11-07)
+Verified: ba06e95 (2026-11-07)
 
-- **dev** @ `2af09c6` (PR #462 merge). Merged today, in order: #457 (`4c696de`, #440 terminal-claim eviction), #458 (`9599eaf`, #436 preset field parity), #459 (`40f5f8e`, #455 survivor drain), #461 (`86bd3a6`, #434 per-unit shape guard), #462 (`2af09c6`, #439 post-spawn containment). Docs: ADR 0023 (`997ee5b` deadline ownership) + ADR 0024 (unit projection, in #461) + the #453 dossier (`357f599`). Worktrees live: **`447`** (review running); `434`/`439`/`440`/`436`/`455` cleaned.
+- **dev** @ `ba06e95` (PR #464 merge). Merged today, in order: #457 (#440 terminal-claim eviction), #458 (#436 preset field parity), #459 (#455 survivor drain), #461 (#434 per-unit shape guard), #462 (#439 post-spawn containment), #463 (#456 Jev `--worktree` stated field), #464 (#447 acceptance marker). Docs: ADR 0023 (deadline ownership), ADR 0024 (unit projection), the #453 dossier, and `12a722e` (review-dispatch note: a bulleted `Verdict:` is invisible to the gate). Worktrees live: **`453`** (implementing).
 - **Released:** **v2.7.0 LIVE** — `main` @ `98bd36e`, tag `v2.7.0`, npm `latest` 2.7.0. **Release checkpoint OPEN** (rule #6): every merged fix today (#440, #436, #455, #434, #439, and #447 when it lands) is extension code, merged and unreleased. Release on the maintainer's go only.
-- **Board — autonomous bug sweep.** Closed today: #440, #436, #455, #434, #439. Open `bug`: **#447** (acceptance marker — implemented, C1 review running), **#453** (deadline ownership — ADR 0023 accepted, brief at revision 2 after a needs-work critique, impl pending), **#456** (the Jev `worktree` field cannot be satisfied on any src dispatch), **#460** (design: a never-settling branch-mode run wedges the git lock + queue). Enhancement: #426, #430. PR #402 still held.
-- **Suite:** 108 files / **2333** green on the #447 head (`--reporter=json`); dev's own count is 2326 after #462. Typecheck clean. Budget **1.96** (48,770 test / 24,848 source, ceiling 2.0 → ~1,000 test lines of headroom, the ratchet is now healthy). README says `2300+`. The `recovery.test.ts` load flake is fixed (#455) and verified under full-suite load.
+- **Board — autonomous bug sweep.** Closed today (7): #440, #436, #455, #434, #439, #456, #447. Open `bug`: **#453** (deadline ownership — impl running, brief revision 2 after a needs-work critique), **#460** (design-open: a never-settling branch-mode run wedges the git lock + queue; do not implement from the body). Enhancement: #426, #430. PR #402 still held.
+- **Suite:** 109 files / **2333** green on dev (`--reporter=json`); typecheck clean. Budget **1.96** (48,777 test / 24,853 source, ceiling 2.0 → ~930 test lines of headroom, the ratchet is healthy again after #429/#431/#443 were thin). README says `2300+`. The `recovery.test.ts` load flake is fixed (#455) and verified under full-suite load.
 - **Merge gate:** `merge-guard.sh <pr> <record>` from the **cockpit**. (a) CI runs the **merge ref** — a branch-green PR can be red on README count drift (cost #459 one cycle); (b) `#<pr>`; (c) line-start `Verdict:`; (d) reviewed head **or** `conductor-verified:`; (e) exact-text provenance match; (f) `recheck-<pr>` + its own `Risk class:`. Merge commits; PRs to `dev` never auto-close — close by hand.
-- **Merge-conflict routine (twice today, #439/#447):** `dev` moves under a PR, and the conflict is **CHANGELOG.md ordering only** — keep both entries newest-first, commit the merge, re-run the gates, add a `Post-review merge:` line to the record naming the merge commit and the re-verified numbers, then re-push. The reviewed code was byte-identical in both cases.
+- **Merge-conflict routine (three times today — #439, #447, and the CHANGELOG in general):** `dev` moves under a PR, and the conflict is **CHANGELOG.md ordering only** — keep both entries newest-first, commit the merge, re-run the gates, add a `Post-review merge:` line to the record naming the merge commit and the re-verified numbers, then re-push. The reviewed code was byte-identical in both cases.
 - **Dispatch models + presets:** implementer `project-implementer` + `deepseek/deepseek-flash`; reviewer `project-reviewer` + `openrouter/meta/muse-spark-1.3-contributor`; plan critic `project-plan-critic` + `openrouter/openai/gpt-6.1-terra` + **`thinkingLevel: "medium"` always**; design investigation `project-proposer` + `inheritSystemPrompt: false`. Non-probe work: explicit `background: true` + `timeout: 7200000`.
-- **Jev provenance (23 exceptions recorded):** print the line with `--classifier … --label`, then **paste it verbatim** — never hand-type (both hand-typed lines today got the level wrong). The printed `worktree` field is the classifier's probability answer (`< 0.5` → `n`) while Rule 5 mandates a worktree for every src change, so most src dispatches need an exception whose reason carries `retro:<label> (evidence row)` — **no trailing period** (the label regex swallows it). Systemic fix: **#456**.
+- **Jev provenance:** print the line with `--classifier … --worktree y|n --label`, then **paste it verbatim** — never hand-type (both hand-typed lines today got the level wrong). Since #456 the `worktree` field can be **stated** (a Rule-5 process fact) and the row records `stated:worktree`, so a src dispatch no longer needs an exception; `level`/`risk` stay classifier answers. 24 exceptions remain recorded from before the fix, all in `.pi/jev-dispatch-exceptions.txt`.
 - **Project flag:** `{"brl-subagent": {"processChecks": true}}` gates the Jev line, the two-arm dispatch-shape pre-flight and engineering-bar injection; fail-open, one reader.
 
 ### Since the last handover
@@ -25,10 +25,9 @@ Verified: 2af09c6 (2026-11-07)
 - **The #453 critique found three blockers in my brief** (run-entry statuses are `running|done|failed` — no `stopped`; the timer's terminal write clears the registry and the session dir survives; and `findLast` does not stop raw-entry consumers double-counting a snapshot + amendment — measured 3 runs/$5 for a $2+$3 pair). Revision 2 adds a **logical-run projection** applied before any windowing, a `failed/timeout` snapshot, and an explicit durable-surface contract.
 
 ### Next actions
-1. **#447** — review result, close nits, merge (C1).
-2. **#453** — implement revision 2 of the brief (`/tmp/issue-453-brief.md`; move it into the worktree) **after #447 merges**, Steps 0-5 + ADR 0023. This is the last `bug`.
-3. **#456** — the Jev `worktree` field; removes the per-dispatch exception tax.
-4. **#460** — design-open; do not implement from the body.
+1. **#453** — impl running (xhigh, Steps 0-5 of the revision-2 brief, mutants M1-M10). C1 review next; it is the last implementable `bug`.
+2. **#460** — design-open; do not implement from the body.
+3. **Release checkpoint** — every fix in this sweep is extension code, merged and unreleased; the maintainer decides when.
 
 
 ## Open items
