@@ -19,8 +19,10 @@ import {
 	isSubagentRunShape,
 	EMPTY_USAGE,
 	SUBAGENT_SIGNAL_KILLED_MESSAGE,
+	NO_ASSISTANT_OUTPUT_REASON,
 } from "../types";
-import { classifyError } from "../types";
+import { classifyError, classifyTerminalOutcome } from "../types";
+import { isTransportFailure } from "../transport-retry";
 
 // ---------------------------------------------------------------------------
 // resolveThinkingLevel
@@ -492,6 +494,92 @@ describe("classifyError", () => {
 
 	it("mixed signals with stopReason error IS an isSubagentError", () => {
 		expect(isSubagentError(makeResult({ exitCode: 0, stopReason: "error" }))).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// classifyTerminalOutcome — assistant evidence (issue #449)
+// ---------------------------------------------------------------------------
+
+describe("classifyTerminalOutcome — assistant evidence (issue #449)", () => {
+	it("defaults the evidence to 'unknown' so every existing caller is unchanged", () => {
+		expect(classifyTerminalOutcome(undefined)).toEqual({ status: "completed" });
+		expect(classifyTerminalOutcome("stop")).toEqual({ status: "completed" });
+		expect(classifyTerminalOutcome(undefined, undefined, {})).toEqual({ status: "completed" });
+		expect(classifyTerminalOutcome(undefined, undefined, { assistantEvidence: "unknown" })).toEqual({
+			status: "completed",
+		});
+		expect(classifyTerminalOutcome("stop", undefined, { assistantEvidence: "present" })).toEqual({
+			status: "completed",
+		});
+	});
+
+	it("fails the formerly-default case only when the projection was READ and holds no assistant", () => {
+		expect(classifyTerminalOutcome(undefined, undefined, { assistantEvidence: "absent" })).toEqual({
+			status: "failed",
+			errorCategory: "incomplete",
+		});
+		// An explicit success reason still wins over the evidence.
+		expect(classifyTerminalOutcome("stop", undefined, { assistantEvidence: "absent" })).toEqual({
+			status: "completed",
+		});
+	});
+
+	it.each([
+		["length", "truncated"],
+		["error", "exit_error"],
+		["toolUse", "incomplete"],
+		["deferred", "incomplete"],
+		["pending", "incomplete"],
+	])("a known terminal outcome wins: %s + absent keeps its own category (%s)", (stopReason, category) => {
+		expect(classifyTerminalOutcome(stopReason, undefined, { assistantEvidence: "absent" })).toEqual({
+			status: "failed",
+			errorCategory: category,
+		});
+	});
+
+	it("aborted + absent is still stopped, not failed", () => {
+		expect(classifyTerminalOutcome("aborted", undefined, { assistantEvidence: "absent" })).toEqual({
+			status: "stopped",
+			errorCategory: "aborted",
+		});
+	});
+
+	it("the failure headline cannot arm the transport auto-retry", () => {
+		// Not one TRANSPORT_SIGNATURES substring...
+		expect(
+			isTransportFailure({ status: "failed", errorCategory: "exit_error", errorMessage: NO_ASSISTANT_OUTPUT_REASON }),
+		).toBe(false);
+		// ...and the class gate excludes 'incomplete' independently.
+		expect(
+			isTransportFailure({ status: "failed", errorCategory: "incomplete", errorMessage: NO_ASSISTANT_OUTPUT_REASON }),
+		).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Foreground terminal status is untouched by issue #449
+// ---------------------------------------------------------------------------
+
+describe("isSubagentError — foreground verdicts are unchanged by issue #449", () => {
+	const foreground = (overrides: Partial<import("../types").SubagentResult> = {}) => ({
+		messages: [],
+		usage: { ...EMPTY_USAGE },
+		exitCode: 0,
+		stderr: "",
+		...overrides,
+	});
+
+	it("a length-terminated stream still fails through its own path", () => {
+		// The foreground child emits message_end for that turn, runner.ts records
+		// stopReason "length", and this predicate is what reads it.
+		expect(isSubagentError(foreground({ stopReason: "length" }))).toBe(true);
+	});
+
+	it("a handled-input exit-0 stream still passes (zero message events)", () => {
+		// A user extension returning {action:"handled"} exits 0 with zero message
+		// events: exitCode 0, no messages, no stopReason — a deliberate success.
+		expect(isSubagentError(foreground({ exitCode: 0 }))).toBe(false);
 	});
 });
 

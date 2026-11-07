@@ -1017,22 +1017,55 @@ export interface TerminalOutcome {
 }
 
 /**
+ * Issue #449: what the settle site saw in the session's PROJECTED message array.
+ *
+ * `"absent"` means exactly ONE thing: the array was READ and contained no
+ * assistant message. It is supplied only by the background settle site, which
+ * reads the projection the SDK rewrote before settling; a missing or throwing
+ * `messages` getter is `"unknown"` (it never reaches the classifier — the settle
+ * handler's catch-all owns it), and a projection holding an assistant message is
+ * `"present"` whatever that message contains.
+ */
+export type AssistantEvidence = "present" | "absent" | "unknown";
+
+/**
+ * Issue #449: the fixed failure headline for a run that settled with no
+ * assistant output. The omitted message cannot be recovered, so this asserts the
+ * OBSERVATION (no output) and only offers truncation as a possibility — it never
+ * claims truncation as fact. Deliberately free of every TRANSPORT_SIGNATURES
+ * substring (transport-retry.ts), so an automatic transport retry cannot fire on
+ * this class; its `incomplete` category is independently excluded by that
+ * predicate's class gate.
+ */
+export const NO_ASSISTANT_OUTPUT_REASON =
+	"Run settled with no assistant output — the provider's response may have been truncated and omitted by the SDK (see #449)";
+
+/**
  * Issue #179 (D1): classify a run's terminal outcome from its final assistant
  * stopReason. This is the settle-time counterpart to classifyError/isSubagentError
  * and REUSES classifyError for every failure reason (single taxonomy).
  *
  * | stopReason               | status    | errorCategory              |
  * |--------------------------|-----------|----------------------------|
- * | stop / undefined         | completed | —                          |
+ * | stop                     | completed | —                          |
+ * | undefined                | completed | —                          |
+ * | undefined + absent (449) | failed    | incomplete                 |
  * | aborted                  | stopped   | aborted                    |
  * | error                    | failed    | from classifyError         |
  * | length                   | failed    | truncated                  |
  * | toolUse/deferred/pending | failed    | incomplete                 |
+ *
+ * Issue #449: `extra.assistantEvidence` defaults to `"unknown"`, so every caller
+ * that does not pass it keeps the pre-#449 result byte for byte. Only an already-
+ * KNOWN terminal outcome (the switch arms above) beats the evidence; the evidence
+ * decides the formerly-default case alone. The omitted message is unrecoverable,
+ * so this is a structural guard: it cannot tell a truncation omission from any
+ * other resolve-with-no-assistant-message.
  */
 export function classifyTerminalOutcome(
 	stopReason: string | undefined,
 	errorMessage?: string,
-	extra?: { stderr?: string; exitCode?: number },
+	extra?: { stderr?: string; exitCode?: number; assistantEvidence?: AssistantEvidence },
 ): TerminalOutcome {
 	switch (stopReason) {
 		case "aborted":
@@ -1054,6 +1087,14 @@ export function classifyTerminalOutcome(
 				}),
 			};
 		default:
+			// Issue #449: no terminal stopReason at all. A projection READ as an
+			// array holding no assistant message is not a success — the still-open
+			// turn has no answer to show for itself. Only the MISSING reason can be
+			// decided by the evidence: any stopReason the caller observed (including
+			// "stop") is an already-known outcome and keeps its existing result.
+			if (stopReason === undefined && extra?.assistantEvidence === "absent") {
+				return { status: "failed", errorCategory: "incomplete" };
+			}
 			return { status: "completed" };
 	}
 }

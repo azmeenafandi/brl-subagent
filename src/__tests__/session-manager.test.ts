@@ -97,7 +97,9 @@ vi.mock("../event-bus", () => ({
 import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus } from "../session-manager";
 import { listInflightRuns } from "../run-registry";
 import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
-import { CUSTOM_ENTRY_TYPES } from "../types";
+import { CUSTOM_ENTRY_TYPES, NO_ASSISTANT_OUTPUT_REASON } from "../types";
+import { buildCompletionMessage } from "../notify-completion";
+import { isTransportRetryable } from "../transport-retry";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 // Issue #98: spawnBackgroundSession persists session run entries via
@@ -2473,7 +2475,6 @@ describe("steerAgent delivery (issue #241)", () => {
 // ---------------------------------------------------------------------------
 // Option B U1: the background spawn mirrors its run into the durable registry
 // ---------------------------------------------------------------------------
-
 describe("Option B U1: background registry mirroring", () => {
 	it("registers an in-flight background entry (kind + owner), cleared at finalize", async () => {
 		// A never-resolving prompt keeps the run in flight so the registry entry
@@ -2486,5 +2487,142 @@ describe("Option B U1: background registry mirroring", () => {
 		const entry = listInflightRuns().find((e) => e.id === agent.id);
 		expect(entry?.kind).toBe("background");
 		expect(entry?.owner?.pid).toBe(process.pid);
+	});
+});
+
+// =========================================================================
+// Issue #449: a settled background run with no assistant output is NOT a
+// success. The SDK can remove the only assistant message from the PROJECTED
+// session (recoverable-length omission) before settling, so the settle site
+// supplies that evidence to classifyTerminalOutcome instead of reading the
+// missing stopReason as a completion.
+// =========================================================================
+describe("background settle with an empty assistant projection (issue #449)", () => {
+	/** The persisted agent record — NOT the in-memory object. */
+	const persistedRecord = (id: string): Record<string, unknown> =>
+		JSON.parse(readFileSync(join(env.storageDir, `${id}.json`), "utf8"));
+
+	/** Settle one background run over a controlled projection. */
+	async function settleWith(
+		messages: Array<Record<string, unknown>>,
+		options: { state?: Record<string, unknown> } = {},
+	) {
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = messages;
+		if (options.state) (mocks.session as Record<string, unknown>).state = options.state;
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "empty projection",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+		const runEntries = fakePi.appendEntry.mock.calls.map((c) => c[1] as Record<string, unknown>);
+		return { agent, run: runEntries[runEntries.length - 1], runStatuses: runEntries.map((r) => r.status) };
+	}
+
+	afterEach(() => {
+		delete (mocks.session as Record<string, unknown>).state;
+	});
+
+	it("fails the run and says so on every surface when the projection has no assistant", async () => {
+		const { agent, run, runStatuses } = await settleWith([{ role: "user", content: "task" }]);
+
+		// agent record — in memory and as persisted
+		expect(agent.status).toBe("failed");
+		expect(agent.result?.exitCode).toBe(1);
+		expect(agent.error).toContain(NO_ASSISTANT_OUTPUT_REASON);
+		const persisted = persistedRecord(agent.id);
+		expect(persisted.status).toBe("failed");
+		expect((persisted.result as Record<string, unknown>).exitCode).toBe(1);
+
+		// persisted run entry — failed / incomplete. The entry has no exitCode
+		// field at all, so only the agent's is asserted above.
+		expect(run.status).toBe("failed");
+		expect(run.errorCategory).toBe("incomplete");
+		expect(String(run.errorMessage)).toContain(NO_ASSISTANT_OUTPUT_REASON);
+		expect(run).not.toHaveProperty("exitCode");
+		expect(run.stopReason).not.toBe("stop");
+		expect(runStatuses).toEqual(["running", "failed"]); // no 'done' record
+
+		// completion message — built from the persisted record, exactly as the wake is
+		const completion = buildCompletionMessage(agent, run as never);
+		expect(completion.details.status).toBe("failed");
+		expect(completion.details.errorCategory).toBe("incomplete");
+		expect(completion.content).toContain(NO_ASSISTANT_OUTPUT_REASON);
+
+		// transcript — no new field, only the failed completion line (#449 pins this)
+		const transcript = readFileSync(transcriptGetTranscriptPath(agent.id), "utf8").trim().split("\n");
+		expect(JSON.parse(transcript[transcript.length - 1]).content).toBe("Transcript completed: failed");
+
+		// failure event — carries the error text and NO category
+		const failedEvents = eventBusMock.emit.mock.calls
+			.map((call) => call[0] as { type: string; data: Record<string, unknown> })
+			.filter((event) => event.type === "subagent:failed");
+		expect(failedEvents).toHaveLength(1);
+		expect(String(failedEvents[0].data.error)).toContain(NO_ASSISTANT_OUTPUT_REASON);
+		expect(failedEvents[0].data).not.toHaveProperty("errorCategory");
+
+		// and the class is never re-dispatched by the transport auto-retry
+		expect(isTransportRetryable(run as never)).toBe(false);
+	});
+
+	it("a pre-stamped 'stopped' wins over the absent evidence (settle ORDER, not the classifier)", async () => {
+		// The stopped branch returns BEFORE the classifier, so this proves the
+		// ordering: zero projected messages cannot turn a user stop into a failure.
+		let resolvePrompt!: () => void;
+		mocks.session.prompt.mockReturnValue(new Promise<void>((r) => { resolvePrompt = r; }));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "stopped with an empty projection",
+		});
+		updateAgentStatus(agent.id, "stopped");
+		mocks.session.messages = [];
+		resolvePrompt();
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(getAgent(agent.id)?.status).toBe("stopped");
+		const run = fakePi.appendEntry.mock.calls[1][1] as Record<string, unknown>;
+		expect(run.status).toBe("failed");
+		expect(run.originalParams?.errorCategory).toBe("aborted");
+	});
+
+	it("the headline WINS over a stale session.state.errorMessage (appended, not substituted)", async () => {
+		const { agent, run } = await settleWith([{ role: "user", content: "task" }], {
+			state: { errorMessage: "stale provider text" },
+		});
+
+		expect(String(agent.error).startsWith(NO_ASSISTANT_OUTPUT_REASON)).toBe(true);
+		expect(agent.error).toContain("stale provider text");
+		expect(String(run.errorMessage).startsWith(NO_ASSISTANT_OUTPUT_REASON)).toBe(true);
+	});
+
+	it.each([
+		["an empty content array", [{ role: "assistant", content: [], stopReason: "stop", usage: { input: 1, output: 1 } }]],
+		["an empty text block", [{ role: "assistant", content: [{ type: "text", text: "" }], stopReason: "stop" }]],
+		["a thinking-only turn", [{ role: "assistant", content: [{ type: "thinking", text: "hmm" }], stopReason: "stop" }]],
+		[
+			"tool_use then an empty final turn",
+			[
+				{ role: "assistant", content: [{ type: "tool_use", name: "ls" }], stopReason: "toolUse" },
+				{ role: "assistant", content: [], stopReason: "stop" },
+			],
+		],
+	])("%s with an assistant PRESENT stays completed", async (_label, assistants) => {
+		const { agent, run } = await settleWith([{ role: "user", content: "task" }, ...assistants]);
+
+		expect(agent.status).toBe("completed");
+		expect(run.status).toBe("done");
+	});
+
+	it("nonconforming synthetic boundary: presence is read from the MESSAGE, never from usage.turns", async () => {
+		// The SDK type requires both `usage` and `stopReason` on an assistant
+		// message, so this shape is synthetic: it exists only to pin that the
+		// evidence is the message's existence. Deriving absence from
+		// `usage.turns === 0` would fail this run.
+		const { agent, run } = await settleWith([
+			{ role: "user", content: "task" },
+			{ role: "assistant", content: [] },
+		]);
+
+		expect(agent.status).toBe("completed");
+		expect(run.status).toBe("done");
+		expect(run.turns).toBe(0);
 	});
 });
