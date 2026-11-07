@@ -534,6 +534,12 @@ describe("fan-out and rejected spawn (issue #439)", () => {
 // ---------------------------------------------------------------------------
 
 describe("degraded-monitoring advisory (issue #439)", () => {
+	// DEVIATION, stated (2026-11-07 review): the terminal half drives the real
+	// delivery-layer subscriber chain, but the settle EVENT itself is emitted directly
+	// rather than through a full `spawnBackgroundSession` settle. A full settle needs a
+	// real SDK session, which this suite does not stand up; the property under test is
+	// the claim policy on the event bus, so the emit is the honest seam. The real-settle
+	// path is covered by the background-session suites.
 	it("T6 — one advisory with two failing groups; channel independence; the terminal notice still lands", async () => {
 		vi.useFakeTimers();
 

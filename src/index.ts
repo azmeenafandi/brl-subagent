@@ -2078,11 +2078,15 @@ export default function (pi: ExtensionAPI) {
 		//     report must therefore be injected at a STATEMENT (a throwing
 		//     registerLiveSubagent, a throwing scheduler, a rejecting spawn), which is
 		//     what the #439 tests do.
-		//   - `agent` (the live record from the spawn) IS read, but only inside these
-		//     containments, and never by the code that builds the result: the two
-		//     callers format from `identity` alone. So an adversarial accessor on the
-		//     live record is contained here and invisible to the report — that is what
-		//     the #439 assertion on a single `description` read pins.
+		//   - `agent` (the live record from the spawn) is read ONLY by the identity
+		//     capture immediately below and by the deadline guard inside G3's
+		//     callback; every later statement reads `identity` and the captured
+		//     primitives instead. The capture itself sits before the outer try, so a
+		//     getter-backed `agent` (which the production spawn cannot produce but an
+		//     injected one can) would still escape to the caller's catch — that is the
+		//     one unpinned read, stated rather than claimed away (2026-11-07 review).
+		//     The callers format their results from `identity` alone, so an
+		//     adversarial accessor on the live record cannot reach the report text.
 		// If a future change makes `identity` a proxy or getter-backed, this boundary
 		// is void: the failing test is the one asserting a started run never reports
 		// "Failed to spawn".
@@ -2129,6 +2133,14 @@ export default function (pi: ExtensionAPI) {
 		 * taken there (PR #71 review). The first gate is what keeps the ordering in
 		 * G1 honest — without it, a row registered before the increment let the
 		 * sweep's decrement land on a SIBLING's count.
+		 *
+		 * Belt-and-braces, stated as such (2026-11-07 review): with the current
+		 * increment-first order in G1, `countedForThisRun` is always true by the time
+		 * any callback can call this, so removing the flag alone changes nothing and
+		 * no test pins it (an extra removal mutant survived). It is kept because the
+		 * ORDERING is the real invariant: when the row is registered before the
+		 * increment, the flag is the only thing standing between a settle and a
+		 * sibling's count — M8 (reorder G1) fails T2b exactly because of it.
 		 *
 		 * Stated limit: the decrement is only reachable from a monitor that a run
 		 * owns. If G1, G2 and G3 ALL fail for the same run (counted, no row, no
@@ -2367,7 +2379,15 @@ export default function (pi: ExtensionAPI) {
 			// ONE advisory per run, after aggregation. It is NOT a terminal notice
 			// and never takes the terminal claim (issue #439 contract): the run's
 			// genuine completion notice is still delivered when it settles.
-			sendMonitoringDegradedAdvisory(pi, ctx, identity, tailFailures);
+			// 2026-11-07 review: this call is INSIDE the outer containment, not after
+			// it — the advisory's own dispatch surfaces are contained too, and the
+			// inner per-channel tries in `sendMonitoringDegradedAdvisory` cover the
+			// case where one channel throws (so one failure cannot lose both).
+			try {
+				sendMonitoringDegradedAdvisory(pi, ctx, identity, tailFailures);
+			} catch (err) {
+				recordTailFailure("monitoring advisory", err);
+			}
 		}
 
 		return { agent, identity, tailFailures };
