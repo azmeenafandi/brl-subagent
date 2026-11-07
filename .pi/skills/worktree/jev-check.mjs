@@ -42,6 +42,12 @@
 //                               provenance log's own cutoff) to have a provenance entry. A line with
 //                               none was NOT printed by --line: it was typed, invented, or copied.
 //                               Missing provenance log = exit 2 (fail-closed, never a silent pass).
+//                               A provenance miss can be ACKNOWLEDGED (never laundered) by an
+//                               exceptions-file entry whose reason carries `retro:<label>` naming a
+//                               real provenance row: the conductor's error stays visible in the same
+//                               report, and the retrospective classification is the evidence. An
+//                               exception without a usable `retro:` label leaves the dispatch an
+//                               offender — the excuse must point at a row, not at prose.
 //   --selftest                  fixture proof of every mode (CI-wired), deterministic, no network.
 //
 // CI:
@@ -400,6 +406,17 @@ function parseDispatchEvents(text) {
 	return { events, unparsed };
 }
 
+/**
+ * A provenance exception must name the retrospective row: `retro:<label>`, where `<label>` is a
+ * label that exists in the provenance log. Prose alone is not evidence — an invented confidence
+ * plus a persuasive sentence would otherwise clear the gate (#449: a hand-typed `high (0.62)` when
+ * the classifier answers `xhigh (0.63)`).
+ */
+function parseProvenanceExceptionMarker(reason) {
+	const match = /\bretro:([A-Za-z0-9][A-Za-z0-9._:-]*)/.exec(reason);
+	return match === null ? null : match[1];
+}
+
 /** Parse the exceptions file: `<agent-id-prefix>  <reason>`. A missing file means no exceptions. */
 function loadDispatchExceptions(path) {
 	let text;
@@ -416,7 +433,8 @@ function loadDispatchExceptions(path) {
 		if (prefix.length < 7) {
 			console.error(`jev-check: exceptions: prefix ${JSON.stringify(prefix)} is shorter than 7 chars — it can match unrelated dispatches`);
 		}
-		exceptions.push({ prefix: prefix.toLowerCase(), reason: rest.join(" ").trim() || "(no reason recorded)" });
+		const reason = rest.join(" ").trim() || "(no reason recorded)";
+		exceptions.push({ prefix: prefix.toLowerCase(), reason, retro: parseProvenanceExceptionMarker(reason) });
 	}
 	return exceptions;
 }
@@ -546,12 +564,41 @@ function analyzeDispatchLog(text, cutoff, exceptions = [], provenance = null) {
 			const sinceCutoff = Number.isFinite(cutoffAt) && (!Number.isFinite(eventAt) || eventAt >= cutoffAt);
 			if (provenance !== null && !audit.gap && sinceCutoff) {
 				if (!provenance.lines.has(audit.line)) {
-					offenders.push({
-						...event,
-						reason:
-							`no classifier provenance for "${audit.line}" — that line was not printed by ` +
-							"`--line --label` (an invented or copied confidence passes a format-only check)",
-					});
+					// A provenance miss is the one offence an invented line cannot hide: the dispatch
+					// went out with a line the classifier never printed. It may be ACKNOWLEDGED, but only
+					// by an exception that names a real retrospective provenance row (`retro:<label>`) —
+					// the error stays in the same report and the evidence is the row, not the prose.
+					const exception = exceptions.find((entry) =>
+						event.agentId !== "" && event.agentId.toLowerCase().startsWith(entry.prefix),
+					);
+					const retroUsable =
+						exception !== undefined &&
+						exception.retro !== null &&
+						provenance.labels !== undefined &&
+						provenance.labels.has(exception.retro);
+					if (retroUsable) {
+						excepted.push({ ...event, kind: "provenance", reason: "no classifier provenance", exception: exception.reason });
+					} else if (exception !== undefined) {
+						const unusable =
+							exception.retro === null
+								? "it carries no retro:<label> naming a provenance row"
+								: "retro:" + exception.retro + " is not a provenance label";
+						offenders.push({
+							...event,
+							reason:
+								'no classifier provenance for "' + audit.line + '" — that line was not printed by ' +
+								"`--line --label` (an invented or copied confidence passes a format-only check). " +
+								"The recorded exception is not usable: " + unusable +
+								" — print the retrospective classification with --classifier … --label <name> and name it.",
+						});
+					} else {
+						offenders.push({
+							...event,
+							reason:
+								`no classifier provenance for "${audit.line}" — that line was not printed by ` +
+								"`--line --label` (an invented or copied confidence passes a format-only check)",
+						});
+					}
 				}
 			}
 			continue;
@@ -586,14 +633,19 @@ function reportDispatchLog(path, since, exceptionsPath, requireProvenance = fals
 	let provenance = null;
 	if (requireProvenance) {
 		const loaded = loadProvenance(DEFAULT_PROVENANCE_LOG);
-		provenance = { cutoff: loaded.cutoff, lines: new Set(loaded.entries.map((entry) => entry.line)) };
+		provenance = {
+			cutoff: loaded.cutoff,
+			lines: new Set(loaded.entries.map((entry) => entry.line)),
+			labels: new Set(loaded.entries.map((entry) => entry.label)),
+		};
 	}
 	const { events, relevant, offenders, excepted, unparsed } = analyzeDispatchLog(text, cutoff, exceptions, provenance);
 
 	if (excepted.length > 0) {
 		console.error(`jev-check: ${excepted.length} offending dispatch(es) carry a RECORDED exception:`);
 		for (const event of excepted) {
-			console.error(`  ${event.timestamp || `(no timestamp, line ${event.lineNumber})`}  ${clip(event.task ?? "", 60)}  — acknowledged: ${event.exception}`);
+			const kind = event.kind === "provenance" ? " [provenance miss]" : "";
+			console.error(`  ${event.timestamp || `(no timestamp, line ${event.lineNumber})`}  ${clip(event.task ?? "", 60)}${kind}  — acknowledged: ${event.exception}`);
 		}
 	}
 
@@ -1226,6 +1278,71 @@ const SELFTEST_CASES = [
 			if (!/no classifier provenance/.test(offenders[0].reason)) {
 				throw new Error(`offender reason: expected /no classifier provenance/, got ${JSON.stringify(offenders[0].reason)}`);
 			}
+		},
+	},
+	{
+		name: "--require-provenance: a provenance miss carrying retro:<label> is ACKNOWLEDGED, never clean",
+		run() {
+			// The 2026-11-07 case: a hand-typed line, no provenance row. The exception names the
+			// retrospective row; the dispatch is still reported as an offender that was excused.
+			const { offenders, excepted } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", "Triage.\n\njev: high (0.62) · C2 · worktree n")),
+				STRICT_DISPATCH_CUTOFF,
+				[
+					{
+						prefix: "fixture-agent",
+						reason: "hand-typed line, no classifier run — conductor error; retrospective row retro:retro-triage",
+						retro: "retro-triage",
+					},
+				],
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set(), labels: new Set(["retro-triage"]) },
+			);
+			assertEqual(offenders.length, 0, "offenders");
+			assertEqual(excepted.length, 1, "excepted");
+			assertEqual(excepted[0].kind, "provenance", "excepted kind");
+			if (!/retro-triage/.test(excepted[0].exception)) {
+				throw new Error(`excepted reason must keep the evidence: ${JSON.stringify(excepted[0].exception)}`);
+			}
+		},
+	},
+	{
+		name: "--require-provenance: a retro exception naming a NON-EXISTENT label stays an offender",
+		run() {
+			const { offenders, excepted } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", "Triage.\n\njev: high (0.62) · C2 · worktree n")),
+				STRICT_DISPATCH_CUTOFF,
+				[{ prefix: "fixture-agent", reason: "sorry — retro:does-not-exist", retro: "does-not-exist" }],
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set(), labels: new Set(["retro-triage"]) },
+			);
+			assertEqual(offenders.length, 1, "offenders");
+			assertEqual(excepted.length, 0, "nothing excused on an unusable excuse");
+			if (!/not usable/.test(offenders[0].reason)) {
+				throw new Error(`offender must say why the excuse failed: ${JSON.stringify(offenders[0].reason)}`);
+			}
+		},
+	},
+	{
+		name: "--require-provenance: an exception cannot launder a dispatch whose line HAS provenance",
+		run() {
+			const line = "jev: medium (0.84) · C2 · worktree y";
+			const { offenders, excepted } = analyzeDispatchLog(
+				dispatchLogFixture(dispatchEvent("2026-11-02T09:00:00.000Z", `Task.\n\n${line}`)),
+				STRICT_DISPATCH_CUTOFF,
+				[{ prefix: "fixture-agent", reason: "claimed error — retro:retro-triage", retro: "retro-triage" }],
+				{ cutoff: "2026-11-01T00:00:00.000Z", lines: new Set([line]), labels: new Set(["retro-triage"]) },
+			);
+			assertEqual(offenders.length, 0, "offenders");
+			assertEqual(excepted.length, 0, "a clean dispatch is never excepted");
+		},
+	},
+	{
+		name: "--require-provenance: `retro:` in prose is parsed, but only a real label excuses",
+		run() {
+			const parsed = loadDispatchExceptions(join(tmpdir(), "jev-retro-parser", "missing"));
+			assertEqual(parsed.length, 0, "missing file means no exceptions");
+			const marker = parseProvenanceExceptionMarker("no classifier run; retrospective row retro:retro-triage-449 end");
+			assertEqual(marker, "retro-triage-449", "marker extraction");
+			assertEqual(parseProvenanceExceptionMarker("no marker here"), null, "absent marker");
 		},
 	},
 	{
