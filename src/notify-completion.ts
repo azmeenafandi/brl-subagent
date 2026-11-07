@@ -60,7 +60,11 @@ export interface DeliveryResolution {
 	triggerTurn: boolean;
 }
 
-/** Default dedupe cap: the set is simply cleared when it exceeds this. */
+/**
+ * Default dedupe cap. The set stays bounded by evicting its oldest entry when it
+ * exceeds this — never the whole set (issue #440: a clear-all forgot the id it had
+ * just claimed, so that id could be delivered twice).
+ */
 const DEDUPE_CAP = 200;
 
 /**
@@ -260,13 +264,19 @@ export function resolveDelivery(
 
 /**
  * Dedupe guard — first terminal event per id wins. Returns true when the event
- * should be delivered, false when it is a duplicate. Capped simply (W1): the
- * set is cleared when it exceeds the cap.
+ * should be delivered, false when it is a duplicate. Retention is bounded (W1):
+ * once the set exceeds the cap its OLDEST entry is evicted (a `Set` iterates in
+ * insertion order, so that is exact). The id just claimed is the newest entry, so
+ * its own call evicts an EARLIER id — not the set, and not that claim. A clear-all
+ * forgot the claim entirely, so the very next duplicate was delivered twice (#440).
  */
 export function markTerminalSeen(seen: Set<string>, id: string, cap = DEDUPE_CAP): boolean {
 	if (seen.has(id)) return false;
 	seen.add(id);
-	if (seen.size > cap) seen.clear();
+	if (seen.size > cap) {
+		const oldest = seen.values().next().value;
+		if (oldest !== undefined) seen.delete(oldest);
+	}
 	return true;
 }
 
