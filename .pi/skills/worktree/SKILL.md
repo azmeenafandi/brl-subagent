@@ -401,6 +401,12 @@ to touch" rule. The shipped **`dev-agent`** preset has no quality bar; do not us
 Reviews use **`project-reviewer`** (its mirror of the same bar, with the required
 `SOLID/DRY violations flagged: N` verdict line); plan critiques use **`project-plan-critic`**.
 
+**Pinned: plan critiques run at `thinkingLevel: "medium"`** (maintainer decision, 2026-11-07 — the measured
+cost/performance optimum for terra) **regardless of what Jev answers.** This is a standing carve-out from
+Rule 22's deviation rule, not a per-dispatch judgement: do not escalate a critique because Jev says `high`
+or `xhigh`, and do not justify `medium` in the dispatch. The Jev line is still recorded and still drives the
+**risk class** — only the thinking level is pinned.
+
 ## Adversarial review dispatch (rule #7 + #8 + #10)
 
 **Classify BEFORE reviewing (Rule 10).** Every change gets a risk class first;
