@@ -1449,45 +1449,70 @@ export async function spawnBackgroundSession(
   //
   // U2 (D2) retention: this is the SINGLE terminal choke point for a background
   // run — git-setup refusal, a synchronous prompt throw, the .then completed /
-  // provider-failed / aborted branches, the .catch stopped / failed branches and
-  // the markTerminalBestEffort catch-all ALL land here exactly once (the
-  // runFinalized guard). The session-dir decision below therefore covers every
-  // settle path. The index.ts poller crash notices are NOT settlements (they flip
-  // only the live UI state and leave the run/agent record to this settle); an
-  // interrupted run (U1 boot-scan mark) never reaches this function and KEEPS its
-  // file (D3).
-  let runFinalized = false;
+  // provider-failed / aborted branches, the .catch stopped / failed branches, the
+  // markTerminalBestEffort catch-all and (since #453) the deadline timer ALL land
+  // here. The session-dir decision below therefore covers every settle path. The
+  // index.ts poller crash notices are NOT settlements (they flip only the live UI
+  // state and leave the run/agent record to this settle); an interrupted run (U1
+  // boot-scan mark) never reaches this function and KEEPS its file (D3).
+  //
+  // Issue #453 (ADR 0023 decision 3): TWO once-only guards, not one.
+  //   - `entryWritten` — a terminal RECORD for this id is durable. The deadline
+  //     may write it first (a classification snapshot); every later write is then
+  //     a payload AMENDMENT of that snapshot, never a second classification.
+  //   - `pruned` — the session-dir decision has been made. Only a SETTLE makes it
+  //     (the deadline passes `prune: false`), and it is made even when the entry
+  //     already exists — otherwise a cooperative timeout would stop pruning.
+  // Collapsing the two is the M4 mutant the dir-survives test kills.
+  let entryWritten = false;
+  let pruned = false;
+  /**
+   * The DEADLINE's classification snapshot — the amendment's base, and ONLY the
+   * deadline ever sets it (see the arm site). A settle→settle re-entry (the
+   * catch-all after a throwing handler) therefore still writes nothing, which is
+   * the single-terminal-entry contract the old `runFinalized` guard enforced.
+   */
+  let snapshot: SubagentRun | undefined;
+
+  /**
+   * This call's OWN classification. The retention/prune gate reads THIS — never
+   * the snapshot's — because at the deadline a run looks like `timeout` (not
+   * transport-retryable) while its true settle category may decide otherwise
+   * (ADR 0023 decision 3).
+   *
+   * Issue #179 (D1/D2): the classifier's explicit category wins (it knows the
+   * terminal stopReason); otherwise fall back to the legacy message-based
+   * classification (refused spawns, sync throws, preflight rejections, the
+   * catch-all) so no failure is ever left uncategorized.
+   */
+  const classifyFailure = (
+    status: "done" | "failed",
+    error?: string,
+    terminal?: { errorCategory?: ErrorCategory },
+  ): ErrorCategory | undefined =>
+    status === "failed"
+      ? terminal?.errorCategory ??
+        (error
+          ? classifyError({
+              messages: [],
+              usage: { ...EMPTY_USAGE },
+              exitCode: 1,
+              stderr: "",
+              errorMessage: error,
+            })
+          : undefined)
+      : undefined;
+
+  /** Returns the entry it appended (the terminal record or the amendment), if any. */
   const finalizeRunEntry = (
     status: "done" | "failed",
     error?: string,
-    terminal?: { stopReason?: string; errorCategory?: ErrorCategory },
-  ): void => {
-    if (runFinalized) return;
-    runFinalized = true;
+    terminal?: { stopReason?: string; errorCategory?: ErrorCategory; prune?: boolean },
+  ): SubagentRun | undefined => {
     const usage = agent.result?.usage ?? EMPTY_USAGE;
     const finalOutput = agent.finalOutput ?? "";
-    // Issue #179 (D1/D2): the classifier's explicit category wins (it knows the
-    // terminal stopReason); otherwise fall back to the legacy message-based
-    // classification (refused spawns, sync throws, preflight rejections, the
-    // catch-all) so no failure is ever left uncategorized.
-    //
-    // Issue #404: HOISTED above the session-dir decision below — the retention
-    // gate must read the same category/value the run record is about to get, and
-    // that decision has to happen before the record write (see the invariant
-    // note there). `classifyError` is pure and total, so hoisting costs nothing.
-    const errorCategory =
-      status === "failed"
-        ? terminal?.errorCategory ??
-          (error
-            ? classifyError({
-                messages: [],
-                usage: { ...EMPTY_USAGE },
-                exitCode: 1,
-                stderr: "",
-                errorMessage: error,
-              })
-            : undefined)
-        : undefined;
+    // The TRUE category of THIS call — see the note on `classifyFailure`.
+    const errorCategory = classifyFailure(status, error, terminal);
     // U2 (D2) prune + #404 retention. THE INVARIANT: the prune/mark decision
     // precedes the run-record write, and everything above it is pure — so no
     // throw between the decision and the write can leave a terminal run's session
@@ -1497,7 +1522,12 @@ export async function spawnBackgroundSession(
     // run that will be re-dispatched has a reader for the retained session, and
     // it is built from the values this record is about to carry, so the reader
     // and the retainer can never disagree.
-    if (!agent.interruptedAt) {
+    //
+    // Issue #453: gated on `pruned` (not on `entryWritten`) and skipped when the
+    // CALLER asks (`prune: false` — the deadline). One flag for both would make a
+    // successful deadline write suppress this decision (mutant M4).
+    if ((terminal?.prune ?? true) && !pruned && !agent.interruptedAt) {
+      pruned = true;
       // The CAPTURED dir — tests swap STORAGE_DIR per case, and a mid-run change
       // of root must never mis-target the delete or the marker.
       const sessionDir = agent._sessionFile ? dirname(agent._sessionFile) : backgroundSessionDir(id);
@@ -1513,6 +1543,39 @@ export async function spawnBackgroundSession(
       if (!retained || !retainSessionDir(id, sessionDir)) {
         pruneSessionDir(id, sessionDir);
       }
+    }
+
+    // Issue #453 (ADR 0023 decision 4): a second write is an AMENDMENT — the
+    // deadline already wrote the classification, so only the PAYLOAD moves
+    // (cost/usage/output/final detail). `status`, `errorCategory`, `stopReason`
+    // and `errorMessage` are the snapshot's and are never rewritten: a late
+    // settle's real usage must not re-open what the run WAS (that would be a
+    // second classification claim — mutant M7).
+    if (entryWritten) {
+      // No snapshot => this is a settle RE-ENTRY (the settle already wrote the
+      // record); nothing new to say. Only a deadline snapshot is amendable.
+      if (!snapshot) return undefined;
+      const amended: SubagentRun = {
+        ...snapshot,
+        turns: usage.turns,
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - startedAtMs,
+        cost: usage.cost,
+        tokensIn: usage.input,
+        tokensOut: usage.output,
+        outputSummary: finalOutput.slice(0, 200),
+        fullOutput: finalOutput || undefined,
+      };
+      persistRunRecord(pi, amended);
+      log.info("Background run amended after a late settle", {
+        agentId: id,
+        status: amended.status,
+        errorCategory: amended.errorCategory,
+        turns: usage.turns,
+        tokensOut: usage.output,
+        cost: usage.cost,
+      });
+      return amended;
     }
     // Issue #187: capture the RAW terminal reason BEFORE coercion. `finalTurnError`
     // means "the final turn was a PROVIDER error" (isProviderError); deriving it
@@ -1551,6 +1614,10 @@ export async function spawnBackgroundSession(
           : run.originalParams,
     };
     persistRunRecord(pi, entry);
+    // Issue #453: set only AFTER the append resolved. A throwing write therefore
+    // leaves `entryWritten === false`, so a later settle still classifies the run
+    // instead of amending a record that was never written (mutant M3).
+    entryWritten = true;
     // Issue #179 (D6): the explicit settle line — the log's job is to record the
     // CLASSIFIED OUTCOME, which cwd alone can never convey.
     log.info("Background run settled", {
@@ -1562,6 +1629,7 @@ export async function spawnBackgroundSession(
       errorCategory,
       error: error ?? null,
     });
+    return entry;
   };
 
   // Issue #447: git teardown state + the teardown itself, declared BEFORE the
@@ -1955,13 +2023,17 @@ export async function spawnBackgroundSession(
   // F27: wrap in the task-as-data fence — the user message is DATA, not
   // instructions (see SUBAGENT_INSTRUCTIONS Task Boundary).
   //
-  // Issue #448 (defect 1): the deadline timer is ABORT-ONLY — status 'stopped',
-  // the transcript note, session.abort() — and NOTHING else: no run-entry
-  // finalization and no session-dir pruning, because a non-settling prompt may
-  // still be writing the session file (#453). The abort is attempted OUTSIDE the
-  // fallible bookkeeping: a throwing status/transcript write must never leave
-  // the record saying 'stopped' while the child keeps running. The status flip
-  // stays BEFORE the abort — the settle path classifies the run from it.
+  // Issue #448 (defect 1) + #453 (ADR 0023 decisions 2/3): the deadline timer is
+  // COOPERATIVE and prune-free. It flips the status to `stopped`, notes the
+  // transcript, aborts, and writes a terminal-run SNAPSHOT (`failed/timeout`) — it
+  // owns no filesystem or git resource, waits for no settle, never prunes the
+  // session dir and never releases the branch lock. Those stay with the settle.
+  //
+  // Ordering is deliberate: status → abort → snapshot. A throwing status or
+  // transcript write must never leave the record saying 'stopped' while the child
+  // keeps running, and a throwing APPEND must never suppress the abort — so each
+  // step has its own containment and the abort sits between the two. The status
+  // flip stays BEFORE the abort because the settle path classifies the run from it.
   const armDeadline = (budgetMs: number): ReturnType<typeof setTimeout> =>
     setTimeout(() => {
       if (agent.completedAt) return; // already settled — nothing to abort
@@ -1985,6 +2057,27 @@ export async function spawnBackgroundSession(
         // abort() threw synchronously — a timer callback must never throw
         // uncaught (that would crash the host process).
         log.warn(`spawnBackgroundSession: abort failed to start for ${id}`, {
+          error: (err as Error).message,
+        });
+      }
+      // Issue #453: the durable classification SNAPSHOT. `timeout` is the run
+      // vocabulary's existing category (there is no `stopped` status for a run —
+      // `running | done | failed`), and `prune: false` is what keeps a
+      // still-writing SDK session's directory alive. Contained: a failed append
+      // must not escape the timer (it would kill the host), and it must NOT undo
+      // the abort above — `entryWritten` stays false, so the settle still writes
+      // the terminal record when (if) it arrives.
+      try {
+        // `snapshot` is assigned from the RETURNED entry, i.e. only after the
+        // append resolved — this is what makes the late settle an amendment
+        // rather than a second classification.
+        snapshot = finalizeRunEntry('failed', reason, {
+          stopReason: 'aborted',
+          errorCategory: 'timeout',
+          prune: false,
+        });
+      } catch (err) {
+        log.warn(`spawnBackgroundSession: deadline record write failed for ${id}`, {
           error: (err as Error).message,
         });
       }
