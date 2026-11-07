@@ -407,12 +407,14 @@ describe("markTerminalSeen", () => {
 		expect(markTerminalSeen(seen, "run-2")).toBe(true); // new id → delivered
 	});
 
-	it("caps the set by clearing when it exceeds the default cap", () => {
+	it("caps the set by evicting the oldest claim when it exceeds the default cap", () => {
 		const seen = new Set<string>();
 		for (let i = 0; i < 200; i++) seen.add(`id-${i}`);
-		// Adding one more crosses the 200 cap → cleared, still returns true.
+		// Adding one more crosses the 200 cap → the oldest entry goes, still returns true.
 		expect(markTerminalSeen(seen, "new-id")).toBe(true);
-		expect(seen.size).toBeLessThanOrEqual(200);
+		expect(seen.size).toBe(200); // bounded at the cap — one eviction, not a wipe
+		expect(seen.has("id-0")).toBe(false); // the oldest was the victim
+		expect(seen.has("new-id")).toBe(true); // the claim just made survives (#440)
 	});
 });
 
@@ -442,13 +444,25 @@ describe("claimTerminalNotice", () => {
 		expect(crash).toBe(false);
 	});
 
-	it("caps the shared set by clearing it when it exceeds the default cap", () => {
+	it("keeps the claim it just made when the overflow evicts", () => {
 		__resetTerminalClaims();
 		for (let i = 0; i < 200; i++) expect(claimTerminalNotice(`id-${i}`)).toBe(true);
-		// The 201st id crosses the cap → the set clears, still claims.
 		expect(claimTerminalNotice("id-overflow")).toBe(true);
-		// The reset wiped the earlier ids, so one of them claims again.
+		// #440: the overflowing claim is retained, so its immediate duplicate loses.
+		expect(claimTerminalNotice("id-overflow")).toBe(false);
+	});
+
+	it("caps the shared set by evicting the oldest claim when it exceeds the default cap", () => {
+		__resetTerminalClaims();
+		for (let i = 0; i < 200; i++) expect(claimTerminalNotice(`id-${i}`)).toBe(true);
+		// The 201st id crosses the cap → the OLDEST claim is evicted, still claims.
+		expect(claimTerminalNotice("id-overflow")).toBe(true);
+		// A recent claim survives the overflow (oldest-first, one eviction per call).
+		expect(claimTerminalNotice("id-199")).toBe(false);
+		// The oldest was evicted, so it claims again — eviction is real.
 		expect(claimTerminalNotice("id-0")).toBe(true);
+		// Re-claiming a forgotten id evicts exactly one more: the next oldest.
+		expect(claimTerminalNotice("id-1")).toBe(true);
 	});
 });
 
