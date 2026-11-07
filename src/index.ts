@@ -421,7 +421,7 @@ export default function (pi: ExtensionAPI) {
 	let state = createSessionState(log);
 
 	// Issue #147: the completion-push subscriber needs the session context to
-	// resolve the run entry (state.getRunEntries(ctx)). The event-bus listener
+	// resolve the run entry (state.getLogicalRunEntries(ctx)). The event-bus listener
 	// receives no ctx, so capture it in session_start where it is available.
 	let sessionCtx: ExtensionContext | undefined;
 
@@ -3771,7 +3771,7 @@ export default function (pi: ExtensionAPI) {
 
 				// E4: SLA tracking — compute metrics if enabled
 				if (state.config.slaTrackingEnabled) {
-					const recentRuns = state.getRunEntries(ctx).slice(0, state.config.slaWindowSize);
+					const recentRuns = state.getLogicalRunEntries(ctx).slice(0, state.config.slaWindowSize);
 					const metrics = computeSLAMetrics(recentRuns);
 					log.info("SLA metrics computed", {
 						totalRuns: metrics.totalRuns,
@@ -4268,7 +4268,7 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		getAgent: RecoveryAgentLookup,
 	): SubagentRun[] {
-		return visibleRunEntriesForSession(state.getRunEntries(ctx), getAgent);
+		return visibleRunEntriesForSession(state.getLogicalRunEntries(ctx), getAgent);
 	}
 
 	/**
@@ -4570,7 +4570,7 @@ export default function (pi: ExtensionAPI) {
 			const agent = getAgent(id);
 			if (!agent) return; // pruned or foreign id — nothing to notify
 			const knob = state.config.completionNotify ?? "all";
-			const run = resolveRunEntry(state.getRunEntries(ctx), id);
+			const run = resolveRunEntry(state.getLogicalRunEntries(ctx), id);
 			// Issue #365: a transport-class background failure is re-dispatched once
 			// and the source notice is suppressed (the retry's settle is the wake).
 			// Every other terminal type — and every non-retryable failure — keeps the

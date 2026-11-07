@@ -1943,15 +1943,22 @@ export async function spawnBackgroundSession(
     // Issue #122: a timed-out run burned tokens — record the real usage
     // (the git-diff block above must not leave the empty fallback).
     recordSessionUsage();
+    // Issue #31: capture the final output while the session is still live, then
+    // release the ref on the terminal path (memory retention; the poller treats
+    // a nulled ref on a terminal agent as expected).
+    //
+    // Issue #453 [c 4]: the CAPTURE now PRECEDES the record. These fields are the
+    // terminal entry's payload, and after a deadline stop this call writes the
+    // AMENDMENT — so output produced after the deadline (the child kept running
+    // until the abort landed, and the SDK may still deliver the final turn) must
+    // be in `agent.finalOutput` by the time the amendment reads it. It used to
+    // finalize first, which persisted the pre-deadline (usually empty) output.
+    captureAndReleaseSession();
     // Issue #120 (Track 1): agent.error carries the reason when the stop was a
     // deadline timeout ('Timed out after Xms' → 'timeout'); a user cancel
     // (stop_subagent) sets no error, so fall back to the honest user-abort
     // stamp (→ 'aborted') instead of the old ambiguous 'Aborted or timed out'.
     finalizeRunEntry('failed', agent.error ?? SUBAGENT_ABORTED_MESSAGE, { stopReason });
-    // Issue #31: capture the final output while the session is still live,
-    // then release the ref on the terminal path (memory retention; the poller
-    // treats a nulled ref on a terminal agent as expected).
-    captureAndReleaseSession();
   };
 
   // Issue #53: the settle handlers (.then/.catch below) run in promise

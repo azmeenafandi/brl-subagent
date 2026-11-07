@@ -78,16 +78,23 @@ export const STALE_FINALIZE_GRACE_MS = POLLER_TICK_MS + 1000;
  * preference rule. Recovery's `dedupeRunEntriesById` delegates here, so the
  * boot scan and every display/retry lookup agree by construction.
  *
- * Each run writes TWO custom entries sharing its id, in append order: a spawn
- * entry (status "running", carrying `originalParams`) FIRST, then the final
- * entry (status "done"/"failed", stamped with fullOutput/cost/duration) at
- * settle. Preference, in order:
+ * Each run writes a spawn entry (status "running", carrying `originalParams`)
+ * FIRST, then its terminal entry (status "done"/"failed", stamped with
+ * fullOutput/cost/duration) at settle. A run stopped by the deadline writes ONE
+ * MORE terminal entry at the late settle — a payload AMENDMENT of the deadline's
+ * classification snapshot (issue #453, ADR 0023 decision 4). Preference, in order:
  *
- *   1. a TERMINAL entry (status !== "running") — the run is resolved;
+ *   1. the LAST terminal entry (status !== "running") — with an amendment that
+ *      is the amended payload; without one it is the only terminal entry, so
+ *      this is unchanged for every pre-#453 run (mutant M5 is `find` here);
  *   2. among non-terminal entries, one carrying the D3 `interruptedAt` mark —
  *      append-only stores keep the original spawn entry forever, so the marked
  *      clone is the authoritative RECOVERED state U3's shared lookup reads;
  *   3. otherwise the first match (the pre-finalize spawn shape).
+ *
+ * Ordering contract: callers pass a store-ordered list (`getRunEntries` is
+ * newest-first with a STABLE sort, so a run's entries stay in append order —
+ * spawn, snapshot, amendment). "Last" therefore means "appended last".
  *
  * Returns undefined when no entry matches.
  */
@@ -98,10 +105,37 @@ export function resolveTerminalRunEntry(
 	const matching = entries.filter((r) => r.id === id);
 	if (matching.length === 0) return undefined;
 	return (
-		matching.find((r) => r.status !== "running") ??
+		matching.findLast((r) => r.status !== "running") ??
 		matching.find((r) => r.interruptedAt) ??
 		matching[0]
 	);
+}
+
+/**
+ * Issue #453 (ADR 0023 decision 4): ONE logical run per id — the projection every
+ * raw-entry consumer reads.
+ *
+ * A run that hits its deadline and settles late has three entries sharing its id
+ * (spawn, `failed/timeout` snapshot, payload amendment). Aggregates that take the
+ * raw list count it two or three times and sum two full payloads (measured: 3
+ * runs / $5 for a $2 snapshot + $3 amendment pair). This yields, per id, the LAST
+ * entry in the input's order: the amendment when there is one (so the amended
+ * payload — the real cost/tokens/output — is what readers see), the terminal entry
+ * for an ordinary run, the spawn entry for a run still in flight.
+ *
+ * ORDER: the output keeps each id's FIRST-seen position and drops repeats, so a
+ * caller's window (`slice(0, n)`) applied AFTER this projects runs, not entries.
+ * That is the contract — apply the projection BEFORE any window or cap, or a
+ * window can split one run's entries across its edge.
+ */
+export function projectLogicalRuns(entries: SubagentRun[]): SubagentRun[] {
+	const lastById = new Map<string, SubagentRun>();
+	const order: string[] = [];
+	for (const entry of entries) {
+		if (!lastById.has(entry.id)) order.push(entry.id);
+		lastById.set(entry.id, entry);
+	}
+	return order.map((id) => lastById.get(id)!);
 }
 
 /**
@@ -397,8 +431,13 @@ export class SessionState {
 	// Run entry access
 	// -------------------------------------------------------------------
 
-	getRunEntries(ctx: ExtensionContext): SubagentRun[] {
-		const runs = ctx.sessionManager
+	/**
+	 * The RAW run-entry store, session order (oldest append first), uncapped.
+	 * Two callers only: {@link getRunEntries} (the raw view) and
+	 * {@link getLogicalRunEntries} (the one every aggregate reads).
+	 */
+	private readRunEntries(ctx: ExtensionContext): SubagentRun[] {
+		return ctx.sessionManager
 			.getEntries()
 			.filter((e: { type: string; customType?: string }) =>
 				e.type === "custom" && e.customType === CUSTOM_ENTRY_TYPES.run,
@@ -410,7 +449,32 @@ export class SessionState {
 				return undefined;
 			})
 			.filter((r): r is SubagentRun => r !== undefined);
-		return cleanupRuns(runs, this.config.maxHistoryEntries);
+	}
+
+	/**
+	 * The RAW run-entry view, newest-first and capped at `maxHistoryEntries`
+	 * ENTRIES. Not the display/aggregate view — a run has two entries (spawn +
+	 * terminal) and a deadline-stopped one has three, so a consumer that counts,
+	 * sums or windows these sees one run several times. It remains the right view
+	 * for `findSpawnRunById` (which deliberately wants the SPAWN entry) and for
+	 * raw-store bookkeeping.
+	 */
+	getRunEntries(ctx: ExtensionContext): SubagentRun[] {
+		return cleanupRuns(this.readRunEntries(ctx), this.config.maxHistoryEntries);
+	}
+
+	/**
+	 * Issue #453: the LOGICAL run-entry view — one entry per run id, carrying the
+	 * amended payload when the deadline and a late settle both wrote (see
+	 * {@link projectLogicalRuns}). Every aggregate/display consumer uses THIS:
+	 * metrics, cost accounting, history, the reports and the dashboard.
+	 *
+	 * The projection runs BEFORE the cap, so `maxHistoryEntries` counts RUNS: an
+	 * amended run cannot be half-kept, and its amendment can never be windowed
+	 * away from the snapshot it amends.
+	 */
+	getLogicalRunEntries(ctx: ExtensionContext): SubagentRun[] {
+		return cleanupRuns(projectLogicalRuns(this.readRunEntries(ctx)), this.config.maxHistoryEntries);
 	}
 
 	/**
@@ -636,7 +700,9 @@ export class SessionState {
 	 * Sum the cost of all completed runs in the current session.
 	 */
 	getSessionTotalCost(ctx: ExtensionContext): number {
-		const runs = this.getRunEntries(ctx);
+		// Issue #453: one row per run — a deadline snapshot and its amendment both
+		// carry a full cost, so summing raw entries would charge the run twice.
+		const runs = this.getLogicalRunEntries(ctx);
 		return runs.reduce((acc, r) => acc + (r.cost ?? 0), 0);
 	}
 

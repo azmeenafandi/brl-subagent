@@ -1207,6 +1207,48 @@ describe("spawnBackgroundSession deadline record (#453)", () => {
 		}
 	});
 
+	it("a late settle AMENDS the payload with output produced after the deadline (#453 [c 4])", async () => {
+		vi.useFakeTimers();
+		try {
+			const prompt = heldPrompt();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "late output",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+			const [snapshot] = terminalRunEntries();
+			expect(snapshot.fullOutput).toBeUndefined();
+			expect(snapshot.cost).toBe(0);
+
+			// The child kept working until the abort landed: a real assistant turn
+			// (and its usage) arrives AFTER the deadline. Today's shipped settle
+			// finalized BEFORE capturing, so the amendment would persist "".
+			mocks.session.messages = [
+				{ role: "user", content: "probe task" },
+				{ role: "assistant", content: [{ type: "text", text: "work done past the deadline" }], stopReason: "stop" },
+			];
+			prompt.settle();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const terminal = terminalRunEntries();
+			expect(terminal).toHaveLength(2);
+			const amendment = terminal[1];
+			// The payload moved...
+			expect(amendment.fullOutput).toBe("work done past the deadline");
+			expect(amendment.outputSummary).toBe("work done past the deadline");
+			// ...and the classification did not (same claim, no second one).
+			expect(amendment.status).toBe("failed");
+			expect(amendment.errorCategory).toBe("timeout");
+			expect(amendment.errorMessage).toBe("Timed out after 5000ms");
+			expect(amendment.stopReason).toBe(snapshot.stopReason);
+			expect(amendment.id).toBe(agent.id);
+			expect(isSubagentRunShape(amendment)).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not retain for retry on the timeout classification, even when the settle is transport-shaped (#453)", async () => {
 		vi.useFakeTimers();
 		try {
