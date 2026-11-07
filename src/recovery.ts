@@ -346,37 +346,26 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 	// finalized `failed` below instead of being handed to the decision engine.
 	const neverStarted: InflightRun[] = [];
 	for (const entry of addressable) {
-		if (entry.kind === "background") {
-			const agent = options.readAgentRecord?.(entry.id) ?? null;
-			if (agent && agent.status !== "running") continue;
-			if (acceptanceState(entry, agent) === null) {
-				neverStarted.push(entry);
-				continue;
-			}
-			records.push({
-				id: entry.id,
-				kind: "agent",
-				status: "running",
-				interruptedAt: agent?.interruptedAt ?? entry.interruptedAt,
-				owner: agent?.owner ?? entry.owner,
-				childMarker: agent?.childMarker ?? entry.childMarker,
-				source: entry,
-			});
-		} else {
-			if (entry.acceptedAt === null) {
-				neverStarted.push(entry);
-				continue;
-			}
-			records.push({
-				id: entry.id,
-				kind: "run",
-				status: "running",
-				interruptedAt: entry.interruptedAt,
-				owner: entry.owner,
-				childMarker: entry.childMarker,
-				source: entry,
-			});
+		const isBackground = entry.kind === "background";
+		// Only a background entry has an agent record to enrich from (and to drop
+		// a stale entry by); the read is that ONE file, never the whole store.
+		const agent = isBackground ? (options.readAgentRecord?.(entry.id) ?? null) : null;
+		if (agent && agent.status !== "running") continue;
+		// Issue #447: ONE tri-state read for both kinds, so the `null` rule cannot
+		// drift between the background and run branches.
+		if (acceptanceState(entry, agent) === null) {
+			neverStarted.push(entry);
+			continue;
 		}
+		records.push({
+			id: entry.id,
+			kind: isBackground ? "agent" : "run",
+			status: "running",
+			interruptedAt: agent?.interruptedAt ?? entry.interruptedAt,
+			owner: agent?.owner ?? entry.owner,
+			childMarker: agent?.childMarker ?? entry.childMarker,
+			source: entry,
+		});
 	}
 
 	const now = options.now?.() ?? new Date();
