@@ -54,6 +54,8 @@ import {
 	DEFAULT_PRIORITY,
 	type GitMode,
 	type BackgroundAgent,
+	type BackgroundAgentIdentity,
+	type BackgroundAgentSpawnResult,
 	type RecoveryMode,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
@@ -157,6 +159,8 @@ import {
 	sendCompletionNotification,
 	claimTerminalNotice,
 	resolveRunEntry,
+	buildMonitoringDegradedParagraph,
+	sendMonitoringDegradedAdvisory,
 } from "./notify-completion";
 import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "./transport-retry";
 
@@ -1853,8 +1857,17 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// Spawn pass — sequential, in task order, through the shared tail.
-		const started: Array<{ id: string; label?: string }> = [];
+		// Issue #439: a unit's report is built from its plain identity record plus
+		// its own containment ledger, so a degraded unit is still reported as
+		// STARTED — including when a LATER unit fails or the batch is cancelled.
+		const started: Array<{ id: string; label?: string; tailFailures: string[] }> = [];
 		const startedIdsText = (): string => started.map((s) => s.id).join(", ");
+		/** The degraded paragraph for every unit whose monitoring did not attach. */
+		const degradedReport = (): string =>
+			started
+				.filter((s) => s.tailFailures.length > 0)
+				.map((s) => buildMonitoringDegradedParagraph(s, s.tailFailures))
+				.join("");
 
 		for (let i = 0; i < fanOutTasks.length; i++) {
 			if (signal?.aborted) {
@@ -1868,7 +1881,8 @@ export default function (pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text" as const, text:
 						`Background fan-out cancelled after starting ${started.length} of ${fanOutTasks.length} agents ` +
-						`(${startedIdsText()}) — they are detached and will still wake you.`
+						`(${startedIdsText()}) — they are detached and will still wake you.` +
+						degradedReport()
 					}],
 					details: undefined,
 					isError: true,
@@ -1887,9 +1901,9 @@ export default function (pi: ExtensionAPI) {
 			);
 			const unitPriority = merged.priority ?? (params.priority as string | undefined);
 
-			let agent: BackgroundAgent;
+			let spawned: BackgroundAgentSpawnResult;
 			try {
-				agent = await startBackgroundAgent(pi, ctx, {
+				spawned = await startBackgroundAgent(pi, ctx, {
 					task: merged.task,
 					type: (params.preset as string | undefined) || 'general-purpose',
 					description: merged.label,
@@ -1935,18 +1949,23 @@ export default function (pi: ExtensionAPI) {
 					: "";
 				return {
 					content: [{ type: "text" as const, text:
-						`Failed to spawn background agent for Task ${i + 1} ("${name}"): ${message}` + alreadyStarted
+						`Failed to spawn background agent for Task ${i + 1} ("${name}"): ${message}` + alreadyStarted +
+						// A degraded EARLIER unit is still a started run: its report must
+						// survive this later unit's failure.
+						degradedReport()
 					}],
 					details: undefined,
 					isError: true,
 				};
 			}
-			started.push({ id: agent.id, label: merged.label });
+			started.push({ id: spawned.identity.id, label: merged.label, tailFailures: spawned.tailFailures });
 		}
 
 		// Text-only result: ids in task order + the wake hint. C: per-task
 		// validation warnings ride the immediate SPAWN result (prefixed with
 		// their task) so the conductor can stop/re-dispatch in the same turn.
+		// Issue #439: a unit whose monitoring did not attach is still reported
+		// STARTED, with its own degraded paragraph — `isError` stays false.
 		const lines = started
 			.map((s, i) => `${i + 1}. ${s.label ? `"${s.label}" ` : ""}— ${s.id}`)
 			.join("\n");
@@ -1955,7 +1974,8 @@ export default function (pi: ExtensionAPI) {
 				`Background agents started: ${started.length}\n\n` +
 				`${lines}\n\n` +
 				`You'll be woken with a completion message as each finishes; use get_subagent_result({ agent_id }) for retrieval and stall checks.` +
-				formatValidationWarnings(taskWarnings)
+				formatValidationWarnings(taskWarnings) +
+				degradedReport()
 			}],
 			details: undefined,
 		};
@@ -1967,8 +1987,11 @@ export default function (pi: ExtensionAPI) {
 	// (tasks fan-out): the session-manager import, the spawn call, live-monitor
 	// registration, footer counters, the 2s progress poller and the default
 	// deadline timer live here exactly once. Callers keep their own prelude,
-	// checks, validations and result formatting. THROWS on spawn failure —
-	// callers translate the error into their own result shape.
+	// checks, validations and result formatting. THROWS only on spawn failure —
+	// callers translate THAT into their own failure shape. Everything after the
+	// spawn is contained (issue #439): it returns `{ agent, identity,
+	// tailFailures }`, and a non-empty `tailFailures` is a STARTED run with
+	// degraded monitoring, never a failed spawn.
 	// -------------------------------------------------------------------
 
 	async function startBackgroundAgent(
@@ -1999,7 +2022,7 @@ export default function (pi: ExtensionAPI) {
 			// Option B U3 (D4): recovery posture snapshot for the background run.
 			recoveryPosture?: RecoveryMode;
 		},
-	): Promise<BackgroundAgent> {
+	): Promise<BackgroundAgentSpawnResult> {
 		const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
 		// Issue #31 (PR #76 review, DRY): extract final output from a
 		// possibly-released ref — the poller may observe a terminal agent
@@ -2037,228 +2060,310 @@ export default function (pi: ExtensionAPI) {
 			recoveryPosture: spawn.recoveryPosture,
 		});
 		
+		// -----------------------------------------------------------------
+		// Post-spawn containment (issue #439).
+		//
+		// The session EXISTS from here on: the run is live and will wake the
+		// conductor however this tail behaves. A fault in the tail must therefore
+		// classify the run as STARTED with degraded monitoring — never as a failed
+		// spawn. Before this containment an escaping throw reached the callers'
+		// catch, which said "Failed to spawn background agent" while the agent was
+		// running, and the transport retry read that as "did not start".
+		//
+		// Boundary statement (falsifiable). Two different records, and only one of
+		// them is read here:
+		//   - `identity` below is a plain record THIS module constructs. Reading its
+		//     properties cannot throw; only a monkey-patched accessor could, and this
+		//     module never installs one. A fault that wants to reach the degraded
+		//     report must therefore be injected at a STATEMENT (a throwing
+		//     registerLiveSubagent, a throwing scheduler, a rejecting spawn), which is
+		//     what the #439 tests do.
+		//   - `agent` (the live record from the spawn) IS read, but only inside these
+		//     containments, and never by the code that builds the result: the two
+		//     callers format from `identity` alone. So an adversarial accessor on the
+		//     live record is contained here and invisible to the report — that is what
+		//     the #439 assertion on a single `description` read pins.
+		// If a future change makes `identity` a proxy or getter-backed, this boundary
+		// is void: the failing test is the one asserting a started run never reports
+		// "Failed to spawn".
+		//
+		// Three independently contained groups record into `tailFailures` — G1
+		// bookkeeping, G2 poller, G3 deadline — so a fault in one never skips the
+		// others. An outer catch backstops the ledger itself, and the degraded
+		// result is assembled from `identity` only.
+		// -----------------------------------------------------------------
+		const identity: BackgroundAgentIdentity = {
+			id: agent.id,
+			label: spawn.description,
+			description: agent.description,
+			task: agent.task,
+			status: agent.status,
+			model: agent.model,
+		};
+
+		const tailFailures: string[] = [];
+		/** Record a contained fault. The text reaches the conductor and the user: sanitize. */
+		const recordTailFailure = (group: string, err: unknown): void => {
+			tailFailures.push(
+				`${group}: ${sanitizeErrorMessage(err instanceof Error ? err.message : String(err), spawn.sanitizeCwd)}`,
+			);
+		};
+
+		let pollInterval: ReturnType<typeof setInterval> | undefined;
+		let hardCapHandle: ReturnType<typeof setTimeout> | undefined;
+		/** G1 completed the counter increment — the ONLY runs that may decrement. */
+		let countedForThisRun = false;
+		let completed = false;
+
+		/** Stop the poller and the deadline, whichever of the two was armed. */
+		const stopTailTimers = (): void => {
+			if (pollInterval !== undefined) clearInterval(pollInterval);
+			if (hardCapHandle !== undefined) clearTimeout(hardCapHandle);
+		};
+
+		/**
+		 * Release this run's live counter — the ONE decrement shape for all five
+		 * poller/deadline sites. Gated on `countedForThisRun` AND on the finalize
+		 * claim: a run that never incremented (G1 failed before it) must not
+		 * decrement, and a run the stale sweep already finalized had its decrement
+		 * taken there (PR #71 review). The first gate is what keeps the ordering in
+		 * G1 honest — without it, a row registered before the increment let the
+		 * sweep's decrement land on a SIBLING's count.
+		 */
+		const releaseLiveCount = (): void => {
+			if (!countedForThisRun) return;
+			if (!state.finalizeLiveSubagent(identity.id)) return;
+			state.activeSubagents--;
+			if (state.activeSubagents < 0) state.activeSubagents = 0;
+		};
+
 		// Issue #318 (from #316 review): the two poller crash sites share one
 		// claimed notification envelope. Content is the only variable; the
 		// claim guard, display, details and deliverAs live here once.
+		// Issue #439: best-effort — the claim and the send sit in their own try, so
+		// neither a throwing claim nor a throwing send can turn a crash notice into
+		// a fault on the run's reporting path.
 		const sendCrashNotice = (content: string): void => {
-			if (claimTerminalNotice(agent.id)) {
+			try {
+				if (!claimTerminalNotice(identity.id)) return;
+			} catch {
+				return;
+			}
+			try {
 				pi.sendMessage({
 					customType: "subagent-notification",
 					content,
 					display: true,
-					details: { agentId: agent.id }
+					details: { agentId: identity.id }
 				}, { deliverAs: "followUp" });
-			}
+			} catch { /* best-effort */ }
 		};
 
-		// Register for live monitor
-		state.registerLiveSubagent(agent.id, {
-			id: agent.id,
-			label: agent.description,
-			task: agent.task,
-			model: agent.model,
-			thinkingLevel: agent.thinkingLevel,
-			priority: agent.priority,
-			startedAt: agent.startedAt,
-			// Issue #423: the persisted EFFECTIVE budget, anchored on the record's
-			// own start clock — the same clock the deadline timers use.
-			...(agent.timeoutMs !== undefined
-				? { deadlineAt: agent.startedAt + agent.timeoutMs }
-				: {}),
-			ctx,
-		});
-		
-		// Update footer counters
-		state.activeSubagents++;
-		repaintStatus(state, ctx);
-
-		let completed = false;
-		
-		// Poll for live progress
-		const pollInterval = setInterval(() => {
+		try {
+			// ---- G1: bookkeeping ------------------------------------------
+			// Ordering (issue #439, measured): counter FIRST, then the live row,
+			// then the repaint. A row therefore always implies a counted run, so the
+			// stale sweep's decrement can only release this run's own count.
 			try {
-				if (completed) return;
-				
-				const session = agent._sessionRef;
-				// Issue #31: a nulled ref on a TERMINAL agent is expected (the
-				// settlement path releases the ref) — fall through to finalize
-				// below instead of treating it as a crash. A nulled ref on a
-				// live agent is still a crash.
-				if (!session && !agent.completedAt) {
-					// Session ref not available — session may have crashed.
-					// Defensive: the ref is assigned synchronously before the poller starts
-					// and is never nulled, so this is mostly unreachable — but keep the
-					// bookkeeping safe regardless.
-					completed = true;
-					clearInterval(pollInterval);
-					clearTimeout(hardCapHandle);
-					// Capture whatever output exists (may be empty — fine).
-					setAgentFinalOutput(agent.id, state.subagentSessions.get(agent.id)?.liveOutput ?? '');
-					// Gate the counter on the finalize claim: if the
-					// stale sweep already finalized this entry, the
-					// decrement happened there (PR #71 review).
-					if (state.finalizeLiveSubagent(agent.id)) {
-						state.activeSubagents--;
-						if (state.activeSubagents < 0) state.activeSubagents = 0;
-					}
-					state.failedSubagents++;
-					repaintStatus(state, ctx);
-					sendCrashNotice(`Background agent "${agent.description}" crashed.`);
-					return;
-				}
-				
-				// While running, update the live monitor.
-				// Once completedAt is set, skip straight to finalize below.
-				// Issue #31: past the guard above, the only nulled-ref path left is a
-				// TERMINAL agent (settlement releases the ref), so a live agent always
-				// has its session — the guard already returned on the live-nulled-ref
-				// crash path. The compiler can't correlate the two checks, so assert it.
-				if (!agent.completedAt) {
-					const finalOutput = extractFinalOutput(session!);
-					
-					try {
-						const stats = session!.getSessionStats();
-						state.updateLiveSubagent(agent.id, finalOutput, stats.tokens.input, stats.tokens.output);
-					} catch {
-						state.updateLiveSubagent(agent.id, finalOutput, 0, 0);
-					}
-				}
-				
-				// Authoritative completion: the prompt promise settled — status and
-				// completedAt are set by .then()/.catch() in spawnBackgroundSession.
-				// Do NOT rely on !session.isStreaming: it is false during prompt()
-				// preflight (auth check, model resolution) and for failed starts.
-				if (agent.completedAt) {
-					completed = true;
-					clearInterval(pollInterval);
-					clearTimeout(hardCapHandle);
-					
-					// Issue #31: prefer the output already captured at settlement;
-					// the ref may already be nulled on terminal agents, so never
-					// overwrite with empty and stay null-safe.
-					const finalOutput = agent.finalOutput ?? extractAgentFinalOutput(agent);
-					setAgentFinalOutput(agent.id, finalOutput);
-					
-					// Gate the counter on the finalize claim: if the
-					// stale sweep already finalized this entry, the
-					// decrement happened there (PR #71 review).
-					if (state.finalizeLiveSubagent(agent.id)) {
-						state.activeSubagents--;
-						if (state.activeSubagents < 0) state.activeSubagents = 0;
-					}
-					
-					if (agent.status === 'failed') {
-						state.failedSubagents++;
-						repaintStatus(state, ctx);
-						// Issue #315: the terminal wake (`subagent-completion`, emitted by
-						// the session-manager settle) is the ONE notice for a failed run.
-						// The status here was set by that settle, so the wake already
-						// delivered — this legacy poller notice would duplicate it.
-					} else if (agent.status === 'stopped') {
-						// User-initiated stop (stop_subagent) or deadline abort
-						// (timeout/deadline) — not a failure.
-						repaintStatus(state, ctx);
-					} else {
-						state.completedSubagents++;
-						state.unseenSubagents++;
-						repaintStatus(state, ctx);
-					}
-				}
+				state.activeSubagents++;
+				countedForThisRun = true;
+				state.registerLiveSubagent(identity.id, {
+					id: identity.id,
+					label: identity.description,
+					task: identity.task,
+					model: identity.model,
+					thinkingLevel: agent.thinkingLevel,
+					priority: agent.priority,
+					startedAt: agent.startedAt,
+					// Issue #423: the persisted EFFECTIVE budget, anchored on the record's
+					// own start clock — the same clock the deadline timers use.
+					...(agent.timeoutMs !== undefined
+						? { deadlineAt: agent.startedAt + agent.timeoutMs }
+						: {}),
+					ctx,
+				});
+				repaintStatus(state, ctx);
 			} catch (err) {
-				if (!completed) {
-					completed = true;
-					clearInterval(pollInterval);
-					clearTimeout(hardCapHandle);
-					try {
-						setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
-					} catch { /* ignore */ }
-					// Gate the counter on the finalize claim: if the
-					// stale sweep already finalized this entry, the
-					// decrement happened there (PR #71 review).
-					if (state.finalizeLiveSubagent(agent.id)) {
-						state.activeSubagents--;
-						if (state.activeSubagents < 0) state.activeSubagents = 0;
-					}
-					state.failedSubagents++;
-					repaintStatus(state, ctx);
-					sendCrashNotice(`Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`);
-				}
+				recordTailFailure("live-monitor bookkeeping", err);
 			}
-		}, 2000);
-		
-		// Default deadline: stop polling AND abort the session after the
-		// deadline. W2 (issue #28): previously this only stopped the poller —
-		// the pi session kept running forever (orphaned). Now it pre-sets
-		// 'stopped' (so the .then keeps it, per W1) and aborts the session.
-		// Issue #240: an explicit per-agent timeout is HONORED verbatim; this
-		// deadline DEFAULTS to 30m only when no timeout is given. It is a
-		// default, not a ceiling. Issue #244: exactly ONE deadline timer per
-		// run — an explicit timeout is owned by the session-manager W3 timer,
-		// so this index timer arms ONLY on the no-timeout path. Issue #448: the
-		// spawn is told `deadlineOwner: "caller"` so it does NOT arm a second
-		// default for the same run (an omission here double-arms).
-		const hasExplicitDeadline = spawn.timeout !== undefined && spawn.timeout > 0;
-		const hardCapMs = spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS;
-		const hardCapHandle: ReturnType<typeof setTimeout> | undefined =
-			hasExplicitDeadline ? undefined : setTimeout(() => {
-			if (!completed && !agent.completedAt) {
-				try {
-					completed = true;
-					clearInterval(pollInterval);
-					// Pre-set stopped BEFORE aborting so the .then in
-					// spawnBackgroundSession keeps the stopped state.
-					updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
-					agent._sessionRef?.abort().catch(() => {
-						// Abort may reject if the session is mid-dispose;
-						// the status flip above is already recorded.
-					});
-					// Capture whatever final output exists in the session
-					const hardCapSession = agent._sessionRef;
-					const hardCapFinalOutput = hardCapSession ? extractFinalOutput(hardCapSession) : '';
-					setAgentFinalOutput(agent.id, hardCapFinalOutput);
-					// Gate the counter on the finalize claim: if the
-					// stale sweep already finalized this entry, the
-					// decrement happened there (PR #71 review).
-					if (state.finalizeLiveSubagent(agent.id)) {
-						state.activeSubagents--;
-						if (state.activeSubagents < 0) state.activeSubagents = 0;
-					}
-					// m6: deadline abort is a stop, not a completion — mirror the
-					// W3/poller stopped path (no completedSubagents increment).
-					repaintStatus(state, ctx);
-				} catch (err) {
-					// Defensive: never let the deadline timer throw uncaught — that would
-					// skip finalizeLiveSubagent, the counter decrement, and the notification.
-					// Do all fallible work first (output capture), then mutate counters,
-					// then notify — a throw mid-path can't double-fire mutations.
-					completed = true;
-					clearInterval(pollInterval);
-					// m3: the try may have thrown BEFORE updateAgentStatus ran (e.g.
-					// persistAgent fs failure) — leave the record terminal so
-					// get_subagent_result doesn't report 'running' and the W3 timer
-					// guard (!agent.completedAt) can't re-fire later.
-					try {
-						updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
-					} catch { /* ignore */ }
-					try {
-						setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
-					} catch { /* ignore */ }
-					// Gate the counter on the finalize claim: if the
-					// stale sweep already finalized this entry, the
-					// decrement happened there (PR #71 review).
-					if (state.finalizeLiveSubagent(agent.id)) {
-						state.activeSubagents--;
-						if (state.activeSubagents < 0) state.activeSubagents = 0;
-					}
-					state.failedSubagents++;
-					repaintStatus(state, ctx);
-				}
-			}
-		}, hardCapMs);
-		
-		log.info("Background agent spawned", { agentId: agent.id, task: spawn.task, model: agent.model });
 
-		return agent;
+			// ---- G2: live progress poller --------------------------------
+			try {
+				pollInterval = setInterval(() => {
+					try {
+						if (completed) return;
+
+						const session = agent._sessionRef;
+						// Issue #31: a nulled ref on a TERMINAL agent is expected (the
+						// settlement path releases the ref) — fall through to finalize
+						// below instead of treating it as a crash. A nulled ref on a
+						// live agent is still a crash.
+						if (!session && !agent.completedAt) {
+							// Session ref not available — session may have crashed.
+							// Defensive: the ref is assigned synchronously before the poller starts
+							// and is never nulled, so this is mostly unreachable — but keep the
+							// bookkeeping safe regardless.
+							completed = true;
+							stopTailTimers();
+							// Capture whatever output exists (may be empty — fine).
+							setAgentFinalOutput(identity.id, state.subagentSessions.get(identity.id)?.liveOutput ?? '');
+							releaseLiveCount();
+							state.failedSubagents++;
+							repaintStatus(state, ctx);
+							sendCrashNotice(`Background agent "${identity.description}" crashed.`);
+							return;
+						}
+
+						// While running, update the live monitor.
+						// Once completedAt is set, skip straight to finalize below.
+						// Issue #31: past the guard above, the only nulled-ref path left is a
+						// TERMINAL agent (settlement releases the ref), so a live agent always
+						// has its session — the guard already returned on the live-nulled-ref
+						// crash path. The compiler can't correlate the two checks, so assert it.
+						if (!agent.completedAt) {
+							const finalOutput = extractFinalOutput(session!);
+
+							try {
+								const stats = session!.getSessionStats();
+								state.updateLiveSubagent(identity.id, finalOutput, stats.tokens.input, stats.tokens.output);
+							} catch {
+								state.updateLiveSubagent(identity.id, finalOutput, 0, 0);
+							}
+						}
+
+						// Authoritative completion: the prompt promise settled — status and
+						// completedAt are set by .then()/.catch() in spawnBackgroundSession.
+						// Do NOT rely on !session.isStreaming: it is false during prompt()
+						// preflight (auth check, model resolution) and for failed starts.
+						if (agent.completedAt) {
+							completed = true;
+							stopTailTimers();
+
+							// Issue #31: prefer the output already captured at settlement;
+							// the ref may already be nulled on terminal agents, so never
+							// overwrite with empty and stay null-safe.
+							const finalOutput = agent.finalOutput ?? extractAgentFinalOutput(agent);
+							setAgentFinalOutput(identity.id, finalOutput);
+
+							releaseLiveCount();
+
+							if (agent.status === 'failed') {
+								state.failedSubagents++;
+								repaintStatus(state, ctx);
+								// Issue #315: the terminal wake (`subagent-completion`, emitted by
+								// the session-manager settle) is the ONE notice for a failed run.
+								// The status here was set by that settle, so the wake already
+								// delivered — this legacy poller notice would duplicate it.
+							} else if (agent.status === 'stopped') {
+								// User-initiated stop (stop_subagent) or deadline abort
+								// (timeout/deadline) — not a failure.
+								repaintStatus(state, ctx);
+							} else {
+								state.completedSubagents++;
+								state.unseenSubagents++;
+								repaintStatus(state, ctx);
+							}
+						}
+					} catch (err) {
+						if (!completed) {
+							completed = true;
+							stopTailTimers();
+							try {
+								setAgentFinalOutput(identity.id, extractAgentFinalOutput(agent));
+							} catch { /* ignore */ }
+							releaseLiveCount();
+							state.failedSubagents++;
+							repaintStatus(state, ctx);
+							sendCrashNotice(`Background agent "${identity.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`);
+						}
+					}
+				}, 2000);
+			} catch (err) {
+				recordTailFailure("progress polling", err);
+			}
+
+			// ---- G3: default deadline -------------------------------------
+			// Default deadline: stop polling AND abort the session after the
+			// deadline. W2 (issue #28): previously this only stopped the poller —
+			// the pi session kept running forever (orphaned). Now it pre-sets
+			// 'stopped' (so the .then keeps it, per W1) and aborts the session.
+			// Issue #240: an explicit per-agent timeout is HONORED verbatim; this
+			// deadline DEFAULTS to 30m only when no timeout is given. It is a
+			// default, not a ceiling. Issue #244: exactly ONE deadline timer per
+			// run — an explicit timeout is owned by the session-manager W3 timer,
+			// so this index timer arms ONLY on the no-timeout path. Issue #448: the
+			// spawn is told `deadlineOwner: "caller"` so it does NOT arm a second
+			// default for the same run (an omission here double-arms).
+			try {
+				const hasExplicitDeadline = spawn.timeout !== undefined && spawn.timeout > 0;
+				const hardCapMs = spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS;
+				hardCapHandle = hasExplicitDeadline ? undefined : setTimeout(() => {
+					if (!completed && !agent.completedAt) {
+						try {
+							completed = true;
+							if (pollInterval !== undefined) clearInterval(pollInterval);
+							// Pre-set stopped BEFORE aborting so the .then in
+							// spawnBackgroundSession keeps the stopped state.
+							updateAgentStatus(identity.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
+							agent._sessionRef?.abort().catch(() => {
+								// Abort may reject if the session is mid-dispose;
+								// the status flip above is already recorded.
+							});
+							// Capture whatever final output exists in the session
+							const hardCapSession = agent._sessionRef;
+							const hardCapFinalOutput = hardCapSession ? extractFinalOutput(hardCapSession) : '';
+							setAgentFinalOutput(identity.id, hardCapFinalOutput);
+							releaseLiveCount();
+							// m6: deadline abort is a stop, not a completion — mirror the
+							// W3/poller stopped path (no completedSubagents increment).
+							repaintStatus(state, ctx);
+						} catch (err) {
+							// Defensive: never let the deadline timer throw uncaught — that would
+							// skip the finalize claim, the counter decrement, and the notification.
+							// Do all fallible work first (output capture), then mutate counters,
+							// then notify — a throw mid-path can't double-fire mutations.
+							completed = true;
+							if (pollInterval !== undefined) clearInterval(pollInterval);
+							// m3: the try may have thrown BEFORE updateAgentStatus ran (e.g.
+							// persistAgent fs failure) — leave the record terminal so
+							// get_subagent_result doesn't report 'running' and the W3 timer
+							// guard (!agent.completedAt) can't re-fire later.
+							try {
+								updateAgentStatus(identity.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
+							} catch { /* ignore */ }
+							try {
+								setAgentFinalOutput(identity.id, extractAgentFinalOutput(agent));
+							} catch { /* ignore */ }
+							releaseLiveCount();
+							state.failedSubagents++;
+							repaintStatus(state, ctx);
+						}
+					}
+				}, hardCapMs);
+			} catch (err) {
+				recordTailFailure("deadline timer", err);
+			}
+
+			try {
+				log.info("Background agent spawned", { agentId: identity.id, task: spawn.task, model: identity.model });
+			} catch (err) {
+				recordTailFailure("spawn log", err);
+			}
+		} catch (err) {
+			// Backstop: the groups above swallow their own faults, so this can only
+			// see a fault in the ledger machinery itself. The degraded result below is
+			// assembled from `identity` — never from a property read on `agent`.
+			recordTailFailure("spawn tail", err);
+		}
+
+		if (tailFailures.length > 0) {
+			// ONE advisory per run, after aggregation. It is NOT a terminal notice
+			// and never takes the terminal claim (issue #439 contract): the run's
+			// genuine completion notice is still delivered when it settles.
+			sendMonitoringDegradedAdvisory(pi, ctx, identity, tailFailures);
+		}
+
+		return { agent, identity, tailFailures };
 	}
 
 	// -------------------------------------------------------------------
@@ -2389,7 +2494,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Option B U1: durability identity (retry inherits the original dispatch).
 			const bgIdentity = newDispatchIdentity(retrySourceRun);
-			const agent = await startBackgroundAgent(pi, ctx, {
+			const spawned = await startBackgroundAgent(pi, ctx, {
 				// Issue #411: the preamble rides the system-prompt side
 				// (`resumeContext`), never the task. The task stays the recorded
 				// original, and the snapshot keeps it too, so a later retry of this
@@ -2429,22 +2534,34 @@ export default function (pi: ExtensionAPI) {
 				? `\n\n[auto-routed to preset '${bgAutoRoutedPreset.name}'${bgAutoRouteKeyword ? ` (matched keyword '${bgAutoRouteKeyword}')` : ""} — ${bgResolved.toolOptions ? formatToolRestriction(bgResolved.toolOptions) : formatPresetRestriction(bgAutoRoutedPreset)}]`
 				: "";
 
+			// Issue #439: everything the result states comes from `identity`, the plain
+			// record captured at spawn time — never a property read on the live agent.
+			// A non-empty `tailFailures` is a STARTED run with degraded monitoring, so
+			// this stays a success (`isError` false) with the degraded paragraph;
+			// the transport retry reads `isError` as "did not start" and must not see
+			// a started run here.
 			return {
 				content: [{
 					type: "text" as const,
-					text: `Background agent started: ${agent.id}\n\n` +
-						`Description: ${agent.description}\n` +
-						`Task: ${agent.task}\n` +
-						`Status: ${agent.status}\n\n` +
-						`You'll be woken with a completion message when it finishes; use get_subagent_result({ agent_id: "${agent.id}" }) for retrieval and stall checks.` +
+					text: `Background agent started: ${spawned.identity.id}\n\n` +
+						`Description: ${spawned.identity.description}\n` +
+						`Task: ${spawned.identity.task}\n` +
+						`Status: ${spawned.identity.status}\n\n` +
+						`You'll be woken with a completion message when it finishes; use get_subagent_result({ agent_id: "${spawned.identity.id}" }) for retrieval and stall checks.` +
 						bgAutoRouteNote +
 						// C: warnings ride the immediate SPAWN result so the conductor
 						// can stop/re-dispatch in the same turn.
-						formatValidationWarnings(bgPreTask.warnings),
+						formatValidationWarnings(bgPreTask.warnings) +
+						buildMonitoringDegradedParagraph(spawned.identity, spawned.tailFailures),
 				}],
 				details: undefined,
+				isError: false,
 			};
 		} catch (err) {
+			// Issue #439: this catch is reachable ONLY for a pre-spawn gate or a
+			// rejected `spawnBackgroundSession`. Everything after a successful spawn
+			// is contained in `startBackgroundAgent` — a run that started never lands
+			// here, so the wording below can never describe a live run.
 			const message = sanitizeErrorMessage(
 				err instanceof Error ? err.message : String(err),
 				bgResolved.effectiveCwd,
@@ -4243,6 +4360,13 @@ export default function (pi: ExtensionAPI) {
 	 * the source run's completion notice, because the retry's own terminal settle
 	 * is the wake. A gate rejection or a throwing spawn returns FALSE and the
 	 * caller reports the original failure exactly as before (no silent drop).
+	 *
+	 * Issue #439: this reads only `isError`, and a retry whose post-spawn tail
+	 * faulted is still a SUCCESSFUL spawn (`isError: false`, degraded monitoring).
+	 * It therefore returns TRUE for it: the source notice stays suppressed and the
+	 * degraded advisory is the signal that the retry started with degraded
+	 * monitoring. Reading a contained tail failure as "did not start" would
+	 * surface the source failure for a run that is live.
 	 */
 	async function scheduleTransportRetry(
 		ctx: ExtensionContext,
