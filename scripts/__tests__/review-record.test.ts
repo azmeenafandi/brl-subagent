@@ -22,10 +22,10 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { checkRecord, parseRecord, recordLines, renderRecord, verifyRendered } from "../lib/record-fields.mjs";
-import { EXIT, recordCheck, writeRecord } from "../review-record.mjs";
+import { EXIT, recordCheck, recordVerify, writeRecord } from "../review-record.mjs";
 
 const ROOT = process.cwd();
 const TOOL = join(ROOT, "scripts", "review-record.mjs");
@@ -120,6 +120,27 @@ function fixture(name: string): string {
 	return readFileSync(join(FIXTURES, `${name}.md`), "utf8");
 }
 
+/**
+ * The recomputation the mode exists for: the REAL `sha256sum`, not a second copy of node's crypto —
+ * the conductor runs exactly this command against the pasted line, so the test runs it too.
+ */
+function sha256sum(path: string): string {
+	const result = spawnSync("sha256sum", [path], { encoding: "utf8" });
+	expect(result.status, result.stderr).toBe(0);
+	return result.stdout.trim().split(/\s+/)[0];
+}
+
+/** `--verify` in-process, both streams captured. */
+function verify(argv: string[]): Captured {
+	const stdout: string[] = [];
+	const stderr: string[] = [];
+	const code = recordVerify(argv, {
+		out: (chunk: string) => void stdout.push(chunk),
+		err: (line: string) => void stderr.push(line),
+	});
+	return { code, stdout: stdout.join("\n"), stderr: stderr.join("\n") };
+}
+
 describe("review-record — the emitted block", () => {
 	it("renders the golden record byte for byte", () => {
 		expect(renderRecord(spec())).toBe(GOLDEN);
@@ -155,6 +176,12 @@ describe("review-record — the emitted block", () => {
 		expect(renderRecord(spec({ findings: "" }))).toContain("## Findings\n\nNo findings recorded.\n");
 		// A trailing blank line in the body is not a second newline in the record: one '\n' ends it.
 		expect(renderRecord(spec({ findings: "one line\n\n\n" }))).toContain("## Findings\n\none line\n");
+	});
+
+	it("counts findings without counting the conductor-verified marker", () => {
+		const withMarker = renderRecord(spec({ findings: "one finding\n\nconductor-verified: ecb411a — a doc-only nit" }));
+		expect(parseRecord(withMarker).findings).toBe(1);
+		expect(parseRecord(renderRecord(spec({ findings: "one finding" }))).findings).toBe(1);
 	});
 
 	it("reads stdin when --findings is `-` (the reviewer has bash and no write tool)", () => {
@@ -293,6 +320,108 @@ describe("review-record — the gate's rules, one definition", () => {
 		const stdout: string[] = [];
 		expect(recordCheck([out], { out: (line: string) => void stdout.push(line), err: () => {} })).toBe(EXIT.WRITTEN);
 		expect(stdout.join("")).toContain("the gate blocks the merge");
+	});
+});
+
+describe("review-record — --verify: the record file is the proof (#503)", () => {
+	// Generated once for the block: the file a reviewer would hand over and the conductor recompute.
+	const out = scratch("verify.md");
+	write(argvFor({}, out));
+	// The exact U2 artifact: hand-written, `Reviewed head:` 41 characters long.
+	const mangled = scratch("verify-head41.md");
+	writeFileSync(mangled, GOLDEN.replace(`Reviewed head: ${HEAD}`, `Reviewed head: ${HEAD}a`));
+
+	it("prints one line a third party recomputes: path, verdict, head, findings, sha256", () => {
+		const result = verify([out]);
+		expect(result.code).toBe(EXIT.WRITTEN);
+		expect(result.stderr).toBe("");
+		const parsed = /^record: (.*) · verdict (\S+) · head (\S+) · findings (\S+) · sha256 (\S+)$/.exec(result.stdout);
+		expect(parsed, result.stdout).not.toBeNull();
+		const [, path, verdict, head, findings, sha] = parsed as RegExpExecArray;
+		expect(path).toBe(out);
+		expect(verdict).toBe("approve-with-nits");
+		expect(head).toBe(HEAD);
+		expect(findings).toBe("2");
+		// sha256sum <path> — the conductor's one command, and the only reason the line is evidence.
+		expect(sha).toBe(sha256sum(out));
+	});
+
+	it("gives one changed byte in the findings a different sha (and counts the new row)", () => {
+		const changed = scratch("verify-changed.md");
+		const extra = "| nit | `oversized-file` | `scripts/lib/record-fields.mjs:9` | one more row |";
+		write(argvFor({ findings: `${FINDINGS}\n${extra}` }, changed));
+		const before = verify([out]);
+		const after = verify([changed]);
+		expect(after.code).toBe(EXIT.WRITTEN);
+		expect(after.stdout).not.toBe(before.stdout);
+		expect(after.stdout).toContain("findings 3");
+		expect(after.stdout.endsWith(`sha256 ${sha256sum(changed)}`)).toBe(true);
+		expect(sha256sum(changed)).not.toBe(sha256sum(out));
+	});
+
+	it("exits 1 with the head reason on the U2 artifact: a 41-character head", () => {
+		const result = verify([mangled]);
+		expect(result.code).toBe(EXIT.REFUSED);
+		expect(result.stderr).toContain("invalid-head");
+		expect(result.stderr).toContain("41 characters");
+		expect(result.stdout).toBe("");
+		// The CLI reports the same code and reason — that is the exit a conductor's one-liner sees.
+		const cli = spawnSync(process.execPath, [TOOL, "--verify", mangled], { encoding: "utf8" });
+		expect(cli.status).toBe(1);
+		expect(cli.stderr).toContain("invalid-head");
+	});
+
+	it("exits 2 naming the RESOLVED path when the file is not there (no file, no claim)", () => {
+		const missing = join(TMP, "never-written.md");
+		// The same file named with a `..` detour (built as text: `join` would normalise it away):
+		// the message must print the resolved path, because the conductor recomputes the sha from it.
+		const given = `${TMP}/../${basename(TMP)}/never-written.md`;
+		expect(given).not.toBe(missing);
+		const result = verify([given]);
+		expect(result.code).toBe(EXIT.USAGE);
+		expect(result.stderr).toContain(missing);
+		expect(result.stderr).not.toContain("..");
+		expect(result.stdout).toBe("");
+		expect(spawnSync(process.execPath, [TOOL, "--verify", given], { encoding: "utf8" }).status).toBe(2);
+	});
+
+	it("--json is one object carrying the same facts, and the reasons on a refusal", () => {
+		const ok = verify([out, "--json"]);
+		expect(ok.code).toBe(EXIT.WRITTEN);
+		expect(JSON.parse(ok.stdout)).toEqual({
+			ok: true,
+			path: out,
+			verdict: "approve-with-nits",
+			head: HEAD,
+			findings: 2,
+			sha256: sha256sum(out),
+			reasons: [],
+		});
+		const bad = verify([mangled, "--json"]);
+		const payload = JSON.parse(bad.stdout);
+		expect(bad.code).toBe(EXIT.REFUSED);
+		expect(payload.ok).toBe(false);
+		expect(payload.path).toBe(mangled);
+		expect(payload.sha256).toBe(sha256sum(mangled));
+		expect(payload.reasons.map((reason: { code: string }) => reason.code)).toEqual(["invalid-head"]);
+	});
+
+	it("counts findings from the one definition: rows, not the table header; the empty sentinel is zero", () => {
+		const none = scratch("verify-none.md");
+		write(argvFor({ findings: "" }, none));
+		expect(verify([none]).stdout).toContain("findings 0");
+		// Same definition, other reader: the count comes off parseRecord, not a second implementation.
+		expect(parseRecord(readFileSync(none, "utf8")).findings).toBe(0);
+		expect(parseRecord(readFileSync(out, "utf8")).findings).toBe(2);
+	});
+
+	it("rejects a missing path and an unknown flag as usage (exit 2)", () => {
+		const none = verify([]);
+		expect(none.code).toBe(EXIT.USAGE);
+		expect(none.stderr).toContain("missing the record path");
+		const unknown = verify([out, "--nope"]);
+		expect(unknown.code).toBe(EXIT.USAGE);
+		expect(unknown.stderr).toContain("unknown argument: --nope");
 	});
 });
 

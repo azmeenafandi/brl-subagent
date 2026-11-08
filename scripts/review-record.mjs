@@ -32,6 +32,22 @@
 //   exit 0 every field rule holds · 1 a named reason failed · 2 usage or unreadable input. It reports
 //   `changes-requested` as well-formed but unmergeable: the merge decision stays the full gate's, whose
 //   (a) CI and (f) `recheck-<pr>` provenance checks need the network and the local log.
+//
+// Verify (#503: the record FILE is the unit of proof):
+//   node scripts/review-record.mjs --verify <record> [--json]
+//
+//   stdout is ONE line a third party recomputes — the same field rules as `--check`, plus the file's
+//   own sha256, so "I ran it" becomes a line with an artifact behind it:
+//     record: /tmp/REVIEW_412.md · verdict approve-with-nits · head <40-hex> · findings <n> · sha256 <64-hex>
+//
+//   exit 0 every field rule holds · 1 not a record the gate could read (named reasons on stderr; the
+//   `--check` rules PLUS a head the line can print, 7-40 hex) · 2 usage, or a file that is not there
+//   or not readable — the message names the RESOLVED path, which is the U2 failure caught in one line
+//   instead of after a `/tmp` listing. `findings <n>` comes from `countFindings` — the one definition
+//   on `parseRecord` — the one definition the gate's check rules share, never a second counter. `--json` prints
+//   one object instead of the line (on every exit: a refusal and an unreadable file carry their
+//   `reasons[]` there too).
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -39,6 +55,7 @@ import { pathToFileURL } from "node:url";
 import {
 	HEAD_RE,
 	MERGEABLE_VERDICTS,
+	checkHeadShape,
 	checkRecord,
 	parseRecord,
 	renderRecord,
@@ -52,6 +69,8 @@ export const USAGE =
 	'[--conductor-verified "<text>"] [--out <path>] [--new-head]';
 
 export const CHECK_USAGE = "usage: review-record.mjs --check <record> [--pr <n>] [--head <sha>]";
+
+export const VERIFY_USAGE = "usage: review-record.mjs --verify <record> [--json]";
 
 /** Exit codes, named so the docs and the tests cannot drift from the script. */
 export const EXIT = Object.freeze({ WRITTEN: 0, REFUSED: 1, USAGE: 2 });
@@ -147,6 +166,36 @@ function describe(error) {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/** `{ ok: true, file, json }` or `{ ok: false, message }` for `--verify` (the path is positional). */
+export function parseVerifyArgs(argv) {
+	const parsed = { file: "", json: false };
+	for (const argument of argv) {
+		if (argument === "--json") {
+			parsed.json = true;
+			continue;
+		}
+		if (argument.startsWith("--")) return { ok: false, message: `unknown argument: ${argument}` };
+		if (parsed.file !== "") return { ok: false, message: `unexpected argument: ${argument}` };
+		parsed.file = argument;
+	}
+	if (parsed.file === "") return { ok: false, message: "missing the record path" };
+	return { ok: true, ...parsed };
+}
+
+/**
+ * `--verify`'s reasons: the `--check` rules, plus a head the `record:` line can actually print. One
+ * code appears once — `missing-head` can be reached from both lists and one line per reason reads
+ * better than a repeat.
+ */
+function verifyProblems(text) {
+	const seen = new Set();
+	return [...checkRecord(text), ...checkHeadShape(text)].filter((item) => {
+		if (seen.has(item.code)) return false;
+		seen.add(item.code);
+		return true;
+	});
+}
+
 /** `--check`: the offline field check. No network, no `gh`, no provenance log. */
 export function recordCheck(argv, { out = console.log, err = console.error } = {}) {
 	const parsed = parseCheckArgs(argv);
@@ -172,6 +221,51 @@ export function recordCheck(argv, { out = console.log, err = console.error } = {
 		? facts.verdict
 		: `${facts.verdict} — well-formed, but the gate blocks the merge until the head is re-reviewed`;
 	out(`record-check: OK — ${parsed.file} (${disposition}; Risk class ${facts.risk}; head ${facts.head.slice(0, 12)})`);
+	return EXIT.WRITTEN;
+}
+
+/** `--verify`: one line, recomputable — the record file IS the proof, not a claim about it (#503). */
+export function recordVerify(argv, { out = console.log, err = console.error } = {}) {
+	const parsed = parseVerifyArgs(argv);
+	if (!parsed.ok) {
+		err(`review-record: ${VERIFY_USAGE}\n${parsed.message}`);
+		return EXIT.USAGE;
+	}
+	// The RESOLVED path is what gets printed: the conductor recomputes `sha256sum <path>` from this
+	// line, and a relative path that only works from one cwd is the thing this mode exists to remove.
+	const path = resolve(parsed.file);
+	const report = (payload) => {
+		if (parsed.json) out(JSON.stringify(payload, null, 2));
+	};
+
+	let bytes;
+	try {
+		bytes = readFileSync(path);
+	} catch (error) {
+		const reason = { code: "unreadable-record", message: `cannot read ${path} (${describe(error)})` };
+		err(`review-record: ${reason.message} — a missing record is not a passing check, it is the #503 failure`);
+		report({ ok: false, path, verdict: "", head: "", findings: 0, sha256: "", reasons: [reason] });
+		return EXIT.USAGE;
+	}
+
+	// Hash the BYTES, not a decoded string: `sha256sum <path>` is the comparison, so a re-encoding
+	// here would make the two disagree on a file that is not valid UTF-8.
+	const sha256 = createHash("sha256").update(bytes).digest("hex");
+	const text = bytes.toString("utf8");
+	const facts = parseRecord(text);
+	const problems = verifyProblems(text);
+	if (problems.length > 0) {
+		for (const item of problems) err(`  ✗ ${item.code}: ${item.message}`);
+		err(`record-verify: ${problems.length} reason(s) — ${path} is not a record the gate can read (sha256 ${sha256})`);
+		report({ ok: false, path, verdict: facts.verdict, head: facts.head, findings: facts.findings, sha256, reasons: problems.map(({ code, message }) => ({ code, message })) });
+		return EXIT.REFUSED;
+	}
+
+	if (parsed.json) {
+		report({ ok: true, path, verdict: facts.verdict, head: facts.head, findings: facts.findings, sha256, reasons: [] });
+	} else {
+		out(`record: ${path} · verdict ${facts.verdict} · head ${facts.head} · findings ${facts.findings} · sha256 ${sha256}`);
+	}
 	return EXIT.WRITTEN;
 }
 
@@ -256,9 +350,11 @@ export function writeRecord(
 	return EXIT.WRITTEN;
 }
 
-/** `--check` selects the offline field check; anything else is the generator. */
+/** `--check` selects the offline field check, `--verify` the record line; anything else generates. */
 export function main(argv = process.argv.slice(2), io = {}) {
-	return argv[0] === "--check" ? recordCheck(argv.slice(1), io) : writeRecord(argv, io);
+	if (argv[0] === "--check") return recordCheck(argv.slice(1), io);
+	if (argv[0] === "--verify") return recordVerify(argv.slice(1), io);
+	return writeRecord(argv, io);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exit(main());
