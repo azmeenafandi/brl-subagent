@@ -15,103 +15,127 @@
 // --bump rewrites the claim mechanically (the release ritual's step 5), so freshness is a command,
 // not a hand edit.
 //
+// Shape (issue #490): the body lives in `main`, which takes its argv and returns its exit code, and
+// the two pure decisions (`readClaim`, `bumpedClaim`) are exported. Nothing runs at import time, so
+// `scripts/__tests__/` can import this file — the test-budget floor check requires an import, and a
+// module that exits 2 on import has no test that can import it.
+//
 // Usage: node scripts/check-readme-test-count.mjs <vitest-json-report> [--strict | --bump]
 //   CI: npx vitest run --reporter=default --reporter=json --outputFile=vitest-report.json
 //   exit 1 = the claim is wrong (overstated, stale, or missing); exit 2 = usage / unreadable report.
 import { readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** How far the claimed floor may trail the real count before the claim is considered stale. */
-const DRIFT_LIMIT = 100;
+export const DRIFT_LIMIT = 100;
 
 /** The claim's shape — greppable, and the anchor the bump rewrites. */
-const CLAIM_RE = /(\d[\d,]*)\+\s+test suite/;
+export const CLAIM_RE = /(\d[\d,]*)\+\s+test suite/;
 
 /** `--bump` floors to the hundred: 2358 -> 2300, so the claim is a floor, never an overstatement. */
-const BUMP_STEP = 100;
+export const BUMP_STEP = 100;
 
-const USAGE = "usage: check-readme-test-count.mjs <vitest-json-report> [--strict | --bump]";
+export const USAGE = "usage: check-readme-test-count.mjs <vitest-json-report> [--strict | --bump]";
 
-const args = process.argv.slice(2);
-const flags = args.filter((a) => a.startsWith("--"));
-const positional = args.filter((a) => !a.startsWith("--"));
-
-const unknown = flags.filter((f) => f !== "--strict" && f !== "--bump");
-if (unknown.length > 0) {
-	console.error(`${USAGE}\nunknown flag: ${unknown.join(" ")}`);
-	process.exit(2);
-}
-if (flags.includes("--strict") && flags.includes("--bump")) {
-	console.error(`${USAGE}\n--strict and --bump are mutually exclusive — run --bump, then --strict.`);
-	process.exit(2);
-}
-const strict = flags.includes("--strict");
-const bump = flags.includes("--bump");
-
-const [reportPath] = positional;
-if (!reportPath) {
-	console.error(USAGE);
-	process.exit(2);
+/**
+ * The claim as the README states it: the value, the matched text and its offset (the bump's anchor),
+ * or `null` when the README holds no greppable claim.
+ */
+export function readClaim(readme) {
+	const match = CLAIM_RE.exec(readme);
+	if (match === null) return null;
+	return { claimed: Number(match[1].replace(/,/g, "")), text: match[0], rawNumber: match[1], index: match.index };
 }
 
-const readme = readFileSync("README.md", "utf8");
-const claim = CLAIM_RE.exec(readme);
-if (!claim) {
-	console.error('README.md: no "<N>+ test suite" claim found — keep the claim greppable (e.g. "a 1200+ test suite").');
-	process.exit(1);
-}
-const claimed = Number(claim[1].replace(/,/g, ""));
-
-let actual;
-try {
-	actual = JSON.parse(readFileSync(reportPath, "utf8")).numTotalTests;
-} catch (error) {
-	console.error(`${reportPath}: could not read the report — ${error.message}`);
-	process.exit(2);
-}
-if (typeof actual !== "number") {
-	console.error(`${reportPath}: no numTotalTests — is this vitest's json reporter output?`);
-	process.exit(2);
+/** Where `--bump` moves the claim: floored to the hundred, so it stays a floor. */
+export function bumpedClaim(actual) {
+	return Math.floor(actual / BUMP_STEP) * BUMP_STEP;
 }
 
-if (bump) {
-	const target = Math.floor(actual / BUMP_STEP) * BUMP_STEP;
-	if (target < BUMP_STEP) {
-		console.error(
-			`refusing to bump: ${actual} tests floors to ${target}+ (under ${BUMP_STEP}) — a lower claim is worse than a stale one.`,
+/** Run the guard. Returns the exit code; README.md and a relative report path resolve under `root`. */
+export function main(argv = process.argv.slice(2), { root = process.cwd(), log = console.log, warn = console.warn, error = console.error } = {}) {
+	const flags = argv.filter((a) => a.startsWith("--"));
+	const positional = argv.filter((a) => !a.startsWith("--"));
+
+	const unknown = flags.filter((f) => f !== "--strict" && f !== "--bump");
+	if (unknown.length > 0) {
+		error(`${USAGE}\nunknown flag: ${unknown.join(" ")}`);
+		return 2;
+	}
+	if (flags.includes("--strict") && flags.includes("--bump")) {
+		error(`${USAGE}\n--strict and --bump are mutually exclusive — run --bump, then --strict.`);
+		return 2;
+	}
+	const strict = flags.includes("--strict");
+	const bump = flags.includes("--bump");
+
+	const [reportPath] = positional;
+	if (!reportPath) {
+		error(USAGE);
+		return 2;
+	}
+
+	const readmePath = join(root, "README.md");
+	const readme = readFileSync(readmePath, "utf8");
+	const claim = readClaim(readme);
+	if (claim === null) {
+		error('README.md: no "<N>+ test suite" claim found — keep the claim greppable (e.g. "a 1200+ test suite").');
+		return 1;
+	}
+	const { claimed } = claim;
+
+	let actual;
+	try {
+		actual = JSON.parse(readFileSync(resolve(root, reportPath), "utf8")).numTotalTests;
+	} catch (failure) {
+		error(`${reportPath}: could not read the report — ${failure instanceof Error ? failure.message : String(failure)}`);
+		return 2;
+	}
+	if (typeof actual !== "number") {
+		error(`${reportPath}: no numTotalTests — is this vitest's json reporter output?`);
+		return 2;
+	}
+
+	if (bump) {
+		const target = bumpedClaim(actual);
+		if (target < BUMP_STEP) {
+			error(
+				`refusing to bump: ${actual} tests floors to ${target}+ (under ${BUMP_STEP}) — a lower claim is worse than a stale one.`,
+			);
+			return 2;
+		}
+		if (target === claimed) {
+			log(`readme-test-count: README already says ${claimed}+ for ${actual} ran — nothing to bump.`);
+			return 0;
+		}
+		const line = claim.text.replace(claim.rawNumber, String(target));
+		writeFileSync(readmePath, readme.slice(0, claim.index) + line + readme.slice(claim.index + claim.text.length));
+		if (target < claimed) {
+			warn(
+				`readme-test-count: the suite SHRANK — ${claimed}+ was correct for a bigger run; the claim moves DOWN to ${target}+ for ${actual} ran.`,
+			);
+		}
+		log(`readme-test-count: bump ${claimed}+ → ${target}+ (${actual} tests ran).`);
+		return 0;
+	}
+
+	if (claimed > actual) {
+		error(`README claims ${claimed}+ tests but only ${actual} ran — the claim overstates reality.`);
+		return 1;
+	}
+	if (strict && actual - claimed > DRIFT_LIMIT) {
+		error(
+			`README claims ${claimed}+ tests but ${actual} ran — update the claim in README.md (drift ${actual - claimed}, limit ${DRIFT_LIMIT}).`,
 		);
-		process.exit(2);
+		return 1;
 	}
-	if (target === claimed) {
-		console.log(`readme-test-count: README already says ${claimed}+ for ${actual} ran — nothing to bump.`);
-		process.exit(0);
+	if (strict) {
+		log(`readme-test-count: README says ${claimed}+, suite ran ${actual} — OK (drift ${actual - claimed} of limit ${DRIFT_LIMIT}).`);
+	} else {
+		log(`readme-test-count: README says ${claimed}+, suite ran ${actual} — OK (truth only; freshness runs at the release seam).`);
 	}
-	const line = claim[0].replace(claim[1], String(target));
-	writeFileSync("README.md", readme.slice(0, claim.index) + line + readme.slice(claim.index + claim[0].length));
-	if (target < claimed) {
-		console.warn(
-			`readme-test-count: the suite SHRANK — ${claimed}+ was correct for a bigger run; the claim moves DOWN to ${target}+ for ${actual} ran.`,
-		);
-	}
-	console.log(`readme-test-count: bump ${claimed}+ → ${target}+ (${actual} tests ran).`);
-	process.exit(0);
+	return 0;
 }
 
-if (claimed > actual) {
-	console.error(`README claims ${claimed}+ tests but only ${actual} ran — the claim overstates reality.`);
-	process.exit(1);
-}
-if (strict && actual - claimed > DRIFT_LIMIT) {
-	console.error(
-		`README claims ${claimed}+ tests but ${actual} ran — update the claim in README.md (drift ${actual - claimed}, limit ${DRIFT_LIMIT}).`,
-	);
-	process.exit(1);
-}
-if (strict) {
-	console.log(
-		`readme-test-count: README says ${claimed}+, suite ran ${actual} — OK (drift ${actual - claimed} of limit ${DRIFT_LIMIT}).`,
-	);
-} else {
-	console.log(
-		`readme-test-count: README says ${claimed}+, suite ran ${actual} — OK (truth only; freshness runs at the release seam).`,
-	);
-}
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exit(main());
