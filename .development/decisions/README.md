@@ -34,8 +34,9 @@ _Generated from each `.development/decisions/NNNN-*.md` record by `npm run docs:
 | 0024 | [The unit projection of the pre-flight: a batch unit's own declared deadline is dropped](./0024-unit-projection-preflight.md) | Accepted | 2026-11-07 |
 | 0025 | [The Jev level is an observation: the gate is provenance + risk, and a model-aware arm is measured against outcomes](./0025-jev-level-as-observation.md) | Accepted | 2026-11-08 |
 | 0026 | [A durable headState per repository: the boot restores the base branch and keeps the interrupted run's work](./0026-headstate-boot-repair.md) | Accepted | 2026-11-08 |
+| 0027 | [One runtime context per extension invocation, plus injected capabilities, as the seam that lets `index.ts` give up its sections](./0027-runtime-context-for-index-extraction.md) | Accepted | 2026-11-08 |
 
-**26 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
+**27 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
 
 <!-- END GENERATED: adr-index -->
 
