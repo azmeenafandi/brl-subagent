@@ -1115,6 +1115,659 @@ function prepareForeground(
 	};
 }
 
+/** What the foreground orchestrator reads from the tool call and the runtime. */
+interface ForegroundRunDeps {
+	pi: ExtensionAPI;
+	state: SessionState;
+	ctx: ExtensionContext;
+	log: Logger;
+	signal: AbortSignal | undefined;
+	onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined;
+}
+
+/**
+ * Seam F–L — the single foreground run (issue #430): the run record, the git
+ * work branch, the pre-start gates, the child (with its timeout retry), the
+ * diff/approval flow, the terminal record and the crash/finally.
+ *
+ * Extracted VERBATIM from `execute` and moved in one commit, so the move is
+ * reviewable as a before/after body comparison. It is an orchestrator, not a
+ * set of decisions: the seams inside it come in the next commit, and every one
+ * of them keeps its awaits and its `try`/`catch`/`finally` in the position the
+ * inline body had them.
+ *
+ * Ownership invariants that must not move:
+ *   - `success` is this function's, and `releaseSlot` fires exactly once for
+ *     exactly this run, in the `finally` that encloses the same `try`;
+ *   - `acquireSlot` and the pre-start rejections stay ABOVE the `try` — a
+ *     pre-try throw therefore does not release, which is the behaviour the
+ *     #340 tests and `dangling-row` pin (a known leak, deliberately preserved);
+ *   - the transcript import stays above the `try` (F7/#65) so the catch can
+ *     complete a transcript it never started;
+ *   - the timeout retry re-registers the live row and calls the runner again
+ *     with the same marker — same run, refreshed deadline.
+ */
+async function runForeground(
+	params: DelegateTaskParams,
+	prepared: ForegroundPrepared,
+	retrySourceRun: SubagentRun | undefined,
+	deps: ForegroundRunDeps,
+): Promise<ToolResult> {
+	const { pi, state, ctx, log, signal, onUpdate } = deps;
+	const {
+		task,
+		label,
+		inheritSP,
+		customSP,
+		timeout,
+		thinkingLevel,
+		toolOptions,
+		resolvedGitMode,
+		resolvedApprovalMode,
+		resolvedPreset,
+		autoRoutedPreset,
+		autoRouteKeyword,
+		resolvedCwd,
+		resolvedOutputFile,
+		warningsNote,
+		subagentModel,
+		currentDepth,
+	} = prepared;
+
+	// Create run record
+	const runId = crypto.randomUUID();
+	// Option B U1: durability identity — a retry inherits the original
+	// dispatchId and records resumeOf/attempt; a fresh marker keys the
+	// child process for boot-time orphan discovery.
+	const identity = newDispatchIdentity(retrySourceRun);
+	const run: SubagentRun = {
+		id: runId,
+		task,
+		label,
+		status: "running",
+		model: `${subagentModel.provider}/${subagentModel.id}`,
+		thinkingLevel,
+		// Issue #114: record-level visibility — the run's priority (absent
+		// when the caller left it to the default).
+		priority: params.priority,
+		startedAt: new Date().toISOString(),
+		originalParams: snapshotOriginalParams(params),
+		dispatchId: identity.dispatchId,
+		resumeOf: identity.resumeOf,
+		attempt: identity.attempt,
+		owner: currentProcessOwner(),
+		childMarker: crypto.randomUUID(),
+		// U3 (D4): the session recovery posture at dispatch.
+		recoveryPosture: state.config.recovery,
+	};
+	state.persistRun(pi, run, "foreground");
+
+	// R2: Prune old run entries if history exceeds limit
+	pruneHistoryIfNeeded(state, ctx, log);
+
+	// Register for live monitor
+	// Issue #423: the merged timeout is the display deadline (absent → no
+	// deadline; a foreground run has no 30m default).
+	registerLiveRun(state, run, ctx, undefined, timeout);
+
+	// P3: Git integration — set up work branch if gitMode is "branch"
+	let headState: HeadState | undefined;
+	let workBranchName: string | undefined;
+	// Issue #466 (ADR 0026 D6): the foreground path creates the same work
+	// branch with the same crash exposure, so it writes and clears the same
+	// durable record — with `kind: "foreground"`, so "no record" means "no
+	// orphan" for every branch run, not just background ones.
+	let headStateRoot: string | undefined;
+	const clearForegroundHeadState = (): void => {
+		if (!headStateRoot) return;
+		clearHeadState(headStateRoot);
+		headStateRoot = undefined;
+	};
+	if (resolvedGitMode === "branch") {
+		try {
+			headState = getHeadState(resolvedCwd);
+
+			if (hasUncommittedChanges(resolvedCwd)) {
+				log.warn("Uncommitted changes detected; proceeding with branch-based workflow anyway", {
+					cwd: resolvedCwd,
+				});
+			}
+
+			// Written BEFORE the branch exists (D1): the name must be minted here.
+			headStateRoot = getRepoRoot(resolvedCwd) ?? resolvedCwd;
+			workBranchName = newWorkBranchName();
+			if (!writeHeadState({
+				version: HEAD_STATE_VERSION,
+				repoRoot: headStateRoot,
+				runId: run.id,
+				kind: "foreground",
+				base: headState,
+				workBranch: workBranchName,
+				owner: currentProcessOwner(),
+				createdAt: new Date().toISOString(),
+			})) {
+				log.warn("headState record could not be written — an interrupted run will name no base", {
+					runId: run.id,
+					workBranch: workBranchName,
+				});
+			}
+
+			const branchResult = createWorkBranch(resolvedCwd, headState.sha, workBranchName);
+			if (branchResult.ok) {
+				log.info("Created work branch for subagent", {
+					branch: workBranchName,
+					base: headState.branch,
+				});
+			} else {
+				log.error("Failed to create work branch, falling back to 'none'", {
+					error: branchResult.error,
+				});
+				// Nothing was created: nothing to repair.
+				clearForegroundHeadState();
+				headState = undefined;
+				workBranchName = undefined;
+			}
+		} catch (err) {
+			log.warn("Not a git repository or git error; falling back to gitMode 'none'", {
+				error: (err as Error).message,
+			});
+			clearForegroundHeadState();
+			headState = undefined;
+			workBranchName = undefined;
+		}
+	}
+
+	// Helper to restore the starting HEAD and delete the work branch. The
+	// delete is NOT gated on the restore succeeding: the branch must never
+	// survive teardown. A still-checked-out branch simply makes deleteBranch
+	// fail (logged) rather than silently leaking the ref.
+	const cleanupGitBranch = () => {
+		if (!workBranchName) return;
+		if (headState) {
+			const restoreResult = restoreHead(resolvedCwd, headState);
+			if (restoreResult.ok) {
+				log.info("Restored original HEAD", {
+					branch: headState.branch,
+					detached: headState.detached,
+				});
+				// Issue #466: verified off the work branch — the record is done.
+				// A FAILED restore keeps it: the base lives only in the record.
+				clearForegroundHeadState();
+			} else {
+				log.warn("Failed to restore original HEAD during cleanup", {
+					branch: headState.branch,
+					error: restoreResult.error,
+				});
+			}
+		}
+		// Attempt to delete the work branch (non-critical)
+		const deleteResult = deleteBranch(resolvedCwd, workBranchName);
+		if (!deleteResult.ok) {
+			log.warn("Failed to delete work branch during cleanup", {
+				branch: workBranchName,
+				error: deleteResult.error,
+			});
+		}
+	};
+
+	// #340: both pre-start gate rejections below must finalize the
+	// `running` record persisted just above. Without this the session entry
+	// stays non-terminal, the inflight registry row (written by
+	// `persistRun(..., "foreground")`) is never cleared, and the live
+	// registration is never released — a phantom interrupted run at the
+	// next boot (and, on a retry, a dangling twin beside the source).
+	// The fabricated result drives `finalizeRunRecord` to terminal
+	// `failed`; `stopReason: "aborted"` makes `coherentFailureReason` keep
+	// the D1 `aborted` category coherent. The exact gate message the caller
+	// receives is recorded as `errorMessage`; the terminal
+	// `state.persistRun` (no kind) clears the registry row via its
+	// terminal-clear rule. Returned content/isError and the retry-source
+	// retention below are unchanged.
+	const SLOT_CANCEL_MESSAGE = "Subagent cancelled while waiting for concurrency slot.";
+	const finalizePreStartRejection = (errorMessage: string): void => {
+		const rejection: SubagentResult = {
+			messages: [],
+			usage: { ...EMPTY_USAGE },
+			exitCode: 1,
+			stderr: "",
+			stopReason: "aborted",
+			errorMessage,
+			errorCategory: "aborted",
+		};
+		finalizeRunRecord(run, rejection, "", new Date(run.startedAt).getTime());
+		run.originalParams = { ...run.originalParams, errorCategory: rejection.errorCategory };
+		state.persistRun(pi, run);
+		state.finalizeLiveSubagent(run.id);
+	};
+
+	// R1: Circuit breaker check — reject if circuit is open
+	const circuitCheck = state.checkCircuit();
+	if (circuitCheck.isOpen) {
+		finalizePreStartRejection(circuitCheck.message!);
+		cleanupGitBranch();
+		return {
+			content: [{ type: "text" as const, text: circuitCheck.message! }],
+			details: undefined,
+			isError: true,
+		};
+	}
+
+	// Resolve priority (issue #99 R2: single mode honors priority like chain/parallel/graph)
+	const singlePriority: Priority = (
+		params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
+			? (params.priority as Priority)
+			: DEFAULT_PRIORITY
+	);
+
+	// Acquire concurrency slot
+	const acquired = await acquireSlot(state, ctx, signal, singlePriority);
+	if (!acquired) {
+		finalizePreStartRejection(SLOT_CANCEL_MESSAGE);
+		cleanupGitBranch();
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: SLOT_CANCEL_MESSAGE,
+				},
+			],
+			details: undefined,
+			isError: true,
+		};
+	}
+
+	let success = false;
+
+	// Retire-on-retry (O3 fold, decision 2026-10-11): the retry has passed
+	// every pre-spawn gate and is about to start, so the SOURCE interrupted
+	// registry entry is superseded — clear it here so the old run is not
+	// re-offered at every subsequent boot. A failed pre-start (circuit open,
+	// slot cancelled) returns ABOVE this point: the source is left intact
+	// and retryable, while the NEW twin has already been finalized terminal
+	// by the gate (#340) — nothing dangles. `retrySourceRun` is set only on
+	// a `retryRunId` call.
+	if (retrySourceRun) clearInflightRun(retrySourceRun.id);
+
+	// F7 (issue #65): import BEFORE the try — the crash-path catch calls
+	// completeTranscript, and block-scoped consts declared inside the try
+	// are invisible in its catch (pre-fix, a crash here threw
+	// "completeTranscript is not defined" instead of returning the
+	// sanitized crash result).
+	const { startTranscript, completeTranscript } = await import('./transcript');
+
+	try {
+		// Build system prompt
+		const basePrompt = ctx.getSystemPrompt();
+		const subagentPrompt = buildSubagentPrompt(
+			basePrompt,
+			inheritSP,
+			customSP,
+			resolvedOutputFile,
+			toolOptions?.tools,
+			resolvedPreset?.promptGuideline,
+		);
+
+		// Emit initial progress
+		const modeInfo = describePromptMode(inheritSP, Boolean(customSP));
+		onUpdate?.({
+			content: [
+				{
+					type: "text" as const,
+					text: `Starting subagent (${modeInfo})...`,
+				},
+			],
+			details: {
+				messages: [],
+				usage: { ...EMPTY_USAGE },
+				exitCode: -1,
+				stderr: "",
+			},
+		});
+
+		// Wrap onUpdate to feed live monitor
+		const liveOnUpdate = makeLiveOnUpdate(state, runId, onUpdate);
+
+		const childDepth = currentDepth + 1;
+
+		// Start transcript for audit trail
+		startTranscript(runId, task);
+
+		let result = await runSubagent(
+			resolvedCwd,
+			subagentPrompt,
+			subagentModel,
+			thinkingLevel,
+			task,
+			signal,
+			liveOnUpdate,
+			toolOptions,
+			timeout,
+			getFinalOutput,
+			log,
+			childDepth,
+			undefined, // intercom
+			undefined, // subagentId
+			run.childMarker,
+		);
+
+		// Auto-retry on timeout
+		if (
+			params.retryOnTimeout &&
+			isSubagentError(result) &&
+			result.errorMessage?.includes("timed out")
+		) {
+			log.info("Auto-retrying after timeout", { runId });
+			// Issue #423: the retry restarts the clock, so its display deadline is
+			// re-anchored on it (the same clock `startedAt` carries). Registering
+			// also clears the finalize claim, so the row is live again.
+			const retryStartedAt = Date.now();
+			const retryDeadlineAt =
+				timeout && timeout > 0 ? retryStartedAt + timeout : undefined;
+			state.registerLiveSubagent(runId, {
+				id: runId,
+				label,
+				task,
+				model: run.model,
+				thinkingLevel,
+				priority: params.priority,
+				startedAt: retryStartedAt,
+				...(retryDeadlineAt !== undefined ? { deadlineAt: retryDeadlineAt } : {}),
+				ctx,
+			});
+
+			onUpdate?.({
+				content: [
+					{ type: "text" as const, text: "Retrying after timeout..." },
+				],
+				details: {
+					messages: [],
+					usage: { ...EMPTY_USAGE },
+					exitCode: -1,
+					stderr: "",
+				},
+			});
+
+			result = await runSubagent(
+				resolvedCwd,
+				subagentPrompt,
+				subagentModel,
+				thinkingLevel,
+				task,
+				signal,
+				liveOnUpdate,
+				toolOptions,
+				timeout,
+				getFinalOutput,
+				log,
+				childDepth,
+				undefined, // intercom
+				undefined, // subagentId
+				run.childMarker,
+			);
+		}
+
+		// F3: Sanitize and cap output
+		let finalOutput = getFinalOutput(result.messages);
+		finalOutput = stripAnsi(finalOutput);
+		finalOutput = capOutput(finalOutput);
+
+		// Attach label for display
+		result.label = label;
+
+		// P3: Capture git diff if we created a work branch
+		if (workBranchName && headState) {
+			// Diff against the captured starting sha rather than the branch
+			// name: a detached start's branch label is the "HEAD" pseudo-ref,
+			// for which `git diff HEAD...HEAD` is always empty.
+			const diffResult = captureDiff(resolvedCwd, headState.sha);
+			if (diffResult.ok) {
+				result.gitBranch = workBranchName;
+				result.gitDiff = diffResult.diff;
+			}
+
+			// Restore the starting HEAD (branch, or detached sha)
+			const restoreResult = restoreHead(resolvedCwd, headState);
+			if (restoreResult.ok) {
+				log.info("Restored original HEAD", {
+					branch: headState.branch,
+					detached: headState.detached,
+				});
+				// Issue #466: the tree is verified off the work branch, so the
+				// durable record has nothing left to repair.
+				clearForegroundHeadState();
+
+				// P4: Change approval workflow — let user review the diff
+				const diffContent = (result.gitDiff ?? "").trim();
+				const hasChanges = diffContent.length > 0;
+				const shouldPrompt =
+					ctx.hasUI !== false &&
+					(resolvedApprovalMode === "always" ||
+						(resolvedApprovalMode === "writes" && hasChanges));
+
+				if (shouldPrompt) {
+					const choice = await showApprovalDialog(ctx, label, result.gitDiff ?? "", workBranchName);
+
+					if (choice === "apply") {
+						const mergeResult = mergeWorkBranch(resolvedCwd, workBranchName);
+						if (mergeResult.ok) {
+							log.info("Merged work branch (approved)", { branch: workBranchName });
+							result.approved = true;
+						} else {
+							log.error("Failed to merge work branch", {
+								branch: workBranchName,
+								error: mergeResult.error,
+							});
+							result.approved = false;
+						}
+					} else {
+						// Discard or cancelled
+						deleteBranch(resolvedCwd, workBranchName);
+						log.info("Discarded work branch", { branch: workBranchName });
+						result.approved = false;
+					}
+					workBranchName = undefined; // Prevent double-cleanup
+				} else if (hasChanges) {
+					// Auto-approve: merge the work branch
+					const mergeResult = mergeWorkBranch(resolvedCwd, workBranchName);
+					if (mergeResult.ok) {
+						log.info("Merged work branch (auto-approve)", { branch: workBranchName });
+						result.approved = true;
+					} else {
+						log.error("Failed to merge work branch (auto-approve)", {
+							branch: workBranchName,
+							error: mergeResult.error,
+						});
+					}
+					// #308: a DETACHED start has no branch of its own to hold the
+					// merge result — teardown re-detached at the captured sha and
+					// the merge fast-forwarded THAT detached HEAD, so deleting the
+					// work branch would leave the committed work reachable only
+					// from the detached HEAD (silently lost on the next checkout).
+					// Keep the branch as the durable ref and log where the work
+					// lives. An ATTACHED start merged onto its own branch, which
+					// already retains the commit, so the temporary work branch is
+					// safe to drop.
+					if (headState.detached) {
+						log.info("detached checkout: work preserved on branch", {
+							branch: workBranchName,
+						});
+					} else {
+						deleteBranch(resolvedCwd, workBranchName);
+					}
+					workBranchName = undefined;
+				} else {
+					// No changes — just delete the empty branch
+					deleteBranch(resolvedCwd, workBranchName);
+					workBranchName = undefined;
+				}
+			} else {
+				log.warn("Failed to restore original HEAD after work-branch run", {
+					branch: headState.branch,
+					error: restoreResult.error,
+				});
+			}
+
+			// Nothing may leave teardown with the work branch still present: the
+			// approval flow above clears workBranchName on every terminal choice
+			// (including "apply", where keeping the branch is intentional), so a
+			// still-set name means the restore failed and the flow was skipped.
+			if (workBranchName) {
+				deleteBranch(resolvedCwd, workBranchName);
+				workBranchName = undefined;
+			}
+		}
+
+		// Finalize run record
+		finalizeRunRecord(
+			run,
+			result,
+			finalOutput,
+			new Date(run.startedAt).getTime(),
+		);
+		run.originalParams = {
+			...run.originalParams,
+			errorCategory: result.errorCategory,
+		};
+		state.persistRun(pi, run);
+
+		// R2: Prune old run entries
+		pruneHistoryIfNeeded(state, ctx, log);
+
+		// Finalize live monitor
+		state.finalizeLiveSubagent(runId);
+
+		// E4: SLA tracking — compute metrics if enabled
+		if (state.config.slaTrackingEnabled) {
+			const recentRuns = state.getLogicalRunEntries(ctx).slice(0, state.config.slaWindowSize);
+			const metrics = computeSLAMetrics(recentRuns);
+			log.info("SLA metrics computed", {
+				totalRuns: metrics.totalRuns,
+				successRate: metrics.successRate,
+				p95DurationMs: metrics.p95DurationMs,
+				totalCost: metrics.totalCost,
+			});
+			if (state.config.lastSLAMetrics) {
+				const report = computeDegradation(metrics, state.config.lastSLAMetrics);
+				if (report.degraded) {
+					log.warn("SLA degradation detected", {
+						successRateChange: report.successRateChange,
+						p95Change: report.p95Change,
+						recommendations: report.recommendations,
+					});
+				}
+			}
+			state.config.lastSLAMetrics = metrics;
+		}
+
+		if (isSubagentError(result)) {
+			const errorMsg =
+				result.errorMessage ||
+				result.stderr ||
+				finalOutput ||
+				"(no output from subagent)";
+			log.warn("Subagent failed", {
+				runId,
+				error: errorMsg,
+				exitCode: result.exitCode,
+				errorCategory: result.errorCategory,
+			});
+
+			// H3: Post-mortem diagnostics — suggest fixes for the failure
+			const suggestions = diagnoseFailure({
+				task,
+				toolOptions,
+				thinkingLevel,
+				gitMode: resolvedGitMode,
+				errorMessage: result.errorMessage,
+				exitCode: result.exitCode,
+				timeout,
+			});
+
+			// R1: Record failure in circuit breaker
+			state.recordFailure();
+
+			let finalMsg = `Subagent failed: ${errorMsg}`;
+			if (suggestions.length > 0) {
+				finalMsg += "\n\nSuggestions:\n" + suggestions.map((s) => `- ${s}`).join("\n");
+			}
+			// C: warnings ride the returned result too — a failed run is
+			// exactly when the conductor most needs the mismatch signal.
+			finalMsg += warningsNote;
+			// Issue #474: the failure path reports the tree it may have left
+			// behind. Appended LAST — the cause and its H1 warnings read
+			// first, the residue after. This is the classified-failure exit
+			// (no throw), the second foreground surface beside the crash seam.
+			finalMsg = appendWorktreeState(finalMsg, resolvedCwd);
+
+		completeTranscript(runId, 'failed');
+
+			return {
+				content: [
+					{ type: "text" as const, text: finalMsg },
+				],
+				details: result,
+				isError: true,
+			};
+		}
+
+		success = true;
+		completeTranscript(runId, 'completed');
+		log.info("Subagent completed successfully",{
+			runId,
+			tokensIn: result.usage.input,
+			tokensOut: result.usage.output,
+			cost: result.usage.cost,
+			sessionTotalCost: state.getSessionTotalCost(ctx),
+		});
+
+		// R1: Record success in circuit breaker
+		state.recordSuccess();
+
+		// B2: Surface auto-route decisions in the tool result so the conductor
+		// sees WHICH preset was auto-selected, the KEYWORD evidence for it,
+		// and what it restricts. Derive the restriction from the RESOLVED
+		// toolOptions (reflects per-call overrides) rather than the preset's
+		// declared values.
+		const autoRouteNote = autoRoutedPreset
+			? `\n\n[auto-routed to preset '${autoRoutedPreset.name}'${autoRouteKeyword ? ` (matched keyword '${autoRouteKeyword}')` : ""} — ${toolOptions ? formatToolRestriction(toolOptions) : formatPresetRestriction(autoRoutedPreset)}]`
+			: "";
+
+		return {
+			content: [
+				{ type: "text" as const, text: (finalOutput || "(no output)") + autoRouteNote + warningsNote },
+			],
+			details: result,
+		};
+	} catch (err) {
+		// P3: Clean up git branch on crash
+		cleanupGitBranch();
+		completeTranscript(runId, 'failed');
+
+		const result = buildCrashResult("Subagent", err, resolvedCwd);
+		log.error("Subagent crashed", { runId, error: result.details.errorMessage });
+
+		// R2 (review): mirror the completion path — finalize the live entry
+		// and persist a FAILED run record. Without this the live entry stays
+		// 'running' forever, the stale sweep never reclaims it, and the
+		// drill-in loops on the live branch indefinitely. finalizeLiveSubagent
+		// is idempotent (true = THIS call claimed it; the foreground path has
+		// no activeSubagents counters to gate).
+		state.finalizeLiveSubagent(runId);
+		const crashOutput = state.subagentSessions.get(runId)?.liveOutput ?? "";
+		finalizeRunRecord(
+			run,
+			result.details,
+			crashOutput,
+			new Date(run.startedAt).getTime(),
+		);
+		state.persistRun(pi, run);
+
+		return result;
+	} finally {
+		releaseSlot(state, success, ctx);
+	}
+}
+
 /**
  * Build the `delegate_task` definition over one runtime context (ADR 0027 D1/D3).
  *
@@ -1278,598 +1931,17 @@ export function createDelegateHandler(
 				currentDepth,
 			} = admitted.value;
 
-			// Create run record
-			const runId = crypto.randomUUID();
-			// Option B U1: durability identity — a retry inherits the original
-			// dispatchId and records resumeOf/attempt; a fresh marker keys the
-			// child process for boot-time orphan discovery.
-			const identity = newDispatchIdentity(retrySourceRun);
-			const run: SubagentRun = {
-				id: runId,
-				task,
-				label,
-				status: "running",
-				model: `${subagentModel.provider}/${subagentModel.id}`,
-				thinkingLevel,
-				// Issue #114: record-level visibility — the run's priority (absent
-				// when the caller left it to the default).
-				priority: params.priority,
-				startedAt: new Date().toISOString(),
-				originalParams: snapshotOriginalParams(params),
-				dispatchId: identity.dispatchId,
-				resumeOf: identity.resumeOf,
-				attempt: identity.attempt,
-				owner: currentProcessOwner(),
-				childMarker: crypto.randomUUID(),
-				// U3 (D4): the session recovery posture at dispatch.
-				recoveryPosture: state.config.recovery,
-			};
-			state.persistRun(pi, run, "foreground");
-
-			// R2: Prune old run entries if history exceeds limit
-			pruneHistoryIfNeeded(state, ctx, log);
-
-			// Register for live monitor
-			// Issue #423: the merged timeout is the display deadline (absent → no
-			// deadline; a foreground run has no 30m default).
-			registerLiveRun(state, run, ctx, undefined, timeout);
-
-			// P3: Git integration — set up work branch if gitMode is "branch"
-			let headState: HeadState | undefined;
-			let workBranchName: string | undefined;
-			// Issue #466 (ADR 0026 D6): the foreground path creates the same work
-			// branch with the same crash exposure, so it writes and clears the same
-			// durable record — with `kind: "foreground"`, so "no record" means "no
-			// orphan" for every branch run, not just background ones.
-			let headStateRoot: string | undefined;
-			const clearForegroundHeadState = (): void => {
-				if (!headStateRoot) return;
-				clearHeadState(headStateRoot);
-				headStateRoot = undefined;
-			};
-			if (resolvedGitMode === "branch") {
-				try {
-					headState = getHeadState(resolvedCwd);
-
-					if (hasUncommittedChanges(resolvedCwd)) {
-						log.warn("Uncommitted changes detected; proceeding with branch-based workflow anyway", {
-							cwd: resolvedCwd,
-						});
-					}
-
-					// Written BEFORE the branch exists (D1): the name must be minted here.
-					headStateRoot = getRepoRoot(resolvedCwd) ?? resolvedCwd;
-					workBranchName = newWorkBranchName();
-					if (!writeHeadState({
-						version: HEAD_STATE_VERSION,
-						repoRoot: headStateRoot,
-						runId: run.id,
-						kind: "foreground",
-						base: headState,
-						workBranch: workBranchName,
-						owner: currentProcessOwner(),
-						createdAt: new Date().toISOString(),
-					})) {
-						log.warn("headState record could not be written — an interrupted run will name no base", {
-							runId: run.id,
-							workBranch: workBranchName,
-						});
-					}
-
-					const branchResult = createWorkBranch(resolvedCwd, headState.sha, workBranchName);
-					if (branchResult.ok) {
-						log.info("Created work branch for subagent", {
-							branch: workBranchName,
-							base: headState.branch,
-						});
-					} else {
-						log.error("Failed to create work branch, falling back to 'none'", {
-							error: branchResult.error,
-						});
-						// Nothing was created: nothing to repair.
-						clearForegroundHeadState();
-						headState = undefined;
-						workBranchName = undefined;
-					}
-				} catch (err) {
-					log.warn("Not a git repository or git error; falling back to gitMode 'none'", {
-						error: (err as Error).message,
-					});
-					clearForegroundHeadState();
-					headState = undefined;
-					workBranchName = undefined;
-				}
-			}
-
-			// Helper to restore the starting HEAD and delete the work branch. The
-			// delete is NOT gated on the restore succeeding: the branch must never
-			// survive teardown. A still-checked-out branch simply makes deleteBranch
-			// fail (logged) rather than silently leaking the ref.
-			const cleanupGitBranch = () => {
-				if (!workBranchName) return;
-				if (headState) {
-					const restoreResult = restoreHead(resolvedCwd, headState);
-					if (restoreResult.ok) {
-						log.info("Restored original HEAD", {
-							branch: headState.branch,
-							detached: headState.detached,
-						});
-						// Issue #466: verified off the work branch — the record is done.
-						// A FAILED restore keeps it: the base lives only in the record.
-						clearForegroundHeadState();
-					} else {
-						log.warn("Failed to restore original HEAD during cleanup", {
-							branch: headState.branch,
-							error: restoreResult.error,
-						});
-					}
-				}
-				// Attempt to delete the work branch (non-critical)
-				const deleteResult = deleteBranch(resolvedCwd, workBranchName);
-				if (!deleteResult.ok) {
-					log.warn("Failed to delete work branch during cleanup", {
-						branch: workBranchName,
-						error: deleteResult.error,
-					});
-				}
-			};
-
-			// #340: both pre-start gate rejections below must finalize the
-			// `running` record persisted just above. Without this the session entry
-			// stays non-terminal, the inflight registry row (written by
-			// `persistRun(..., "foreground")`) is never cleared, and the live
-			// registration is never released — a phantom interrupted run at the
-			// next boot (and, on a retry, a dangling twin beside the source).
-			// The fabricated result drives `finalizeRunRecord` to terminal
-			// `failed`; `stopReason: "aborted"` makes `coherentFailureReason` keep
-			// the D1 `aborted` category coherent. The exact gate message the caller
-			// receives is recorded as `errorMessage`; the terminal
-			// `state.persistRun` (no kind) clears the registry row via its
-			// terminal-clear rule. Returned content/isError and the retry-source
-			// retention below are unchanged.
-			const SLOT_CANCEL_MESSAGE = "Subagent cancelled while waiting for concurrency slot.";
-			const finalizePreStartRejection = (errorMessage: string): void => {
-				const rejection: SubagentResult = {
-					messages: [],
-					usage: { ...EMPTY_USAGE },
-					exitCode: 1,
-					stderr: "",
-					stopReason: "aborted",
-					errorMessage,
-					errorCategory: "aborted",
-				};
-				finalizeRunRecord(run, rejection, "", new Date(run.startedAt).getTime());
-				run.originalParams = { ...run.originalParams, errorCategory: rejection.errorCategory };
-				state.persistRun(pi, run);
-				state.finalizeLiveSubagent(run.id);
-			};
-
-			// R1: Circuit breaker check — reject if circuit is open
-			const circuitCheck = state.checkCircuit();
-			if (circuitCheck.isOpen) {
-				finalizePreStartRejection(circuitCheck.message!);
-				cleanupGitBranch();
-				return {
-					content: [{ type: "text" as const, text: circuitCheck.message! }],
-					details: undefined,
-					isError: true,
-				};
-			}
-
-			// Resolve priority (issue #99 R2: single mode honors priority like chain/parallel/graph)
-			const singlePriority: Priority = (
-				params.priority && ["critical", "high", "normal", "low"].includes(params.priority)
-					? (params.priority as Priority)
-					: DEFAULT_PRIORITY
-			);
-
-			// Acquire concurrency slot
-			const acquired = await acquireSlot(state, ctx, signal, singlePriority);
-			if (!acquired) {
-				finalizePreStartRejection(SLOT_CANCEL_MESSAGE);
-				cleanupGitBranch();
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: SLOT_CANCEL_MESSAGE,
-						},
-					],
-					details: undefined,
-					isError: true,
-				};
-			}
-
-			let success = false;
-
-			// Retire-on-retry (O3 fold, decision 2026-10-11): the retry has passed
-			// every pre-spawn gate and is about to start, so the SOURCE interrupted
-			// registry entry is superseded — clear it here so the old run is not
-			// re-offered at every subsequent boot. A failed pre-start (circuit open,
-			// slot cancelled) returns ABOVE this point: the source is left intact
-			// and retryable, while the NEW twin has already been finalized terminal
-			// by the gate (#340) — nothing dangles. `retrySourceRun` is set only on
-			// a `retryRunId` call.
-			if (retrySourceRun) clearInflightRun(retrySourceRun.id);
-
-			// F7 (issue #65): import BEFORE the try — the crash-path catch calls
-			// completeTranscript, and block-scoped consts declared inside the try
-			// are invisible in its catch (pre-fix, a crash here threw
-			// "completeTranscript is not defined" instead of returning the
-			// sanitized crash result).
-			const { startTranscript, completeTranscript } = await import('./transcript');
-
-			try {
-				// Build system prompt
-				const basePrompt = ctx.getSystemPrompt();
-				const subagentPrompt = buildSubagentPrompt(
-					basePrompt,
-					inheritSP,
-					customSP,
-					resolvedOutputFile,
-					toolOptions?.tools,
-					resolvedPreset?.promptGuideline,
-				);
-
-				// Emit initial progress
-				const modeInfo = describePromptMode(inheritSP, Boolean(customSP));
-				onUpdate?.({
-					content: [
-						{
-							type: "text" as const,
-							text: `Starting subagent (${modeInfo})...`,
-						},
-					],
-					details: {
-						messages: [],
-						usage: { ...EMPTY_USAGE },
-						exitCode: -1,
-						stderr: "",
-					},
-				});
-
-				// Wrap onUpdate to feed live monitor
-				const liveOnUpdate = makeLiveOnUpdate(state, runId, onUpdate);
-
-				const childDepth = currentDepth + 1;
-
-				// Start transcript for audit trail
-				startTranscript(runId, task);
-
-				let result = await runSubagent(
-					resolvedCwd,
-					subagentPrompt,
-					subagentModel,
-					thinkingLevel,
-					task,
-					signal,
-					liveOnUpdate,
-					toolOptions,
-					timeout,
-					getFinalOutput,
-					log,
-					childDepth,
-					undefined, // intercom
-					undefined, // subagentId
-					run.childMarker,
-				);
-
-				// Auto-retry on timeout
-				if (
-					params.retryOnTimeout &&
-					isSubagentError(result) &&
-					result.errorMessage?.includes("timed out")
-				) {
-					log.info("Auto-retrying after timeout", { runId });
-					// Issue #423: the retry restarts the clock, so its display deadline is
-					// re-anchored on it (the same clock `startedAt` carries). Registering
-					// also clears the finalize claim, so the row is live again.
-					const retryStartedAt = Date.now();
-					const retryDeadlineAt =
-						timeout && timeout > 0 ? retryStartedAt + timeout : undefined;
-					state.registerLiveSubagent(runId, {
-						id: runId,
-						label,
-						task,
-						model: run.model,
-						thinkingLevel,
-						priority: params.priority,
-						startedAt: retryStartedAt,
-						...(retryDeadlineAt !== undefined ? { deadlineAt: retryDeadlineAt } : {}),
-						ctx,
-					});
-
-					onUpdate?.({
-						content: [
-							{ type: "text" as const, text: "Retrying after timeout..." },
-						],
-						details: {
-							messages: [],
-							usage: { ...EMPTY_USAGE },
-							exitCode: -1,
-							stderr: "",
-						},
-					});
-
-					result = await runSubagent(
-						resolvedCwd,
-						subagentPrompt,
-						subagentModel,
-						thinkingLevel,
-						task,
-						signal,
-						liveOnUpdate,
-						toolOptions,
-						timeout,
-						getFinalOutput,
-						log,
-						childDepth,
-						undefined, // intercom
-						undefined, // subagentId
-						run.childMarker,
-					);
-				}
-
-				// F3: Sanitize and cap output
-				let finalOutput = getFinalOutput(result.messages);
-				finalOutput = stripAnsi(finalOutput);
-				finalOutput = capOutput(finalOutput);
-
-				// Attach label for display
-				result.label = label;
-
-				// P3: Capture git diff if we created a work branch
-				if (workBranchName && headState) {
-					// Diff against the captured starting sha rather than the branch
-					// name: a detached start's branch label is the "HEAD" pseudo-ref,
-					// for which `git diff HEAD...HEAD` is always empty.
-					const diffResult = captureDiff(resolvedCwd, headState.sha);
-					if (diffResult.ok) {
-						result.gitBranch = workBranchName;
-						result.gitDiff = diffResult.diff;
-					}
-
-					// Restore the starting HEAD (branch, or detached sha)
-					const restoreResult = restoreHead(resolvedCwd, headState);
-					if (restoreResult.ok) {
-						log.info("Restored original HEAD", {
-							branch: headState.branch,
-							detached: headState.detached,
-						});
-						// Issue #466: the tree is verified off the work branch, so the
-						// durable record has nothing left to repair.
-						clearForegroundHeadState();
-
-						// P4: Change approval workflow — let user review the diff
-						const diffContent = (result.gitDiff ?? "").trim();
-						const hasChanges = diffContent.length > 0;
-						const shouldPrompt =
-							ctx.hasUI !== false &&
-							(resolvedApprovalMode === "always" ||
-								(resolvedApprovalMode === "writes" && hasChanges));
-
-						if (shouldPrompt) {
-							const choice = await showApprovalDialog(ctx, label, result.gitDiff ?? "", workBranchName);
-
-							if (choice === "apply") {
-								const mergeResult = mergeWorkBranch(resolvedCwd, workBranchName);
-								if (mergeResult.ok) {
-									log.info("Merged work branch (approved)", { branch: workBranchName });
-									result.approved = true;
-								} else {
-									log.error("Failed to merge work branch", {
-										branch: workBranchName,
-										error: mergeResult.error,
-									});
-									result.approved = false;
-								}
-							} else {
-								// Discard or cancelled
-								deleteBranch(resolvedCwd, workBranchName);
-								log.info("Discarded work branch", { branch: workBranchName });
-								result.approved = false;
-							}
-							workBranchName = undefined; // Prevent double-cleanup
-						} else if (hasChanges) {
-							// Auto-approve: merge the work branch
-							const mergeResult = mergeWorkBranch(resolvedCwd, workBranchName);
-							if (mergeResult.ok) {
-								log.info("Merged work branch (auto-approve)", { branch: workBranchName });
-								result.approved = true;
-							} else {
-								log.error("Failed to merge work branch (auto-approve)", {
-									branch: workBranchName,
-									error: mergeResult.error,
-								});
-							}
-							// #308: a DETACHED start has no branch of its own to hold the
-							// merge result — teardown re-detached at the captured sha and
-							// the merge fast-forwarded THAT detached HEAD, so deleting the
-							// work branch would leave the committed work reachable only
-							// from the detached HEAD (silently lost on the next checkout).
-							// Keep the branch as the durable ref and log where the work
-							// lives. An ATTACHED start merged onto its own branch, which
-							// already retains the commit, so the temporary work branch is
-							// safe to drop.
-							if (headState.detached) {
-								log.info("detached checkout: work preserved on branch", {
-									branch: workBranchName,
-								});
-							} else {
-								deleteBranch(resolvedCwd, workBranchName);
-							}
-							workBranchName = undefined;
-						} else {
-							// No changes — just delete the empty branch
-							deleteBranch(resolvedCwd, workBranchName);
-							workBranchName = undefined;
-						}
-					} else {
-						log.warn("Failed to restore original HEAD after work-branch run", {
-							branch: headState.branch,
-							error: restoreResult.error,
-						});
-					}
-
-					// Nothing may leave teardown with the work branch still present: the
-					// approval flow above clears workBranchName on every terminal choice
-					// (including "apply", where keeping the branch is intentional), so a
-					// still-set name means the restore failed and the flow was skipped.
-					if (workBranchName) {
-						deleteBranch(resolvedCwd, workBranchName);
-						workBranchName = undefined;
-					}
-				}
-
-				// Finalize run record
-				finalizeRunRecord(
-					run,
-					result,
-					finalOutput,
-					new Date(run.startedAt).getTime(),
-				);
-				run.originalParams = {
-					...run.originalParams,
-					errorCategory: result.errorCategory,
-				};
-				state.persistRun(pi, run);
-
-				// R2: Prune old run entries
-				pruneHistoryIfNeeded(state, ctx, log);
-
-				// Finalize live monitor
-				state.finalizeLiveSubagent(runId);
-
-				// E4: SLA tracking — compute metrics if enabled
-				if (state.config.slaTrackingEnabled) {
-					const recentRuns = state.getLogicalRunEntries(ctx).slice(0, state.config.slaWindowSize);
-					const metrics = computeSLAMetrics(recentRuns);
-					log.info("SLA metrics computed", {
-						totalRuns: metrics.totalRuns,
-						successRate: metrics.successRate,
-						p95DurationMs: metrics.p95DurationMs,
-						totalCost: metrics.totalCost,
-					});
-					if (state.config.lastSLAMetrics) {
-						const report = computeDegradation(metrics, state.config.lastSLAMetrics);
-						if (report.degraded) {
-							log.warn("SLA degradation detected", {
-								successRateChange: report.successRateChange,
-								p95Change: report.p95Change,
-								recommendations: report.recommendations,
-							});
-						}
-					}
-					state.config.lastSLAMetrics = metrics;
-				}
-
-				if (isSubagentError(result)) {
-					const errorMsg =
-						result.errorMessage ||
-						result.stderr ||
-						finalOutput ||
-						"(no output from subagent)";
-					log.warn("Subagent failed", {
-						runId,
-						error: errorMsg,
-						exitCode: result.exitCode,
-						errorCategory: result.errorCategory,
-					});
-
-					// H3: Post-mortem diagnostics — suggest fixes for the failure
-					const suggestions = diagnoseFailure({
-						task,
-						toolOptions,
-						thinkingLevel,
-						gitMode: resolvedGitMode,
-						errorMessage: result.errorMessage,
-						exitCode: result.exitCode,
-						timeout,
-					});
-
-					// R1: Record failure in circuit breaker
-					state.recordFailure();
-
-					let finalMsg = `Subagent failed: ${errorMsg}`;
-					if (suggestions.length > 0) {
-						finalMsg += "\n\nSuggestions:\n" + suggestions.map((s) => `- ${s}`).join("\n");
-					}
-					// C: warnings ride the returned result too — a failed run is
-					// exactly when the conductor most needs the mismatch signal.
-					finalMsg += warningsNote;
-					// Issue #474: the failure path reports the tree it may have left
-					// behind. Appended LAST — the cause and its H1 warnings read
-					// first, the residue after. This is the classified-failure exit
-					// (no throw), the second foreground surface beside the crash seam.
-					finalMsg = appendWorktreeState(finalMsg, resolvedCwd);
-
-				completeTranscript(runId, 'failed');
-
-					return {
-						content: [
-							{ type: "text" as const, text: finalMsg },
-						],
-						details: result,
-						isError: true,
-					};
-				}
-
-				success = true;
-				completeTranscript(runId, 'completed');
-				log.info("Subagent completed successfully",{
-					runId,
-					tokensIn: result.usage.input,
-					tokensOut: result.usage.output,
-					cost: result.usage.cost,
-					sessionTotalCost: state.getSessionTotalCost(ctx),
-				});
-
-				// R1: Record success in circuit breaker
-				state.recordSuccess();
-
-				// B2: Surface auto-route decisions in the tool result so the conductor
-				// sees WHICH preset was auto-selected, the KEYWORD evidence for it,
-				// and what it restricts. Derive the restriction from the RESOLVED
-				// toolOptions (reflects per-call overrides) rather than the preset's
-				// declared values.
-				const autoRouteNote = autoRoutedPreset
-					? `\n\n[auto-routed to preset '${autoRoutedPreset.name}'${autoRouteKeyword ? ` (matched keyword '${autoRouteKeyword}')` : ""} — ${toolOptions ? formatToolRestriction(toolOptions) : formatPresetRestriction(autoRoutedPreset)}]`
-					: "";
-
-				return {
-					content: [
-						{ type: "text" as const, text: (finalOutput || "(no output)") + autoRouteNote + warningsNote },
-					],
-					details: result,
-				};
-			} catch (err) {
-				// P3: Clean up git branch on crash
-				cleanupGitBranch();
-				completeTranscript(runId, 'failed');
-
-				const result = buildCrashResult("Subagent", err, resolvedCwd);
-				log.error("Subagent crashed", { runId, error: result.details.errorMessage });
-
-				// R2 (review): mirror the completion path — finalize the live entry
-				// and persist a FAILED run record. Without this the live entry stays
-				// 'running' forever, the stale sweep never reclaims it, and the
-				// drill-in loops on the live branch indefinitely. finalizeLiveSubagent
-				// is idempotent (true = THIS call claimed it; the foreground path has
-				// no activeSubagents counters to gate).
-				state.finalizeLiveSubagent(runId);
-				const crashOutput = state.subagentSessions.get(runId)?.liveOutput ?? "";
-				finalizeRunRecord(
-					run,
-					result.details,
-					crashOutput,
-					new Date(run.startedAt).getTime(),
-				);
-				state.persistRun(pi, run);
-
-				return result;
-			} finally {
-				releaseSlot(state, success, ctx);
-			}
+			// Seam F–L: the single foreground run. Everything that outlives this
+			// call — the run record, the work branch, the slot, the child process,
+			// the approval gate — is owned by the orchestrator below.
+			return runForeground(params, admitted.value, retrySourceRun, {
+				pi,
+				state,
+				ctx,
+				log,
+				signal,
+				onUpdate,
+			});
 		},
 
 		renderCall(
