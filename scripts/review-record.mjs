@@ -237,6 +237,9 @@ export function writeRecord(
 		return EXIT.REFUSED;
 	}
 
+	// Crash recovery is contractual, not atomic: this is a plain write, so a kill between render and
+	// write can leave a partial file. Re-running the identical command rewrites it byte-identically
+	// (the output is deterministic), and `--check` fails closed on any partial residue.
 	try {
 		writeFileSync(spec.out, record);
 	} catch (error) {

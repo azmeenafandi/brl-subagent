@@ -2,7 +2,9 @@
 Regression fixture S6 (issue 487) — a merged unit's record as it reached the gate.
 Provenance: PR 486, the reviewer's findings bank written straight out to the record file: no
 disposition field at all, no PR number, and the risk class fused with the recheck on one line.
-Expected: rejected, named reasons `wrong-pr` + `missing-verdict` + `missing-recheck` + `malformed-risk`.
+Expected: rejected with `wrong-pr` + `missing-verdict` + `missing-recheck` + `malformed-risk`
+when checked with `--pr 486` (as the test at review-record.test.ts:276 does); the shape-only
+invocation reports `missing-pr` instead of `wrong-pr`.
 -->
 
 REVIEW SCRATCH
