@@ -13,10 +13,11 @@ import { createEvent } from './event-bus';
 import { assertSafeAgentId, sanitizeErrorMessage } from './sanitize';
 import { wrapTask } from './prompt';
 import { createLogger } from './logging';
-import { getCurrentBranch, getHeadState, restoreHead, createWorkBranch, captureDiff, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
+import { getCurrentBranch, getHeadState, restoreHead, createWorkBranch, newWorkBranchName, captureDiff, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
 import type { HeadState } from './git';
+import { clearHeadState, readHeadState, writeHeadState, HEAD_STATE_VERSION } from './headstate';
 import { effectiveBackgroundBudget } from './validate';
-import { currentProcessOwner } from './recovery';
+import { currentProcessOwner, classifyOwner, defaultRecoveryDeps } from './recovery';
 import { persistRunRecord, listInflightRuns, clearInflightRun, type InflightRun } from './run-registry';
 import { isTransportRetryable } from './transport-retry';
 import { ensureOwnerOnlyDir, repairOwnerOnlyFiles } from './store-permissions';
@@ -1181,6 +1182,42 @@ export async function steerAgent(id: string, message: string): Promise<Backgroun
 export { transcriptPath as getTranscriptPath } from './transcript-path';
 
 /**
+ * Issue #466 (ADR 0026 D4): the pre-flight refusal for a repository whose
+ * durable head-state record is still unresolved and whose owner is NOT alive —
+ * i.e. the boot could not repair it (a dirty tree, an unreadable record, a
+ * failed restore, or a boot that never ran in this project).
+ *
+ * Returns the message, or undefined when the dispatch may proceed. Ordered
+ * BEFORE the dirty check because an unresolved record is the more specific
+ * fact: the tree is on a branch a dead run left behind, and only this record
+ * names its base. A record with a corrupt shape, and a record whose owner is
+ * ALIVE, never refuse — the first cannot be acted on by either side (L1/L2 of
+ * the dossier), and a live owner may still be writing its own run.
+ *
+ * The message names the BRANCH, the BASE and the COMMANDS (never a path):
+ * `sanitizeErrorMessage` neutralises the cwd and its parent downstream (#460 §4.2).
+ */
+function unresolvedHeadStateRefusal(repoRoot: string): string | undefined {
+  const read = readHeadState(repoRoot);
+  if (read.state !== 'ok') return undefined;
+  const record = read.record;
+  if (classifyOwner(record.owner, defaultRecoveryDeps()) === 'alive') return undefined;
+  const base = record.base.detached
+    ? `detached HEAD at ${record.base.sha.slice(0, 8)}`
+    : record.base.branch;
+  const checkout = record.base.detached
+    ? `git checkout --detach ${record.base.sha}`
+    : `git checkout ${record.base.branch}`;
+  return (
+    `this repository still carries an unresolved branch-run state: the working tree was left on ` +
+    `${record.workBranch} by an interrupted run whose recorded base is ${base}. ` +
+    `Inspect it with \`git status\`, then restore the base by hand: ` +
+    `git stash push -u -m "brl-subagent interrupted work" && ${checkout}. ` +
+    `Keep ${record.workBranch} until its work is reviewed — it is the only copy.`
+  );
+}
+
+/**
  * Spawn a background session using pi's session API
  * 
  * This creates a real pi session that runs independently.
@@ -1650,6 +1687,11 @@ export async function spawnBackgroundSession(
   // would re-restore/re-delete and log spurious warnings.
   let gitCleanupDone = false;
   const gitCwd = params.cwd ?? ctx.cwd;
+  // Issue #466: the repository root the head-state record is keyed by — the SAME
+  // resolution the branch lock below uses, so the write and the clear cannot
+  // disagree about which record they own (a record keyed on `process.cwd()`
+  // would name the wrong repo for a run dispatched with `cwd` elsewhere).
+  const headStateRepoRoot = (): string => getRepoRoot(gitCwd) ?? gitCwd;
 
   // Branch teardown — commit the agent's work (so the diff is real), capture
   // the diff, switch back to the original branch, delete the work branch, and
@@ -1669,12 +1711,17 @@ export async function spawnBackgroundSession(
           log.warn(`cleanupWorkBranch: tree moved off ${workBranchName} — skipping switch/delete`, {
             agentId: id,
           });
+          // Issue #466: the tree is VERIFIED off our branch (moved by hand), so
+          // the record has nothing left to repair — clear it (M7's counterpart).
+          clearHeadState(headStateRepoRoot());
           return info;
         }
       } catch (err) {
         log.warn(`getCurrentBranch failed during cleanup for background agent ${id}`, {
           error: (err as Error).message,
         });
+        // Issue #466: KEEP the record — we cannot tell where the tree is, which
+        // is exactly the crash-equivalent state the boot's retry is for.
         return info;
       }
       try {
@@ -1711,6 +1758,11 @@ export async function spawnBackgroundSession(
         const restoreResult = restoreHead(gitCwd, headState);
         if (!restoreResult.ok) {
           log.warn(`restoreHead failed for background agent ${id}`, { error: restoreResult.error });
+          // Issue #466: a FAILED restore keeps the record (mutants M3/M4) — the
+          // tree is still on the work branch and the base lives only here.
+        } else {
+          // Verified off the work branch: the record has done its job.
+          clearHeadState(headStateRepoRoot());
         }
       } catch (err) {
         log.warn(`restoreHead failed for background agent ${id}`, { error: (err as Error).message });
@@ -1867,6 +1919,14 @@ export async function spawnBackgroundSession(
     };
 
     try {
+      // Issue #466 (ADR 0026 D4): BEFORE the dirty check — an unresolved record
+      // is the more specific fact, and a tree left on a dead run's branch would
+      // otherwise only produce "working tree has uncommitted changes" (or, when
+      // clean, a NEW branch based on the orphan: exactly the silent wrong base
+      // this issue is about).
+      const unresolved = unresolvedHeadStateRefusal(lockKey);
+      if (unresolved) throw new Error(unresolved);
+
       // C1: isolation is only real when the base tree is clean. A dirty tree
       // would ride onto the work branch, get clobbered by the agent's writes,
       // and leak back into the base working tree on switch — refuse loudly.
@@ -1877,15 +1937,41 @@ export async function spawnBackgroundSession(
         );
       }
       headState = getHeadState(gitCwd);
-      const branchResult = createWorkBranch(gitCwd, headState.sha);
+      // Issue #466 (D1): the durable record is written INSIDE the lock, after
+      // the dirty check and BEFORE the branch exists — the write-ahead property
+      // that makes a crash in `createWorkBranch` (and in the teardown window)
+      // repairable. The name is minted here so the record can name the branch.
+      workBranchName = newWorkBranchName();
+      if (!writeHeadState({
+        version: HEAD_STATE_VERSION,
+        repoRoot: lockKey,
+        runId: id,
+        kind: 'background',
+        base: headState,
+        workBranch: workBranchName,
+        owner,
+        createdAt: new Date().toISOString(),
+      })) {
+        // A store failure must never refuse a run (same discipline as the
+        // registry): the run proceeds, only its crash-recoverability degrades.
+        log.warn('headState record could not be written — an interrupted run will name no base', {
+          agentId: id,
+          workBranch: workBranchName,
+        });
+      }
+      const branchResult = createWorkBranch(gitCwd, headState.sha, workBranchName);
       if (branchResult.ok) {
-        workBranchName = branchResult.branch;
         log.info('Created work branch for background agent', {
           branch: workBranchName,
           base: headState.branch,
           agentId: id,
         });
       } else {
+        // Nothing was created, so there is nothing to repair: clear the record
+        // and drop the name, or cleanupWorkBranch would act on a branch that
+        // never existed.
+        clearHeadState(lockKey);
+        workBranchName = undefined;
         throw new Error(`createWorkBranch failed: ${branchResult.error}`);
       }
     } catch (err) {

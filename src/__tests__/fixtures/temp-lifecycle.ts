@@ -1,7 +1,8 @@
 /**
  * Shared temp-dir + log-cwd lifecycle for suites that redirect the transcript
- * output dir, the session-manager storage dir, and the logger's file sink into
- * per-test throwaway directories.
+ * output dir, the session-manager storage dir, the run registry, the durable
+ * head-state store and the logger's file sink into per-test throwaway
+ * directories.
  *
  * ORDER MATTERS, and this helper enforces it so every suite gets it right:
  *
@@ -24,6 +25,7 @@ import * as path from "node:path";
 import { __setOutputDir } from "../../transcript";
 import { __setStorageDir } from "../../session-manager";
 import { __setRegistryDir } from "../../run-registry";
+import { __setHeadStateDir } from "../../headstate";
 import { setLogCwd } from "../../logging";
 
 export interface TempEnvOptions {
@@ -39,6 +41,8 @@ export interface TempEnv {
 	readonly baseDir: string;
 	readonly outputDir: string;
 	readonly storageDir: string;
+	/** Issue #466: the durable head-state store (never the repo's real .pi/). */
+	readonly headStateDir: string;
 	/** Only meaningful when the env was created with `withCwd` (the default). */
 	readonly testCwd: string;
 }
@@ -60,6 +64,7 @@ export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEn
 	let outputDir: string | undefined;
 	let storageDir: string | undefined;
 	let registryDir: string | undefined;
+	let headStateDir: string | undefined;
 	let testCwd: string | undefined;
 
 	const remove = (dir: string | undefined): void => {
@@ -81,9 +86,11 @@ export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEn
 			outputDir = path.join(baseDir, "output");
 			storageDir = path.join(baseDir, "subagents");
 			registryDir = path.join(baseDir, "run-registry");
+			headStateDir = path.join(baseDir, "head-state");
 			__setOutputDir(outputDir);
 			__setStorageDir(storageDir);
 			__setRegistryDir(registryDir);
+			__setHeadStateDir(headStateDir);
 		},
 		async tearDown(): Promise<void> {
 			// Same order as setUp's crossing: clear -> drain -> remove.
@@ -95,6 +102,7 @@ export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEn
 			outputDir = undefined;
 			storageDir = undefined;
 			registryDir = undefined;
+			headStateDir = undefined;
 			testCwd = undefined;
 		},
 		get baseDir(): string {
@@ -102,6 +110,9 @@ export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEn
 		},
 		get outputDir(): string {
 			return requireDir(`prefix "${prefix}"`, "outputDir", outputDir);
+		},
+		get headStateDir(): string {
+			return requireDir(`prefix "${prefix}"`, "headStateDir", headStateDir);
 		},
 		get storageDir(): string {
 			return requireDir(`prefix "${prefix}"`, "storageDir", storageDir);

@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 		getCurrentBranch: vi.fn(),
 		getHeadState: vi.fn(),
 		createWorkBranch: vi.fn(),
+		newWorkBranchName: vi.fn().mockReturnValue("brl-subagent-abc12345"),
 		captureDiff: vi.fn(),
 		restoreHead: vi.fn(),
 		deleteBranch: vi.fn(),
@@ -65,6 +66,7 @@ vi.mock("../git", () => ({
 	getCurrentBranch: mocks.git.getCurrentBranch,
 	getHeadState: mocks.git.getHeadState,
 	createWorkBranch: mocks.git.createWorkBranch,
+	newWorkBranchName: mocks.git.newWorkBranchName,
 	captureDiff: mocks.git.captureDiff,
 	restoreHead: mocks.git.restoreHead,
 	deleteBranch: mocks.git.deleteBranch,
@@ -1507,6 +1509,7 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		// the current branch and expects it to still be the work branch.
 		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 		mocks.git.getCurrentBranch.mockReturnValue("brl-subagent-abc12345");
+		mocks.git.newWorkBranchName.mockReturnValue("brl-subagent-abc12345");
 		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
 		mocks.git.captureDiff.mockReturnValue({ ok: true, diff: "diff --git a/x.ts b/x.ts" });
 		mocks.git.restoreHead.mockReturnValue({ ok: true });
