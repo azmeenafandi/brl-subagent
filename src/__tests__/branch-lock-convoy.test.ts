@@ -21,6 +21,10 @@ const mocks = vi.hoisted(() => ({
 		getCurrentBranch: vi.fn(),
 		getHeadState: vi.fn(),
 		createWorkBranch: vi.fn(),
+		// Issue #466: the caller mints the work branch name, so the record can
+		// name it before the branch exists — this file mocks `../git`, and a
+		// missing export here is a spawn-time throw, not a no-op.
+		newWorkBranchName: vi.fn(),
 		captureDiff: vi.fn(),
 		restoreHead: vi.fn(),
 		deleteBranch: vi.fn(),
@@ -67,6 +71,7 @@ vi.mock("../git", () => ({
 	getCurrentBranch: mocks.git.getCurrentBranch,
 	getHeadState: mocks.git.getHeadState,
 	createWorkBranch: mocks.git.createWorkBranch,
+	newWorkBranchName: mocks.git.newWorkBranchName,
 	captureDiff: mocks.git.captureDiff,
 	restoreHead: mocks.git.restoreHead,
 	deleteBranch: mocks.git.deleteBranch,
@@ -130,7 +135,10 @@ function resetGit(): void {
 	mocks.git.getRepoRoot.mockImplementation((cwd: string) => cwd);
 	mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 	mocks.git.getCurrentBranch.mockReturnValue("brl-subagent-owner");
-	mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-owner" });
+	// The minted name IS the created branch (#466): one value keeps the lock
+	// owner's stamped `workBranch` and the branch git was asked for identical.
+	mocks.git.newWorkBranchName.mockReturnValue("brl-subagent-owner");
+	mocks.git.createWorkBranch.mockImplementation((_cwd: string, _sha: string, branch: string) => ({ ok: true, branch }));
 	mocks.git.captureDiff.mockReturnValue({ ok: true, diff: "" });
 	mocks.git.restoreHead.mockReturnValue({ ok: true });
 	mocks.git.deleteBranch.mockReturnValue({ ok: true });
@@ -219,6 +227,22 @@ describe("issue #465 (b) — a terminal-but-unsettled owner refuses later branch
 		expect((refusal as Error).message).toMatch(/gitMode 'branch' refused/);
 		expect((refusal as Error).message).toContain(owner.id);
 		expect((refusal as Error).message).toContain("brl-subagent-owner");
+
+		// #473 finding 1: the message's second half is pinned VERBATIM. The shape
+		// assertions above let it drift for two issues: #465 shipped "the repository
+		// stays on it, and the lock is only cleared by a process restart", which #466
+		// made false in exactly the case it describes (the boot now restores a
+		// provable orphan). The repair half and its precondition must be stated, and
+		// the manual commands must survive only as the needs-manual fallback.
+		expect((refusal as Error).message).toContain(
+			"this process keeps the repository on it for the rest of its life, and only a " +
+				"restart releases the lock. That restart is also the repair: at the next boot " +
+				"the recorded base is restored — when the owner is provably dead, HEAD is " +
+				"exactly brl-subagent-owner and the working tree is clean — and " +
+				"brl-subagent-owner is KEPT with the run's commits.",
+		);
+		expect((refusal as Error).message).toContain("git stash push -u");
+		expect((refusal as Error).message).not.toContain("only cleared by a process restart");
 
 		// The refused dispatch is provably never-started: refused BEFORE its chain
 		// link, so it never touched git.

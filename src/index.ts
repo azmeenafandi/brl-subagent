@@ -67,8 +67,12 @@ import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, ge
 import {
 	hasUncommittedChanges,
 	createWorkBranch,
+	newWorkBranchName,
 	captureDiff,
 	getHeadState,
+	getHeadBranch,
+	getRepoRoot,
+	listWorkBranches,
 	restoreHead,
 	deleteBranch,
 	mergeWorkBranch,
@@ -107,7 +111,19 @@ import {
 	recoverProduction,
 	currentProcessOwner,
 	newDispatchIdentity,
+	classifyOwner,
+	defaultRecoveryDeps,
 } from "./recovery";
+import {
+	buildHeadStateNotice,
+	reconcileHeadStates,
+	sweepHeadStates,
+	writeHeadState,
+	clearHeadState,
+	HEAD_STATE_VERSION,
+	type HeadStateDeps,
+	type HeadStateOutcome,
+} from "./headstate";
 import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
 import { acquireSlot, clearProgressLinger, releaseSlot, repaintStatus, stopProgressTicker } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
@@ -3384,6 +3400,16 @@ export default function (pi: ExtensionAPI) {
 			// P3: Git integration — set up work branch if gitMode is "branch"
 			let headState: HeadState | undefined;
 			let workBranchName: string | undefined;
+			// Issue #466 (ADR 0026 D6): the foreground path creates the same work
+			// branch with the same crash exposure, so it writes and clears the same
+			// durable record — with `kind: "foreground"`, so "no record" means "no
+			// orphan" for every branch run, not just background ones.
+			let headStateRoot: string | undefined;
+			const clearForegroundHeadState = (): void => {
+				if (!headStateRoot) return;
+				clearHeadState(headStateRoot);
+				headStateRoot = undefined;
+			};
 			if (resolvedGitMode === "branch") {
 				try {
 					headState = getHeadState(resolvedCwd);
@@ -3394,9 +3420,27 @@ export default function (pi: ExtensionAPI) {
 						});
 					}
 
-					const branchResult = createWorkBranch(resolvedCwd, headState.sha);
+					// Written BEFORE the branch exists (D1): the name must be minted here.
+					headStateRoot = getRepoRoot(resolvedCwd) ?? resolvedCwd;
+					workBranchName = newWorkBranchName();
+					if (!writeHeadState({
+						version: HEAD_STATE_VERSION,
+						repoRoot: headStateRoot,
+						runId: run.id,
+						kind: "foreground",
+						base: headState,
+						workBranch: workBranchName,
+						owner: currentProcessOwner(),
+						createdAt: new Date().toISOString(),
+					})) {
+						log.warn("headState record could not be written — an interrupted run will name no base", {
+							runId: run.id,
+							workBranch: workBranchName,
+						});
+					}
+
+					const branchResult = createWorkBranch(resolvedCwd, headState.sha, workBranchName);
 					if (branchResult.ok) {
-						workBranchName = branchResult.branch;
 						log.info("Created work branch for subagent", {
 							branch: workBranchName,
 							base: headState.branch,
@@ -3405,12 +3449,16 @@ export default function (pi: ExtensionAPI) {
 						log.error("Failed to create work branch, falling back to 'none'", {
 							error: branchResult.error,
 						});
+						// Nothing was created: nothing to repair.
+						clearForegroundHeadState();
 						headState = undefined;
+						workBranchName = undefined;
 					}
 				} catch (err) {
 					log.warn("Not a git repository or git error; falling back to gitMode 'none'", {
 						error: (err as Error).message,
 					});
+					clearForegroundHeadState();
 					headState = undefined;
 					workBranchName = undefined;
 				}
@@ -3429,6 +3477,9 @@ export default function (pi: ExtensionAPI) {
 							branch: headState.branch,
 							detached: headState.detached,
 						});
+						// Issue #466: verified off the work branch — the record is done.
+						// A FAILED restore keeps it: the base lives only in the record.
+						clearForegroundHeadState();
 					} else {
 						log.warn("Failed to restore original HEAD during cleanup", {
 							branch: headState.branch,
@@ -3668,6 +3719,9 @@ export default function (pi: ExtensionAPI) {
 							branch: headState.branch,
 							detached: headState.detached,
 						});
+						// Issue #466: the tree is verified off the work branch, so the
+						// durable record has nothing left to repair.
+						clearForegroundHeadState();
 
 						// P4: Change approval workflow — let user review the diff
 						const diffContent = (result.gitDiff ?? "").trim();
@@ -4256,6 +4310,70 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	/**
+	 * Issue #466 (ADR 0026 D2): the git/process surface the head-state table
+	 * reads, wired once so the boot step and its tests cannot drift apart.
+	 */
+	function headStateDeps(): HeadStateDeps {
+		const procDeps = defaultRecoveryDeps();
+		return {
+			getRepoRoot,
+			classifyOwner: (owner) => classifyOwner(owner, procDeps),
+			getHeadBranch,
+			restoreHead,
+			hasUncommittedChanges,
+			listWorkBranches,
+		};
+	}
+
+	/**
+	 * Issue #466: the boot's ONE git-mutating step, between the scan (which only
+	 * marks records) and the notices. Best-effort like the scan — a failing store
+	 * must never break session start — but every record still ends in exactly one
+	 * LOGGED verdict (D5: silence is not a verdict).
+	 *
+	 * The repair itself is NEVER gated by `config.recovery`: a tree left on a dead
+	 * run's branch is a correctness problem, not a recovery offer. Only the notice
+	 * below is gated.
+	 */
+	function reconcileHeadStatesAtBoot(): HeadStateOutcome[] {
+		try {
+			const outcomes = reconcileHeadStates(headStateDeps());
+			for (const outcome of outcomes) {
+				log.info("Boot head-state verdict", { ...outcome });
+			}
+			// Housekeeping, never part of the repair contract: only a record whose
+			// repository no longer resolves (or that cannot be parsed) is swept, so
+			// a live orphan's base is never deleted by age.
+			const swept = sweepHeadStates({
+				repoGone: (record) => getRepoRoot(record.repoRoot) === undefined,
+			});
+			if (swept > 0) log.info("Swept stale head-state records", { count: swept });
+			return outcomes;
+		} catch (err) {
+			log.warn("Boot head-state reconciliation failed", { error: (err as Error).message });
+			return [];
+		}
+	}
+
+	/**
+	 * Issue #466 (D5): the repair and the needs-manual verdict reach the user
+	 * once, on the same `nextTurn` channel as the recovery notice, and are gated
+	 * by `config.recovery !== "off"` like every other boot surface.
+	 */
+	function maybeSendHeadStateNotice(outcomes: HeadStateOutcome[]): void {
+		if (state.config.recovery === "off") return;
+		const notice = buildHeadStateNotice(outcomes);
+		if (!notice) return;
+		try {
+			pi.sendMessage(notice, resolveRecoveryNoticeDelivery());
+			log.info("Head-state notice delivered", { count: notice.details.count });
+		} catch (err) {
+			// The notice is best-effort — it must never break session start.
+			log.warn("Head-state notice failed", { error: (err as Error).message });
+		}
+	}
+
+	/**
 	 * Option B U3 Fix A: the recovery visibility bridge, wired for the two
 	 * extension consumers that resolve a run id (the retryRunId branch and the
 	 * abandon action). Session run entries UNIONED with synthetic durable
@@ -4386,9 +4504,17 @@ export default function (pi: ExtensionAPI) {
 		// records interrupted BEFORE anything else touches their worktrees.
 		await performBootRecovery();
 
+		// Issue #466 (ADR 0026 D2/D5): reconcile the durable head-state records —
+		// the ONE step allowed to move git at boot, and only for a record whose
+		// owner it has proved dead.
+		const headStateOutcomes = reconcileHeadStatesAtBoot();
+
 		// Option B U3 (D2): after the scan, surface every unresolved interrupted
 		// run ONCE, at the next turn boundary (never mid-turn).
 		await maybeSendRecoveryNotice(ctx);
+
+		// Issue #466: the head-state verdicts ride the same nextTurn channel.
+		maybeSendHeadStateNotice(headStateOutcomes);
 
 		// Issue #356: boot is a config-paint edge — route it through the same
 		// chokepoint as every other footer repaint. With no runs in flight the
