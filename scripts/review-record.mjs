@@ -44,7 +44,7 @@
 //   `--check` rules PLUS a head the line can print, 7-40 hex) · 2 usage, or a file that is not there
 //   or not readable — the message names the RESOLVED path, which is the U2 failure caught in one line
 //   instead of after a `/tmp` listing. `findings <n>` comes from `countFindings` — the one definition
-//   on `parseRecord`, the same number `--check` reads, never a second implementation. `--json` prints
+//   on `parseRecord` — the one definition the gate's check rules share, never a second counter. `--json` prints
 //   one object instead of the line (on every exit: a refusal and an unreadable file carry their
 //   `reasons[]` there too).
 import { createHash } from "node:crypto";
@@ -257,7 +257,7 @@ export function recordVerify(argv, { out = console.log, err = console.error } = 
 	if (problems.length > 0) {
 		for (const item of problems) err(`  ✗ ${item.code}: ${item.message}`);
 		err(`record-verify: ${problems.length} reason(s) — ${path} is not a record the gate can read (sha256 ${sha256})`);
-		report({ ok: false, path, verdict: facts.verdict, head: facts.head, findings: facts.findings, sha256, reasons: problems });
+		report({ ok: false, path, verdict: facts.verdict, head: facts.head, findings: facts.findings, sha256, reasons: problems.map(({ code, message }) => ({ code, message })) });
 		return EXIT.REFUSED;
 	}
 

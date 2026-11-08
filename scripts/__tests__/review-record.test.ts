@@ -178,6 +178,12 @@ describe("review-record — the emitted block", () => {
 		expect(renderRecord(spec({ findings: "one line\n\n\n" }))).toContain("## Findings\n\none line\n");
 	});
 
+	it("counts findings without counting the conductor-verified marker", () => {
+		const withMarker = renderRecord(spec({ findings: "one finding\n\nconductor-verified: ecb411a — a doc-only nit" }));
+		expect(parseRecord(withMarker).findings).toBe(1);
+		expect(parseRecord(renderRecord(spec({ findings: "one finding" }))).findings).toBe(1);
+	});
+
 	it("reads stdin when --findings is `-` (the reviewer has bash and no write tool)", () => {
 		const out = scratch("stdin.md");
 		const result = write(argvFor({ findings: "-" }, out), FINDINGS);

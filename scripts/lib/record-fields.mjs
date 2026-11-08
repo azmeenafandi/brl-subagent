@@ -199,6 +199,9 @@ export function countFindings(text) {
 	for (let index = 0; index < body.length; index += 1) {
 		const line = body[index].trim();
 		if (line === "" || line === NO_FINDINGS || ATX_RE.test(line) || TABLE_RULE_RE.test(line)) continue;
+		// A gate field line is not a finding: `conductor-verified:` can legally sit in the body (the
+		// other four are refused at generation), and counting it inflated `findings` by one.
+		if (FIELD.conductorVerified && line.toLowerCase().startsWith(FIELD.conductorVerified)) continue;
 		const next = body[index + 1];
 		if (next !== undefined && TABLE_RULE_RE.test(next.trim())) continue; // the table's header row
 		count += 1;
