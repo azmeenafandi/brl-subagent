@@ -24,6 +24,7 @@ import { createDelegateHandler, type DelegateHandlerDeps } from "../delegate-han
 import { SessionState } from "../state";
 import { __setRegistryDir } from "../run-registry";
 import { __setOutputDir } from "../transcript";
+import { __setHeadStateDir, listHeadStates } from "../headstate";
 import {
 	CUSTOM_ENTRY_TYPES,
 	MAX_CHAIN_STEPS,
@@ -42,6 +43,72 @@ const runner = vi.hoisted(() => ({
 	runSubagent: vi.fn(),
 	getPiInvocation: vi.fn(() => ({ command: process.execPath, args: [] as string[] })),
 }));
+/**
+ * Git is faked so a work-branch path is deterministic and never touches the
+ * repository. The REAL `headstate` module is used (with its dir redirected), so
+ * the durable record's write/clear is observed rather than mocked away.
+ */
+const git = vi.hoisted(() => ({
+	head: { sha: "0123456789abcdef0123456789abcdef01234567", detached: false, branch: "dev" },
+	diff: "",
+	createFails: false,
+	restoreFails: false,
+	mergeFails: false,
+	calls: [] as string[],
+	reset() {
+		this.head = { sha: "0123456789abcdef0123456789abcdef01234567", detached: false, branch: "dev" };
+		this.diff = "";
+		this.createFails = false;
+		this.restoreFails = false;
+		this.mergeFails = false;
+		this.calls = [];
+	},
+}));
+vi.mock("../git", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../git")>();
+	return {
+		...actual,
+		getHeadState: vi.fn(() => {
+			git.calls.push("getHeadState");
+			return git.head;
+		}),
+		hasUncommittedChanges: vi.fn(() => false),
+		getRepoRoot: vi.fn(() => "/repo"),
+		newWorkBranchName: vi.fn(() => "brl-subagent-seam-wb"),
+		createWorkBranch: vi.fn((_cwd: string, _base: string, branch: string) => {
+			git.calls.push("createWorkBranch");
+			return git.createFails ? { ok: false as const, error: "checkout failed" } : { ok: true as const, branch };
+		}),
+		captureDiff: vi.fn(() => {
+			git.calls.push("captureDiff");
+			return { ok: true as const, diff: git.diff };
+		}),
+		restoreHead: vi.fn(() => {
+			git.calls.push("restoreHead");
+			return git.restoreFails ? { ok: false as const, error: "restore failed" } : { ok: true as const };
+		}),
+		mergeWorkBranch: vi.fn(() => {
+			git.calls.push("mergeWorkBranch");
+			return git.mergeFails ? { ok: false as const, error: "merge failed" } : { ok: true as const };
+		}),
+		deleteBranch: vi.fn(() => {
+			git.calls.push("deleteBranch");
+			return { ok: true as const };
+		}),
+	};
+});
+
+/** The approval dialog: what the next call answers. */
+const dialog = vi.hoisted(() => ({ answer: "apply" as "apply" | "discard", calls: [] as string[] }));
+vi.mock("../tui", () => ({
+	showApprovalDialog: vi.fn(async (_ctx: unknown, label: string | undefined, _diff: string, branch: string) => {
+		dialog.calls.push(`${label}/${branch}`);
+		return dialog.answer;
+	}),
+	renderDelegateCall: vi.fn(() => "call"),
+	renderDelegateResult: vi.fn(() => "result"),
+}));
+
 vi.mock("../runner", () => ({
 	runSubagent: runner.runSubagent,
 	getPiInvocation: runner.getPiInvocation,
@@ -69,16 +136,23 @@ const workdir = mkdtempSync(join(tmpdir(), "brl-s6-seams-"));
 /** The durable registry + the transcript dir, redirected out of the repo. */
 const registryDir = mkdtempSync(join(tmpdir(), "brl-s6-seams-registry-"));
 const transcriptDir = mkdtempSync(join(tmpdir(), "brl-s6-seams-transcript-"));
+const headStateDir = mkdtempSync(join(tmpdir(), "brl-s6-seams-headstate-"));
 beforeEach(() => {
 	__setRegistryDir(registryDir);
 	__setOutputDir(transcriptDir);
+	__setHeadStateDir(headStateDir);
+	git.reset();
+	dialog.answer = "apply";
+	dialog.calls = [];
 });
 afterAll(() => {
 	__setRegistryDir(undefined);
 	__setOutputDir(undefined);
+	__setHeadStateDir(undefined);
 	rmSync(workdir, { recursive: true, force: true });
 	rmSync(registryDir, { recursive: true, force: true });
 	rmSync(transcriptDir, { recursive: true, force: true });
+	rmSync(headStateDir, { recursive: true, force: true });
 });
 
 interface SentMessage {
@@ -229,6 +303,28 @@ function runnerTimeout(): number | undefined {
 /** The task the child was spawned with (arg 5 of runSubagent). */
 function runnerTask(): string | undefined {
 	return runner.runSubagent.mock.calls[0][4] as string | undefined;
+}
+
+/** The arguments of the FIRST runSubagent call, by position. */
+function runnerCall(): unknown[] {
+	return runner.runSubagent.mock.calls[0];
+}
+
+/** True when every live row still in the map is finalized (the map lingers 3 s). */
+function allLiveFinalized(h: Harness): boolean {
+	return [...h.state.subagentSessions.keys()].every((id) => h.state.isLiveEntryFinalized(id));
+}
+
+/**
+ * The live rows as the monitor sees them — used to observe the registration
+ * (label + display deadline) while the child is still in flight.
+ */
+function liveEntries(h: Harness): Array<{ id: string; label?: string; deadlineAt?: number }> {
+	return [...h.state.subagentSessions.values()].map((entry) => ({
+		id: entry.id,
+		label: entry.label,
+		deadlineAt: entry.deadlineAt,
+	}));
 }
 
 const textOf = (result: { content: Array<{ type: string; text?: string }> }): string =>
@@ -1033,6 +1129,398 @@ describe("seam E — every foreground gate rejects before a run record exists", 
 		expect(result.isError).toBeFalsy();
 		expect(textOf(result)).toContain("pre-task validation warnings");
 		expect(textOf(result)).toContain("architectural work");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Seam F — registerForegroundRun
+// ---------------------------------------------------------------------------
+
+describe("seam F — the run record, prune and live registration", () => {
+	it("registers the live entry with the MERGED deadline and the run's label", async () => {
+		const h = makeHarness();
+		runner.runSubagent.mockImplementation(async () => {
+			// While the child is in flight the live rows must be visible.
+			expect(liveEntries(h)).toHaveLength(1);
+			expect(liveEntries(h)[0].label).toBe("probe-label");
+			expect(liveEntries(h)[0].deadlineAt).toBeGreaterThan(Date.now());
+			return childResult();
+		});
+
+		await h.tool.execute(
+			"call-f",
+			{ task: "summarize the design notes", label: "probe-label", timeout: 60_000 } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		// The record was persisted before the live entry and survives the run as
+		// a terminal row: two writes, spawn then terminal.
+		expect(h.persisted()).toBe(2);
+	});
+
+	it("registers no deadline when the dispatch has none (a foreground run has no default)", async () => {
+		const h = makeHarness();
+		runner.runSubagent.mockImplementation(async () => {
+			expect(liveEntries(h)[0].deadlineAt).toBeUndefined();
+			return childResult();
+		});
+		await h.tool.execute("call-f", { task: "summarize the design notes" } as never, undefined, undefined, makeCtx());
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Seam G — prepareWorkBranch
+// ---------------------------------------------------------------------------
+
+describe("seam G — the work branch and its durable record", () => {
+	it("writes the head-state record BEFORE creating the branch", async () => {
+		const h = makeHarness();
+		await h.tool.execute(
+			"call-g",
+			{ task: "summarize the design notes", gitMode: "branch" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		const writeIndex = git.calls.indexOf("createWorkBranch");
+		expect(writeIndex).toBeGreaterThan(0);
+		// Nothing but the HEAD capture may precede the branch creation: the
+		// durable record is written from inside create's own step (ADR 0026 D1),
+		// and a clean teardown removes it again.
+		expect(git.calls.slice(0, writeIndex)).toEqual(["getHeadState"]);
+		expect(listHeadStates()).toHaveLength(0);
+	});
+
+	it("falls back to gitMode none and clears the record when the branch cannot be created", async () => {
+		const h = makeHarness();
+		git.createFails = true;
+		const result = await h.tool.execute(
+			"call-g",
+			{ task: "summarize the design notes", gitMode: "branch" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(git.calls).toContain("createWorkBranch");
+		expect(git.calls).not.toContain("mergeWorkBranch");
+		expect(listHeadStates()).toHaveLength(0);
+	});
+
+	it("cleanup restores HEAD and deletes the branch on the crash path", async () => {
+		const h = makeHarness();
+		runner.runSubagent.mockRejectedValue(new Error("boom"));
+		const result = await h.tool.execute(
+			"call-g",
+			{ task: "summarize the design notes", gitMode: "branch" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBe(true);
+		expect(git.calls).toContain("restoreHead");
+		expect(git.calls).toContain("deleteBranch");
+		expect(listHeadStates()).toHaveLength(0);
+	});
+
+	it("keeps the durable record when the restore fails (the base lives only there)", async () => {
+		const h = makeHarness();
+		git.restoreFails = true;
+		await h.tool.execute(
+			"call-g",
+			{ task: "summarize the design notes", gitMode: "branch" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		const records = listHeadStates();
+		expect(records).toHaveLength(1);
+		expect(records[0].kind).toBe("foreground");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Seam H — the pre-start gates
+// ---------------------------------------------------------------------------
+
+describe("seam H — pre-start rejection terminalizes the running record", () => {
+	it("writes the spawn AND the terminal record, releases the live entry and never spawns", async () => {
+		const h = makeHarness();
+		h.state.config.circuitBreaker.circuitOpen = true;
+		h.state.config.circuitBreaker.consecutiveFailures = 3;
+		h.state.config.circuitBreaker.lastFailureTime = Date.now();
+
+		const result = await h.tool.execute(
+			"call-h",
+			{ task: "summarize the design notes" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("Circuit breaker is open");
+		expect(h.persisted()).toBe(2);
+		expect(allLiveFinalized(h)).toBe(true);
+		expect(h.state.activeSubagents).toBe(0);
+		expect(runner.runSubagent).not.toHaveBeenCalled();
+	});
+
+	it("leaves a retry source intact and terminalizes only the twin", async () => {
+		const h = makeHarness();
+		h.state.config.circuitBreaker.circuitOpen = true;
+		h.state.config.circuitBreaker.consecutiveFailures = 3;
+		h.state.config.circuitBreaker.lastFailureTime = Date.now();
+		const source = recordedRun({ originalParams: { task: "original task", background: false } });
+
+		const result = await h.tool.execute(
+			"call-h",
+			{ retryRunId: source.id } as never,
+			undefined,
+			undefined,
+			makeCtx(withEntry(source)),
+		);
+
+		expect(result.isError).toBe(true);
+		// Spawn + terminal for the twin; the source is untouched by this path.
+		expect(h.persisted()).toBe(2);
+		expect(runner.runSubagent).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Seam I — buildForegroundRunInput
+// ---------------------------------------------------------------------------
+
+describe("seam I — the child's input", () => {
+	it("assembles the system prompt, the thinking level and the child depth", async () => {
+		const h = makeHarness();
+		// The declared level is CAPPED by the configured maximum (default "off"),
+		// so the cap is raised here to observe the declared value reaching the child.
+		h.state.config.maxThinkingLevel = "medium";
+		await h.tool.execute(
+			"call-i",
+			{
+				task: "summarize the design notes",
+				systemPrompt: "CUSTOM RULES",
+				inheritSystemPrompt: false,
+				thinkingLevel: "medium",
+			} as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		const call = runnerCall();
+		expect(call[1]).toContain("CUSTOM RULES");
+		expect(call[1]).not.toContain("SYSTEM");
+		expect(call[3]).toBe("medium");
+		expect(call[11]).toBe(1); // childDepth = currentDepth + 1
+		expect(call[4]).toBe("summarize the design notes");
+	});
+
+	it("inherits the caller's prompt when inheritSystemPrompt is not disabled", async () => {
+		const h = makeHarness();
+		await h.tool.execute(
+			"call-i",
+			{ task: "summarize the design notes" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+		expect(runnerCall()[1]).toContain("SYSTEM");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Seam J — decideBranchOutcome
+// ---------------------------------------------------------------------------
+
+describe("seam J — the approval decision table", () => {
+	it("auto-merges when there is no UI — the mode degrades instead of discarding work", async () => {
+		const h = makeHarness();
+		git.diff = "diff --git a/a b/a\n+x\n";
+		const result = await h.tool.execute(
+			"call-j",
+			{ task: "summarize the design notes", gitMode: "branch", approvalMode: "always" } as never,
+			undefined,
+			undefined,
+			makeCtx(), // hasUI: false
+		);
+
+		expect(dialog.calls).toHaveLength(0);
+		expect(git.calls).toContain("mergeWorkBranch");
+		expect((result.details as { approved?: boolean }).approved).toBe(true);
+	});
+
+	it("prompts on an 'always' dispatch with a UI, and merges on apply", async () => {
+		const h = makeHarness();
+		const ctx = makeCtx() as { hasUI: boolean };
+		ctx.hasUI = true;
+		git.diff = "diff --git a/a b/a\n+x\n";
+		dialog.answer = "apply";
+
+		const result = await h.tool.execute(
+			"call-j",
+			{ task: "summarize the design notes", gitMode: "branch", approvalMode: "always" } as never,
+			undefined,
+			undefined,
+			ctx as unknown as ExtensionContext,
+		);
+
+		expect(dialog.calls).toHaveLength(1);
+		expect(git.calls).toContain("mergeWorkBranch");
+		expect((result.details as { approved?: boolean }).approved).toBe(true);
+	});
+
+	it("deletes the empty branch without a prompt on a 'writes' dispatch", async () => {
+		const h = makeHarness();
+		const ctx = makeCtx() as { hasUI: boolean };
+		ctx.hasUI = true;
+		git.diff = "";
+		const result = await h.tool.execute(
+			"call-j",
+			{ task: "summarize the design notes", gitMode: "branch", approvalMode: "writes" } as never,
+			undefined,
+			undefined,
+			ctx as unknown as ExtensionContext,
+		);
+
+		// `writes` gates on CHANGES: nothing to review, nothing to ask.
+		expect(dialog.calls).toHaveLength(0);
+		expect(git.calls).toContain("deleteBranch");
+		expect(git.calls).not.toContain("mergeWorkBranch");
+		expect((result.details as { approved?: boolean }).approved).toBeUndefined();
+	});
+
+	it("keeps the work branch on a DETACHED auto-merge (#308)", async () => {
+		const h = makeHarness();
+		git.head = { sha: "0123456789abcdef0123456789abcdef01234567", detached: true, branch: "HEAD" };
+		git.diff = "diff --git a/a b/a\n+x\n";
+		await h.tool.execute(
+			"call-j",
+			{ task: "summarize the design notes", gitMode: "branch" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(git.calls).toContain("mergeWorkBranch");
+		// The merge result must stay reachable: no delete on a detached start.
+		expect(git.calls).not.toContain("deleteBranch");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Seam K — finalizeForegroundResult / the failure report / the success result
+// ---------------------------------------------------------------------------
+
+describe("seam K — terminal recording and accounting", () => {
+	it("records the failure and returns the failure text", async () => {
+		const h = makeHarness();
+		runner.runSubagent.mockResolvedValue({
+			messages: [{ role: "assistant", content: [{ type: "text", text: "partial" }] }],
+			usage: { input: 1, output: 1, cost: 0 },
+			exitCode: 1,
+			stderr: "",
+			errorMessage: "no such model",
+			errorCategory: "model_unavailable",
+		});
+
+		const result = await h.tool.execute(
+			"call-k",
+			{ task: "summarize the design notes" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("Subagent failed: no such model");
+		expect(h.state.config.circuitBreaker.consecutiveFailures).toBe(1);
+		expect(h.persisted()).toBe(2);
+	});
+
+	it("records the success and refreshes the SLA snapshot when tracking is on", async () => {
+		const h = makeHarness();
+		h.state.config.slaTrackingEnabled = true;
+		const result = await h.tool.execute(
+			"call-k",
+			{ task: "summarize the design notes" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(h.state.config.circuitBreaker.consecutiveFailures).toBe(0);
+		expect(h.state.config.lastSLAMetrics).toBeDefined();
+		expect(h.infos.some((i) => i.message === "SLA metrics computed")).toBe(true);
+	});
+
+	it("surfaces the auto-route evidence in a successful result", async () => {
+		const h = makeHarness();
+		h.state.builtinPresets = [
+			{ name: "code-reviewer", description: "review", taskKeywords: ["review"] },
+		] as never;
+		const result = await h.tool.execute(
+			"call-k",
+			{ task: "review this change" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(textOf(result)).toContain("auto-routed to preset 'code-reviewer'");
+		expect(textOf(result)).toContain("matched keyword 'review'");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Seam L — the crash path and the finally
+// ---------------------------------------------------------------------------
+
+describe("seam L — crash finalization and the single release", () => {
+	it("finalizes the live entry, persists the failed record and releases the slot once", async () => {
+		const h = makeHarness();
+		runner.runSubagent.mockRejectedValue(new Error("runner exploded"));
+
+		const result = await h.tool.execute(
+			"call-l",
+			{ task: "summarize the design notes" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("Subagent crashed");
+		expect(h.persisted()).toBe(2);
+		expect(allLiveFinalized(h)).toBe(true);
+		expect(h.state.activeSubagents).toBe(0);
+		expect(h.state.failedSubagents).toBe(1);
+	});
+
+	it("sanitizes the caller's cwd out of the crash message", async () => {
+		const h = makeHarness();
+		runner.runSubagent.mockRejectedValue(new Error(`boom at ${workdir}/secret.txt`));
+
+		const result = await h.tool.execute(
+			"call-l",
+			{ task: "summarize the design notes" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(textOf(result)).not.toContain(workdir);
+		expect(textOf(result)).toContain("<cwd>/secret.txt");
 	});
 });
 
