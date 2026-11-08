@@ -228,6 +228,22 @@ describe("issue #465 (b) — a terminal-but-unsettled owner refuses later branch
 		expect((refusal as Error).message).toContain(owner.id);
 		expect((refusal as Error).message).toContain("brl-subagent-owner");
 
+		// #473 finding 1: the message's second half is pinned VERBATIM. The shape
+		// assertions above let it drift for two issues: #465 shipped "the repository
+		// stays on it, and the lock is only cleared by a process restart", which #466
+		// made false in exactly the case it describes (the boot now restores a
+		// provable orphan). The repair half and its precondition must be stated, and
+		// the manual commands must survive only as the needs-manual fallback.
+		expect((refusal as Error).message).toContain(
+			"this process keeps the repository on it for the rest of its life, and only a " +
+				"restart releases the lock. That restart is also the repair: at the next boot " +
+				"the recorded base is restored — when the owner is provably dead, HEAD is " +
+				"exactly brl-subagent-owner and the working tree is clean — and " +
+				"brl-subagent-owner is KEPT with the run's commits.",
+		);
+		expect((refusal as Error).message).toContain("git stash push -u");
+		expect((refusal as Error).message).not.toContain("only cleared by a process restart");
+
 		// The refused dispatch is provably never-started: refused BEFORE its chain
 		// link, so it never touched git.
 		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(1);

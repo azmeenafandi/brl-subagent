@@ -2004,13 +2004,27 @@ export async function spawnBackgroundSession(
     if (holderId && isStuckTerminalOwner(holderId)) {
       const holder = agents.get(holderId)!;
       const heldFor = Math.round((Date.now() - holder.completedAt!) / 1000);
+      const workBranch = holder.workBranch ?? '(unknown)';
+      // Issue #466 (dossier §7): the second half of this message must not outlive
+      // #465's own world. Post-#466 the boot DOES repair a provable orphan (the
+      // head-state table's row 7), so "restart clears it, restore the base by
+      // hand" is false for exactly the case this refusal names — the lock is the
+      // restart's business, the trailer is the base's. The manual commands stay,
+      // but only for the needs-manual rows (dirty tree, unreadable record).
       const reason = sanitizeErrorMessage(
         `gitMode 'branch' refused: this repository is locked by run ${holderId}, ` +
         `which has been terminal (${holder.status}${holder.error ? `: ${holder.error}` : ''}) ` +
         `for ${heldFor}s but has not settled — its SDK session is still held, so the ` +
         `branch lock cannot be released while it may still write. The work branch ` +
-        `${holder.workBranch ?? '(unknown)'} is still checked out; the repository stays ` +
-        `on it, and the lock is only cleared by a process restart.`,
+        `${workBranch} is still checked out; this process keeps the repository on it ` +
+        `for the rest of its life, and only a restart releases the lock. That restart ` +
+        `is also the repair: at the next boot the recorded base is restored — when the ` +
+        `owner is provably dead, HEAD is exactly ${workBranch} and the working tree is ` +
+        `clean — and ${workBranch} is KEPT with the run's commits. If the boot cannot ` +
+        `repair it (uncommitted changes in the tree, or an unreadable record) it names ` +
+        `the reason and keeps the record; the tree then needs the manual steps — ` +
+        `git stash push -u -m "brl-subagent interrupted work" && ` +
+        `git checkout <recorded base> — and ${workBranch} stays until its work is reviewed.`,
         effectiveCwd,
       );
       // Mirror the branch-setup-throw path below: the agent record was already
