@@ -6,10 +6,10 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md`, `-2026-11-06.md`, `-2026-11-07b.md` (the pre-sweep snapshot), `-2026-11-08.md` (a superseded mid-sweep STATE) — not current state.
 
 ## STATE
-Verified: 7ca4ee6 (2026-11-08)
-Cycle: closed 2026-11-08 — the cycle-end ritual ran (metrics row, Rule 11, environment sweep); release: the maintainer's call
+Verified: 7809e56 (2026-11-08)
+Cycle: closed 2026-11-08 with v2.8.0 released; the next cycle opens when a direction is agreed
 
-- **dev** @ `cdcf618` (PR #473 merge). Merged today, in order: #457 (#440), #458 (#436), #459 (#455), #461 (#434), #462 (#439), #463 (#456), #464 (#447), #467 (#453), #470 (#469), #471 (#468), #472 (#465), #473 (#466). Docs: ADR 0023 (deadline ownership), ADR 0024 (unit projection), ADR 0025 (Jev level as observation), ADR 0026 (headState boot repair), the #453/#460/#466 dossiers. **No worktrees beyond the cockpit pair**; `git worktree list` = `main` + `dev`.
+- **dev** @ `7809e56` (release commit `436d56b` + the release docs). Merged today, in order: #457 (#440), #458 (#436), #459 (#455), #461 (#434), #462 (#439), #463 (#456), #464 (#447), #467 (#453), #470 (#469), #471 (#468), #472 (#465), #473 (#466), then PR #475 (`dev → main`, release). Docs: ADR 0023 (deadline ownership), ADR 0024 (unit projection), ADR 0025 (Jev level as observation), ADR 0026 (headState boot repair), the #453/#460/#466 dossiers. **No worktrees beyond the cockpit pair**; `git worktree list` = `main` + `dev`.
 - **Released:** **v2.8.0 LIVE** (2026-11-08) — GitHub release published `2026-11-08T04:14:51Z`, npm `latest` **2.8.0**, `main` and `dev` both @ `436d56b` (tag `v2.8.0`). **Published-build probe: 70 packed files, every one byte-identical to the tag, zero missing** (`npm pack brl-subagent@2.8.0` against `git archive v2.8.0`). **Release checkpoint CLOSED.** Running install is still the **dev checkout** at the release commit — step 9 (switch to `npm:brl-subagent`) is pending and user-triggered: `pi remove <dev path>` → `pi install npm:brl-subagent` → `pi update --extensions` → `/reload`.
 - **Board:** the autonomous bug sweep closed **eight** issues — #440, #436, #455, #434, #439, #447, #453, #460 — plus #456 (filed and closed inside the sweep). The two follow-up tooling units are closed too: **#469** (#470, README count split) and **#468** (#471, Jev level as observation + measurement). The last two bugs are closed: **#465** (#472) and **#466** (#473) — **every bug from the 2026-11-07 board is closed.** Next cycle's P0 from Rule 11: **#474** (connection-drop ×3 — the failure path reports the worktree state). Open: **#450** (harden, low), **#430** (refactor), **#426** (design-open), PR #402 held.
 - **Suite:** 114 files / **2400** green on dev; typecheck clean; docs guards current (48 modules, **26 ADRs**); budget **1.96** (50,773 test / 25,900 source, ceiling 2.0 → ~**1,027** test lines of headroom; it rose from ~470 because source grew, not because tests were trimmed).
@@ -28,7 +28,7 @@ Cycle: closed 2026-11-08 — the cycle-end ritual ran (metrics row, Rule 11, env
 
 ### Next actions
 1. **#450 / #430 / #426** — unchanged priorities; #450 is low hardening, #430 the `execute` split, #426 needs the maintainer's call.
-2. **Release checkpoint** — nine extension fixes are merged and unreleased (#440, #436, #455, #434, #439, #447, #453, #465, #466; #456/#468/#469 are tooling and do not ship). The call is the maintainer's.
+2. **Release** — checkpoint CLOSED: v2.8.0 shipped the nine fixes (published build verified byte-identical to the tag). The next release belongs to the next cycle; never propose one unprompted.
 3. **Follow-ups with no issue yet** — the shared `vi.mock("../git")` fixture (three copies; the merge broke one), `spawnBackgroundSession` (~1,100 lines, now a third responsibility), and the `branch-lock.ts` extraction the #466 dossier names. None is a defect; all are maintenance hazards.
 4. **After the publish** — the install switch (step 9: `pi remove <dev path>` → `pi install npm:brl-subagent` → `pi update --extensions` → `/reload`, user-triggered), then the next cycle opens with #474 as its P0.
 
