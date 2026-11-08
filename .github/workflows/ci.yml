@@ -43,8 +43,9 @@ jobs:
       - name: README count — truth + freshness (release seam only)
         if: ${{ (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: node scripts/check-readme-test-count.mjs vitest-report.json --strict
-      # The suite's growth budget (issue #368): wall time <= 60 s and test:source
-      # LOC ratio <= 2.0. Ceilings, not targets — growth needs a reason.
+      # The suite's growth budget (issues #368, #490): wall time <= 60 s, and a test:source LOC
+      # ratio PER SURFACE — src <= 2.0 (warning band at 1.95) and scripts <= 1.0 — plus a floor
+      # check: every top-level scripts/*.mjs must be imported by a test. Ceilings, not targets.
       - run: node scripts/check-test-budget.mjs vitest-report.json
       # The Jev ritual's mechanical gate (issue #366): the dispatch-line formatter's selftest, then
       # an audit of the calibration log — every row since the strict-Jev cutoff (2026-10-12) must
