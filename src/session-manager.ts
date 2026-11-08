@@ -1904,7 +1904,9 @@ export async function spawnBackgroundSession(
     // fight over the shared working tree (stranding the repo on an orphan
     // branch). The lock is released in cleanupWorkBranch (or on setup throw).
     // Key: resolved repository root, cwd fallback for non-repo paths (#224).
-    const lockKey = getRepoRoot(gitCwd) ?? gitCwd;
+    // Issue #466: ONE definition, shared with the head-state record's key — the
+    // lock, the write and the clear can then never name different repositories.
+    const lockKey = headStateRepoRoot();
     const prev = gitBranchLocks.get(lockKey) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>(r => { release = r; });
