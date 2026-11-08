@@ -95,6 +95,8 @@ interface Harness {
 	notifies: Array<{ message: string; level: string }>;
 	warns: Array<{ message: string; data?: Record<string, unknown> }>;
 	infos: Array<{ message: string; data?: Record<string, unknown> }>;
+	/** How many run records the dispatch persisted (0 ⇒ nothing outlived it). */
+	persisted: () => number;
 	deps: {
 		runChainMode: ReturnType<typeof vi.fn>;
 		runParallelMode: ReturnType<typeof vi.fn>;
@@ -148,6 +150,12 @@ function makeHarness(): Harness {
 	};
 	const state = new SessionState(log as never);
 	state.config.gitMode = "none";
+	let persistCount = 0;
+	const realPersistRun = state.persistRun.bind(state);
+	state.persistRun = (p, run, kind) => {
+		persistCount++;
+		realPersistRun(p, run, kind);
+	};
 
 	const deps = {
 		runChainMode: vi.fn(async () => okResult("chain")),
@@ -161,7 +169,7 @@ function makeHarness(): Harness {
 		{ pi, log: log as never, state },
 		deps as unknown as DelegateHandlerDeps,
 	);
-	return { tool, state, pi, sent, notifies, warns, infos, deps };
+	return { tool, state, pi, sent, notifies, warns, infos, persisted: () => persistCount, deps };
 }
 
 /** The notification sink of the CURRENT test's harness (set by makeHarness). */
@@ -259,6 +267,9 @@ function withEntry(run: SubagentRun): unknown[] {
 beforeEach(() => {
 	vi.clearAllMocks();
 	runner.runSubagent.mockResolvedValue(childResult());
+	// `clearAllMocks` clears calls, not implementations — a test that faults the
+	// pre-flight must not leak its verdict into the next one.
+	runner.getPiInvocation.mockReturnValue({ command: process.execPath, args: [] });
 });
 
 // ---------------------------------------------------------------------------
@@ -875,6 +886,153 @@ describe("seam D — routing to the injected instance", () => {
 		expect(h.deps.spawnBackgroundRun).not.toHaveBeenCalled();
 		expect(runner.runSubagent).toHaveBeenCalledTimes(1);
 		expect(runnerTask()).toBe("summarize the design notes");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Seam E — prepareForeground (admission before any run exists)
+// ---------------------------------------------------------------------------
+
+describe("seam E — every foreground gate rejects before a run record exists", () => {
+	const cases: Array<{
+		name: string;
+		params: Record<string, unknown>;
+		setup?: (h: Harness) => void;
+		expected: string;
+	}> = [
+		{
+			name: "session cost limit",
+			params: { task: "summarize the design notes" },
+			setup: (h) => {
+				h.state.config.sessionCostLimit = 0.001;
+			},
+			expected: "Cannot delegate: session cost limit reached",
+		},
+		{
+			name: "recursion depth",
+			params: { task: "summarize the design notes" },
+			setup: (h) => {
+				h.state.config.maxSubagentDepth = 0;
+			},
+			expected: "Cannot delegate further: subagent recursion depth limit reached",
+		},
+		{
+			name: "cwd",
+			params: { task: "summarize the design notes", cwd: "/nonexistent-s6-cwd" },
+			expected: "Invalid cwd:",
+		},
+		{
+			name: "outputFile",
+			params: { task: "summarize the design notes", outputFile: "/etc/escape.md" },
+			expected: 'Invalid outputFile: Output file path "/etc/escape.md" escapes the project root.',
+		},
+		{
+			name: "capability (bash missing)",
+			params: { task: "run the tests", tools: ["read"] },
+			expected: "Cannot delegate: the task requires the 'bash' tool",
+		},
+	];
+
+	for (const testCase of cases) {
+		it(`${testCase.name} rejection leaves no run record and no spawn`, async () => {
+			const h = makeHarness();
+			testCase.setup?.(h);
+			const result = await h.tool.execute(
+				"call-e",
+				testCase.params as never,
+				undefined,
+				undefined,
+				makeCtx(),
+			);
+
+			expect(result.isError).toBe(true);
+			expect(textOf(result)).toContain(testCase.expected);
+			// The point of the seam: admission precedes existence.
+			expect(h.persisted()).toBe(0);
+			expect(runner.runSubagent).not.toHaveBeenCalled();
+			expect(h.deps.spawnBackgroundRun).not.toHaveBeenCalled();
+		});
+	}
+
+	it("pi pre-flight failure rejects with the pre-flight message", async () => {
+		const h = makeHarness();
+		runner.getPiInvocation.mockReturnValue({ command: "/nonexistent/s6-pi", args: [] });
+		const result = await h.tool.execute(
+			"call-e",
+			{ task: "summarize the design notes" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("Pre-flight check failed:");
+		expect(h.persisted()).toBe(0);
+		expect(runner.runSubagent).not.toHaveBeenCalled();
+	});
+
+	it("rejects a resolved model with an empty provider/id", async () => {
+		const h = makeHarness();
+		h.state.config.model = { provider: "", id: "" };
+		const result = await h.tool.execute(
+			"call-e",
+			{ task: "summarize the design notes" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("Subagent model is not configured.");
+		expect(h.persisted()).toBe(0);
+	});
+
+	it("rejects when no model can be resolved at all", async () => {
+		const h = makeHarness();
+		const ctx = makeCtx() as unknown as { model: unknown };
+		ctx.model = undefined;
+		const result = await h.tool.execute(
+			"call-e",
+			{ task: "summarize the design notes" } as never,
+			undefined,
+			undefined,
+			ctx as unknown as ExtensionContext,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("No model available.");
+		expect(h.persisted()).toBe(0);
+	});
+
+	it("force degrades a capability error to the returned warning note", async () => {
+		const h = makeHarness();
+		const result = await h.tool.execute(
+			"call-e",
+			{ task: "run the tests", tools: ["read"], force: true } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(textOf(result)).toContain("'bash' is not available");
+		expect(h.warns.some((w) => w.message === "Pre-task validation warnings")).toBe(true);
+		expect(runner.runSubagent).toHaveBeenCalledTimes(1);
+	});
+
+	it("carries H1 warnings into the returned text of a successful run", async () => {
+		const h = makeHarness();
+		const result = await h.tool.execute(
+			"call-e",
+			{ task: "summarize the design notes", thinkingLevel: "off" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(textOf(result)).toContain("pre-task validation warnings");
+		expect(textOf(result)).toContain("architectural work");
 	});
 });
 

@@ -55,9 +55,13 @@ import {
 	isSubagentError,
 	type DelegateTaskDetails,
 	type DelegateTaskParams,
+	type ApprovalMode,
+	type GitMode,
 	type Priority,
 	type SubagentResult,
 	type SubagentRun,
+	type SubagentPreset,
+	type SubagentToolOptions,
 	type TaskTemplate,
 	type ThinkingLevel,
 } from "./types";
@@ -883,6 +887,234 @@ function routeDispatch(
 	return { kind: "foreground", singleTask };
 }
 
+/** What seam E reads — the three gates' surroundings (not the whole runtime). */
+interface ForegroundDeps {
+	state: SessionState;
+	ctx: ExtensionContext;
+	log: Logger;
+}
+
+/**
+ * Seam E's value: every foreground input resolved ONCE, so no later seam can
+ * re-derive one and drift (the failure mode #434's second `processChecks` read
+ * demonstrated). Named fields, not a bag: a seam that needs the whole
+ * `RuntimeContext` would be a seam with the wrong boundary.
+ */
+interface ForegroundPrepared {
+	/** The sanitized single-task body the child runs. */
+	task: string;
+	label: string | undefined;
+	inheritSP: boolean;
+	customSP: string | undefined;
+	/** The merged (preset/template-aware) deadline; undefined = no deadline. */
+	timeout: number | undefined;
+	thinkingLevel: ThinkingLevel;
+	toolOptions: SubagentToolOptions | undefined;
+	resolvedGitMode: GitMode;
+	resolvedApprovalMode: ApprovalMode;
+	resolvedPreset: SubagentPreset | undefined;
+	autoRoutedPreset: SubagentPreset | undefined;
+	autoRouteKeyword: string | undefined;
+	/** The validated absolute cwd the child runs in. */
+	resolvedCwd: string;
+	/** The validated output file, or undefined when the caller set none. */
+	resolvedOutputFile: string | undefined;
+	/** The H1 warnings note appended to the returned text (empty when clean). */
+	warningsNote: string;
+	/** The resolved model — provider/id, precedence already applied. */
+	subagentModel: { provider: string; id: string };
+	/** The depth THIS dispatch sits at; the child runs at `currentDepth + 1`. */
+	currentDepth: number;
+}
+
+/**
+ * Seam E — foreground admission (issue #430).
+ *
+ * Every gate that must hold BEFORE a run exists: the session cost limit, the
+ * recursion-depth cap, cwd + outputFile validation, the pi pre-flight, the H1
+ * capability validation, and model resolution. Each rejection is returned
+ * unchanged and NOTHING has been persisted — which is exactly why these gates
+ * live above seam F's run record: a rejection here leaves no dangling row.
+ *
+ * FOREGROUND-ONLY, and it must stay that way: seam D routes batch/background
+ * dispatches to their own runners before this runs, and those paths apply their
+ * own cost/model policy (`runModePrologue`). Moving E above D would re-gate a
+ * background dispatch the caller asked for.
+ *
+ * `force` degrades a capability error to a warning (B2's override) — the flag
+ * is read off `params` here because it is a CALL-level decision, not a resolved
+ * value; `cwd`/`noJev` likewise reach H1 straight from the dispatch.
+ */
+function prepareForeground(
+	params: DelegateTaskParams,
+	singleTask: string,
+	deps: ForegroundDeps,
+): Outcome<ForegroundPrepared> {
+	const { state, ctx, log } = deps;
+
+	// R5: Check session cost limit before spawning
+	// Use a default per-task estimate of $0.05 if no perTaskCostEstimate is set
+	const costError = gateSessionCost({
+		state,
+		ctx,
+		log,
+		units: 1,
+		label: "Subagent delegation",
+	});
+	if (costError) return { ok: false, result: costError };
+
+	// Reject delegation if recursion depth exceeds configured max.
+	// This prevents subagents from spawning infinite sub-subagents while
+	// still allowing other extensions to function normally in subprocesses.
+	const currentDepth = getCurrentDepth();
+	if (currentDepth >= state.config.maxSubagentDepth) {
+		log.warn("Subagent delegation rejected: max depth reached", {
+			currentDepth,
+			maxDepth: state.config.maxSubagentDepth,
+		});
+		return { ok: false, result: depthLimitRejection(currentDepth, state.config.maxSubagentDepth) };
+	}
+
+	const {
+		task,
+		label,
+		inheritSP,
+		customSP,
+		outputFile,
+		timeout,
+		effectiveCwd,
+		thinkingLevel,
+		toolOptions,
+		resolvedGitMode,
+		resolvedApprovalMode,
+		resolvedPreset,
+		autoRoutedPreset,
+		autoRouteKeyword,
+	} = resolveSubagentParams({ ...params, task: singleTask }, state, ctx, log);
+
+	// F1: Validate CWD
+	const cwdResult = validateCwd(effectiveCwd, ctx.cwd);
+	if (!cwdResult.ok) {
+		return {
+			ok: false,
+			result: {
+				content: [{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` }],
+				details: undefined,
+				isError: true,
+			},
+		};
+	}
+	const resolvedCwd = cwdResult.value;
+
+	// F1: Validate outputFile
+	let resolvedOutputFile: string | undefined;
+	if (outputFile) {
+		const ofResult = validateOutputFile(outputFile, resolvedCwd);
+		if (!ofResult.ok) {
+			return {
+				ok: false,
+				result: {
+					content: [
+						{ type: "text" as const, text: `Invalid outputFile: ${ofResult.error}` },
+					],
+					details: undefined,
+					isError: true,
+				},
+			};
+		}
+		resolvedOutputFile = ofResult.value;
+	}
+
+	// R3: Pre-flight checks — fail fast before consuming resources
+	const pfResult = preflightCheck(resolvedCwd);
+	if (!pfResult.ok) {
+		log.warn("Pre-flight check failed", { error: pfResult.error });
+		return {
+			ok: false,
+			result: {
+				content: [{ type: "text" as const, text: `Pre-flight check failed: ${pfResult.error}` }],
+				details: undefined,
+				isError: true,
+			},
+		};
+	}
+
+	// H1: Pre-task validation — deterministic check that tools/thinking match task
+	// (`force` degrades capability errors to warnings — B2's override).
+	const validation = validatePreTask({
+		task,
+		toolOptions,
+		thinkingLevel,
+		gitMode: resolvedGitMode,
+		outputFile: resolvedOutputFile,
+		force: params.force,
+		cwd: resolvedCwd,
+		noJev: params.noJev,
+	});
+	if (validation.warnings.length > 0) {
+		log.warn("Pre-task validation warnings", { warnings: validation.warnings });
+	}
+	if (!validation.valid) {
+		const errText = validation.errors.join("; ");
+		log.warn("Pre-task validation failed", { errors: validation.errors });
+		return {
+			ok: false,
+			result: {
+				content: [{
+					type: "text" as const,
+					text: errText,
+				}],
+				details: undefined,
+				isError: true,
+			},
+		};
+	}
+	// C: surface warnings in the returned result (not just the log) —
+	// shared renderer so foreground/background wording stays identical.
+	const warningsNote = formatValidationWarnings(validation.warnings);
+
+	// Resolve model (per-call top-level model override beats preset)
+	const modelResult = resolveSubagentModelPrecedence({
+		state,
+		ctx,
+		log,
+		preset: resolvedPreset,
+		perCallModel: params.model,
+	});
+	if (!modelResult.ok) return { ok: false, result: modelResult.error };
+	const subagentModel = modelResult.model;
+
+	// R3: Verify resolved model provider+id is non-empty
+	const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
+	if (!modelStr || modelStr === "/") {
+		log.warn("Model string is empty after resolution", { model: subagentModel });
+		return { ok: false, result: modelNotConfiguredRejection() };
+	}
+
+	return {
+		ok: true,
+		value: {
+			task,
+			label,
+			inheritSP,
+			customSP,
+			timeout,
+			thinkingLevel,
+			toolOptions,
+			resolvedGitMode,
+			resolvedApprovalMode,
+			resolvedPreset,
+			autoRoutedPreset,
+			autoRouteKeyword,
+			resolvedCwd,
+			resolvedOutputFile,
+			warningsNote,
+			subagentModel,
+			currentDepth,
+		},
+	};
+}
+
 /**
  * Build the `delegate_task` definition over one runtime context (ADR 0027 D1/D3).
  *
@@ -1021,37 +1253,17 @@ export function createDelegateHandler(
 			if (route.kind === "returned") return route.result;
 			const singleTask = route.singleTask;
 
-			// R5: Check session cost limit before spawning
-			// Use a default per-task estimate of $0.05 if no perTaskCostEstimate is set
-			const costError = gateSessionCost({
-				state,
-				ctx,
-				log,
-				units: 1,
-				label: "Subagent delegation",
-			});
-			if (costError) return costError;
-
-			// Reject delegation if recursion depth exceeds configured max.
-			// This prevents subagents from spawning infinite sub-subagents while
-			// still allowing other extensions to function normally in subprocesses.
-			const currentDepth = getCurrentDepth();
-			if (currentDepth >= state.config.maxSubagentDepth) {
-				log.warn("Subagent delegation rejected: max depth reached", {
-					currentDepth,
-					maxDepth: state.config.maxSubagentDepth,
-				});
-				return depthLimitRejection(currentDepth, state.config.maxSubagentDepth);
-			}
-
+			// Seam E: foreground admission — cost, depth, cwd/output, preflight,
+			// capability validation, model resolution. No run record exists yet, so
+			// every rejection here returns without persisting anything.
+			const admitted = prepareForeground(params, singleTask, { state, ctx, log });
+			if (!admitted.ok) return admitted.result;
 			const {
 				task,
 				label,
 				inheritSP,
 				customSP,
-				outputFile,
 				timeout,
-				effectiveCwd,
 				thinkingLevel,
 				toolOptions,
 				resolvedGitMode,
@@ -1059,94 +1271,12 @@ export function createDelegateHandler(
 				resolvedPreset,
 				autoRoutedPreset,
 				autoRouteKeyword,
-			} = resolveSubagentParams({ ...params, task: singleTask }, state, ctx, log);
-
-			// F1: Validate CWD
-			const cwdResult = validateCwd(effectiveCwd, ctx.cwd);
-			if (!cwdResult.ok) {
-				return {
-					content: [{ type: "text" as const, text: `Invalid cwd: ${cwdResult.error}` }],
-					details: undefined,
-					isError: true,
-				};
-			}
-			const resolvedCwd = cwdResult.value;
-
-			// F1: Validate outputFile
-			let resolvedOutputFile: string | undefined;
-			if (outputFile) {
-				const ofResult = validateOutputFile(outputFile, resolvedCwd);
-				if (!ofResult.ok) {
-					return {
-						content: [
-							{ type: "text" as const, text: `Invalid outputFile: ${ofResult.error}` },
-						],
-						details: undefined,
-						isError: true,
-					};
-				}
-				resolvedOutputFile = ofResult.value;
-			}
-
-			// R3: Pre-flight checks — fail fast before consuming resources
-			const pfResult = preflightCheck(resolvedCwd);
-			if (!pfResult.ok) {
-				log.warn("Pre-flight check failed", { error: pfResult.error });
-				return {
-					content: [{ type: "text" as const, text: `Pre-flight check failed: ${pfResult.error}` }],
-					details: undefined,
-					isError: true,
-				};
-			}
-
-			// H1: Pre-task validation — deterministic check that tools/thinking match task
-			// (`force` degrades capability errors to warnings — B2's override).
-			const validation = validatePreTask({
-				task,
-				toolOptions,
-				thinkingLevel,
-				gitMode: resolvedGitMode,
-				outputFile: resolvedOutputFile,
-				force: params.force,
-				cwd: resolvedCwd,
-				noJev: params.noJev,
-			});
-			if (validation.warnings.length > 0) {
-				log.warn("Pre-task validation warnings", { warnings: validation.warnings });
-			}
-			if (!validation.valid) {
-				const errText = validation.errors.join("; ");
-				log.warn("Pre-task validation failed", { errors: validation.errors });
-				return {
-					content: [{
-						type: "text" as const,
-						text: errText,
-					}],
-					details: undefined,
-					isError: true,
-				};
-			}
-			// C: surface warnings in the returned result (not just the log) —
-			// shared renderer so foreground/background wording stays identical.
-			const warningsNote = formatValidationWarnings(validation.warnings);
-
-			// Resolve model (per-call top-level model override beats preset)
-			const modelResult = resolveSubagentModelPrecedence({
-				state,
-				ctx,
-				log,
-				preset: resolvedPreset,
-				perCallModel: params.model,
-			});
-			if (!modelResult.ok) return modelResult.error;
-			const subagentModel = modelResult.model;
-
-			// R3: Verify resolved model provider+id is non-empty
-			const modelStr = `${subagentModel.provider}/${subagentModel.id}`.trim();
-			if (!modelStr || modelStr === "/") {
-				log.warn("Model string is empty after resolution", { model: subagentModel });
-				return modelNotConfiguredRejection();
-			}
+				resolvedCwd,
+				resolvedOutputFile,
+				warningsNote,
+				subagentModel,
+				currentDepth,
+			} = admitted.value;
 
 			// Create run record
 			const runId = crypto.randomUUID();
