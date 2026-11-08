@@ -41,8 +41,9 @@ import { SessionState } from "./state";
 
 /**
  * The per-unit fields shared by chain/parallel/graph modes (`merged` from
- * mergeSubTaskParams). Kept structural so the call sites verify by shape —
- * mergeSubTaskParams itself is not imported (it lives in index.ts).
+ * mergeSubTaskParams, unit-params.ts). Kept structural so the call sites
+ * verify by shape — this module writes a run record and has no reason to
+ * depend on the merge itself.
  */
 export interface UnitRunSource {
 	task: string;

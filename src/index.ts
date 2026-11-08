@@ -124,6 +124,7 @@ import {
 	type ResolveInputParams,
 	type UnitShape,
 } from "./params";
+import { displayTaskName, mergeSubTaskParams, type MergedSubTaskParams } from "./unit-params";
 import { delegateTaskParamsSchema } from "./schema";
 import { readProcessChecks } from "./project-flags";
 import { createSessionState, resolveTerminalRunEntry, type SessionState } from "./state";
@@ -530,87 +531,6 @@ export default function (pi: ExtensionAPI) {
 		return globalModel;
 	}
 
-	// -------------------------------------------------------------------
-	// P1+P2: mergeSubTaskParams
-	// -------------------------------------------------------------------
-
-	/**
-	 * Merge global resolved params with a SubTaskParams.
-	 * SubTask fields override global fields. Tools/excludeTools/noBuiltinTools
-	 * are replaced entirely if set in the subTask, otherwise inherited from global.
-	 */
-	function mergeSubTaskParams(
-		globalParams: ResolvedParams & { resolvedGitMode: GitMode; resolvedApprovalMode: ApprovalMode },
-		subTask: SubTaskParams,
-	): {
-		task: string;
-		label: string | undefined;
-		model: string | undefined;
-		inheritSP: boolean;
-		customSP: string | undefined;
-		outputFile: string | undefined;
-		timeout: number | undefined;
-		effectiveCwd: string;
-		thinkingLevel: ThinkingLevel;
-		priority: Priority | undefined;
-		toolOptions: SubagentToolOptions | undefined;
-		resolvedGitMode: GitMode;
-		resolvedApprovalMode: ApprovalMode;
-	} {
-		const mergedThinkingLevel = subTask.thinkingLevel
-			? resolveThinkingLevel(
-					subTask.thinkingLevel as ThinkingLevel,
-					state.config.maxThinkingLevel,
-				)
-			: globalParams.thinkingLevel;
-
-		const mergedTools = subTask.tools ?? globalParams.toolOptions?.tools;
-		// Fix: edit depends on write in pi's tool system.
-		const resolvedTools = mergedTools && mergedTools.includes("edit") && !mergedTools.includes("write")
-			? [...mergedTools, "write"]
-			: mergedTools;
-		const mergedExcludeTools = subTask.excludeTools ?? globalParams.toolOptions?.excludeTools;
-		const mergedNoBuiltinTools =
-			subTask.noBuiltinTools ?? globalParams.toolOptions?.noBuiltinTools;
-
-		const mergedToolOptions: SubagentToolOptions | undefined =
-			resolvedTools || mergedExcludeTools || mergedNoBuiltinTools
-				? {
-						tools: resolvedTools,
-						excludeTools: mergedExcludeTools,
-						noBuiltinTools: mergedNoBuiltinTools,
-					}
-				: undefined;
-
-		return {
-			task: subTask.task || globalParams.task,
-			label: subTask.label ?? globalParams.label,
-			model: subTask.model,
-			inheritSP: subTask.inheritSystemPrompt ?? globalParams.inheritSP,
-			customSP: subTask.systemPrompt ?? globalParams.customSP,
-			outputFile: subTask.outputFile ?? globalParams.outputFile,
-			timeout: subTask.timeout ?? globalParams.timeout,
-			effectiveCwd: subTask.cwd ?? globalParams.effectiveCwd,
-			thinkingLevel: mergedThinkingLevel,
-			// Issue #114: per-unit priority — undefined when the step declares none
-			// (the caller then falls back to the call-level priority).
-			priority: subTask.priority && ["critical", "high", "normal", "low"].includes(subTask.priority)
-				? (subTask.priority as Priority)
-				: undefined,
-			toolOptions: mergedToolOptions,
-			resolvedGitMode: globalParams.resolvedGitMode,
-			resolvedApprovalMode: globalParams.resolvedApprovalMode,
-		};
-	}
-
-	// Per-unit display name for validation prefixes: the label when present,
-	// else the task truncated to 60 chars. Shared by the foreground parallel
-	// pre-pass and the background fan-out pre-pass (issue #220) so a unit
-	// renders identically in either shape.
-	const displayTaskName = (merged: ReturnType<typeof mergeSubTaskParams>): string =>
-		merged.label ??
-		(merged.task.length > 60 ? `${merged.task.slice(0, 57)}...` : merged.task);
-
 	/**
 	 * Issue #434: apply the dispatch pre-flight's UNIT projection to one merged
 	 * unit — `merged.timeout = undefined` before the unit's run record exists, so
@@ -635,7 +555,7 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		guard: BatchGuardContext,
 		step: SubTaskParams,
-		merged: ReturnType<typeof mergeSubTaskParams>,
+		merged: MergedSubTaskParams,
 	): void {
 		const shouldDrop = shouldDropUnitTimeout({
 			processChecks: guard.processChecks,
@@ -731,7 +651,8 @@ export default function (pi: ExtensionAPI) {
 			noJev: params.noJev,
 			// Issue #443: the DECLARED per-step level (the merged one is resolved).
 			declaredThinkingLevel: (step) => step.thinkingLevel,
-			merge: (step) => mergeSubTaskParams(globalParams, step),
+			merge: (step) =>
+				mergeSubTaskParams(globalParams, step, state.config.maxThinkingLevel),
 			describe: (_step, merged, i) => ({
 				prefix: `Step ${i + 1} ("${displayTaskName(merged)}")`,
 				logContext: { step: i + 1 },
@@ -789,7 +710,7 @@ export default function (pi: ExtensionAPI) {
 				const step = chainSteps[i];
 
 				// Merge params for this step
-				const merged = mergeSubTaskParams(globalParams, step);
+				const merged = mergeSubTaskParams(globalParams, step, state.config.maxThinkingLevel);
 
 				// Issue #434: the unit projection of the dispatch pre-flight (#412/#431).
 				// A chain holds its ONE mode-level slot across the whole loop, so the
@@ -1129,7 +1050,8 @@ export default function (pi: ExtensionAPI) {
 			noJev: params.noJev,
 			// Issue #443: the DECLARED per-task level (the merged one is resolved).
 			declaredThinkingLevel: (task) => task.thinkingLevel,
-			merge: (task) => mergeSubTaskParams(globalParams, task),
+			merge: (task) =>
+				mergeSubTaskParams(globalParams, task, state.config.maxThinkingLevel),
 			describe: (_task, merged, i) => ({
 				prefix: `Task ${i + 1} ("${displayTaskName(merged)}")`,
 				logContext: { task: i + 1 },
@@ -1167,7 +1089,7 @@ export default function (pi: ExtensionAPI) {
 		// Individual task runner (captures merged params, runs subagent)
 		const runTask = async (
 			index: number,
-			merged: ReturnType<typeof mergeSubTaskParams>,
+			merged: MergedSubTaskParams,
 			unitCwd: string,
 		): Promise<boolean> => {
 
@@ -1350,7 +1272,7 @@ export default function (pi: ExtensionAPI) {
 		const promises = taskList.map(async (_, index) => {
 			// Issue #114: per-unit priority wins the slot — the step's merged
 			// priority (if any) beats the call-level parallelPriority fallback.
-			const merged = mergeSubTaskParams(globalParams, taskList[index]);
+			const merged = mergeSubTaskParams(globalParams, taskList[index], state.config.maxThinkingLevel);
 			const acquired = await acquireSlot(state, ctx, signal, merged.priority ?? parallelPriority);
 			if (!acquired) {
 				results[index] = {
@@ -1540,7 +1462,8 @@ export default function (pi: ExtensionAPI) {
 			noJev: params.noJev,
 			// Issue #443: the DECLARED per-node level (the merged one is resolved).
 			declaredThinkingLevel: (node) => node.thinkingLevel,
-			merge: (node) => mergeSubTaskParams(globalParams, graphTaskToSubTaskParams(node)),
+			merge: (node) =>
+				mergeSubTaskParams(globalParams, graphTaskToSubTaskParams(node), state.config.maxThinkingLevel),
 			describe: (node, merged) => ({
 				prefix: `Node "${node.id}"`,
 				logContext: { id: node.id },
@@ -1613,7 +1536,7 @@ export default function (pi: ExtensionAPI) {
 					const globalNode = ++globalNodeCounter;
 					const subTaskParams = graphTaskToSubTaskParams(graphTask);
 
-					const merged = mergeSubTaskParams(globalParams, subTaskParams);
+					const merged = mergeSubTaskParams(globalParams, subTaskParams, state.config.maxThinkingLevel);
 					// Issue #222: the node's OWN validated cwd (pre-pass);
 					// resolvedCwd (the mode-level cwd) is the guaranteed
 					// fallback, so a node that declares none still resolves.
@@ -1956,7 +1879,7 @@ export default function (pi: ExtensionAPI) {
 		// Per-task pre-pass: resolve + validate EVERYTHING before any spawn, so a
 		// single bad task rejects the whole batch with nothing started.
 		type FanOutTask = {
-			merged: ReturnType<typeof mergeSubTaskParams>;
+			merged: MergedSubTaskParams;
 			model: { provider: string; id: string };
 			cwd: string;
 			outputFile: string | undefined;
@@ -1966,7 +1889,7 @@ export default function (pi: ExtensionAPI) {
 		// C: per-task warnings collect here to ride the immediate spawn result.
 		const taskWarnings: string[] = [];
 		for (let i = 0; i < taskList.length; i++) {
-			const merged = mergeSubTaskParams(globalParams, taskList[i]);
+			const merged = mergeSubTaskParams(globalParams, taskList[i], state.config.maxThinkingLevel);
 			const name = displayTaskName(merged);
 			const taskPrefix = `Task ${i + 1} ("${name}")`;
 			// Issue #443: the DECLARED per-task level — `merged.thinkingLevel` is

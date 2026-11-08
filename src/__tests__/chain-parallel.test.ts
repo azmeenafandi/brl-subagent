@@ -7,20 +7,19 @@
 
 import { describe, it, expect } from "vitest";
 import {
-	resolveThinkingLevel,
 	EMPTY_USAGE,
 	MAX_CHAIN_STEPS,
 	MAX_PARALLEL_TASKS,
 	PREVIOUS_OUTPUT_PLACEHOLDER,
-	type SubTaskParams,
-	type SubTaskResult,
+	type ApprovalMode,
 	type ChainDetails,
 	type ParallelDetails,
+	type ResolvedParams,
+	type SubTaskResult,
 	type ThinkingLevel,
-	type SubagentToolOptions,
 	type UsageStats,
-	type Priority,
 } from "../types";
+import { mergeSubTaskParams } from "../unit-params";
 
 // =========================================================================
 // Helper: build a SubTaskResult for aggregation tests
@@ -56,73 +55,24 @@ function makeSubTaskResult(
 	};
 }
 
-/** Minimal resolved params shape used by mergeSubTaskParams. */
-interface ResolvedParamsLike {
-	task: string;
-	label: string | undefined;
-	inheritSP: boolean;
-	customSP: string | undefined;
-	outputFile: string | undefined;
-	timeout: number | undefined;
-	effectiveCwd: string;
-	thinkingLevel: ThinkingLevel;
-	/** Issue #114: per-unit priority — undefined when the step declares none. */
-	priority: Priority | undefined;
-	toolOptions: SubagentToolOptions | undefined;
+/**
+ * The global side of a merge: `ResolvedParams` plus the two resolved modes —
+ * i.e. exactly what `mergeSubTaskParams` takes.
+ */
+interface ResolvedParamsLike extends ResolvedParams {
 	resolvedGitMode: "branch" | "none";
+	resolvedApprovalMode: ApprovalMode;
 }
 
 // =========================================================================
 // 1. mergeSubTaskParams
 // =========================================================================
 
+// These 13 tests used to drive a hand-maintained replica of the merge, because
+// the real function was a closure in index.ts. It lives in unit-params.ts now,
+// so they drive the REAL one (the template's `resolveSubagentParams` precedent,
+// issue #59) — a replica can drift, an import cannot.
 describe("mergeSubTaskParams", () => {
-	/**
-	 * Replicates the logic from index.ts mergeSubTaskParams.
-	 * Accepts maxThinkingLevel as a parameter (instead of reading from state).
-	 */
-	function mergeSubTaskParams(
-		globalParams: ResolvedParamsLike,
-		subTask: SubTaskParams,
-		maxThinkingLevel: ThinkingLevel,
-	): ResolvedParamsLike {
-		const mergedThinkingLevel = subTask.thinkingLevel
-			? resolveThinkingLevel(
-					subTask.thinkingLevel as ThinkingLevel,
-					maxThinkingLevel,
-				)
-			: globalParams.thinkingLevel;
-
-		const mergedTools = subTask.tools ?? globalParams.toolOptions?.tools;
-		const mergedExcludeTools =
-			subTask.excludeTools ?? globalParams.toolOptions?.excludeTools;
-		const mergedNoBuiltinTools =
-			subTask.noBuiltinTools ?? globalParams.toolOptions?.noBuiltinTools;
-
-		const mergedToolOptions: SubagentToolOptions | undefined =
-			mergedTools || mergedExcludeTools || mergedNoBuiltinTools
-				? {
-						tools: mergedTools,
-						excludeTools: mergedExcludeTools,
-						noBuiltinTools: mergedNoBuiltinTools,
-					}
-				: undefined;
-
-		return {
-			task: subTask.task || globalParams.task,
-			label: subTask.label ?? globalParams.label,
-			inheritSP: subTask.inheritSystemPrompt ?? globalParams.inheritSP,
-			customSP: subTask.systemPrompt ?? globalParams.customSP,
-			outputFile: subTask.outputFile ?? globalParams.outputFile,
-			timeout: subTask.timeout ?? globalParams.timeout,
-			effectiveCwd: subTask.cwd ?? globalParams.effectiveCwd,
-			thinkingLevel: mergedThinkingLevel,
-			priority: subTask.priority as Priority | undefined,
-			toolOptions: mergedToolOptions,
-			resolvedGitMode: globalParams.resolvedGitMode,
-		};
-	}
-
 	const baseGlobal: ResolvedParamsLike = {
 		task: "Global task",
 		label: "global-label",
@@ -132,13 +82,14 @@ describe("mergeSubTaskParams", () => {
 		timeout: 120000,
 		effectiveCwd: "/workspace",
 		thinkingLevel: "medium",
-		priority: undefined,
+		autoRoutedPreset: undefined,
 		toolOptions: {
 			tools: ["read", "grep", "find"],
 			excludeTools: ["write"],
 			noBuiltinTools: false,
 		},
 		resolvedGitMode: "none",
+		resolvedApprovalMode: "auto",
 	};
 
 	const maxThinkingLevel: ThinkingLevel = "high";

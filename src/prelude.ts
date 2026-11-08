@@ -317,7 +317,7 @@ export function runPreTaskValidation(input: {
 
 /**
  * A merged per-unit source, structurally (mergeSubTaskParams lives in
- * index.ts and is passed in by the handler). These are the fields the
+ * unit-params.ts and is passed in by the handler). These are the fields the
  * pre-pass reads; the handler's own type is preserved through the generic
  * `M` so it can build its mode-specific unit records from the result.
  */
