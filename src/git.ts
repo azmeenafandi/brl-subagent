@@ -348,8 +348,13 @@ export function captureWorkingDiff(cwd: string): string | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * One git command inside the probe. Three reads, so the probe is bounded at
- * ~9 s, and the branch read (shared with `getHeadBranch`) takes the same bound.
+ * One git command inside the probe. The probe makes FIVE short reads —
+ * `rev-parse`, `status`, the two inside `getHeadBranch` (`symbolic-ref` +
+ * `rev-parse --verify`), and `diff --shortstat` — so its worst case is
+ * 5 × this bound (~15 s) on a host where every one hangs, and milliseconds
+ * when git is healthy. The bound is per command on purpose: the branch reads
+ * are shared with `getHeadBranch` (their detached/unborn semantics are not
+ * re-implemented here), and the failure path may wait, but not forever.
  */
 const PROBE_TIMEOUT_MS = 3_000;
 

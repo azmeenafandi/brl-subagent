@@ -1008,7 +1008,8 @@ function rejectedUnitResult(
 		);
 
 		// Launch all tasks concurrently using acquireSlot for natural concurrency limiting
-		const promises = taskList.map(async (_, index) => {			// Issue #114: per-unit priority wins the slot — the step's merged
+		const promises = taskList.map(async (_, index) => {
+			// Issue #114: per-unit priority wins the slot — the step's merged
 			// priority (if any) beats the call-level parallelPriority fallback.
 			const merged = mergeSubTaskParams(globalParams, taskList[index], state.config.maxThinkingLevel);
 			const acquired = await acquireSlot(state, ctx, signal, merged.priority ?? parallelPriority);
