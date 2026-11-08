@@ -30,3 +30,6 @@
 | 2026-11-08 | 81 | 8/73 | 82.3% (107/130) | 17.7% (23) | 0 | 0% (0/0) | 0 (0.0%) | 0.46 | 7 | 1 |
 
 > **The 2026-11-08 row's reconciliation does not close cleanly.** `sprint-metrics` reports 81 dispatch calls and 130 settled runs; the extension log shows 118 spawn events in the same window. The three numbers differ by retries and by window-boundary effects (a run can spawn before the window and settle inside it), and the tool's `Retries` cell is still 0 because it counts only explicit `retryRunId` dispatches — the same gap recorded on the 2026-11-01 row. Treat the dispatch count as a floor until the counter is fixed (sweep candidate).
+| composition-root | 32 | 1/31 | 90.6% (29/32) | 9.4% (3) | 0 | 0% (0/0) | 0 (0.0%) | 0.72 | 3 | 0 |
+
+> **The composition-root row was reconciled by hand.** `sprint-metrics` counted **11** dispatches (direct `delegate_task` toolCalls); **21 of the cycle's dispatches ran inside `codemode` scripts** and are invisible to that scan. The extension log shows **31** `Background agent spawned` events in the window plus the one foreground dispatch = **32**, which equals the **32** settled runs. The dispatch count, fg/bg split and polls-per-dispatch were corrected from that source (23 polls / 32 = 0.72); the template and preset columns remain floors for the same reason. Filed as #489 (mechanical fix).
