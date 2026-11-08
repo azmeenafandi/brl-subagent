@@ -1,6 +1,6 @@
 // Purpose: JSONL transcript recording for every agent run (`.pi/output/agent-<id>.jsonl`).
-import { appendFileSync, readFileSync, existsSync } from 'fs';
 import type { TranscriptEntry, TranscriptEntryType } from './types';
+import { appendFileSync, readFileSync, existsSync } from 'fs';
 import { transcriptPath, TRANSCRIPT_DIR } from './transcript-path';
 import { createLogger } from './logging';
 import { ensureOwnerOnlyDir } from './store-permissions';

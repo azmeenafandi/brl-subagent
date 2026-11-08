@@ -1,11 +1,28 @@
 // Purpose: Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths.
 import { randomUUID } from 'crypto';
 import { basename, dirname, join, resolve } from 'path';
-import { writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync } from 'fs';
-import type { Dirent } from 'fs';
-import type { BackgroundAgent, AgentStatus, GitMode, RecoveryMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
-import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE, NO_ASSISTANT_OUTPUT_REASON, PROMPT_NEVER_ISSUED_MESSAGE } from './types';
-import type { AssistantEvidence } from './types';
+import { writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync, type Dirent } from 'fs';
+import {
+	EMPTY_USAGE,
+	classifyError,
+	classifyTerminalOutcome,
+	isProviderError,
+	coherentFailureReason,
+	SUBAGENT_ABORTED_MESSAGE,
+	NO_ASSISTANT_OUTPUT_REASON,
+	PROMPT_NEVER_ISSUED_MESSAGE,
+	type BackgroundAgent,
+	type AgentStatus,
+	type GitMode,
+	type RecoveryMode,
+	type SubagentResult,
+	type SubagentRun,
+	type ThinkingLevel,
+	type SubagentToolOptions,
+	type UsageStats,
+	type ErrorCategory,
+	type AssistantEvidence,
+} from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -13,8 +30,20 @@ import { createEvent } from './event-bus';
 import { assertSafeAgentId, sanitizeErrorMessage } from './sanitize';
 import { wrapTask } from './prompt';
 import { createLogger } from './logging';
-import { getCurrentBranch, getHeadState, restoreHead, createWorkBranch, newWorkBranchName, captureDiff, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
-import type { HeadState } from './git';
+import {
+	getCurrentBranch,
+	getHeadState,
+	restoreHead,
+	createWorkBranch,
+	newWorkBranchName,
+	captureDiff,
+	deleteBranch,
+	hasUncommittedChanges,
+	getRepoRoot,
+	commitAll,
+	captureWorkingDiff,
+	type HeadState,
+} from './git';
 import { clearHeadState, readHeadState, writeHeadState, HEAD_STATE_VERSION } from './headstate';
 import { effectiveBackgroundBudget } from './validate';
 import { currentProcessOwner, classifyOwner, defaultRecoveryDeps } from './recovery';

@@ -37,20 +37,14 @@
  * same point in the sequence.
  */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ToolResult } from "./types";
-import type { SessionState } from "./state";
 import type { Logger } from "./logging";
+import type { SessionState } from "./state";
+import type { ToolResult } from "./types";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveSubagentParams, type ResolveInputParams } from "./params";
 import { getCurrentDepth } from "./sanitize";
 import { preflightCheck } from "./preflight";
-import {
-	depthLimitRejection,
-	gateSessionCost,
-	rejection,
-	runPreTaskValidation,
-	validateDelegationTargets,
-} from "./prelude";
+import { depthLimitRejection, gateSessionCost, rejection, runPreTaskValidation, validateDelegationTargets } from "./prelude";
 
 /** The params object the shared resolver consumes (`ResolveInputParams`,
  * params.ts) — the same type the background and single paths pass. */

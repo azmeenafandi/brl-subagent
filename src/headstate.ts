@@ -32,13 +32,13 @@
  * restores the recorded base and keeps the branch.
  */
 
+import type { HeadState } from "./git";
+import type { OwnerState } from "./recovery-engine";
+import type { ProcessOwner } from "./types";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import type { HeadState } from "./git";
-import type { OwnerState } from "./recovery-engine";
 import { ensureOwnerOnlyDir } from "./store-permissions";
-import type { ProcessOwner } from "./types";
 
 /** On-disk record version. A record with any other value is `skip-record`. */
 export const HEAD_STATE_VERSION = 1;

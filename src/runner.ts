@@ -10,19 +10,13 @@
  * - Temp file management
  */
 
-import { spawn } from "node:child_process";
-import type { ChildProcess } from "node:child_process";
+import type { TranscriptMessage, TranscriptContentBlock, TranscriptToolCallBlock } from "./transcript-tail";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { wrapTask } from "./prompt";
-import type {
-	SubagentResult,
-	SubagentToolOptions,
-	UsageStats,
-	ThinkingLevel,
-} from "./types";
 import {
 	EMPTY_USAGE,
 	SIGKILL_GRACE_MS,
@@ -33,6 +27,10 @@ import {
 	classifyError,
 	SUBAGENT_ABORTED_MESSAGE,
 	SUBAGENT_SIGNAL_KILLED_MESSAGE,
+	type SubagentResult,
+	type SubagentToolOptions,
+	type UsageStats,
+	type ThinkingLevel,
 } from "./types";
 import {
 	escalateKill,
@@ -45,16 +43,9 @@ import {
 } from "./kill-escalation";
 import { findByMarker, pidAlive, pidHasMarker, pidGone, groupHasMembers, killProcessGroup } from "./proc";
 import { getSafeEnv, DEPTH_ENV_KEY, CHILD_MARKER_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
-import { createLogger } from "./logging";
-import type { Logger } from "./logging";
+import { createLogger, type Logger } from "./logging";
 import { buildEngineeringBarSection } from "./engineering-bar";
-import type { Intercom } from "./messaging";
-import { extractMessages, formatPendingMessages } from "./messaging";
-import type {
-	TranscriptMessage,
-	TranscriptContentBlock,
-	TranscriptToolCallBlock,
-} from "./transcript-tail";
+import { extractMessages, formatPendingMessages, type Intercom } from "./messaging";
 
 /**
  * The logger for diagnostics a CALLER did not instrument. `runSubagent`'s `log`

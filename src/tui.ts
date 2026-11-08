@@ -7,35 +7,17 @@
  * delegate_task result rendering.
  */
 
-import type {
-	ExtensionContext,
-	ExtensionAPI,
-	Theme,
-	ToolRenderResultOptions,
-} from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Container, type Component, type SelectItem, SelectList, Spacer, Text, Markdown, matchesKey } from "@earendil-works/pi-tui";
-import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type {
-	TaskTemplate,
-	SubagentResult,
-	SubagentRun,
-	SubTaskResult,
-	MultiSubagentDetails,
-	ChainDetails,
-	ParallelDetails,
-	GraphDetails,
-	DelegateTaskDetails,
-	DelegateTaskParams,
-	ThinkingLevel,
-	UsageStats,
-	FileDiff,
-	CompletionNotifyMode,
-	RecoveryMode,
-	LiveSubagent,
-	SLAMetrics,
-} from "./types";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import {
+	DynamicBorder,
+	getMarkdownTheme,
+	type ExtensionContext,
+	type ExtensionAPI,
+	type Theme,
+	type ToolRenderResultOptions,
+} from "@earendil-works/pi-coding-agent";
+import { Container, type Component, type SelectItem, SelectList, Spacer, Text, Markdown, matchesKey } from "@earendil-works/pi-tui";
 import {
 	THINKING_LEVELS,
 	NAV_FOOTER,
@@ -55,6 +37,23 @@ import {
 	isGraphDetails,
 	isUnsettledPartial,
 	isInterruptedRun,
+	type TaskTemplate,
+	type SubagentResult,
+	type SubagentRun,
+	type SubTaskResult,
+	type MultiSubagentDetails,
+	type ChainDetails,
+	type ParallelDetails,
+	type GraphDetails,
+	type DelegateTaskDetails,
+	type DelegateTaskParams,
+	type ThinkingLevel,
+	type UsageStats,
+	type FileDiff,
+	type CompletionNotifyMode,
+	type RecoveryMode,
+	type LiveSubagent,
+	type SLAMetrics,
 } from "./types";
 import { buildFileAccessReport, buildSecretsExposureReport, generateComplianceSummary } from "./reports";
 import { extractParamNames } from "./templates";
@@ -67,12 +66,23 @@ import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type Se
 import { getAgent } from "./session-manager";
 import { visibleRunEntriesForSession } from "./recovery-surface";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
-import { formatElapsed, formatOutcomeSymbol, liveRowName, liveSpinner, formatLiveRowDim, formatBudget, sortLiveSessions, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName, formatMenuValue, formatTemplateSummary, menuSection } from "./tui-format";
 import {
-	renderTranscriptMessages,
-	type TranscriptLineStyle,
-	type TranscriptMessage,
-} from "./transcript-tail";
+	formatElapsed,
+	formatOutcomeSymbol,
+	liveRowName,
+	liveSpinner,
+	formatLiveRowDim,
+	formatBudget,
+	sortLiveSessions,
+	runHistoryStatus,
+	runHistoryStatusLabel,
+	buildRetryOfferMessage,
+	runDisplayName,
+	formatMenuValue,
+	formatTemplateSummary,
+	menuSection,
+} from "./tui-format";
+import { renderTranscriptMessages, type TranscriptLineStyle, type TranscriptMessage } from "./transcript-tail";
 
 // ---------------------------------------------------------------------------
 // SelectList helper

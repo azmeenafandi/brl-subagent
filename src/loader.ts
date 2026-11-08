@@ -25,9 +25,9 @@
  *     which is how PROJECT > USER precedence is enforced.
  */
 
+import type { Logger } from "./logging";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing

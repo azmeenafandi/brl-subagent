@@ -5,39 +5,11 @@
  * See AGENT.md for the conductor-facing capability reference.
  */
 
+import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
+import type { ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type {
-	AgentToolResult,
-	AgentToolUpdateCallback,
-} from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-
-import type {
-	SubagentPreset,
-	SubagentResult,
-	SubagentRun,
-	SubagentToolOptions,
-	ResolvedParams,
-	ThinkingLevel,
-	ApprovalMode,
-	SubTaskParams,
-	SubTaskResult,
-	ChainDetails,
-	ParallelDetails,
-	MultiSubagentDetails,
-	GraphTask,
-	GraphDetails,
-	GraphWave,
-	DelegateTaskDetails,
-	DelegateTaskParams,
-	Priority,
-	TaskTemplate,
-	ToolResult,
-	SubagentEvent,
-	SubagentEventListener,
-} from "./types";
 import {
 	declaredThinkingLevel,
 	resolveThinkingLevel,
@@ -57,13 +29,43 @@ import {
 	type BackgroundAgentIdentity,
 	type BackgroundAgentSpawnResult,
 	type RecoveryMode,
+	type SubagentPreset,
+	type SubagentResult,
+	type SubagentRun,
+	type SubagentToolOptions,
+	type ResolvedParams,
+	type ThinkingLevel,
+	type ApprovalMode,
+	type SubTaskParams,
+	type SubTaskResult,
+	type ChainDetails,
+	type ParallelDetails,
+	type MultiSubagentDetails,
+	type GraphTask,
+	type GraphDetails,
+	type GraphWave,
+	type DelegateTaskDetails,
+	type DelegateTaskParams,
+	type Priority,
+	type TaskTemplate,
+	type ToolResult,
+	type SubagentEvent,
+	type SubagentEventListener,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
 import { runModePrologue } from "./mode-prologue";
 import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates, validateTemplatePresetRefs, extractParamNames } from "./templates";
 import { pkgPath } from "./paths";
-
-import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, getCurrentDepth, sanitizeErrorMessage, buildCrashResult } from "./sanitize";
+import {
+	sanitizeTask,
+	validateCwd,
+	validateOutputFile,
+	stripAnsi,
+	capOutput,
+	getCurrentDepth,
+	sanitizeErrorMessage,
+	buildCrashResult,
+} from "./sanitize";
 import {
 	hasUncommittedChanges,
 	createWorkBranch,
@@ -79,8 +81,29 @@ import {
 	type HeadState,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { depthLimitRejection, formatValidationWarnings, gateSessionCost, invalidThinkingLevelRejection, modelNotConfiguredRejection, rejectApprovalAlwaysInBackground, rejection, resolveModeModel, resolveSubagentModelPrecedence, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, type SubagentModelResolution } from "./prelude";
-import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
+import {
+	depthLimitRejection,
+	formatValidationWarnings,
+	gateSessionCost,
+	invalidThinkingLevelRejection,
+	modelNotConfiguredRejection,
+	rejectApprovalAlwaysInBackground,
+	rejection,
+	resolveModeModel,
+	resolveSubagentModelPrecedence,
+	runPreTaskValidation,
+	validateDelegationTargets,
+	validateUnitPrePass,
+	type SubagentModelResolution,
+} from "./prelude";
+import {
+	loadBuiltinPresets,
+	loadCustomPresets,
+	getAllPresets,
+	writePresetFile,
+	formatPresetRestriction,
+	formatToolRestriction,
+} from "./presets";
 import { modelIsAvailable, parseModelString } from "./model-availability";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import {
@@ -107,13 +130,7 @@ import { createSessionState, resolveTerminalRunEntry, type SessionState } from "
 import { makeLiveOnUpdate, createUnitRun, finalizeUnitRun, finalizeUnitRunCrash, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs, reapActiveChildren } from "./runner";
-import {
-	recoverProduction,
-	currentProcessOwner,
-	newDispatchIdentity,
-	classifyOwner,
-	defaultRecoveryDeps,
-} from "./recovery";
+import { recoverProduction, currentProcessOwner, newDispatchIdentity, classifyOwner, defaultRecoveryDeps } from "./recovery";
 import {
 	buildHeadStateNotice,
 	reconcileHeadStates,
@@ -127,11 +144,7 @@ import {
 import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
 import { acquireSlot, clearProgressLinger, releaseSlot, repaintStatus, stopProgressTicker } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
-import {
-	finalizeRunRecord,
-	resolveRetryParams,
-	createEmptyResult,
-} from "./history";
+import { finalizeRunRecord, resolveRetryParams, createEmptyResult } from "./history";
 import { computeSLAMetrics, computeDegradation } from "./metrics";
 import {
 	showSelectList,

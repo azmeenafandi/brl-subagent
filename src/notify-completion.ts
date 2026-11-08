@@ -18,17 +18,17 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type {
-	BackgroundAgent,
-	BackgroundAgentIdentity,
-	SubagentRun,
-	CompletionNotifyMode,
-	AgentStatus,
-} from "./types";
 import { truncateTail } from "./transcript-tail";
 import { formatRunDuration } from "./history";
 import { formatBudgetDuration } from "./tui-format";
-import { classifyTerminalOutcome } from "./types";
+import {
+	classifyTerminalOutcome,
+	type BackgroundAgent,
+	type BackgroundAgentIdentity,
+	type SubagentRun,
+	type CompletionNotifyMode,
+	type AgentStatus,
+} from "./types";
 import { resolveTerminalRunEntry } from "./state";
 
 /** Terminal statuses the completion message can carry. */

@@ -22,13 +22,11 @@
  *   // resolved.value.task now has placeholders filled
  */
 
+import type { Logger } from "./logging";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { TaskTemplate, ThinkingLevel, SubagentPreset } from "./types";
-import { TEMPLATE_PARAM_RE, THINKING_LEVELS } from "./types";
-import type { Logger } from "./logging";
-import { applyFrontmatterMappers, loadMarkdownRecords } from "./loader";
-import type { FrontmatterFieldMapper, FrontmatterMapContext } from "./loader";
+import { TEMPLATE_PARAM_RE, THINKING_LEVELS, type TaskTemplate, type ThinkingLevel, type SubagentPreset } from "./types";
+import { applyFrontmatterMappers, loadMarkdownRecords, type FrontmatterFieldMapper, type FrontmatterMapContext } from "./loader";
 import { sanitizeFileName } from "./presets";
 import { pkgPath } from "./paths";
 
