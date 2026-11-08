@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # merge-guard.sh — the mechanical merge gate: CI green, verdict present, reviewed head matches.
 #
-# Usage: merge-guard.sh <pr-number> <review-record-path> [--repo-root <path>]
+# Usage: merge-guard.sh <pr-number> <review-record-path> [--repo-root <path>] [--pr-tree <path>]
 #        merge-guard.sh --check-record <record> [--pr <n>] [--head <sha>]
 #        merge-guard.sh --selftest
 #
@@ -30,9 +30,29 @@
 #       can be invented (2026-10-31: a dispatched `medium (0.70)` was really `high (0.32)`), so a
 #       dispatch line must have a row written by `jev-check --classifier '<raw answers>' --label <name>`
 #       (`--line --label` requires `--legacy-line`: format-only input cannot claim a classifier).
+#   (g) the PR BODY's numbers are recomputed (#500): `pr-evidence --check --pr <n>` runs here, not in
+#       the conductor's head. The check is only applicable when the body carries a
+#       `<!-- pr-evidence:begin -->` block or states a count (the tool's own predicate — its fenced
+#       block and blockquote exemptions stay); otherwise it prints `(g) not applicable`. A drift
+#       blocks with the tool's named code, and an unanswerable run (exit 2) blocks too — "cannot
+#       check" is never a pass. The body's TEXT is only ever handed to the tool's pure parser;
+#       nothing read from a PR body is executed.
 #
 # Run it from the COCKPIT (dev) checkout: the subagent log lives in the cockpit's local,
 # gitignored `.pi/subagent-logs/`. `JEV_LOG` overrides the log path.
+#
+# Paths and identity (#500). Both arguments are resolved and echoed at the top of the run (`pr`,
+# `record` absolute) and every open/read error names the RESOLVED path: a relative record path is
+# resolved against the caller's cwd, so `merge-guard.sh 500 REVIEW_PR500.md` works from the cockpit.
+# The header also carries `record sha256: <hash>` — the bytes the gate read, so the conductor can
+# confirm they are the bytes the reviewer produced (a transcribed record once passed a claim about a
+# file the gate never saw).
+#
+# Check (g) measures the PR's head, and suite/budget are read from a CHECKED-OUT TREE, so the tool
+# runs the copy of `scripts/pr-evidence.mjs` that lives in a checkout whose HEAD is the PR's head
+# (`git worktree list` finds it; the review worktree normally is). `--pr-tree <path>` names it
+# explicitly. With neither, (g) blocks and says how to provide one — a body checked against the
+# wrong tree would be a confident wrong answer, which is exactly what the tool refuses to give.
 #
 # `--check-record` is the offline half: checks (b), (c), (d) and (f)'s field rules only, with no
 # `gh`, no network and no provenance log — it runs `scripts/review-record.mjs --check`, which uses
@@ -66,6 +86,39 @@ JEV_PROVENANCE="${JEV_PROVENANCE_ENV:-${REPO_ROOT}/.pi/jev-lines.log}"
 usage() {
     # Print the header block only (every leading comment, however long it grows).
     sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+# ── Paths and identity (#500) ─────────────────────────────────────────────────────────
+
+# The caller's cwd is the base for a relative path — never the script's location and never
+# REPO_ROOT: a record is an argument, so it resolves where the caller stood (which is how
+# `merge-guard.sh 500 REVIEW_PR500.md` works from the cockpit and the same relative path works
+# nowhere else, said out loud instead of failing with a shell `cat: no such file`).
+absolute_path() {
+    local path="$1" dir base
+    [[ -n "${path}" ]] || return 1
+    case "${path}" in
+        /*) dir="$(dirname "${path}")" ;;
+        *) dir="$(dirname "${PWD}/${path}")" ;;
+    esac
+    base="$(basename "${path}")"
+    if [[ -d "${dir}" ]]; then
+        printf '%s/%s' "$(cd "${dir}" && pwd -P)" "${base}"
+    else
+        printf '%s/%s' "${dir}" "${base}"
+    fi
+}
+
+# The bytes the gate read, so the conductor can confirm they are the bytes the reviewer produced
+# (#500: a reviewer once transcribed its record, left no file and claimed --check-record passed).
+record_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        return 1
+    fi
 }
 
 # ── Record parsing (pure — no network; the selftest drives these directly) ──────────────
@@ -216,6 +269,120 @@ check_recheck() {
     fi
 }
 
+# ── Check (g) — the PR body's numbers (#500) ───────────────────────────────────────────────
+
+# Both seams the selftest replaces, because (g) is otherwise a `gh` read plus a subprocess:
+#   PR_EVIDENCE_BODY_FILE  a body file on disk instead of `gh pr view <n> --json body`
+#   PR_EVIDENCE_CMD        the tool invocation instead of the PR tree's own pr-evidence.mjs
+# The defaults are the real thing; the selftest never reaches the network.
+PR_EVIDENCE_BODY_FILE=""
+PR_EVIDENCE_CMD=()
+
+# Applicability, decided by the tool's OWN predicate: a block, or a count outside one (its fenced
+# block and blockquote exemptions included). Duplicating that regex here would be a second definition
+# of "the body states a number", so the pure module is imported and only a PATH travels in argv —
+# the body's text is parsed, never executed.
+PR_EVIDENCE_PREDICATE='
+import { readFileSync } from "node:fs";
+const { scanBlocks, unattributedCounts } = await import(process.argv[1]);
+const lines = readFileSync(0, "utf8").split("\n");
+const { ranges, unclosed } = scanBlocks(lines);
+const applicable = ranges.length > 0 || unclosed !== -1 || unattributedCounts(lines, ranges).length > 0;
+console.log(applicable ? "applicable" : "not applicable");
+'
+
+# Sets PR_TREE — a checkout whose HEAD is the PR head, which is the only tree (g) may measure — or
+# PR_TREE_ERROR. `--pr-tree` wins; otherwise the repo's own worktree list answers, and a miss is a
+# named failure rather than a check against the cockpit's tree (that would answer about the wrong
+# bytes: the tool refuses it, and so does this).
+PR_TREE=""
+PR_TREE_ERROR=""
+resolve_pr_tree() {
+    local pr="$1" head="$2" path="" sha="" line
+    PR_TREE=""
+    PR_TREE_ERROR=""
+    if [[ -n "${PR_TREE_OVERRIDE}" ]]; then
+        PR_TREE="$(absolute_path "${PR_TREE_OVERRIDE}")"
+        if [[ ! -f "${PR_TREE}/scripts/pr-evidence.mjs" ]]; then
+            PR_TREE_ERROR="--pr-tree ${PR_TREE} has no scripts/pr-evidence.mjs"
+            PR_TREE=""
+            return 1
+        fi
+        return 0
+    fi
+    if [[ -z "${head}" ]]; then
+        PR_TREE_ERROR="the PR head is unknown — cannot tell which tree the body's numbers describe"
+        return 1
+    fi
+    while IFS= read -r line; do
+        case "${line}" in
+            worktree\ *) path="${line#worktree }" ;;
+            HEAD\ *) sha="${line#HEAD }" ;;
+            "")
+                if [[ -n "${path}" && "${sha}" == "${head}" && -f "${path}/scripts/pr-evidence.mjs" ]]; then
+                    PR_TREE="${path}"
+                    return 0
+                fi
+                path=""
+                sha=""
+                ;;
+        esac
+    done < <(git -C "${REPO_ROOT}" worktree list --porcelain 2>/dev/null; echo)
+    PR_TREE_ERROR="no local checkout has PR #${pr}'s head ${head} — provision one (git worktree add <path> ${head}) or pass --pr-tree <path>"
+    return 1
+}
+
+# The tool's findings, as its named codes. A finding is `pr-evidence: <code> (line N): …` or
+# `pr-evidence: <code>: …`; the tool's other chatter (`suite/budget read from …`, `out of scope by
+# design: …`, `clean — …`) has no code in that position, so it is not mistaken for one.
+pr_evidence_codes() {
+    sed -nE 's/^pr-evidence: ([a-z-]+)( \(line [0-9]+\))?: .*/\1/p' | paste -sd, -
+}
+
+check_pr_evidence() {
+    local pr="$1" verdict out rc=0 codes tree_label
+
+    if ! verdict="$(
+        if [[ -n "${PR_EVIDENCE_BODY_FILE}" ]]; then cat "${PR_EVIDENCE_BODY_FILE}"; else gh pr view "${pr}" --json body -q .body; fi \
+            | node --input-type=module -e "${PR_EVIDENCE_PREDICATE}" "${REPO_ROOT}/scripts/lib/pr-evidence.mjs"
+    )"; then
+        fail_line "(g) pr-evidence: could not read PR #${pr}'s body or the tool's own predicate (${REPO_ROOT}/scripts/lib/pr-evidence.mjs) — refusing to skip"
+        return
+    fi
+    case "${verdict}" in
+        "not applicable")
+            skip_line "(g) pr-evidence: no counts, no block — (g) not applicable"
+            return ;;
+        applicable) ;;
+        *)
+            fail_line "(g) pr-evidence: the applicability predicate printed ${verdict@Q} — expected 'applicable' or 'not applicable'"
+            return ;;
+    esac
+
+    local -a cmd=()
+    if [[ ${#PR_EVIDENCE_CMD[@]} -gt 0 ]]; then
+        cmd=("${PR_EVIDENCE_CMD[@]}")
+        tree_label="the configured tool"
+    else
+        if ! resolve_pr_tree "${pr}" "${HEAD_SHA}"; then
+            fail_line "(g) pr-evidence: ${PR_TREE_ERROR}"
+            return
+        fi
+        cmd=(node "${PR_TREE}/scripts/pr-evidence.mjs")
+        tree_label="${PR_TREE}"
+    fi
+
+    out="$("${cmd[@]}" --check --pr "${pr}" 2>&1)" || rc=$?
+    case "${rc}" in
+        0)
+            pass_line "(g) pr-evidence: the body's block recomputes clean at PR #${pr}'s head (${tree_label})" ;;
+        *)
+            codes="$(printf '%s\n' "${out}" | pr_evidence_codes)"
+            fail_line "(g) pr-evidence: --check --pr ${pr} exited ${rc}${codes:+ — ${codes}} (${tree_label}); the body's numbers are stale or unattributed"
+            printf '%s\n' "${out}" | sed 's/^/      /' ;;
+    esac
+}
+
 # ── --check-record — the offline half, from the SAME definition that writes the record ──
 
 # Delegate to `scripts/review-record.mjs --check`, which uses `scripts/lib/record-fields.mjs` — one
@@ -223,18 +390,22 @@ check_recheck() {
 # not possible. No `gh`, no network, no provenance log: (a), (e) and (f)'s `recheck-<pr>` row need
 # the full gate. `pr` / `head` are optional (shape-only check); pass them to demand both.
 run_record_check() {
-    local record="$1" pr="$2" head="$3"
+    local record="$(absolute_path "$1")" pr="$2" head="$3"
     local tool="${REPO_ROOT}/scripts/review-record.mjs"
     if [[ ! -f "${tool}" ]]; then
         echo "merge-guard: ${tool} is missing — a checkout older than #487 cannot check a record" >&2
         return 2
     fi
     if ! command -v node >/dev/null 2>&1; then
-        echo "merge-guard: node is not installed — cannot run the record check" >&2
+        echo "merge-guard: node is not installed — cannot run the record check (record: ${record})" >&2
         return 2
     fi
-    if [[ ! -f "${record}" || ! -r "${record}" ]]; then
-        echo "merge-guard: review record not readable: ${record}" >&2
+    if [[ ! -f "${record}" ]]; then
+        echo "merge-guard: record: ${record} — not found" >&2
+        return 2
+    fi
+    if [[ ! -r "${record}" ]]; then
+        echo "merge-guard: record: ${record} — not readable" >&2
         return 2
     fi
     local args=(--check "${record}")
@@ -253,6 +424,9 @@ FAIL_REASONS=()
 
 pass_line() { printf '  ✓ %s\n' "$1"; }
 fail_line() { printf '  ✗ %s\n' "$1"; FAIL_REASONS+=("$1"); }
+# A SKIP is not a pass: nothing was checked, so it never clears anything either — it just says why
+# the check did not apply (check (g) on a docs-only body).
+skip_line() { printf '  · %s\n' "$1"; }
 
 check_ci() {
     local pr="$1" output rc=0 total=0 blocking=0 summary="" name status rest
@@ -273,7 +447,10 @@ check_ci() {
 
     if [[ ${total} -eq 0 ]]; then
         # No parsable check rows is not a green CI — it is an unverifiable merge.
+        # A HINT, never a pass: a PR that cannot merge (a conflict, a draft, a fork whose
+        # workflows need approval) reports no checks at all, so name the likely cause (#465).
         fail_line "(a) CI: no checks reported by 'gh pr checks ${pr}' (gh exit ${rc}) — refusing to merge blind: ${output//$'\n'/ }"
+        printf '      may mean the PR cannot merge (#465): `gh pr view %s --json mergeable,mergeStateStatus`\n' "${pr}"
         return
     fi
     if [[ ${blocking} -gt 0 ]]; then
@@ -362,17 +539,30 @@ resolve_head_sha() {
 }
 
 run_guard() {
-    local pr="$1" record="$2"
+    local pr="$1" record hash
     if ! [[ "${pr}" =~ ^[0-9]+$ ]]; then
         echo "merge-guard: <pr-number> must be numeric (got '${pr}')" >&2
         return 2
     fi
-    if [[ ! -f "${record}" || ! -r "${record}" ]]; then
-        echo "merge-guard: review record not readable: ${record}" >&2
+    # Resolve BOTH arguments before anything else, and name the resolved path in every refusal: a
+    # missing record must read as `record: /abs/path — not found`, never as a shell error.
+    record="$(absolute_path "$2")"
+    if [[ ! -f "${record}" ]]; then
+        echo "merge-guard: record: ${record} — not found (resolved from ${2@Q} against ${PWD})" >&2
+        return 2
+    fi
+    if [[ ! -r "${record}" ]]; then
+        echo "merge-guard: record: ${record} — not readable" >&2
+        return 2
+    fi
+    if ! hash="$(record_sha256 "${record}")"; then
+        echo "merge-guard: record sha256: neither sha256sum nor shasum is installed — cannot confirm the gate read the reviewer's bytes" >&2
         return 2
     fi
 
-    echo "merge-guard: PR #${pr} · record ${record}"
+    echo "merge-guard: pr #${pr}"
+    echo "             record ${record}"
+    echo "             record sha256: ${hash}"
     echo "             jev log ${JEV_LOG}"
 
     local head
@@ -383,6 +573,7 @@ run_guard() {
     check_record "${pr}" "${record}" "${head}"
     check_dispatch_audit
     check_recheck "${pr}" "${record}"
+    check_pr_evidence "${pr}"
 
     if [[ ${#FAIL_REASONS[@]} -gt 0 ]]; then
         echo ""
@@ -439,6 +630,46 @@ expect_verdict() {
         SELFTEST_PASS=$((SELFTEST_PASS + 1))
     else
         printf '  ✗ %s (expected %s, got %s)\n' "${label}" "${expected}" "${actual}"
+        SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+    fi
+}
+
+# Run a command and assert BOTH its exit code and a substring of its output — the only way to test a
+# refusal that must also NAME the path it resolved. The command runs in a subshell, so a case cannot
+# leak state into the next one.
+expect_run() {
+    local label="$1" want_rc="$2" want_text="$3"
+    shift 3
+    local out="" rc=0
+    if out="$("$@" 2>&1)"; then rc=0; else rc=$?; fi
+    if [[ "${rc}" -ne "${want_rc}" ]]; then
+        printf '  ✗ %s (expected exit %s, got %s: %s)\n' "${label}" "${want_rc}" "${rc}" "${out//$'\n'/ }"
+        SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+    elif [[ -n "${want_text}" && "${out}" != *"${want_text}"* ]]; then
+        printf '  ✗ %s (expected output containing %s, got: %s)\n' "${label}" "${want_text}" "${out//$'\n'/ }"
+        SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+    else
+        printf '  ✓ %s\n' "${label}"
+        SELFTEST_PASS=$((SELFTEST_PASS + 1))
+    fi
+}
+
+# Run a command with a caller cwd that is not the repo — the relative-record-path cases (#500).
+in_dir() {
+    local dir="$1"
+    shift
+    ( cd "${dir}" && "$@" )
+}
+
+# One line of an ad-hoc assertion, so a case that needs two facts does not get a bespoke block.
+expect_that() {
+    local label="$1"
+    shift
+    if "$@"; then
+        printf '  ✓ %s\n' "${label}"
+        SELFTEST_PASS=$((SELFTEST_PASS + 1))
+    else
+        printf '  ✗ %s\n' "${label}"
         SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
     fi
 }
@@ -699,12 +930,172 @@ EOF
     expect_fail "--check-record rejects a declared tier weaker than the recheck" check_record_ok "${dir}/recheck-weak.md" 412 ""
     expect_fail "--check-record rejects a record that does not cover the head" check_record_ok "${dir}/written-by-the-generator.md" 412 "${other}"
 
+    # --- #500: paths, record identity, and check (g) -----------------------------------------
+    echo "merge-guard --selftest: paths, identity, (g)"
+
+    # A relative record path resolves against the CALLER's cwd (never the script's location), and a
+    # missing one exits 2 naming the path it resolved — never a bare `cat: no such file`.
+    expect_run "a relative record path resolves against the caller's cwd" 0 "${dir}/approve.md" \
+        in_dir "${dir}" absolute_path "approve.md"
+    expect_run "a missing record exits 2 and names the resolved path" 2 \
+        "record: ${dir}/absent.md — not found" \
+        in_dir "${dir}" run_guard 412 "absent.md"
+    expect_run "an absolute missing record names its absolute path" 2 \
+        "record: ${dir}/absent-too.md — not found" \
+        run_guard 412 "${dir}/absent-too.md"
+
+    # Record identity: the gate echoes the sha256 of the bytes it read (#500 — a transcribed record
+    # once passed a claim about a file the gate never saw).
+    local fixture_hash changed_hash
+    fixture_hash="$(record_sha256 "${dir}/approve.md")"
+    expect_that "record_sha256 prints one sha256 of the file's bytes" \
+        grep -qE '^[0-9a-f]{64}$' <<<"${fixture_hash}"
+    printf 'one more byte\n' >/dev/null
+    cp "${dir}/approve.md" "${dir}/changed-copy.md"
+    printf 'and one more\n' >>"${dir}/changed-copy.md"
+    changed_hash="$(record_sha256 "${dir}/changed-copy.md")"
+    expect_that "record_sha256 changes when the bytes change (it is not a name-derived hash)" \
+        test "${fixture_hash}" != "${changed_hash}"
+
+    # --- check (g): the PR body's numbers (#500) --------------------------------------------
+    # Network-free by construction: the body and the tool are the two files these cases supply
+    # (PR_EVIDENCE_BODY_FILE / PR_EVIDENCE_CMD), and the tool is a stub with the real one's shape.
+    mkdir -p "${dir}/stubs"
+    cat >"${dir}/stubs/clean.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    cat >"${dir}/stubs/stale.sh" <<'EOF'
+#!/usr/bin/env bash
+echo 'pr-evidence: stale-suite (line 5): suite: 88 files / 2604 tests is stale (tree: 89 files / 2675 tests)'
+exit 1
+EOF
+    cat >"${dir}/stubs/missing-block.sh" <<'EOF'
+#!/usr/bin/env bash
+echo 'pr-evidence: missing-block (line 7): no <!-- pr-evidence:begin --> block, but line 7 states a count — a block is required once the body states one'
+exit 2
+EOF
+    chmod +x "${dir}"/stubs/*.sh
+
+    printf '# Docs only\n\nProse changes; there is nothing to attribute here.\n' >"${dir}/body-docs.md"
+    cat >"${dir}/body-stale.md" <<'EOF'
+## Evidence
+
+<!-- pr-evidence:begin -->
+head: 77338bfc929098cdcdf750a40933660edae6ed3 ← git rev-parse HEAD
+suite: 88 files / 2604 tests ← npx vitest run
+<!-- pr-evidence:end -->
+EOF
+    printf '## Evidence\n\nThe suite passes 88 files / 2604 tests.\n' >"${dir}/body-count.md"
+    cat >"${dir}/body-quoted-count.md" <<'EOF'
+## Evidence
+
+An old reading, quoted:
+
+```
+88 files / 2604 tests
+```
+
+> 88 files / 2604 tests
+EOF
+
+    # The check prints its line and the number of reasons it added: a skip adds NONE (it is not a
+    # pass, but it cannot block), a block adds exactly one.
+    g_case() {
+        local label="$1" body="$2" stub="$3" want_line="$4" want_fails="$5" out
+        PR_EVIDENCE_BODY_FILE="${body}"
+        PR_EVIDENCE_CMD=("${stub}")
+        local before=${#FAIL_REASONS[@]}
+        out="$(check_pr_evidence 412 2>&1; printf 'fails=%s' "$((${#FAIL_REASONS[@]} - before))")"
+        PR_EVIDENCE_BODY_FILE=""
+        PR_EVIDENCE_CMD=()
+        if [[ ${before} -gt 0 ]]; then
+            FAIL_REASONS=("${FAIL_REASONS[@]:0:${before}}")
+        else
+            FAIL_REASONS=()
+        fi
+        if [[ "${out}" == *"${want_line}"* && "${out}" == *"fails=${want_fails}"* ]]; then
+            printf '  ✓ %s\n' "${label}"
+            SELFTEST_PASS=$((SELFTEST_PASS + 1))
+        else
+            printf '  ✗ %s (wanted %s + fails=%s, got: %s)\n' "${label}" "${want_line}" "${want_fails}" "${out//$'\n'/ }"
+            SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+        fi
+    }
+
+    g_case "(g) a docs-only body with no counts is SKIPPED, not passed" \
+        "${dir}/body-docs.md" "${dir}/stubs/clean.sh" "no counts, no block — (g) not applicable" 0
+    g_case "(g) a count inside a fence or a blockquote is the tool's exemption — skipped" \
+        "${dir}/body-quoted-count.md" "${dir}/stubs/clean.sh" "no counts, no block — (g) not applicable" 0
+    g_case "(g) a stale block body is BLOCKED with the tool's named code" \
+        "${dir}/body-stale.md" "${dir}/stubs/stale.sh" "stale-suite" 1
+    g_case "(g) a count with no block is BLOCKED as missing-block" \
+        "${dir}/body-count.md" "${dir}/stubs/missing-block.sh" "missing-block" 1
+    g_case "(g) a clean block passes (g)" \
+        "${dir}/body-stale.md" "${dir}/stubs/clean.sh" "recomputes clean" 0
+
+    # The tree a body's numbers may be measured against: the one at the PR head. A PR head with no
+    # local checkout is a NAMED failure, never a check against the caller's tree.
+    local self_head
+    self_head="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null)"
+    if [[ -n "${self_head}" ]] && resolve_pr_tree 412 "${self_head}" && [[ -f "${PR_TREE}/scripts/pr-evidence.mjs" ]]; then
+        printf '  ✓ (g) a known head resolves to the checkout that has it\n'
+        SELFTEST_PASS=$((SELFTEST_PASS + 1))
+    else
+        printf '  ✗ (g) a known head did not resolve to a checkout (%s)\n' "${PR_TREE_ERROR}"
+        SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+    fi
+    if ! resolve_pr_tree 412 "0000000000000000000000000000000000000000" && [[ "${PR_TREE_ERROR}" == *"no local checkout"* ]]; then
+        printf '  ✓ (g) a head with no local checkout is a named failure\n'
+        SELFTEST_PASS=$((SELFTEST_PASS + 1))
+    else
+        printf '  ✗ (g) an unknown head must fail with a named reason (got: %s)\n' "${PR_TREE_ERROR}"
+        SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+    fi
+
+    # The whole run, offline: a stub `gh` on PATH (no network), a fixture subagent log, the fixture
+    # provenance, and a stubbed (g). It proves the header echoes BOTH resolved arguments and the
+    # record's sha256, and that every check still composes.
+    mkdir -p "${dir}/bin"
+    cat >"${dir}/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+echo 'stub-gh: the selftest never touches the network' >&2
+exit 1
+EOF
+    chmod +x "${dir}/bin/gh"
+    cat >"${dir}/subagent.log" <<EOF
+{"timestamp":"2026-11-08T09:00:00.000Z","message":"Background agent spawned","data":{"agentId":"fixture-agent","task":"Implement it.\n\njev: medium (0.84) · C2 · worktree y"}}
+EOF
+    printf '2026-11-08T09:00:00.000Z\timpl-500\tjev: medium (0.84) · C2 · worktree y\n' >>"${prov}"
+    local header_out header_rc=0 head_hash
+    header_out="$(
+        cd "${dir}" || exit 1
+        JEV_LOG="${dir}/subagent.log"
+        PATH="${dir}/bin:${PATH}"
+        PR_EVIDENCE_CMD=("${dir}/stubs/stale.sh")
+        run_guard 412 "approve.md"
+    ) 2>&1" || header_rc=$?
+    head_hash="$(record_sha256 "${dir}/approve.md")"
+    for want in "pr #412" "record ${dir}/approve.md" "record sha256: ${head_hash}" "(a) CI:" "may mean the PR cannot merge (#465): \`gh pr view 412 --json mergeable,mergeStateStatus\`" "(e) dispatch audit" "(f) recheck" "(g) pr-evidence:"; do
+        if [[ "${header_out}" == *"${want}"* ]]; then
+            printf '  ✓ the offline run echoes %s\n' "${want}"
+            SELFTEST_PASS=$((SELFTEST_PASS + 1))
+        else
+            printf '  ✗ the offline run must echo %s (got: %s)\n' "${want}" "${header_out//$'\n'/ }"
+            SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+        fi
+    done
+    expect_that "the offline run still blocks when its checks fail (gh is stubbed out)" test "${header_rc}" -eq 1
+
     local total=$((SELFTEST_PASS + SELFTEST_FAIL))
     echo "merge-guard --selftest: ${SELFTEST_PASS}/${total} passed — $([[ ${SELFTEST_FAIL} -eq 0 ]] && echo PASS || echo FAIL)"
     [[ ${SELFTEST_FAIL} -eq 0 ]]
 }
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────────────
+
+# `--pr-tree` names the checkout whose HEAD is the PR head for check (g); empty = discover it.
+PR_TREE_OVERRIDE=""
 
 main() {
     local args=() repo_root_override="" check_record_path="" check_pr="" check_head=""
@@ -715,6 +1106,10 @@ main() {
             --repo-root)
                 [[ $# -ge 2 ]] || { echo "merge-guard: --repo-root needs a path" >&2; return 2; }
                 repo_root_override="$2"
+                shift 2 ;;
+            --pr-tree)
+                [[ $# -ge 2 ]] || { echo "merge-guard: --pr-tree needs a path" >&2; return 2; }
+                PR_TREE_OVERRIDE="$2"
                 shift 2 ;;
             --check-record)
                 [[ $# -ge 2 ]] || { echo "merge-guard: --check-record needs a record path" >&2; return 2; }

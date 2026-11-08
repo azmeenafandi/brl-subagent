@@ -10,6 +10,23 @@ query and formatted with `.pi/skills/worktree/jev-check.mjs --line`. A **bare le
 finding — it is a process defect, not a style nit. Format, the pipeline and the ledger check:
 `references/jev-advisory.md`.
 
+**The review dispatch is itself a dispatch, recorded in one command (#500).** Its `jev:` line
+comes from `--dispatch`, which prints the line, appends the provenance row and prints the exact
+paste text:
+
+```bash
+node .pi/skills/worktree/jev-check.mjs --dispatch --classifier '<raw answers>' \
+  --worktree y --label review-<pr> --kind review [--model <id>]
+# jev: high (0.62) · C2 · worktree y
+# paste: jev: high (0.62) · C2 · worktree y
+```
+
+Three units in a row (S4, S5, U1) dispatched a review with no `review-<pr>` row — printing the
+review-time `recheck-<pr>` line looked like recording the dispatch — so `--settle review-<pr>`
+refused and the row was reconstructed afterwards. `--dispatch` makes the line, the row and the
+paste text one step, and `--label` is mandatory (exit 2) because a row with no label is invisible
+to both `--settle` and the gate.
+
 Reviewers are **read-only on the repo but have bash** — the read-only
 `code-reviewer` preset excludes bash and is NOT used (empirical verification
 needs execution). Use the project-scoped `project-reviewer` preset
@@ -206,6 +223,18 @@ Merge check (f) requires a provenance row for that exact line under `recheck-<pr
 when the declared `Risk class` is **weaker** than the recheck (C1 strongest). A record carrying
 only the dispatch-time line cannot show the tier was right — the 2026-11-04 miss was dispatched
 `C2`, classified `C1`, and would have merged under the old gate.
+
+### Check (g) — the PR body's numbers, at the gate
+
+The reviewer runs `node scripts/pr-evidence.mjs --check --pr <n>` before approving, and the gate
+now runs it too (#500): a stale block or a count with no block blocked nothing before, because
+nothing at the merge point read the body. The check applies only when the body carries a
+`<!-- pr-evidence:begin -->` block **or** states a count (the tool's own predicate — its fenced
+block and blockquote exemptions stay); otherwise the gate prints `no counts, no block — (g) not
+applicable`. Suite and budget are measured from a checked-out tree, so (g) runs the copy of the
+tool in the checkout at the PR head — normally the review worktree, which `git worktree list`
+finds; `--pr-tree <path>` names one explicitly, and no checkout at the head is a **named block**,
+not a check against the cockpit's tree.
 
 ### `conductor-verified:` — the post-verdict commit
 
