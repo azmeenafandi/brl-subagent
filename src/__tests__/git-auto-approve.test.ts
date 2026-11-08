@@ -15,6 +15,11 @@
  * Harness mirrors per-step-cwd.test.ts: the REAL delegate_task execute handler
  * with ../runner and ../git mocked (no subprocesses, no real repo). The logger
  * is pointed at a throwaway dir so the preservation log line can be asserted.
+ *
+ * Issue #466 (D6, pinned by #473 finding 2): the same harness also proves the
+ * foreground branch path writes the durable head-state record before the branch
+ * exists, and clears it at BOTH teardown sites only when the restore succeeded.
+ * The store is the REAL `../headstate` module, pointed at `env.headStateDir`.
  */
 
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
@@ -85,6 +90,7 @@ vi.mock("@earendil-works/pi-tui", () => {
 });
 
 import initExtension from "../index";
+import { readHeadState } from "../headstate";
 import { setLogCwd } from "../logging";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 import type { SubagentResult } from "../types";
@@ -247,5 +253,68 @@ describe("foreground auto-approve teardown (#308)", () => {
 		const preserved = logLines().filter((l) => l.includes("detached checkout: work preserved on branch"));
 		expect(preserved).toHaveLength(1);
 		expect(preserved[0]).toContain(WORK_BRANCH);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #466 (D6) — the foreground durable record (#473 finding 2)
+// ---------------------------------------------------------------------------
+
+describe("foreground durable head state (#466 D6)", () => {
+	/** The record the last execute left behind for the test repository. */
+	function stored() {
+		const read = readHeadState(env.testCwd);
+		return read.state === "ok" ? read.record : undefined;
+	}
+
+	it("writes kind:foreground BEFORE the work branch exists", async () => {
+		gitMocks.getHeadState.mockReturnValue({ sha: "base123", detached: false, branch: "main" });
+		// Read the store from INSIDE the checkout call: the write-ahead property is
+		// "the record exists before the branch does", which an after-the-fact read
+		// cannot see (teardown clears it again). Deleting the foreground
+		// `writeHeadState` leaves this undefined — the pre-#473 suite stayed green.
+		let duringCheckout: ReturnType<typeof readHeadState> | undefined;
+		gitMocks.createWorkBranch.mockImplementation(() => {
+			duringCheckout = readHeadState(env.testCwd);
+			return { ok: true, branch: WORK_BRANCH };
+		});
+
+		await execute({ task: "do work", gitMode: "branch" });
+
+		const written = duringCheckout?.state === "ok" ? duringCheckout.record : undefined;
+		expect(written?.kind).toBe("foreground");
+		expect(written?.workBranch).toBe(WORK_BRANCH);
+		expect(written?.base).toMatchObject({ branch: "main", sha: "base123", detached: false });
+		expect(written?.runId).toEqual(expect.any(String));
+		// ...and the successful run's restore-ok teardown cleared it: nothing to repair.
+		expect(readHeadState(env.testCwd).state).toBe("absent");
+	});
+
+	it("the diff-capture teardown site clears the record only on restore-ok", async () => {
+		gitMocks.getHeadState.mockReturnValue({ sha: "base123", detached: false, branch: "main" });
+
+		await execute({ task: "do work", gitMode: "branch" });
+		expect(readHeadState(env.testCwd).state).toBe("absent");
+
+		// The restore failed, so the tree is still on the work branch: the record is
+		// the only copy of the base and must survive the same teardown.
+		gitMocks.restoreHead.mockReturnValue({ ok: false, error: "would be overwritten" });
+		await execute({ task: "do work, failed restore", gitMode: "branch" });
+		expect(stored()?.workBranch).toBe(WORK_BRANCH);
+	});
+
+	it("the cleanupGitBranch (crash) site clears the record only on restore-ok", async () => {
+		gitMocks.getHeadState.mockReturnValue({ sha: "base123", detached: false, branch: "main" });
+		gitMocks.restoreHead.mockReturnValue({ ok: false, error: "would be overwritten" });
+		runnerMocks.runSubagent.mockRejectedValue(new Error("boom"));
+
+		const crashed = await execute({ task: "crash", gitMode: "branch" });
+		expect(crashed.isError).toBeTruthy();
+		expect(stored()?.workBranch).toBe(WORK_BRANCH);
+
+		// Same site, a restore that landed: the record is done.
+		gitMocks.restoreHead.mockReturnValue({ ok: true });
+		await execute({ task: "crash, clean restore", gitMode: "branch" });
+		expect(readHeadState(env.testCwd).state).toBe("absent");
 	});
 });
