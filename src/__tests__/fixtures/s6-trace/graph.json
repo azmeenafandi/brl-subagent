@@ -1,0 +1,12 @@
+[
+  {
+    "effect": "dep.runGraphMode"
+  },
+  {
+    "effect": "result",
+    "payload": {
+      "isError": false,
+      "text": "graph"
+    }
+  }
+]

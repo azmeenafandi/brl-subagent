@@ -1,0 +1,26 @@
+[
+  {
+    "effect": "preflight.check",
+    "payload": {
+      "cwd": "<cwd>"
+    }
+  },
+  {
+    "effect": "log.warn",
+    "payload": {
+      "data": {
+        "errors": [
+          "Cannot delegate: the task requires the 'bash' tool (running commands) but it is not available in the resolved toolset (tools=read, excludeTools=none). Fix: add 'bash' to this dispatch's tools (or remove it from excludeTools) and re-dispatch, or pass force: true to dispatch anyway."
+        ]
+      },
+      "message": "Pre-task validation failed"
+    }
+  },
+  {
+    "effect": "result",
+    "payload": {
+      "isError": true,
+      "text": "Cannot delegate: the task requires the 'bash' tool (running commands) but it is not available in the resolved toolset (tools=read, excludeTools=none). Fix: add 'bash' to this dispatch's tools (or remove it from excludeTools) and re-dispatch, or pass force: true to dispatch anyway."
+    }
+  }
+]

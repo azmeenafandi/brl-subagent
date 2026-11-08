@@ -1,0 +1,20 @@
+[
+  {
+    "effect": "log.warn",
+    "payload": {
+      "data": {
+        "currentTotal": 0,
+        "estimatedCost": 0.05,
+        "limit": 0.001
+      },
+      "message": "Subagent delegation: session cost limit reached"
+    }
+  },
+  {
+    "effect": "result",
+    "payload": {
+      "isError": true,
+      "text": "Cannot delegate: session cost limit reached ($0.0000 spent of $0.00 limit). Increase the limit via /brl-subagent costlimit or set to 0 for unlimited."
+    }
+  }
+]

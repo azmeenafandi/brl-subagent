@@ -1,0 +1,12 @@
+[
+  {
+    "effect": "dep.runParallelMode"
+  },
+  {
+    "effect": "result",
+    "payload": {
+      "isError": false,
+      "text": "parallel"
+    }
+  }
+]
