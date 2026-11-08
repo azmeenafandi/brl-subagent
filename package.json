@@ -29,6 +29,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "check:imports": "node scripts/check-imports.mjs",
     "docs:arch": "node scripts/docs-arch.mjs --write",
     "docs:decisions": "node scripts/docs-decisions.mjs --write"
   },
