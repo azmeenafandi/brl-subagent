@@ -87,6 +87,64 @@ conductor-assigned line, because a format-only check cannot tell a classified co
 invented one (2026-10-31: `medium (0.70)` typed, classifier said `high (0.32)`; 2026-11-04: the
 same shortcut, and the risk class was wrong — C2 dispatched, C1 classified).
 
+### The model and the second arm (issue #468)
+
+The classifier answers **task difficulty**; the decision is **task × model**. The blind arm keeps
+the template exactly (`state` = the task text and nothing else); the model-aware arm is the *same*
+template plus one model stanza — the only difference — so any movement between the arms is
+attributable. Both run in the same `codemode` call, and one `--classifier` invocation records both:
+
+```bash
+$ node .pi/skills/worktree/jev-check.mjs --classifier '<blind raw answers>' \
+    --model openrouter/meta/muse-spark-1.3-contributor \
+    --classifier-model-aware '<aware raw answers>' --label impl-468
+jev-check: aware arm minimal (0.61) — recorded as level-model, never printed: the blind line above is the dispatch line
+jev: medium (0.72) · C2 · worktree y
+jev-check: provenance row appended to .pi/jev-lines.log (label "impl-468", model openrouter/meta/muse-spark-1.3-contributor, aware arm recorded)
+```
+
+- **One line is printed.** The aware arm is a stderr diagnostic plus a record column; a second
+  `jev:` line on stdout would let a reader paste the wrong arm.
+- **Rollout ordering.** The new columns may be written only **after** this tool is merged: the cockpit's
+  merge guard runs its own copy of `jev-check`, and that parser is fail-closed, so a `model:` or
+  `level-model:` row written early makes every merge fail structurally. A row without them is
+  legacy-shaped and safe on either side of the merge.
+- **Blind isolation.** The printed line is byte-identical with and without `--model`/
+  `--classifier-model-aware`, so adding the measurement cannot change the dispatch.
+- **It never blocks.** `--classifier-model-aware` requires `--model` (exit 2 — an arm without a
+  model names nothing), but an *unusable* arm-2 answer falls back to blind-only: the record says so
+  and the dispatch proceeds. It is a measurement.
+- **The columns are keyed and optional** after the line: `stated:worktree`, `model:<id>`,
+  `level-model:<level> (<conf>)` — any subset, any order, each at most once. The matched line never
+  changes, so `--require-provenance` keeps comparing exactly, and 3-, 4-, 5- and 6-column rows
+  coexist in one log.
+
+## Settle and calibrate — does the level survive contact with an outcome?
+
+The provenance row records what the classifier **answered**; it can never record what **happened**,
+so the apparatus was structurally unable to answer "was this level right for this model". The
+sidecar closes that gap without touching the matched row:
+
+```bash
+$ node .pi/skills/worktree/jev-check.mjs --settle impl-468 --kind impl --outcome done \
+    --verdict approve-with-nits --nits 2 --model-ran deepseek/deepseek-flash
+$ node .pi/skills/worktree/jev-check.mjs --calibrate
+```
+
+- **`.pi/jev-outcomes.log`** — header `# jev-outcomes — cutoff <full ISO instant>`, then
+  `ts\tlabel\tkind\toutcome\tverdict|null\tnits|null\tmodel-ran|null`. Keyed by the dispatch label:
+  one line per settle, appended, never rewritten. `--kind` is required because a review is a
+  different question — a `changes-requested` review is a **good** review, not a level failure.
+- **`unknown` is a gap, not a value.** A dead agent settles `unknown`; nothing is inferred.
+- **`--model-ran` is a manual correction** for a transport retry or a fallback, on the settle row so
+  the provenance row's exact text is untouched. It is not runtime detection, and it is not claimed
+  to be.
+- **`--calibrate`** prints `eligible / settled / with-model`, then per model: N, observed-sufficient
+  count, both arms' agreement against the **dispatched** level, and the delta direction
+  (above/below/equal). **Below 20 eligible implementation rows it prints counts only** — the
+  comparison floor is the falsifier in ADR 0025, and the bias is stated: both arms are scored
+  against the conductor's own choice, on runs that worked. It never names a winner.
+
 **A bare level is a finding.** `jev: medium · C2 · worktree y` records no query — it is the exact
 form the 2026-10-13 and 2026-10-23 skips produced. Every spec and dispatch carries the full line
 `jev: <level> (<conf>) · Cx · worktree <y|n>`; a review that sees a bare level (or no line at all)
@@ -168,8 +226,8 @@ Rules of the input:
   boundary", "changes a retry contract" are task facts — include them. "This is C1",
   "recommend high" are OUR answers — never include them.
 - **Operational burden is a fact too** — the worktree, the full suite, the mutation battery,
-  the PR. Jev's known blind spot is exactly this; the clamps patch it today, the template
-  lets Jev reason about it.
+  the PR. Jev's known blind spot is exactly this; the template hands it the burden as facts, and the
+  model-aware arm (`--model`) hands it the one input the blind arm never had.
 - **Reviews:** include the risk class under review and the attack surfaces (facts), never the
   expected verdict.
 
@@ -177,6 +235,10 @@ Rules of the input:
 
 One line per dispatch, appended to `.development/investigations/jev-calibration-log.md` when
 the dispatch **closes** (merge / rejection), not at dispatch time:
+
+The **machine-readable** half is the sidecar: `jev-check --settle <label> …` appends to
+`.pi/jev-outcomes.log`, and `--calibrate` reads it back against the provenance log (see "Settle and
+calibrate" above). The table below stays the human narrative, and `--ledger` audits it.
 
 ```
 | Date | Dispatch | Class | Jev | Chosen | Delta / reason | Outcome | Calibrated? |
@@ -194,23 +256,32 @@ the dispatch **closes** (merge / rejection), not at dispatch time:
 ## The rules (Rule 22)
 
 - **Advisory only.** The conductor decides; the maintainer's spec approval is the gate.
-- **Record the line** in the spec and the dispatch — format it with
-  `.pi/skills/worktree/jev-check.mjs --line '<classifier-json>'` (a bare level is a finding).
-  **Strict Jev (ratified 2026-10-12):** use Jev's
-  level. **ANY deviation (either direction) carries a one-line reason**; the former C1⇒high convention
-  is retired.
-- **Low-confidence carve-out (the one standing exception):** on a C1, when Jev's confidence is
-  `< 0.5`, a +1 raise is justified — the reason must cite the low confidence. The calibration log tests
-  whether the carve-out earns its keep (delete it if raised runs show no outcome difference).
-- **Clamps:** artifact-producing dispatches (worktree / PR / verification) floor at
-  `low`; reviews floor at `medium`.
+- **The level is an OBSERVATION (2026-11-08, #468).** Record the line in the spec and the dispatch —
+  format it with `.pi/skills/worktree/jev-check.mjs --classifier '<raw answers>'` (a bare level is a
+  finding) — and then run whatever level you judge right. No deviation reason, no floor, and no
+  "below Jev" note is required or checked: the level rides along in the line and the row so that it
+  can be **measured against outcomes**, not so that it can be obeyed. The risk class still gates
+  review depth.
+- **The two clauses this supersedes** (recorded, because deleting a rule silently is the failure
+  mode this file exists to prevent): "Strict Jev — use Jev's level, ANY deviation (either direction)
+  carries a one-line reason", "the low-confidence carve-out on a C1 with conf < 0.5", and "Clamps:
+  artifact dispatches floor at `low`, reviews floor at `medium`". All three were level *controls*
+  with no measured cost behind them, and the 2026-11-07 sub-plan-critique pin already contradicted
+  the first. The low-confidence carve-out is superseded by that pin (critiques run at `medium`
+  regardless); the floors are withdrawn.
+- **The `worktree` cell is stated, not answered** (#456): `--worktree y|n` with `--classifier`
+  records `stated:worktree`, because Rule 5 and the worktree guard govern, not a probability.
+- **The model and the outcome are recorded** (#468): `--model <provider>/<id>` adds a `model:`
+  column to the provenance row; `--classifier-model-aware '<raw answers>'` adds the second arm's
+  `level-model:<level> (<conf>)`; `--settle <label> --kind impl|review|probe --outcome
+  done|failed|stopped|unknown [--verdict …] [--nits N] [--model-ran <id>]` appends what happened to
+  `.pi/jev-outcomes.log`, keyed by label. `--calibrate` joins the two and prints both arms'
+  agreement — counts only below 20 eligible implementation rows, and never a winner.
 - **Input + log:** build `state.task` from the input template; when the dispatch closes,
-  record the outcome line in `.development/investigations/jev-calibration-log.md`.
-- **The `worktree` cell can misread `src/__tests__`** (observed: it said `n` for a test-only fix).
-  Rule 5 and the worktree-guard govern — always treat a `src/**` edit as worktree-required and
-  record the override.
+  record the outcome line in `.development/investigations/jev-calibration-log.md` and settle it.
 - **Unavailable is recorded, not silent:** if `codemode` or the model is missing, write
-  `jev: unavailable` and proceed — never block a dispatch on the classifier.
+  `jev: unavailable` and proceed — never block a dispatch on the classifier. The same holds for the
+  model-aware arm: an unusable arm 2 falls back to blind-only, because it is a measurement.
 
 ## Why advisory (2026-10-10 backtest, 98 dispatches)
 
@@ -220,9 +291,10 @@ the dispatch **closes** (merge / rejection), not at dispatch time:
 - **It raises reviews:** `review-test-hygiene-r2` (the review that caught the #308
   regression) high→**xhigh**, `review-fix315` → high, `impl-299-probe` medium→**xhigh**.
 - **Its biases:** it discounts mechanical plumbing work but also ignores *operational*
-  burden (worktree, suite, PR, evidence) — hence the clamps and advisory-only status. The
-  input template above hands it that burden as facts; the calibration log measures whether
-  it actually helps.
+  burden (worktree, suite, PR, evidence). The input template above hands it that burden as facts;
+  the calibration log and `--calibrate` measure whether it actually helps. The backtest measured
+  **agreement** between two unvalidated opinions, never calibration against an outcome — which is
+  exactly what the `model:`/`level-model:`/outcome columns now make possible (ADR 0025).
 - Evidence: `.development/investigations/jev-thinking-backtest-2026-10-10.md`.
 
 ## Recorded exceptions (`--log`)

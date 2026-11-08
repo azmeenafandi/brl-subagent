@@ -275,13 +275,16 @@ never re-type their logic by hand. Full design:
     - **State** ("nothing is in flight", "the tree is clean") → the command that
       showed it.
 
-22. **Thinking-level calibration (Rule 22 — advisory, Jev).** Before writing a spec or
-    dispatch, classify the task **blind** (task text only) with the Jev classifier and
+22. **Thinking-level calibration (Rule 22 — the Jev level is an OBSERVATION).** Before writing a
+    spec or dispatch, classify the task **blind** (task text only) with the Jev classifier and
     record the result in the spec and the dispatch:
-    `jev: <level> (<conf>) · <C1|C2|C3> · worktree <y|n>`. Deviations **≥2
-    levels**, and **any level below Jev on a review**, carry a one-line reason. Clamps:
-    artifact-producing dispatches floor at `low`; reviews floor at `medium`. If
-    `codemode`/Jev is unavailable, record `jev: unavailable` and proceed — never block
+    `jev: <level> (<conf>) · <C1|C2|C3> · worktree <y|n>`. **The level is a recorded observation,
+    not a gate input** (#468): run whatever level you judge right for the task and the model — no
+    ≥2-level deviation reason, no "below Jev" review note, and no artifact/review floor is
+    required, because none of them is checked. The **risk class** is what still gates: `C1|C2|C3`
+    sets review depth (the table below), and a review's `jev-recheck:` may not classify the change
+    riskier than the record declares. If `codemode`/Jev is unavailable, record
+    `jev: unavailable` and proceed — never block
     a dispatch on the classifier. **Advisory on the LEVEL** — the conductor (and the
     maintainer's spec approval) still decide — but **blocking on PRESENCE** in a project
     that opts in: a `package.json` carrying `{"brl-subagent": {"processChecks": true}}`
@@ -294,6 +297,12 @@ never re-type their logic by hand. Full design:
     conductor-assigned line), so the provenance log records that a CLASSIFIER produced it — `--log --require-provenance` (run by `merge-guard.sh`) fails a
     line nobody printed, because the format check alone passes an invented confidence
     (2026-10-31: `medium (0.70)` dispatched, the classifier had said `high (0.32)`).
+    **Record the model and what happened** (#468): `--model <provider>/<id>` adds a `model:` column,
+    `--classifier-model-aware '<raw answers>'` adds the second arm's `level-model:` answer (it needs
+    `--model`; it never prints a second line and never blocks a dispatch), and `--settle <label>
+    --kind impl|review|probe --outcome done|failed|stopped|unknown [--verdict …] [--nits N]` appends
+    the outcome to `.pi/jev-outcomes.log`. `--calibrate` then compares both arms against the
+    dispatched level — and prints **counts only** below 20 eligible implementation rows.
     Snippet + the 2026-10-10 backtest (98 dispatches,
     $0.0034: it flags over-leveling, raises reviews — `review-test-hygiene-r2`, which
     caught the #308 regression, was called high→xhigh) live in
@@ -402,10 +411,11 @@ Reviews use **`project-reviewer`** (its mirror of the same bar, with the require
 `SOLID/DRY violations flagged: N` verdict line); plan critiques use **`project-plan-critic`**.
 
 **Pinned: plan critiques run at `thinkingLevel: "medium"`** (maintainer decision, 2026-11-07 — the measured
-cost/performance optimum for terra) **regardless of what Jev answers.** This is a standing carve-out from
-Rule 22's deviation rule, not a per-dispatch judgement: do not escalate a critique because Jev says `high`
-or `xhigh`, and do not justify `medium` in the dispatch. The Jev line is still recorded and still drives the
-**risk class** — only the thinking level is pinned.
+cost/performance optimum for terra) **regardless of what Jev answers.** This is a standing PIN, not a
+per-dispatch judgement: do not escalate a critique because Jev says `high` or `xhigh`, and the dispatch
+needs no justification for `medium`. The Jev line is still recorded and still drives the **risk class**;
+with the level an observation (#468) there is no deviation rule left to carve out of — the pin and the
+record simply coexist.
 
 ## Adversarial review dispatch (rule #7 + #8 + #10)
 

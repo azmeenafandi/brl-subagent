@@ -32,8 +32,9 @@ _Generated from each `.development/decisions/NNNN-*.md` record by `npm run docs:
 | 0022 | [The pre-flight's second arm: drop the deadline, keep the approval gate](./0022-preflight-drop-timeout-arm.md) | Accepted | 2026-11-06 |
 | 0023 | [One owner for the background deadline: the spawn arms it, only a settle ends a run](./0023-deadline-ownership.md) | Accepted | 2026-11-07 |
 | 0024 | [The unit projection of the pre-flight: a batch unit's own declared deadline is dropped](./0024-unit-projection-preflight.md) | Accepted | 2026-11-07 |
+| 0025 | [The Jev level is an observation: the gate is provenance + risk, and a model-aware arm is measured against outcomes](./0025-jev-level-as-observation.md) | Accepted | 2026-11-08 |
 
-**24 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
+**25 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
 
 <!-- END GENERATED: adr-index -->
 

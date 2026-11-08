@@ -590,9 +590,25 @@ jev-recheck: jev: high (0.44) · C1 · worktree y
 Risk class: C1
 EOF
 
+    # #468 B pin: the LEVEL is an observation. A recheck whose level sits BELOW the dispatch's
+    # level must still clear when the RISK class is equal — check (f) compares risk ranks, never
+    # level adequacy, so a dispatch classified `high` and rechecked `minimal` at the same C1 is
+    # not a finding. A guard that started reading the level would fail this case.
+    printf '2026-11-04T00:00:02.000Z\timpl-412\tjev: high (0.72) · C1 · worktree y\n' >>"${prov}"
+    printf '2026-11-04T00:00:03.000Z\trecheck-level-drop\tjev: minimal (0.58) · C1 · worktree y\n' >>"${prov}"
+
+    cat >"${dir}/recheck-level-below.md" <<EOF
+# Review — PR #level-drop
+
+Verdict: approve
+
+jev-recheck: jev: minimal (0.58) · C1 · worktree y
+Risk class: C1
+EOF
+
     check_f_ok() {
-        local label="$1" record="$2" expected="$3" reason
-        reason="$(recheck_decision 412 "${record}")"
+        local label="$1" record="$2" expected="$3" pr="${4:-412}" reason
+        reason="$(recheck_decision "${pr}" "${record}")"
         if [[ -z "${expected}" ]]; then
             if [[ -z "${reason}" ]]; then
                 printf '  ✓ %s\n' "${label}"
@@ -615,6 +631,9 @@ EOF
     check_f_ok "(f) a record without jev-recheck fails" "${dir}/recheck-missing.md" "no line-start"
     check_f_ok "(f) a malformed recheck fails" "${dir}/recheck-malformed.md" "malformed"
     check_f_ok "(f) a recheck line with no provenance row fails" "${dir}/recheck-unproven.md" "no provenance row"
+    # #468 B pin — the level is an observation: a recheck BELOW the dispatch's level passes when
+    # the risk class is equal (the guard reads the risk, never the level).
+    check_f_ok "(f) a recheck LEVEL below the dispatch level passes when the risk class is equal (#468)" "${dir}/recheck-level-below.md" "" "level-drop"
 
     local total=$((SELFTEST_PASS + SELFTEST_FAIL))
     echo "merge-guard --selftest: ${SELFTEST_PASS}/${total} passed — $([[ ${SELFTEST_FAIL} -eq 0 ]] && echo PASS || echo FAIL)"
