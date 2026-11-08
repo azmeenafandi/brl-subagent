@@ -2,7 +2,7 @@
 
 > Multi-agent orchestration for [pi](https://github.com/earendil-works/pi) — chain, parallel, and dependency-graph delegation to isolated subagents with per-step model routing, preset-driven tool scoping, thinking-level control, and background execution with live monitoring, real abort, and per-agent timeouts.
 
-**Version:** 2.7.0 · **Author:** Azmeen Afandi / [Beeroo Labs](https://beeroolabs.com) · **License:** MIT
+**Version:** 2.8.0 · **Author:** Azmeen Afandi / [Beeroo Labs](https://beeroolabs.com) · **License:** MIT
 
 ---
 
@@ -14,7 +14,7 @@
 - **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and a 30-minute default deadline for runs that don't set one. Nothing orphans; nothing leaks.
 - **Preset-driven tool scoping** — every subagent runs with exactly the tools its job needs, restricted by preset or per-call `tools`/`excludeTools`, with auto-route that picks the right preset when you don't.
 - **Templates with slots** — saved, file-backed task templates with `${param}` placeholders for workflows you run again and again.
-- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence (`0o700` stores, `0o600` files; the directory mode is repaired on every write and is the confidentiality boundary), and a 2300+ test suite pinning every contract against the real pi SDK.
+- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence (`0o700` stores, `0o600` files; the directory mode is repaired on every write and is the confidentiality boundary), and a 2400+ test suite pinning every contract against the real pi SDK.
 
 ---
 
