@@ -125,6 +125,23 @@ conductor-assigned line, because a format-only check cannot tell a classified co
 invented one (2026-10-31: `medium (0.70)` typed, classifier said `high (0.32)`; 2026-11-04: the
 same shortcut, and the risk class was wrong — C2 dispatched, C1 classified).
 
+**One command per dispatch (#500):** `--dispatch` is the `--classifier --label` composition plus
+the paste text, so the line, the row and what goes into the task are one step:
+
+```bash
+$ node .pi/skills/worktree/jev-check.mjs --dispatch --classifier '<raw answers>' \
+    --worktree y --label review-447 --kind review
+jev: medium (0.64) · C1 · worktree y
+paste: jev: medium (0.64) · C1 · worktree y
+jev-check: provenance row appended to .pi/jev-lines.log (label "review-447")
+jev-check: settle it with: jev-check.mjs --settle "review-447" --kind review --outcome done|failed|stopped|unknown
+```
+
+Its row is byte-identical to `--classifier`'s (same writer, one definition), and `--label` is
+required — exit 2 — because a row with no label is invisible to `--settle` and to the gate. The
+three review dispatches that arrived with no `review-<pr>` row (S4, S5, U1) were all recorded
+*after* the fact; the one step is the fix.
+
 ### The model and the second arm (issue #468)
 
 The classifier answers **task difficulty**; the decision is **task × model**. The blind arm keeps

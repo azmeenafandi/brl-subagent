@@ -376,8 +376,13 @@ ships as product documentation — see `CONTRIBUTING.md`).
                 says how the post-verdict commit was verified, (e) `jev-check --log` is
                 green, (f) the record carries a `jev-recheck:` line (the classifier's
                 answer on the DISPATCH text, run at review time) with a `recheck-<pr>`
-                provenance row, and a `Risk class:` no weaker than the recheck. Any
-                failure blocks and lists every reason. Then merge commit to
+                provenance row, and a `Risk class:` no weaker than the recheck, and
+                (g) the PR BODY's `pr-evidence` block recomputes
+                (`pr-evidence --check --pr <n>`) — skipped as `(g) not applicable` for a
+                body with no block and no count. Any
+                failure blocks and lists every reason. The run echoes `pr #<n>`, the
+                RESOLVED record path and `record sha256: <hash>` first, so the conductor
+                can confirm the gate read the bytes the reviewer produced. Then merge commit to
                 `dev` (PRs target `dev`; `dev → main` is the release-time merge commit.
                 Never squash — per-issue commits must survive so release notes can read
                 them. Never merge a task PR straight to `main`.) Then run
@@ -492,14 +497,28 @@ mechanics, verdict format: `references/review-dispatch.md`.
   it), and `--log --require-provenance` additionally fails a dispatch
   line with no such row — fail-closed (exit 2) when the log is missing or empty. That is
   the check the format cannot make: a hand-typed confidence passes the shape.
+  **`--dispatch --classifier '<raw answers>' --label <name> [--worktree y|n] [--model <id>]
+  [--kind impl|review|probe]` is the ONE command a dispatch needs (#500):** it prints the line,
+  appends the row, and prints the exact `paste:` text, then the `--settle` command that label
+  needs. `--label` is required (exit 2) because a row with no label is invisible to `--settle`
+  and to the gate — the review dispatch's `review-<pr>` row was reconstructed by hand three
+  times (S4, S5, U1) because printing the recheck line looked like recording the dispatch.
   `--selftest` proves every path with fixtures. CI runs `--selftest` and `--ledger`
   beside the test-budget guard.
 - **`merge-guard.sh <pr-number> <review-record-path>`** — the mechanical merge gate
   (lifecycle step 7), wired to the `unreviewed final fix` friction entry (#395
   `77338bf`): CI green, the record names the PR, its last `Verdict:` is
   approve/approve-with-nits, the PR's **current head** is in the record (or a
-  `conductor-verified:` line documents the post-verdict commit), and `jev-check --log`
-  passes. Exit 1 lists every failed reason at once; run it from the cockpit.
+  `conductor-verified:` line documents the post-verdict commit), `jev-check --log`
+  passes, the record's `jev-recheck:` is bound to a `recheck-<pr>` row at no weaker a tier,
+  and the PR body's numbers recompute (`pr-evidence --check --pr <n>`; `(g) not applicable`
+  when the body carries neither a block nor a count). Exit 1 lists every failed reason at
+  once; run it from the cockpit. The header echoes `pr #<n>`, the RESOLVED record path and
+  `record sha256: <hash>` — a relative record path resolves against the caller's cwd, and a
+  missing one says `record: <abs path> — not found` instead of a shell error. `(g)` measures
+  the checkout at the PR head (`git worktree list` finds it — normally the review worktree;
+  `--pr-tree <path>` names it), and a `no checks reported` failure carries the
+  `gh pr view <n> --json mergeable,mergeStateStatus` hint (#465), never a pass.
   `--check-record <record> [--pr <n>] [--head <sha>]` is the offline half — the same field
   rules, no `gh`, no network, no provenance log — so a generated record can be checked
   before dispatch; write the record with `scripts/review-record.mjs` (#487), never by hand.
