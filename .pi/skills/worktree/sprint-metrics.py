@@ -226,6 +226,15 @@ RECONCILE_SELFTEST_CASES = [
                  "cm-1")],
      [_spawn("agent-1")],
      1, 0, 1, True),
+    # The span rule: a stray `background: false` before the call must not flip it.
+    ("a stray background flag outside the call is not attributed to it",
+     [_tool_call("delegate_task", {"task": "x", "background": True}, "direct-1"),
+      _tool_call("codemode",
+                 {"code": "const note = 'set background: false';\n"
+                          "await tools.delegate_task({ task: 'x' });"},
+                 "cm-1")],
+     [_spawn("agent-1"), _spawn("agent-2")],
+     1, 1, 2, True),
     # The allowance's two legitimate shapes: one call, N spawns (a `tasks` fan-out)
     # and a transport auto-retry start, which has no dispatch call at all.
     ("a tasks fan-out raises the allowance by its extra units",
@@ -308,14 +317,23 @@ def codemode_dispatches(code: str):
     Returns a list of `background` values — True/False when the script states the
     flag on that call, None when it does not. Counting OCCURRENCES (not calls) is
     what makes a `Promise.all([tools.delegate_task(...), tools.delegate_task(...)])`
-    fan-out reconcile against the two spawns it produces.
+    fan-out reconcile against the two spawns it produces. Each flag is read from its
+    own call's span (from the call to the next occurrence), never positionally from
+    the whole script: a stray `background: false` in a string or an unrelated object
+    must not flip the first call's classification. Totals never depended on this (the
+    reconcile compares spawn totals), but the FG/BG column did.
     """
     stripped = strip_js_comments(code)
-    n = len(_CODEMODE_CALL.findall(stripped))
-    if not n:
+    calls = list(_CODEMODE_CALL.finditer(stripped))
+    if not calls:
         return []
-    flags = [f == "true" for f in _CODEMODE_BACKGROUND.findall(stripped)][:n]
-    return flags + [None] * (n - len(flags))
+    flags = []
+    for index, call in enumerate(calls):
+        start = call.start()
+        end = calls[index + 1].start() if index + 1 < len(calls) else len(stripped)
+        hit = _CODEMODE_BACKGROUND.search(stripped[start:end])
+        flags.append(hit.group(1) == "true" if hit else None)
+    return flags
 
 
 def load_events(log_paths, since, until):
