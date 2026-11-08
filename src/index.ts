@@ -132,13 +132,16 @@ export default function (pi: ExtensionAPI) {
 	const { runChainMode, runParallelMode, runGraphMode, resolveStepModel, applyUnitShapeGuard } = createModeRunners(rt);
 	// ADR 0027 (S3): the background pipeline. The loader thunk is invoked only
 	// inside `startBackgroundAgent`, so session-manager's lifecycle mutators stay
-	// lazily imported from the one module allowed to reach them.
+	// lazily imported from the one module allowed to reach them. S6 (#430):
+	// `startBackgroundAgent` itself is no longer destructured here — nothing in
+	// the composition root calls it (`spawnBackgroundRun` does), and the unused
+	// binding only invited the illusion of a second entry point.
 	const backgroundPipeline = createBackgroundPipeline(rt, {
 		loadSessionManager: () => import("./session-manager"),
 		resolveStepModel,
 		applyUnitShapeGuard,
 	});
-	const { runBackgroundFanOut, startBackgroundAgent, spawnBackgroundRun } = backgroundPipeline;
+	const { runBackgroundFanOut, spawnBackgroundRun } = backgroundPipeline;
 
 	// Issue #147: the completion-push subscriber needs the session context to
 	// resolve the run entry (state.getLogicalRunEntries(ctx)). The event-bus listener

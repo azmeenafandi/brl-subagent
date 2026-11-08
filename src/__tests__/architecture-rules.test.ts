@@ -345,10 +345,12 @@ describe("architecture rules (issue #251)", () => {
 		// approvalMode are persisted strings, not schema-validated unions.
 		// Removing it needs the production type work (history.ts's return type),
 		// so this commit PINS the current typed cast and forbids regressing it to
-		// an anonymous literal or `any`.
+		// an anonymous literal or `any`. Since S6 (#430) the assignment sits in
+		// the private `resolveRetrySource` seam — the pin follows it there rather
+		// than relaxing to "somewhere in the file".
 		const retryAssignments = delegateSource
 			.split("\n")
-			.filter((line) => /\bparams\s*=\s*resolveRetryParams\(/.test(line));
+			.filter((line) => /\bresolveRetryParams\(/.test(line));
 		expect(retryAssignments).toHaveLength(1);
 		expect(retryAssignments[0]).toContain("as DelegateTaskParams");
 		expect(retryAssignments[0]).not.toMatch(/\bas\s+(?:any|unknown)\b/);

@@ -1,0 +1,83 @@
+[
+  {
+    "effect": "preflight.check",
+    "payload": {
+      "cwd": "<cwd>"
+    }
+  },
+  {
+    "effect": "log.warn",
+    "payload": {
+      "data": {
+        "warnings": [
+          "Task involves architectural work but thinkingLevel is 'off' — consider 'medium' or higher"
+        ]
+      },
+      "message": "Pre-task validation warnings"
+    }
+  },
+  {
+    "effect": "state.persistRun",
+    "payload": {
+      "kind": "foreground",
+      "status": "running"
+    }
+  },
+  {
+    "effect": "registry.write",
+    "payload": {
+      "kind": "foreground",
+      "status": "running"
+    }
+  },
+  {
+    "effect": "history.prune"
+  },
+  {
+    "effect": "live.register",
+    "payload": {
+      "task": "summarize the design notes"
+    }
+  },
+  {
+    "effect": "live.state.register",
+    "payload": {
+      "task": "summarize the design notes"
+    }
+  },
+  {
+    "effect": "slot.acquire",
+    "payload": {
+      "acquired": false,
+      "active": 1,
+      "priority": "normal"
+    }
+  },
+  {
+    "effect": "state.persistRun",
+    "payload": {
+      "errorCategory": "aborted",
+      "kind": "terminal",
+      "outputSummary": "",
+      "status": "failed"
+    }
+  },
+  {
+    "effect": "registry.write",
+    "payload": {
+      "errorCategory": "aborted",
+      "kind": "terminal",
+      "status": "failed"
+    }
+  },
+  {
+    "effect": "live.state.finalize"
+  },
+  {
+    "effect": "result",
+    "payload": {
+      "isError": true,
+      "text": "Subagent cancelled while waiting for concurrency slot."
+    }
+  }
+]
