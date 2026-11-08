@@ -6,8 +6,8 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md`, `-2026-11-06.md`, `-2026-11-07b.md` (the pre-sweep snapshot), `-2026-11-08.md` (a superseded mid-sweep STATE) — not current state.
 
 ## STATE
-Verified: 20f44ed (2026-11-08)
-Cycle: closed 2026-11-08 with v2.8.0 released; the next cycle opens when a direction is agreed
+Verified: a685561 (2026-11-08)
+Cycle: the composition-root cycle (open 2026-11-08) — #474 P0 first, then #476, the runtime-context ADR, and #430 as the first seam
 
 - **dev** @ `7809e56` (release commit `436d56b` + the release docs). Merged today, in order: #457 (#440), #458 (#436), #459 (#455), #461 (#434), #462 (#439), #463 (#456), #464 (#447), #467 (#453), #470 (#469), #471 (#468), #472 (#465), #473 (#466), then PR #475 (`dev → main`, release). Docs: ADR 0023 (deadline ownership), ADR 0024 (unit projection), ADR 0025 (Jev level as observation), ADR 0026 (headState boot repair), the #453/#460/#466 dossiers. **No worktrees beyond the cockpit pair**; `git worktree list` = `main` + `dev`.
 - **Released:** **v2.8.0 LIVE** (2026-11-08) — GitHub release published `2026-11-08T04:14:51Z`, npm `latest` **2.8.0**, `main` and `dev` both @ `436d56b` (tag `v2.8.0`). **Published-build probe: 70 packed files, every one byte-identical to the tag, zero missing** (`npm pack brl-subagent@2.8.0` against `git archive v2.8.0`). **Release checkpoint CLOSED.** Running install: **`npm:brl-subagent` 2.8.0** — the dev install was removed, and the installed copy is **byte-identical to the published tarball** (70 files, 0 mismatches). Step 9 complete.
