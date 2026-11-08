@@ -37,12 +37,68 @@ var spawnQueue: Promise<void> = Promise.resolve();
 const gitBranchLocks = new Map<string, Promise<void>>();
 
 /**
+ * Issue #465 (b): WHO holds each branch lock (run id). `gitBranchLocks` records
+ * only that a repository is locked — and a waiter that is refused (rather than
+ * left hanging) has to say whose run it is waiting on.
+ *
+ * Set once the lock is actually acquired, and cleared ONLY by the matching
+ * release: a queued spawn's chain entry may already have replaced ours, so an
+ * owner must never be deleted by a stale id. In-process state, like the lock
+ * itself — neither survives a restart, which is why a restart is the documented
+ * recovery from a wedged owner.
+ */
+const gitBranchLockOwners = new Map<string, string>();
+
+/**
+ * Issue #465 (b): how long a terminal-but-unsettled owner is given before later
+ * branch-mode dispatches are refused. 30 s is a measurement, not a guess: the
+ * cooperative settle lag after a deadline measured 88 ms (W460P-P6) plus the
+ * largest observed `cleanupWorkBranch` (commitAll + captureDiff + restoreHead +
+ * deleteBranch) — orders of magnitude below this — while a human staring at a
+ * hung dispatch deserves an answer well inside a minute. The grace bounds only
+ * the false-positive window; after the first refusal it changes nothing.
+ */
+const DEFAULT_STUCK_OWNER_GRACE_MS = 30_000;
+let stuckOwnerGraceMs = DEFAULT_STUCK_OWNER_GRACE_MS;
+
+/**
+ * TEST-ONLY: shorten the stuck-owner grace. A unit test cannot wait out the
+ * shipped 30 s, and the predicate's shape (not its constant) is what it pins.
+ */
+export function __setStuckOwnerGraceMs(ms: number): void {
+  stuckOwnerGraceMs = ms;
+}
+
+/**
+ * Issue #465 (b): is `runId` a branch-lock owner that is terminal on paper but
+ * still holding its SDK session — i.e. the settle (the only releaser of the
+ * branch lock) never ran?
+ *
+ * `_sessionRef` is the clause that separates "settling" from "wedged": every
+ * settle path releases the lock in `cleanupWorkBranch` and only then clears the
+ * ref, so a run that is still reachable here has not begun its teardown. It is
+ * defence in depth rather than the only guard — `completedAt` plus the grace
+ * already covers the settle-in-flight window that a deadline opens (measured
+ * 88 ms, W460P-P6) — and removing it changes no verdict this tree can reach
+ * (the six settle paths order the release before the clear). It stays because
+ * the next change to that ordering must not silently turn a settling run into a
+ * refused one.
+ */
+function isStuckTerminalOwner(runId: string): boolean {
+  const owner = agents.get(runId);
+  if (!owner?.completedAt) return false;
+  if (owner._sessionRef === undefined) return false;
+  return Date.now() - owner.completedAt >= stuckOwnerGraceMs;
+}
+
+/**
  * TEST-ONLY: release every held git branch lock. The lock is normally held
  * for the agent's lifetime (released at settle), but tests that never settle
  * (hanging prompt mocks) would leak it into the next test.
  */
 export function __testResetGitBranchLocks(): void {
   gitBranchLocks.clear();
+  gitBranchLockOwners.clear();
 }
 
 // Robust UUID generation with fallback
@@ -1229,6 +1285,20 @@ export async function spawnBackgroundSession(
   let resolveNext!: () => void;
   spawnQueue = new Promise<void>(r => { resolveNext = r; });
   await prev;
+
+  // Issue #465 (d): the queue's critical section is the pi API access below
+  // (the dynamic import + createAgentSession), NOT the per-repo git wait
+  // further down — which can last a whole run. The release is therefore
+  // explicit AND idempotent: the branch block releases before it waits on
+  // another run's repository, and the `finally` still releases on every other
+  // exit path (measured before this: a healthy branch-mode run made an
+  // unrelated non-git spawn stay PENDING for its entire duration).
+  let spawnQueueReleased = false;
+  const releaseSpawnQueue = (): void => {
+    if (spawnQueueReleased) return;
+    spawnQueueReleased = true;
+    resolveNext();
+  };
   
   try {
   const id = generateUUID();
@@ -1853,16 +1923,63 @@ export async function spawnBackgroundSession(
     // branch). The lock is released in cleanupWorkBranch (or on setup throw).
     // Key: resolved repository root, cwd fallback for non-repo paths (#224).
     const lockKey = getRepoRoot(gitCwd) ?? gitCwd;
+    // Issue #465 (b): refuse a dispatch whose repository is held by a run that
+    // is terminal on paper but never settled — the settle is the only releaser
+    // of this lock (#460 §1.1), so waiting for it never ends. Checked BEFORE the
+    // chain link is installed and before any wait, so the refusal is immediate
+    // and the caller gets a spawn failure naming the owner instead of a tool
+    // call that hangs forever (measured: W460P-P10).
+    const holderId = gitBranchLockOwners.get(lockKey);
+    if (holderId && isStuckTerminalOwner(holderId)) {
+      const holder = agents.get(holderId)!;
+      const heldFor = Math.round((Date.now() - holder.completedAt!) / 1000);
+      const reason = sanitizeErrorMessage(
+        `gitMode 'branch' refused: this repository is locked by run ${holderId}, ` +
+        `which has been terminal (${holder.status}${holder.error ? `: ${holder.error}` : ''}) ` +
+        `for ${heldFor}s but has not settled — its SDK session is still held, so the ` +
+        `branch lock cannot be released while it may still write. The work branch ` +
+        `${holder.workBranch ?? '(unknown)'} is still checked out; the repository stays ` +
+        `on it, and the lock is only cleared by a process restart.`,
+        effectiveCwd,
+      );
+      // Mirror the branch-setup-throw path below: the agent record was already
+      // persisted as 'running' above, so a refusal that only THROWS leaves a
+      // zombie row `get_subagent_result` reports as running forever (measured,
+      // #460 §4.4 — `failPreStart` alone stops at the run entry). Record flip ->
+      // run entry -> transcript, then the throw that reaches the caller's
+      // spawn-failure result; each step is contained so a cleanup fault can
+      // never mask the refusal itself. `finalizeRunEntry` already retires the
+      // registry entry (a non-running write clears it); the explicit call is the
+      // belt for a finalize that threw — registry residue is what boot recovery
+      // reads, and this dispatch provably never started.
+      try {
+        updateAgentStatus(id, 'failed', reason);
+        finalizeRunEntry('failed', reason);
+        transcript.completeTranscript(id, 'failed');
+      } catch { /* best-effort, same discipline as the setup-throw path */ }
+      clearInflightRun(id);
+      throw new Error(reason);
+    }
+    // Issue #465 (d): release the process-wide spawn queue BEFORE the per-repo
+    // wait below — that wait is bounded by another run's lifetime, so holding
+    // the queue through it blocks every spawn in the process, not just this
+    // repository's. The git chain itself is unchanged: this spawn still cannot
+    // touch the working tree until the lock is handed over.
+    releaseSpawnQueue();
     const prev = gitBranchLocks.get(lockKey) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>(r => { release = r; });
     const entry = prev.then(() => gate);
     gitBranchLocks.set(lockKey, entry);
     await prev;
+    gitBranchLockOwners.set(lockKey, id);
     releaseGitLock = () => {
       // Delete the map entry ONLY if we are still the head of the chain — a
-      // queued spawn behind us replaced the entry with its own.
+      // queued spawn behind us replaced the entry with its own. The owner is
+      // held to the same rule: a stale release must not disown the new holder
+      // (that would turn the next dispatch's refusal back into a silent wait).
       if (gitBranchLocks.get(lockKey) === entry) gitBranchLocks.delete(lockKey);
+      if (gitBranchLockOwners.get(lockKey) === id) gitBranchLockOwners.delete(lockKey);
       release();
     };
 
@@ -1880,6 +1997,12 @@ export async function spawnBackgroundSession(
       const branchResult = createWorkBranch(gitCwd, headState.sha);
       if (branchResult.ok) {
         workBranchName = branchResult.branch;
+        // Issue #465 (b): stamp the work branch on the DURABLE record, not only
+        // in this closure. `agent.result.gitBranch` is written at settle, which
+        // is exactly what a wedged run never does — and a live-only field would
+        // die with the process that needs to name it.
+        agent.workBranch = workBranchName;
+        persistAgent(agent);
         log.info('Created work branch for background agent', {
           branch: workBranchName,
           base: headState.branch,
@@ -2409,6 +2532,6 @@ export async function spawnBackgroundSession(
   
   return agent;
   } finally {
-    resolveNext();
+    releaseSpawnQueue();
   }
 }
