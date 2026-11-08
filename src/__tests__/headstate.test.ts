@@ -10,6 +10,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import {
+	HEAD_STATE_SWEEP_AGE_MS,
 	HEAD_STATE_VERSION,
 	buildHeadStateNotice,
 	headStatePath,
@@ -275,5 +276,24 @@ describe("the notice and the sweep", () => {
 		utimesSync(file, old, old);
 		expect(sweepHeadStates({ repoGone: () => true })).toBe(1);
 		expect(readHeadState("/corrupt")).toEqual({ state: "absent" });
+	});
+
+	it("keeps a record at EXACTLY the age window and sweeps one 1 ms past it (strict >)", () => {
+		const now = Date.now();
+		const cutoff = HEAD_STATE_SWEEP_AGE_MS;
+		writeHeadState(record({ repoRoot: "/gone-exact", createdAt: new Date(now - cutoff).toISOString() }));
+		writeHeadState(record({ repoRoot: "/gone-past", createdAt: new Date(now - cutoff - 1).toISOString() }));
+		// `repoGone` is true for BOTH, so the age is the only separator: the boundary
+		// is exclusive (`age > maxAgeMs`), which is the conservative direction — a
+		// record is kept one tick longer than swept early.
+		expect(sweepHeadStates({ now, repoGone: () => true })).toBe(1);
+		expect(listHeadStates().map((r) => r.repoRoot)).toEqual(["/gone-exact"]);
+	});
+
+	it("never sweeps a record whose repository still resolves, however old (repoGone seam)", () => {
+		const now = Date.now();
+		writeHeadState(record({ repoRoot: "/alive-ancient", createdAt: new Date(now - 400 * DAY_MS).toISOString() }));
+		expect(sweepHeadStates({ now, repoGone: () => false })).toBe(0);
+		expect(listHeadStates()).toHaveLength(1);
 	});
 });
