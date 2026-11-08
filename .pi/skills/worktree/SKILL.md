@@ -500,6 +500,9 @@ mechanics, verdict format: `references/review-dispatch.md`.
   approve/approve-with-nits, the PR's **current head** is in the record (or a
   `conductor-verified:` line documents the post-verdict commit), and `jev-check --log`
   passes. Exit 1 lists every failed reason at once; run it from the cockpit.
+  `--check-record <record> [--pr <n>] [--head <sha>]` is the offline half — the same field
+  rules, no `gh`, no network, no provenance log — so a generated record can be checked
+  before dispatch; write the record with `scripts/review-record.mjs` (#487), never by hand.
   `--selftest` covers the record parsing with temp fixtures.
 
 ## Notes

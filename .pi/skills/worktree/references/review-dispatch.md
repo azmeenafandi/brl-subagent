@@ -46,15 +46,30 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   it goes (bash-side). The verdict still lives in the final response; banking
   exists so a drop/timeout leaves a resumable artifact (Rule 21's live
   artifact) — a re-dispatch then starts with "read the banked file first".
-- **The record is written to `/tmp/REVIEW_<n>.md` with bash BEFORE the final
-  message** — `cat > /tmp/REVIEW_<n>.md <<'EOF' … EOF`, then the same content
-  in the final response. `/tmp` is scratch, not a repo path, so the read-only
-  reviewer can write it (the preset excludes `write`/`edit`, keeps `bash`), and
-  a truncated or dropped final message no longer costs the whole review. The
-  conductor copies the file into the worktree as `REVIEW_PR<n>.md` (and
-  cross-checks it against the final message) instead of transcribing from
-  prose; a missing file is itself a finding to raise, not a reason to
-  reconstruct one from memory.
+- **The record is written by `scripts/review-record.mjs`, with bash, BEFORE the
+  final message** — one command, not a heredoc (the heredoc is how S4/S5/S6 got
+  their shape; #487):
+
+  ```bash
+  node scripts/review-record.mjs --pr <n> --verdict approve-with-nits \
+    --head "$(git -C <worktree> rev-parse HEAD)" --risk C1 \
+    --recheck 'jev: medium (0.63) · C1 · worktree y' --findings -
+  ```
+
+  `--findings -` reads the findings body from stdin; the script writes the
+  canonical block to `/tmp/REVIEW_<n>.md` (override with `--out`) **and**
+  prints it — paste the printed block into the final response. `/tmp` is
+  scratch, not a repo path, so the read-only reviewer can write it (the preset
+  excludes `write`/`edit`, keeps `bash`), and a truncated or dropped final
+  message no longer costs the whole review. The script pre-flights the gate's
+  rules — it refuses a declared `Risk class` weaker than the recheck's and a
+  findings body carrying its own line-start field — so verify the file before
+  pasting with
+  `bash .pi/skills/worktree/merge-guard.sh --check-record /tmp/REVIEW_<n>.md --pr <n> --head <sha>`
+  (offline: no `gh`, no provenance log). The conductor copies the file into the
+  worktree as `REVIEW_PR<n>.md` (and cross-checks it against the final message)
+  instead of transcribing from prose; a missing file is itself a finding to
+  raise, not a reason to reconstruct one from memory.
 - Output your verdict in this exact format in your final response:
   verdict line (`approve` / `approve-with-nits` / `changes-requested`),
   `Reviewed head: <sha>` (the commit you actually reviewed — `git -C <worktree>
@@ -81,6 +96,35 @@ and presents it for the user loop.
 `merge-guard.sh <pr> <record>` (lifecycle step 7) reads the record with a script, so the
 record carries three machine-checked facts. Miss one and the gate blocks the merge:
 
+**Generate the record; do not transcribe it (#487).** Three merged units in a row reached the
+gate in a shape it could not read — S4 #484 (no `jev-recheck:` line), S5 #485 (`Risk class:`
+and `jev-recheck:` fused onto one line) and S6 #486 (a findings bank with no `Verdict:` and no
+PR number). The gate was right every time; the *shape* was authored by prose, and a parser is
+not a proofreader. So the shape is now emitted:
+
+```bash
+node scripts/review-record.mjs --pr <n> \
+  --verdict approve|approve-with-nits|changes-requested \
+  --head <sha> --risk C1|C2|C3 \
+  --recheck 'jev: <level> (<conf>) · Cx · worktree <y|n>' \
+  --findings <path|-> [--conductor-verified "<what was verified, and how>"] \
+  [--out /tmp/REVIEW_<n>.md] [--new-head]
+```
+
+- **One definition.** `scripts/lib/record-fields.mjs` holds the parse/validate rules the bash
+gate applies; the generator and `merge-guard.sh --check-record` both use it, so a record the
+script writes cannot fail the gate on a field rule. Do not re-type the fields, and do not
+"improve" the block by hand.
+- **Exit 0/1/2** — 0 written, 1 refused (a named reason: a declared tier weaker than the
+recheck, a findings body that would become the disposition the gate reads), 2 bad invocation.
+- **`--new-head`** is the only way to re-mint a record that already covers a different head:
+the old head is kept on a `Superseded head:` line, so a retry cannot silently mint a newer
+record.
+- **`--check-record <file> [--pr <n>] [--head <sha>]`** is the offline half of the gate — the
+same rules, no network and no `gh`. Run it on the generated file before dispatch to the
+conductor; it reports `changes-requested` as well-formed but unmergeable, because that record
+is exactly the one a reviewer must be able to write.
+
 | Line | Required | Checked by |
 |---|---|---|
 | PR number | `#<pr>` somewhere in the record (title is fine) | (b) the guard |
@@ -90,15 +134,25 @@ record carries three machine-checked facts. Miss one and the gate blocks the mer
 | `jev-recheck: jev: <level> (<conf>) · Cx · worktree <y|n>` | the classifier's answer on the **dispatch text**, run at review time | (f) the guard |
 | `Structural closure:` | present for refactor PRs, or an explicit `n/a` | **informational** in this unit — not merge-gated |
 
-Format the head line explicitly, e.g.
+The emitted block, byte for byte (identical inputs produce identical bytes — no timestamps, one
+case per field):
 
 ```
-# REVIEW — PR #412 (`tooling/x`, "title") @ 4c1d9ab
+# Review record — PR #412
 
-Reviewed head: 4c1d9ab2f1e0…
-
+Reviewed head: 4c1d9ab2f1e0c3d4e5f60718293a4b5c6d7e8f90
 Verdict: approve-with-nits
+Risk class: C1
+jev-recheck: jev: medium (0.63) · C1 · worktree y
+
+## Findings
+
+<the findings body, verbatim>
 ```
+
+The four field lines are **bare** — no bullet, no bold, no fence. `--conductor-verified` adds
+its marker line after `jev-recheck:`; `--new-head` adds one `Superseded head:` line per
+superseded commit under `Reviewed head:`.
 
 Rules the parser assumes:
 
