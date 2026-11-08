@@ -11,7 +11,6 @@
 
 import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "typebox";
 import {
@@ -30,9 +29,9 @@ import {
 	type Priority,
 	type TaskTemplate,
 	type SubagentEvent,
-	type SubagentEventListener,
 } from "./types";
 import { createBackgroundPipeline } from "./background-pipeline";
+import { createBootRecovery } from "./boot-recovery";
 import { createModeRunners, type BatchGuardContext } from "./mode-runners";
 import { createRuntime } from "./runtime";
 import { resolveTemplate, loadAllTemplates, loadBuiltinTemplates, validateTemplatePresetRefs, extractParamNames } from "./templates";
@@ -53,9 +52,7 @@ import {
 	newWorkBranchName,
 	captureDiff,
 	getHeadState,
-	getHeadBranch,
 	getRepoRoot,
-	listWorkBranches,
 	restoreHead,
 	deleteBranch,
 	mergeWorkBranch,
@@ -100,18 +97,9 @@ import { delegateTaskParamsSchema } from "./schema";
 import { readProcessChecks } from "./project-flags";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent, cleanupTempDirs, reapActiveChildren } from "./runner";
-import { recoverProduction, currentProcessOwner, newDispatchIdentity, classifyOwner, defaultRecoveryDeps } from "./recovery";
-import {
-	buildHeadStateNotice,
-	reconcileHeadStates,
-	sweepHeadStates,
-	writeHeadState,
-	clearHeadState,
-	HEAD_STATE_VERSION,
-	type HeadStateDeps,
-	type HeadStateOutcome,
-} from "./headstate";
-import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
+import { currentProcessOwner, newDispatchIdentity } from "./recovery";
+import { writeHeadState, clearHeadState, HEAD_STATE_VERSION } from "./headstate";
+import { clearInflightRun } from "./run-registry";
 import { acquireSlot, clearProgressLinger, releaseSlot, repaintStatus, stopProgressTicker } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
 import { finalizeRunRecord, resolveRetryParams } from "./history";
@@ -141,28 +129,9 @@ import {
 	renderDelegateResult,
 } from "./tui";
 import { setLogCwd } from "./logging";
-import {
-	collectInterruptedRuns,
-	offeredInterruptedRuns,
-	buildRecoveryNotice,
-	resolveRecoveryNoticeDelivery,
-	abandonInterruptedRun,
-	visibleRunEntriesForSession,
-	type RecoveryAgentLookup,
-} from "./recovery-surface";
-import * as eventBus from "./event-bus";
-import {
-	buildCompletionMessage,
-	formatBudgetLine,
-	normalizeCompletionStatus,
-	resolveDelivery,
-	sendCompletionNotification,
-	claimTerminalNotice,
-	resolveRunEntry,
-	withWorktreeState,
-} from "./notify-completion";
-import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "./transport-retry";
-import { appendWorktreeState, describeWorktreeState } from "./worktree-report";
+import { formatBudgetLine, normalizeCompletionStatus } from "./notify-completion";
+import { createTerminalNotifier } from "./terminal-notifier";
+import { appendWorktreeState } from "./worktree-report";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -236,53 +205,6 @@ export function cleanupSessionState(state: SessionState): void {
 	state.pendingQueue.length = 0;
 }
 
-/**
- * Issue #401/#411: the resume preamble a transport auto-retry builds and delivers
- * as a `<resume-context>` section on the child's system prompt — never inside
- * the `<task>` fence. A dropped connection costs the child its context, not its
- * files: the retry spawns into the same directory, so the work it already did
- * (commits, written files, a bank) is still there. The preamble turns a blind
- * replay into a resume by naming what to inspect first.
- *
- * Kept bounded (5 lines max) and deliberately vetted for runtime vocabulary —
- * it is prompt text a user can see in the child's system prompt.
- *
- * Issue #404: it also names the retained SDK session directory when one exists.
- * That is the only artifact that holds attempt 1's CONVERSATION — the output log
- * is a start/steering stub — and the settle path retains it for exactly this
- * class of run. The pointer is absolute and computed conductor-side at build
- * time: the retry's child can run in a different cwd (worktree/branch mode), so
- * a relative path would point at the wrong tree. The exists gate is deliberate:
- * an attempt whose session was not retained (size floor, marker failure, a
- * legacy run) gets the bank-only preamble, never a dead path.
- */
-function buildRetryResumePreamble(
-	run: SubagentRun,
-	nextAttempt: number,
-	retainedSessionDir?: string,
-): string {
-	const sanitize = (value: string): string => value.replace(/[^A-Za-z0-9._-]/g, "-");
-	const label = sanitize(run.label ?? "");
-	// A label made only of separators ("---") is not a filename; fall back to the
-	// (UUID-shaped, hence already safe) id.
-	const bankLabel = /[A-Za-z0-9]/.test(label) ? label : sanitize(run.id);
-	const lines = [
-		`[attempt ${nextAttempt} — the previous attempt (${run.id}) died on a transport failure.`,
-		"This directory may already contain its uncommitted edits.",
-		`Before acting, inspect: \`git status --short\`, \`git log --oneline -8\`, and the progress bank at /tmp/brl-${bankLabel}-bank.md if it exists.`,
-		"Continue from what exists; do NOT redo committed, written, or banked work.]",
-	];
-	if (retainedSessionDir) {
-		// Insert before the closing line so the block still reads as one unit.
-		lines.splice(
-			lines.length - 1,
-			0,
-			`The previous attempt's session is retained at ${retainedSessionDir} — read the newest .jsonl inside (ISO-prefixed names sort lexicographically) to recover what it had worked out.`,
-		);
-	}
-	return lines.join("\n");
-}
-
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
@@ -351,11 +273,19 @@ export default function (pi: ExtensionAPI) {
 	// receives no ctx, so capture it in session_start where it is available.
 	let sessionCtx: ExtensionContext | undefined;
 
-	// Option B U3 (D2): "one recovery notice per boot". The boot scan may be
-	// followed by more session_starts in the same process (reload); without this
-	// guard every one would re-list the same interrupted runs. Reset on shutdown
-	// so a genuinely new session notifies again.
-	let recoveryNoticeDelivered = false;
+	// ADR 0027 (S4): the boot recovery cluster — the interrupted-run scan, the
+	// head-state reconcile, the two boot notices and the abandon action, built
+	// over this runtime. Its once-per-boot latch (`recoveryNoticeDelivered`) is
+	// the factory's own (D5): a latch here would be shared by two runtimes.
+	const {
+		performBootRecovery,
+		reconcileHeadStatesAtBoot,
+		maybeSendHeadStateNotice,
+		maybeSendRecoveryNotice,
+		abandonProductionRun,
+		visibleRunsFor,
+		resetRecoveryNotice,
+	} = createBootRecovery(rt);
 
 	// -------------------------------------------------------------------
 	// Config change callback
@@ -1953,206 +1883,6 @@ export default function (pi: ExtensionAPI) {
 	// Session lifecycle — F7: Session-bound state initialization
 	// -------------------------------------------------------------------
 
-	// -------------------------------------------------------------------
-	// Option B U1: boot recovery — identity/liveness detection + child reap
-	// -------------------------------------------------------------------
-	// Runs AFTER restoreFromSession so config is ready. Candidate runs come from
-	// the DURABLE registry (`.pi/run-registry/`), NOT from this session's run
-	// entries: a crashed session's foreground/unit records are invisible to a
-	// default fresh startup, and the full `.pi/subagents/` store is too costly to
-	// parse (only the one agent record a background entry names is read). For
-	// each in-flight run whose owner is dead, its orphaned marker-verified child
-	// is reaped and the record is marked: the registry entry always, plus the
-	// agent record for background runs. The scan itself is SILENT in the UI —
-	// U3's `maybeSendRecoveryNotice` (below) is the one notice surface.
-	// Platforms without /proc skip the whole scan (one log line):
-	// pid-only liveness cannot rule out pid reuse, so nothing is killed or
-	// marked unverified.
-	async function performBootRecovery(): Promise<void> {
-		try {
-			const { getAgent, markAgentInterrupted } = await import("./session-manager");
-			// `recoverProduction` owns the /proc platform guard (nothing is marked or
-			// killed without start-token verification) — see src/recovery.ts.
-			const summary = await recoverProduction({
-				log,
-				// Read THAT ONE agent record by id — never the whole store.
-				readAgentRecord: (id) => getAgent(id),
-				mark(record, interruptedAt) {
-					// Registry entry = the durable mark for every kind. Issue #304: its
-					// boolean is the durable-write result — do NOT drop it, or the boot
-					// summary would claim a mark that never landed. The scan counts a
-					// `false` as `markFailures` and warns with the id.
-					const durable = markInterrupted(record.id, interruptedAt);
-					if (record.kind === "agent") markAgentInterrupted(record.id, interruptedAt);
-					return durable;
-				},
-				// Issue #447: a dispatch whose acceptance marker is still `null` never
-				// reached `session.prompt()`. It is finalized `failed` here — a
-				// terminal write, so `persistRunRecord` retires the registry entry in
-				// the same call and no interrupted/retry surface can pick it up.
-				finalizeNeverStarted: (run) => {
-					state.persistRun(pi, run);
-				},
-			});
-			// Report the scan whenever it did anything durable OR attempted a mark
-			// that failed — a failure-only boot must not be silent (issue #304).
-			if (summary.marked > 0 || summary.markFailures > 0) {
-				log.warn("Boot recovery marked interrupted runs", { ...summary });
-			}
-			// Issue #447: never-started dispatches are finalized, not marked — a
-			// separate line so the two outcomes cannot be read as one another.
-			if (summary.neverStarted > 0) {
-				log.info("Boot recovery finalized never-started dispatches", {
-					count: summary.neverStarted,
-				});
-			}
-		} catch (err) {
-			// Recovery is best-effort hygiene — it must never break session start.
-			log.warn("Boot recovery scan failed", { error: (err as Error).message });
-		}
-	}
-
-	/**
-	 * Issue #466 (ADR 0026 D2): the git/process surface the head-state table
-	 * reads, wired once so the boot step and its tests cannot drift apart.
-	 */
-	function headStateDeps(): HeadStateDeps {
-		const procDeps = defaultRecoveryDeps();
-		return {
-			getRepoRoot,
-			classifyOwner: (owner) => classifyOwner(owner, procDeps),
-			getHeadBranch,
-			restoreHead,
-			hasUncommittedChanges,
-			listWorkBranches,
-		};
-	}
-
-	/**
-	 * Issue #466: the boot's ONE git-mutating step, between the scan (which only
-	 * marks records) and the notices. Best-effort like the scan — a failing store
-	 * must never break session start — but every record still ends in exactly one
-	 * LOGGED verdict (D5: silence is not a verdict).
-	 *
-	 * The repair itself is NEVER gated by `config.recovery`: a tree left on a dead
-	 * run's branch is a correctness problem, not a recovery offer. Only the notice
-	 * below is gated.
-	 */
-	function reconcileHeadStatesAtBoot(): HeadStateOutcome[] {
-		try {
-			const outcomes = reconcileHeadStates(headStateDeps());
-			for (const outcome of outcomes) {
-				log.info("Boot head-state verdict", { ...outcome });
-			}
-			// Housekeeping, never part of the repair contract: only a record whose
-			// repository no longer resolves (or that cannot be parsed) is swept, so
-			// a live orphan's base is never deleted by age.
-			const swept = sweepHeadStates({
-				repoGone: (record) => getRepoRoot(record.repoRoot) === undefined,
-			});
-			if (swept > 0) log.info("Swept stale head-state records", { count: swept });
-			return outcomes;
-		} catch (err) {
-			log.warn("Boot head-state reconciliation failed", { error: (err as Error).message });
-			return [];
-		}
-	}
-
-	/**
-	 * Issue #466 (D5): the repair and the needs-manual verdict reach the user
-	 * once, on the same `nextTurn` channel as the recovery notice, and are gated
-	 * by `config.recovery !== "off"` like every other boot surface.
-	 */
-	function maybeSendHeadStateNotice(outcomes: HeadStateOutcome[]): void {
-		if (state.config.recovery === "off") return;
-		const notice = buildHeadStateNotice(outcomes);
-		if (!notice) return;
-		try {
-			pi.sendMessage(notice, resolveRecoveryNoticeDelivery());
-			log.info("Head-state notice delivered", { count: notice.details.count });
-		} catch (err) {
-			// The notice is best-effort — it must never break session start.
-			log.warn("Head-state notice failed", { error: (err as Error).message });
-		}
-	}
-
-	/**
-	 * Option B U3 Fix A: the recovery visibility bridge, wired for the two
-	 * extension consumers that resolve a run id (the retryRunId branch and the
-	 * abandon action). Session run entries UNIONED with synthetic durable
-	 * interrupted records the session has never seen (a genuine fresh boot), so
-	 * an id named by the boot notice resolves here instead of being rejected as
-	 * not found. `getAgent` is injected because the callers already load it
-	 * dynamically — this keeps the registry/agent reads in ONE place.
-	 */
-	function visibleRunsFor(
-		ctx: ExtensionContext,
-		getAgent: RecoveryAgentLookup,
-	): SubagentRun[] {
-		return visibleRunEntriesForSession(state.getLogicalRunEntries(ctx), getAgent);
-	}
-
-	/**
-	 * Option B U3 (D2): after the boot scan, send ONE notice at the next turn
-	 * boundary listing every unresolved interrupted run whose dispatch snapshot
-	 * (and the session posture) says "offer". Delivery is `nextTurn` — the notice
-	 * can never steer or arrive mid-turn (see `resolveRecoveryNoticeDelivery`).
-	 * Silent when there is nothing to offer; at most once per session start.
-	 */
-	async function maybeSendRecoveryNotice(ctx: ExtensionContext): Promise<void> {
-		if (recoveryNoticeDelivered) return;
-		recoveryNoticeDelivered = true;
-		// Session posture off silences the whole surface, regardless of per-run
-		// snapshots (a user opting out expects quiet).
-		if (state.config.recovery === "off") return;
-		try {
-			const { getAgent } = await import("./session-manager");
-			const offered = offeredInterruptedRuns(
-				collectInterruptedRuns({
-					listInflight: () => listInflightRuns(),
-					getAgent: (id) => getAgent(id),
-					findRun: (id) => state.findTerminalRunById(ctx, id),
-				}),
-			);
-			if (offered.length === 0) return;
-			pi.sendMessage(buildRecoveryNotice(offered), resolveRecoveryNoticeDelivery());
-			log.info("Recovery notice delivered", { count: offered.length });
-		} catch (err) {
-			// The notice is best-effort — it must never break session start.
-			log.warn("Recovery notice failed", { error: (err as Error).message });
-		}
-	}
-
-	/**
-	 * Option B U3 (D5): finalize ONE interrupted run as the existing terminal
-	 * `stopped` outcome and prune its U2 session dir. Wired through injected deps
-	 * so the pure core (`recovery-surface.ts`) stays testable; the run record is
-	 * written terminal (the run store's `status` union has no `stopped` — a
-	 * stopped outcome is represented as `failed` + `errorCategory: "aborted"`,
-	 * exactly as every other stop path does) and the background agent record is
-	 * flipped to `stopped`.
-	 */
-	async function abandonProductionRun(ctx: ExtensionContext, id: string): Promise<void> {
-		const { updateAgentStatus, pruneBackgroundSession, getAgent } = await import("./session-manager");
-		// Fix A: the abandon lookup routes through the visibility bridge, so a run
-		// that exists ONLY in the durable registry after a fresh boot is
-		// abandonable instead of resolving to undefined (the silent `false`).
-		const visible = visibleRunsFor(ctx, getAgent);
-		abandonInterruptedRun(id, {
-			getRun: (runId) => resolveTerminalRunEntry(visible, runId),
-			writeRun: (run) => {
-				state.persistRun(pi, run);
-				pruneHistoryIfNeeded(state, ctx, log);
-			},
-			markAgentStopped: (agentId) => {
-				const agent = updateAgentStatus(agentId, "stopped");
-				if (agent) log.info("Abandoned background agent record", { agentId });
-			},
-			retireRegistry: (runId) => clearInflightRun(runId),
-			pruneSession: (runId) => pruneBackgroundSession(runId),
-		});
-	}
-
 	pi.on("session_start", async (_event, ctx) => {
 		// Issue #147: capture the session context for the completion-push subscriber.
 		sessionCtx = ctx;
@@ -2234,8 +1964,9 @@ export default function (pi: ExtensionAPI) {
 		// claim for the NEW session's run, delivering (or throwing) through dead
 		// pi/ctx handles. Only our three exact identities are removed, and the
 		// release is idempotent, so other subscribers and a later runtime are
-		// untouched. `releaseTerminalSubscriptions` is a hoisted declaration
-		// below (the subscription block is registered after this handler).
+		// untouched. `releaseTerminalSubscriptions` is the notifier factory's own
+		// `release` (ADR 0027 D5), built below at the position the subscription
+		// block used to occupy — this handler body runs after init completes.
 		releaseTerminalSubscriptions();
 
 		log.info("Session shutting down", {
@@ -2251,187 +1982,25 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		cleanupSessionState(state);
-		// U3: a new session boot may notify again.
-		recoveryNoticeDelivered = false;
+		// U3: a new session boot may notify again (the latch is the boot
+		// factory's own — ADR 0027 D5, so the reset goes through it).
+		resetRecoveryNotice();
 	});
 
 	// -------------------------------------------------------------------
-	// Issue #147: completion-push wake — subscribe to terminal event-bus events
+	// Issue #147: completion-push wake — the terminal notifier (ADR 0027 S4)
 	// -------------------------------------------------------------------
-	// The event-bus is the complete terminal chokepoint (subagent:completed /
-	// subagent:failed / subagent:stopped), so the conductor is woken via
-	// pi.sendMessage + triggerTurn when a background run reaches a terminal state.
-	// Delivery is always-on (minimum nextTurn); the completionNotify knob controls
-	// the WAKE (D1+D2 — see notify-completion.ts). The shared terminal claim
-	// (issue #315) defends the pathological double-emit path (first terminal
-	// event or crash notice per id wins); it is capped simply (cleared when it
-	// exceeds 200 entries).
-	//
-	// Stopped-run degradation — ACCEPTED BY DESIGN (review #2, adjudicated
-	// 2026-09-01): subagent:stopped fires at stop time (updateAgentStatus) BEFORE
-	// finalizeRunEntry stamps cost/duration/errorCategory and before finalOutput
-	// is captured. So the stopped shape may lack those fields and the run entry
-	// resolveRunEntry returns may be the pre-finalize spawn entry. The wake is
-	// the point; details are best-effort — the notification must never throw or
-	// block on their absence.
-	const terminalTypes = ["subagent:completed", "subagent:failed", "subagent:stopped"] as const;
+	// The notifier owns its three subscriptions AND their release latch (D5).
+	// Created HERE, where the subscription block used to live, so the bus sees
+	// the same registration order. Its one backward edge — the transport-retry
+	// re-dispatch — reaches the S3 pipeline's spawn through this deps literal.
+	const terminalNotifier = createTerminalNotifier(rt, {
+		// ADR 0027 D2: `sessionCtx` stays a `let` here; the listener gets a getter.
+		getSession: () => sessionCtx,
+		spawnBackgroundRun,
+	});
+	// The shutdown hook keeps its old name and its position: `release` is
+	// idempotent and removes only this instance's three listeners (#437).
+	const releaseTerminalSubscriptions = terminalNotifier.release;
 
-	// Issue #437: keep the EXACT listener references this factory instance owns.
-	// Anonymous subscriptions could never be released, so a shut-down runtime's
-	// listeners stayed on the shared bus forever. Ownership is per factory
-	// invocation: the array and the released flag are this runtime's alone, so a
-	// replacement's listeners are never in the removal set.
-	const terminalSubscriptions: Array<{
-		type: (typeof terminalTypes)[number];
-		listener: SubagentEventListener;
-	}> = [];
-	let terminalSubscriptionsReleased = false;
-
-	/**
-	 * Issue #437: unsubscribe exactly the listeners registered above.
-	 *
-	 * Idempotent — a repeated/double `session_shutdown` (or a late one after the
-	 * replacement runtime is already live) is a no-op. Synchronous, so it can run
-	 * as the first statement of `session_shutdown`, before any await or fallible
-	 * cleanup. Never touches another subscriber or another runtime's listeners.
-	 */
-	function releaseTerminalSubscriptions(): void {
-		if (terminalSubscriptionsReleased) return;
-		terminalSubscriptionsReleased = true;
-		for (const { type, listener } of terminalSubscriptions) {
-			eventBus.off(type, listener);
-		}
-		terminalSubscriptions.length = 0;
-	}
-
-	for (const type of terminalTypes) {
-		const listener: SubagentEventListener = (event) => {
-			void deliverCompletionAlert(event);
-		};
-		terminalSubscriptions.push({ type, listener });
-		eventBus.on(type, listener);
-	}
-
-	/**
-	 * Issue #365: re-dispatch a background run that settled with a transport-class
-	 * failure, using the `retryRunId` machinery. `resolveRetryParams({}, run)`
-	 * restores the recorded params and `spawnBackgroundRun(..., run)` mints the
-	 * lineage (`resumeOf` + `attempt: 2`), so the retry re-runs the normal gates
-	 * (cost, approval, pre-task) and is visible in the record.
-	 *
-	 * Issue #401/#411: the retry carries a resume preamble (`attemptContext`) that
-	 * is injected into the child's system prompt only (as a `<resume-context>`
-	 * section), never inside the `<task>` fence. The task handed to
-	 * `resolveSubagentParams` stays the recorded original, so auto-routing, H1
-	 * keyword warnings and the capability checks behave exactly as they did on
-	 * attempt 1.
-	 *
-	 * Returns TRUE when the retry was actually spawned — the caller then SUPPRESSES
-	 * the source run's completion notice, because the retry's own terminal settle
-	 * is the wake. A gate rejection or a throwing spawn returns FALSE and the
-	 * caller reports the original failure exactly as before (no silent drop).
-	 *
-	 * Issue #439: this reads only `isError`, and a retry whose post-spawn tail
-	 * faulted is still a SUCCESSFUL spawn (`isError: false`, degraded monitoring).
-	 * It therefore returns TRUE for it: the source notice stays suppressed and the
-	 * degraded advisory is the signal that the retry started with degraded
-	 * monitoring. Reading a contained tail failure as "did not start" would
-	 * surface the source failure for a run that is live.
-	 */
-	async function scheduleTransportRetry(
-		ctx: ExtensionContext,
-		run: SubagentRun,
-	): Promise<boolean> {
-		const sourceAttempt = run.attempt ?? 1;
-		try {
-			const retryParams = resolveRetryParams({}, run);
-			// Issue #404: point at the retained session ONLY when it is really
-			// there. Resolve this conductor-side: the child may run in another cwd.
-			// An invalid id cannot have a session dir (and `backgroundSessionDir`
-			// throws on one) — no pointer, no throw.
-			let retainedSessionDir: string | undefined;
-			try {
-				const { retainedSessionPointer } = await import('./session-manager');
-				const candidate = retainedSessionPointer(run.id);
-				if (fs.existsSync(candidate)) retainedSessionDir = candidate;
-			} catch {
-				retainedSessionDir = undefined;
-			}
-			const result = await spawnBackgroundRun(
-				pi,
-				ctx,
-				retryParams,
-				retryParams.task!,
-				run,
-				buildRetryResumePreamble(run, sourceAttempt + 1, retainedSessionDir),
-			);
-			if (result.isError) {
-				log.warn("Transport auto-retry spawn rejected — surfacing the original failure", {
-					sourceId: run.id,
-					attempt: sourceAttempt,
-					error: result.content[0]?.type === "text" ? result.content[0].text : undefined,
-				});
-				return false;
-			}
-		} catch (err) {
-			log.warn("Transport auto-retry spawn failed — surfacing the original failure", {
-				sourceId: run.id,
-				attempt: sourceAttempt,
-				error: (err as Error).message,
-			});
-			return false;
-		}
-		log.info("Background run settled — transport auto-retry scheduled", {
-			sourceId: run.id,
-			attempt: sourceAttempt + 1,
-		});
-		ctx.ui.notify(TRANSPORT_RETRY_TOAST, "warning");
-		return true;
-	}
-
-	async function deliverCompletionAlert(event: SubagentEvent): Promise<void> {
-		const id = event.agentId;
-		if (!claimTerminalNotice(id)) return;
-		const ctx = sessionCtx;
-		if (!ctx) return;
-		try {
-			const { getAgent } = await import("./session-manager");
-			const agent = getAgent(id);
-			if (!agent) return; // pruned or foreign id — nothing to notify
-			const knob = state.config.completionNotify ?? "all";
-			const run = resolveRunEntry(state.getLogicalRunEntries(ctx), id);
-			// Issue #365: a transport-class background failure is re-dispatched once
-			// and the source notice is suppressed (the retry's settle is the wake).
-			// Every other terminal type — and every non-retryable failure — keeps the
-			// existing path unchanged.
-			if (event.type === "subagent:failed" && run && isTransportRetryable(run)) {
-				const retried = await scheduleTransportRetry(ctx, run);
-				if (retried) return;
-			}
-			const message = buildCompletionMessage(agent, run);
-			// Issue #474: a settle that is not a success reports the worktree it may
-			// have left. The CLASSIFIED status gates it (not `agent.status`), so the
-			// #179 completed→failed downgrade carries the block too, and a genuinely
-			// completed run stays noise-free. A record written before #474 has no
-			// `agent.cwd`; its retry snapshot's cwd is used only when it is absolute
-			// (describeWorktreeState refuses a relative one rather than resolving it
-			// against this process's cwd).
-			const settledMessage =
-				message.details.status === "completed"
-					? message
-					: withWorktreeState(
-							message,
-							describeWorktreeState(agent.cwd ?? run?.originalParams?.cwd),
-						);
-			// Issue #179 (D2): resolve delivery from the CLASSIFIED notification
-			// status, not the raw agent status — otherwise a run whose completion
-			// the builder downgraded to failed would still be delivered as a success.
-			const delivery = resolveDelivery(settledMessage.details.status, knob);
-			sendCompletionNotification(pi, settledMessage, delivery);
-		} catch (err) {
-			log.warn(`completion-push handler failed for ${id}`, {
-				error: (err as Error).message,
-			});
-		}
-	}
 }

@@ -73,6 +73,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | Module | Purpose |
 |---|---|
 | `background-pipeline.ts` | The background pipeline — the fan-out handler, the shared spawn tail and the single-background spawn — built over one runtime context. |
+| `boot-recovery.ts` | Boot recovery — the interrupted-run scan, the boot head-state reconcile and the recovery notices, built over one runtime context. |
 | `concurrency.ts` | Session-bound concurrency queue: slot acquisition/release, priority insertion, and progress counters. |
 | `diff.ts` | Parses git unified diffs into structured per-file summaries and hunks for the result UI. |
 | `dispatch-line.ts` | Parse and validate the Rule 22 dispatch line (the project-local opt-in lives in project-flags.ts). |
@@ -114,6 +115,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `state.ts` | Session-bound state container with versioned validation and migration for persisted settings. |
 | `store-permissions.ts` | Owner-only repair for the persistent stores' directories and files — mkdirSync's mode applies only on CREATE. |
 | `templates.ts` | Task-template resolution: `${param}` substitution over the file-backed template tiers. |
+| `terminal-notifier.ts` | The terminal notifier — the terminal event-bus subscriptions, their per-instance release latch, and the completion alert with its transport auto-retry. |
 | `transcript-path.ts` | The single declaration of the transcript path format — filesystem (`join`) and display (POSIX) forms. |
 | `transcript-tail.ts` | Pure line-planning for the drill-in transcript overlay (no TUI imports). |
 | `transcript.ts` | JSONL transcript recording for every agent run (`.pi/output/agent-<id>.jsonl`). |
@@ -126,7 +128,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 | `worktree-report.ts` | Formats the read-only worktree state a failed or stopped run may have left behind (issue #474). |
 
-**53 modules** — every one is listed because a new module without a purpose fails CI.
+**55 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
