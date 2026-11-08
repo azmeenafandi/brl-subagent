@@ -21,6 +21,11 @@
 // prints on stderr and still exits 0, so the next breach is visible before it happens. The band is
 // non-failing by design — it is a signal, not a second ceiling.
 //
+// A FLOOR CHECK covers the gap no ratio can see: a gate script nobody tests adds source, which
+// IMPROVES the ratio. So every top-level `scripts/*.mjs` must be imported by a test file under
+// `scripts/__tests__/**.test.ts` — an import statement, not a mention, because a path named in a
+// comment proves nothing.
+//
 // The limits are CEILINGS, not targets: shrinking is always allowed. The wall is read from the
 // report's own timestamps (start -> last file end), not measured by this script, so it reflects
 // vitest's run and not this check; CI runner speed still varies, which is why the 60 s ceiling keeps
@@ -33,8 +38,8 @@
 //        node scripts/check-test-budget.mjs --report <vitest-json-report>
 //   CI: npx vitest run --reporter=default --reporter=json --outputFile=vitest-report.json
 // Exit: 0 within budget (warnings allowed) · 1 a finding · 2 usage, unreadable report or tree.
-import { readFileSync, readdirSync } from "node:fs";
-import { extname, join, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Local suite wall-time ceiling (ms). Current local wall: ~18 s. Global to every surface. */
@@ -68,6 +73,18 @@ export const SURFACES = Object.freeze([
 ]);
 
 export const USAGE = "usage: check-test-budget.mjs <vitest-json-report> | --report <vitest-json-report>";
+
+/**
+ * The floor check's corpus: every top-level `scripts/*.mjs` must be imported by a `*.test.ts` under
+ * `scripts/__tests__/`. Constants rather than re-typed paths, so the guard and its message cannot
+ * disagree about which directory they mean.
+ */
+export const FLOOR = Object.freeze({
+	dir: "scripts",
+	testDir: join("scripts", TEST_DIR_NAME),
+	scriptExtension: ".mjs",
+	testSuffix: ".test.ts",
+});
 
 function message(error) {
 	return error instanceof Error ? error.message : String(error);
@@ -177,6 +194,49 @@ function formatMs(ms) {
 }
 
 // ---------------------------------------------------------------------------
+// Floor — a gate script nobody imports is a gate nobody runs.
+// ---------------------------------------------------------------------------
+
+/**
+ * The module specifiers a source text imports or requires: `from "x"`, a side-effect `import "x"`,
+ * a dynamic `import("x")` and `require("x")`. A path merely named in a comment or a string carries
+ * none of those keywords and is never matched — the floor is an import, not a mention.
+ */
+export function importSpecifiers(text) {
+	return [...text.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)(["'])([^"'\n]+)\1/g)].map(
+		(match) => match[2],
+	);
+}
+
+/**
+ * Top-level `scripts/*.mjs` files that no `scripts/__tests__/**.test.ts` imports, sorted.
+ * A missing test directory is a floor failure (nothing imports anything), not an IO failure.
+ */
+export function findUntestedScripts(root = process.cwd()) {
+	let scriptNames;
+	try {
+		scriptNames = readdirSync(join(root, FLOOR.dir), { withFileTypes: true })
+			.filter((entry) => entry.isFile() && entry.name.endsWith(FLOOR.scriptExtension))
+			.map((entry) => entry.name)
+			.sort();
+	} catch (error) {
+		throw new Error(`${FLOOR.dir}: cannot read the tree (${message(error)}).`);
+	}
+
+	const testsDir = join(root, FLOOR.testDir);
+	const testFiles = existsSync(testsDir) ? collectFiles(testsDir).filter((file) => file.endsWith(FLOOR.testSuffix)) : [];
+
+	const imported = new Set();
+	for (const file of testFiles) {
+		for (const specifier of importSpecifiers(readFileSync(file, "utf8"))) {
+			// A relative specifier is a file in this repo; a bare one is a package, never a script.
+			if (specifier.startsWith(".")) imported.add(basename(specifier));
+		}
+	}
+	return scriptNames.filter((name) => !imported.has(name));
+}
+
+// ---------------------------------------------------------------------------
 // Verdict — report every breach, then one summary. Pure: no IO, no exits.
 // ---------------------------------------------------------------------------
 
@@ -185,7 +245,7 @@ function headroom(surface) {
 	return Math.max(0, Math.floor(surface.ceiling * surface.sourceLoc) - surface.testLoc);
 }
 
-export function evaluate({ reportPath, wallMs, wallCeilingMs = WALL_CEILING_MS, surfaces }) {
+export function evaluate({ reportPath, wallMs, wallCeilingMs = WALL_CEILING_MS, surfaces, untested = [] }) {
 	const findings = [];
 	const warnings = [];
 	if (wallMs > wallCeilingMs) {
@@ -208,6 +268,12 @@ export function evaluate({ reportPath, wallMs, wallCeilingMs = WALL_CEILING_MS, 
 					`${headroom(surface)} test lines of headroom under the ${surface.ceiling.toFixed(1)} ceiling.`,
 			);
 		}
+	}
+	if (untested.length > 0) {
+		findings.push(
+			`scripts floor: no test under ${FLOOR.testDir} imports ${untested.join(", ")} — ` +
+				"a gate script without a test is the gap the ratio cannot see (an import, not a mention).",
+		);
 	}
 	return { findings, warnings };
 }
@@ -253,15 +319,17 @@ export function main(argv = process.argv.slice(2), { root = process.cwd(), out =
 
 	let wallMs;
 	let surfaces;
+	let untested;
 	try {
 		wallMs = readWallMs(reportPath);
 		surfaces = [...SURFACES].sort((a, b) => (a.name < b.name ? -1 : 1)).map((surface) => measureSurface(surface, root));
+		untested = findUntestedScripts(root);
 	} catch (error) {
 		err(`test-budget: ${message(error)}`);
 		return 2;
 	}
 
-	const { findings, warnings } = evaluate({ reportPath, wallMs, surfaces });
+	const { findings, warnings } = evaluate({ reportPath, wallMs, surfaces, untested });
 
 	out(`test-budget: wall ${formatMs(wallMs)} (<= ${formatMs(WALL_CEILING_MS)}, report: ${reportPath})`);
 	for (const surface of surfaces) out(formatSurface(surface));

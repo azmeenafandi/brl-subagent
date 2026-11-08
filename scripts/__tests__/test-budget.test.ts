@@ -25,7 +25,9 @@ import {
 	WALL_CEILING_MS,
 	countLines,
 	evaluate,
+	findUntestedScripts,
 	formatSurface,
+	importSpecifiers,
 	main,
 	measureSurface,
 	parseArgs,
@@ -47,15 +49,21 @@ function surface(name: string) {
 	return found;
 }
 
-/** Write `files` (`path -> lines`) under a fresh fixture root; every line is newline-terminated. */
-function tree(name: string, files: Record<string, number>): string {
+/** Write `files` under a fresh fixture root. A number writes that many fixture lines; an array
+ *  writes its lines verbatim (so a fixture can hold a real import statement). */
+function tree(name: string, files: Record<string, number | string[]>): string {
 	const root = join(TMP, name);
-	for (const [path, lines] of Object.entries(files)) {
+	for (const [path, content] of Object.entries(files)) {
 		const full = join(root, path);
 		mkdirSync(dirname(full), { recursive: true });
-		writeFileSync(full, "// fixture\n".repeat(lines));
+		writeFileSync(full, Array.isArray(content) ? `${content.join("\n")}\n` : "// fixture\n".repeat(content));
 	}
 	return root;
+}
+
+/** A `scripts/__tests__` file that imports the fixture guard — the floor's import, plus filler lines. */
+function importer(lines: number): string[] {
+	return ['import { guard } from "../guard.mjs";', ...Array.from({ length: lines - 1 }, () => "// filler")];
 }
 
 /** A vitest-shaped report whose run lasted `wallMs`, written to a temp path. */
@@ -232,11 +240,43 @@ describe("parseArgs — positional or --report, no surprises", () => {
 	});
 });
 
+describe("findUntestedScripts — an import, not a mention", () => {
+	it("names a script that only a comment or a string mentions", () => {
+		const root = tree("floor-mention", {
+			"scripts/guard.mjs": 1,
+			"scripts/orphan.mjs": 1,
+			"scripts/__tests__/guard.test.ts": ['import "../guard.mjs";', "// see ../orphan.mjs", 'const path = "../orphan.mjs";'],
+		});
+		expect(findUntestedScripts(root)).toEqual(["orphan.mjs"]);
+	});
+
+	it("reads require/import/dynamic import in nested test files, and ignores non-test helpers", () => {
+		const root = tree("floor-forms", {
+			"scripts/a.mjs": 1,
+			"scripts/b.mjs": 1,
+			"scripts/c.mjs": 1,
+			"scripts/__tests__/deep/nested.test.ts": ['const a = require("../../a.mjs");'],
+			"scripts/__tests__/helpers.ts": ['import "../b.mjs";', 'import "../c.mjs";'],
+			"scripts/__tests__/c.test.ts": ['void import("../c.mjs");'],
+		});
+		// `helpers.ts` is not a `*.test.ts`: a helper importing a script proves nothing.
+		expect(findUntestedScripts(root)).toEqual(["b.mjs"]);
+	});
+
+	it("treats a missing test directory as nothing imported", () => {
+		expect(findUntestedScripts(tree("floor-absent", { "scripts/guard.mjs": 1 }))).toEqual(["guard.mjs"]);
+	});
+
+	it("reads only module requests, never a prose mention", () => {
+		expect(importSpecifiers('import { a } from "../x.mjs";\n// ../comment.mjs\nconst s = "../string.mjs";')).toEqual(["../x.mjs"]);
+	});
+});
+
 describe("main — the two streams and the exit codes", () => {
 	it("reports both surfaces every run, in name order, and exits 0", () => {
 		const root = tree("cli-ok", {
 			"scripts/guard.mjs": 10,
-			"scripts/__tests__/guard.test.ts": 9,
+			"scripts/__tests__/guard.test.ts": importer(9),
 			"src/module.ts": 10,
 			"src/__tests__/module.test.ts": 15,
 		});
@@ -255,7 +295,7 @@ describe("main — the two streams and the exit codes", () => {
 	it("fails on a scripts breach but still prints the src surface", () => {
 		const root = tree("cli-scripts-breach", {
 			"scripts/guard.mjs": 10,
-			"scripts/__tests__/guard.test.ts": 11,
+			"scripts/__tests__/guard.test.ts": importer(11),
 			"src/module.ts": 10,
 			"src/__tests__/module.test.ts": 15,
 		});
@@ -270,7 +310,7 @@ describe("main — the two streams and the exit codes", () => {
 	it("keeps the band non-failing on the src surface", () => {
 		const root = tree("cli-band", {
 			"scripts/guard.mjs": 10,
-			"scripts/__tests__/guard.test.ts": 5,
+			"scripts/__tests__/guard.test.ts": importer(5),
 			"src/module.ts": 100,
 			"src/__tests__/module.test.ts": 196,
 		});
@@ -283,7 +323,7 @@ describe("main — the two streams and the exit codes", () => {
 	it("fails the wall ceiling with the report path named", () => {
 		const root = tree("cli-wall", {
 			"scripts/guard.mjs": 10,
-			"scripts/__tests__/guard.test.ts": 5,
+			"scripts/__tests__/guard.test.ts": importer(5),
 			"src/module.ts": 10,
 			"src/__tests__/module.test.ts": 5,
 		});
@@ -291,6 +331,22 @@ describe("main — the two streams and the exit codes", () => {
 		const { code, err } = run([path], root);
 		expect(code).toBe(1);
 		expect(err.join("\n")).toContain(`wall time 60.01s exceeds the 60.00s ceiling (report: ${path}`);
+	});
+
+	it("fails the floor when a gate script has no importer, naming the script", () => {
+		const root = tree("cli-floor", {
+			"scripts/guard.mjs": 10,
+			"scripts/orphan.mjs": 10,
+			"scripts/__tests__/guard.test.ts": importer(5),
+			"src/module.ts": 10,
+			"src/__tests__/module.test.ts": 5,
+		});
+		const { code, err } = run([report("floor", 1_000)], root);
+		expect(code).toBe(1);
+		expect(err).toEqual([
+			"test-budget: scripts floor: no test under scripts/__tests__ imports orphan.mjs — " +
+				"a gate script without a test is the gap the ratio cannot see (an import, not a mention).",
+		]);
 	});
 
 	it("exits 2 on usage and on an unreadable input, not 1", () => {
@@ -305,7 +361,7 @@ describe("main — the two streams and the exit codes", () => {
 	it("produces identical output on repeated runs", () => {
 		const root = tree("cli-deterministic", {
 			"scripts/guard.mjs": 10,
-			"scripts/__tests__/guard.test.ts": 5,
+			"scripts/__tests__/guard.test.ts": importer(5),
 			"src/module.ts": 10,
 			"src/__tests__/module.test.ts": 5,
 		});
@@ -327,7 +383,7 @@ describe("the CLI as CI runs it", () => {
 	it("exits 1 and names the surface when spawned as a real process", () => {
 		const root = tree("spawn", {
 			"scripts/guard.mjs": 10,
-			"scripts/__tests__/guard.test.ts": 20,
+			"scripts/__tests__/guard.test.ts": importer(20),
 			"src/module.ts": 10,
 			"src/__tests__/module.test.ts": 5,
 		});
