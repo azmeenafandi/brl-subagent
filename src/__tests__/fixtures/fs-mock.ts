@@ -10,7 +10,10 @@
  *   - `dirEntries`   — return these entries instead of the real listing;
  *   - `statErrors`   — throw the errno mapped to a path string (a `stat` read
  *                      failure for one pid);
- *   - `statContents` — return the contents mapped to a path string.
+ *   - `statContents` — return the contents mapped to a path string;
+ *   - `readPaths`    — a LOG of every path `readFileSync` was asked for, so a
+ *                      suite can pin "this file was never read" (issue #421's
+ *                      disabled-flag direction). Recording is side-effect free.
  *
  * With none of the controls set the mock is fully transparent, so a suite that
  * never populates it is unaffected. Vitest isolates the module registry per test
@@ -25,6 +28,8 @@ export interface FsMockControl {
 	dirEntries?: string[];
 	statErrors: Map<string, NodeJS.ErrnoException>;
 	statContents: Map<string, string>;
+	/** Every `readFileSync` path, in call order. Append-only until reset. */
+	readPaths: string[];
 }
 
 /**
@@ -36,6 +41,7 @@ export const fsMockControl: FsMockControl = {
 	dirEntries: undefined,
 	statErrors: new Map(),
 	statContents: new Map(),
+	readPaths: [],
 };
 
 /** Reset every control so the mock delegates to the real `node:fs` again. */
@@ -44,6 +50,7 @@ export function resetFsMock(): void {
 	fsMockControl.dirEntries = undefined;
 	fsMockControl.statErrors.clear();
 	fsMockControl.statContents.clear();
+	fsMockControl.readPaths.length = 0;
 }
 
 /**
@@ -66,6 +73,7 @@ export function buildFsMock(actual: typeof fs): typeof fs {
 		}) as typeof actual.readdirSync,
 		readFileSync: ((...args: unknown[]) => {
 			const file = String(args[0]);
+			fsMockControl.readPaths.push(file);
 			const err = fsMockControl.statErrors.get(file);
 			if (err) throw err;
 			const contents = fsMockControl.statContents.get(file);

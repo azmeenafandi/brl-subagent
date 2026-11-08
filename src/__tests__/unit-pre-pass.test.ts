@@ -35,6 +35,8 @@ interface Unit {
 	task?: string;
 	outputFile?: string;
 	excludeTools?: string[];
+	/** The unit's DECLARED thinking level (issue #443) — never the merged one. */
+	thinkingLevel?: string;
 }
 
 function merge(unit: Unit): UnitPrePassSource & { name: string } {
@@ -62,6 +64,7 @@ function pass(units: Unit[], overrides: { force?: boolean; describeTask?: string
 		ctx,
 		log: fakeLog(),
 		force: overrides.force,
+		declaredThinkingLevel: (unit) => unit.thinkingLevel,
 	});
 }
 
@@ -118,10 +121,34 @@ describe("validateUnitPrePass", () => {
 			gitMode: "none",
 			ctx,
 			log: fakeLog(),
+			declaredThinkingLevel: (unit) => unit.thinkingLevel,
 		});
 		expect(result.ok).toBe(false);
 		if (result.ok) return;
 		expect(result.error.content[0].text).toContain('Unit b: Invalid cwd:');
 		expect(mergeSpy).toHaveBeenCalledTimes(2);
+	});
+
+	/**
+	 * Issue #443: the per-unit guard reads the DECLARED value. `merged` reports a
+	 * VALID level here, so a check that read the merged value would pass — the
+	 * erasure this exists for (an unknown declaration resolved to `undefined`)
+	 * is exactly what makes the merged value unusable as evidence.
+	 */
+	it("rejects an unknown DECLARED per-unit level, prefixed with the unit", () => {
+		const result = pass([{ name: "a" }, { name: "b", thinkingLevel: "bogus" }]);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		const text = result.error.content[0].text;
+		expect(text).toContain('Unit b: Invalid thinkingLevel "bogus"');
+		// The supported set is named, so the caller does not have to guess.
+		expect(text).toContain("off, minimal, low, medium, high, xhigh");
+	});
+
+	it("accepts every valid level, an omitted one, and the preserved empty string", () => {
+		for (const thinkingLevel of [undefined, "", "off", "minimal", "low", "medium", "high", "xhigh"]) {
+			const result = pass([{ name: "a", thinkingLevel }]);
+			expect(result.ok, `declared ${JSON.stringify(thinkingLevel)}`).toBe(true);
+		}
 	});
 });

@@ -617,3 +617,214 @@ describe("footer linger reset timer (F2)", () => {
 		expect(vi.getTimerCount()).toBe(0);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Issue #423 — the budget clock on the footer
+// ---------------------------------------------------------------------------
+
+describe("formatProgressStatus — ran/deadline segments (issue #423)", () => {
+	/** Counters of the pinned example line, with the live clock supplied. */
+	function clockInput(times: ProgressStatusInput["times"]): ProgressStatusInput {
+		return input({
+			activeSubagents: 2,
+			completedSubagents: 1,
+			failedSubagents: 1,
+			times,
+		});
+	}
+
+	it("form 2 — ran only, counters intact: `… · ran: 4m 12s`", () => {
+		// 75_000 = spinner frame 0 of the cycle.
+		expect(formatProgressStatus(clockInput({ ranMs: 252_000 }), 75_000, PLAIN)).toBe(
+			`${LIVE_SPINNER_FRAMES[0]} brl: 2 running, \u2713 1 done, \u2717 1 failed \u00b7 ran: 4m 12s`,
+		);
+	});
+
+	it("form 3 — ran + deadline: `… · ran: 4m 12s · deadline in 34s`", () => {
+		expect(
+			formatProgressStatus(
+				clockInput({ ranMs: 252_000, next: { remainingMs: 34_000, fraction: 0.5 } }),
+				75_000,
+				PLAIN,
+			),
+		).toBe(
+			`${LIVE_SPINNER_FRAMES[0]} brl: 2 running, \u2713 1 done, \u2717 1 failed \u00b7 ran: 4m 12s \u00b7 deadline in 34s`,
+		);
+	});
+
+	it("form 4 — exhausted deadline: `… · ran: 4m 12s · deadline: stopping`", () => {
+		expect(
+			formatProgressStatus(
+				clockInput({ ranMs: 252_000, next: { remainingMs: 0, fraction: 0 } }),
+				75_000,
+				PLAIN,
+			),
+		).toBe(
+			`${LIVE_SPINNER_FRAMES[0]} brl: 2 running, \u2713 1 done, \u2717 1 failed \u00b7 ran: 4m 12s \u00b7 deadline: stopping`,
+		);
+	});
+
+	it("form 1 — no times keeps the burst-anchor fallback byte for byte", () => {
+		expect(
+			formatProgressStatus(
+				input({
+					activeSubagents: 2,
+					completedSubagents: 1,
+					failedSubagents: 1,
+					activeSinceMs: 1_000,
+				}),
+				75_000,
+				PLAIN,
+			),
+		).toBe(
+			`${LIVE_SPINNER_FRAMES[0]} brl: 2 running, \u2713 1 done, \u2717 1 failed \u00b7 1m 14s`,
+		);
+	});
+
+	it("prefers the live map's ranMs over the burst anchor when both are known", () => {
+		const text = formatProgressStatus(
+			input({ activeSinceMs: 1_000, times: { ranMs: 252_000 } }),
+			75_000,
+			PLAIN,
+		);
+
+		expect(text).toContain(`\u00b7 ran: 4m 12s`);
+		expect(text).not.toContain(`\u00b7 1m 14s`);
+	});
+
+	it("falls back to the burst anchor when `times` carries no age (empty live list)", () => {
+		const text = formatProgressStatus(
+			input({ activeSinceMs: 1_000, times: {} }),
+			75_000,
+			PLAIN,
+		);
+
+		expect(text).toBe(`${LIVE_SPINNER_FRAMES[0]} brl: 1 running \u00b7 1m 14s`);
+	});
+
+	it("omits both clock segments once nothing is active", () => {
+		const text = formatProgressStatus(
+			input({
+				activeSubagents: 0,
+				completedSubagents: 1,
+				times: { ranMs: 252_000, next: { remainingMs: 34_000, fraction: 0.5 } },
+			}),
+			75_000,
+			PLAIN,
+		);
+
+		expect(text).toBe(`\u2713 brl: 1 done`);
+	});
+});
+
+describe("formatProgressStatus — deadline colour bands (issue #423)", () => {
+	function deadlineColor(fraction: number, remainingMs = fraction * 1_000): string | undefined {
+		const { calls, theme } = recordingTheme();
+		formatProgressStatus(
+			input({ times: { ranMs: 1_000, next: { remainingMs, fraction } } }),
+			0,
+			theme,
+		);
+		return calls.at(-1)?.color;
+	}
+
+	it("paints a comfortable deadline muted", () => {
+		expect(deadlineColor(0.5)).toBe("muted");
+		expect(deadlineColor(0.21)).toBe("muted");
+	});
+
+	it("paints a tight deadline warning", () => {
+		expect(deadlineColor(0.2)).toBe("warning");
+		expect(deadlineColor(0.06)).toBe("warning");
+	});
+
+	it("paints an almost-exhausted or exhausted deadline error", () => {
+		expect(deadlineColor(0.05)).toBe("error");
+		expect(deadlineColor(0.01)).toBe("error");
+		expect(deadlineColor(0, 0)).toBe("error");
+	});
+
+	it("paints the ran segment muted in every form", () => {
+		const { calls, theme } = recordingTheme();
+		formatProgressStatus(input({ times: { ranMs: 252_000 } }), 0, theme);
+
+		expect(calls.at(-1)).toEqual({ color: "muted", text: " \u00b7 ran: 4m 12s" });
+	});
+});
+
+describe("footer budget clock through the paint chokepoint (issue #423)", () => {
+	const NOW = 1_500_000;
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(NOW);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	function liveEntry(
+		id: string,
+		startedAt: number,
+		deadlineAt: number | undefined,
+		ctx: ExtensionContext,
+	) {
+		return {
+			id,
+			task: `task ${id}`,
+			model: "provider/model",
+			thinkingLevel: "low",
+			startedAt,
+			...(deadlineAt !== undefined ? { deadlineAt } : {}),
+			ctx,
+		};
+	}
+
+	it("renders the oldest live age and the soonest deadline", () => {
+		const state = createSessionState();
+		const { ctx, setStatus } = mockCtx();
+		state.activeSubagents = 2;
+		state.registerLiveSubagent("a", liveEntry("a", NOW - 252_000, NOW + 34_000, ctx));
+		state.registerLiveSubagent("b", liveEntry("b", NOW - 10_000, NOW + 600_000, ctx));
+
+		updateProgressStatus(state, ctx);
+
+		expect(String(setStatus.mock.calls.at(-1)?.[1])).toBe(
+			`${LIVE_SPINNER_FRAMES[0]} brl: 2 running \u00b7 ran: 4m 12s \u00b7 deadline in 34s`,
+		);
+		stopProgressTicker(state);
+	});
+
+	it("drops a finalized entry from both clocks", () => {
+		const state = createSessionState();
+		const { ctx, setStatus } = mockCtx();
+		state.activeSubagents = 2;
+		state.registerLiveSubagent("a", liveEntry("a", NOW - 252_000, NOW + 34_000, ctx));
+		state.registerLiveSubagent("b", liveEntry("b", NOW - 10_000, NOW + 600_000, ctx));
+
+		state.finalizeLiveSubagent("a");
+		updateProgressStatus(state, ctx);
+
+		// The settled row keeps its 3 s linger in the map, but not on the line.
+		expect(state.subagentSessions.has("a")).toBe(true);
+		expect(String(setStatus.mock.calls.at(-1)?.[1])).toBe(
+			`${LIVE_SPINNER_FRAMES[0]} brl: 2 running \u00b7 ran: 10s \u00b7 deadline in 10m 0s`,
+		);
+		stopProgressTicker(state);
+	});
+
+	it("renders the stopped form once the deadline has passed", () => {
+		const state = createSessionState();
+		const { ctx, setStatus } = mockCtx();
+		state.activeSubagents = 1;
+		state.registerLiveSubagent("a", liveEntry("a", NOW - 60_000, NOW, ctx));
+
+		updateProgressStatus(state, ctx);
+
+		expect(String(setStatus.mock.calls.at(-1)?.[1])).toContain(
+			`\u00b7 ran: 1m 0s \u00b7 deadline: stopping`,
+		);
+		stopProgressTicker(state);
+	});
+});

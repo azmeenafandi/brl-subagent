@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Updated: 2026-11-01 | Released: **v2.7.0** (2026-11-01) | Integration: `dev` @ the v2.7.0 release commit (tag `v2.7.0`); see "Shipped (2026-11-01, v2.7.0)" below. Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
+> Updated: 2026-11-08 | Released: **v2.8.0** (2026-11-08) | Integration: `dev` @ the v2.8.0 release commit (tag `v2.8.0`); see "Shipped (2026-11-08, v2.8.0)" below. Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -279,6 +279,25 @@ Goal: ship brl-subagent as a first-class pi package so installation and updates 
 **Outcome:** `brl-subagent@2.3.5` published to npm — installable via `pi install npm:brl-subagent`, updated via `pi update --extensions`, released through a token-free staged pipeline. 979 tests across 45 files; board clean.
 
 **Deferred → RESOLVED in v2.3.6:** pin doc version strings to `package.json` (the README ×2 and the AGENT.md header shipped stale in 2.3.5). Now enforced mechanically (#166).
+
+### Shipped (2026-11-08, v2.8.0)
+
+The bug-sweep + truth cycle: eight measured fixes, two new crash-path behaviours, and the tooling that demoted a ritual to a measurement.
+
+| Issue | What shipped | PR |
+|---|---|---|
+| #440 | **Dedupe eviction:** a terminal-notice cap overflow evicts the oldest id instead of clearing the whole set — the claim just made always survives. | #457 |
+| #436 | **Preset field parity:** the frontmatter mapper is a type-pinned table, so a declared field cannot be silently dropped (`outputFile` revived); the `timeout` omission stays allowlisted and pinned. | #458 |
+| #455 | **SIGKILL survivor drain:** the force-kill pass samples death after a bounded drain instead of in the same instant as the signal; both loops are bounded twice (clock + iteration). The "flaky test" was a producer defect. | #459 |
+| #434 | **Per-unit pre-flight:** batch units are judged by the same shape rule through a unit projection, using the **declared** level, with `processChecks` threaded rather than re-read. | #461 |
+| #439 | **Post-spawn containment:** a throw after the spawn can no longer report "Failed to spawn" for a live run; one advisory per run, and a sibling's counter is never stolen. | #462 |
+| #447 | **Acceptance marker:** a tri-state `acceptedAt` (`null`/ISO/absent) distinguishes "prompt never issued" from "provider silent"; a pre-start cleanup settles the record, and the boot scan reads the tri-state. | #464 |
+| #453 | **One deadline owner:** `spawnBackgroundSession` arms the budget on every path; the timer writes a `failed`/`timeout` snapshot and never prunes; late settles amend it; `projectLogicalRuns` gives one logical run per id for every raw-entry consumer. | #467 |
+| #465 | **Stuck-owner refusal:** the per-repo git wait leaves the spawn-queue critical section, and a same-repo branch dispatch whose owner is terminal-but-unsettled fails fast with the owner and branch named. | #472 |
+| #466 | **Boot repair (ADR 0026):** a durable `HeadStateRecord` per repo, written before the work branch exists; at boot the recorded base is restored only when the owner is provably dead ∧ HEAD is exactly the work branch ∧ the tree is clean, the branch is kept, and everything unrepairable is named. | #473 |
+| — | **Tooling (not shipped):** the Jev level demoted to an observation with a model-aware measurement arm (#468), and the README test-count freshness gate moved to the release PR (#469). | #471, #470 |
+
+Cycle close: **Rule 11 = 1 escalation** (`connection-drop` ×3 → #474, mechanical: the failure path reports the worktree state); the Jev hand-typed class was closed by the provenance guard and the #456/#468 mechanism change. Suite **2400 tests / 114 files**; 82.3% run success in the window; ADR 0026 added (0025 in the same cycle).
 
 ### Shipped (2026-11-01, v2.7.0)
 

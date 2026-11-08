@@ -100,8 +100,17 @@ never re-type their logic by hand. Full design:
     currency, the session log / run entries audit trail), THEN theorize about
     code. When delegating a debugging task, instruct the subagent to check the
     environment first.
-13. **Graph-first scoping (Rule 13) — the Recon checkpoint.** Before writing a
-    spec for any C1/C2 change, the CONDUCTOR runs
+13. **Graph-first scoping (Rule 13) — code exploration starts with CodeGraph.**
+    **No exception.** Any code-exploration task — a C1/C2 spec, an ad-hoc
+    question, a design discussion, a review — starts with CodeGraph, not grep.
+    Manual `grep`/`rg`/`find` is allowed only when CodeGraph cannot answer with
+    sufficient detail: a text pattern, a doc/prose string, a config value, or a
+    gap you record as a finding. Say which case it is; **"grep is faster" is not
+    a case** — on 2026-11-04 a grep recon missed the four `LiveSubagent` test
+    fixtures that `codegraph explore` named in one call, and the miss surfaced
+    at red-test time instead of design time.
+
+    Before writing a spec for any C1/C2 change, the CONDUCTOR also runs
     `bash .pi/skills/worktree/recon.sh <symbol|file> [--file <src>] --grep`
     (conductor-side only; subagents never see the index, rule 4) and PASTES its
     output into a `## Recon` section at the top of the spec. **No C1/C2 spec
@@ -130,9 +139,21 @@ never re-type their logic by hand. Full design:
       `codegraph-refresh.sh` at every merge (lifecycle step 7);
       `codegraph-check.py --repo-root <path>` for freshness. CLI-only,
       conductor-side, watcher off, never a hook (#230).
-      **Enforced for refactor PRs** via the review brief's `Structural closure`
+    - **Enforced for refactor PRs** via the review brief's `Structural closure`
       (`review-dispatch.md`): moved/renamed/deleted exports carry `recon.sh` callers +
       impact, reconciled against the PR diff.
+    - **Interactive recon — the commands that are not artifacts.**
+      `codegraph explore <area>` for a first pass over an unfamiliar area
+      (blast radius + verbatim source in one call — cap the output);
+      `codegraph node <symbol>` for source + the caller/callee trail in one
+      call; `codegraph callees <symbol>` for what a function does downstream
+      (`callers`/`impact` only see who calls it); `codegraph context <task>` to
+      build a task map. These are for reading; anything `recon.sh` prints, or a
+      test pins, still uses the `-j` commands.
+      **Selection:** area/first pass → `explore` (or `recon.sh --explore "<area>"`
+      for the freshness gate + a cap); one symbol → `node`; upstream →
+      `callers`/`impact`; downstream → `callees`; test set → `affected <changed
+      files>` (not a whole-module basename); task map → `context`.
     - **Doc concept / cross-document questions → grep + `docs-arch` + the ADRs**
       — the deterministic fallback. graphify is retired (ADR 0016); no LLM sits
       on the doc-navigation path.
@@ -254,13 +275,16 @@ never re-type their logic by hand. Full design:
     - **State** ("nothing is in flight", "the tree is clean") → the command that
       showed it.
 
-22. **Thinking-level calibration (Rule 22 — advisory, Jev).** Before writing a spec or
-    dispatch, classify the task **blind** (task text only) with the Jev classifier and
+22. **Thinking-level calibration (Rule 22 — the Jev level is an OBSERVATION).** Before writing a
+    spec or dispatch, classify the task **blind** (task text only) with the Jev classifier and
     record the result in the spec and the dispatch:
-    `jev: <level> (<conf>) · <C1|C2|C3> · worktree <y|n>`. Deviations **≥2
-    levels**, and **any level below Jev on a review**, carry a one-line reason. Clamps:
-    artifact-producing dispatches floor at `low`; reviews floor at `medium`. If
-    `codemode`/Jev is unavailable, record `jev: unavailable` and proceed — never block
+    `jev: <level> (<conf>) · <C1|C2|C3> · worktree <y|n>`. **The level is a recorded observation,
+    not a gate input** (#468): run whatever level you judge right for the task and the model — no
+    ≥2-level deviation reason, no "below Jev" review note, and no artifact/review floor is
+    required, because none of them is checked. The **risk class** is what still gates: `C1|C2|C3`
+    sets review depth (the table below), and a review's `jev-recheck:` may not classify the change
+    riskier than the record declares. If `codemode`/Jev is unavailable, record
+    `jev: unavailable` and proceed — never block
     a dispatch on the classifier. **Advisory on the LEVEL** — the conductor (and the
     maintainer's spec approval) still decide — but **blocking on PRESENCE** in a project
     that opts in: a `package.json` carrying `{"brl-subagent": {"processChecks": true}}`
@@ -268,10 +292,17 @@ never re-type their logic by hand. Full design:
     carries the exact form and the command that prints it), for foreground and background
     alike. `jev: unavailable` is an accepted form; the stated escape is
     `noJev: "<reason>"`, which proceeds and surfaces the reason as a warning. Print every
-    line with `--line '<json>' --label <name>` so the provenance log records that a
-    CLASSIFIER produced it — `--log --require-provenance` (run by `merge-guard.sh`) fails a
+    line from the classifier's **raw response**: `--classifier '<raw answers>' --label <name>`
+    (a hand-built `--line '<json>' --label` is refused without `--legacy-line`, which acknowledges a
+    conductor-assigned line), so the provenance log records that a CLASSIFIER produced it — `--log --require-provenance` (run by `merge-guard.sh`) fails a
     line nobody printed, because the format check alone passes an invented confidence
     (2026-10-31: `medium (0.70)` dispatched, the classifier had said `high (0.32)`).
+    **Record the model and what happened** (#468): `--model <provider>/<id>` adds a `model:` column,
+    `--classifier-model-aware '<raw answers>'` adds the second arm's `level-model:` answer (it needs
+    `--model`; it never prints a second line and never blocks a dispatch), and `--settle <label>
+    --kind impl|review|probe --outcome done|failed|stopped|unknown [--verdict …] [--nits N]` appends
+    the outcome to `.pi/jev-outcomes.log`. `--calibrate` then compares both arms against the
+    dispatched level — and prints **counts only** below 20 eligible implementation rows.
     Snippet + the 2026-10-10 backtest (98 dispatches,
     $0.0034: it flags over-leveling, raises reviews — `review-test-hygiene-r2`, which
     caught the #308 regression, was called high→xhigh) live in
@@ -305,13 +336,20 @@ ships as product documentation — see `CONTRIBUTING.md`).
 2. **No deadline ⇒ durable path.** A missing deadline is not permission to move fast; it means
    verify first, act once: background, banked, commit-per-step. Foreground is only for a probe
    whose answer the next step needs inline. This is enforced in code, not just here, in a project
-   that opted into its own process checks: a `high`/`xhigh` dispatch with `background: false` and an
-   explicit `timeout` is auto-switched to background (the 30-minute default applies) unless
-   `force: true` — a short foreground timeout loses the run's work, because foreground runs persist
-   nothing (ADR 0018, scoped by ADR 0019). This checkout opts in via its tracked `package.json`
-   (`brl-subagent.processChecks: true`); users' projects have no such field, so their explicit
-   shape and timeout stand. The flag is maintainer process tooling and is never documented as a
-   user-facing feature.
+   that opted into its own process checks — two outcomes, one rule (the run must not be killable by
+   its own deadline):
+   - **the shape can move**: a `high`/`xhigh` dispatch with `background: false` and an explicit
+     `timeout` is auto-switched to background (the 30-minute default applies) — ADR 0018;
+   - **the shape cannot move** (an effective `always`, or an omitted `background` that the
+     `writes`/`always` default keeps foreground): the explicit `timeout` is dropped and the run
+     STAYS foreground, where there is no default deadline, so nothing kills it — ADR 0022. This is
+     Rule 18's dispatch-parameter clause mechanized: foreground dispatches omit the timeout.
+
+   `force: true` keeps the explicit timeout on either arm. A short foreground timeout loses the
+   run's work, because foreground runs persist nothing. This checkout opts in via its tracked
+   `package.json` (`brl-subagent.processChecks: true`); users' projects have no such field, so their
+   explicit shape and timeout stand. The flag is maintainer process tooling and is never documented
+   as a user-facing feature.
 3. **"Done" carries its falsifier.** Every completion names the check that would prove it wrong,
    or says "unverified". The PR body's `Verification:` line is where that is written (`pr` skill
    §2); the review record cites it.
@@ -336,15 +374,20 @@ ships as product documentation — see `CONTRIBUTING.md`).
                 `#<pr>`, (c) its last `Verdict:` is approve/approve-with-nits, (d) the
                 PR's CURRENT head sha is in the record or a `conductor-verified:` line
                 says how the post-verdict commit was verified, (e) `jev-check --log` is
-                green. Any failure blocks and lists every reason. Then merge commit to
+                green, (f) the record carries a `jev-recheck:` line (the classifier's
+                answer on the DISPATCH text, run at review time) with a `recheck-<pr>`
+                provenance row, and a `Risk class:` no weaker than the recheck. Any
+                failure blocks and lists every reason. Then merge commit to
                 `dev` (PRs target `dev`; `dev → main` is the release-time merge commit.
                 Never squash — per-issue commits must survive so release notes can read
                 them. Never merge a task PR straight to `main`.) Then run
                 `codegraph-refresh.sh` — the canonical structural index
                 (cockpit/dev) is refreshed AT EVERY MERGE; explicit invocation
                 only, never a hook (#230). The refresh asserts coverage AND
-                freshness (`indexed_at_commit == HEAD`, `index_state =
-                complete`). CodeGraph is the SOLE structural index (ADR 0016);
+                freshness (`indexed_at_commit == HEAD`, OR the delta since it
+                touches no `src/**/*.ts` — docs/tooling commits are not
+                staleness; `index_state = complete`). CodeGraph is the SOLE
+                structural index (ADR 0016);
                 graphify is retired.
 8. CHECKPOINT   release checkpoint for extension-code changes — conductor
                 pauses for the user (rule #6; docs/tests/tooling: none)
@@ -359,6 +402,21 @@ ships as product documentation — see `CONTRIBUTING.md`).
                 tagged commit), not after every merge.
 ```
 
+## Dispatch presets (never guess)
+
+Implementation dispatches use the repo-local **`project-implementer`** preset — it carries the SOLID/DRY
+quality bar (S/O/L/I/D + the two-occurrence DRY threshold) and the "flag, never fix, code you were not asked
+to touch" rule. The shipped **`dev-agent`** preset has no quality bar; do not use it for implementation work.
+Reviews use **`project-reviewer`** (its mirror of the same bar, with the required
+`SOLID/DRY violations flagged: N` verdict line); plan critiques use **`project-plan-critic`**.
+
+**Pinned: plan critiques run at `thinkingLevel: "medium"`** (maintainer decision, 2026-11-07 — the measured
+cost/performance optimum for terra) **regardless of what Jev answers.** This is a standing PIN, not a
+per-dispatch judgement: do not escalate a critique because Jev says `high` or `xhigh`, and the dispatch
+needs no justification for `medium`. The Jev line is still recorded and still drives the **risk class**;
+with the level an observation (#468) there is no deviation rule left to carve out of — the pin and the
+record simply coexist.
+
 ## Adversarial review dispatch (rule #7 + #8 + #10)
 
 **Classify BEFORE reviewing (Rule 10).** Every change gets a risk class first;
@@ -371,7 +429,12 @@ no ritual without a classification:
 | **C3 — Minor** | Display, docs, config, comments, dead code | Conductor diff read only (no subagent review) |
 
 Reversibility is the tiebreaker when the class is ambiguous; new evidence found
-during review can reclassify. If unsure, default UP. Brief content, dispatch
+during review can reclassify. If unsure, default UP. **Before dispatching the
+review, re-run the classifier on the dispatch text** (codemode, blind) and print
+it with `jev-check --classifier '<raw answers>' --label recheck-<pr>`; the record
+carries that line plus `Risk class: <Cx>`, and merge check (f) refuses a record
+whose declared tier is weaker than the recheck. The dispatch-time line is a
+prediction; the recheck is the merge-time fact. Brief content, dispatch
 mechanics, verdict format: `references/review-dispatch.md`.
 
 ## When to use each script
@@ -424,8 +487,9 @@ mechanics, verdict format: `references/review-dispatch.md`.
   line, offenders print `timestamp + task head + reason` and exit 1, zero parsed
   dispatch events is exit 2. `--log` is conductor/merge-time (the log is local and
   gitignored, so it is NOT CI-visible; `--since` re-audits legacy dispatches).
-  `--line ... --label <name>` appends the printed line to the gitignored provenance log
-  (`.pi/jev-lines.log`), and `--log --require-provenance` additionally fails a dispatch
+  `--classifier ... --label <name>` appends the printed line to the gitignored provenance log
+  (`.pi/jev-lines.log`); `--line` never appends (refused without `--legacy-line`, no-write with
+  it), and `--log --require-provenance` additionally fails a dispatch
   line with no such row — fail-closed (exit 2) when the log is missing or empty. That is
   the check the format cannot make: a hand-typed confidence passes the shape.
   `--selftest` proves every path with fixtures. CI runs `--selftest` and `--ledger`

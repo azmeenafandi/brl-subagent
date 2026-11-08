@@ -45,6 +45,7 @@ import {
 	type RecoveryDeps,
 	type RecoveryRecord,
 } from "../recovery";
+import { collectInterruptedRuns, offeredInterruptedRuns, buildRecoveryNotice } from "../recovery-surface";
 import { __setProcAvailableForTest } from "../proc";
 import { CHILD_MARKER_ENV_KEY } from "../sanitize";
 import { SessionState } from "../state";
@@ -542,8 +543,11 @@ describe("boot scan wait-once", () => {
 		const summary = await runBootScan({ records: orphanRecords(5), deps, mark: () => {} });
 		expect(summary.marked).toBe(5);
 		expect(summary.reaped).toBe(5);
-		expect(sleep).toHaveBeenCalledTimes(1);
-		expect(sleep).toHaveBeenCalledWith(50);
+		// #455: the ONE grace sleep comes first and is unchanged. The post-SIGKILL
+		// drain then samples these never-dying fake pids, bounded by its own
+		// iteration cap (drainMs 100 / pollMs 10 = 10 samples) — so the total is
+		// bounded, not "one". The grace window is still shared by all N orphans.
+		expect(sleep.mock.calls).toEqual([[50], ...Array<[number]>(10).fill([10])]);
 	});
 
 	it("bounds elapsed time to ~one grace window", async () => {
@@ -711,5 +715,75 @@ describe("boot-scan mark truthfulness (issue #304)", () => {
 		);
 		expect(skips).toHaveLength(1);
 		expect(skips[0][1]).toMatchObject({ count: 1, ids: [garbageId] });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 7. ACCEPTANCE TRI-STATE (issue #447)
+//
+// `acceptedAt` separates "tracked but never reached session.prompt()" (`null`)
+// from "accepted" (ISO) and "written before the field existed" (absent). Only
+// the `null` class is excluded from recovery; an accepted run and a legacy
+// record keep today's interrupted+retryable behaviour exactly.
+// ---------------------------------------------------------------------------
+
+describe("acceptance tri-state in the boot scan (issue #447)", () => {
+	const deps = () => ({ ...defaultRecoveryDeps(), sleep: async () => {}, graceMs: 0 });
+	/** The recovery surface's rows over the durable registry. */
+	const views = (): ReturnType<typeof collectInterruptedRuns> =>
+		collectInterruptedRuns({
+			listInflight: listInflightRuns,
+			getAgent: () => null,
+			findRun: () => undefined,
+		});
+	const offeredIds = (): string[] => offeredInterruptedRuns(views()).map((view) => view.id);
+
+	it("A5: an ACCEPTED run with a dead owner is still interrupted, listed and retryable", async () => {
+		const id = crypto.randomUUID();
+		registerInflightRun({ id, kind: "foreground", owner: DEAD_OWNER, startedAt: ISO, acceptedAt: ISO });
+
+		const summary = await recoverInflightRuns({
+			deps: deps(),
+			mark: (record, at) => markInterrupted(record.id, at),
+		});
+
+		expect(summary.marked).toBe(1);
+		expect(summary.neverStarted).toBe(0);
+		expect(typeof readEntry(id)?.interruptedAt).toBe("string");
+		expect(offeredIds()).toEqual([id]);
+		expect(buildRecoveryNotice(offeredInterruptedRuns(views())).details.ids).toEqual([id]);
+	});
+
+	it("A6: a LEGACY record (no acceptedAt) keeps today's behaviour — interrupted and offered", async () => {
+		const id = crypto.randomUUID();
+		registerInflightRun({ id, kind: "foreground", owner: DEAD_OWNER, startedAt: ISO });
+
+		const summary = await recoverInflightRuns({
+			deps: deps(),
+			mark: (record, at) => markInterrupted(record.id, at),
+		});
+
+		expect(readEntry(id)).not.toHaveProperty("acceptedAt");
+		expect(summary.marked).toBe(1);
+		expect(summary.neverStarted).toBe(0);
+		expect(offeredIds()).toEqual([id]);
+	});
+
+	it("A7: `null` survives the JSON round-trip of BOTH durable records (the sentinel's point)", () => {
+		const id = crypto.randomUUID();
+		const appended: SubagentRun[] = [];
+		const pi = { appendEntry: (_type: string, run: SubagentRun) => appended.push(run) };
+		persistRunRecord(pi as never, makeRun({ id, acceptedAt: null }), "background");
+
+		// Session run entry: JSON must KEEP the key (an `undefined` would vanish).
+		const runEntry = JSON.parse(JSON.stringify(appended[0])) as Record<string, unknown>;
+		expect("acceptedAt" in runEntry).toBe(true);
+		expect(runEntry.acceptedAt).toBeNull();
+
+		// Registry entry: read back from DISK, through the parse-tolerant reader.
+		const onDisk = JSON.parse(fs.readFileSync(entryFile(id), "utf-8")) as Record<string, unknown>;
+		expect("acceptedAt" in onDisk).toBe(true);
+		expect(onDisk.acceptedAt).toBeNull();
+		expect(listInflightRuns().find((entry) => entry.id === id)?.acceptedAt).toBeNull();
 	});
 });

@@ -35,6 +35,28 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 
 export const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
+/**
+ * Issue #443: the ONE membership test for a thinking level — the guard every
+ * seam that can launch a subagent calls before a DECLARED level is resolved.
+ *
+ * Why it is not `resolveThinkingLevel`: that function CLAMPS, and it cannot
+ * report failure. An unknown value (`"bogus"`, `"MAX"`, `" high"`) has index
+ * -1, so `THINKING_LEVELS[Math.min(-1, maxIdx)]` is `undefined` — the level is
+ * then erased into argv as `--thinking undefined`, pi warns and runs at ITS OWN
+ * default, and the configured cap is bypassed rather than a launch refused.
+ * Callers therefore check membership first and keep `resolveThinkingLevel`
+ * exactly as it is for valid input.
+ *
+ * Case- and whitespace-exact by construction (`THINKING_LEVELS.includes`), so
+ * `"High"` and `" high"` are rejected too. `""` is NOT a level: the dispatch
+ * seams preserve its existing meaning (top level → the configured maximum,
+ * per unit → the global level), so the empty string is handled by them, not
+ * here. pi's own `max` is not a delegated level.
+ */
+export function isThinkingLevel(value: unknown): value is ThinkingLevel {
+	return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
+}
+
 export type Priority = "critical" | "high" | "normal" | "low";
 
 export const PRIORITY_ORDER: Record<Priority, number> = {
@@ -79,6 +101,14 @@ export const SUBAGENT_ABORTED_MESSAGE = "Subagent aborted by user";
 // on its distinctive "killed by external signal" substring (mirroring the
 // SUBAGENT_ABORTED_MESSAGE match) — keep the literal in sync with classifyError.
 export const SUBAGENT_SIGNAL_KILLED_MESSAGE = "Subagent killed by external signal";
+
+// Issue #447: the honest stamp for a dispatch that never reached
+// `session.prompt()`. Shared by the in-process pre-start cleanup
+// (session-manager) and the boot scan's never-started finalize (recovery) so
+// the two surfaces cannot describe the same non-event differently. It carries
+// no classifyError keyword on purpose — a pre-start failure is `unknown`, not a
+// timeout, an abort, or an exit error.
+export const PROMPT_NEVER_ISSUED_MESSAGE = "Subagent prompt was never issued";
 
 /**
  * Classify a subagent result into an error category based on its errorMessage,
@@ -382,6 +412,20 @@ export interface SubagentRun {
 	// Option B U3 (D4): the recovery posture in force when this run was
 	// dispatched. Additive: a pre-U3 record lacks it and reads as "offer".
 	recoveryPosture?: RecoveryMode;
+	/**
+	 * Issue #447: the acceptance marker. `null` at creation — the dispatch is
+	 * TRACKED (agent record + run entry + registry entry written) but has not
+	 * reached `session.prompt()`; an ISO timestamp written immediately before
+	 * the prompt; absent on records written before the field existed.
+	 *
+	 * The tri-state IS the compatibility contract: `null` cannot be produced by
+	 * a pre-upgrade record (JSON keeps `null`, where `undefined` would vanish),
+	 * so the boot scan reads `null` as never-started without taking the retry
+	 * offer away from a legacy record. It is NOT a display status — the
+	 * vocabulary stays running | completed | failed | stopped, and "started,
+	 * outcome unknown" remains #439's business (see `isInterruptedRun`).
+	 */
+	acceptedAt?: string | null;
 	startedAt: string;
 	finishedAt?: string;
 	durationMs?: number;
@@ -406,6 +450,13 @@ export interface LiveSubagent {
 	// Issue #114: per-unit priority for the drill-in header (`p:critical` etc.).
 	priority?: string;
 	startedAt: number;
+	/**
+	 * Issue #423: absolute deadline (epoch ms) for this run, when it has a timer.
+	 * Absent for a foreground run with no explicit timeout (foreground has no
+	 * default deadline) and for a background run with no persisted budget (an
+	 * old record). Display only — the kill remains the timer owner's business.
+	 */
+	deadlineAt?: number;
 	liveOutput: string;
 	usage: { input: number; output: number };
 	ctx: ExtensionContext;
@@ -769,6 +820,13 @@ export interface BackgroundAgent {
 	status: AgentStatus;
 	startedAt: number;
 	completedAt?: number;
+	/**
+	 * Issue #423: the EFFECTIVE budget of this background run (explicit timeout,
+	 * else the 30 m default), persisted at spawn so the result and wake can
+	 * state it after the closure that armed the timer is gone. Absent on records
+	 * written before the field existed — read as "no budget known".
+	 */
+	timeoutMs?: number;
 	task: string;
 	model: string;
 	thinkingLevel: ThinkingLevel;
@@ -777,6 +835,13 @@ export interface BackgroundAgent {
 	error?: string;
 	result?: SubagentResult;
 	finalOutput?: string;
+	/**
+	 * Issue #465: the work branch this run's `gitMode=branch` isolation created,
+	 * stamped when the branch is created so a DURABLE record names it even if the
+	 * run never settles (a stuck owner never writes `result.gitBranch`, which is
+	 * settle-only). Serializable on purpose — a refusal's message is built from it.
+	 */
+	workBranch?: string;
 	/** @internal — session reference for live monitor polling */
 	_sessionRef?: import('@earendil-works/pi-coding-agent').AgentSession;
 	/**
@@ -802,9 +867,58 @@ export interface BackgroundAgent {
 	recoveryPosture?: RecoveryMode;
 }
 
+/**
+ * Issue #439: the part of a spawned background run that is needed to REPORT it,
+ * captured as a plain record the instant the spawn returns.
+ *
+ * Why a separate record rather than the agent itself: everything after the
+ * spawn is contained (a fault there must classify the run as STARTED, never as
+ * a failed spawn), and a containment whose degraded path still formats from the
+ * live agent re-opens the window it exists to close. Callers format from these
+ * fields only; `label` is `description` under the name `delegate_task` takes it
+ * from the caller, so a fan-out can render its unit label from the same record.
+ */
+export interface BackgroundAgentIdentity {
+	id: string;
+	label?: string;
+	description: string;
+	task: string;
+	status: AgentStatus;
+	model: string;
+}
+
+/**
+ * Issue #439: what the background-spawn tail returns. `agent` is the live
+ * record the tail's own poller/deadline close over; `identity` is the plain
+ * reporting record (all callers format from it); `tailFailures` is the
+ * containments' ledger — empty when the whole tail attached.
+ *
+ * A non-empty `tailFailures` means exactly one thing: **the run started and its
+ * monitoring is degraded**. It is never a spawn failure, so no caller may
+ * classify it as an error (the transport retry reads `isError` as "did not
+ * start" and would surface a false source failure).
+ */
+export interface BackgroundAgentSpawnResult {
+	agent: BackgroundAgent;
+	identity: BackgroundAgentIdentity;
+	tailFailures: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
+
+/**
+ * The approval modes that make a background spawn impossible (W5, issue #28).
+ *
+ * ONE definition, two consumers — `rejectApprovalAlwaysInBackground`
+ * (prelude.ts, the background gates) and `resolveThinkingDispatchSwitch`
+ * (params.ts, the dispatch pre-flight that must not switch a dispatch into a
+ * rejection — issue #433). A re-spelled `=== "always"` at either site is the
+ * drift this helper exists to prevent: widening or narrowing what background
+ * can accept must change the pre-flight's verdict in the same edit.
+ */
+export const approvalBlocksBackground = (m: ApprovalMode): boolean => m === "always";
 
 export function resolveThinkingLevel(
 	requested: ThinkingLevel | undefined,
@@ -814,6 +928,26 @@ export function resolveThinkingLevel(
 	const requestedIdx = THINKING_LEVELS.indexOf(requested);
 	const maxIdx = THINKING_LEVELS.indexOf(maxAllowed);
 	return THINKING_LEVELS[Math.min(requestedIdx, maxIdx)];
+}
+
+/**
+ * Issue #443: the value that actually REACHES resolution — the per-call
+ * declaration, else the selected preset's — before any clamping.
+ *
+ * ONE spelling, three readers: `resolveSubagentParams` merges it, and both
+ * dispatch seams guard it (`execute` and `spawnBackgroundRun`, the latter for
+ * the transport auto-retry). A guard that computed this differently would
+ * judge a value the merge never uses, which is the silent-drift class this
+ * helper removes; `resolveThinkingLevel` then clamps what it returns.
+ *
+ * `undefined` (omitted) and `""` are returned unchanged on purpose — they are
+ * existing declarations, not values to judge (see `isThinkingLevel`).
+ */
+export function declaredThinkingLevel(
+	callLevel: string | undefined,
+	presetLevel: string | undefined,
+): string | undefined {
+	return callLevel ?? presetLevel;
 }
 
 export function formatTokens(count: number): string {
@@ -949,22 +1083,55 @@ export interface TerminalOutcome {
 }
 
 /**
+ * Issue #449: what the settle site saw in the session's PROJECTED message array.
+ *
+ * `"absent"` means exactly ONE thing: the array was READ and contained no
+ * assistant message. It is supplied only by the background settle site, which
+ * reads the projection the SDK rewrote before settling; a missing or throwing
+ * `messages` getter is `"unknown"` (it never reaches the classifier — the settle
+ * handler's catch-all owns it), and a projection holding an assistant message is
+ * `"present"` whatever that message contains.
+ */
+export type AssistantEvidence = "present" | "absent" | "unknown";
+
+/**
+ * Issue #449: the fixed failure headline for a run that settled with no
+ * assistant output. The omitted message cannot be recovered, so this asserts the
+ * OBSERVATION (no output) and only offers truncation as a possibility — it never
+ * claims truncation as fact. Deliberately free of every TRANSPORT_SIGNATURES
+ * substring (transport-retry.ts), so an automatic transport retry cannot fire on
+ * this class; its `incomplete` category is independently excluded by that
+ * predicate's class gate.
+ */
+export const NO_ASSISTANT_OUTPUT_REASON =
+	"Run settled with no assistant output — the provider's response may have been truncated and omitted by the SDK (see #449)";
+
+/**
  * Issue #179 (D1): classify a run's terminal outcome from its final assistant
  * stopReason. This is the settle-time counterpart to classifyError/isSubagentError
  * and REUSES classifyError for every failure reason (single taxonomy).
  *
  * | stopReason               | status    | errorCategory              |
  * |--------------------------|-----------|----------------------------|
- * | stop / undefined         | completed | —                          |
+ * | stop                     | completed | —                          |
+ * | undefined                | completed | —                          |
+ * | undefined + absent (449) | failed    | incomplete                 |
  * | aborted                  | stopped   | aborted                    |
  * | error                    | failed    | from classifyError         |
  * | length                   | failed    | truncated                  |
  * | toolUse/deferred/pending | failed    | incomplete                 |
+ *
+ * Issue #449: `extra.assistantEvidence` defaults to `"unknown"`, so every caller
+ * that does not pass it keeps the pre-#449 result byte for byte. Only an already-
+ * KNOWN terminal outcome (the switch arms above) beats the evidence; the evidence
+ * decides the formerly-default case alone. The omitted message is unrecoverable,
+ * so this is a structural guard: it cannot tell a truncation omission from any
+ * other resolve-with-no-assistant-message.
  */
 export function classifyTerminalOutcome(
 	stopReason: string | undefined,
 	errorMessage?: string,
-	extra?: { stderr?: string; exitCode?: number },
+	extra?: { stderr?: string; exitCode?: number; assistantEvidence?: AssistantEvidence },
 ): TerminalOutcome {
 	switch (stopReason) {
 		case "aborted":
@@ -986,6 +1153,14 @@ export function classifyTerminalOutcome(
 				}),
 			};
 		default:
+			// Issue #449: no terminal stopReason at all. A projection READ as an
+			// array holding no assistant message is not a success — the still-open
+			// turn has no answer to show for itself. Only the MISSING reason can be
+			// decided by the evidence: any stopReason the caller observed (including
+			// "stop") is an already-known outcome and keeps its existing result.
+			if (stopReason === undefined && extra?.assistantEvidence === "absent") {
+				return { status: "failed", errorCategory: "incomplete" };
+			}
 			return { status: "completed" };
 	}
 }

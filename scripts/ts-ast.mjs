@@ -158,7 +158,17 @@ function getApi() {
 			},
 		});
 		api = client;
-		process.once("exit", () => client.close());
+		// The tsgo child may already be gone when this hook runs (the sync channel throws
+		// `eofError` on close during teardown). An uncaught throw in an `exit` handler marks
+		// the whole process failed — vitest then exits 1 *after* a green run (seen 2026-11-02,
+		// it blocked a worktree pre-flight). Contain it: nothing can be done at exit.
+		process.once("exit", () => {
+			try {
+				client.close();
+			} catch {
+				/* teardown race — the child is already gone */
+			}
+		});
 	}
 	return api;
 }

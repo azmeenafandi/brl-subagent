@@ -24,7 +24,7 @@ import type {
 	SnapshotParams,
 	DelegateTaskParams,
 } from "./types";
-import { resolveThinkingLevel } from "./types";
+import { approvalBlocksBackground, declaredThinkingLevel, resolveThinkingLevel } from "./types";
 import { getAllPresets, getPreset } from "./presets";
 import { classifyTask } from "./router";
 import { normalizeTimeout } from "./validate";
@@ -199,48 +199,106 @@ export const THINKING_SWITCH_NOTICE =
 	"The run is now background; the conductor is woken on terminal state. Pass force: true to keep it foreground (state the reason in the task text).";
 
 /** The pre-flight's verdict for one dispatch. */
-export type ThinkingDispatchSwitch = "switch" | "forced" | "none";
+export type ThinkingDispatchSwitch = "switch" | "drop-timeout" | "forced" | "none";
 
 /**
- * Issue #412 (rule 2: "no deadline ⇒ durable path") — should the pre-flight
- * change this dispatch's shape?
+ * The notice the dispatch emits on the SECOND arm (issue #431): the run was
+ * going to be killed by its own explicit foreground timeout, but its approval
+ * mode makes a background run impossible (or it never asked for one), so the
+ * deadline is dropped and the shape stays foreground.
+ *
+ * Deliberately NOT `THINKING_SWITCH_NOTICE`: that text says "the run is now
+ * background", which is a lie on this arm. The trade-off (no clock on a hung
+ * child) is stated rather than hidden — a dropped deadline removes the only
+ * bound the runner had.
+ */
+export const THINKING_TIMEOUT_DROP_NOTICE =
+	"Dispatch pre-flight (no deadline means the durable path): a high/xhigh-thinking run carried an explicit timeout, but its effective approval mode needs the interactive approval dialog — a background run would be rejected ('always') or would silently auto-approve ('writes'), so the shape cannot move. " +
+	"The explicit timeout was dropped and the run stays FOREGROUND: foreground runs have no default deadline, so no clock kills it, and the conductor's call blocks until the child settles. " +
+	"The trade-off is explicit — a dropped deadline also removes the only clock on a child that hangs. Pass force: true to keep the explicit timeout.";
+
+/**
+ * Issue #412 (rule 2: "no deadline ⇒ durable path") — what should the
+ * pre-flight do with this dispatch?
  *
  * The 2026-10-31 incident: a plan critique ran foreground under a 15-minute
  * timeout, was killed at ~14 minutes ("almost done"), and lost everything —
  * the background re-run then cost another 17 minutes. The decision was
  * conductor discretion; this predicate makes the durable shape the only one
- * for the runs where losing the context is expensive:
+ * for the runs where losing the context is expensive.
+ *
+ * One rule, two arms — the run must not be killable by its own deadline:
  *
  *   processChecks (the project opted into OUR process — issue #415)
  *     + thinkingLevel high|xhigh
- *     + background EXPLICITLY false (the caller asked for foreground)
  *     + an explicit timeout (the deadline that would kill it)
- *     → switch to background and drop the timeout.
+ *     + an effective FOREGROUND shape
+ *
+ *     → "switch": move to background and drop the timeout (the 30-minute
+ *       background default applies) — used when a background run is possible.
+ *     → "drop-timeout": keep foreground and drop the timeout (a foreground
+ *       run has no default deadline since #423) — used when it is not:
+ *         · `background: false` + effective `always`: switching there would be
+ *           REJECTED (no dialog in background), and a pre-flight must never
+ *           turn a valid dispatch into an error (#433);
+ *         · `background` omitted where the #361 default resolved FOREGROUND
+ *           (effective `writes`/`always`): the default already judged the
+ *           approval mode, so the deadline is all that is left to remove.
  *
  * Deliberately exempt:
  *   - `processChecks: false` — this is a CONDUCTOR decision rule, not product
  *     behavior. A user's explicit foreground timeout is usually a budget cap,
  *     so overriding it could triple time and cost against their instruction.
- *     The umbrella flag (ADR 0019) is what makes the switch opt-in; the
+ *     The umbrella flag (ADR 0019) is what makes the pre-flight opt-in; the
  *     predicate has no global mode.
- *   - `chain`/`graph` — they block by definition and `background: true` is
- *     rejected at dispatch; the decision cannot apply to them.
- *   - an omitted `background` — the #361 default already decided, and it knows
- *     about approval modes (a `writes`/`always` run must stay in front of the
- *     user); second-guessing it here would silently move a gated run into a
- *     context with no approval dialog.
- *   - no explicit timeout — there is no deadline to lose; the background
- *     default is a deadline too, so switching would not make the run safer.
+ *   - `chain`/`graph` — an uncapped batch multiplies a hang across N units and
+ *     has no per-unit pre-flight (#434); the exemption is about the BATCH now,
+ *     not about `background: true` being rejected (which motivated it for the
+ *     switch arm only).
+ *   - an explicit `background: true` — the caller asked for background; there
+ *     is no foreground deadline to lose.
+ *   - an omitted `background` whose effective shape is background (`auto`) —
+ *     the #361 default already chose the durable shape.
+ *   - no explicit timeout — there is no deadline to drop.
  *   - `force: true` — the override, reported as `forced` (not `none`) so the
- *     caller can tell "kept foreground by request" from "never applied".
- *     `force` carries no reason field (ADR 0007): the dispatch text is the
- *     reason.
+ *     caller can tell "kept by request" from "never applied". `force` carries
+ *     no reason field (ADR 0007): the dispatch text is the reason.
+ *     PRECEDENCE: force maps `switch`/`drop-timeout` → `forced`; an arm that
+ *     computes `none` stays `none` REGARDLESS of force — there is nothing to
+ *     override, and the call site's "foreground forced" log line must never
+ *     print for a run that is already background.
+ *
+ * The omitted-background arm keys on the EFFECTIVE SHAPE via
+ * `defaultBackgroundFor`, never on a re-spelled mode list — the same helper the
+ * #361 default uses, so the two cannot disagree. `effectiveApprovalMode` is
+ * resolved by `resolveEffectiveApprovalMode(params.approvalMode, state)` at the
+ * call site, never read from the raw call param: a config-tier mode must reach
+ * this predicate, and the `always` guard goes through `approvalBlocksBackground`
+ * — the same helper the background gates reject with.
+ *
+ * INVARIANT (MAJ-7): "drop the timeout" is `params.timeout = undefined`, which
+ * `resolveSubagentParams` merges as `params.timeout ?? preset?.timeout`. The
+ * drop arm's no-deadline guarantee therefore holds ONLY because no preset can
+ * carry a `timeout` at runtime (`presetFromFrontmatter` maps none, so
+ * `SubagentPreset.timeout` is dead). If preset timeouts ever map, the drop
+ * silently re-merges one, no test fails, and the notice becomes a lie — merge
+ * or skip the preset value here first.
  *
  * `thinkingLevel` is the DECLARED level (per-call, else the named preset's),
  * not the capped one: `maxThinkingLevel` defaults to `off` for an unconfigured
  * session, so applying the cap here would disable the pre-flight exactly where
  * nobody configured anything — the drift this rule exists to remove.
  */
+/**
+ * #434 review (DRY): the two levels the pre-flight treats as "high thinking".
+ * ONE member test, used by the dispatch predicate and by its unit projection —
+ * the literal pair is shared core, not a documented divergence, and U10 pins
+ * that the two predicates agree on the same declared pair.
+ */
+export function isHighDeclaredLevel(level: ThinkingLevel | string | undefined): boolean {
+	return level === "high" || level === "xhigh";
+}
+
 export function resolveThinkingDispatchSwitch(input: {
 	processChecks: boolean;
 	thinkingLevel: ThinkingLevel | undefined;
@@ -248,13 +306,124 @@ export function resolveThinkingDispatchSwitch(input: {
 	timeout: number | undefined;
 	force: boolean | undefined;
 	shape: DispatchShape;
+	/** The mode the child will actually run with (call param, else config). */
+	effectiveApprovalMode: ApprovalMode;
 }): ThinkingDispatchSwitch {
 	if (!input.processChecks) return "none";
 	if (input.shape === "chain" || input.shape === "graph") return "none";
-	if (input.thinkingLevel !== "high" && input.thinkingLevel !== "xhigh") return "none";
-	if (input.explicitBackground !== false) return "none";
+	if (!isHighDeclaredLevel(input.thinkingLevel)) return "none";
 	if (input.timeout === undefined) return "none";
-	return input.force === true ? "forced" : "switch";
+	const base: ThinkingDispatchSwitch =
+		input.explicitBackground === true
+			? "none"
+			: input.explicitBackground === false
+				? approvalBlocksBackground(input.effectiveApprovalMode)
+					? "drop-timeout"
+					: "switch"
+				: defaultBackgroundFor(input.shape, input.effectiveApprovalMode)
+					? "none"
+					: "drop-timeout";
+	if (base === "none") return "none";
+	return input.force === true ? "forced" : base;
+}
+
+/**
+ * The notice a batch dispatch emits when the UNIT projection of the same rule
+ * (issue #434) removes a unit's own declared deadline.
+ *
+ * Emitted at most once per dispatch, at the first affected unit's run — so the
+ * wording deliberately claims NO completeness: it names that one unit and says
+ * when the others are judged. A unit cancelled before its run is never named,
+ * and a unit whose own declaration is not eligible gets no line at all.
+ *
+ * Deliberately NOT `THINKING_TIMEOUT_DROP_NOTICE`: that text reasons about the
+ * DISPATCH's effective approval mode, which says nothing about a unit that
+ * declared its own pair inside a batch the caller already shaped.
+ */
+export const THINKING_UNIT_TIMEOUT_DROP_NOTICE =
+	"Dispatch pre-flight (no deadline means the durable path): a batch unit declares its own high/xhigh thinking level with an explicit timeout, so that unit's timeout is dropped and it runs FOREGROUND — a foreground run has no default deadline, so no clock kills it. " +
+	"Only the unit this notice is attached to is reported here; the other units are judged when each reaches its run, so a unit that has not started yet is not covered. " +
+	"Pass force: true to keep the units' declared timeouts.";
+
+/**
+ * Whether a UNIT runs foreground or background — the unit's own shape, which
+ * decides whether its declared deadline is a foreground hazard at all (issue
+ * #434).
+ *
+ * Background units are excluded by construction: a `tasks` fan-out spawns its
+ * units as detached background agents, where the deadline is the legitimate
+ * 30-minute budget and dropping it would REMOVE a bound instead of adding
+ * durability. Chain/graph units are always foreground (an explicit
+ * `background: true` batch is rejected at dispatch).
+ */
+export type UnitShape = "foreground" | "background";
+
+/**
+ * Issue #434 — the UNIT projection of `resolveThinkingDispatchSwitch`.
+ *
+ * The dispatch rule only judges the DISPATCH-level pair (`params.thinkingLevel`
+ * + `params.timeout`). Batch units carry their own (`schema.ts`
+ * `STEP_HEAD_FIELDS`/`STEP_THINKING_LEVEL_FIELD`/`STEP_TAIL_FIELDS`) and
+ * `mergeSubTaskParams` lets the unit win per field, so a unit declaring
+ * `thinkingLevel: "high"` + `timeout: 600000` under no top-level pair
+ * reproduced the 2026-11-06 incident for that unit alone: the dispatch
+ * predicate exits early on `params.timeout === undefined`.
+ *
+ * Only ONE arm is available per unit — a unit cannot become its own background
+ * dispatch (it is one spawn inside a batch the caller already shaped), so the
+ * projection answers a boolean and never re-states the switch/drop-timeout
+ * approval arms that decide a DISPATCH's shape.
+ *
+ * Eligible when ALL hold:
+ *
+ *   1. `processChecks` — threaded from `execute` so a unit is judged by the
+ *      same project opt-in as its dispatch. NEVER re-read at the unit site: a
+ *      relative `params.cwd` re-read (against the process cwd instead of
+ *      `ctx.cwd`) measured `false` where the dispatch resolved `true`.
+ *   2. `force !== true` — the override reaches units too; it is the caller's
+ *      statement that the declared pair is intentional.
+ *   3. the unit's EFFECTIVE DECLARED level is high/xhigh: its own declaration,
+ *      else the dispatch's declared level, which the unit inherits. NOT
+ *      `merged.thinkingLevel`: that value is CAPPED, and the default cap is
+ *      `off`, so judging it would silently disable this guard exactly where
+ *      nobody configured anything — the same drift #443 removed one level up.
+ *   4. the MERGED timeout is defined and `> 0`. Only a positive timeout arms a
+ *      foreground timer (`runner.ts`: `if (timeout && timeout > 0)`), and
+ *      `mergeSubTaskParams` merges with `??`, so a declared `timeout: 0`
+ *      OVERRIDES an inherited timeout and arms nothing — never eligible.
+ *   5. the unit DECLARES the pair — a non-empty `thinkingLevel`, or `timeout`
+ *      present (a `0` included: it is a declaration, it just never arms a
+ *      timer). This is the #434/#431 boundary: a unit that declares NEITHER
+ *      and inherits the dispatch's pair was already judged at dispatch level,
+ *      including the chain/graph exemption — so inherited pairs stay exempt
+ *      (pinned, not accidental) while unit-declared ones do not.
+ *   6. the unit's shape is FOREGROUND (`unitShape`, passed explicitly so the
+ *      exclusion is visible at the call site).
+ *
+ * The caller applies the effect — `merged.timeout = undefined` — before the
+ * unit's run record is created, so the retry snapshot records an absent
+ * deadline instead of restoring the cap (ADR 0009).
+ */
+export function shouldDropUnitTimeout(input: {
+	processChecks: boolean;
+	force: boolean | undefined;
+	/** The DISPATCH's declared level, threaded from `execute` (clause 3). */
+	dispatchDeclaredLevel: ThinkingLevel | undefined;
+	unitShape: UnitShape;
+	/** The unit's OWN declaration: `""`/`undefined` both mean "inherit". */
+	declaredLevel: ThinkingLevel | "" | undefined;
+	/** The unit's OWN timeout declaration (`undefined` = inherit). */
+	declaredTimeout: number | undefined;
+	/** `mergeSubTaskParams`' result: the deadline the unit would actually run with. */
+	mergedTimeout: number | undefined;
+}): boolean {
+	if (!input.processChecks) return false;
+	if (input.force === true) return false;
+	if (input.unitShape !== "foreground") return false;
+	const effectiveDeclaredLevel = input.declaredLevel || input.dispatchDeclaredLevel;
+	if (!isHighDeclaredLevel(effectiveDeclaredLevel)) return false;
+	if (input.mergedTimeout === undefined || input.mergedTimeout <= 0) return false;
+	return Boolean(input.declaredLevel) || input.declaredTimeout !== undefined;
 }
 
 /**
@@ -369,9 +538,13 @@ export function resolveSubagentParams(
 		: undefined;
 	const autoRoutedPreset = wasAutoRouted ? preset : undefined;
 
-	const mergedThinkingLevel =
-		(params.thinkingLevel as ThinkingLevel | undefined) ??
-		(preset?.thinkingLevel as ThinkingLevel | undefined);
+	// The DECLARED level (per-call, else the selected preset's) — read through the
+	// shared helper so both dispatch guards (issue #443) judge exactly the value
+	// this merge resolves, not a second interpretation of it.
+	const mergedThinkingLevel = declaredThinkingLevel(
+		params.thinkingLevel,
+		preset?.thinkingLevel,
+	) as ThinkingLevel | undefined;
 	const mergedSystemPrompt = params.systemPrompt ?? preset?.systemPrompt;
 	const mergedInheritSP = params.inheritSystemPrompt ?? preset?.inheritSystemPrompt;
 	const mergedOutputFile = params.outputFile ?? preset?.outputFile;

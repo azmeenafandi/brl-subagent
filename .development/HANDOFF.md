@@ -3,50 +3,59 @@
 > **How to use:** read §STATE → run its verify commands → work `## Open items` → follow `## Pointers`.
 > §STATE is injected at session start and after every compaction by `.pi/extensions/handoff/`, with a
 > `Verified:` staleness line; the write contract is `.pi/skills/handoff/references/handoff.md`.
-> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md` — not current state.
+> Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md`, `-2026-11-06.md`, `-2026-11-07b.md` (the pre-sweep snapshot), `-2026-11-08.md` (a superseded mid-sweep STATE) — not current state.
 
 ## STATE
-Verified: 7118862 (2026-10-31)
+Verified: f9cbda0 (2026-11-08)
+Cycle: closed 2026-11-08 — the cycle-end ritual ran (metrics row, Rule 11, environment sweep); release: the maintainer's call
 
-- **dev** @ `7118862` — PR #416 merged. Only `dev` + `main`; worktrees: the cockpit pair only.
-- **Released:** v2.6.0 (2026-10-24, `main` @ `ef9f6be`, npm `latest`). **v2.7.0 NOT taken.** **Release checkpoint open.**
-- **Running install:** DEV checkout (dogfood), pi **1.4.0**; deps ^1.4.0; typebox **1.3.27** (host pin). **Reloaded after #415** — the running build reads `processChecks`; live-verified both ways (a line-less cockpit dispatch is rejected; a `high` + foreground + timeout dispatch in a cwd without the manifest stays foreground).
-- **Board:** **#402 held** (dependabot typebox 1.4.3; host pins 1.3.27). #407/#412/#415 closed (folded/merged).
-- **Cycle (post-v2.6.0): COMPLETE**; #411/#412/#415 landed after it. **Suite:** 96 files / **1940**; tsc clean; CodeGraph fresh at `7118862`.
-- **Merge gate:** `merge-guard.sh <pr> <record>` — (a) CI, (b) `#<pr>`, (c) line-start `Verdict:`, (d) head sha / `conductor-verified:`, (e) `--log --require-provenance`.
-- **Dispatch models (never guess):** implementers **`deepseek/deepseek-flash`**; reviewers **`openrouter/meta/muse-spark-1.3-contributor`**; plan critic the `project-plan-critic` preset (qwen3.8-max-0902).
-- **Jev provenance:** every line printed by `node .pi/skills/worktree/jev-check.mjs --line '<json>' --label <label>` (rows in `.pi/jev-lines.log`).
-- **Project flag:** the cockpit's `package.json` opts in: `{"brl-subagent": {"processChecks": true}}` — the single umbrella (ADR 0019) gating the Jev line + the shape switch; fail-open; single reader (ratchet-tested). Local templates require `${jev}`; the reviewer preset allows `/tmp/REVIEW_<n>.md`.
+- **dev** @ `cdcf618` (PR #473 merge). Merged today, in order: #457 (#440), #458 (#436), #459 (#455), #461 (#434), #462 (#439), #463 (#456), #464 (#447), #467 (#453), #470 (#469), #471 (#468), #472 (#465), #473 (#466). Docs: ADR 0023 (deadline ownership), ADR 0024 (unit projection), ADR 0025 (Jev level as observation), ADR 0026 (headState boot repair), the #453/#460/#466 dossiers. **No worktrees beyond the cockpit pair**; `git worktree list` = `main` + `dev`.
+- **Released:** **v2.7.0 LIVE** — `main` @ `98bd36e`, tag `v2.7.0`, npm `latest` 2.7.0. **Release checkpoint OPEN** (rule #6): every fix from this sweep is extension code, merged and unreleased. Release on the maintainer's go only — never propose a version unprompted. All nine now have `## Unreleased` entries.
+- **Board:** the autonomous bug sweep closed **eight** issues — #440, #436, #455, #434, #439, #447, #453, #460 — plus #456 (filed and closed inside the sweep). The two follow-up tooling units are closed too: **#469** (#470, README count split) and **#468** (#471, Jev level as observation + measurement). The last two bugs are closed: **#465** (#472) and **#466** (#473) — **every bug from the 2026-11-07 board is closed.** Next cycle's P0 from Rule 11: **#474** (connection-drop ×3 — the failure path reports the worktree state). Open: **#450** (harden, low), **#430** (refactor), **#426** (design-open), PR #402 held.
+- **Suite:** 114 files / **2400** green on dev; typecheck clean; docs guards current (48 modules, **26 ADRs**); budget **1.96** (50,773 test / 25,900 source, ceiling 2.0 → ~**1,027** test lines of headroom; it rose from ~470 because source grew, not because tests were trimmed).
+- **Merge gate:** `merge-guard.sh <pr> <record>` from the **cockpit**. (a) CI runs the **merge ref** — a conflicting PR gets **no checks at all** (`no checks reported` can mean a conflict, not an outage); since #469 the README count no longer reddens a task PR — truth only; (b) `#<pr>`; (c) **line-start** `Verdict:`; (d) reviewed head **or** `conductor-verified:`; (e) exact-text provenance match; (f) `recheck-<pr>` + its own `Risk class:`. **Every field line must be bare** — `Verdict:`, `Risk class:`, `jev-recheck:`, `Reviewed head:`; a leading `- ` makes the field invisible (4 hits: #446, #455, #457, #471). The recheck's provenance row **must be labelled `recheck-<pr>`** — any other label is invisible to (f). Merge commits; PRs to `dev` never auto-close — close by hand.
+- **Merge-conflict routine (three hits in the 2026-11-07 sweep):** the conflict is **CHANGELOG ordering only** — keep both entries newest-first, commit the merge, re-run the gates, add a `Post-review merge:` line naming the merge commit and the re-verified numbers to the record, then push.
+- **Dispatch models + presets:** implementer `project-implementer` + `deepseek/deepseek-flash`; reviewer `project-reviewer` + `openrouter/meta/muse-spark-1.3-contributor`; plan critic `project-plan-critic` + `openrouter/openai/gpt-6.1-terra` + **`thinkingLevel: "medium"` always**; design investigation `project-proposer` + `inheritSystemPrompt: false`. Non-probe work: explicit `background: true` + `timeout: 7200000`.
+- **Jev provenance:** print the line with `--classifier … --worktree y|n [--model <id>] [--classifier-model-aware '<raw>'] --label <name>`, then **paste it verbatim** (never hand-type). Since #456 `worktree` is a **stated** process fact (`stated:worktree` in the row); `level`/`risk` stay classifier answers, and since #468 the level is an **observation** — nothing gates its value. Rows may carry `model:` and `level-model:`; **write those only from the merged tool** (ADR 0025: the cockpit's own parser is fail-closed, an early new-format row blocks every merge — the Rule 9 probe ran legacy-shaped for that reason). `--settle <label> --kind impl|review|probe --outcome …` records the outcome sidecar; `--calibrate` refuses any comparison below 20 eligible `impl` rows. 23 historical exceptions are acknowledged at the audit.
+- **Project flag:** `{"brl-subagent": {"processChecks": true}}` gates the Jev line, the two-arm dispatch-shape pre-flight and engineering-bar injection; fail-open, one reader.
 
 ### Since the last handover
-- **#415 merged** (PR #416, `7118862`): #412's global shape switch scoped behind `processChecks`; the user path is pinned (explicit foreground + timeout stand, no notice); ADR 0019 supersedes the global scope of 0018.
-- The #415 implementer's first attempt died on transport; the auto-retry resumed and completed (the #401/#404/#411 machinery, now with the system-side resume context).
+- **Both remaining `bug` issues are closed, both decided before code.** **#465** (`e38eb32`) releases the spawn queue immediately before the per-repo `await prev` — the per-repo git wait no longer runs inside the module-level critical section — and refuses a same-repo branch dispatch whose owner is terminal-but-unsettled, naming the owner and its branch after settling it. **#466** (`cdcf618`, ADR 0026) adds one durable `HeadStateRecord` per repo, written before the work branch exists; at boot it restores the recorded base only when the owner is proven dead ∧ HEAD is exactly the work branch ∧ the tree is clean, keeps the branch, and names everything it cannot repair. #466's dossier (798 lines, 12 probes) measured the late detached writer — a SIGKILLed conductor leaves a child alive at 38 B/s whose writes land in the base tree — and admitted it as a stated limit.
+- **"CI did not trigger" was a conflicting PR.** GitHub builds the merge ref *before* queuing `pull_request`, so a PR that cannot merge gets **no checks at all** — `no checks reported` is not an outage. #465 had landed after #473's branch was cut; one integration merge (with the two refusals ordered per dossier §7) fixed it.
+- **Both C1 review findings were missing killers.** #465's refusal message still said "the lock is only cleared by a process restart" after #466 made the boot repair real, and the foreground record had **no test at all** — deleting the write kept the suite green. Both are now pinned by deletion proofs. Same class as the vacuous-pin lesson: a claim with no killer drifts.
+- **Review-record fields closed at the instruction level.** The reviewer preset's own template was the bullet, not the model. Patched locally (bare `Verdict:`/`Risk class:`/`jev-recheck:`/`Reviewed head:`), and #472/#473 came back bare first try. The guard tolerance was **declined**: stripping `- ` would re-open the prose-mention hole the line-start rule exists to close.
+- **Budget corrected.** 114 files / **2400** tests, ratio **1.96** (50,773 test / 25,900 source). Headroom is ~**1,027 test lines**, *larger* than before (~470) because #466 grew source by ~900 — the ceiling is a ratio, so source growth buys test capacity. The earlier "last comfortable unit" framing was wrong in direction.
 
 ### Next actions
-1. **v2.7.0** — the maintainer's decision (no calendar pressure).
-2. **#402 held**; the "bare `Verdict:` line" doc nit remains optional.
+1. **#450 / #430 / #426** — unchanged priorities; #450 is low hardening, #430 the `execute` split, #426 needs the maintainer's call.
+2. **Release checkpoint** — nine extension fixes are merged and unreleased (#440, #436, #455, #434, #439, #447, #453, #465, #466; #456/#468/#469 are tooling and do not ship). The call is the maintainer's.
+3. **Follow-ups with no issue yet** — the shared `vi.mock("../git")` fixture (three copies; the merge broke one), `spawnBackgroundSession` (~1,100 lines, now a third responsibility), and the `branch-lock.ts` extraction the #466 dossier names. None is a defect; all are maintenance hazards.
 
 ## Open items
-- **#402 held** — re-evaluate only when pi's typebox pin moves.
-- **Doc nit (optional):** `review-dispatch.md` should say a *bare* `Verdict:` line (no list bullet).
-- **Sweep candidates (advisory):** `sprint-metrics` auto-retry accounting; `stop_subagent`'s bare not-found; plan-critic cost discipline; the release-ritual tarball smoke (added by #415) is not yet exercised.
-- **ADR amendments still pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
+- **#426 design-open** — subagent timeouts: soft stage, stall watchdog vs cliff, extension, calibration. Filed 2026-11-03; no direction chosen. Do not implement from it.
+- **Review-record fields — resolved at the instruction level (2026-11-08).** The reviewer preset's own template showed `- Verdict:`; the model copied it, so the class was ours, not muse-spark's. The preset is patched (bare `Verdict:`/`Risk class:`/`jev-recheck:`/`Reviewed head:`) and #472/#473 came back bare first try. The guard tolerance was **declined** on purpose: stripping `- ` would re-open the prose-mention hole (#397/#399) the line-start rule exists to close.
+- **PR #402 held** — re-evaluate only when pi's typebox pin moves off 1.3.27.
+- **Watch-CI** — the `recovery.test.ts` family (#299 A1 load flake) is fixed by #455; the earlier group-empty fast-path note is superseded. The lesson stands: a load-only failure is a PRODUCT defect until a before-commit comparison proves otherwise.
+- **Sweep candidates (advisory):** wire the CodeGraph freshness check into `merge-guard` (the rule is fixed, the enforcement is manual); `sprint-metrics` auto-retry accounting (it counts only explicit `retryRunId`, so transport auto-retries read as 0); `stop_subagent`'s bare not-found; Jev exceptions ↔ ledger cross-check.
+- **ADR amendments pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
+- **Probe isolation incident (2026-11-07):** the #449 plan critique inherited the harness environment and ran a real agentic `pi` CLI against OpenRouter `anthropic/claude-fable-5` — 4 turns, **$0.0698915** — and `env | grep PI_` exposed seven `PI_*` values (none credential-shaped) to that model. Now Rule 23 in `references/rule-notes.md`: `env -i` + scratch `HOME` + scratch `PI_CODING_AGENT_DIR` + fake creds + loopback-only (`env -i` + `PI_OFFLINE=1` alone is measured insufficient), and never an agentic CLI for a source question.
+- **Reviewer record format (recurring, 4 hits: #446, #455, #457, #471):** reviewers write fields as bullets (`- Verdict:`, `- Risk class:`), which `merge-guard` cannot see. #471 needed two normalizations (the verdict, then the field block). Fix mechanically, not by prose.
 
 ## Operating notes
-- **Dispatch line (Rule 22):** every dispatch carries `jev: <level> (<conf>) · Cx · worktree y|n`; manual until #407. `jev-check --log` audits it; historical misses live in `.pi/jev-dispatch-exceptions.txt` with reasons + a ledger row.
-- **Banking:** implementation and plan-critique briefs name `/tmp/brl-<label>-bank.md`; commit per step. A transport auto-retry resumes from the worktree, the bank and the retained session (#401/#404).
-- **Wake delivery:** wakes are prompt when idle, queued mid-turn (pi's follow-up queueing).
-- **Dispatch conventions:** implementers at the configured default, `low`/`medium`; reviewers pin a model at `medium`+ (never the config default). **Reviewer model: `openrouter/meta/muse-spark-1.3-contributor`.** Plan critic: preset `project-plan-critic` (qwen3.8-max-0902, `inheritSystemPrompt: false`).
-- **Releases:** no calendar pressure; do not propose one while a known fix is open.
-- **Reviews:** C1 adversarial, C2 focused, C3 conductor read (Rule 10). After a verdict: re-review the new head, or record `conductor-verified: <sha> — <evidence>` for nits.
-- **Gates:** `npx vitest run` · `npx tsc --noEmit` · `node scripts/docs-arch.mjs` · `node scripts/docs-decisions.mjs` · `git diff --check` · **merge step 7 `codegraph-refresh.sh`** (check (f) pending).
-- **Never `npm install` in the cockpit** — `worktree-prep.sh` only (Rule 2). `.pi/brl-subagent/{presets,templates}` are gitignored local config.
+- **CodeGraph first, no exception (Rule 13):** every exploration starts with `codegraph` (`explore`, `node`, `callers`, `callees`, `impact`, `affected`) or `recon.sh <symbol> --grep`; `grep`/`rg` only for what the graph cannot answer (prose, config, a recorded gap) — and say why. Note the index is cockpit-only, so PR-branch symbols don't resolve there.
+- **Dispatch line:** with `processChecks` on, a line-less dispatch is rejected before spawn. Classify → `--classifier … --label` → paste the printed line. `jev-check --log --require-provenance` runs in the merge gate; historical misses are in `.pi/jev-dispatch-exceptions.txt`.
+- **Banking:** implementation and critique briefs name `/tmp/brl-<label>-bank.md` and require incremental writes plus commit-per-step — that is what made three transport drops cost nothing this cycle.
+- **Reviews:** C1 adversarial, C2 focused, C3 conductor read (Rule 10). Re-run the classifier on the dispatch text at review time (`--label recheck-<pr>`) and put `jev-recheck:` + `Risk class:` in the record. After a verdict, either re-review the new head or record `conductor-verified: <sha> — <evidence>`; a post-verdict commit with neither blocks at gate (d).
+- **Mutation choice decides coverage:** name the mutant and its killer in the spec, and prefer a realistic mutant — a weak one can make a sound pin look vacuous (2026-11-06: `(meta.timeout as number)` survived a pin that `Number(meta.timeout)` killed).
+- **Acceptance bars must be measurable here:** no coverage percentages (ADR 0021 §1 — no provider, and adding one is foreclosed); use a branch checklist + named mutants. A metric no tool in this repo can produce is a spec defect, not an aspiration.
+- **Releases:** no calendar pressure; never propose one unprompted.
+- **Gates:** `npx vitest run` · `npx tsc --noEmit` · `node scripts/docs-arch.mjs` · `node scripts/docs-decisions.mjs` · `git diff --check` · merge step 7 `codegraph-refresh.sh`.
+- **Never `npm install` in the cockpit** — `worktree-prep.sh` only, and `--force-isolated` for any dependency-bump worktree. `.pi/brl-subagent/{presets,templates}` are gitignored local config, so the tracked record of a convention change lives here.
 
 ## Pointers
-- `.pi/skills/worktree/SKILL.md` — lifecycle (step 0 = read §STATE), rituals, team rules.
-- `.pi/skills/handoff/references/handoff.md` — the §STATE write contract.
-- `.development/` — `ROADMAP.md`, `AUDIT.md`, `TASKS.md`, `METRICS.md`, `FRICTION_LOG.md`,
-  `GLOSSARY.md`, `ARCHITECTURE.md`, `decisions/` (16 ADRs).
-- `.development/investigations/` — specs, evidence, review findings, calibration log.
-- `README.md` (user-facing), `AGENT.md` (delegation reference), `CHANGELOG.md`.
-- Archive: `.development/HANDOFF-ARCHIVE-2026-10-17.md`.
+- `.pi/skills/worktree/SKILL.md` — lifecycle (step 0 = read §STATE), team rules 1–22, rituals, dispatch presets; `references/` holds review-dispatch, jev-advisory, engineering-bar, release-ritual, friction-log and sprint-end.
+- `.pi/skills/handoff/references/handoff.md` — the §STATE write contract; `.pi/skills/pr/SKILL.md` — the PR-body contract.
+- `.development/` — `ROADMAP.md`, `AUDIT.md`, `TASKS.md`, `METRICS.md`, `FRICTION_LOG.md`, `GLOSSARY.md`, `ARCHITECTURE.md`, `WORKTREE_FRAMEWORK.md`, `decisions/` (**25 ADRs**; the index is generated — `npm run docs:decisions`).
+- `.development/investigations/` — specs, evidence and review findings: the complexity/CRAP measurement, `test-plan-428-…`, `plan-critique-431-…`, `serena-bakeoff-2026-11-05/`, the smell audit, the calibration log.
+- `README.md` (user-facing), `AGENT.md` (delegation reference — ships in the tarball), `CHANGELOG.md` (Unreleased section; pi-parsable headings).
+- Archives: `.development/HANDOFF-ARCHIVE-2026-10-17.md`, `.development/HANDOFF-ARCHIVE-2026-11-06.md`, `-2026-11-07b.md`, `-2026-11-08.md`.

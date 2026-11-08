@@ -4,6 +4,7 @@
 - **Date:** 2026-10-10
 - **Issues:** #230
 - **Amended by:** ADR 0016 — graphify is retired; CodeGraph is the sole structural index. The two-layer split and the Phase 2 criteria below are superseded (the structural half of this decision stands).
+- **Addendum:** 2026-11-04 — the routing list is a floor, not the whole surface; interactive recon commands + the CodeGraph-first rule (Rule 13). See the addendum below.
 
 ## Context
 
@@ -71,3 +72,26 @@ and runs both refreshes **side by side**:
 3. **Decide** — retire or narrow graphify after **a week or N merges, whichever comes first**, on that evidence;
    cockpit `.codegraph/` is already present from the 2026-10-08 trial (11 MB, gitignored) — what Phase 2 decides is the per-merge usage, not adoption.
 4. **Feed the decision** — unresolved-ref sampling and the binary's supply-chain posture are Phase 2 inputs.
+
+## Addendum (2026-11-04) — the routing list is a floor, not the full surface
+
+The Decision's routing bullet names `callers`, `impact`, `query`, `affected`. Those are the four
+**artifact** commands — the ones `recon.sh` parses into a paste-ready Recon block and tests pin. They
+are a floor, not the whole CLI: on 2026-11-04 an ad-hoc exploration went around the graph entirely
+because the routing sentence was read as the full toolset, and a grep pass missed four `LiveSubagent`
+test fixtures that `codegraph explore` named in one call.
+
+What stands unchanged: CLI-only, conductor-side, watcher/daemon off, never a hook (#230); the pinned
+version and `DO_NOT_TRACK` posture; no MCP server in the workflow (pi is not a supported `install`
+target, and CI must not depend on one).
+
+What this addendum records:
+
+- **Rule 13 now covers every code-exploration task**, not only the C1/C2 Recon checkpoint: CodeGraph
+  first, no exception; manual `grep` only for a text pattern, a prose/config string, or a gap recorded
+  as a finding — with the reason stated.
+- **Four interactive commands are CodeGraph too** and are not artifacts: `explore` (area first pass,
+  verbatim source — cap the output), `node` (symbol source + caller/callee trail), `callees`
+  (downstream; `callers`/`impact` see only upstream), `context` (task map).
+- `recon.sh --explore "<area>"` wraps the first-pass form with the freshness gate and a capped output
+  (issue #424); the `## Recon` artifact path is unchanged.

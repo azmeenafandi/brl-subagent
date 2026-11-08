@@ -21,9 +21,14 @@ WHAT IT CHECKS (mechanical; no LLM, no network)
   2. SYMBOL COVERAGE — every exported declaration (the exported-declaration
      regex below) in `src/*.ts` appears as a node whose name / qualified_name /
      id matches, in the node's `file_path`.
-  3. FRESHNESS — `project_metadata.indexed_at_commit` equals git HEAD and
-     `index_state = 'complete'`. If HEAD is unavailable (not a checkout), the
-     commit assertion is reported as unverified, not silently skipped.
+  3. FRESHNESS — the index describes `src/` as it is at HEAD:
+     `project_metadata.indexed_at_commit` equals git HEAD, OR the commits since
+     it touch no indexed source (`src/**/*.ts`, excluding `src/__tests__/**`) —
+     docs/tooling commits are not staleness (they change nothing the graph
+     describes; CodeGraph syncs markdown as a no-op). A `src/` change since the
+     indexed commit still fails, naming the files. `index_state = 'complete'`
+     is required either way. If HEAD is unavailable (not a checkout), the commit
+     assertion is reported as unverified, not silently skipped.
   4. DIRTY-PATHS ADVISORY — `indexed_dirty_paths` lists indexed code files whose
      content is not in HEAD (untracked or modified). Non-empty = warning, never a
      failure: an ad-hoc sync on a dirty tree is legitimate, but a query result
@@ -66,6 +71,33 @@ EXPORT_RE = re.compile(
 def repo_root_from_script() -> Path:
     # <root>/.pi/skills/worktree/codegraph-check.py -> <root>
     return Path(__file__).resolve().parents[3]
+
+
+def changed_source_paths(root: Path, base: str, head: str) -> list[str] | None:
+    """Indexed source paths that differ between two commits.
+
+    `None` means the delta cannot be computed (unknown commit, not a checkout) —
+    callers must fail closed, as before. `[]` means the commits only touched
+    things CodeGraph does not describe: docs, `.pi/` tooling, package metadata,
+    `.development/` records. The indexed surface is `src/**/*.ts` minus
+    `src/__tests__/**` — the same boundary the module/symbol checks declare.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "diff", "--name-only", f"{base}..{head}", "--", "src"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return [
+        path
+        for path in result.stdout.splitlines()
+        if path.endswith(".ts") and not path.startswith("src/__tests__/")
+    ]
 
 
 def main() -> int:
@@ -132,6 +164,22 @@ def main() -> int:
     commit_verifiable = bool(declared and head)
     state_ok = state.get("index_state") == "complete"
 
+    # Freshness is about the indexed surface, not the commit hash: a records or
+    # tooling commit after a sync changes nothing CodeGraph describes, and
+    # flagging it made every post-merge docs commit look like drift. Compare the
+    # commits over `src/**/*.ts` (excluding tests); only a real source change is
+    # staleness. An uncomputable delta fails closed.
+    docs_only_delta = False
+    changed_sources: list[str] = []
+    if not commit_ok and commit_verifiable:
+        delta = changed_source_paths(root, declared, head)
+        if delta is not None:
+            if delta:
+                changed_sources = delta
+            else:
+                commit_ok = True
+                docs_only_delta = True
+
     dirty_paths = []
     try:
         dirty = json.loads(state.get("indexed_dirty_paths") or "{}")
@@ -161,6 +209,10 @@ def main() -> int:
         if not commit_ok:
             if commit_verifiable:
                 print(f"  ✗ FRESHNESS: indexed_at_commit={declared} vs HEAD={head} — run the refresh script")
+                for path in changed_sources[:10]:
+                    print(f"        {path}")
+                if len(changed_sources) > 10:
+                    print(f"        … and {len(changed_sources) - 10} more")
             else:
                 print(f"  ✗ FRESHNESS UNVERIFIED: indexed_at_commit={declared!r}, HEAD={head!r}")
         if not state_ok:
@@ -171,7 +223,13 @@ def main() -> int:
             print(f"  ⚠ index includes uncommitted changes ({len(dirty_paths)}): {', '.join(shown_dirty)}{more}")
             print("      -> advisory only; queries reflect the working tree, not HEAD.")
         if ok:
-            print("  ✓ coverage complete; index was built from HEAD")
+            if docs_only_delta:
+                print(
+                    f"  ✓ coverage complete; index matches src/ "
+                    f"(docs/tooling-only delta since {declared[:7]}, no source change)"
+                )
+            else:
+                print("  ✓ coverage complete; index was built from HEAD")
         print("  boundaries: NOT checked — re-exports/aliases, non-exported symbols, nested")
         print("              paths (src/__tests__/**), links/edges, unresolved refs, markdown/docs")
 

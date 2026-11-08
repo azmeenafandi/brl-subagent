@@ -18,11 +18,17 @@
 #   (d) the PR's CURRENT head sha appears in the record, OR the record carries a
 #       `conductor-verified:` line — the documented disposition for a post-verdict commit
 #       (a short sha of >= 7 hex chars counts; it must be a PREFIX of the head)
+#   (f) the review record carries a `jev-recheck:` line (the classifier's answer on the DISPATCH
+#       text, run at review time) and a `Risk class:` line; the recheck line must have its own
+#       provenance row under the label `recheck-<pr>`, and the declared tier may not be weaker than
+#       the recheck (C1 strongest). A record with only the dispatch-time line cannot show the tier
+#       was right — the 2026-11-04 miss (dispatched C2, classified C1) is the case.
 #   (e) `jev-check.mjs --log --require-provenance` passes for the local subagent log (Rule 22
 #       dispatch audit + provenance) — fail-closed: a missing/empty log OR provenance log is
 #       exit 2 and blocks the merge. Provenance is the Goodhart fix: a line in the right FORMAT
 #       can be invented (2026-10-31: a dispatched `medium (0.70)` was really `high (0.32)`), so a
-#       dispatch line must have a row written by `jev-check --line '<json>' --label <name>`.
+#       dispatch line must have a row written by `jev-check --classifier '<raw answers>' --label <name>`
+#       (`--line --label` requires `--legacy-line`: format-only input cannot claim a classifier).
 #
 # Run it from the COCKPIT (dev) checkout: the subagent log lives in the cockpit's local,
 # gitignored `.pi/subagent-logs/`. `JEV_LOG` overrides the log path.
@@ -33,6 +39,10 @@
 #   Reviewed head: <sha>        or  @ <sha>  anywhere in the record
 #   Verdict: approve | approve-with-nits | changes-requested
 #   conductor-verified: <sha> — <what was verified and how>   (post-verdict commit only)
+#   jev-recheck: jev: <level> (<conf>) · Cx · worktree <y|n>   (produced by --classifier, label recheck-<pr>)
+#   Risk class: C1 | C2 | C3
+
+# The provenance log for (f) — override with JEV_PROVENANCE (used by the selftest).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +50,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 # Environment override wins over both the script location and --repo-root.
 JEV_LOG_ENV="${JEV_LOG:-}"
 JEV_LOG="${JEV_LOG_ENV:-${REPO_ROOT}/.pi/subagent-logs/brl-subagent.log}"
+JEV_PROVENANCE_ENV="${JEV_PROVENANCE:-}"
+JEV_PROVENANCE="${JEV_PROVENANCE_ENV:-${REPO_ROOT}/.pi/jev-lines.log}"
 
 usage() {
     # Print the header block only (every leading comment, however long it grows).
@@ -107,6 +119,91 @@ record_mentions_sha() {
 # (d, alternative disposition) The documented post-verdict-commit marker.
 record_has_conductor_verified() {
     grep -qiE 'conductor-verified:' "$1"
+}
+
+# (f) A line-start `<label>:` value outside fences — the last one wins, markdown stripped.
+record_line_field() {
+    local record="$1" label="$2" line="" raw stripped in_fence=0
+    local fence='^[[:space:]]*(```|~~~)'
+    while IFS= read -r raw; do
+        if [[ "${raw}" =~ ${fence} ]]; then
+            in_fence=$((in_fence ^ 1))
+            continue
+        fi
+        [[ ${in_fence} -eq 1 ]] && continue
+        stripped="$(printf '%s' "${raw}" | sed -E 's/^[[:space:]#*`]+//')"
+        if [[ "${stripped,,}" == "${label,,}"* ]]; then
+            line="${stripped#*:}"
+            line="$(printf '%s' "${line}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+        fi
+    done < "${record}"
+    printf '%s' "${line}"
+}
+
+record_recheck() { record_line_field "$1" "jev-recheck:"; }
+record_risk() { record_line_field "$1" "Risk class:"; }
+
+RE_RECHECK='^jev: (off|minimal|low|medium|high|xhigh) \([01](\.[0-9]+)?\) · C[123] · worktree [yn]$'
+
+risk_rank() {
+    case "${1^^}" in
+        C1) printf '3' ;;
+        C2) printf '2' ;;
+        C3) printf '1' ;;
+        *) printf '0' ;;
+    esac
+}
+
+# The recheck line must have a provenance row labelled `recheck-<pr>` — a dispatch-time row is
+# not enough (that line belongs to the dispatch, not to the review-time classification).
+provenance_has_recheck() {
+    local line="$1" pr="$2"
+    [[ -n "${line}" && -f "${JEV_PROVENANCE}" ]] || return 1
+    awk -F'\t' -v want="${line}" -v label="recheck-${pr}" '
+        NF >= 3 && $2 == label && $3 == want { found = 1 }
+        END { exit(found ? 0 : 1) }
+    ' "${JEV_PROVENANCE}"
+}
+
+# Empty when the record satisfies (f); otherwise the reason.
+recheck_decision() {
+    local pr="$1" record="$2" line risk recheck_risk declared_rank recheck_rank
+    line="$(record_recheck "${record}")"
+    if [[ -z "${line}" ]]; then
+        printf 'the record has no line-start "jev-recheck:" — run the classifier on the DISPATCH text at review time'
+        return
+    fi
+    if ! [[ "${line}" =~ ${RE_RECHECK} ]]; then
+        printf 'malformed jev-recheck line %s — expected "jev-recheck: jev: <level> (<conf>) · Cx · worktree <y|n>"' "${line@Q}"
+        return
+    fi
+    risk="$(record_risk "${record}")"
+    if ! [[ "${risk^^}" =~ ^C[123]$ ]]; then
+        printf 'the record has no "Risk class: C1|C2|C3" line — the review tier must be stated next to the recheck'
+        return
+    fi
+    if ! provenance_has_recheck "${line}" "${pr}"; then
+        printf 'no provenance row "%s" for the recheck — print it with: jev-check --classifier '"'"'<raw answers>'"'"' --label recheck-%s' "${line}" "${pr}"
+        return
+    fi
+    local stripped="${line% · worktree *}"
+    recheck_risk="${stripped##*· }"
+    declared_rank="$(risk_rank "${risk}")"
+    recheck_rank="$(risk_rank "${recheck_risk}")"
+    if [[ ${declared_rank} -lt ${recheck_rank} ]]; then
+        printf 'the record declares Risk class %s but the recheck classified %s — the review depth understates the risk' "${risk^^}" "${recheck_risk}"
+        return
+    fi
+}
+
+check_recheck() {
+    local pr="$1" record="$2" reason
+    reason="$(recheck_decision "${pr}" "${record}")"
+    if [[ -z "${reason}" ]]; then
+        pass_line "(f) recheck: $(record_recheck "${record}") · declared $(record_risk "${record}")"
+    else
+        fail_line "(f) recheck: ${reason}"
+    fi
 }
 
 # ── The gate ─────────────────────────────────────────────────────────────────────────────
@@ -197,7 +294,7 @@ check_dispatch_audit() {
             fail_line "(e) dispatch audit: a dispatch since the cutoff carries no valid Rule 22 line or no provenance row"
             printf '%s\n' "${out}" | sed 's/^/      /' ;;
         *)
-            fail_line "(e) dispatch audit: jev-check --log could not run (exit ${rc}) — never a silent pass. A missing provenance log means no dispatch line was ever printed by \`--line --label\`; run it for every dispatch since the cutoff."
+            fail_line "(e) dispatch audit: jev-check --log could not run (exit ${rc}) — never a silent pass. A missing provenance log means no dispatch line was ever printed by \`--classifier --label\`; run it for every dispatch since the cutoff."
             printf '%s\n' "${out}" | sed 's/^/      /' ;;
     esac
 }
@@ -244,6 +341,7 @@ run_guard() {
     check_ci "${pr}"
     check_record "${pr}" "${record}" "${head}"
     check_dispatch_audit
+    check_recheck "${pr}" "${record}"
 
     if [[ ${#FAIL_REASONS[@]} -gt 0 ]]; then
         echo ""
@@ -440,6 +538,103 @@ EOF
         SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
     fi
 
+    # --- (f) classifier recheck -------------------------------------------
+    local prov="${dir}/jev-lines.log"
+    printf '2026-11-04T00:00:00.000Z\timpl-423\tjev: medium (0.72) · C2 · worktree y\n' >"${prov}"
+    printf '2026-11-04T00:00:01.000Z\trecheck-412\tjev: medium (0.63) · C1 · worktree y\n' >>"${prov}"
+    JEV_PROVENANCE="${prov}"
+
+    cat >"${dir}/recheck-ok.md" <<EOF
+# Review — PR #412
+
+Reviewed head: ${head}
+
+Verdict: approve
+
+jev-recheck: jev: medium (0.63) · C1 · worktree y
+Risk class: C1
+EOF
+
+    cat >"${dir}/recheck-weak.md" <<EOF
+# Review — PR #412
+
+Verdict: approve
+
+jev-recheck: jev: medium (0.63) · C1 · worktree y
+Risk class: C2
+EOF
+
+    cat >"${dir}/recheck-missing.md" <<EOF
+# Review — PR #412
+
+Verdict: approve
+
+Risk class: C1
+EOF
+
+    cat >"${dir}/recheck-malformed.md" <<EOF
+# Review — PR #412
+
+Verdict: approve
+
+jev-recheck: medium · C1
+Risk class: C1
+EOF
+
+    cat >"${dir}/recheck-unproven.md" <<EOF
+# Review — PR #412
+
+Verdict: approve
+
+jev-recheck: jev: high (0.44) · C1 · worktree y
+Risk class: C1
+EOF
+
+    # #468 B pin: the LEVEL is an observation. A recheck whose level sits BELOW the dispatch's
+    # level must still clear when the RISK class is equal — check (f) compares risk ranks, never
+    # level adequacy, so a dispatch classified `high` and rechecked `minimal` at the same C1 is
+    # not a finding. A guard that started reading the level would fail this case.
+    printf '2026-11-04T00:00:02.000Z\timpl-412\tjev: high (0.72) · C1 · worktree y\n' >>"${prov}"
+    printf '2026-11-04T00:00:03.000Z\trecheck-level-drop\tjev: minimal (0.58) · C1 · worktree y\n' >>"${prov}"
+
+    cat >"${dir}/recheck-level-below.md" <<EOF
+# Review — PR #level-drop
+
+Verdict: approve
+
+jev-recheck: jev: minimal (0.58) · C1 · worktree y
+Risk class: C1
+EOF
+
+    check_f_ok() {
+        local label="$1" record="$2" expected="$3" pr="${4:-412}" reason
+        reason="$(recheck_decision "${pr}" "${record}")"
+        if [[ -z "${expected}" ]]; then
+            if [[ -z "${reason}" ]]; then
+                printf '  ✓ %s\n' "${label}"
+                SELFTEST_PASS=$((SELFTEST_PASS + 1))
+            else
+                printf '  ✗ %s (expected pass, got: %s)\n' "${label}" "${reason}"
+                SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+            fi
+        elif [[ "${reason}" == *"${expected}"* ]]; then
+            printf '  ✓ %s\n' "${label}"
+            SELFTEST_PASS=$((SELFTEST_PASS + 1))
+        else
+            printf '  ✗ %s (expected reason containing %s, got: %s)\n' "${label}" "${expected}" "${reason}"
+            SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+        fi
+    }
+
+    check_f_ok "(f) a rechecked, provenance-bound record at the classified tier passes" "${dir}/recheck-ok.md" ""
+    check_f_ok "(f) a declared tier weaker than the recheck fails" "${dir}/recheck-weak.md" "understates the risk"
+    check_f_ok "(f) a record without jev-recheck fails" "${dir}/recheck-missing.md" "no line-start"
+    check_f_ok "(f) a malformed recheck fails" "${dir}/recheck-malformed.md" "malformed"
+    check_f_ok "(f) a recheck line with no provenance row fails" "${dir}/recheck-unproven.md" "no provenance row"
+    # #468 B pin — the level is an observation: a recheck BELOW the dispatch's level passes when
+    # the risk class is equal (the guard reads the risk, never the level).
+    check_f_ok "(f) a recheck LEVEL below the dispatch level passes when the risk class is equal (#468)" "${dir}/recheck-level-below.md" "" "level-drop"
+
     local total=$((SELFTEST_PASS + SELFTEST_FAIL))
     echo "merge-guard --selftest: ${SELFTEST_PASS}/${total} passed — $([[ ${SELFTEST_FAIL} -eq 0 ]] && echo PASS || echo FAIL)"
     [[ ${SELFTEST_FAIL} -eq 0 ]]
@@ -467,6 +662,7 @@ main() {
         REPO_ROOT="$(cd "${repo_root_override}" && pwd)"
     fi
     JEV_LOG="${JEV_LOG_ENV:-${REPO_ROOT}/.pi/subagent-logs/brl-subagent.log}"
+    JEV_PROVENANCE="${JEV_PROVENANCE_ENV:-${REPO_ROOT}/.pi/jev-lines.log}"
 
     if [[ ${#args[@]} -ne 2 ]]; then
         echo "merge-guard: expected <pr-number> <review-record-path> (got ${#args[@]} argument(s))" >&2

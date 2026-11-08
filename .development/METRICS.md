@@ -27,3 +27,6 @@
 | 2026-11-01 (v2.7.0) | 60 | 5/55 | 79.1% (53/67) | 20.9% (14) | 15† | n/a† | 1 (1.5%) | 0.15 | 1 | 1 |
 
 > **The 2026-11-01 row's Retries cell is log-derived, not tool-derived.** `sprint-metrics` counts only explicit `retryRunId` dispatches (it reported 0), while the session log shows **15 transport auto-retries** in the window; the 60-dispatches / 67-settled arithmetic does not reconcile with those retries (60 + 15 ≠ 67 either) — both are sweep candidates. The successful-retry split is therefore not yet computable and is written `n/a`.
+| 2026-11-08 | 81 | 8/73 | 82.3% (107/130) | 17.7% (23) | 0 | 0% (0/0) | 0 (0.0%) | 0.46 | 7 | 1 |
+
+> **The 2026-11-08 row's reconciliation does not close cleanly.** `sprint-metrics` reports 81 dispatch calls and 130 settled runs; the extension log shows 118 spawn events in the same window. The three numbers differ by retries and by window-boundary effects (a run can spawn before the window and settle inside it), and the tool's `Retries` cell is still 0 because it counts only explicit `retryRunId` dispatches — the same gap recorded on the 2026-11-01 row. Treat the dispatch count as a floor until the counter is fixed (sweep candidate).

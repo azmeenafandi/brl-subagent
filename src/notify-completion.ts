@@ -17,15 +17,17 @@
  * controls the WAKE (D2). D1: failed/stopped → "steer", completed → "followUp".
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
 	BackgroundAgent,
+	BackgroundAgentIdentity,
 	SubagentRun,
 	CompletionNotifyMode,
 	AgentStatus,
 } from "./types";
 import { truncateTail } from "./transcript-tail";
 import { formatRunDuration } from "./history";
+import { formatBudgetDuration } from "./tui-format";
 import { classifyTerminalOutcome } from "./types";
 import { resolveTerminalRunEntry } from "./state";
 
@@ -59,7 +61,11 @@ export interface DeliveryResolution {
 	triggerTurn: boolean;
 }
 
-/** Default dedupe cap: the set is simply cleared when it exceeds this. */
+/**
+ * Default dedupe cap. The set stays bounded by evicting its oldest entry when it
+ * exceeds this — never the whole set (issue #440: a clear-all forgot the id it had
+ * just claimed, so that id could be delivered twice).
+ */
 const DEDUPE_CAP = 200;
 
 /**
@@ -112,6 +118,49 @@ function buildSummaryLine(
 	if (costUsd !== undefined) line += ` · $${costUsd}`;
 	line += ` · category: ${errorCategory}`;
 	return line;
+}
+
+/**
+ * The ONE timeout predicate (issue #423): a run hit its deadline when the
+ * classified category says so or the agent's error is the deadline stamp. The
+ * wake, the result renderer and the budget line all read it, so the two
+ * exhaustion surfaces cannot disagree.
+ */
+export function isTimeoutEvidence(agent: BackgroundAgent, run?: SubagentRun): boolean {
+	const category = run?.errorCategory ?? run?.originalParams?.errorCategory;
+	return category === "timeout" || /^Timed out/.test(agent.error ?? "");
+}
+
+/**
+ * One line stating a run's budget (issue #423). PURE. Returns undefined when the
+ * record carries no budget — an old record written before `timeoutMs` existed
+ * has nothing to state, so no line is better than an invented 30 m.
+ *
+ * Shapes:
+ * - timeout:  `Budget: 30m (exhausted)`
+ * - otherwise `Budget: 30m — 4m 12s used, 25m 48s left`
+ *
+ * `status` guards the exhausted form: a run classified `completed` never claims
+ * to have exhausted its budget (the evidence predicate alone would otherwise be
+ * enough to downgrade a late-but-successful settle). `run` is optional because
+ * the result path (`get_subagent_result`) has only the agent record; both read
+ * the SAME predicate.
+ */
+export function formatBudgetLine(
+	agent: BackgroundAgent,
+	status: CompletionStatus | undefined,
+	run: SubagentRun | undefined,
+	now: number = Date.now(),
+): string | undefined {
+	if (agent.timeoutMs === undefined) return undefined;
+	const budget = formatBudgetDuration(agent.timeoutMs);
+	if (status !== "completed" && isTimeoutEvidence(agent, run)) {
+		return `Budget: ${budget} (exhausted)`;
+	}
+	const endMs = agent.completedAt ?? now;
+	const usedMs = Math.max(0, endMs - agent.startedAt);
+	const remainingMs = Math.max(0, agent.startedAt + agent.timeoutMs - endMs);
+	return `Budget: ${budget} — ${formatBudgetDuration(usedMs)} used, ${formatBudgetDuration(remainingMs)} left`;
 }
 
 /**
@@ -169,6 +218,13 @@ export function buildCompletionMessage(
 			: stored;
 	const tail = truncateTail(body, 15);
 	const parts = [summary];
+	// Issue #423: the budget rides its own part, and ONLY on a failed/stopped
+	// wake — a completed run's message is unchanged (the human reads the budget
+	// when something went wrong, not on every success).
+	if (status !== "completed") {
+		const budgetLine = formatBudgetLine(agent, status, run);
+		if (budgetLine) parts.push(budgetLine);
+	}
 	if (headline) parts.push(headline);
 	if (tail) parts.push(tail);
 	parts.push(COMPLETION_DIRECTIVE);
@@ -209,13 +265,20 @@ export function resolveDelivery(
 
 /**
  * Dedupe guard — first terminal event per id wins. Returns true when the event
- * should be delivered, false when it is a duplicate. Capped simply (W1): the
- * set is cleared when it exceeds the cap.
+ * should be delivered, false when it is a duplicate. Retention is bounded (W1):
+ * once the set exceeds the cap its OLDEST entry is evicted (a `Set` iterates in
+ * insertion order, so that is exact). The id just claimed is the newest entry, so
+ * its own call evicts an EARLIER id — not the set, and not that claim. A clear-all
+ * forgot the claim entirely, so the very next duplicate was delivered twice (#440).
  */
 export function markTerminalSeen(seen: Set<string>, id: string, cap = DEDUPE_CAP): boolean {
+	cap = Math.max(cap, 1); // a cap below 1 evicts the claim just made — retention must keep it
 	if (seen.has(id)) return false;
 	seen.add(id);
-	if (seen.size > cap) seen.clear();
+	if (seen.size > cap) {
+		const oldest = seen.values().next().value;
+		if (oldest !== undefined) seen.delete(oldest);
+	}
 	return true;
 }
 
@@ -253,4 +316,82 @@ export function sendCompletionNotification(
 	delivery: DeliveryResolution,
 ): void {
 	pi.sendMessage(message, { deliverAs: delivery.deliverAs, triggerTurn: delivery.triggerTurn });
+}
+
+// ---------------------------------------------------------------------------
+// Started-but-degraded monitoring advisory (issue #439)
+//
+// A background spawn whose tail faulted is a STARTED run whose monitoring is
+// degraded — never a failed spawn. The conductor learns that from the spawn
+// result's paragraph; the user learns it from this advisory. The advisory is
+// deliberately NOT a terminal notice and never takes the terminal claim: the
+// run is live, and its genuine completion notice must still be delivered later
+// (the resolved contract on the issue). A run that emits the advisory and then
+// never delivers a terminal notice (no listener at settle time) degrades to
+// "advisory only" — a stated limitation, not a silent one.
+// ---------------------------------------------------------------------------
+
+/** The advisory's custom message type. NOT a terminal notice type. */
+export const MONITORING_DEGRADED_CUSTOM_TYPE = "subagent-monitoring-degraded";
+
+/** The user-facing half of the advisory (the footer/toast line). */
+export const MONITORING_DEGRADED_TOAST = "Background agent started — monitoring degraded";
+
+/**
+ * The conductor-facing paragraph a STARTED-but-degraded spawn result carries.
+ * Built from the identity record only — never from a property read on the live
+ * agent (see the boundary statement in `startBackgroundAgent`). EMPTY when the
+ * tail attached fully: callers append it unconditionally.
+ */
+export function buildMonitoringDegradedParagraph(
+	unit: Pick<BackgroundAgentIdentity, "id" | "label">,
+	tailFailures: string[],
+): string {
+	if (tailFailures.length === 0) return "";
+	const name = unit.label ? `"${unit.label}" ` : "";
+	return (
+		`\n\nMonitoring degraded: ${name}started, but its live monitoring could not be attached (${tailFailures.join("; ")}). ` +
+		`Do not re-dispatch — the run is live; retrieve with get_subagent_result({ agent_id: "${unit.id}" }).`
+	);
+}
+
+/** The advisory's message body — the same facts, phrased for the user's screen. */
+export function buildMonitoringDegradedAdvisory(
+	unit: Pick<BackgroundAgentIdentity, "id" | "label">,
+	tailFailures: string[],
+): string {
+	if (tailFailures.length === 0) return "";
+	const name = unit.label ? ` "${unit.label}"` : "";
+	return (
+		`Background agent${name} started, but its monitoring is degraded (${tailFailures.join("; ")}). ` +
+		`The run is live — do not re-dispatch it; retrieve with get_subagent_result({ agent_id: "${unit.id}" }).`
+	);
+}
+
+/**
+ * Emit the advisory on both channels, each in its own try: a throwing
+ * `sendMessage` must not swallow the footer line, and a missing UI must not
+ * swallow the message. Best-effort by design — this is the report of a
+ * degraded path and cannot itself fail the spawn.
+ */
+export function sendMonitoringDegradedAdvisory(
+	pi: ExtensionAPI,
+	ctx: Pick<ExtensionContext, "ui">,
+	identity: BackgroundAgentIdentity,
+	tailFailures: string[],
+): void {
+	try {
+		pi.sendMessage(
+			{
+				customType: MONITORING_DEGRADED_CUSTOM_TYPE,
+				content: buildMonitoringDegradedAdvisory(identity, tailFailures),
+				display: true,
+				details: { agentId: identity.id, tailFailures },
+			},
+			{ deliverAs: "followUp" },
+		);
+	} catch { /* best-effort */ }
+	try {
+		ctx.ui.notify(MONITORING_DEGRADED_TOAST, "warning");
+	} catch { /* best-effort */ }
 }

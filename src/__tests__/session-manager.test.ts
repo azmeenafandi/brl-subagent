@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { existsSync, statSync, readFileSync } from "node:fs";
+import { existsSync, statSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { recordTimeoutDelays } from "./fixtures/deadline-census";
 
 // Mocks must exist before vi.mock factory runs (hoisted).
 const mocks = vi.hoisted(() => ({
@@ -9,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 		getCurrentBranch: vi.fn(),
 		getHeadState: vi.fn(),
 		createWorkBranch: vi.fn(),
+		newWorkBranchName: vi.fn().mockReturnValue("brl-subagent-abc12345"),
 		captureDiff: vi.fn(),
 		restoreHead: vi.fn(),
 		deleteBranch: vi.fn(),
@@ -64,6 +66,7 @@ vi.mock("../git", () => ({
 	getCurrentBranch: mocks.git.getCurrentBranch,
 	getHeadState: mocks.git.getHeadState,
 	createWorkBranch: mocks.git.createWorkBranch,
+	newWorkBranchName: mocks.git.newWorkBranchName,
 	captureDiff: mocks.git.captureDiff,
 	restoreHead: mocks.git.restoreHead,
 	deleteBranch: mocks.git.deleteBranch,
@@ -94,11 +97,19 @@ vi.mock("../event-bus", () => ({
 	createEvent: eventBusMock.createEvent,
 }));
 
-import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus } from "../session-manager";
+import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, backgroundSessionDir } from "../session-manager";
 import { listInflightRuns } from "../run-registry";
 import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
-import { CUSTOM_ENTRY_TYPES } from "../types";
+import { CUSTOM_ENTRY_TYPES, NO_ASSISTANT_OUTPUT_REASON, PROMPT_NEVER_ISSUED_MESSAGE, isSubagentRunShape, type SubagentRun } from "../types";
+import { buildCompletionMessage } from "../notify-completion";
+import { isTransportRetryable } from "../transport-retry";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
+import { setLogCwd } from "../logging";
+import { __setOutputDir } from "../transcript";
+import { persistRunRecord, registerInflightRun } from "../run-registry";
+import { recoverInflightRuns, defaultRecoveryDeps } from "../recovery";
+import { collectInterruptedRuns, offeredInterruptedRuns } from "../recovery-surface";
+import { readHeadState } from "../headstate";
 
 // Issue #98: spawnBackgroundSession persists session run entries via
 // pi.appendEntry (same store the foreground path writes to).
@@ -109,6 +120,21 @@ const fakeCtx = {
 		find: vi.fn().mockReturnValue({ provider: "anthropic", id: "claude-sonnet-4-5" }),
 	},
 };
+
+/**
+ * Issue #447: a background dispatch appends THREE run entries — the spawn
+ * record (`acceptedAt: null`), the acceptance record (an ISO timestamp,
+ * written immediately before the prompt) and the terminal record. Tests that
+ * read "the finalized entry" go through this accessor so the added write
+ * cannot silently shift an index, and `SETTLED_RUN_WRITES` names the count.
+ */
+function lastRunEntry(): Record<string, unknown> {
+	const calls = fakePi.appendEntry.mock.calls;
+	return calls[calls.length - 1][1] as Record<string, unknown>;
+}
+
+/** Issue #447: spawn + acceptance + terminal = three run-entry writes. */
+const SETTLED_RUN_WRITES = 3;
 
 // Issue #52: isolate EVERY test from the real repo .pi/ — the agent-record
 // storage dir and the transcript output dir are redirected to throwaway temp
@@ -736,6 +762,602 @@ function resetGitMocks() {
 	mocks.git.captureWorkingDiff.mockReturnValue("diff --git a/y.ts b/y.ts");
 }
 
+// ---------------------------------------------------------------------------
+// Issue #448: the deadline abort must be INDEPENDENT of fallible bookkeeping
+// (a throwing status/transcript write must never leave the record 'stopped'
+// while the child keeps running), and a DIRECT spawn must arm the 30 m default
+// itself unless the caller explicitly owns it. These tests drive the real
+// timer path: fake timers, real transcript filesystem.
+// ---------------------------------------------------------------------------
+
+/** The single shared log file, once a test points the logger at a temp cwd. */
+function readLog(): string {
+	try {
+		return readFileSync(join(env.baseDir, ".pi", "subagent-logs", "brl-subagent.log"), "utf-8");
+	} catch {
+		return "";
+	}
+}
+
+/** Agent ids observed in the per-test transcript dir (agent-<id>.jsonl). */
+function transcriptIds(): string[] {
+	return readdirSync(env.outputDir)
+		.map((name) => /^agent-(.+)\.jsonl$/.exec(name)?.[1])
+		.filter((id): id is string => id !== undefined);
+}
+
+/**
+ * Record every `setTimeout` delay armed while the clock is frozen, and return the
+ * (append-only) list. Issue #453 [c 8]: the deadline test counts ARMS by delay, not
+ * timers — a normal run arms a poller and a footer too, so a raw timer count can
+ * never answer "how many deadlines does this path create".
+ */
+
+/** The census's delay list for the CURRENT run — the only deadline budget used. */
+const DEFAULT_BUDGET_MS = 30 * 60 * 1000;
+
+describe("spawnBackgroundSession deadline independence (#448)", () => {
+	/** A never-settling prompt keeps the run 'running' so the deadline can fire. */
+	function hangPrompt(): void {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+	}
+
+	it("aborts exactly once when the transcript write fails (real EISDIR) (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			mocks.session.abort.mockClear();
+			setLogCwd(env.baseDir);
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a broken transcript",
+				timeout: 5000,
+			});
+
+			// A REAL transcript failure: the recorded path is made a DIRECTORY, so
+			// completeTranscript's appendFileSync throws EISDIR inside the timer.
+			const transcriptPath = transcriptGetTranscriptPath(agent.id);
+			rmSync(transcriptPath, { force: true });
+			mkdirSync(transcriptPath);
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			// Status BEFORE abort (the settle path classifies 'stopped' from it),
+			// the abort is not suppressed by the throwing write, and the failure is
+			// surfaced in the log rather than absorbed.
+			const after = getAgent(agent.id);
+			expect(after?.status).toBe("stopped");
+			expect(after?.error).toContain("Timed out after 5000ms");
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(readLog()).toContain("deadline bookkeeping failed");
+			expect(readLog()).toContain("EISDIR");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("aborts exactly once when the status write fails (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			mocks.session.abort.mockClear();
+			setLogCwd(env.baseDir);
+			// Make updateAgentStatus itself throw: its emit is the fallible step (the
+			// REAL bus swallows listener errors, so only a mock can force this).
+			eventBusMock.emit.mockImplementation((event: { type: string }) => {
+				if (event.type === "subagent:stopped") throw new Error("emit boom");
+			});
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a throwing status write",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(readLog()).toContain("deadline bookkeeping failed");
+			expect(readLog()).toContain("emit boom");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("survives a REJECTING abort() and records the deadline stop once (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			// Abort can reject when the session is mid-dispose. The deadline must
+			// still record the stop, call it once, and never surface an unhandled
+			// rejection (the .catch in armDeadline exists for exactly this).
+			setLogCwd(env.baseDir);
+			mocks.session.abort.mockRejectedValue(new Error("session disposing"));
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a rejecting abort",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+			// The rejection is surfaced, not silently swallowed — this is what makes
+			// the test discriminate the guard from a missing `.catch`.
+			expect(readLog()).toContain("abort rejected");
+			expect(readLog()).toContain("session disposing");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("survives a SYNCHRONOUSLY throwing abort() and logs it (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			setLogCwd(env.baseDir);
+			// A timer callback must never throw uncaught — that crashes the host.
+			mocks.session.abort.mockImplementation(() => {
+				throw new Error("abort exploded sync");
+			});
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a sync-throwing abort",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+			expect(readLog()).toContain("abort failed to start");
+			expect(readLog()).toContain("abort exploded sync");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("arms exactly one default deadline for a direct spawn, at delay == budget (#453)", async () => {
+		vi.useFakeTimers();
+		// [c 8] Arm CENSUS, not a timer count: a normal run arms other timers too
+		// (poller, footer), so count only the arms whose delay is the budget — with
+		// the clock frozen, elapsed == 0 and the arm delay IS the budget.
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
+		try {
+			hangPrompt();
+			mocks.session.abort.mockClear();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "direct spawn, no explicit timeout",
+			});
+
+			expect(census.delays.filter((ms) => ms === DEFAULT_BUDGET_MS)).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 1);
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+
+			// A live session dir the timer must NOT prune. The SDK's per-run dir is
+			// stubbed out by the mocked SessionManager, so create it here.
+			const sessionDir = backgroundSessionDir(agent.id);
+			mkdirSync(sessionDir, { recursive: true });
+			const runWritesBefore = fakePi.appendEntry.mock.calls.length;
+
+			await vi.advanceTimersByTimeAsync(1);
+
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			const after = getAgent(agent.id);
+			expect(after?.status).toBe("stopped");
+			expect(after?.error).toContain("Timed out after 1800000ms");
+			// The timer NOW writes the classification snapshot (issue #453) — one
+			// append, `failed` + `timeout`, a valid full entry — and prunes nothing.
+			expect(fakePi.appendEntry.mock.calls.length).toBe(runWritesBefore + 1);
+			const deadlineEntry = lastRunEntry() as unknown as SubagentRun;
+			expect(deadlineEntry.status).toBe("failed");
+			expect(deadlineEntry.errorCategory).toBe("timeout");
+			expect(deadlineEntry.errorMessage).toContain("Timed out after 1800000ms");
+			expect(isSubagentRunShape(deadlineEntry)).toBe(true);
+			expect(existsSync(sessionDir)).toBe(true);
+		} finally {
+			census.restore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("arms exactly one deadline for an explicit timeout, at delay == budget (#453)", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
+		try {
+			hangPrompt();
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "direct spawn, explicit timeout",
+				timeout: 5000,
+			});
+
+			// ONE arm, and no second one hiding behind the default: an explicit
+			// budget must not also arm a 30 m one.
+			expect(census.delays.filter((ms) => ms === 5000)).toHaveLength(1);
+			expect(census.delays.filter((ms) => ms === DEFAULT_BUDGET_MS)).toHaveLength(0);
+		} finally {
+			census.restore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("arms the deadline before it returns, so a CALLER throw cannot unbounded the run (#453)", async () => {
+		vi.useFakeTimers();
+		try {
+			hangPrompt();
+			mocks.session.abort.mockClear();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "caller tail throws after the spawn",
+			});
+
+			// F1.4's measured hole: while the caller owned the deadline, a throw
+			// between the spawn returning and the caller's arm left the run
+			// UNBOUNDED. The arm now precedes the return, so the same throw is
+			// harmless — the timer is already installed.
+			expect(() => {
+				throw new Error("caller tail boom");
+			}).toThrow("caller tail boom");
+
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("clears a deadline armed before prompt() when the spawn throws synchronously (#448)", async () => {
+		vi.useFakeTimers();
+		try {
+			let timersAtPrompt = -1;
+			mocks.session.prompt.mockImplementation(() => {
+				// Observe the arm ORDER: the deadline must already be armed here.
+				timersAtPrompt = vi.getTimerCount();
+				throw new Error("sync spawn boom");
+			});
+			mocks.session.abort.mockClear();
+
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync spawn throw" }),
+			).rejects.toThrow("sync spawn boom");
+
+			// Armed BEFORE prompt() (an arm-after ordering leaves 0 here)...
+			expect(timersAtPrompt).toBe(1);
+			// ...and cleared in the sync-throw catch, before its own cleanup.
+			expect(vi.getTimerCount()).toBe(0);
+
+			const [id] = transcriptIds();
+			expect(id).toBeDefined();
+			const statusAfterThrow = getAgent(id)?.status;
+
+			await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+			expect(getAgent(id)?.status).toBe(statusAfterThrow);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #453 (ADR 0023 decisions 2/3): the deadline timer writes the terminal
+// run-record SNAPSHOT (`failed` + `timeout` — the run vocabulary has no
+// `stopped`) and prunes NOTHING. A still-writing SDK session holds its dir, so
+// the dir decision belongs to the settle, from the settle's own category.
+// ---------------------------------------------------------------------------
+
+/** Every run entry appended so far, in append order. */
+function runEntries(): SubagentRun[] {
+	return fakePi.appendEntry.mock.calls
+		.filter(([type]) => type === CUSTOM_ENTRY_TYPES.run)
+		.map(([, run]) => run as SubagentRun);
+}
+
+/** The run entries that carry a terminal classification. */
+function terminalRunEntries(): SubagentRun[] {
+	return runEntries().filter((run) => run.status !== "running");
+}
+
+describe("spawnBackgroundSession deadline record (#453)", () => {
+	/** A prompt that settles only when the test says so (a cooperative abort). */
+	function heldPrompt(): { settle: () => void; reject: (err: Error) => void } {
+		let settle!: () => void;
+		let reject!: (err: Error) => void;
+		mocks.session.prompt.mockReturnValue(
+			new Promise<void>((resolve, fail) => {
+				settle = resolve;
+				reject = fail;
+			}),
+		);
+		return { settle, reject };
+	}
+
+	/** The SDK's per-run dir is stubbed by the mock, so the test creates it. */
+	function liveSessionDir(id: string): string {
+		const dir = backgroundSessionDir(id);
+		mkdirSync(dir, { recursive: true });
+		return dir;
+	}
+
+	it("writes a failed/timeout snapshot, keeps the session dir, retires the registry entry (#453)", async () => {
+		vi.useFakeTimers();
+		try {
+			heldPrompt();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline snapshot",
+				timeout: 5000,
+			});
+			const sessionDir = liveSessionDir(agent.id);
+			// Tracked at spawn: the registry means "an owner may still be running".
+			expect(listInflightRuns().some((e) => e.id === agent.id)).toBe(true);
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			// Exactly ONE terminal entry, and it is the run vocabulary's shape:
+			// `failed` + `timeout` (a `SubagentRun` has no `stopped` status).
+			expect(terminalRunEntries()).toHaveLength(1);
+			const entry = terminalRunEntries()[0];
+			expect(entry.status).toBe("failed");
+			expect(entry.errorCategory).toBe("timeout");
+			expect(entry.errorMessage).toContain("Timed out after 5000ms");
+			expect(entry.originalParams?.errorCategory).toBe("timeout");
+			expect(isSubagentRunShape(entry)).toBe(true);
+			// The terminal classification ends the "an owner may still run" claim.
+			expect(listInflightRuns().some((e) => e.id === agent.id)).toBe(false);
+			// ...but it does NOT delete a directory a live child may still write.
+			expect(existsSync(sessionDir)).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a later cooperative settle prunes the dir from ITS OWN category and writes no second classification (#453)", async () => {
+		vi.useFakeTimers();
+		try {
+			const prompt = heldPrompt();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline then settle",
+				timeout: 5000,
+			});
+			const sessionDir = liveSessionDir(agent.id);
+
+			await vi.advanceTimersByTimeAsync(5001);
+			expect(terminalRunEntries()).toHaveLength(1);
+
+			// The abort finally lands: the run settles as an aborted stop.
+			prompt.settle();
+			await vi.advanceTimersByTimeAsync(0);
+
+			// The settle pruned with its own category (the pre-set timeout is not
+			// transport-retryable). One flag for write+prune would have skipped this
+			// prune entirely (mutant M4).
+			expect(existsSync(sessionDir)).toBe(false);
+			// TWO records now — the deadline snapshot and the settle's payload
+			// AMENDMENT (ADR 0023 decision 4) — but exactly ONE classification:
+			// the amendment must never re-open what the run was (mutant M7).
+			const terminal = terminalRunEntries();
+			expect(terminal).toHaveLength(2);
+			expect(new Set(terminal.map((run) => `${run.status}/${run.errorCategory}`))).toEqual(
+				new Set(["failed/timeout"]),
+			);
+			expect(getAgent(agent.id)?.status).toBe("stopped");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a throwing deadline append neither escapes the timer nor suppresses the abort (#453)", async () => {
+		vi.useFakeTimers();
+		try {
+			const prompt = heldPrompt();
+			mocks.session.abort.mockClear();
+			setLogCwd(env.baseDir);
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline with a throwing append",
+				timeout: 5000,
+			});
+			const sessionDir = liveSessionDir(agent.id);
+			// The mock RECORDS a call even when it throws, so the honest witness for
+			// "the write landed" is a store of its own: the next run-entry append
+			// throws, and only the ones that return are collected.
+			let throwNext = true;
+			const landed: SubagentRun[] = [];
+			fakePi.appendEntry.mockImplementation((type: string, data: unknown) => {
+				if (type !== CUSTOM_ENTRY_TYPES.run) return;
+				if (throwNext) {
+					throwNext = false;
+					throw new Error("append boom");
+				}
+				landed.push(data as SubagentRun);
+			});
+			try {
+				await vi.advanceTimersByTimeAsync(5001);
+
+				// The abort is independent of the write (it precedes it), the failure is
+				// surfaced, and the timer callback did not throw into the event loop.
+				expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+				expect(getAgent(agent.id)?.status).toBe("stopped");
+				expect(readLog()).toContain("deadline record write failed");
+				expect(readLog()).toContain("append boom");
+				// Nothing landed: no terminal record, and no prune either.
+				expect(landed.filter((run) => run.status !== "running")).toHaveLength(0);
+				expect(existsSync(sessionDir)).toBe(true);
+				expect(readLog()).not.toContain("Background run settled");
+
+				// `entryWritten` was NOT set by the failed append, so the settle still
+				// CLASSIFIES the run (it does not amend a record that never landed).
+				prompt.settle();
+				await vi.advanceTimersByTimeAsync(0);
+				const terminal = landed.filter((run) => run.status !== "running");
+				expect(terminal).toHaveLength(1);
+				expect(terminal[0].status).toBe("failed");
+				expect(terminal[0].errorCategory).toBe("timeout");
+				expect(readLog()).toContain("Background run settled");
+				expect(readLog()).not.toContain("Background run amended");
+				expect(existsSync(sessionDir)).toBe(false);
+			} finally {
+				fakePi.appendEntry.mockReset();
+			}
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a late settle AMENDS the payload with output produced after the deadline (#453 [c 4])", async () => {
+		vi.useFakeTimers();
+		try {
+			const prompt = heldPrompt();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "late output",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+			const [snapshot] = terminalRunEntries();
+			expect(snapshot.fullOutput).toBeUndefined();
+			expect(snapshot.cost).toBe(0);
+
+			// The child kept working until the abort landed: a real assistant turn
+			// (and its usage) arrives AFTER the deadline. Today's shipped settle
+			// finalized BEFORE capturing, so the amendment would persist "".
+			//
+			// `stopReason: "length"` is deliberate: it makes this settle's OWN
+			// classification differ from the snapshot's (`length`, not `aborted`), so
+			// an amendment that re-derived the classification from this call instead
+			// of the snapshot would be visible below (mutant M7).
+			mocks.session.messages = [
+				{ role: "user", content: "probe task" },
+				{ role: "assistant", content: [{ type: "text", text: "work done past the deadline" }], stopReason: "length" },
+			];
+			prompt.settle();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const terminal = terminalRunEntries();
+			expect(terminal).toHaveLength(2);
+			const amendment = terminal[1];
+			// The payload moved...
+			expect(amendment.fullOutput).toBe("work done past the deadline");
+			expect(amendment.outputSummary).toBe("work done past the deadline");
+			// ...and the classification did not (same claim, no second one).
+			expect(amendment.status).toBe("failed");
+			expect(amendment.errorCategory).toBe("timeout");
+			expect(amendment.errorMessage).toBe("Timed out after 5000ms");
+			// The snapshot's 'aborted', NOT this settle's 'length' — a payload
+			// amendment never re-opens the classification.
+			expect(amendment.stopReason).toBe("aborted");
+			expect(amendment.stopReason).toBe(snapshot.stopReason);
+			expect(amendment.id).toBe(agent.id);
+			expect(isSubagentRunShape(amendment)).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("shortens the armed delay by the setup time already spent, and the reason still names the budget (#453 [c 8])", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
+		try {
+			heldPrompt();
+			mocks.session.abort.mockClear();
+			// Inject 1 234 ms of setup between record creation and the arm: the run
+			// entry persist is the statement that sits between them. A frozen clock
+			// plus this shift is the measured drift (F5.1).
+			fakePi.appendEntry.mockImplementationOnce(() => {
+				vi.setSystemTime(Date.now() + 1234);
+			});
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "setup delay",
+				timeout: 5000,
+			});
+
+			// The budget is 5000; the armed delay is the REMAINDER (mutant M8 arms
+			// the full budget and drifts past the displayed deadlineAt).
+			expect(census.delays.filter((ms) => ms === 5000)).toEqual([]);
+			expect(census.delays.filter((ms) => ms === 5000 - 1234)).toHaveLength(1);
+
+			await vi.advanceTimersByTimeAsync(5000 - 1234 - 1);
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			// Mutant M9: the reason reports the BUDGET, never the remainder.
+			expect(getAgent(agent.id)?.error).toContain("Timed out after 5000ms");
+			expect(getAgent(agent.id)?.error).not.toContain("3766");
+		} finally {
+			census.restore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("a zero remainder still aborts, immediately, with the full-budget reason (#453 [c 8])", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_700_000_000_000);
+		const census = recordTimeoutDelays();
+		try {
+			heldPrompt();
+			mocks.session.abort.mockClear();
+			// Setup took LONGER than the budget: the remainder clamps to 0 rather
+			// than going negative (a negative delay is an instant kill / an overflow,
+			// and normalizeTimeout would read 0 as "no timeout" — the wrong path).
+			fakePi.appendEntry.mockImplementationOnce(() => {
+				vi.setSystemTime(Date.now() + 6000);
+			});
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "over-budget setup",
+				timeout: 5000,
+			});
+
+			expect(census.delays.filter((ms) => ms === 0)).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(getAgent(agent.id)?.error).toContain("Timed out after 5000ms");
+		} finally {
+			census.restore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not retain for retry on the timeout classification, even when the settle is transport-shaped (#453)", async () => {
+		vi.useFakeTimers();
+		try {
+			const prompt = heldPrompt();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline then transport-shaped settle",
+				timeout: 5000,
+				// A retry-eligible dispatch: attempt 1, background, has originalParams.
+				originalParams: { background: true },
+			});
+			const sessionDir = liveSessionDir(agent.id);
+			// Big enough that the retention rule WOULD retain it (it refuses dirs
+			// under RETAINED_MIN_BYTES).
+			writeFileSync(join(sessionDir, "session.jsonl"), "x".repeat(4096));
+
+			await vi.advanceTimersByTimeAsync(5001);
+			const snapshot = terminalRunEntries()[0];
+			// The retention gate, evaluated on the snapshot's own fields: `timeout`
+			// is not a transport failure, so a deadline-stopped run is never retained.
+			expect(
+				isTransportRetryable({
+					status: snapshot.status,
+					errorCategory: snapshot.errorCategory,
+					errorMessage: snapshot.errorMessage,
+					attempt: snapshot.attempt,
+					originalParams: snapshot.originalParams,
+				}),
+			).toBe(false);
+			expect(existsSync(join(sessionDir, ".transport-retained"))).toBe(false);
+
+			// The settle arrives with a transport-shaped failure; the classification
+			// it settles on is still the pre-set timeout (F4.2), so it prunes.
+			prompt.reject(new Error("socket hang up"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(existsSync(sessionDir)).toBe(false);
+			expect(terminalRunEntries()[0].errorCategory).toBe("timeout");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 	const VALID_UUID = "9a8b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d";
 
@@ -794,20 +1416,25 @@ describe("spawnBackgroundSession per-agent timeout (issue #28 W3)", () => {
 		}
 	});
 
-	it("ignores a zero/undefined timeout (no timer armed)", async () => {
+	it("a zero timeout is 'no explicit timeout' — the default applies to a direct spawn (#448)", async () => {
 		vi.useFakeTimers();
 		try {
 			mocks.session.prompt.mockReturnValue(new Promise(() => {}));
 			mocks.session.abort.mockClear();
 			const { spawnBackgroundSession } = await import("../session-manager");
+			// Pre-#448 a zero timeout armed NO timer, because the index caller owned
+			// the no-timeout default. A DIRECT spawn now owns that default unless
+			// told otherwise (#448), so 0 means "no explicit timeout" → 30 m.
 			await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
-				task: "test no timeout",
+				task: "test zero timeout",
 				timeout: 0,
 			});
 
-			await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
-
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 1);
 			expect(mocks.session.abort).not.toHaveBeenCalled();
+
+			await vi.advanceTimersByTimeAsync(1);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -883,6 +1510,7 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		// the current branch and expects it to still be the work branch.
 		mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 		mocks.git.getCurrentBranch.mockReturnValue("brl-subagent-abc12345");
+		mocks.git.newWorkBranchName.mockReturnValue("brl-subagent-abc12345");
 		mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-abc12345" });
 		mocks.git.captureDiff.mockReturnValue({ ok: true, diff: "diff --git a/x.ts b/x.ts" });
 		mocks.git.restoreHead.mockReturnValue({ ok: true });
@@ -964,6 +1592,9 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		// Issue #122 nit: the usage merge must preserve the branch's real
 		// exitCode (0 on the completed path — not clobbered by the seed).
 		expect(after?.result?.exitCode).toBe(0);
+		// Issue #466: the tree is verified off the work branch, so the durable
+		// record has nothing left to repair.
+		expect(readHeadState(fakeCtx.cwd).state).toBe("absent");
 	});
 
 	it("captures any partial diff and discards the branch on failure", async () => {
@@ -1046,6 +1677,51 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 			"brl-subagent-abc12345"
 		);
 		expect(getAgent(agent.id)?.status).toBe("stopped");
+	});
+
+	// Issue #466: the durable head state is the write-ahead half of the branch
+	// lifecycle — written BEFORE the branch exists (M1/M2), and cleared only once
+	// the tree is verified off the branch (M3/M4).
+	it("writes the durable head state BEFORE the work branch exists (M1/M2)", async () => {
+		resetGitMocks();
+		let duringCheckout: ReturnType<typeof readHeadState> | undefined;
+		mocks.git.createWorkBranch.mockImplementation(() => {
+			duringCheckout = readHeadState(fakeCtx.cwd);
+			return { ok: false, error: "checkout failed" };
+		});
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "test head state write point",
+				gitMode: "branch",
+			})
+		).rejects.toThrow(/Refusing to spawn the background agent unisolated/);
+
+		const written = duringCheckout?.state === "ok" ? duringCheckout.record : undefined;
+		expect(written?.workBranch).toBe("brl-subagent-abc12345");
+		expect(written?.base).toMatchObject({ branch: "main", sha: "abc123def456", detached: false });
+		expect(written?.kind).toBe("background");
+		// The checkout failed, so nothing was created and nothing needs repair.
+		expect(readHeadState(fakeCtx.cwd).state).toBe("absent");
+	});
+
+	it("a FAILED restore keeps the head state, and a verified one clears it (M3/M4)", async () => {
+		resetGitMocks();
+		mocks.git.restoreHead.mockReturnValue({ ok: false, error: "would be overwritten" });
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test failed restore keeps the record",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		// The tree is still on the work branch: the record is the only copy of the base.
+		expect(readHeadState(fakeCtx.cwd).state).toBe("ok");
 	});
 });
 
@@ -1782,8 +2458,8 @@ describe("issue #31 — terminal paths release agent._sessionRef", () => {
 		// 'aborted' reason (there is no last assistant message to narrow it from
 		// on this path). Pinned here so the shared helper cannot drift from the
 		// .then branch's finalize semantics.
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		expect(run.stopReason).toBe("aborted");
 		expect(run.errorMessage).toBe("Subagent aborted by user");
@@ -1815,7 +2491,8 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 			thinkingLevel: "high",
 		});
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(1);
+		// Issue #447: the spawn record and the acceptance record — no terminal yet.
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
 		const [customType, run] = fakePi.appendEntry.mock.calls[0];
 		expect(customType).toBe(CUSTOM_ENTRY_TYPES.run);
 		// id == agent id — the id the caller holds IS the retry-able run id.
@@ -1863,8 +2540,8 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		// Let the .then settle handler run.
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.id).toBe(agent.id);
 		expect(run.status).toBe("done");
 		expect(run.finishedAt).toBeDefined();
@@ -1879,8 +2556,8 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		// Let the .catch settle handler run.
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.id).toBe(agent.id);
 		expect(run.status).toBe("failed");
 		expect(run.errorMessage).toBe("auth failed");
@@ -1898,8 +2575,8 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		});
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.id).toBe(agent.id);
 		expect(run.status).toBe("failed");
 		// Issue #120 (Track 1): a user cancel now stamps the honest source instead
@@ -1931,8 +2608,8 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		resolvePrompt();
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		expect(run.errorMessage).toBe("Timed out after 5000ms");
 		expect(run.originalParams?.errorCategory).toBe("timeout");
@@ -1966,12 +2643,13 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 		const runEntries = fakePi.appendEntry.mock.calls
 			.filter(([t]) => t === CUSTOM_ENTRY_TYPES.run)
 			.map(([, run]) => run);
-		// Exactly two: the spawn entry + ONE terminal entry.
-		expect(runEntries).toHaveLength(2);
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		// Exactly three: spawn, acceptance, and ONE terminal entry.
+		expect(runEntries).toHaveLength(SETTLED_RUN_WRITES);
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
 		expect(runEntries[0].status).toBe("running");
-		expect(runEntries[1].status).toBe("done");
-		expect(runEntries[1].id).toBe(agent.id);
+		expect(runEntries[1].status).toBe("running");
+		expect(runEntries[2].status).toBe("done");
+		expect(runEntries[2].id).toBe(agent.id);
 		// The record still settled as completed (the catch-all keeps the status).
 		expect(getAgent(agent.id)?.status).toBe("completed");
 	});
@@ -1988,10 +2666,10 @@ describe("spawnBackgroundSession run-entry persistence (issue #98)", () => {
 			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync-throws" })
 		).rejects.toThrow("sync preflight failure");
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
 		const spawnRun = fakePi.appendEntry.mock.calls[0][1];
 		expect(spawnRun.status).toBe("running");
-		const finalRun = fakePi.appendEntry.mock.calls[1][1];
+		const finalRun = lastRunEntry();
 		expect(finalRun.id).toBe(spawnRun.id);
 		expect(finalRun.status).toBe("failed");
 		expect(finalRun.errorMessage).toBe("sync preflight failure");
@@ -2039,8 +2717,8 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 		// Let the completion settle handler run.
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.status).toBe("done");
 		// Folded from BOTH assistant turns: input 1000+500, output 200+250,
 		// cacheRead 300, cacheWrite 50, cost 0.5+0.25, turns 2, contextTokens
@@ -2100,8 +2778,8 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 		// Let the aborted settle handler run.
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		// Issue #120 (Track 1): honest user-abort stamp + category (see above).
 		expect(run.errorMessage).toBe("Subagent aborted by user");
@@ -2138,8 +2816,8 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 		// Let the .catch settle handler run.
 		await new Promise((r) => setTimeout(r, 0));
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		expect(run.cost).toBe(0);
 		expect(run.tokensIn).toBe(0);
@@ -2161,8 +2839,8 @@ describe("spawnBackgroundSession run-entry audit fields (issue #122)", () => {
 			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync-throws-audit" })
 		).rejects.toThrow("sync preflight failure");
 
-		expect(fakePi.appendEntry).toHaveBeenCalledTimes(2);
-		const finalRun = fakePi.appendEntry.mock.calls[1][1];
+		expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+		const finalRun = lastRunEntry();
 		expect(finalRun.status).toBe("failed");
 		expect(finalRun.cost).toBe(0);
 		expect(finalRun.tokensIn).toBe(0);
@@ -2224,7 +2902,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 			expect(after?.status).toBe(status);
 
 			// D2: the finalized run entry carries the CLASSIFIED reason.
-			const run = fakePi.appendEntry.mock.calls[1][1];
+			const run = lastRunEntry();
 			expect(run.status).toBe(runStatus);
 			expect(run.stopReason).toBe(stopReason);
 			if (category) expect(run.errorCategory).toBe(category);
@@ -2260,7 +2938,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 		// The reason leads; the earlier prose is still available below it.
 		expect(after?.finalOutput?.startsWith("provider died")).toBe(true);
 		expect(after?.finalOutput).toContain("planned the work");
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		const run = lastRunEntry();
 		expect(run.outputSummary).toContain("provider died");
 	});
 
@@ -2276,7 +2954,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 		});
 		await new Promise((r) => setTimeout(r, 0));
 
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		expect(run.turns).toBe(0);
 		expect(run.finalTurnError).toBe(true);
@@ -2296,7 +2974,7 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 		await new Promise((r) => setTimeout(r, 0));
 
 		// Before the fix this entry said "done" — invisible to the retry menu.
-		const run = fakePi.appendEntry.mock.calls[1][1];
+		const run = lastRunEntry();
 		expect(run.status).toBe("failed");
 		expect(run.stopReason).toBe("error");
 		const { resolveRetryParams } = await import("../history");
@@ -2473,7 +3151,6 @@ describe("steerAgent delivery (issue #241)", () => {
 // ---------------------------------------------------------------------------
 // Option B U1: the background spawn mirrors its run into the durable registry
 // ---------------------------------------------------------------------------
-
 describe("Option B U1: background registry mirroring", () => {
 	it("registers an in-flight background entry (kind + owner), cleared at finalize", async () => {
 		// A never-resolving prompt keeps the run in flight so the registry entry
@@ -2486,5 +3163,294 @@ describe("Option B U1: background registry mirroring", () => {
 		const entry = listInflightRuns().find((e) => e.id === agent.id);
 		expect(entry?.kind).toBe("background");
 		expect(entry?.owner?.pid).toBe(process.pid);
+	});
+});
+
+// =========================================================================
+// Issue #449: a settled background run with no assistant output is NOT a
+// success. The SDK can remove the only assistant message from the PROJECTED
+// session (recoverable-length omission) before settling, so the settle site
+// supplies that evidence to classifyTerminalOutcome instead of reading the
+// missing stopReason as a completion.
+// =========================================================================
+describe("background settle with an empty assistant projection (issue #449)", () => {
+	/** The persisted agent record — NOT the in-memory object. */
+	const persistedRecord = (id: string): Record<string, unknown> =>
+		JSON.parse(readFileSync(join(env.storageDir, `${id}.json`), "utf8"));
+
+	/** Settle one background run over a controlled projection. */
+	async function settleWith(
+		messages: Array<Record<string, unknown>>,
+		options: { state?: Record<string, unknown> } = {},
+	) {
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = messages;
+		if (options.state) (mocks.session as Record<string, unknown>).state = options.state;
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "empty projection",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+		const runEntries = fakePi.appendEntry.mock.calls.map((c) => c[1] as Record<string, unknown>);
+		return { agent, run: runEntries[runEntries.length - 1], runStatuses: runEntries.map((r) => r.status) };
+	}
+
+	afterEach(() => {
+		delete (mocks.session as Record<string, unknown>).state;
+	});
+
+	it("fails the run and says so on every surface when the projection has no assistant", async () => {
+		const { agent, run, runStatuses } = await settleWith([{ role: "user", content: "task" }]);
+
+		// agent record — in memory and as persisted
+		expect(agent.status).toBe("failed");
+		expect(agent.result?.exitCode).toBe(1);
+		expect(agent.error).toContain(NO_ASSISTANT_OUTPUT_REASON);
+		const persisted = persistedRecord(agent.id);
+		expect(persisted.status).toBe("failed");
+		expect((persisted.result as Record<string, unknown>).exitCode).toBe(1);
+
+		// persisted run entry — failed / incomplete. The entry has no exitCode
+		// field at all, so only the agent's is asserted above.
+		expect(run.status).toBe("failed");
+		expect(run.errorCategory).toBe("incomplete");
+		expect(String(run.errorMessage)).toContain(NO_ASSISTANT_OUTPUT_REASON);
+		expect(run).not.toHaveProperty("exitCode");
+		expect(run.stopReason).not.toBe("stop");
+		expect(runStatuses).toEqual(["running", "running", "failed"]); // no 'done' record
+
+		// completion message — built from the persisted record, exactly as the wake is
+		const completion = buildCompletionMessage(agent, run as never);
+		expect(completion.details.status).toBe("failed");
+		expect(completion.details.errorCategory).toBe("incomplete");
+		expect(completion.content).toContain(NO_ASSISTANT_OUTPUT_REASON);
+
+		// transcript — no new field, only the failed completion line (#449 pins this)
+		const transcript = readFileSync(transcriptGetTranscriptPath(agent.id), "utf8").trim().split("\n");
+		expect(JSON.parse(transcript[transcript.length - 1]).content).toBe("Transcript completed: failed");
+
+		// failure event — carries the error text and NO category
+		const failedEvents = eventBusMock.emit.mock.calls
+			.map((call) => call[0] as { type: string; data: Record<string, unknown> })
+			.filter((event) => event.type === "subagent:failed");
+		expect(failedEvents).toHaveLength(1);
+		expect(String(failedEvents[0].data.error)).toContain(NO_ASSISTANT_OUTPUT_REASON);
+		expect(failedEvents[0].data).not.toHaveProperty("errorCategory");
+
+		// and the class is never re-dispatched by the transport auto-retry
+		expect(isTransportRetryable(run as never)).toBe(false);
+	});
+
+	it("a pre-stamped 'stopped' wins over the absent evidence (settle ORDER, not the classifier)", async () => {
+		// The stopped branch returns BEFORE the classifier, so this proves the
+		// ordering: zero projected messages cannot turn a user stop into a failure.
+		let resolvePrompt!: () => void;
+		mocks.session.prompt.mockReturnValue(new Promise<void>((r) => { resolvePrompt = r; }));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "stopped with an empty projection",
+		});
+		updateAgentStatus(agent.id, "stopped");
+		mocks.session.messages = [];
+		resolvePrompt();
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(getAgent(agent.id)?.status).toBe("stopped");
+		const run = lastRunEntry();
+		expect(run.status).toBe("failed");
+		expect(run.originalParams?.errorCategory).toBe("aborted");
+	});
+
+	it("the headline WINS over a stale session.state.errorMessage (appended, not substituted)", async () => {
+		const { agent, run } = await settleWith([{ role: "user", content: "task" }], {
+			state: { errorMessage: "stale provider text" },
+		});
+
+		expect(String(agent.error).startsWith(NO_ASSISTANT_OUTPUT_REASON)).toBe(true);
+		expect(agent.error).toContain("stale provider text");
+		expect(String(run.errorMessage).startsWith(NO_ASSISTANT_OUTPUT_REASON)).toBe(true);
+	});
+
+	it.each([
+		["an empty content array", [{ role: "assistant", content: [], stopReason: "stop", usage: { input: 1, output: 1 } }]],
+		["an empty text block", [{ role: "assistant", content: [{ type: "text", text: "" }], stopReason: "stop" }]],
+		["a thinking-only turn", [{ role: "assistant", content: [{ type: "thinking", text: "hmm" }], stopReason: "stop" }]],
+		[
+			"tool_use then an empty final turn",
+			[
+				{ role: "assistant", content: [{ type: "tool_use", name: "ls" }], stopReason: "toolUse" },
+				{ role: "assistant", content: [], stopReason: "stop" },
+			],
+		],
+	])("%s with an assistant PRESENT stays completed", async (_label, assistants) => {
+		const { agent, run } = await settleWith([{ role: "user", content: "task" }, ...assistants]);
+
+		expect(agent.status).toBe("completed");
+		expect(run.status).toBe("done");
+	});
+
+	it("nonconforming synthetic boundary: presence is read from the MESSAGE, never from usage.turns", async () => {
+		// The SDK type requires both `usage` and `stopReason` on an assistant
+		// message, so this shape is synthetic: it exists only to pin that the
+		// evidence is the message's existence. Deriving absence from
+		// `usage.turns === 0` would fail this run.
+		const { agent, run } = await settleWith([
+			{ role: "user", content: "task" },
+			{ role: "assistant", content: [] },
+		]);
+
+		expect(agent.status).toBe("completed");
+		expect(run.status).toBe("done");
+		expect(run.turns).toBe(0);
+	});
+});
+
+// =========================================================================
+// Issue #447: a dispatch that never reached `session.prompt()` must not be
+// presented at the next boot as an interrupted, retryable run. The tri-state
+// `acceptedAt` (null ⇒ never accepted, ISO ⇒ accepted, absent ⇒ legacy) plus
+// the pre-start cleanup is what draws that line.
+// =========================================================================
+describe("issue #447 — never-started dispatches", () => {
+	/** A boot scan over the durable registry with the PRODUCTION finalize wiring. */
+	function scanBoot(): ReturnType<typeof recoverInflightRuns> {
+		return recoverInflightRuns({
+			deps: { ...defaultRecoveryDeps(), sleep: async () => {}, graceMs: 0 },
+			// A never-started dispatch is never a recovery candidate: a mark here
+			// IS the false positive this issue is about.
+			mark: () => {
+				throw new Error("must not mark a never-started dispatch as interrupted");
+			},
+			finalizeNeverStarted: (run) => persistRunRecord(fakePi as never, run),
+		});
+	}
+
+	/** The recovery surface's view of the registry (empty ⇒ nothing is offered). */
+	function interruptedViews(): ReturnType<typeof collectInterruptedRuns> {
+		return collectInterruptedRuns({
+			listInflight: () => listInflightRuns(),
+			getAgent: () => null,
+			findRun: () => undefined,
+		});
+	}
+
+	afterEach(() => {
+		fakePi.appendEntry.mockReset();
+	});
+
+	it("A1 (S1): a registry write that throws at dispatch ends `failed`, and the boot scan offers NOTHING", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		fakePi.appendEntry.mockImplementationOnce(() => {
+			throw new Error("append-fs-boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "never accepted" })
+		).rejects.toThrow("append-fs-boom");
+		expect(mocks.session.prompt).not.toHaveBeenCalled();
+
+		// The durable residue is exactly "tracked, not accepted" — the sentinel a
+		// pre-upgrade record can never carry, which is what keeps it classifiable.
+		const residue = listInflightRuns();
+		expect(residue).toHaveLength(1);
+		expect(residue[0].acceptedAt).toBeNull();
+
+		// OWNER-LIVE HOLD: while the dispatcher is alive it may be inside its own
+		// pre-start window and will write its acceptance marker momentarily.
+		// Settling it here would stamp a false `failed` terminal record that the
+		// run's real terminal entry could never outrank (`resolveTerminalRunEntry`
+		// prefers the first terminal entry) — so the scan must not touch it.
+		const live = await scanBoot();
+		expect(live.neverStarted).toBe(0);
+		expect(listInflightRuns()).toHaveLength(1);
+		// ... and the hold must be invisible at the surface too: a held entry is
+		// skipped only because it carries no `interruptedAt`, which is worth pinning
+		// rather than assuming (2026-11-07 review).
+		expect(interruptedViews()).toEqual([]);
+
+		// The CRASH case the issue is about: the conductor is gone, so the residue
+		// is provably dead weight — settled failed, retired, never offered.
+		registerInflightRun({
+			id: residue[0].id,
+			kind: "background",
+			owner: { pid: 999_999_999, start: "100" },
+			startedAt: residue[0].startedAt,
+		});
+		const summary = await scanBoot();
+		// A never-started dispatch is not even a recovery CANDIDATE (M5): nothing
+		// was started, so nothing may be scanned, reaped, or marked.
+		expect(summary.scanned).toBe(0);
+		expect(summary.neverStarted).toBe(1);
+		expect(summary.marked).toBe(0);
+		const terminal = lastRunEntry();
+		expect(terminal.id).toBe(residue[0].id);
+		expect(terminal.status).toBe("failed");
+		expect(String(terminal.errorMessage)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+		// Retired by the terminal write, so no interrupted offer can survive it.
+		expect(listInflightRuns()).toHaveLength(0);
+		expect(interruptedViews()).toEqual([]);
+	});
+
+	it("A2 (S2): a transcript-start throw is cleaned in-process — no residue reaches a boot", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		// A REAL ENOTDIR: the transcript dir's parent is a file.
+		const blocker = join(env.baseDir, "blocker-file");
+		writeFileSync(blocker, "not a directory");
+		__setOutputDir(join(blocker, "output"));
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "transcript dies" })
+		).rejects.toThrow(/ENOTDIR/);
+		expect(mocks.session.prompt).not.toHaveBeenCalled();
+
+		const terminal = lastRunEntry();
+		expect(terminal.status).toBe("failed");
+		expect(String(terminal.errorMessage)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+		// In-process cleanup: the registry entry is gone, so a later boot has
+		// nothing to classify — and nothing to offer.
+		expect(listInflightRuns()).toHaveLength(0);
+		expect((await scanBoot()).neverStarted).toBe(0);
+		expect(interruptedViews()).toEqual([]);
+	});
+
+	it("A3: an acceptance write that throws means the prompt is NEVER issued (M7)", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		let writes = 0;
+		fakePi.appendEntry.mockImplementation(() => {
+			writes++;
+			if (writes === 2) throw new Error("accept-boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "acceptance dies" })
+		).rejects.toThrow("accept-boom");
+		expect(mocks.session.prompt).not.toHaveBeenCalled();
+		expect(writes).toBe(SETTLED_RUN_WRITES); // spawn, refused acceptance, terminal
+
+		const terminal = lastRunEntry();
+		expect(terminal.status).toBe("failed");
+		// The in-memory ISO stamp must not ride into this record: the entry would claim
+		// the prompt was accepted while its message says it never was (review nit).
+		expect(terminal.acceptedAt).toBeNull();
+		expect(String(terminal.errorMessage)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+		expect(String(terminal.errorMessage)).toContain("accept-boom");
+		expect(listInflightRuns()).toHaveLength(0);
+		expect(interruptedViews()).toEqual([]);
+	});
+
+	it("A4: the acceptance marker is written AFTER the spawn record and BEFORE the prompt (M6)", async () => {
+		const order: string[] = [];
+		fakePi.appendEntry.mockImplementation((_type: string, run: SubagentRun) => {
+			order.push(run.acceptedAt === null ? "spawn" : "acceptance");
+		});
+		mocks.session.prompt.mockImplementation(() => {
+			order.push("prompt");
+			return new Promise(() => {});
+		});
+
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "ordered" });
+
+		expect(order).toEqual(["spawn", "acceptance", "prompt"]);
+		const accepted = fakePi.appendEntry.mock.calls[1][1] as SubagentRun;
+		expect(typeof accepted.acceptedAt).toBe("string");
+		expect(Number.isNaN(Date.parse(accepted.acceptedAt as string))).toBe(false);
 	});
 });

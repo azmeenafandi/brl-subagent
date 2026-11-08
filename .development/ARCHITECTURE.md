@@ -73,8 +73,10 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `concurrency.ts` | Session-bound concurrency queue: slot acquisition/release, priority insertion, and progress counters. |
 | `diff.ts` | Parses git unified diffs into structured per-file summaries and hunks for the result UI. |
 | `dispatch-line.ts` | Parse and validate the Rule 22 dispatch line (the project-local opt-in lives in project-flags.ts). |
+| `engineering-bar.ts` | Builds the project's `<engineering-bar>` system-prompt section for every child spawn (issue #421). |
 | `event-bus.ts` | In-memory lifecycle pub/sub (`subagent:*` events) for extensions and the completion wake. |
 | `git.ts` | Branch-based git workflow for worktree runs: branch creation, diff capture, switch-back, cleanup. |
+| `headstate.ts` | Durable per-repository head state (ADR 0026): the record a branch run writes before its branch exists, the guarded boot reconciliation, and the age sweep. |
 | `history.ts` | Run-record store: creation, finalization, retry lookup, and history pruning. |
 | `index.ts` | Entry point: tool/command registration, the delegate_task handlers, and the execution-mode runners. |
 | `kill-escalation.ts` | The one SIGTERM → grace → SIGKILL escalation shared by foreground reap, abort/timeout, and boot recovery. |
@@ -117,7 +119,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**46 modules** — every one is listed because a new module without a purpose fails CI.
+**48 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

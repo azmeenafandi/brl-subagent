@@ -47,6 +47,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ApprovalMode, GitMode, SubagentPreset, SubagentToolOptions, ThinkingLevel, ToolResult } from "./types";
+import { approvalBlocksBackground, isThinkingLevel, THINKING_LEVELS } from "./types";
 import type { SessionState } from "./state";
 import type { Logger } from "./logging";
 import { validateCwd, validateOutputFile } from "./sanitize";
@@ -86,6 +87,62 @@ export function modelNotConfiguredRejection(): ToolResult<undefined> {
 	return rejection(
 		"Subagent model is not configured. " +
 		"Use /brl-subagent to set a model, or ensure your current session has a valid model.",
+	);
+}
+
+// ── Gate 0: a DECLARED thinking level (issue #443) ──────────────────────
+
+/**
+ * Render a declared value for the rejection text. A string is quoted as JSON so
+ * an empty/whitespace value is VISIBLE (`""` vs `" high"`); anything else
+ * arrives only from a programmatic caller (the schema declares a string), so it
+ * is rendered as JSON and falls back to `String` for the values JSON rejects
+ * (a `BigInt` throws, a symbol stringifies to `undefined`).
+ */
+function renderDeclaredThinkingLevel(value: unknown): string {
+	try {
+		return JSON.stringify(value) ?? String(value);
+	} catch {
+		return String(value);
+	}
+}
+
+/**
+ * Reject an unsupported DECLARED thinking level before it reaches resolution
+ * (issue #443). Returns `undefined` when the value is usable.
+ *
+ * This is the runtime guard; the schema's `enum` is only the first line of
+ * defence, because pi validates raw TOOL ARGUMENTS. Every other route to a
+ * launch — a preset object injected in memory (the file tier has its own
+ * validator, `getPreset` does not re-check), a value restored by `retryRunId`,
+ * the transport auto-retry's rebuilt params, a per-unit declaration — reaches
+ * `resolveSubagentParams` without passing through the schema at all.
+ *
+ * The guard must run before resolution: `resolveThinkingLevel` erases an
+ * unknown value to `undefined`, which then survives every later check
+ * (`resolveSubagentParams` returns a level, it cannot report a failure) and
+ * reaches the child as `--thinking undefined`, where pi warns and runs at its
+ * own default — the configured cap silently bypassed.
+ *
+ * Deliberately NOT rejected: `undefined`/`null` (omitted) and `""`. Both are
+ * existing, meaningful declarations — top level `""` means "use the configured
+ * maximum", per unit `""` means "inherit the global level" — so the empty
+ * string keeps its meaning rather than becoming an error.
+ *
+ * `prefix` names the unit a per-unit declaration came from, matching the other
+ * unit-prefixed rejections (`Task 2 ("two"): …`).
+ */
+export function invalidThinkingLevelRejection(
+	declared: unknown,
+	prefix?: string,
+): ToolResult<undefined> | undefined {
+	// Omitted, or the preserved empty-string declaration: not a level to judge.
+	if (declared === undefined || declared === null || declared === "") return undefined;
+	if (isThinkingLevel(declared)) return undefined;
+	return rejection(
+		`${prefix ? `${prefix}: ` : ""}Invalid thinkingLevel ${renderDeclaredThinkingLevel(declared)}. ` +
+			`Valid levels: ${THINKING_LEVELS.join(", ")} — matched exactly, so "High" and " high" are rejected too. ` +
+			`Omit thinkingLevel, or pass "", to use the configured maximum.`,
 	);
 }
 
@@ -142,7 +199,7 @@ export function gateSessionCost(input: {
 export function rejectApprovalAlwaysInBackground(
 	approvalMode: ApprovalMode,
 ): ToolResult<undefined> | undefined {
-	if (approvalMode !== "always") return undefined;
+	if (!approvalBlocksBackground(approvalMode)) return undefined;
 	return rejection(
 		`Cannot spawn background agent with approvalMode 'always': background agents run unattended ` +
 		`and cannot present the approval dialog. Use approvalMode 'auto' (default) or 'writes'.`,
@@ -310,6 +367,15 @@ export interface UnitPrePassInput<U, M extends UnitPrePassSource> {
 	 * silence the check for a batch while appearing to pass it for the call.
 	 */
 	noJev?: string;
+	/**
+	 * The unit's DECLARED thinkingLevel, read from the unit itself (issue #443).
+	 * Required, so a new caller cannot silently skip the check: the merged value
+	 * cannot be judged — `merge` has already resolved it, and an unknown
+	 * declaration comes back as `undefined` (the erasure this guard exists for).
+	 * `""` and an omitted declaration are NOT rejected here: they mean "inherit
+	 * the global level", which `merge` applies.
+	 */
+	declaredThinkingLevel: (unit: U) => unknown;
 }
 
 export type UnitPrePassOutcome<U, M extends UnitPrePassSource> =
@@ -318,7 +384,8 @@ export type UnitPrePassOutcome<U, M extends UnitPrePassSource> =
 
 /**
  * The per-unit pre-pass shared by chain, parallel and graph: for EVERY unit,
- * merge → validate cwd/outputFile → H1 → collect `${prefix}: ${warning}`.
+ * declared-level guard → merge → validate cwd/outputFile → H1 → collect
+ * `${prefix}: ${warning}`.
  *
  * This is a helper each handler CALLS at its own position; it is deliberately
  * not a hook the mode prologue invokes — the three modes run it at different
@@ -331,7 +398,7 @@ export type UnitPrePassOutcome<U, M extends UnitPrePassSource> =
 export function validateUnitPrePass<U, M extends UnitPrePassSource>(
 	input: UnitPrePassInput<U, M>,
 ): UnitPrePassOutcome<U, M> {
-	const { units, merge, describe, label, gitMode, ctx, log, force, noJev } = input;
+	const { units, merge, describe, label, gitMode, ctx, log, force, noJev, declaredThinkingLevel } = input;
 	const validated: Array<ValidatedUnit<U, M>> = [];
 	const warnings: string[] = [];
 
@@ -339,6 +406,15 @@ export function validateUnitPrePass<U, M extends UnitPrePassSource>(
 		const unit = units[i];
 		const merged = merge(unit, i);
 		const display = describe(unit, merged, i);
+
+		// Issue #443: the DECLARED per-unit level, before `merged.thinkingLevel`
+		// (already resolved, so an unknown value is indistinguishable from
+		// omitted) could hide it.
+		const thinkingError = invalidThinkingLevelRejection(
+			declaredThinkingLevel(unit),
+			display.prefix,
+		);
+		if (thinkingError) return { ok: false, error: thinkingError };
 
 		const targets = validateDelegationTargets({
 			ctx,

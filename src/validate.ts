@@ -38,12 +38,19 @@ export interface ValidateConfig {
   cwd?: string;
   /**
    * delegate_task's `noJev` param — the STATED bypass for the Jev-line check
-   * (issue #412, ADR 0018). Non-empty by schema. It downgrades the rejection
-   * to a warning that carries the reason, so the bypass is visible in the
-   * result, never silent. It bypasses ONLY the line check: every capability
-   * conflict still rejects (unlike `force`, which is capability-only).
+   * (issue #412, ADR 0018). It downgrades the rejection to a warning that
+   * carries the reason, so the bypass is visible in the result, never silent.
+   * It bypasses ONLY the line check: every capability conflict still rejects
+   * (unlike `force`, which is capability-only).
+   *
+   * Typed `unknown` on purpose (issue #419, ADR 0020): the schema DECLARES a
+   * non-empty string, but the harness validates with `coerce: true` and
+   * pi-schema's string rule stringifies booleans/numbers before the handler
+   * runs, so the value that arrives is not guaranteed to be the declared type
+   * (a direct caller can pass anything at all). `readNoJevReason` is the
+   * runtime guard, and it is the ONLY place this value may be read.
    */
-  noJev?: string;
+  noJev?: unknown;
 }
 
 export interface ValidateResult {
@@ -305,6 +312,55 @@ export function diagnoseFailure(config: DiagnoseConfig): string[] {
 	return suggestions;
 }
 
+// ── The noJev bypass reason (issue #419, ADR 0020) ───────────────────
+
+/**
+ * What the harness's coercion turns a non-string reason INTO: `compile(schema,
+ * { coerce: true })` stringifies booleans and numbers, so `noJev: true`
+ * reaches the handler as `"true"` — a value that passes `Type.String({
+ * minLength: 1 })` and is NOT a stated reason. Matching the coerced text is the
+ * only way to tell it apart from a real one at this seam.
+ */
+const COERCED_PRIMITIVE_RE = /^(true|false|-?\d+(\.\d+)?)$/i;
+
+/** The three outcomes of reading `noJev`: no bypass, a usable reason, or a refusal. */
+type NoJevVerdict =
+  | { kind: 'absent' }
+  | { kind: 'reason'; reason: string }
+  | { kind: 'invalid'; problem: string };
+
+/**
+ * Reads `noJev` defensively. The schema declares a non-empty string, but that
+ * is a DECLARATION, not a runtime guarantee: coercion stringifies primitives
+ * (above), and a direct caller can pass any value. So: never `.trim()` a
+ * non-string, and treat a coerced primitive (or an empty/whitespace reason) as
+ * an INVALID bypass rather than a usable one — a boolean must neither bypass
+ * the check nor crash it.
+ */
+function readNoJevReason(value: unknown): NoJevVerdict {
+  // Omitted, or an optional `null` (pi-schema drops those during coercion):
+  // no bypass was stated, so the caller gets the plain missing-line error.
+  if (value === undefined || value === null) return { kind: 'absent' };
+  if (typeof value !== 'string') {
+    const shape = Array.isArray(value) ? 'array' : typeof value;
+    return { kind: 'invalid', problem: `expected a non-empty reason string, got ${shape}` };
+  }
+  const reason = value.trim();
+  if (reason === '') {
+    return { kind: 'invalid', problem: 'the reason is empty' };
+  }
+  if (COERCED_PRIMITIVE_RE.test(reason)) {
+    const coerced = /^(true|false)$/i.test(reason) ? 'boolean' : 'number';
+    return {
+      kind: 'invalid',
+      problem:
+        `\`${reason}\` is a coerced ${coerced}, not a stated reason — the tool-argument validator ` +
+        `stringifies booleans and numbers before the handler sees them`,
+    };
+  }
+  return { kind: 'reason', reason };
+}
+
 // ── Main validation ──────────────────────────────────────────────────
 
 export function validatePreTask(config: ValidateConfig): ValidateResult {
@@ -327,15 +383,24 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
   // dispatch is never rejected for a missing line. The flag read is fail-open
   // (`src/project-flags.ts`). `noJev` — a stated reason — downgrades the
   // rejection to a WARNING that names the reason, so the bypass is surfaced
-  // rather than silent (ADR 0007's pattern).
+  // rather than silent (ADR 0007's pattern). The reason itself is read through
+  // a runtime guard, never off the declared type (issue #419, ADR 0020): a
+  // boolean/number arrives here coercion-stringified, and it must be refused
+  // as the missing line, not accepted as a bypass.
   if (isProcessChecksEnabled(config.cwd)) {
     const verdict = parseDispatchLine(taskText);
     if (!verdict.ok) {
-      if (config.noJev !== undefined && config.noJev.trim() !== '') {
+      const bypass = readNoJevReason(config.noJev);
+      if (bypass.kind === 'reason') {
         warnings.push(
-          `noJev override: the Jev dispatch line was skipped — ${config.noJev} (${verdict.reason})`,
+          `noJev override: the Jev dispatch line was skipped — ${bypass.reason} (${verdict.reason})`,
         );
       } else {
+        if (bypass.kind === 'invalid') {
+          errors.push(
+            `invalid noJev: ${bypass.problem}. Pass the reason the line was skipped as a non-empty string (e.g. noJev: "classifier unreachable; maintainer approved"), or append the line.`,
+          );
+        }
         errors.push(
           `missing Jev dispatch line: ${verdict.reason}. ` +
           `Classify with the Jev classifier, format the answer with \`jev-check --line '<json>'\` (it prints the line verbatim), and append it to the task as: ${DISPATCH_LINE_FORM}. ` +
@@ -455,4 +520,18 @@ export function normalizeTimeout(timeout: number | undefined): number | undefine
 	// Node's setTimeout overflows to ~1ms at 2^31-1 (TimeoutOverflowWarning).
 	if (timeout >= 2 ** 31 - 1) return undefined;
 	return timeout;
+}
+
+/**
+ * The EFFECTIVE budget of a BACKGROUND run: the normalized explicit `timeout`,
+ * or {@link DEFAULT_BACKGROUND_DEADLINE_MS} when there is none (issue #423).
+ *
+ * The single definition of "30 m default" for the background path — the W3
+ * timer, the persisted record's `timeoutMs` and every display of the budget
+ * derive from here, so a displayed deadline cannot drift from the armed timer.
+ * Not used by the foreground path: a foreground run has NO default deadline,
+ * so an absent timeout there means "no deadline", not 30 m.
+ */
+export function effectiveBackgroundBudget(timeout: number | undefined): number {
+	return normalizeTimeout(timeout) ?? DEFAULT_BACKGROUND_DEADLINE_MS;
 }

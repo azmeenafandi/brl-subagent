@@ -67,7 +67,7 @@ import { collapseRunsForHistory, retryableRuns, sweepStaleLiveSubagents, type Se
 import { getAgent } from "./session-manager";
 import { visibleRunEntriesForSession } from "./recovery-surface";
 import { computeSLAMetrics, computeCostTrend, formatSparkline } from "./metrics";
-import { formatElapsed, formatOutcomeSymbol, liveRowName, liveSpinner, formatLiveRowDim, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName, formatMenuValue, formatTemplateSummary, menuSection } from "./tui-format";
+import { formatElapsed, formatOutcomeSymbol, liveRowName, liveSpinner, formatLiveRowDim, formatBudget, sortLiveSessions, runHistoryStatus, runHistoryStatusLabel, buildRetryOfferMessage, runDisplayName, formatMenuValue, formatTemplateSummary, menuSection } from "./tui-format";
 import {
 	renderTranscriptMessages,
 	type TranscriptLineStyle,
@@ -495,7 +495,7 @@ export async function showSLAStats(
 	ctx: ExtensionContext,
 	state: SessionState,
 ): Promise<void> {
-	const runs = state.getRunEntries(ctx).slice(0, state.config.slaWindowSize);
+	const runs = state.getLogicalRunEntries(ctx).slice(0, state.config.slaWindowSize);
 	if (runs.length === 0) {
 		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
 		return;
@@ -542,7 +542,7 @@ export async function showFileAccessReport(
 	ctx: ExtensionContext,
 	state: SessionState,
 ): Promise<void> {
-	const runs = state.getRunEntries(ctx);
+	const runs = state.getLogicalRunEntries(ctx);
 	if (runs.length === 0) {
 		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
 		return;
@@ -577,7 +577,7 @@ export async function showSecretsExposureReport(
 	ctx: ExtensionContext,
 	state: SessionState,
 ): Promise<void> {
-	const runs = state.getRunEntries(ctx);
+	const runs = state.getLogicalRunEntries(ctx);
 	if (runs.length === 0) {
 		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
 		return;
@@ -634,7 +634,7 @@ export async function showFullComplianceSummary(
 	ctx: ExtensionContext,
 	state: SessionState,
 ): Promise<void> {
-	const runs = state.getRunEntries(ctx);
+	const runs = state.getLogicalRunEntries(ctx);
 	if (runs.length === 0) {
 		ctx.ui.notify("No runs to analyze. Delegate a task first.", "info");
 		return;
@@ -1269,7 +1269,7 @@ export async function showConfigMenu(
  * run that exists only in the durable registry.
  */
 function recoverableRunEntries(ctx: ExtensionContext, state: SessionState): SubagentRun[] {
-	return visibleRunEntriesForSession(state.getRunEntries(ctx), getAgent);
+	return visibleRunEntriesForSession(state.getLogicalRunEntries(ctx), getAgent);
 }
 
 export async function showRunHistory(
@@ -1558,6 +1558,11 @@ export async function showMonitor(
 		// Selected row index (0-based). Clamped to the map size on every
 		// render — entries can be swept while the monitor is open.
 		let selectedIndex = 0;
+		// Issue #423: the id list from the LAST paint. Selection identity is an
+		// index over what was RENDERED, not over the live map: a spawn or a
+		// finalize between paint and Enter would otherwise shift the id list and
+		// open an agent other than the highlighted row.
+		let lastRenderedIds: string[] = [];
 		// Guards against stacking drill-in overlays on repeated Enter.
 		let detailOpen = false;
 
@@ -1567,13 +1572,17 @@ export async function showMonitor(
 			// render pass. Idempotent, so racing the poller is safe.
 			sweepStaleLiveSubagents(state, getAgent);
 
+			// Issue #423: the shared display projection (settled ids out, deadline order).
+			const entries = liveDisplayEntries(state);
+			lastRenderedIds = entries.map(([id]) => id);
+
 			const container = new Container();
 			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 			container.addChild(
 				new Text(
 					theme.fg(
 						"accent",
-						theme.bold(`Subagent Monitor (${state.subagentSessions.size} active)`),
+						theme.bold(`Subagent Monitor (${entries.length} active)`),
 					),
 					1,
 					0,
@@ -1584,14 +1593,14 @@ export async function showMonitor(
 			);
 			container.addChild(new Text("", 0, 0));
 
-			const entries = Array.from(state.subagentSessions.entries());
 			const selIdx = Math.min(selectedIndex, Math.max(0, entries.length - 1));
+			const now = Date.now();
 
 			let idx = 0;
 			for (const [id, session] of entries) {
-				const elapsedStr = formatElapsed(Date.now() - session.startedAt);
+				const elapsedStr = formatElapsed(now - session.startedAt);
 				const name = liveRowName(session.label, session.task);
-				const spinner = liveSpinner(Date.now());
+				const spinner = liveSpinner(now);
 				// Selection marker: a "›" prefix on the selected row only. The
 				// rest of the row (spinner/name/dim/muted lines) is unchanged.
 				const marker = idx === selIdx ? "› " : "";
@@ -1601,7 +1610,14 @@ export async function showMonitor(
 						theme.fg("accent", `${marker}${spinner} ${name}`) +
 						theme.fg(
 							"dim",
-							formatLiveRowDim(id, session.usage, elapsedStr),
+							formatLiveRowDim(
+								id,
+								session.usage,
+								elapsedStr,
+								// Issue #423: used / budget (percent left); `—` when the run has
+								// no timer at all (a foreground run with no timeout).
+								formatBudget(session.startedAt, session.deadlineAt, now),
+							),
 						),
 						1,
 						0,
@@ -1652,15 +1668,17 @@ export async function showMonitor(
 					done();
 					return;
 				}
-				// up / down: move the selection, wrapping like SelectList.
+				// up / down: move the selection, wrapping like SelectList. The bound is
+				// the list the LAST paint rendered (issue #423), so the highlight can
+				// never run past a row the human cannot see.
 				if (_kb.matches(data, "tui.select.up")) {
-					const count = state.subagentSessions.size;
+					const count = lastRenderedIds.length;
 					selectedIndex = count > 0 ? (selectedIndex - 1 + count) % count : 0;
 					tui.requestRender();
 					return;
 				}
 				if (_kb.matches(data, "tui.select.down")) {
-					const count = state.subagentSessions.size;
+					const count = lastRenderedIds.length;
 					selectedIndex = count > 0 ? (selectedIndex + 1) % count : 0;
 					tui.requestRender();
 					return;
@@ -1668,9 +1686,11 @@ export async function showMonitor(
 				// enter: open the full-screen drill-in overlay for the selected agent.
 				// The overlay's done() returns to the list — the monitor stays open
 				// beneath it (fire-and-forget; handleInput is synchronous).
+				// Issue #423: the id resolves against the RENDERED list, so a spawn or
+				// a finalize between paint and Enter cannot open a different agent than
+				// the highlighted row (a stale id falls through to the not-found path).
 				if (_kb.matches(data, "tui.select.confirm")) {
-					const ids = Array.from(state.subagentSessions.keys());
-					const id = ids[Math.min(selectedIndex, ids.length - 1)];
+					const id = lastRenderedIds[selectedIndex];
 					if (id && !detailOpen) {
 						detailOpen = true;
 						showAgentDetail(ctx, state, id).finally(() => {
@@ -1982,7 +2002,7 @@ function compactDuration(ms: number): string {
 /** The per-row live-session slice the Active Subagents panel renders. */
 export type ActiveSubagentSlice = Pick<
 	LiveSubagent,
-	"label" | "task" | "startedAt" | "usage"
+	"label" | "task" | "startedAt" | "deadlineAt" | "usage"
 >;
 
 /** Panel 1 — header: the dashboard title plus the refresh stamp. */
@@ -2001,15 +2021,35 @@ export function renderDashboardHeader(theme: Theme, refreshStr: string): Compone
 /**
  * Panel 2 — active subagents: the live count in the title, one row per entry.
  *
- * `now` is injected (the composer passes the wall clock) so the spinner frame
- * and the elapsed suffix stay testable; it is sampled per row, as before.
+ * Issue #423: the rows arrive as an ORDERED array (the call site filters
+ * finalized ids and sorts by the soonest deadline) rather than the raw map, so
+ * the panel cannot render a settled row or an order the monitor disagrees with,
+ * and `activeCount` is the rendered length instead of `map.size` (which counted
+ * finalized-but-lingering entries).
+ *
+ * `now` is injected (the composer passes the wall clock) so the spinner frame,
+ * the elapsed suffix and the budget stay testable; it is sampled per render.
  */
+/**
+ * Issue #423: the monitor and the dashboard render the same projection — settled
+ * ids removed (a 3 s lingering row must not show a live deadline) and rows
+ * ordered by the soonest deadline. One definition, so the surfaces cannot
+ * disagree (review 425, DRY).
+ */
+export function liveDisplayEntries(state: SessionState): Array<[string, LiveSubagent]> {
+	return sortLiveSessions(
+		Array.from(state.subagentSessions.entries()).filter(
+			([id]) => !state.isLiveEntryFinalized(id),
+		),
+	);
+}
+
 export function renderDashboardActivePanel(
 	theme: Theme,
-	sessions: ReadonlyMap<string, ActiveSubagentSlice>,
+	sessions: ReadonlyArray<readonly [string, ActiveSubagentSlice]>,
 	now: () => number = Date.now,
 ): Component[] {
-	const activeCount = sessions.size;
+	const activeCount = sessions.length;
 	const components: Component[] = [
 		new Text(
 			theme.fg("accent", theme.bold(`Active Subagents (${activeCount})`)),
@@ -2022,15 +2062,22 @@ export function renderDashboardActivePanel(
 	} else {
 		let idx = 0;
 		for (const [id, session] of sessions) {
-			const elapsedStr = formatElapsed(now() - session.startedAt);
+			const nowMs = now();
+			const elapsedStr = formatElapsed(nowMs - session.startedAt);
 			const name = liveRowName(session.label, session.task);
-			const spinner = liveSpinner(now());
+			const spinner = liveSpinner(nowMs);
 			components.push(
 				new Text(
 					theme.fg("accent", `  ${spinner} ${name}`) +
 						theme.fg(
 							"dim",
-							formatLiveRowDim(id, session.usage, elapsedStr),
+							formatLiveRowDim(
+								id,
+								session.usage,
+								elapsedStr,
+								// Issue #423: used / budget (percent left); `—` when no timer.
+								formatBudget(session.startedAt, session.deadlineAt, nowMs),
+							),
 						),
 					1,
 					0,
@@ -2234,10 +2281,11 @@ export async function showDashboard(
 			append(renderDashboardHeader(theme, refreshStr));
 
 			// ---- Panel 2: Active subagents ----
-			append(renderDashboardActivePanel(theme, state.subagentSessions, Date.now));
+			// Issue #423: the panel takes the same ordered projection as the monitor.
+			append(renderDashboardActivePanel(theme, liveDisplayEntries(state), Date.now));
 
 			// ---- Panel 3: SLA Summary ----
-			const allRuns = state.getRunEntries(ctx);
+			const allRuns = state.getLogicalRunEntries(ctx);
 			const recentRuns = allRuns.slice(0, state.config.slaWindowSize || 50);
 			const metrics = recentRuns.length > 0 ? computeSLAMetrics(recentRuns) : null;
 			append(renderDashboardSlaPanel(theme, metrics, recentRuns.length));

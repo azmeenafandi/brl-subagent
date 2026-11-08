@@ -36,8 +36,10 @@ import type {
 	TaskTemplate,
 	ToolResult,
 	SubagentEvent,
+	SubagentEventListener,
 } from "./types";
 import {
+	declaredThinkingLevel,
 	resolveThinkingLevel,
 	EMPTY_USAGE,
 	getFinalOutput,
@@ -52,6 +54,8 @@ import {
 	DEFAULT_PRIORITY,
 	type GitMode,
 	type BackgroundAgent,
+	type BackgroundAgentIdentity,
+	type BackgroundAgentSpawnResult,
 	type RecoveryMode,
 } from "./types";
 import { validateGraph, topologicalSort } from "./scheduler";
@@ -63,18 +67,22 @@ import { sanitizeTask, validateCwd, validateOutputFile, stripAnsi, capOutput, ge
 import {
 	hasUncommittedChanges,
 	createWorkBranch,
+	newWorkBranchName,
 	captureDiff,
 	getHeadState,
+	getHeadBranch,
+	getRepoRoot,
+	listWorkBranches,
 	restoreHead,
 	deleteBranch,
 	mergeWorkBranch,
 	type HeadState,
 } from "./git";
 import { preflightCheck } from "./preflight";
-import { depthLimitRejection, formatValidationWarnings, gateSessionCost, modelNotConfiguredRejection, rejectApprovalAlwaysInBackground, rejection, resolveModeModel, resolveSubagentModelPrecedence, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, type SubagentModelResolution } from "./prelude";
+import { depthLimitRejection, formatValidationWarnings, gateSessionCost, invalidThinkingLevelRejection, modelNotConfiguredRejection, rejectApprovalAlwaysInBackground, rejection, resolveModeModel, resolveSubagentModelPrecedence, runPreTaskValidation, validateDelegationTargets, validateUnitPrePass, type SubagentModelResolution } from "./prelude";
 import { loadBuiltinPresets, loadCustomPresets, getAllPresets, writePresetFile, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { modelIsAvailable, parseModelString } from "./model-availability";
-import { validatePreTask, diagnoseFailure, DEFAULT_BACKGROUND_DEADLINE_MS } from "./validate";
+import { validatePreTask, diagnoseFailure } from "./validate";
 import {
 	defaultBackgroundFor,
 	findUnknownParams,
@@ -83,11 +91,15 @@ import {
 	resolveEffectiveApprovalMode,
 	resolveSubagentParams,
 	resolveThinkingDispatchSwitch,
+	shouldDropUnitTimeout,
 	shouldRejectBackgroundForBatch,
 	snapshotOriginalParams,
 	THINKING_SWITCH_NOTICE,
+	THINKING_TIMEOUT_DROP_NOTICE,
+	THINKING_UNIT_TIMEOUT_DROP_NOTICE,
 	type DispatchShape,
 	type ResolveInputParams,
+	type UnitShape,
 } from "./params";
 import { delegateTaskParamsSchema } from "./schema";
 import { readProcessChecks } from "./project-flags";
@@ -99,7 +111,19 @@ import {
 	recoverProduction,
 	currentProcessOwner,
 	newDispatchIdentity,
+	classifyOwner,
+	defaultRecoveryDeps,
 } from "./recovery";
+import {
+	buildHeadStateNotice,
+	reconcileHeadStates,
+	sweepHeadStates,
+	writeHeadState,
+	clearHeadState,
+	HEAD_STATE_VERSION,
+	type HeadStateDeps,
+	type HeadStateOutcome,
+} from "./headstate";
 import { markInterrupted, listInflightRuns, clearInflightRun } from "./run-registry";
 import { acquireSlot, clearProgressLinger, releaseSlot, repaintStatus, stopProgressTicker } from "./concurrency";
 import { transcriptDisplayPath } from "./transcript-path";
@@ -148,10 +172,14 @@ import { Intercom } from "./messaging";
 import * as eventBus from "./event-bus";
 import {
 	buildCompletionMessage,
+	formatBudgetLine,
+	normalizeCompletionStatus,
 	resolveDelivery,
 	sendCompletionNotification,
 	claimTerminalNotice,
 	resolveRunEntry,
+	buildMonitoringDegradedParagraph,
+	sendMonitoringDegradedAdvisory,
 } from "./notify-completion";
 import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "./transport-retry";
 
@@ -332,6 +360,38 @@ function graphTaskToSubTaskParams(node: GraphTask): SubTaskParams {
 }
 
 /**
+ * Issue #434: what every unit of ONE dispatch needs from the dispatch-level
+ * pre-flight — threaded from `execute` into the four batch handlers, never
+ * re-derived at a unit site.
+ *
+ *   - `processChecks` is the project opt-in `execute` already resolved from the
+ *     dispatch's OWN cwd. Re-reading it per unit (from a relative
+ *     `params.cwd`) judges a different directory than the dispatch did.
+ *   - `dispatchDeclaredLevel` is the declared (uncapped) level the dispatch arm
+ *     judged, so a unit that declares only a `timeout` is still judged against
+ *     the thinking level it actually inherits.
+ *   - `force` and `unitShape` are the dispatch-level facts the unit projection
+ *     asks for; `params` is in scope at every unit site, so passing them here is
+ *     what keeps the predicate's inputs in ONE place.
+ *   - `noticeEmitted` is the one-shot flag on this shared object (all handlers
+ *     received the same reference): the unit projection emits AT MOST one
+ *     additional notice per dispatch, and a dispatch-arm notice starts it true
+ *     (the drop still happens — the deadline is the hazard, the notice is the
+ *     report). A flag on the shared context, not a boolean copy, because the
+ *     first unit to reach its run is whichever won the slot, not the first in
+ *     the array.
+ */
+interface BatchGuardContext {
+	processChecks: boolean;
+	dispatchDeclaredLevel: ThinkingLevel | undefined;
+	/** The dispatch's `force` — the override applies to every unit of it. */
+	force: boolean | undefined;
+	unitShape: UnitShape;
+	/** True once any notice for this dispatch went out — mutated at the unit site. */
+	noticeEmitted: boolean;
+}
+
+/**
  * Issue #376 (audit D3): the one `SubagentResult` → `SubTaskResult` field
  * mapping, shared by every dispatch mode (chain, parallel, graph). The ten
  * assignments plus the error classification were copied per mode, so a field
@@ -377,7 +437,7 @@ export default function (pi: ExtensionAPI) {
 	let state = createSessionState(log);
 
 	// Issue #147: the completion-push subscriber needs the session context to
-	// resolve the run entry (state.getRunEntries(ctx)). The event-bus listener
+	// resolve the run entry (state.getLogicalRunEntries(ctx)). The event-bus listener
 	// receives no ctx, so capture it in session_start where it is available.
 	let sessionCtx: ExtensionContext | undefined;
 
@@ -538,6 +598,74 @@ export default function (pi: ExtensionAPI) {
 		merged.label ??
 		(merged.task.length > 60 ? `${merged.task.slice(0, 57)}...` : merged.task);
 
+	/**
+	 * Issue #434: apply the dispatch pre-flight's UNIT projection to one merged
+	 * unit — `merged.timeout = undefined` before the unit's run record exists, so
+	 * the retry snapshot records an absent deadline (ADR 0009) and no
+	 * `createUnitRun`/`startBackgroundAgent` ever sees it. The decision itself
+	 * lives in `shouldDropUnitTimeout` (params.ts): re-stating the condition here
+	 * is the drift #361's resolver extraction exists to prevent.
+	 *
+	 * EVERY input is threaded (`ctx`'s guard) or the unit's own declaration
+	 * (`step`) — the unit site reads no config, no manifest and no cap of its
+	 * own. `merged.thinkingLevel` is deliberately not an input: it is the capped
+	 * level, and the default cap would silently disable the guard.
+	 *
+	 * Emission discipline (issue #434 [c2]): called from the unit's dispatch
+	 * point, AFTER its slot is held and immediately BEFORE its run — a pre-pass
+	 * would announce a unit that a cancellation can still skip. At most ONE
+	 * notice per dispatch: a dispatch-arm notice suppresses this one entirely
+	 * (the drop still happens — the deadline is the hazard, the notice is the
+	 * report), and the first unit to reach its run claims it.
+	 */
+	function applyUnitShapeGuard(
+		ctx: ExtensionContext,
+		guard: BatchGuardContext,
+		step: SubTaskParams,
+		merged: ReturnType<typeof mergeSubTaskParams>,
+	): void {
+		const shouldDrop = shouldDropUnitTimeout({
+			processChecks: guard.processChecks,
+			force: guard.force,
+			dispatchDeclaredLevel: guard.dispatchDeclaredLevel,
+			unitShape: guard.unitShape,
+			declaredLevel: step.thinkingLevel as ThinkingLevel | "" | undefined,
+			declaredTimeout: step.timeout,
+			mergedTimeout: merged.timeout,
+		});
+		if (!shouldDrop) return;
+
+		const previousTimeout = merged.timeout;
+		const unit = displayTaskName(merged);
+		const effectiveLevel = step.thinkingLevel || guard.dispatchDeclaredLevel;
+		// The drop precedes `createUnitRun`: that is what makes the recorded
+		// `originalParams.timeout` absent, so a retry re-derives instead of
+		// restoring the cap (ADR 0009). A drop after it passes every
+		// runner-argument assertion and still restores the deadline on retry.
+		merged.timeout = undefined;
+		log.info("Dispatch pre-flight: unit-declared timeout dropped, unit stays foreground", {
+			unit,
+			thinkingLevel: effectiveLevel,
+			previousTimeout,
+		});
+		if (!guard.noticeEmitted) {
+			guard.noticeEmitted = true;
+			pi.sendMessage({
+				customType: "delegate-notification",
+				content: THINKING_UNIT_TIMEOUT_DROP_NOTICE,
+				display: true,
+				details: {
+					unit,
+					thinkingLevel: effectiveLevel,
+					// The ACTUAL ms value, mirroring the dispatch drop arm: the
+					// friction log needs the number to tell a budget cap from a clock.
+					previousTimeout,
+				},
+			}, { deliverAs: "followUp" });
+			ctx.ui.notify(THINKING_UNIT_TIMEOUT_DROP_NOTICE, "warning");
+		}
+	}
+
 	// -------------------------------------------------------------------
 	// P1: runChainMode
 	// -------------------------------------------------------------------
@@ -547,6 +675,7 @@ export default function (pi: ExtensionAPI) {
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
+		guard: BatchGuardContext,
 	): Promise<ToolResult<SubagentResult | ChainDetails | undefined>> {
 		const chainSteps: SubTaskParams[] = params.chain!;
 
@@ -587,6 +716,8 @@ export default function (pi: ExtensionAPI) {
 			log,
 			force: params.force as boolean | undefined,
 			noJev: params.noJev,
+			// Issue #443: the DECLARED per-step level (the merged one is resolved).
+			declaredThinkingLevel: (step) => step.thinkingLevel,
 			merge: (step) => mergeSubTaskParams(globalParams, step),
 			describe: (_step, merged, i) => ({
 				prefix: `Step ${i + 1} ("${displayTaskName(merged)}")`,
@@ -646,6 +777,12 @@ export default function (pi: ExtensionAPI) {
 
 				// Merge params for this step
 				const merged = mergeSubTaskParams(globalParams, step);
+
+				// Issue #434: the unit projection of the dispatch pre-flight (#412/#431).
+				// A chain holds its ONE mode-level slot across the whole loop, so the
+				// slot is already held here; the drop lands BEFORE `createUnitRun`
+				// below, or the retry snapshot would restore the deadline (ADR 0009).
+				applyUnitShapeGuard(ctx, guard, step, merged);
 
 				// C3: Resolve this step's model override (step.model > global resolved model)
 				const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
@@ -727,7 +864,7 @@ export default function (pi: ExtensionAPI) {
 				// parallel mode's issue #119 registration). Fall back to
 				// "Step N" when the step carries no label (liveRowName would
 				// otherwise show the truncated task).
-				registerLiveRun(state, run, ctx, merged.label ?? `Step ${i + 1}`);
+				registerLiveRun(state, run, ctx, merged.label ?? `Step ${i + 1}`, merged.timeout);
 
 				// Wrap onUpdate so the live monitor sees per-step progress
 				// (mirrors parallel mode's taskOnUpdate).
@@ -938,6 +1075,7 @@ export default function (pi: ExtensionAPI) {
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
+		guard: BatchGuardContext,
 	): Promise<ToolResult<SubagentResult | ParallelDetails | undefined>> {
 		const taskList: SubTaskParams[] = params.tasks!;
 
@@ -976,6 +1114,8 @@ export default function (pi: ExtensionAPI) {
 			log,
 			force: params.force as boolean | undefined,
 			noJev: params.noJev,
+			// Issue #443: the DECLARED per-task level (the merged one is resolved).
+			declaredThinkingLevel: (task) => task.thinkingLevel,
 			merge: (task) => mergeSubTaskParams(globalParams, task),
 			describe: (_task, merged, i) => ({
 				prefix: `Task ${i + 1} ("${displayTaskName(merged)}")`,
@@ -1018,6 +1158,14 @@ export default function (pi: ExtensionAPI) {
 			unitCwd: string,
 		): Promise<boolean> => {
 
+			// Issue #434: the unit projection of the dispatch pre-flight. Applied
+			// HERE, not in the launcher's pre-merge: the launcher awaits
+			// `acquireSlot` and only then calls this, so a unit cancelled while
+			// waiting for its slot is never announced (and never dropped). The
+			// drop still precedes `createUnitRun` below, so the retry snapshot
+			// records an absent deadline rather than restoring the cap.
+			applyUnitShapeGuard(ctx, guard, taskList[index], merged);
+
 			// C3: Resolve this step's model override (step.model > global resolved model)
 			const stepModel = resolveStepModel(ctx, merged.model, subagentModel);
 
@@ -1055,8 +1203,9 @@ export default function (pi: ExtensionAPI) {
 			pruneHistoryIfNeeded(state, ctx, log);
 
 			// Register for live monitor — parallel subtasks now appear in the
-			// drill-in with their per-unit priority (issue #119).
-			registerLiveRun(state, run, ctx);
+			// drill-in with their per-unit priority (issue #119). The merged
+			// timeout rides along as the display deadline (issue #423).
+			registerLiveRun(state, run, ctx, undefined, merged.timeout);
 
 			log.debug("Parallel subtask run registered", { runId, index });
 
@@ -1286,6 +1435,7 @@ export default function (pi: ExtensionAPI) {
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 		ctx: ExtensionContext,
+		guard: BatchGuardContext,
 	): Promise<ToolResult<SubagentResult | GraphDetails | undefined>> {
 		const graphTasks: GraphTask[] = params.graph!;
 
@@ -1375,6 +1525,8 @@ export default function (pi: ExtensionAPI) {
 			log,
 			force: params.force as boolean | undefined,
 			noJev: params.noJev,
+			// Issue #443: the DECLARED per-node level (the merged one is resolved).
+			declaredThinkingLevel: (node) => node.thinkingLevel,
 			merge: (node) => mergeSubTaskParams(globalParams, graphTaskToSubTaskParams(node)),
 			describe: (node, merged) => ({
 				prefix: `Node "${node.id}"`,
@@ -1496,6 +1648,12 @@ export default function (pi: ExtensionAPI) {
 					const subagentId = graphTask.id;
 					intercom.register(subagentId);
 
+					// Issue #434: the unit projection of the dispatch pre-flight, applied
+					// after this node's slot is held (a node cancelled above never
+					// reaches here) and BEFORE `createUnitRun` below, so the retry
+					// snapshot records the dropped deadline (ADR 0009).
+					applyUnitShapeGuard(ctx, guard, subTaskParams, merged);
+
 					// Issue #133: status-bar breakdown — the node's dispatch-wide
 					// position (globalNode, not the wave-local nodeIndex) so a later
 					// wave reports its true global ordinal.
@@ -1525,7 +1683,8 @@ export default function (pi: ExtensionAPI) {
 					// is host-global, so raw graph-task ids would collide across
 					// concurrent graph runs (the intercom namespace is per-run and
 					// stays untouched).
-					registerLiveRun(state, run, ctx);
+					// Issue #423: the merged timeout rides along as the display deadline.
+					registerLiveRun(state, run, ctx, undefined, merged.timeout);
 
 					let nodeSuccess = false;
 					try {
@@ -1719,6 +1878,7 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		params: DelegateTaskParams,
 		signal: AbortSignal | undefined,
+		guard: BatchGuardContext,
 	): Promise<ToolResult<SubagentResult | undefined>> {
 		const taskList: SubTaskParams[] = params.tasks!;
 
@@ -1796,6 +1956,16 @@ export default function (pi: ExtensionAPI) {
 			const merged = mergeSubTaskParams(globalParams, taskList[i]);
 			const name = displayTaskName(merged);
 			const taskPrefix = `Task ${i + 1} ("${name}")`;
+			// Issue #443: the DECLARED per-task level — `merged.thinkingLevel` is
+			// already resolved, so an unknown declaration is indistinguishable from
+			// an omitted one by the time the spawn pass reads it. Checked here, in
+			// the all-before-any-spawn pass, so a bad SECOND task rejects the whole
+			// batch with nothing started.
+			const declaredThinkingError = invalidThinkingLevelRejection(
+				taskList[i].thinkingLevel,
+				taskPrefix,
+			);
+			if (declaredThinkingError) return declaredThinkingError;
 			// Per-task model override wins; the global model is the fallback.
 			const stepModel = resolveStepModel(ctx, merged.model, globalModel);
 
@@ -1830,8 +2000,17 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// Spawn pass — sequential, in task order, through the shared tail.
-		const started: Array<{ id: string; label?: string }> = [];
+		// Issue #439: a unit's report is built from its plain identity record plus
+		// its own containment ledger, so a degraded unit is still reported as
+		// STARTED — including when a LATER unit fails or the batch is cancelled.
+		const started: Array<{ id: string; label?: string; tailFailures: string[] }> = [];
 		const startedIdsText = (): string => started.map((s) => s.id).join(", ");
+		/** The degraded paragraph for every unit whose monitoring did not attach. */
+		const degradedReport = (): string =>
+			started
+				.filter((s) => s.tailFailures.length > 0)
+				.map((s) => buildMonitoringDegradedParagraph(s, s.tailFailures))
+				.join("");
 
 		for (let i = 0; i < fanOutTasks.length; i++) {
 			if (signal?.aborted) {
@@ -1845,7 +2024,8 @@ export default function (pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text" as const, text:
 						`Background fan-out cancelled after starting ${started.length} of ${fanOutTasks.length} agents ` +
-						`(${startedIdsText()}) — they are detached and will still wake you.`
+						`(${startedIdsText()}) — they are detached and will still wake you.` +
+						degradedReport()
 					}],
 					details: undefined,
 					isError: true,
@@ -1853,6 +2033,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const { merged, model, cwd, outputFile } = fanOutTasks[i];
+			// Issue #434: called with the dispatch's `unitShape`, which is
+			// "background" here — a detached unit's deadline is the legitimate
+			// 30-minute budget, so nothing is dropped and no unit notice is ever
+			// emitted on this path. The call is here (not omitted) so the exclusion
+			// is visible at the spawn site instead of hidden in a never-taken branch.
+			applyUnitShapeGuard(ctx, guard, taskList[i], merged);
 			const name = displayTaskName(merged);
 			const subagentPrompt = buildSubagentPrompt(
 				ctx.getSystemPrompt(),
@@ -1864,9 +2050,9 @@ export default function (pi: ExtensionAPI) {
 			);
 			const unitPriority = merged.priority ?? (params.priority as string | undefined);
 
-			let agent: BackgroundAgent;
+			let spawned: BackgroundAgentSpawnResult;
 			try {
-				agent = await startBackgroundAgent(pi, ctx, {
+				spawned = await startBackgroundAgent(pi, ctx, {
 					task: merged.task,
 					type: (params.preset as string | undefined) || 'general-purpose',
 					description: merged.label,
@@ -1912,18 +2098,23 @@ export default function (pi: ExtensionAPI) {
 					: "";
 				return {
 					content: [{ type: "text" as const, text:
-						`Failed to spawn background agent for Task ${i + 1} ("${name}"): ${message}` + alreadyStarted
+						`Failed to spawn background agent for Task ${i + 1} ("${name}"): ${message}` + alreadyStarted +
+						// A degraded EARLIER unit is still a started run: its report must
+						// survive this later unit's failure.
+						degradedReport()
 					}],
 					details: undefined,
 					isError: true,
 				};
 			}
-			started.push({ id: agent.id, label: merged.label });
+			started.push({ id: spawned.identity.id, label: merged.label, tailFailures: spawned.tailFailures });
 		}
 
 		// Text-only result: ids in task order + the wake hint. C: per-task
 		// validation warnings ride the immediate SPAWN result (prefixed with
 		// their task) so the conductor can stop/re-dispatch in the same turn.
+		// Issue #439: a unit whose monitoring did not attach is still reported
+		// STARTED, with its own degraded paragraph — `isError` stays false.
 		const lines = started
 			.map((s, i) => `${i + 1}. ${s.label ? `"${s.label}" ` : ""}— ${s.id}`)
 			.join("\n");
@@ -1932,7 +2123,8 @@ export default function (pi: ExtensionAPI) {
 				`Background agents started: ${started.length}\n\n` +
 				`${lines}\n\n` +
 				`You'll be woken with a completion message as each finishes; use get_subagent_result({ agent_id }) for retrieval and stall checks.` +
-				formatValidationWarnings(taskWarnings)
+				formatValidationWarnings(taskWarnings) +
+				degradedReport()
 			}],
 			details: undefined,
 		};
@@ -1944,8 +2136,11 @@ export default function (pi: ExtensionAPI) {
 	// (tasks fan-out): the session-manager import, the spawn call, live-monitor
 	// registration, footer counters, the 2s progress poller and the default
 	// deadline timer live here exactly once. Callers keep their own prelude,
-	// checks, validations and result formatting. THROWS on spawn failure —
-	// callers translate the error into their own result shape.
+	// checks, validations and result formatting. THROWS only on spawn failure —
+	// callers translate THAT into their own failure shape. Everything after the
+	// spawn is contained (issue #439): it returns `{ agent, identity,
+	// tailFailures }`, and a non-empty `tailFailures` is a STARTED run with
+	// degraded monitoring, never a failed spawn.
 	// -------------------------------------------------------------------
 
 	async function startBackgroundAgent(
@@ -1976,8 +2171,8 @@ export default function (pi: ExtensionAPI) {
 			// Option B U3 (D4): recovery posture snapshot for the background run.
 			recoveryPosture?: RecoveryMode;
 		},
-	): Promise<BackgroundAgent> {
-		const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput, updateAgentStatus } = await import('./session-manager');
+	): Promise<BackgroundAgentSpawnResult> {
+		const { spawnBackgroundSession, setAgentFinalOutput, extractFinalOutput } = await import('./session-manager');
 		// Issue #31 (PR #76 review, DRY): extract final output from a
 		// possibly-released ref — the poller may observe a terminal agent
 		// whose ref was already nulled by the settlement path.
@@ -1997,6 +2192,8 @@ export default function (pi: ExtensionAPI) {
 			resumeContext: spawn.resumeContext,
 			cwd: spawn.cwd,
 			toolOptions: spawn.toolOptions,
+			// Issue #453: the deadline rides the spawn's own timer (one owner). The
+			// caller passes the budget only — no ownership flag, no timer of its own.
 			timeout: spawn.timeout,
 			gitMode: spawn.gitMode,
 			// Issue #98/#108: snapshotOriginalParams is the single source of truth
@@ -2010,223 +2207,286 @@ export default function (pi: ExtensionAPI) {
 			recoveryPosture: spawn.recoveryPosture,
 		});
 		
+		// -----------------------------------------------------------------
+		// Post-spawn containment (issue #439).
+		//
+		// The session EXISTS from here on: the run is live and will wake the
+		// conductor however this tail behaves. A fault in the tail must therefore
+		// classify the run as STARTED with degraded monitoring — never as a failed
+		// spawn. Before this containment an escaping throw reached the callers'
+		// catch, which said "Failed to spawn background agent" while the agent was
+		// running, and the transport retry read that as "did not start".
+		//
+		// Boundary statement (falsifiable). Two different records, and only one of
+		// them is read here:
+		//   - `identity` below is a plain record THIS module constructs. Reading its
+		//     properties cannot throw; only a monkey-patched accessor could, and this
+		//     module never installs one. A fault that wants to reach the degraded
+		//     report must therefore be injected at a STATEMENT (a throwing
+		//     registerLiveSubagent, a throwing scheduler, a rejecting spawn), which is
+		//     what the #439 tests do.
+		//   - `agent` (the live record from the spawn) is read ONLY by the identity
+		//     capture immediately below and by the poller's terminal-state guard;
+		//     every later statement reads `identity` and the captured
+		//     primitives instead. The capture itself sits before the outer try, so a
+		//     getter-backed `agent` (which the production spawn cannot produce but an
+		//     injected one can) would still escape to the caller's catch — that is the
+		//     one unpinned read, stated rather than claimed away (2026-11-07 review).
+		//     The callers format their results from `identity` alone, so an
+		//     adversarial accessor on the live record cannot reach the report text.
+		// If a future change makes `identity` a proxy or getter-backed, this boundary
+		// is void: the failing test is the one asserting a started run never reports
+		// "Failed to spawn".
+		//
+		// Two independently contained groups record into `tailFailures` — G1
+		// bookkeeping, G2 poller — so a fault in one never skips the other. The
+		// deadline is NOT one of them (issue #453): it is the spawn's, armed before
+		// the spawn returned, so no statement here can leave a run unbounded. An
+		// outer catch backstops the ledger itself, and the degraded result is
+		// assembled from `identity` only.
+		// -----------------------------------------------------------------
+		const identity: BackgroundAgentIdentity = {
+			id: agent.id,
+			label: spawn.description,
+			description: agent.description,
+			task: agent.task,
+			status: agent.status,
+			model: agent.model,
+		};
+
+		const tailFailures: string[] = [];
+		/** Record a contained fault. The text reaches the conductor and the user: sanitize. */
+		const recordTailFailure = (group: string, err: unknown): void => {
+			tailFailures.push(
+				`${group}: ${sanitizeErrorMessage(err instanceof Error ? err.message : String(err), spawn.sanitizeCwd)}`,
+			);
+		};
+
+		let pollInterval: ReturnType<typeof setInterval> | undefined;
+		/** G1 completed the counter increment — the ONLY runs that may decrement. */
+		let countedForThisRun = false;
+		let completed = false;
+
+		/** Stop the live-poll. The deadline is NOT the caller's to stop (issue #453). */
+		const stopTailPolling = (): void => {
+			if (pollInterval !== undefined) clearInterval(pollInterval);
+		};
+
+		/**
+		 * Release this run's live counter — the ONE decrement shape for all five
+		 * poller/deadline sites. Gated on `countedForThisRun` AND on the finalize
+		 * claim: a run that never incremented (G1 failed before it) must not
+		 * decrement, and a run the stale sweep already finalized had its decrement
+		 * taken there (PR #71 review). The first gate is what keeps the ordering in
+		 * G1 honest — without it, a row registered before the increment let the
+		 * sweep's decrement land on a SIBLING's count.
+		 *
+		 * Belt-and-braces, stated as such (2026-11-07 review): with the current
+		 * increment-first order in G1, `countedForThisRun` is always true by the time
+		 * any callback can call this, so removing the flag alone changes nothing and
+		 * no test pins it (an extra removal mutant survived). It is kept because the
+		 * ORDERING is the real invariant: when the row is registered before the
+		 * increment, the flag is the only thing standing between a settle and a
+		 * sibling's count — M8 (reorder G1) fails T2b exactly because of it.
+		 *
+		 * Stated limit: the decrement is only reachable from a monitor that a run
+		 * owns. If G1 AND G2 BOTH fail for the same run (counted, no row, no poller)
+		 * nothing can release its count, so the footer's active count stays one high
+		 * for the session. That is the honest reading — the run is real and
+		 * unmonitored — and the alternative (releasing from a group that never
+		 * attached) is how a sibling's count gets stolen.
+		 *
+		 * Issue #453: the deadline used to be a third releaser. It is not any more
+		 * and does not need to be — the poller sees the spawn's `stopped` +
+		 * `completedAt` on its next tick and releases there, which is exactly how an
+		 * explicit-timeout run has always been released.
+		 */
+		const releaseLiveCount = (): void => {
+			if (!countedForThisRun) return;
+			if (!state.finalizeLiveSubagent(identity.id)) return;
+			state.activeSubagents--;
+			if (state.activeSubagents < 0) state.activeSubagents = 0;
+		};
+
 		// Issue #318 (from #316 review): the two poller crash sites share one
 		// claimed notification envelope. Content is the only variable; the
 		// claim guard, display, details and deliverAs live here once.
+		// Issue #439: best-effort — the claim and the send sit in their own try, so
+		// neither a throwing claim nor a throwing send can turn a crash notice into
+		// a fault on the run's reporting path.
 		const sendCrashNotice = (content: string): void => {
-			if (claimTerminalNotice(agent.id)) {
+			try {
+				if (!claimTerminalNotice(identity.id)) return;
+			} catch {
+				return;
+			}
+			try {
 				pi.sendMessage({
 					customType: "subagent-notification",
 					content,
 					display: true,
-					details: { agentId: agent.id }
+					details: { agentId: identity.id }
 				}, { deliverAs: "followUp" });
-			}
+			} catch { /* best-effort */ }
 		};
 
-		// Register for live monitor
-		state.registerLiveSubagent(agent.id, {
-			id: agent.id,
-			label: agent.description,
-			task: agent.task,
-			model: agent.model,
-			thinkingLevel: agent.thinkingLevel,
-			priority: agent.priority,
-			startedAt: agent.startedAt,
-			ctx,
-		});
-		
-		// Update footer counters
-		state.activeSubagents++;
-		repaintStatus(state, ctx);
-
-		let completed = false;
-		
-		// Poll for live progress
-		const pollInterval = setInterval(() => {
+		try {
+			// ---- G1: bookkeeping ------------------------------------------
+			// Ordering (issue #439, measured): counter FIRST, then the live row,
+			// then the repaint. A row therefore always implies a counted run, so the
+			// stale sweep's decrement can only release this run's own count.
 			try {
-				if (completed) return;
-				
-				const session = agent._sessionRef;
-				// Issue #31: a nulled ref on a TERMINAL agent is expected (the
-				// settlement path releases the ref) — fall through to finalize
-				// below instead of treating it as a crash. A nulled ref on a
-				// live agent is still a crash.
-				if (!session && !agent.completedAt) {
-					// Session ref not available — session may have crashed.
-					// Defensive: the ref is assigned synchronously before the poller starts
-					// and is never nulled, so this is mostly unreachable — but keep the
-					// bookkeeping safe regardless.
-					completed = true;
-					clearInterval(pollInterval);
-					clearTimeout(hardCapHandle);
-					// Capture whatever output exists (may be empty — fine).
-					setAgentFinalOutput(agent.id, state.subagentSessions.get(agent.id)?.liveOutput ?? '');
-					// Gate the counter on the finalize claim: if the
-					// stale sweep already finalized this entry, the
-					// decrement happened there (PR #71 review).
-					if (state.finalizeLiveSubagent(agent.id)) {
-						state.activeSubagents--;
-						if (state.activeSubagents < 0) state.activeSubagents = 0;
-					}
-					state.failedSubagents++;
-					repaintStatus(state, ctx);
-					sendCrashNotice(`Background agent "${agent.description}" crashed.`);
-					return;
-				}
-				
-				// While running, update the live monitor.
-				// Once completedAt is set, skip straight to finalize below.
-				// Issue #31: past the guard above, the only nulled-ref path left is a
-				// TERMINAL agent (settlement releases the ref), so a live agent always
-				// has its session — the guard already returned on the live-nulled-ref
-				// crash path. The compiler can't correlate the two checks, so assert it.
-				if (!agent.completedAt) {
-					const finalOutput = extractFinalOutput(session!);
-					
-					try {
-						const stats = session!.getSessionStats();
-						state.updateLiveSubagent(agent.id, finalOutput, stats.tokens.input, stats.tokens.output);
-					} catch {
-						state.updateLiveSubagent(agent.id, finalOutput, 0, 0);
-					}
-				}
-				
-				// Authoritative completion: the prompt promise settled — status and
-				// completedAt are set by .then()/.catch() in spawnBackgroundSession.
-				// Do NOT rely on !session.isStreaming: it is false during prompt()
-				// preflight (auth check, model resolution) and for failed starts.
-				if (agent.completedAt) {
-					completed = true;
-					clearInterval(pollInterval);
-					clearTimeout(hardCapHandle);
-					
-					// Issue #31: prefer the output already captured at settlement;
-					// the ref may already be nulled on terminal agents, so never
-					// overwrite with empty and stay null-safe.
-					const finalOutput = agent.finalOutput ?? extractAgentFinalOutput(agent);
-					setAgentFinalOutput(agent.id, finalOutput);
-					
-					// Gate the counter on the finalize claim: if the
-					// stale sweep already finalized this entry, the
-					// decrement happened there (PR #71 review).
-					if (state.finalizeLiveSubagent(agent.id)) {
-						state.activeSubagents--;
-						if (state.activeSubagents < 0) state.activeSubagents = 0;
-					}
-					
-					if (agent.status === 'failed') {
-						state.failedSubagents++;
-						repaintStatus(state, ctx);
-						// Issue #315: the terminal wake (`subagent-completion`, emitted by
-						// the session-manager settle) is the ONE notice for a failed run.
-						// The status here was set by that settle, so the wake already
-						// delivered — this legacy poller notice would duplicate it.
-					} else if (agent.status === 'stopped') {
-						// User-initiated stop (stop_subagent) or deadline abort
-						// (timeout/deadline) — not a failure.
-						repaintStatus(state, ctx);
-					} else {
-						state.completedSubagents++;
-						state.unseenSubagents++;
-						repaintStatus(state, ctx);
-					}
-				}
+				state.activeSubagents++;
+				countedForThisRun = true;
+				state.registerLiveSubagent(identity.id, {
+					id: identity.id,
+					label: identity.description,
+					task: identity.task,
+					model: identity.model,
+					thinkingLevel: agent.thinkingLevel,
+					priority: agent.priority,
+					startedAt: agent.startedAt,
+					// Issue #423: the persisted EFFECTIVE budget, anchored on the record's
+					// own start clock — the same clock the deadline timers use.
+					...(agent.timeoutMs !== undefined
+						? { deadlineAt: agent.startedAt + agent.timeoutMs }
+						: {}),
+					ctx,
+				});
+				repaintStatus(state, ctx);
 			} catch (err) {
-				if (!completed) {
-					completed = true;
-					clearInterval(pollInterval);
-					clearTimeout(hardCapHandle);
-					try {
-						setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
-					} catch { /* ignore */ }
-					// Gate the counter on the finalize claim: if the
-					// stale sweep already finalized this entry, the
-					// decrement happened there (PR #71 review).
-					if (state.finalizeLiveSubagent(agent.id)) {
-						state.activeSubagents--;
-						if (state.activeSubagents < 0) state.activeSubagents = 0;
-					}
-					state.failedSubagents++;
-					repaintStatus(state, ctx);
-					sendCrashNotice(`Background agent "${agent.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`);
-				}
+				recordTailFailure("live-monitor bookkeeping", err);
 			}
-		}, 2000);
-		
-		// Default deadline: stop polling AND abort the session after the
-		// deadline. W2 (issue #28): previously this only stopped the poller —
-		// the pi session kept running forever (orphaned). Now it pre-sets
-		// 'stopped' (so the .then keeps it, per W1) and aborts the session.
-		// Issue #240: an explicit per-agent timeout is HONORED verbatim; this
-		// deadline DEFAULTS to 30m only when no timeout is given. It is a
-		// default, not a ceiling. Issue #244: exactly ONE deadline timer per
-		// run — an explicit timeout is owned by the session-manager W3 timer,
-		// so this index timer arms ONLY on the no-timeout path, mirroring
-		// spawnBackgroundSession's `params.timeout && params.timeout > 0` guard
-		// (with no timeout, it owns the 30m default, #28).
-		const hasExplicitDeadline = spawn.timeout !== undefined && spawn.timeout > 0;
-		const hardCapMs = spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS;
-		const hardCapHandle: ReturnType<typeof setTimeout> | undefined =
-			hasExplicitDeadline ? undefined : setTimeout(() => {
-			if (!completed && !agent.completedAt) {
-				try {
-					completed = true;
-					clearInterval(pollInterval);
-					// Pre-set stopped BEFORE aborting so the .then in
-					// spawnBackgroundSession keeps the stopped state.
-					updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
-					agent._sessionRef?.abort().catch(() => {
-						// Abort may reject if the session is mid-dispose;
-						// the status flip above is already recorded.
-					});
-					// Capture whatever final output exists in the session
-					const hardCapSession = agent._sessionRef;
-					const hardCapFinalOutput = hardCapSession ? extractFinalOutput(hardCapSession) : '';
-					setAgentFinalOutput(agent.id, hardCapFinalOutput);
-					// Gate the counter on the finalize claim: if the
-					// stale sweep already finalized this entry, the
-					// decrement happened there (PR #71 review).
-					if (state.finalizeLiveSubagent(agent.id)) {
-						state.activeSubagents--;
-						if (state.activeSubagents < 0) state.activeSubagents = 0;
-					}
-					// m6: deadline abort is a stop, not a completion — mirror the
-					// W3/poller stopped path (no completedSubagents increment).
-					repaintStatus(state, ctx);
-				} catch (err) {
-					// Defensive: never let the deadline timer throw uncaught — that would
-					// skip finalizeLiveSubagent, the counter decrement, and the notification.
-					// Do all fallible work first (output capture), then mutate counters,
-					// then notify — a throw mid-path can't double-fire mutations.
-					completed = true;
-					clearInterval(pollInterval);
-					// m3: the try may have thrown BEFORE updateAgentStatus ran (e.g.
-					// persistAgent fs failure) — leave the record terminal so
-					// get_subagent_result doesn't report 'running' and the W3 timer
-					// guard (!agent.completedAt) can't re-fire later.
-					try {
-						updateAgentStatus(agent.id, 'stopped', `Timed out (${hardCapMs}ms deadline)`);
-					} catch { /* ignore */ }
-					try {
-						setAgentFinalOutput(agent.id, extractAgentFinalOutput(agent));
-					} catch { /* ignore */ }
-					// Gate the counter on the finalize claim: if the
-					// stale sweep already finalized this entry, the
-					// decrement happened there (PR #71 review).
-					if (state.finalizeLiveSubagent(agent.id)) {
-						state.activeSubagents--;
-						if (state.activeSubagents < 0) state.activeSubagents = 0;
-					}
-					state.failedSubagents++;
-					repaintStatus(state, ctx);
-				}
-			}
-		}, hardCapMs);
-		
-		log.info("Background agent spawned", { agentId: agent.id, task: spawn.task, model: agent.model });
 
-		return agent;
+			// ---- G2: live progress poller --------------------------------
+			// Issue #453: this poller is the CLEANUP OWNER for a deadline stop. The
+			// spawn's timer sets `status: 'stopped'` + `completedAt` (via
+			// updateAgentStatus) and aborts; on its next tick the poller below sees
+			// the terminal record and does every caller-owned step — output capture,
+			// the finalize claim, the counter decrement, the repaint — then stops
+			// itself. Nothing here arms or clears a deadline.
+			try {
+				pollInterval = setInterval(() => {
+					try {
+						if (completed) return;
+
+						const session = agent._sessionRef;
+						// Issue #31: a nulled ref on a TERMINAL agent is expected (the
+						// settlement path releases the ref) — fall through to finalize
+						// below instead of treating it as a crash. A nulled ref on a
+						// live agent is still a crash.
+						if (!session && !agent.completedAt) {
+							// Session ref not available — session may have crashed.
+							// Defensive: the ref is assigned synchronously before the poller starts
+							// and is never nulled, so this is mostly unreachable — but keep the
+							// bookkeeping safe regardless.
+							completed = true;
+							stopTailPolling();
+							// Capture whatever output exists (may be empty — fine).
+							setAgentFinalOutput(identity.id, state.subagentSessions.get(identity.id)?.liveOutput ?? '');
+							releaseLiveCount();
+							state.failedSubagents++;
+							repaintStatus(state, ctx);
+							sendCrashNotice(`Background agent "${identity.description}" crashed.`);
+							return;
+						}
+
+						// While running, update the live monitor.
+						// Once completedAt is set, skip straight to finalize below.
+						// Issue #31: past the guard above, the only nulled-ref path left is a
+						// TERMINAL agent (settlement releases the ref), so a live agent always
+						// has its session — the guard already returned on the live-nulled-ref
+						// crash path. The compiler can't correlate the two checks, so assert it.
+						if (!agent.completedAt) {
+							const finalOutput = extractFinalOutput(session!);
+
+							try {
+								const stats = session!.getSessionStats();
+								state.updateLiveSubagent(identity.id, finalOutput, stats.tokens.input, stats.tokens.output);
+							} catch {
+								state.updateLiveSubagent(identity.id, finalOutput, 0, 0);
+							}
+						}
+
+						// Authoritative completion: the prompt promise settled — status and
+						// completedAt are set by .then()/.catch() in spawnBackgroundSession.
+						// Do NOT rely on !session.isStreaming: it is false during prompt()
+						// preflight (auth check, model resolution) and for failed starts.
+						if (agent.completedAt) {
+							completed = true;
+							stopTailPolling();
+
+							// Issue #31: prefer the output already captured at settlement;
+							// the ref may already be nulled on terminal agents, so never
+							// overwrite with empty and stay null-safe.
+							const finalOutput = agent.finalOutput ?? extractAgentFinalOutput(agent);
+							setAgentFinalOutput(identity.id, finalOutput);
+
+							releaseLiveCount();
+
+							if (agent.status === 'failed') {
+								state.failedSubagents++;
+								repaintStatus(state, ctx);
+								// Issue #315: the terminal wake (`subagent-completion`, emitted by
+								// the session-manager settle) is the ONE notice for a failed run.
+								// The status here was set by that settle, so the wake already
+								// delivered — this legacy poller notice would duplicate it.
+							} else if (agent.status === 'stopped') {
+								// User-initiated stop (stop_subagent) or deadline abort
+								// (timeout/deadline) — not a failure.
+								repaintStatus(state, ctx);
+							} else {
+								state.completedSubagents++;
+								state.unseenSubagents++;
+								repaintStatus(state, ctx);
+							}
+						}
+					} catch (err) {
+						if (!completed) {
+							completed = true;
+							stopTailPolling();
+							try {
+								setAgentFinalOutput(identity.id, extractAgentFinalOutput(agent));
+							} catch { /* ignore */ }
+							releaseLiveCount();
+							state.failedSubagents++;
+							repaintStatus(state, ctx);
+							sendCrashNotice(`Background agent "${identity.description}" crashed: ${sanitizeErrorMessage((err as Error).message, spawn.sanitizeCwd)}`);
+						}
+					}
+				}, 2000);
+			} catch (err) {
+				recordTailFailure("progress polling", err);
+			}
+
+			try {
+				log.info("Background agent spawned", { agentId: identity.id, task: spawn.task, model: identity.model });
+			} catch (err) {
+				recordTailFailure("spawn log", err);
+			}
+		} catch (err) {
+			// Backstop: the groups above swallow their own faults, so this can only
+			// see a fault in the ledger machinery itself. The degraded result below is
+			// assembled from `identity` — never from a property read on `agent`.
+			recordTailFailure("spawn tail", err);
+		}
+
+		if (tailFailures.length > 0) {
+			// ONE advisory per run, after aggregation. It is NOT a terminal notice
+			// and never takes the terminal claim (issue #439 contract): the run's
+			// genuine completion notice is still delivered when it settles.
+			// 2026-11-07 review: this call is INSIDE the outer containment, not after
+			// it — the advisory's own dispatch surfaces are contained too, and the
+			// inner per-channel tries in `sendMonitoringDegradedAdvisory` cover the
+			// case where one channel throws (so one failure cannot lose both).
+			try {
+				sendMonitoringDegradedAdvisory(pi, ctx, identity, tailFailures);
+			} catch (err) {
+				recordTailFailure("monitoring advisory", err);
+			}
+		}
+
+		return { agent, identity, tailFailures };
 	}
 
 	// -------------------------------------------------------------------
@@ -2261,6 +2521,19 @@ export default function (pi: ExtensionAPI) {
 		 */
 		attemptContext?: string,
 	): Promise<ToolResult<undefined>> {
+		// Issue #443: the DECLARED level, guarded before `bgResolved` clamps it.
+		// This is the seam for the TRANSPORT auto-retry (`scheduleTransportRetry`
+		// re-enters here with `resolveRetryParams`' rebuilt bag and never passes
+		// through `execute`), and the reason a restored record carrying an unknown
+		// level cannot launch a session at pi's default. A rejection here surfaces
+		// as the ORIGINAL failure's notice — the caller reports it unchanged.
+		const bgDeclaredThinkingLevel = declaredThinkingLevel(
+			params.thinkingLevel,
+			resolveDispatchPreset({ ...params, task: singleTask }, state).preset?.thinkingLevel,
+		);
+		const bgDeclaredThinkingError = invalidThinkingLevelRejection(bgDeclaredThinkingLevel);
+		if (bgDeclaredThinkingError) return bgDeclaredThinkingError;
+
 		// Phase 6.5: Background execution — spawn session and return ID immediately.
 		// Resolve the preset and its model BEFORE the background branch so the
 		// preset's model (and system prompt) are honored in background mode.
@@ -2344,7 +2617,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Option B U1: durability identity (retry inherits the original dispatch).
 			const bgIdentity = newDispatchIdentity(retrySourceRun);
-			const agent = await startBackgroundAgent(pi, ctx, {
+			const spawned = await startBackgroundAgent(pi, ctx, {
 				// Issue #411: the preamble rides the system-prompt side
 				// (`resumeContext`), never the task. The task stays the recorded
 				// original, and the snapshot keeps it too, so a later retry of this
@@ -2384,22 +2657,34 @@ export default function (pi: ExtensionAPI) {
 				? `\n\n[auto-routed to preset '${bgAutoRoutedPreset.name}'${bgAutoRouteKeyword ? ` (matched keyword '${bgAutoRouteKeyword}')` : ""} — ${bgResolved.toolOptions ? formatToolRestriction(bgResolved.toolOptions) : formatPresetRestriction(bgAutoRoutedPreset)}]`
 				: "";
 
+			// Issue #439: everything the result states comes from `identity`, the plain
+			// record captured at spawn time — never a property read on the live agent.
+			// A non-empty `tailFailures` is a STARTED run with degraded monitoring, so
+			// this stays a success (`isError` false) with the degraded paragraph;
+			// the transport retry reads `isError` as "did not start" and must not see
+			// a started run here.
 			return {
 				content: [{
 					type: "text" as const,
-					text: `Background agent started: ${agent.id}\n\n` +
-						`Description: ${agent.description}\n` +
-						`Task: ${agent.task}\n` +
-						`Status: ${agent.status}\n\n` +
-						`You'll be woken with a completion message when it finishes; use get_subagent_result({ agent_id: "${agent.id}" }) for retrieval and stall checks.` +
+					text: `Background agent started: ${spawned.identity.id}\n\n` +
+						`Description: ${spawned.identity.description}\n` +
+						`Task: ${spawned.identity.task}\n` +
+						`Status: ${spawned.identity.status}\n\n` +
+						`You'll be woken with a completion message when it finishes; use get_subagent_result({ agent_id: "${spawned.identity.id}" }) for retrieval and stall checks.` +
 						bgAutoRouteNote +
 						// C: warnings ride the immediate SPAWN result so the conductor
 						// can stop/re-dispatch in the same turn.
-						formatValidationWarnings(bgPreTask.warnings),
+						formatValidationWarnings(bgPreTask.warnings) +
+						buildMonitoringDegradedParagraph(spawned.identity, spawned.tailFailures),
 				}],
 				details: undefined,
+				isError: false,
 			};
 		} catch (err) {
+			// Issue #439: this catch is reachable ONLY for a pre-spawn gate or a
+			// rejected `spawnBackgroundSession`. Everything after a successful spawn
+			// is contained in `startBackgroundAgent` — a run that started never lands
+			// here, so the wording below can never describe a live run.
 			const message = sanitizeErrorMessage(
 				err instanceof Error ? err.message : String(err),
 				bgResolved.effectiveCwd,
@@ -2765,15 +3050,37 @@ export default function (pi: ExtensionAPI) {
 			// caller declared no level, so the pre-flight resolves the SAME preset
 			// the merge below will (one rule, `resolveDispatchPreset`).
 			const declaredPresetForSwitch = resolveDispatchPreset(params, state).preset;
+			// Issue #443: guard the EFFECTIVE DECLARED level here — the per-call value
+			// or the selected preset's (named, or auto-routed by the line above) —
+			// BEFORE `resolveSubagentParams` clamps it. `params.thinkingLevel` is
+			// already the post-template, post-`retryRunId` value by this point, so a
+			// level restored from a run record is judged too; a preset object injected
+			// in memory never passed a schema or the preset-file validator, so this
+			// is its only check. Everything below runs through this one seam: the
+			// single, background, chain, parallel and graph handlers are all reached
+			// from here, and the per-unit declarations are guarded by the pre-passes.
+			const effectiveDeclaredThinkingLevel = declaredThinkingLevel(
+				params.thinkingLevel,
+				declaredPresetForSwitch?.thinkingLevel,
+			);
+			const declaredThinkingError = invalidThinkingLevelRejection(effectiveDeclaredThinkingLevel);
+			if (declaredThinkingError) return declaredThinkingError;
+			// The EFFECTIVE approval mode (call param, else the configured default) —
+			// the same resolver `resolveSubagentParams` and the #361 default use, so the
+			// pre-flight cannot judge a mode the child will not run with. Reading
+			// `params.approvalMode` raw here would miss a config-tier mode entirely.
+			const effectiveApprovalModeForSwitch = resolveEffectiveApprovalMode(
+				params.approvalMode,
+				state,
+			);
 			const thinkingSwitch = resolveThinkingDispatchSwitch({
 				processChecks,
-				thinkingLevel: (params.thinkingLevel ?? declaredPresetForSwitch?.thinkingLevel) as
-					| ThinkingLevel
-					| undefined,
+				thinkingLevel: effectiveDeclaredThinkingLevel as ThinkingLevel | undefined,
 				explicitBackground,
 				timeout: params.timeout,
 				force: params.force,
 				shape: dispatchShape,
+				effectiveApprovalMode: effectiveApprovalModeForSwitch,
 			});
 			if (thinkingSwitch === "switch") {
 				params.background = true;
@@ -2792,6 +3099,34 @@ export default function (pi: ExtensionAPI) {
 					details: { thinkingLevel: params.thinkingLevel, previousTimeout: "dropped" },
 				}, { deliverAs: "followUp" });
 				ctx.ui.notify(THINKING_SWITCH_NOTICE, "warning");
+			} else if (thinkingSwitch === "drop-timeout") {
+				// Issue #431 — the second arm: the shape cannot move (an effective
+				// 'always'/'writes' run needs the interactive gate, and switching an
+				// explicit-foreground 'always' dispatch would be REJECTED — #433), so
+				// the only thing the pre-flight can remove is the deadline. Clearing it
+				// HERE, before `snapshotOriginalParams` records the run (:3035
+				// foreground, :2374 background), is what makes a retry re-derive an
+				// absent deadline instead of restoring the cap (ADR 0009).
+				const previousTimeout = params.timeout;
+				params.timeout = undefined;
+				log.info("Dispatch pre-flight: high-thinking foreground timeout dropped, shape kept", {
+					thinkingLevel: params.thinkingLevel,
+					previousTimeout,
+					effectiveApprovalMode: effectiveApprovalModeForSwitch,
+				});
+				pi.sendMessage({
+					customType: "delegate-notification",
+					content: THINKING_TIMEOUT_DROP_NOTICE,
+					display: true,
+					details: {
+						thinkingLevel: params.thinkingLevel,
+						// The ACTUAL ms value, not "dropped": the friction log needs the
+						// number to tell a budget cap from a tight clock.
+						previousTimeout,
+						effectiveApprovalMode: effectiveApprovalModeForSwitch,
+					},
+				}, { deliverAs: "followUp" });
+				ctx.ui.notify(THINKING_TIMEOUT_DROP_NOTICE, "warning");
 			} else if (thinkingSwitch === "forced") {
 				// The override is recorded, not silent: the dispatch text is the reason
 				// (`force` has no reason field — ADR 0007's contract stays unchanged).
@@ -2839,6 +3174,26 @@ export default function (pi: ExtensionAPI) {
 			// unit retries as a single foreground run (issue #229), unaffected here.
 			params.background ??= useBackground;
 
+			// Issue #434: the unit projection's inputs, resolved ONCE here so no
+			// unit site can re-derive them (a relative `params.cwd` re-read of the
+			// manifest measured `false` where this resolution measured `true`).
+			// `noticeEmitted` starts true when the DISPATCH arm announced its own
+			// change: the drop still reaches every eligible unit, but the dispatch
+			// already spoke, and a second notice would double-report one decision.
+			// (`forced` emits nothing — the caller asked for the explicit pair, so
+			// there is nothing to announce and no arm acted.)
+			const batchGuard: BatchGuardContext = {
+				processChecks,
+				dispatchDeclaredLevel: effectiveDeclaredThinkingLevel as ThinkingLevel | undefined,
+				force: params.force as boolean | undefined,
+				// A `tasks` fan-out spawns detached background units (their deadline is
+				// the legitimate budget); every other batch handler runs its units
+				// foreground. Chain/graph can never be background: an explicit
+				// `background: true` batch was rejected above.
+				unitShape: isParallel && useBackground ? "background" : "foreground",
+				noticeEmitted: thinkingSwitch === "switch" || thinkingSwitch === "drop-timeout",
+			};
+
 			if (isChain) {
 				if (params.chain!.length > MAX_CHAIN_STEPS) {
 					return {
@@ -2852,7 +3207,7 @@ export default function (pi: ExtensionAPI) {
 						isError: true,
 					};
 				}
-				return runChainMode(params, signal, onUpdate, ctx);
+				return runChainMode(params, signal, onUpdate, ctx, batchGuard);
 			}
 
 			if (isParallel) {
@@ -2868,12 +3223,12 @@ export default function (pi: ExtensionAPI) {
 						isError: true,
 					};
 				}
-				if (useBackground) return runBackgroundFanOut(pi, ctx, params, signal);
-				return runParallelMode(params, signal, onUpdate, ctx);
+				if (useBackground) return runBackgroundFanOut(pi, ctx, params, signal, batchGuard);
+				return runParallelMode(params, signal, onUpdate, ctx, batchGuard);
 			}
 
 			if (isGraph) {
-				return runGraphMode(params, signal, onUpdate, ctx);
+				return runGraphMode(params, signal, onUpdate, ctx, batchGuard);
 			}
 
 			// Single mode: isSingle is true (modeCount===1, none of chain/parallel/graph),
@@ -3038,11 +3393,23 @@ export default function (pi: ExtensionAPI) {
 			pruneHistoryIfNeeded(state, ctx, log);
 
 			// Register for live monitor
-			registerLiveRun(state, run, ctx);
+			// Issue #423: the merged timeout is the display deadline (absent → no
+			// deadline; a foreground run has no 30m default).
+			registerLiveRun(state, run, ctx, undefined, timeout);
 
 			// P3: Git integration — set up work branch if gitMode is "branch"
 			let headState: HeadState | undefined;
 			let workBranchName: string | undefined;
+			// Issue #466 (ADR 0026 D6): the foreground path creates the same work
+			// branch with the same crash exposure, so it writes and clears the same
+			// durable record — with `kind: "foreground"`, so "no record" means "no
+			// orphan" for every branch run, not just background ones.
+			let headStateRoot: string | undefined;
+			const clearForegroundHeadState = (): void => {
+				if (!headStateRoot) return;
+				clearHeadState(headStateRoot);
+				headStateRoot = undefined;
+			};
 			if (resolvedGitMode === "branch") {
 				try {
 					headState = getHeadState(resolvedCwd);
@@ -3053,9 +3420,27 @@ export default function (pi: ExtensionAPI) {
 						});
 					}
 
-					const branchResult = createWorkBranch(resolvedCwd, headState.sha);
+					// Written BEFORE the branch exists (D1): the name must be minted here.
+					headStateRoot = getRepoRoot(resolvedCwd) ?? resolvedCwd;
+					workBranchName = newWorkBranchName();
+					if (!writeHeadState({
+						version: HEAD_STATE_VERSION,
+						repoRoot: headStateRoot,
+						runId: run.id,
+						kind: "foreground",
+						base: headState,
+						workBranch: workBranchName,
+						owner: currentProcessOwner(),
+						createdAt: new Date().toISOString(),
+					})) {
+						log.warn("headState record could not be written — an interrupted run will name no base", {
+							runId: run.id,
+							workBranch: workBranchName,
+						});
+					}
+
+					const branchResult = createWorkBranch(resolvedCwd, headState.sha, workBranchName);
 					if (branchResult.ok) {
-						workBranchName = branchResult.branch;
 						log.info("Created work branch for subagent", {
 							branch: workBranchName,
 							base: headState.branch,
@@ -3064,12 +3449,16 @@ export default function (pi: ExtensionAPI) {
 						log.error("Failed to create work branch, falling back to 'none'", {
 							error: branchResult.error,
 						});
+						// Nothing was created: nothing to repair.
+						clearForegroundHeadState();
 						headState = undefined;
+						workBranchName = undefined;
 					}
 				} catch (err) {
 					log.warn("Not a git repository or git error; falling back to gitMode 'none'", {
 						error: (err as Error).message,
 					});
+					clearForegroundHeadState();
 					headState = undefined;
 					workBranchName = undefined;
 				}
@@ -3088,6 +3477,9 @@ export default function (pi: ExtensionAPI) {
 							branch: headState.branch,
 							detached: headState.detached,
 						});
+						// Issue #466: verified off the work branch — the record is done.
+						// A FAILED restore keeps it: the base lives only in the record.
+						clearForegroundHeadState();
 					} else {
 						log.warn("Failed to restore original HEAD during cleanup", {
 							branch: headState.branch,
@@ -3252,6 +3644,12 @@ export default function (pi: ExtensionAPI) {
 					result.errorMessage?.includes("timed out")
 				) {
 					log.info("Auto-retrying after timeout", { runId });
+					// Issue #423: the retry restarts the clock, so its display deadline is
+					// re-anchored on it (the same clock `startedAt` carries). Registering
+					// also clears the finalize claim, so the row is live again.
+					const retryStartedAt = Date.now();
+					const retryDeadlineAt =
+						timeout && timeout > 0 ? retryStartedAt + timeout : undefined;
 					state.registerLiveSubagent(runId, {
 						id: runId,
 						label,
@@ -3259,7 +3657,8 @@ export default function (pi: ExtensionAPI) {
 						model: run.model,
 						thinkingLevel,
 						priority: params.priority,
-						startedAt: Date.now(),
+						startedAt: retryStartedAt,
+						...(retryDeadlineAt !== undefined ? { deadlineAt: retryDeadlineAt } : {}),
 						ctx,
 					});
 
@@ -3320,6 +3719,9 @@ export default function (pi: ExtensionAPI) {
 							branch: headState.branch,
 							detached: headState.detached,
 						});
+						// Issue #466: the tree is verified off the work branch, so the
+						// durable record has nothing left to repair.
+						clearForegroundHeadState();
 
 						// P4: Change approval workflow — let user review the diff
 						const diffContent = (result.gitDiff ?? "").trim();
@@ -3423,7 +3825,7 @@ export default function (pi: ExtensionAPI) {
 
 				// E4: SLA tracking — compute metrics if enabled
 				if (state.config.slaTrackingEnabled) {
-					const recentRuns = state.getRunEntries(ctx).slice(0, state.config.slaWindowSize);
+					const recentRuns = state.getLogicalRunEntries(ctx).slice(0, state.config.slaWindowSize);
 					const metrics = computeSLAMetrics(recentRuns);
 					log.info("SLA metrics computed", {
 						totalRuns: metrics.totalRuns,
@@ -3662,6 +4064,17 @@ export default function (pi: ExtensionAPI) {
 				resultText += `Completed: ${new Date(agent.completedAt).toISOString()}\n`;
 				resultText += `Duration: ${agent.completedAt - agent.startedAt}ms\n`;
 			}
+
+			// Issue #423: the budget the run actually ran under — from the PERSISTED
+			// record, so it survives the closure that armed the timer. The result
+			// path has no run entry to consult, so the timeout evidence is the
+			// agent's own error stamp (one shared predicate owns both paths).
+			const budgetLine = formatBudgetLine(
+				agent,
+				normalizeCompletionStatus(agent.status),
+				undefined,
+			);
+			if (budgetLine) resultText += `${budgetLine}\n`;
 			
 			if (agent.error) {
 				resultText += `Error: ${agent.error}\n`;
@@ -3870,15 +4283,93 @@ export default function (pi: ExtensionAPI) {
 					if (record.kind === "agent") markAgentInterrupted(record.id, interruptedAt);
 					return durable;
 				},
+				// Issue #447: a dispatch whose acceptance marker is still `null` never
+				// reached `session.prompt()`. It is finalized `failed` here — a
+				// terminal write, so `persistRunRecord` retires the registry entry in
+				// the same call and no interrupted/retry surface can pick it up.
+				finalizeNeverStarted: (run) => {
+					state.persistRun(pi, run);
+				},
 			});
 			// Report the scan whenever it did anything durable OR attempted a mark
 			// that failed — a failure-only boot must not be silent (issue #304).
 			if (summary.marked > 0 || summary.markFailures > 0) {
 				log.warn("Boot recovery marked interrupted runs", { ...summary });
 			}
+			// Issue #447: never-started dispatches are finalized, not marked — a
+			// separate line so the two outcomes cannot be read as one another.
+			if (summary.neverStarted > 0) {
+				log.info("Boot recovery finalized never-started dispatches", {
+					count: summary.neverStarted,
+				});
+			}
 		} catch (err) {
 			// Recovery is best-effort hygiene — it must never break session start.
 			log.warn("Boot recovery scan failed", { error: (err as Error).message });
+		}
+	}
+
+	/**
+	 * Issue #466 (ADR 0026 D2): the git/process surface the head-state table
+	 * reads, wired once so the boot step and its tests cannot drift apart.
+	 */
+	function headStateDeps(): HeadStateDeps {
+		const procDeps = defaultRecoveryDeps();
+		return {
+			getRepoRoot,
+			classifyOwner: (owner) => classifyOwner(owner, procDeps),
+			getHeadBranch,
+			restoreHead,
+			hasUncommittedChanges,
+			listWorkBranches,
+		};
+	}
+
+	/**
+	 * Issue #466: the boot's ONE git-mutating step, between the scan (which only
+	 * marks records) and the notices. Best-effort like the scan — a failing store
+	 * must never break session start — but every record still ends in exactly one
+	 * LOGGED verdict (D5: silence is not a verdict).
+	 *
+	 * The repair itself is NEVER gated by `config.recovery`: a tree left on a dead
+	 * run's branch is a correctness problem, not a recovery offer. Only the notice
+	 * below is gated.
+	 */
+	function reconcileHeadStatesAtBoot(): HeadStateOutcome[] {
+		try {
+			const outcomes = reconcileHeadStates(headStateDeps());
+			for (const outcome of outcomes) {
+				log.info("Boot head-state verdict", { ...outcome });
+			}
+			// Housekeeping, never part of the repair contract: only a record whose
+			// repository no longer resolves (or that cannot be parsed) is swept, so
+			// a live orphan's base is never deleted by age.
+			const swept = sweepHeadStates({
+				repoGone: (record) => getRepoRoot(record.repoRoot) === undefined,
+			});
+			if (swept > 0) log.info("Swept stale head-state records", { count: swept });
+			return outcomes;
+		} catch (err) {
+			log.warn("Boot head-state reconciliation failed", { error: (err as Error).message });
+			return [];
+		}
+	}
+
+	/**
+	 * Issue #466 (D5): the repair and the needs-manual verdict reach the user
+	 * once, on the same `nextTurn` channel as the recovery notice, and are gated
+	 * by `config.recovery !== "off"` like every other boot surface.
+	 */
+	function maybeSendHeadStateNotice(outcomes: HeadStateOutcome[]): void {
+		if (state.config.recovery === "off") return;
+		const notice = buildHeadStateNotice(outcomes);
+		if (!notice) return;
+		try {
+			pi.sendMessage(notice, resolveRecoveryNoticeDelivery());
+			log.info("Head-state notice delivered", { count: notice.details.count });
+		} catch (err) {
+			// The notice is best-effort — it must never break session start.
+			log.warn("Head-state notice failed", { error: (err as Error).message });
 		}
 	}
 
@@ -3895,7 +4386,7 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		getAgent: RecoveryAgentLookup,
 	): SubagentRun[] {
-		return visibleRunEntriesForSession(state.getRunEntries(ctx), getAgent);
+		return visibleRunEntriesForSession(state.getLogicalRunEntries(ctx), getAgent);
 	}
 
 	/**
@@ -4013,9 +4504,17 @@ export default function (pi: ExtensionAPI) {
 		// records interrupted BEFORE anything else touches their worktrees.
 		await performBootRecovery();
 
+		// Issue #466 (ADR 0026 D2/D5): reconcile the durable head-state records —
+		// the ONE step allowed to move git at boot, and only for a record whose
+		// owner it has proved dead.
+		const headStateOutcomes = reconcileHeadStatesAtBoot();
+
 		// Option B U3 (D2): after the scan, surface every unresolved interrupted
 		// run ONCE, at the next turn boundary (never mid-turn).
 		await maybeSendRecoveryNotice(ctx);
+
+		// Issue #466: the head-state verdicts ride the same nextTurn channel.
+		maybeSendHeadStateNotice(headStateOutcomes);
 
 		// Issue #356: boot is a config-paint edge — route it through the same
 		// chokepoint as every other footer repaint. With no runs in flight the
@@ -4025,6 +4524,17 @@ export default function (pi: ExtensionAPI) {
 
 	// F7: Clean up session-bound state on shutdown
 	pi.on("session_shutdown", async (_event, _ctx) => {
+		// Issue #437: release THIS runtime's terminal subscribers FIRST — before
+		// any await or fallible cleanup. A clean replacement (/new, /resume,
+		// /fork, /reload, quit) tears this runtime down and loads a new factory
+		// instance; the old listeners used to survive and win the shared terminal
+		// claim for the NEW session's run, delivering (or throwing) through dead
+		// pi/ctx handles. Only our three exact identities are removed, and the
+		// release is idempotent, so other subscribers and a later runtime are
+		// untouched. `releaseTerminalSubscriptions` is a hoisted declaration
+		// below (the subscription block is registered after this handler).
+		releaseTerminalSubscriptions();
+
 		log.info("Session shutting down", {
 			activeSubagents: state.activeSubagents,
 		});
@@ -4062,10 +4572,41 @@ export default function (pi: ExtensionAPI) {
 	// the point; details are best-effort — the notification must never throw or
 	// block on their absence.
 	const terminalTypes = ["subagent:completed", "subagent:failed", "subagent:stopped"] as const;
+
+	// Issue #437: keep the EXACT listener references this factory instance owns.
+	// Anonymous subscriptions could never be released, so a shut-down runtime's
+	// listeners stayed on the shared bus forever. Ownership is per factory
+	// invocation: the array and the released flag are this runtime's alone, so a
+	// replacement's listeners are never in the removal set.
+	const terminalSubscriptions: Array<{
+		type: (typeof terminalTypes)[number];
+		listener: SubagentEventListener;
+	}> = [];
+	let terminalSubscriptionsReleased = false;
+
+	/**
+	 * Issue #437: unsubscribe exactly the listeners registered above.
+	 *
+	 * Idempotent — a repeated/double `session_shutdown` (or a late one after the
+	 * replacement runtime is already live) is a no-op. Synchronous, so it can run
+	 * as the first statement of `session_shutdown`, before any await or fallible
+	 * cleanup. Never touches another subscriber or another runtime's listeners.
+	 */
+	function releaseTerminalSubscriptions(): void {
+		if (terminalSubscriptionsReleased) return;
+		terminalSubscriptionsReleased = true;
+		for (const { type, listener } of terminalSubscriptions) {
+			eventBus.off(type, listener);
+		}
+		terminalSubscriptions.length = 0;
+	}
+
 	for (const type of terminalTypes) {
-		eventBus.on(type, (event) => {
+		const listener: SubagentEventListener = (event) => {
 			void deliverCompletionAlert(event);
-		});
+		};
+		terminalSubscriptions.push({ type, listener });
+		eventBus.on(type, listener);
 	}
 
 	/**
@@ -4086,6 +4627,13 @@ export default function (pi: ExtensionAPI) {
 	 * the source run's completion notice, because the retry's own terminal settle
 	 * is the wake. A gate rejection or a throwing spawn returns FALSE and the
 	 * caller reports the original failure exactly as before (no silent drop).
+	 *
+	 * Issue #439: this reads only `isError`, and a retry whose post-spawn tail
+	 * faulted is still a SUCCESSFUL spawn (`isError: false`, degraded monitoring).
+	 * It therefore returns TRUE for it: the source notice stays suppressed and the
+	 * degraded advisory is the signal that the retry started with degraded
+	 * monitoring. Reading a contained tail failure as "did not start" would
+	 * surface the source failure for a run that is live.
 	 */
 	async function scheduleTransportRetry(
 		ctx: ExtensionContext,
@@ -4148,7 +4696,7 @@ export default function (pi: ExtensionAPI) {
 			const agent = getAgent(id);
 			if (!agent) return; // pruned or foreign id — nothing to notify
 			const knob = state.config.completionNotify ?? "all";
-			const run = resolveRunEntry(state.getRunEntries(ctx), id);
+			const run = resolveRunEntry(state.getLogicalRunEntries(ctx), id);
 			// Issue #365: a transport-class background failure is re-dispatched once
 			// and the source notice is suppressed (the retry's settle is the wake).
 			// Every other terminal type — and every non-retryable failure — keeps the

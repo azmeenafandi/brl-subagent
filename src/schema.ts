@@ -5,7 +5,7 @@
  * Static<typeof delegateTaskParamsSchema>, so schema and types cannot drift.
  */
 import { Type } from "typebox";
-import { MAX_CHAIN_STEPS, MAX_PARALLEL_TASKS, MAX_GRAPH_TASKS } from "./types";
+import { MAX_CHAIN_STEPS, MAX_PARALLEL_TASKS, MAX_GRAPH_TASKS, THINKING_LEVELS } from "./types";
 
 /**
  * Issue #381 (audit D7): the per-unit fields registered for `chain[]` steps,
@@ -24,8 +24,34 @@ const STEP_HEAD_FIELDS = {
 	model: Type.Optional(Type.String({ description: "Model override for this step (provider/model-id). Defaults to the global subagent model." })),
 };
 
+/**
+ * Issue #443: the accepted thinking levels as a schema `enum`, derived from
+ * `THINKING_LEVELS` so the declaration cannot drift from the runtime guard
+ * (`isThinkingLevel`).
+ *
+ * The EMPTY STRING is a member on purpose: it is an existing declaration with a
+ * meaning (call level → the configured maximum, per unit → inherit the global
+ * level), so the enum must not turn it into a validation failure. An `enum`
+ * beats a union of literals here because pi-schema's error names the whole set
+ * (`thinkingLevel: expected one of [...]`) instead of only the first branch.
+ *
+ * This is the FIRST line of defence only: pi validates raw tool arguments, so
+ * a preset object, a restored `retryRunId` value, the transport retry's rebuilt
+ * params and every per-unit declaration reach the handler WITHOUT passing here.
+ * `invalidThinkingLevelRejection` (prelude.ts) is the runtime guard.
+ */
+const THINKING_LEVEL_ENUM = [...THINKING_LEVELS, ""];
+
 const STEP_THINKING_LEVEL_FIELD = {
-	thinkingLevel: Type.Optional(Type.String({})),
+	thinkingLevel: Type.Optional(
+		Type.String({
+			enum: THINKING_LEVEL_ENUM,
+			description:
+				"Thinking level override for this subtask. Same values and rules as the call-level thinkingLevel: " +
+				`${THINKING_LEVELS.join(", ")} (exact match). An unknown value rejects the whole batch before anything starts. ` +
+				"Empty inherits the call-level level.",
+		}),
+	),
 };
 
 /** Per-unit concurrency priority — tasks[] and graph[] only (issue #114). */
@@ -73,10 +99,12 @@ export const delegateTaskParamsSchema = Type.Object({
 			),
 			thinkingLevel: Type.Optional(
 				Type.String({
+					enum: THINKING_LEVEL_ENUM,
 					description:
 						"Requested thinking level for this subagent call. " +
-						"One of: off, minimal, low, medium, high, xhigh. " +
-						"Capped at the user's configured maximum. If omitted, the user's configured level is used.",
+						`One of: ${THINKING_LEVELS.join(", ")} — matched exactly, so case and whitespace matter. ` +
+						"An unknown value is rejected (pi's own `max` is not a delegated level). " +
+						"Capped at the user's configured maximum. If omitted, or an empty string, the user's configured level is used.",
 				}),
 			),
 			outputFile: Type.Optional(
@@ -114,7 +142,8 @@ export const delegateTaskParamsSchema = Type.Object({
 			tools: Type.Optional(
 				Type.Array(Type.String(), {
 					description:
-						"Explicit allowlist of tool names for the subagent. Maps to pi's --tools flag.",
+						"Explicit allowlist of tool names for the subagent. Maps to pi's --tools flag. " +
+						"An EMPTY array means no child tools (pi --no-tools); omitting the field keeps pi's defaults.",
 				}),
 			),
 			excludeTools: Type.Optional(
@@ -211,7 +240,8 @@ export const delegateTaskParamsSchema = Type.Object({
 					minLength: 1,
 					description:
 						"Stated bypass for the Jev dispatch-line pre-flight, which is active ONLY in a project whose package.json sets the `brl-subagent.processChecks` field (this repository). " +
-						"A NON-EMPTY reason string: the dispatch proceeds and the reason is surfaced as a warning in the result, so the bypass is never silent. " +
+						"A reason string that states WHY the line is missing: the dispatch proceeds and the reason is surfaced as a warning in the result, so the bypass is never silent. " +
+						"The reason is validated when the dispatch is handled, not by this schema: the argument validator coerces loosely typed input, so a boolean or a number arrives as its text (`true` becomes \"true\") and is REFUSED exactly like an absent bypass. " +
 						"It bypasses ONLY the line check — capability conflicts still reject (unlike force). " +
 						"Append `jev: unavailable` to the task instead when the classifier did not run.",
 				}),
@@ -224,7 +254,7 @@ export const delegateTaskParamsSchema = Type.Object({
 						"The conductor is woken with a completion message; use get_subagent_result for post-wake retrieval and stall checks. " +
 						"Supports a single task or the tasks array (a fan-out that starts one background agent per task; with tasks the call returns one ID per task and the conductor is woken once per agent as each finishes); combining background with chain or graph is rejected. " +
 						"Default: conditional. Omitted, a single task or tasks fan-out runs in the BACKGROUND when the effective approvalMode is 'auto' (call param, else config); it stays foreground for 'writes'/'always' (a background run has no approval dialog, so the gate must stay in front of the user) and for chain/graph, which block by definition. " +
-						"Pass background: false for a quick probe whose answer the next step needs inline. Explicit true/false wins. ONE pre-flight exception exists, and only in a project that opted into its own process checks (package.json `brl-subagent.processChecks: true`; this repository): a high/xhigh-thinking dispatch with background: false AND an explicit timeout is switched to background and the explicit timeout is dropped, because a foreground run loses its whole work at a timeout while a background run keeps its session and is retried on a transport error; pass force: true to keep it foreground. Without that project opt-in the explicit shape and its timeout stand. " +
+						"Pass background: false for a quick probe whose answer the next step needs inline. Explicit true/false wins. ONE pre-flight exception exists, and only in a project that opted into its own process checks (package.json `brl-subagent.processChecks: true`; this repository): a high/xhigh-thinking dispatch that resolves FOREGROUND and carries an explicit timeout loses that timeout, because a foreground run persists nothing and a deadline there loses all its work. The shape it lands in depends on the effective approvalMode (call param, else config), in two outcomes: when a background run is possible (explicit background: false with 'auto'/'writes') the dispatch is switched to background, where the 30-minute default applies; when it is not (an effective 'always', which background cannot present a dialog for, or an omitted background whose approval mode keeps it foreground) the run STAYS FOREGROUND with NO deadline at all, so the call blocks until the child settles instead of being killed. Either outcome is announced to the conductor and the user; pass force: true to keep the explicit timeout. The same judgement is made PER BATCH UNIT: a tasks/chain/graph unit that declares its own high/xhigh thinking level with a positive timeout has that unit's timeout dropped before it runs, while a background fan-out unit keeps its own — there the deadline is the budget. Without that project opt-in the explicit shape and its timeout stand. " +
 						"A background run defaults to a 30-minute deadline when no timeout is given.",
 				}),
 			),

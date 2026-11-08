@@ -27,8 +27,15 @@ _Generated from each `.development/decisions/NNNN-*.md` record by `npm run docs:
 | 0017 | [Retry resume context is delivered system-side, never inside the task fence](./0017-resume-context-system-side.md) | Accepted | 2026-10-31 |
 | 0018 | [The dispatch pre-flight: shape auto-switch, and the opt-in Jev-line gate](./0018-dispatch-preflight.md) | Accepted | 2026-10-31 |
 | 0019 | [Project-local process checks: one umbrella `processChecks` flag](./0019-project-process-checks.md) | Accepted | 2026-10-31 |
+| 0020 | [The `noJev` bypass is validated in the handler, not the schema](./0020-nojev-handler-validation.md) | Accepted | 2026-11-02 |
+| 0021 | [No CRAP gate: complexity stays a smell, coverage debt is paid as targeted follow-ups](./0021-no-crap-gate-targeted-followups.md) | Accepted | 2026-11-06 |
+| 0022 | [The pre-flight's second arm: drop the deadline, keep the approval gate](./0022-preflight-drop-timeout-arm.md) | Accepted | 2026-11-06 |
+| 0023 | [One owner for the background deadline: the spawn arms it, only a settle ends a run](./0023-deadline-ownership.md) | Accepted | 2026-11-07 |
+| 0024 | [The unit projection of the pre-flight: a batch unit's own declared deadline is dropped](./0024-unit-projection-preflight.md) | Accepted | 2026-11-07 |
+| 0025 | [The Jev level is an observation: the gate is provenance + risk, and a model-aware arm is measured against outcomes](./0025-jev-level-as-observation.md) | Accepted | 2026-11-08 |
+| 0026 | [A durable headState per repository: the boot restores the base branch and keeps the interrupted run's work](./0026-headstate-boot-repair.md) | Accepted | 2026-11-08 |
 
-**19 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
+**26 decisions** — every one is listed because a record without a heading/Status/Date fails CI.
 
 <!-- END GENERATED: adr-index -->
 

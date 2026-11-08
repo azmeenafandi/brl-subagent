@@ -14,7 +14,7 @@
 - **True background execution** — live monitor, real abort (`stop_subagent`), per-agent timeouts, and a 30-minute default deadline for runs that don't set one. Nothing orphans; nothing leaks.
 - **Preset-driven tool scoping** — every subagent runs with exactly the tools its job needs, restricted by preset or per-call `tools`/`excludeTools`, with auto-route that picks the right preset when you don't.
 - **Templates with slots** — saved, file-backed task templates with `${param}` placeholders for workflows you run again and again.
-- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence (`0o700` stores, `0o600` files; the directory mode is repaired on every write and is the confidentiality boundary), and a 1900+ test suite pinning every contract against the real pi SDK.
+- **Safety by default** — task-fence injection protection, sanitized error paths, owner-only persistence (`0o700` stores, `0o600` files; the directory mode is repaired on every write and is the confidentiality boundary), and a 2300+ test suite pinning every contract against the real pi SDK.
 
 ---
 
@@ -88,13 +88,13 @@ All settings persist across sessions.
 | `params` | object | — | Values for `${param}` slots in the template. All slots must be filled; missing ones error. |
 | `systemPrompt` | string | — | Extra instructions or a different persona for the subagent. |
 | `inheritSystemPrompt` | boolean | `true` | Whether to inherit the main agent's system prompt. Set `false` to save tokens. |
-| `thinkingLevel` | string | — | `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. Capped at user's configured max. |
+| `thinkingLevel` | string | — | `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. Capped at user's configured max. Matched **exactly** (case and whitespace matter): an unknown value is rejected before anything launches — including pi's own `max`, which is not a delegated level. `""` or an omitted field uses the configured max. |
 | `outputFile` | string | — | Path for the subagent to write full findings. Returns only a summary. |
-| `timeout` | number | — | Max milliseconds. Foreground: exceeded → SIGTERM (5s grace) → SIGKILL. Background: the session is aborted and the run ends `stopped` with the timeout reason. A background run with no explicit `timeout` gets the 30-minute default deadline — an explicit timeout is honored as given (a default, not a ceiling). A raw value `≥ 2^31-1` normalizes to no timeout (for a background run, the 30-minute default then applies). |
+| `timeout` | number | — | Max milliseconds. Foreground: exceeded → SIGTERM (5s grace) → SIGKILL. Background: the session is aborted, the agent ends `stopped`, and the run record is finalized `failed` with `errorCategory: "timeout"`; a settle that arrives later amends that record's cost/tokens/output instead of rewriting its classification. One owner arms it — `spawnBackgroundSession`, before the prompt, with the budget anchored at the run record's creation. A background run with no explicit `timeout` gets the 30-minute default deadline — an explicit timeout is honored as given (a default, not a ceiling). A raw value `≥ 2^31-1` normalizes to no timeout (for a background run, the 30-minute default then applies). |
 | `cwd` | string | — | Working directory. Defaults to conductor's cwd. |
 | `background` | boolean | conditional | Spawn as an independent background session; returns an ID immediately. **Omitted**, a single task or a `tasks` fan-out runs in the background when the *effective* `approvalMode` is `auto` (call param, else config), and stays foreground under `writes`/`always` or for `chain`/`graph` — see [Background execution](#background-execution). With `tasks` it fans out (one background agent per task, one ID per task), and the conductor is woken once per agent as each finishes. Pass `false` for a quick probe whose answer the next step needs inline. |
 | `priority` | string | — | Concurrency priority: `critical` / `high` / `normal` / `low`. Defaults to `normal`; higher-priority delegations queue ahead. `tasks[]` / `graph[]` steps can set `priority` per unit (see below). |
-| `tools` | array | — | Explicit tool allowlist for the subagent. |
+| `tools` | array | — | Explicit tool allowlist for the subagent. **An empty array (`tools: []`) requests zero child tools** — it maps to pi's `--no-tools`, which also wins over `noBuiltinTools`. Omit the field to keep pi's defaults. |
 | `excludeTools` | array | — | Tool names to disable for the subagent. |
 | `noBuiltinTools` | boolean | — | Disable all pi built-in tools for the subagent. |
 
@@ -110,9 +110,13 @@ All settings persist across sessions.
 
 **Capability pre-flight:** before spawning, the extension checks that the resolved toolset can actually do the task — a run/execute/test/compile/benchmark task with no `bash`, or an exploration task (search/grep/find/list/locate/glob) with none of `find`/`ls`/`grep`/`bash`. Such a dispatch is **rejected** by default; `force: true` downgrades the rejection to a **warning**. `force` never suppresses an `outputFile`-without-write conflict — that stays a hard error. Warnings are surfaced in the returned result in every mode.
 
+**An empty tool list means no tools (`tools: []`):** `tools: []` is an explicit *restriction*, not an absent value. A foreground child is spawned with pi's `--no-tools`, so all built-in, extension, custom and MCP tools are inactive for that run, and it wins over `noBuiltinTools` (`[]` can never widen into "built-ins off, extension tools on"). A background run passes the same empty list to the SDK session, so it starts with zero active tools. When the resolved tool allowlist is omitted, Pi's normal selection applies unless `noBuiltinTools` or `excludeTools` restrict it; a preset may still supply an allowlist. Before this fix, a resolved empty allowlist alone incorrectly fell back to that selection in foreground runs. `[]` combined with `excludeTools` still has no tools; `excludeTools` can only disable.
+
+This is a **tool-access setting, not a security sandbox.** In the foreground, configured extensions and MCP servers still load and connect at child startup, because users deliberately rely on that startup (and on extension *hooks* such as permission gates) — `[]` denies the model their tools, it does not prevent the code from running, and it is no defence against an extension that reactivates tools on purpose. Background runs are unchanged: they never load extensions or skills (`noExtensions`/`noSkills`) and start no MCP servers at all, with or without `tools`. A dispatch that needs zero capabilities therefore still costs the child its extension initialisation time; if an `outputFile` is requested alongside `tools: []`, the dispatch is rejected before launch, because no write tool exists to write that file.
+
 **Retries (`retryRunId`):** a retry rebuilds the parameter object from a fixed set of fields, falling back to the original run's recorded values, with explicit values on the retry call winning: `task`, `label`, `model`, `preset`, `systemPrompt`, `inheritSystemPrompt`, `thinkingLevel`, `priority`, `outputFile`, `timeout`, `cwd`, `tools`, `excludeTools`, `noBuiltinTools`, plus the four **execution-shape** fields `background`, `gitMode`, `approvalMode` and `force`.
 
-**Interrupted runs:** a run whose conductor died mid-run is marked interrupted (it keeps its persisted session file) and is surfaced as **Interrupted** in `/brl-subagent history` and in `/brl-subagent retry` — including after a crash + fresh boot, when it is reconstructed from the durable per-run registry (plus the background agent record). Recover one with `retryRunId: <run-id>`, or abandon it from the retry menu — abandon finalizes it as stopped, prunes its session file, and sends no completion wake. A **foreground** run's task is not persisted, so its crashed row shows no task and a retry needs the task supplied explicitly; a background run keeps its task in its agent record. The recovery posture (`/brl-subagent recovery`, default `offer`) controls whether a boot announces interrupted runs with one turn-boundary notice; `off` silences it. Recovery is never automatic — there is no `auto` mode.
+**Interrupted runs:** a run whose conductor died mid-run is marked interrupted (it keeps its persisted session file) and is surfaced as **Interrupted** in `/brl-subagent history` and in `/brl-subagent retry` — including after a crash + fresh boot, when it is reconstructed from the durable per-run registry (plus the background agent record). Recover one with `retryRunId: <run-id>`, or abandon it from the retry menu — abandon finalizes it as stopped, prunes its session file, and sends no completion wake. A **foreground** run's task is not persisted, so its crashed row shows no task and a retry needs the task supplied explicitly; a background run keeps its task in its agent record. The recovery posture (`/brl-subagent recovery`, default `offer`) controls whether a boot announces interrupted runs with one turn-boundary notice; `off` silences it. Recovery is never automatic — there is no `auto` mode. A dispatch that died **before its prompt was issued** is not an interrupted run: it is finalized failed and never offered for retry.
 
 **The execution-shape fields are restored, so a retry keeps the original's shape:** retrying a background run re-runs it in the background (with its completion wake), a `gitMode: 'branch'` retry keeps its work branch, an `approvalMode`-constrained retry keeps that gating, and a retry that was capability-blocked keeps its `force`. Passing any of them explicitly on the retry call overrides the recorded value. One qualification on `gitMode`: when neither the record nor the call carries one, the **configured** default still applies — so a user with a global `gitMode: 'branch'` gets a work branch on every retry, and one with the default `'none'` gets none. Do not assume "no work branch" without checking the effective `gitMode`.
 
@@ -184,9 +188,13 @@ model: anthropic/claude-opus-4-6
 tools:
   - read
   - bash
+# optional — capture the run's findings to this path; needs the write tool
+outputFile: findings.md
 thinkingLevel: high
 ---
 ```
+
+A preset `outputFile` is validated at dispatch exactly like the `outputFile` parameter — it requires the `write` tool, so a preset that excludes `write` is a hard conflict. `timeout` is deliberately **not** a preset field: the deadline belongs to the call/template tier, not the persona (ADR 0022 §6).
 
 Custom presets override built-ins with the same name and survive `pi install` updates.
 
@@ -234,7 +242,7 @@ Supported frontmatter fields:
 | `thinkingLevel` | string | `off` / `minimal` / `low` / `medium` / `high` / `xhigh` |
 | `outputFile` | string | Output file path (may contain `${param}` slots) |
 | `timeout` | number | Max milliseconds for the delegated run |
-| `tools` | list | Tool allowlist |
+| `tools` | list | Tool allowlist (empty = no tools) |
 | `excludeTools` | list | Tools to exclude |
 | `noBuiltinTools` | `"true"` / `"false"` | Disable all pi built-in tools |
 | `inheritSystemPrompt` | `"true"` / `"false"` | Override system-prompt inheritance (default `true`) |
@@ -314,7 +322,7 @@ The approval-aware fallback is the safety property: background runs have no appr
 
 **Background safety controls (issue #28):** background agents honor the same safety controls as foreground runs — no more unattended sessions that bypass approval, git isolation, deadlines, or cost:
 
-- **Per-agent timeout** — the deadline is armed immediately after the prompt is issued, so in-prompt preflight (auth, model resolution) counts toward it. A background run with no explicit `timeout` gets a 30-minute default deadline (the issue #28 orphan protection); an explicit timeout is honored as given — 30 minutes is the default, not a ceiling. On expiry the session is aborted and the agent ends with status `stopped` and the timeout reason. Timeout values are normalized (`0`/negative/`NaN`/`Infinity`/`≥ 2^31` → no timeout, which for a background run means the 30-minute default) and a double-fire guard prevents the timer from acting on an already-settled agent.
+- **Per-agent timeout** — exactly one deadline is armed per run, by the session that owns it, before the prompt is issued; the budget is anchored at the run record's creation, so the setup and the in-prompt preflight (auth, model resolution) both count toward it. A background run with no explicit `timeout` gets a 30-minute default deadline (the issue #28 orphan protection); an explicit timeout is honored as given — 30 minutes is the default, not a ceiling. On expiry the session is aborted, the agent ends with status `stopped` and the timeout reason, and the run record becomes `failed` / `timeout` — written at the deadline and amended (never re-classified) if the prompt settles later. The abort is cooperative: a prompt that ignores it keeps running, and that run keeps its session directory and its branch lock (and has no registry entry). Timeout values are normalized (`0`/negative/`NaN`/`Infinity`/`≥ 2^31` → no timeout, which for a background run means the 30-minute default) and a double-fire guard prevents the timer from acting on an already-settled agent.
 - **Session cost limit (R5)** — the cost check runs before the background spawn, so a session at its limit cannot bypass it by delegating to background. For a background fan-out the whole batch is checked up front as per-task estimate × N.
 - **Approval mode** — `approvalMode: 'always'` is rejected for background agents (there is no interactive dialog to approve a diff while running unattended); `'writes'` silently auto-approves with a warning logged. For a fan-out, `'always'` rejects the whole batch before any spawn and `'writes'` warns once for the batch.
 - **Transport auto-retry** — a run that dies on a dropped connection is replayed once with its recorded params (see [Transport auto-retry](#transport-auto-retry)), carrying a `<resume-context>` block on the system-prompt side that names the surviving files and the progress bank; the source notice is replaced by a toast so a lost connection doesn't read as a lost run. A second failure surfaces normally.
@@ -324,7 +332,7 @@ The approval-aware fallback is the safety property: background runs have no appr
 
 `background: true` with `tasks: [...]` fans out: every task starts as its own background agent, the call returns immediately with **one ID per task** in task order, and the conductor is woken with **one completion message per agent** as each finishes — no coalescing, no batch wake. `chain` and `graph` cannot be combined with `background: true` (rejected loudly): sequential dependencies and dependency waves do not survive fan-out.
 
-Fan-out validates the entire batch before spawning anything. Any invalid task — `cwd`, `outputFile`, or a pre-task check — rejects the whole batch before a single spawn starts, and the error names the task (`Task N ("label")`). Per-task overrides are honoured: `model`, `thinkingLevel`, `tools` / `excludeTools` / `noBuiltinTools`, `systemPrompt` / `inheritSystemPrompt`, `outputFile`, `timeout`, `cwd`, `priority`, `label`.
+Fan-out validates the entire batch before spawning anything. Any invalid task — `cwd`, `outputFile`, an unsupported `thinkingLevel`, or a pre-task check — rejects the whole batch before a single spawn starts, and the error names the task (`Task N ("label")`). Per-task overrides are honoured: `model`, `thinkingLevel`, `tools` / `excludeTools` / `noBuiltinTools`, `systemPrompt` / `inheritSystemPrompt`, `outputFile`, `timeout`, `cwd`, `priority`, `label`.
 
 Three checks reject the fan-out up front, before any spawn: `approvalMode: 'always'`; `gitMode: 'branch'` for the batch (the git lock is awaited inside the first spawn and held until that agent settles, so branch-mode spawns targeting the same repository would serialize and block the call — the rule is blanket because the lock is keyed by the resolved repository root, so any two units of the same repo contend); and the session cost limit, checked as per-task estimate × N.
 

@@ -91,6 +91,17 @@ dates, and historical framing. The binding rules (with their numbers) live in
    in repo docs/tools (this skill, `.development/` — tracked since #247), and tasks where the
    conductor already holds irreplaceable context (e.g. mid-review steering).
 
+   **A killed subagent leaves hostile state, not unfinished work.** Its worktree
+   is suspect and its verification is *unrun*: the 2026-11-07 sweep left two
+   mutants applied in worktrees (a reversed `outputFile` precedence and a
+   partially applied batch guard) and one run that committed all five steps and
+   then died before its mutant table. After any transport death: read
+   `git diff` for an inverted condition or a stray edit, and re-derive the gate
+   the agent would have run — a reviewer rebuilt that whole mutant table for
+   exactly this reason. Take over a unit that died past roughly 70% instead of
+   re-dispatching it; what survives is judged by the conductor, because the
+   agent's own report does not exist.
+
 ## Rule 8
 
 8. **"Fixes #N" in commit + PR bodies.** GitHub only auto-closes issues on
@@ -341,4 +352,46 @@ dates, and historical framing. The binding rules (with their numbers) live in
 
 **The backtest (2026-10-10, 98 sprint-window dispatches, $0.0034).** Blind-classified every production dispatch with TypeSafe's **Jev** classifier ("System One" — typed choice questions over JSON state, `models.classify` via `codemode`): exact agreement 47%, adjacent 87%. The disagreement is systematic, not noise — it **discounts mechanical/plumbing work** (16/40 `high` and 19/40 `medium` downgraded, including `impl-codegraph-phase1` high→low and `impl-fix315` high→minimal) and it **raises reviews** (`review-test-hygiene-r2` — the review that caught the #308 regression — high→**xhigh**; `impl-299-probe` medium→xhigh). It also ignores operational burden entirely, so its `minimal` calls would under-provision worktree/suite/PR work.
 
-**Decision: advisory, with clamps.** Rule 22 records `jev: <level> (<conf>) · risk · worktree` in every spec/dispatch; ≥2-level deviations and below-Jev reviews need a reason; artifact work floors at `low`. Same doctrine as Rule 13: an intention with no artifact decays — the recorded line is the artifact, and the maintainer's spec approval is the gate. Phase 2 (classifier inside the extension) is deliberately unscheduled; the released package is untouched.
+**Decision: advisory — and, from 2026-11-08, an OBSERVATION (#468).** Rule 22 records `jev: <level> (<conf>) · risk · worktree` in every spec/dispatch. Originally the level was a control: ≥2-level deviations and below-Jev reviews needed a reason, and artifact work floored at `low`. Those clauses are **withdrawn** — the field that could not be wrong had become a tax, and the dispatches that overrode it kept working because the *model*, not the level, dominated the outcome (two hand-typed lines this session were wrong on level; both dispatches succeeded — a 13-mutant review from `muse-spark` at medium, a five-step C1 implementation from `deepseek-flash`). The gate is now **provenance + risk + worktree**: `--log --require-provenance` and merge-guard check (f) prove the line was printed and the risk class was classified, and never read the level's value. **Standing PIN (2026-11-07, maintainer):** plan critiques always run at `thinkingLevel: "medium"` for terra — the measured cost/performance optimum — regardless of the Jev level; with the deviation rule gone there is nothing left to carve out of, so the pin and the record simply coexist. Same doctrine as Rule 13: an intention with no artifact decays — the recorded line is the artifact, and the maintainer's spec approval is the gate. Phase 2 (classifier inside the extension) is deliberately unscheduled; the released package is untouched.
+
+**The row learned to carry the model and the outcome (2026-11-08, #468).** The provenance row keeps its base `<iso>\t<label>\t<line>` and now accepts up to three **keyed** optional columns, any subset, any order, each at most once: `stated:worktree` (#456), `model:<provider>/<id>` (`--model`), and `level-model:<level> (<conf>)` (`--classifier-model-aware`). The parser is fail-closed on an unknown key, a duplicate key, a malformed value, a key before the line, a tab inside a value, a truncated row, and a confidence outside `[0, 1]` (`1.5` matches the shape and is rejected numerically); the model pattern allows **multiple** slashes, because the ids actually dispatched include `openrouter/meta/muse-spark-1.3-contributor` and `openrouter/~typesafe/jev-latest`. Because the columns are keyed, the matched line never changes: 3-, 4-, 5- and 6-column rows coexist in one log and `--require-provenance` stays an exact-text comparison.
+
+**Two arms, one blindness invariant.** The blind arm keeps the template exactly (task text only); the model-aware arm is the same template plus one model stanza, so the delta is attributable. `--classifier --model … --classifier-model-aware '<raw answers>'` prints **one** pasteable line (the blind arm's, byte-identical with and without the new data), records the aware answer as a diagnostic plus a column, and falls back to blind-only when arm 2 fails — it is a measurement and must never block a dispatch.
+
+**Settle, then calibrate.** `--settle <label> --kind impl|review|probe --outcome done|failed|stopped|unknown [--verdict …] [--nits N] [--model-ran <id>]` appends to the sidecar `.pi/jev-outcomes.log` (instant-cutoff header, `ts\tlabel\tkind\toutcome\tverdict|null\tnits|null\tmodel-ran|null`). It is a sidecar, not a second provenance row, precisely so the matched row is untouched; every refusal (unknown label, duplicate settle, unknown vocabulary, `--nits` without a verdict, a malformed `--model-ran`, a 0-byte file) is exit 2. `--calibrate` joins the two: the cohort is `kind=impl` with `done|failed` and a verdict for `done` — reviews are excluded because a `changes-requested` review is a good review — and it prints `eligible / settled / with-model`, both arms' agreement against the dispatched level, and the delta direction. Below **20 eligible rows** it prints counts and no conclusion; it never declares a winner, and it states the bias (both arms against the conductor's own choice, on runs that worked).
+
+**The falsifier is pre-committed (ADR 0025).** At 20 eligible rows with mixed models, if the model-aware arm is no better than blind, the model input is deleted and the ledger and settle lines stay. `--model-ran` is stated as a manual correction for a transport retry or fallback — not runtime detection — and levels are recorded as *requested*, not as capped.
+
+**The `worktree` field is a stated fact, not a model answer (2026-11-07, #456).**
+It was derived by thresholding the classifier's probability at 0.5, but its own
+criterion is mechanical ("it modifies `src/` or `presets/`") and Rule 5 requires
+a worktree for every such change — measured: **16 of 16** src dispatches printed
+`worktree n` and every one correctly ran in a worktree, so each became an
+exact-text provenance miss at the merge gate and needed an exceptions entry.
+`jev-check --classifier … --worktree y|n --label …` now lets the conductor
+**state** it; the row gains a fourth column, `stated:worktree`, so the artifact
+records which fields the model actually produced. `level` and `risk` stay
+classifier answers — hand-typing them remains the Goodhart failure this
+apparatus exists to prevent — and `--worktree` is refused with `--line`, where
+the field is already decided. The printed line keeps its shape, so the gate
+still matches it exactly.
+
+## Rule 23
+
+23. **A dispatched agent's probes must be isolated from the host (Rule 23 — the probe-isolation class).**
+    A scratch directory is not isolation; the *environment* is what leaks. Provenance: 2026-11-07, the #449
+    plan critique inherited this harness's environment and ran a real agentic `pi` CLI against OpenRouter's
+    `anthropic/claude-fable-5` — four turns, **$0.0698915** — and its shell also ran `env | grep PI_`,
+    exposing seven `PI_*` values (none credential-shaped, but session ids and a session path) to that model.
+    The expensive model was a *symptom*: the failure was launching an agentic CLI unisolated to answer a
+    question that mostly needed reading the SDK.
+    - **Any command that can reach a provider** runs with `env -i`, an explicit `PATH`, a scratch `HOME`
+      **and** scratch `PI_CODING_AGENT_DIR`, fake credentials, and a provider base URL that is loopback-only.
+      `env -i` + `PI_OFFLINE=1` alone is **not** enough, measured: `env -i … node -p 'os.homedir()'` still
+      returns the real home (the SDK derives agent/auth paths from it) and `PI_OFFLINE` only disables
+      *startup* network operations.
+    - **Do not run an agentic CLI to answer a source question.** Read the code; if a probe is unavoidable,
+      it is a stub against a controlled session or a loopback fake provider — never a live model turn.
+    - When a probe could reach a provider, name the scratch env in the dispatch text (`env -i`, the two
+      scratch paths, the loopback URL) and require the agent to prove it — a probe whose isolation is
+      asserted but not shown is a finding, not a formality.

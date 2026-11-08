@@ -3,9 +3,15 @@
 # print a paste-ready `## Recon` block for a C1/C2 spec.
 #
 # Usage: recon.sh <symbol|file> [--file <path>] [--grep] [--repo-root <path>]
+#        recon.sh --explore "<area query>" [--repo-root <path>]
 #   <symbol|file>   symbol name, or a source file (path or basename)
 #   --file <path>   additionally run `affected` for this source file
 #   --grep          also print the raw grep hit count (comments included)
+#   --explore       area recon (Rule 13, issue #424): `codegraph explore` on a
+#                   free-text query, printed as a CAPPED `## Explore` block. This
+#                   is NOT the C1/C2 artifact — use it before you can name symbols.
+#                   Cap via CODEGRAPH_EXPLORE_LINES (default 60). Cannot combine
+#                   with --file/--grep.
 #   --repo-root     cockpit root (default: derived from this script)
 #
 # Freshness: when `indexed_at_commit != HEAD`, runs codegraph-refresh.sh first
@@ -19,18 +25,24 @@ REPO_ROOT="${SCRIPT_DIR}/../../.."
 TARGET=""
 FILE=""
 DO_GREP=0
+DO_EXPLORE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --file) FILE="$2"; shift 2 ;;
         --grep) DO_GREP=1; shift ;;
+        --explore) DO_EXPLORE=1; shift ;;
         --repo-root) REPO_ROOT="$2"; shift 2 ;;
         -*) echo "Unknown argument: $1" >&2; exit 2 ;;
-        *) TARGET="$1"; shift ;;
+        *) TARGET="${TARGET:+${TARGET} }$1"; shift ;;
     esac
 done
 
-[[ -n "${TARGET}" ]] || { echo "Usage: recon.sh <symbol|file> [--file <path>] [--grep] [--repo-root <path>]" >&2; exit 2; }
+[[ -n "${TARGET}" ]] || { echo "Usage: recon.sh <symbol|file> [--file <path>] [--grep] | --explore \"<query>\" [--repo-root <path>]" >&2; exit 2; }
+if [[ "${DO_EXPLORE}" -eq 1 && ( -n "${FILE}" || "${DO_GREP}" -eq 1 ) ]]; then
+    echo "recon: --explore is its own mode — it cannot combine with --file or --grep" >&2
+    exit 2
+fi
 REPO_ROOT="$(cd "${REPO_ROOT}" && pwd)"
 CODEGRAPH_BIN="${CODEGRAPH_BIN:-codegraph}"
 
@@ -78,6 +90,29 @@ SYMBOL="${TARGET}"
 if [[ "${IS_FILE}" -eq 1 && -z "${FILE}" ]]; then FILE="${TARGET}"; fi
 
 json() { "${CODEGRAPH_BIN}" "$@" -p "${REPO_ROOT}" 2>/dev/null || true; }
+
+# --- explore mode (issue #424) -------------------------------------------
+# Area recon, not the C1/C2 artifact: a capped first pass so an unfamiliar area
+# is entered through the graph instead of a grep sweep. The output is verbatim
+# source by design, so the cap keeps it from flooding a spec session.
+if [[ "${DO_EXPLORE}" -eq 1 ]]; then
+    CAP="${CODEGRAPH_EXPLORE_LINES:-60}"
+    RAW="$("${CODEGRAPH_BIN}" explore "${TARGET}" -p "${REPO_ROOT}" 2>/dev/null || true)"
+    echo "## Explore (Rule 13 — codegraph @ ${SHORT})"
+    echo "- query: \`${TARGET}\`"
+    if [[ -z "${RAW}" ]]; then
+        # A graph gap is a FINDING, never a silent skip (Rule 13).
+        echo "- (explore returned no output — record this as a graph gap)"
+        exit 0
+    fi
+    TOTAL="$(printf '%s\n' "${RAW}" | wc -l | tr -d ' ')"
+    printf '%s\n' "${RAW}" | head -n "${CAP}"
+    if [[ "${TOTAL}" -gt "${CAP}" ]]; then
+        echo ""
+        echo "- (truncated: ${CAP} of ${TOTAL} lines — rerun with CODEGRAPH_EXPLORE_LINES=${TOTAL}, or \`codegraph node <symbol>\` for one symbol)"
+    fi
+    exit 0
+fi
 
 echo "## Recon (Rule 13 — codegraph @ ${SHORT})"
 echo "- target: \`${TARGET}\`${FILE:+ (file: ${FILE})}"

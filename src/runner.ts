@@ -45,7 +45,9 @@ import {
 } from "./kill-escalation";
 import { findByMarker, pidAlive, pidHasMarker, pidGone, groupHasMembers, killProcessGroup } from "./proc";
 import { getSafeEnv, DEPTH_ENV_KEY, CHILD_MARKER_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
+import { createLogger } from "./logging";
 import type { Logger } from "./logging";
+import { buildEngineeringBarSection } from "./engineering-bar";
 import type { Intercom } from "./messaging";
 import { extractMessages, formatPendingMessages } from "./messaging";
 import type {
@@ -53,6 +55,16 @@ import type {
 	TranscriptContentBlock,
 	TranscriptToolCallBlock,
 } from "./transcript-tail";
+
+/**
+ * The logger for diagnostics a CALLER did not instrument. `runSubagent`'s `log`
+ * is optional (its sweep/shutdown callers pass one; the foreground dispatch in
+ * `index.ts` passes one too), but the engineering bar's read failure (#421)
+ * must never be silent — so the bar's warning falls back to this sink instead of
+ * being dropped when `log` is absent.
+ */
+const fallbackLog = createLogger("runner");
+
 // ---------------------------------------------------------------------------
 // In-flight child registry (Option B U1)
 // ---------------------------------------------------------------------------
@@ -478,7 +490,17 @@ export function buildSubagentArgs(
 		"--thinking",
 		thinkingLevel,
 	];
-	if (toolOptions?.noBuiltinTools) {
+	// Issue #442: an EXPLICITLY empty allowlist means "no child tools", which is
+	// neither of the two states pi already expresses. Omitted keeps pi's
+	// defaults (no restriction flag at all), and `--no-builtin-tools` keeps
+	// extension and custom tools. `tools !== undefined` is therefore the
+	// emptiness test, not `.length > 0`: `[]` must reach pi's blanket
+	// `--no-tools`, and it must win over `noBuiltinTools` so an empty allowlist
+	// can never widen into "built-ins off, extension tools on". `--exclude-tools`
+	// stays additive below — it only disables, so it cannot re-enable a tool.
+	if (toolOptions?.tools !== undefined && toolOptions.tools.length === 0) {
+		args.push("--no-tools");
+	} else if (toolOptions?.noBuiltinTools) {
 		args.push("--no-builtin-tools");
 	} else if (toolOptions?.tools && toolOptions.tools.length > 0) {
 		args.push("--tools", toolOptions.tools.join(","));
@@ -1078,11 +1100,19 @@ ${msgBlock}`;
 
 	const args = buildSubagentArgs(model, thinkingLevel, toolOptions);
 
+		// Issue #421: the project's engineering bar rides the same
+		// --append-system-prompt channel as the caller's prompt, appended last.
+		// Injected HERE (the foreground chokepoint all callers share) rather than
+		// in each caller, so no preset selection can drop it; gated by the project
+		// flag (ADR 0019), and `engineering-bar.ts` owns the read + its warning.
+		const barSection = buildEngineeringBarSection(cwd, log ?? fallbackLog);
+		const childSystemPrompt = barSection ? `${systemPrompt}${barSection}` : systemPrompt;
+
 		let tmpDir: string | null = null;
 		let tmpFilePath: string | null = null;
 
-		if (systemPrompt.trim()) {
-			const tmp = await writeToTempFile(cwd, "system", systemPrompt);
+		if (childSystemPrompt.trim()) {
+			const tmp = await writeToTempFile(cwd, "system", childSystemPrompt);
 			tmpDir = tmp.dir;
 			tmpFilePath = tmp.filePath;
 			args.push("--append-system-prompt", tmpFilePath);
@@ -1105,7 +1135,7 @@ ${msgBlock}`;
 			thinkingLevel,
 			cwd,
 			taskPreview: task.slice(0, 80),
-			hasSystemPrompt: systemPrompt.trim().length > 0,
+			hasSystemPrompt: childSystemPrompt.trim().length > 0,
 			timeout,
 		});
 

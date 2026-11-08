@@ -21,6 +21,8 @@ import type {
 import { DEFAULT_COMPLETION_NOTIFY, CUSTOM_ENTRY_TYPES } from "../types";
 import {
 	buildCompletionMessage,
+	formatBudgetLine,
+	isTimeoutEvidence,
 	resolveDelivery,
 	markTerminalSeen,
 	claimTerminalNotice,
@@ -405,12 +407,21 @@ describe("markTerminalSeen", () => {
 		expect(markTerminalSeen(seen, "run-2")).toBe(true); // new id → delivered
 	});
 
-	it("caps the set by clearing when it exceeds the default cap", () => {
+	it.each([0, 1])("keeps the claim just made when cap is %i", (cap) => {
+		const seen = new Set<string>();
+		expect(markTerminalSeen(seen, "run-1", cap)).toBe(true);
+		expect(markTerminalSeen(seen, "run-1", cap)).toBe(false);
+		expect(seen.size).toBe(1);
+	});
+
+	it("caps the set by evicting the oldest claim when it exceeds the default cap", () => {
 		const seen = new Set<string>();
 		for (let i = 0; i < 200; i++) seen.add(`id-${i}`);
-		// Adding one more crosses the 200 cap → cleared, still returns true.
+		// Adding one more crosses the 200 cap → the oldest entry goes, still returns true.
 		expect(markTerminalSeen(seen, "new-id")).toBe(true);
-		expect(seen.size).toBeLessThanOrEqual(200);
+		expect(seen.size).toBe(200); // bounded at the cap — one eviction, not a wipe
+		expect(seen.has("id-0")).toBe(false); // the oldest was the victim
+		expect(seen.has("new-id")).toBe(true); // the claim just made survives (#440)
 	});
 });
 
@@ -440,13 +451,25 @@ describe("claimTerminalNotice", () => {
 		expect(crash).toBe(false);
 	});
 
-	it("caps the shared set by clearing it when it exceeds the default cap", () => {
+	it("keeps the claim it just made when the overflow evicts", () => {
 		__resetTerminalClaims();
 		for (let i = 0; i < 200; i++) expect(claimTerminalNotice(`id-${i}`)).toBe(true);
-		// The 201st id crosses the cap → the set clears, still claims.
 		expect(claimTerminalNotice("id-overflow")).toBe(true);
-		// The reset wiped the earlier ids, so one of them claims again.
+		// #440: the overflowing claim is retained, so its immediate duplicate loses.
+		expect(claimTerminalNotice("id-overflow")).toBe(false);
+	});
+
+	it("caps the shared set by evicting the oldest claim when it exceeds the default cap", () => {
+		__resetTerminalClaims();
+		for (let i = 0; i < 200; i++) expect(claimTerminalNotice(`id-${i}`)).toBe(true);
+		// The 201st id crosses the cap → the OLDEST claim is evicted, still claims.
+		expect(claimTerminalNotice("id-overflow")).toBe(true);
+		// A recent claim survives the overflow (oldest-first, one eviction per call).
+		expect(claimTerminalNotice("id-199")).toBe(false);
+		// The oldest was evicted, so it claims again — eviction is real.
 		expect(claimTerminalNotice("id-0")).toBe(true);
+		// Re-claiming a forgotten id evicts exactly one more: the next oldest.
+		expect(claimTerminalNotice("id-1")).toBe(true);
 	});
 });
 
@@ -479,5 +502,142 @@ describe("completionNotify config default", () => {
 		// An invalid value makes the whole state shape invalid → restore rejected.
 		expect(s2.restoreFromSession(restoreCtx({ completionNotify: "bogus" }))).toBe(false);
 		expect(s2.config.completionNotify).toBe("all");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #423 — the budget line (wake) and its ONE timeout predicate
+// ---------------------------------------------------------------------------
+
+describe("isTimeoutEvidence (issue #423)", () => {
+	it("fires on the classified category, on the run or on its snapshot", () => {
+		expect(isTimeoutEvidence(makeAgent(), makeRun({ errorCategory: "timeout" }))).toBe(true);
+		expect(
+			isTimeoutEvidence(makeAgent(), makeRun({ originalParams: { errorCategory: "timeout" } })),
+		).toBe(true);
+	});
+
+	it("fires on the agent's own `Timed out` stamp (the result path's only evidence)", () => {
+		expect(isTimeoutEvidence(makeAgent({ error: "Timed out after 1800000ms" }))).toBe(true);
+		expect(isTimeoutEvidence(makeAgent({ error: "Timed out (1800000ms deadline)" }))).toBe(true);
+	});
+
+	it("does not fire on an abort, an ordinary failure, or nothing at all", () => {
+		expect(isTimeoutEvidence(makeAgent({ error: "Aborted by user" }))).toBe(false);
+		expect(isTimeoutEvidence(makeAgent({ error: "provider died" }), makeRun({ errorCategory: "exit_error" }))).toBe(false);
+		expect(isTimeoutEvidence(makeAgent(), makeRun())).toBe(false);
+	});
+});
+
+describe("formatBudgetLine (issue #423)", () => {
+	const budget = 30 * 60_000;
+
+	/** A failed/stopped run 4m 12s into a 30m budget. */
+	function agentAt(overrides: Partial<BackgroundAgent> = {}): BackgroundAgent {
+		return makeAgent({
+			status: "failed",
+			startedAt: 1_000,
+			completedAt: 253_000, // 252_000 ms = 4m 12s after start
+			timeoutMs: budget,
+			...overrides,
+		});
+	}
+
+	it("states used and left, anchored on completedAt", () => {
+		expect(formatBudgetLine(agentAt(), "failed", undefined)).toBe(
+			"Budget: 30m — 4m 12s used, 25m 48s left",
+		);
+	});
+
+	it("states exhaustion on timeout evidence", () => {
+		const agent = agentAt({ status: "stopped", error: "Timed out after 1800000ms" });
+		expect(formatBudgetLine(agent, "stopped", makeRun({ errorCategory: "timeout" }))).toBe(
+			"Budget: 30m (exhausted)",
+		);
+		expect(formatBudgetLine(agent, "stopped", undefined)).toBe("Budget: 30m (exhausted)");
+	});
+
+	it("does NOT claim exhaustion for a user abort, even when the budget is nearly gone", () => {
+		const agent = agentAt({ status: "stopped", error: "Aborted by user" });
+		expect(formatBudgetLine(agent, "stopped", undefined)).toBe(
+			"Budget: 30m — 4m 12s used, 25m 48s left",
+		);
+	});
+
+	it("does not claim exhaustion for a run classified completed", () => {
+		const agent = agentAt({ status: "completed", error: "Timed out after 1800000ms" });
+		expect(formatBudgetLine(agent, "completed", undefined)).toBe(
+			"Budget: 30m — 4m 12s used, 25m 48s left",
+		);
+	});
+
+	it("falls back to `now` while the run is unsettled", () => {
+		const agent = agentAt({ completedAt: undefined });
+		expect(formatBudgetLine(agent, undefined, undefined, 253_000)).toBe(
+			"Budget: 30m — 4m 12s used, 25m 48s left",
+		);
+	});
+
+	it("clamps an overrun to 0 left instead of going negative", () => {
+		const agent = agentAt({ completedAt: 1_000 + budget + 60_000 });
+		expect(formatBudgetLine(agent, "failed", undefined)).toBe(
+			"Budget: 30m — 31m used, 0s left",
+		);
+	});
+
+	it("returns nothing when the record carries no budget (an old record)", () => {
+		expect(formatBudgetLine(agentAt({ timeoutMs: undefined }), "failed", undefined)).toBeUndefined();
+	});
+});
+
+describe("buildCompletionMessage — the budget part (issue #423)", () => {
+	it("appends the budget as its own paragraph on a stopped timeout wake", () => {
+		const agent = makeAgent({
+			status: "stopped",
+			startedAt: 1_000,
+			completedAt: 253_000,
+			timeoutMs: 30 * 60_000,
+			error: "Timed out after 1800000ms",
+			finalOutput: "partial work",
+		});
+
+		const msg = buildCompletionMessage(agent, makeRun({ status: "failed", errorCategory: "timeout" }));
+
+		expect(msg.content).toContain("\n\nBudget: 30m (exhausted)\n\n");
+		expect(msg.details.status).toBe("stopped");
+	});
+
+	it("appends used/left on a non-timeout failure", () => {
+		const agent = makeAgent({
+			status: "failed",
+			startedAt: 1_000,
+			completedAt: 253_000,
+			timeoutMs: 30 * 60_000,
+			error: "provider died",
+		});
+
+		const msg = buildCompletionMessage(agent, makeRun({ status: "failed", errorCategory: "exit_error" }));
+
+		expect(msg.content).toContain("Budget: 30m — 4m 12s used, 25m 48s left");
+		expect(msg.content).not.toContain("(exhausted)");
+	});
+
+	it("leaves a completed wake unchanged (no budget part)", () => {
+		const agent = makeAgent({
+			status: "completed",
+			startedAt: 1_000,
+			completedAt: 253_000,
+			timeoutMs: 30 * 60_000,
+		});
+
+		const msg = buildCompletionMessage(agent, makeRun());
+
+		expect(msg.content).not.toContain("Budget:");
+	});
+
+	it("leaves an old record's wake unchanged (no timeoutMs, no budget part)", () => {
+		const agent = makeAgent({ status: "failed", startedAt: 1_000, completedAt: 253_000 });
+
+		expect(buildCompletionMessage(agent, makeRun({ status: "failed" })).content).not.toContain("Budget:");
 	});
 });

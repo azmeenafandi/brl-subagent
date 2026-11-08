@@ -77,6 +77,13 @@ const VOCABULARY_ALLOWLIST = new Map<string, string>([
 			"verbatim — the token is the line's grammar, not internal vocabulary. It is shown only " +
 			"by a project that opted into the line check (ADR 0018), never to a user's dispatch.",
 	],
+	[
+		"src/engineering-bar.ts|worktree",
+		"ENGINEERING_BAR_PATH is a FILESYSTEM LOCATION, not prose: it names the tracked " +
+			"reference the spawn-seam injection reads (issue #421). The string is never rendered — " +
+			"when the file is missing the log entry names the path on disk, and the section itself " +
+			"only exists in a project that opted into processChecks (ADR 0019).",
+	],
 ]);
 
 // ---------------------------------------------------------------------------

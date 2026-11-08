@@ -256,21 +256,125 @@ describe("validatePreTask — the line check inside the one shared validator", (
 });
 
 // ---------------------------------------------------------------------------
-// Schema pins — the bypass reason is a non-empty string, never a boolean
+// The HANDLER's guard — a stated reason must actually BE a reason (issue #419)
 // ---------------------------------------------------------------------------
 
-describe("delegate_task schema: noJev is a non-empty string (refused forms are schema errors)", () => {
+/*
+ * Why these live at the handler and not the schema (ADR 0020): the harness
+ * validates tool arguments with `compile(schema, { coerce: true })`, and
+ * pi-schema's string rule stringifies booleans and numbers BEFORE the handler
+ * is called. So `noJev: true` arrives as the string `"true"` — it satisfies
+ * `Type.String({ minLength: 1 })` and the schema can never refuse it. The
+ * values below are exactly what the handler receives after that coercion, so
+ * each case is written from the handler's point of view, not the model's.
+ */
+describe("noJev — the handler refuses a bypass whose reason is not a reason", () => {
+	/** Dispatch a task with no line and the supplied noJev, against the opted-in project. */
+	function dispatch(noJev: unknown) {
+		return validatePreTask({
+			task: "Implement the thing.",
+			cwd: OPTED_IN,
+			noJev: noJev as string | undefined,
+		});
+	}
+
+	/** The bypass never applies: the normal missing-line ERROR, and no noJev warning. */
+	function expectRefused(result: ReturnType<typeof validatePreTask>) {
+		expect(result.valid).toBe(false);
+		expect(result.errors.some((e) => e.includes("missing Jev dispatch line"))).toBe(true);
+		expect(result.warnings.some((w) => w.includes("noJev"))).toBe(false);
+	}
+
+	it.each([
+		["true", "a coerced boolean true"],
+		["false", "a coerced boolean false"],
+		["42", "a coerced number"],
+		["-1.5", "a coerced negative decimal"],
+		["", "an empty reason"],
+		["   \t ", "a whitespace-only reason"],
+	])("refuses %j (%s) instead of downgrading to a warning", (noJev) => {
+		expectRefused(dispatch(noJev));
+	});
+
+	it("refuses a value the schema could never coerce, without throwing (no .trim on a non-string)", () => {
+		for (const raw of [{}, ["captured from the rollout"], 42, true]) {
+			expect(() => dispatch(raw), `noJev: ${JSON.stringify(raw)} must not throw`).not.toThrow();
+			expectRefused(dispatch(raw));
+		}
+	});
+
+	it("names the reason when it is a genuine one (the bypass still works)", () => {
+		const result = dispatch("captured from the #412 rollout");
+		expect(result.valid).toBe(true);
+		expect(result.errors).toHaveLength(0);
+		expect(result.warnings.some((w) => w.includes("captured from the #412 rollout"))).toBe(true);
+	});
+
+	it("keeps the opt-in: with no processChecks the same coerced value is inert", () => {
+		const result = validatePreTask({
+			task: "Implement the thing.",
+			cwd: OPTED_OUT,
+			noJev: "true" as string | undefined,
+		});
+		expect(result.valid).toBe(true);
+		expect(result.errors).toHaveLength(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Schema pins — the DECLARED shape, and the coercion that defeats it at runtime
+// ---------------------------------------------------------------------------
+
+describe("delegate_task schema: noJev is DECLARED a non-empty string", () => {
 	it("declares `noJev` as Type.String({ minLength: 1 })", () => {
 		const noJev = (delegateTaskParamsSchema.properties as Record<string, Record<string, unknown>>).noJev;
 		expect(noJev, "the schema must declare noJev").toBeDefined();
-		// pi's own argument validator enforces this JSON Schema before execute()
-		// runs, so `noJev: true` (wrong type) and `noJev: ""` (shorter than
-		// minLength) never reach the handler.
+		// This pins the DECLARATION only. It is NOT the guarantee: pi's validator
+		// compiles with `coerce: true`, so a boolean/number reason is stringified
+		// before the handler runs and never trips this rule (see the coercion pin
+		// below and ADR 0020). The stated-reason property is enforced in
+		// `validatePreTask`.
 		expect(noJev.type).toBe("string");
 		expect(noJev.minLength).toBe(1);
 	});
 
 	it("registers noJev as a known delegate key (the unknown-param warn must not fire)", () => {
 		expect([...KNOWN_DELEGATE_KEYS]).toContain("noJev");
+	});
+});
+
+describe("harness coercion — the real validator stringifies a boolean/number reason", () => {
+	/**
+	 * The REAL pi validator (`@earendil-works/pi-ai` → pi-schema `parse()` with
+	 * `{ coerce: true }`), imported lazily so this file's other tests do not pay
+	 * for loading the SDK. If the module ever stops being importable here, this
+	 * pin must not be deleted silently — the reason it cannot run gets recorded
+	 * in its place.
+	 */
+	async function runValidator(noJev: unknown): Promise<any> {
+		const { validateToolArguments } = await import("@earendil-works/pi-ai");
+		const tool = { name: "delegate_task", parameters: delegateTaskParamsSchema } as any;
+		const call = { name: "delegate_task", arguments: { task: "Implement the thing.", noJev } } as any;
+		return validateToolArguments(tool, call);
+	}
+
+	it("coerces true / false / 42 into their text — so the schema accepts them (issue #419)", async () => {
+		expect((await runValidator(true)).noJev).toBe("true");
+		expect((await runValidator(false)).noJev).toBe("false");
+		expect((await runValidator(42)).noJev).toBe("42");
+	});
+
+	it("still refuses \"\" and values it cannot stringify (the half ADR 0018 got right)", async () => {
+		for (const raw of ["", {}, ["a reason"]]) {
+			await expect(runValidator(raw), `noJev: ${JSON.stringify(raw)}`).rejects.toThrow(/noJev/);
+		}
+	});
+
+	it("pins the whole path: a coerced boolean reaches the handler as the string that must be refused", async () => {
+		const coerced = (await runValidator(true)).noJev;
+		expect(coerced).toBe("true");
+		const result = validatePreTask({ task: "Implement the thing.", cwd: OPTED_IN, noJev: coerced });
+		expect(result.valid).toBe(false);
+		expect(result.warnings.some((w) => w.includes("noJev"))).toBe(false);
 	});
 });

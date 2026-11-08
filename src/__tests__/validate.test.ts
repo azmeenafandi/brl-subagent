@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { validatePreTask, diagnoseFailure, normalizeTimeout, type ValidateConfig, type DiagnoseConfig } from "../validate";
+import {
+  validatePreTask,
+  diagnoseFailure,
+  normalizeTimeout,
+  effectiveBackgroundBudget,
+  DEFAULT_BACKGROUND_DEADLINE_MS,
+  type ValidateConfig,
+  type DiagnoseConfig,
+} from "../validate";
 
 describe("validatePreTask", () => {
   it("returns valid for empty task", () => {
@@ -560,5 +568,19 @@ describe("normalizeTimeout (issue #28 PR #49 review M1/m1)", () => {
 		// An explicit timeout is honored verbatim (no ceiling); 30m is only the
 		// no-timeout background default.
 		expect(normalizeTimeout(45 * 60 * 1000)).toBe(45 * 60 * 1000);
+	});
+});
+
+describe("effectiveBackgroundBudget (issue #423)", () => {
+	it("falls back to the 30m background default when there is no usable timeout", () => {
+		expect(DEFAULT_BACKGROUND_DEADLINE_MS).toBe(30 * 60 * 1000);
+		for (const unusable of [undefined, 0, -5, NaN, Infinity, 2 ** 31 - 1]) {
+			expect(effectiveBackgroundBudget(unusable)).toBe(DEFAULT_BACKGROUND_DEADLINE_MS);
+		}
+	});
+
+	it("honors an explicit timeout verbatim — the default is not a ceiling", () => {
+		expect(effectiveBackgroundBudget(90_000)).toBe(90_000);
+		expect(effectiveBackgroundBudget(45 * 60 * 1000)).toBe(45 * 60 * 1000);
 	});
 });
