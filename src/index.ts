@@ -178,8 +178,10 @@ import {
 	resolveRunEntry,
 	buildMonitoringDegradedParagraph,
 	sendMonitoringDegradedAdvisory,
+	withWorktreeState,
 } from "./notify-completion";
 import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "./transport-retry";
+import { appendWorktreeState, describeWorktreeState } from "./worktree-report";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2430,6 +2432,11 @@ export default function (pi: ExtensionAPI) {
 					// C: warnings ride the returned result too — a failed run is
 					// exactly when the conductor most needs the mismatch signal.
 					finalMsg += warningsNote;
+					// Issue #474: the failure path reports the tree it may have left
+					// behind. Appended LAST — the cause and its H1 warnings read
+					// first, the residue after. This is the classified-failure exit
+					// (no throw), the second foreground surface beside the crash seam.
+					finalMsg = appendWorktreeState(finalMsg, resolvedCwd);
 
 				completeTranscript(runId, 'failed');
 
@@ -3256,11 +3263,25 @@ export default function (pi: ExtensionAPI) {
 				if (retried) return;
 			}
 			const message = buildCompletionMessage(agent, run);
+			// Issue #474: a settle that is not a success reports the worktree it may
+			// have left. The CLASSIFIED status gates it (not `agent.status`), so the
+			// #179 completed→failed downgrade carries the block too, and a genuinely
+			// completed run stays noise-free. A record written before #474 has no
+			// `agent.cwd`; its retry snapshot's cwd is used only when it is absolute
+			// (describeWorktreeState refuses a relative one rather than resolving it
+			// against this process's cwd).
+			const settledMessage =
+				message.details.status === "completed"
+					? message
+					: withWorktreeState(
+							message,
+							describeWorktreeState(agent.cwd ?? run?.originalParams?.cwd),
+						);
 			// Issue #179 (D2): resolve delivery from the CLASSIFIED notification
 			// status, not the raw agent status — otherwise a run whose completion
 			// the builder downgraded to failed would still be delivered as a success.
-			const delivery = resolveDelivery(message.details.status, knob);
-			sendCompletionNotification(pi, message, delivery);
+			const delivery = resolveDelivery(settledMessage.details.status, knob);
+			sendCompletionNotification(pi, settledMessage, delivery);
 		} catch (err) {
 			log.warn(`completion-push handler failed for ${id}`, {
 				error: (err as Error).message,

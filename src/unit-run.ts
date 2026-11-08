@@ -34,6 +34,7 @@ import { currentProcessOwner } from "./recovery";
 import { capOutput, stripAnsi, buildCrashResult } from "./sanitize";
 import { finalizeRunRecord, pruneSessionRuns } from "./history";
 import { SessionState } from "./state";
+import { attachWorktreeState } from "./worktree-report";
 
 // ---------------------------------------------------------------------------
 // Structural source for a per-unit run entry
@@ -203,6 +204,11 @@ export function finalizeUnitRun(
  * node"); `logContext` carries the mode-specific context fields (chain passes
  * the step index, parallel passes the task index, graph passes the node id)
  * spread into the log call alongside runId/error.
+ *
+ * Issue #474: `resolvedCwd` is the UNIT's cwd, and the block for it is attached
+ * to the rethrown error BEFORE the rethrow — the mode's outer catch only knows
+ * the dispatch cwd, so without the attachment a unit crash in its own directory
+ * would report a sibling's tree. `buildCrashResult` prefers the attachment.
  */
 export function finalizeUnitRunCrash(
 	state: SessionState,
@@ -214,6 +220,7 @@ export function finalizeUnitRunCrash(
 	log: Logger,
 	logContext?: Record<string, unknown>,
 ): never {
+	attachWorktreeState(err, resolvedCwd);
 	const crash = buildCrashResult(modeLabel, err, resolvedCwd);
 	state.finalizeLiveSubagent(run.id);
 	const crashOutput = state.subagentSessions.get(run.id)?.liveOutput ?? "";

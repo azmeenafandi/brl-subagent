@@ -75,7 +75,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `dispatch-line.ts` | Parse and validate the Rule 22 dispatch line (the project-local opt-in lives in project-flags.ts). |
 | `engineering-bar.ts` | Builds the project's `<engineering-bar>` system-prompt section for every child spawn (issue #421). |
 | `event-bus.ts` | In-memory lifecycle pub/sub (`subagent:*` events) for extensions and the completion wake. |
-| `git.ts` | Branch-based git workflow for worktree runs: branch creation, diff capture, switch-back, cleanup. |
+| `git.ts` | Branch-based git workflow for worktree runs (branch, diff, switch-back, cleanup) plus the read-only worktree probe. |
 | `headstate.ts` | Durable per-repository head state (ADR 0026): the record a branch run writes before its branch exists, the guarded boot reconciliation, and the age sweep. |
 | `history.ts` | Run-record store: creation, finalization, retry lookup, and history pruning. |
 | `index.ts` | Entry point: tool/command registration, the delegate_task handlers, dispatch, single mode and the background fan-out. |
@@ -121,8 +121,9 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-params.ts` | The per-unit param merge (SubTask over global) and the unit display name, shared by chain/parallel/graph and the background fan-out. |
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
+| `worktree-report.ts` | Formats the read-only worktree state a failed or stopped run may have left behind (issue #474). |
 
-**51 modules** — every one is listed because a new module without a purpose fails CI.
+**52 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

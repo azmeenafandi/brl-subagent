@@ -548,6 +548,12 @@ export interface SubTaskResult {
 	errorCategory?: ErrorCategory;
 	gitBranch?: string;
 	gitDiff?: string;
+	/**
+	 * Issue #474: the worktree-state block for a FAILED unit, probed at that
+	 * unit's OWN cwd (a step may declare one, distinct from the dispatch cwd).
+	 * Absent on success — the block is failure-path reporting, not noise.
+	 */
+	worktreeState?: string;
 }
 
 /** Aggregate result for chain and parallel modes. */
@@ -844,6 +850,13 @@ export interface BackgroundAgent {
 	workBranch?: string;
 	/** @internal — session reference for live monitor polling */
 	_sessionRef?: import('@earendil-works/pi-coding-agent').AgentSession;
+	/**
+	 * Issue #474: the directory this run was spawned in, stamped at spawn so a
+	 * settled failure can report the worktree it may have left. Absolute by
+	 * construction (the spawn's resolved cwd); additive, so a record written
+	 * before the field existed reads as "no recorded cwd".
+	 */
+	cwd?: string;
 	/**
 	 * @internal — Option B U2: the on-disk session file for this run, captured
 	 * from `SessionManager.getSessionFile()` at spawn. Used by the settle path to

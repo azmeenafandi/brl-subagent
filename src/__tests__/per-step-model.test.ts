@@ -1682,11 +1682,18 @@ describe("graph mode crash semantics with live registration (issue #130)", () =>
 		// Both siblings were spawned — the rejection did not cancel the wave.
 		expect(runnerMocks.runSubagent).toHaveBeenCalledTimes(2);
 
-		// The wave carries only the fulfilled node's result.
+		// Issue #474: the wave carries BOTH nodes. The rejected node used to vanish
+		// from the wave (the conductor read a shorter list as "nothing failed
+		// there"); it now keeps its place as a FAILED row — exitCode 1, the reason,
+		// and the unit's own worktree block.
 		const waveTasks = result?.details?.waves?.[0]?.tasks ?? [];
-		expect(waveTasks).toHaveLength(1);
-		expect(waveTasks[0]?.task).toBe("fine task");
-		expect(waveTasks[0]?.exitCode).toBe(0);
+		expect(waveTasks).toHaveLength(2);
+		const byTask = new Map(waveTasks.map((t) => [t.task, t]));
+		expect(byTask.get("fine task")?.exitCode).toBe(0);
+		const failedRow = byTask.get("boom the build");
+		expect(failedRow?.exitCode).toBe(1);
+		expect(failedRow?.errorMessage).toContain("spawn failed");
+		expect(failedRow?.worktreeState).toContain("Worktree state (git, at failure):");
 	});
 });
 
@@ -2095,12 +2102,17 @@ describe("per-unit releaseSlot success flags (issue #137)", () => {
 		const calls = releaseSpy.mock.calls;
 		expect(calls).toHaveLength(3);
 		const successFlags = calls.map((c) => c[1] as boolean);
-		expect(successFlags.filter(Boolean)).toHaveLength(2); // fine node + mode-level
-		expect(successFlags.filter((s) => !s)).toHaveLength(1); // boom node
+		// Issue #474 changed the third flag, on purpose: a rejected node keeps a
+		// FAILED row in the wave, so the aggregate is honestly "not all done" and
+		// the mode-level release now counts the dispatch as failed. Before #474 the
+		// row was dropped, and the dispatch released as a success while a node had
+		// crashed — the count was quiet, not correct.
+		expect(successFlags.filter(Boolean)).toHaveLength(1); // fine node
+		expect(successFlags.filter((s) => !s)).toHaveLength(2); // boom node + mode-level
 
 		const state = lastState();
-		expect(state.completedSubagents).toBe(2);
-		expect(state.failedSubagents).toBe(1);
+		expect(state.completedSubagents).toBe(1);
+		expect(state.failedSubagents).toBe(2);
 	});
 
 	it("parallel: successful tasks count as done, zero failed (no mode-level release adds no phantom fail)", async () => {

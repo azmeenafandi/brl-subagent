@@ -1535,6 +1535,12 @@ export async function spawnBackgroundSession(
     model: params.model || 'unknown',
     thinkingLevel: params.thinkingLevel || 'medium',
     priority: params.priority,
+    // Issue #474: the directory this run was spawned in, stamped so a settled
+    // failure can report the worktree it may have left. `effectiveCwd` is the
+    // resolved, validated absolute path (params.cwd ?? ctx.cwd), and
+    // `persistAgent` strips only the live-only pointers — so this survives the
+    // record and the completion wake can read it.
+    cwd: effectiveCwd,
     dispatchId,
     resumeOf: params.resumeOf,
     attempt,
