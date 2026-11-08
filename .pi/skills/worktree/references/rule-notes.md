@@ -91,6 +91,17 @@ dates, and historical framing. The binding rules (with their numbers) live in
    in repo docs/tools (this skill, `.development/` — tracked since #247), and tasks where the
    conductor already holds irreplaceable context (e.g. mid-review steering).
 
+   **A killed subagent leaves hostile state, not unfinished work.** Its worktree
+   is suspect and its verification is *unrun*: the 2026-11-07 sweep left two
+   mutants applied in worktrees (a reversed `outputFile` precedence and a
+   partially applied batch guard) and one run that committed all five steps and
+   then died before its mutant table. After any transport death: read
+   `git diff` for an inverted condition or a stray edit, and re-derive the gate
+   the agent would have run — a reviewer rebuilt that whole mutant table for
+   exactly this reason. Take over a unit that died past roughly 70% instead of
+   re-dispatching it; what survives is judged by the conductor, because the
+   agent's own report does not exist.
+
 ## Rule 8
 
 8. **"Fixes #N" in commit + PR bodies.** GitHub only auto-closes issues on
@@ -342,6 +353,20 @@ dates, and historical framing. The binding rules (with their numbers) live in
 **The backtest (2026-10-10, 98 sprint-window dispatches, $0.0034).** Blind-classified every production dispatch with TypeSafe's **Jev** classifier ("System One" — typed choice questions over JSON state, `models.classify` via `codemode`): exact agreement 47%, adjacent 87%. The disagreement is systematic, not noise — it **discounts mechanical/plumbing work** (16/40 `high` and 19/40 `medium` downgraded, including `impl-codegraph-phase1` high→low and `impl-fix315` high→minimal) and it **raises reviews** (`review-test-hygiene-r2` — the review that caught the #308 regression — high→**xhigh**; `impl-299-probe` medium→xhigh). It also ignores operational burden entirely, so its `minimal` calls would under-provision worktree/suite/PR work.
 
 **Decision: advisory, with clamps.** Rule 22 records `jev: <level> (<conf>) · risk · worktree` in every spec/dispatch; ≥2-level deviations and below-Jev reviews need a reason; artifact work floors at `low`. **Standing carve-out (2026-11-07, maintainer):** plan critiques always run at `thinkingLevel: "medium"` for terra — the measured cost/performance optimum — regardless of the Jev level. The line is still recorded and still sets the risk class; only the thinking level is pinned, and the deviation needs no per-dispatch justification. Same doctrine as Rule 13: an intention with no artifact decays — the recorded line is the artifact, and the maintainer's spec approval is the gate. Phase 2 (classifier inside the extension) is deliberately unscheduled; the released package is untouched.
+
+**The `worktree` field is a stated fact, not a model answer (2026-11-07, #456).**
+It was derived by thresholding the classifier's probability at 0.5, but its own
+criterion is mechanical ("it modifies `src/` or `presets/`") and Rule 5 requires
+a worktree for every such change — measured: **16 of 16** src dispatches printed
+`worktree n` and every one correctly ran in a worktree, so each became an
+exact-text provenance miss at the merge gate and needed an exceptions entry.
+`jev-check --classifier … --worktree y|n --label …` now lets the conductor
+**state** it; the row gains a fourth column, `stated:worktree`, so the artifact
+records which fields the model actually produced. `level` and `risk` stay
+classifier answers — hand-typing them remains the Goodhart failure this
+apparatus exists to prevent — and `--worktree` is refused with `--line`, where
+the field is already decided. The printed line keeps its shape, so the gate
+still matches it exactly.
 
 ## Rule 23
 
