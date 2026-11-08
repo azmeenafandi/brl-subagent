@@ -102,6 +102,12 @@ const VOCABULARY_ALLOWLIST = new Map<string, string>([
 		"Module specifier only (./worktree-report) — resolved by the loader, never rendered.",
 	],
 	[
+		"src/delegate-handler.ts|worktree",
+		"Module specifier only (./worktree-report) — resolved by the loader, never rendered. " +
+			"Added by ADR 0027 S5: the failure block's call site moved here with the " +
+			"foreground run path.",
+	],
+	[
 		"src/sanitize.ts|worktree",
 		"Module specifier only (./worktree-report) — resolved by the loader, never rendered.",
 	],

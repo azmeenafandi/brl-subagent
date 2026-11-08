@@ -321,11 +321,18 @@ describe("architecture rules (issue #251)", () => {
 		// an inline `spawn: { … }` at the parameter list would be exactly the
 		// anonymous object-literal assertion this rule forbids.
 		const pipelineSource = readFileSync(join(SRC, "background-pipeline.ts"), "utf8");
+		// ADR 0027 (S5): the `delegate_task` body — which carries the retry seam —
+		// moved to `delegate-handler.ts`. Both halves of this pin follow it: the
+		// `as {` prohibition (a new unchecked object-literal claim there is exactly
+		// as invisible as it was in the composition root) and the ONE documented
+		// retry cast, which now lives at its new home.
+		const delegateSource = readFileSync(join(SRC, "delegate-handler.ts"), "utf8");
 
 		for (const [file, source] of [
 			["src/index.ts", indexSource],
 			["src/mode-runners.ts", modeRunnersSource],
 			["src/background-pipeline.ts", pipelineSource],
+			["src/delegate-handler.ts", delegateSource],
 		] as const) {
 			expect(
 				/\bas\s*\{/.test(source),
@@ -339,7 +346,7 @@ describe("architecture rules (issue #251)", () => {
 		// Removing it needs the production type work (history.ts's return type),
 		// so this commit PINS the current typed cast and forbids regressing it to
 		// an anonymous literal or `any`.
-		const retryAssignments = indexSource
+		const retryAssignments = delegateSource
 			.split("\n")
 			.filter((line) => /\bparams\s*=\s*resolveRetryParams\(/.test(line));
 		expect(retryAssignments).toHaveLength(1);
@@ -349,7 +356,7 @@ describe("architecture rules (issue #251)", () => {
 		// One named retry cast is the whole contract: a second `as
 		// DelegateTaskParams` elsewhere re-opens the unchecked-claim class commit
 		// 1 closed.
-		const namedCasts = indexSource.match(/\bas\s+DelegateTaskParams\b/g) ?? [];
+		const namedCasts = delegateSource.match(/\bas\s+DelegateTaskParams\b/g) ?? [];
 		expect(namedCasts).toHaveLength(1);
 	});
 

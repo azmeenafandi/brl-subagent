@@ -72,9 +72,12 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 
 | Module | Purpose |
 |---|---|
+| `agent-tools.ts` | The three agent-lifecycle tools (get_subagent_result, steer_subagent, stop_subagent) as definitions, returned to the composition root to register. |
 | `background-pipeline.ts` | The background pipeline — the fan-out handler, the shared spawn tail and the single-background spawn — built over one runtime context. |
 | `boot-recovery.ts` | Boot recovery — the interrupted-run scan, the boot head-state reconcile and the recovery notices, built over one runtime context. |
+| `commands.ts` | The /brl-subagent command definition — its argument completions and the handler table — returned to the composition root to register. |
 | `concurrency.ts` | Session-bound concurrency queue: slot acquisition/release, priority insertion, and progress counters. |
+| `delegate-handler.ts` | The delegate_task tool — its definition, the dispatch pre-flight, the foreground run path — returned to the composition root to register. |
 | `diff.ts` | Parses git unified diffs into structured per-file summaries and hunks for the result UI. |
 | `dispatch-line.ts` | Parse and validate the Rule 22 dispatch line (the project-local opt-in lives in project-flags.ts). |
 | `engineering-bar.ts` | Builds the project's `<engineering-bar>` system-prompt section for every child spawn (issue #421). |
@@ -128,7 +131,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 | `worktree-report.ts` | Formats the read-only worktree state a failed or stopped run may have left behind (issue #474). |
 
-**55 modules** — every one is listed because a new module without a purpose fails CI.
+**58 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
