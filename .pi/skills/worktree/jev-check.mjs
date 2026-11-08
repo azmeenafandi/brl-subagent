@@ -1261,6 +1261,56 @@ function formatCalibrationRow(bucket) {
 	);
 }
 
+/** The empty accumulators for one model bucket (and for the totals row — same shape, one source). */
+function emptyBucket(model) {
+	return { model, n: 0, sufficient: 0, blindAgree: 0, awareN: 0, awareAgree: 0, delta: { above: 0, below: 0, equal: 0 } };
+}
+
+/**
+ * Fold the eligible rows into per-model buckets: counts, the observed-sufficient count, both arms'
+ * agreement with the DISPATCHED level, and the direction the aware arm moved. Rows whose model is
+ * recorded nowhere land in `(unstated)` — legacy rows are shown, never hidden.
+ */
+function collectCalibrationBuckets(eligible, byLabel) {
+	const rank = new Map(LEVELS.map((level, index) => [level, index]));
+	const buckets = new Map();
+	for (const row of eligible) {
+		const entry = byLabel.get(row.label);
+		const dispatched = levelOfDispatchLine(entry.line);
+		const aware = entry.levelModel === null ? null : entry.levelModel.level;
+		const model = row.modelRan ?? entry.model ?? MODEL_UNSTATED;
+		if (!buckets.has(model)) buckets.set(model, emptyBucket(model));
+		const bucket = buckets.get(model);
+		bucket.n += 1;
+		if (isObservedSufficient(row)) bucket.sufficient += 1;
+		// The blind arm's answer IS the recorded line, so this compares it with the dispatched level
+		// literally — tautological by construction, which is why the output says so out loud.
+		const blind = dispatched;
+		if (blind === dispatched) bucket.blindAgree += 1;
+		if (aware !== null) {
+			bucket.awareN += 1;
+			if (aware === dispatched) bucket.awareAgree += 1;
+			const delta = rank.get(aware) - rank.get(dispatched);
+			if (delta > 0) bucket.delta.above += 1;
+			else if (delta < 0) bucket.delta.below += 1;
+			else bucket.delta.equal += 1;
+		}
+	}
+	const totals = emptyBucket("total");
+	for (const bucket of buckets.values()) {
+		totals.n += bucket.n;
+		totals.sufficient += bucket.sufficient;
+		totals.blindAgree += bucket.blindAgree;
+		totals.awareN += bucket.awareN;
+		totals.awareAgree += bucket.awareAgree;
+		totals.delta.above += bucket.delta.above;
+		totals.delta.below += bucket.delta.below;
+		totals.delta.equal += bucket.delta.equal;
+	}
+	const sorted = [...buckets.values()].sort((a, b) => b.n - a.n || a.model.localeCompare(b.model));
+	return { sorted, totals, unstated: (buckets.get(MODEL_UNSTATED) ?? { n: 0 }).n };
+}
+
 /**
  * `--calibrate`: join the sidecar to the provenance log and print a comparison — never a ranking.
  *
@@ -1319,41 +1369,7 @@ function reportCalibration(provenancePath = DEFAULT_PROVENANCE_LOG, outcomesPath
 		return 0;
 	}
 
-	const rank = new Map(LEVELS.map((level, index) => [level, index]));
-	const buckets = new Map();
-	const bucketFor = (model) => {
-		if (!buckets.has(model)) {
-			buckets.set(model, {
-				model,
-				n: 0,
-				sufficient: 0,
-				blindAgree: 0,
-				awareN: 0,
-				awareAgree: 0,
-				delta: { above: 0, below: 0, equal: 0 },
-			});
-		}
-		return buckets.get(model);
-	};
-	for (const row of eligible) {
-		const entry = byLabel.get(row.label);
-		const dispatched = levelOfDispatchLine(entry.line);
-		const blind = dispatched;
-		const aware = entry.levelModel === null ? null : entry.levelModel.level;
-		const bucket = bucketFor(row.modelRan ?? entry.model ?? MODEL_UNSTATED);
-		bucket.n += 1;
-		if (isObservedSufficient(row)) bucket.sufficient += 1;
-		if (blind === dispatched) bucket.blindAgree += 1;
-		if (aware !== null) {
-			bucket.awareN += 1;
-			if (aware === dispatched) bucket.awareAgree += 1;
-			const delta = rank.get(aware) - rank.get(dispatched);
-			if (delta > 0) bucket.delta.above += 1;
-			else if (delta < 0) bucket.delta.below += 1;
-			else bucket.delta.equal += 1;
-		}
-	}
-
+	const { sorted, totals, unstated } = collectCalibrationBuckets(eligible, byLabel);
 	console.log(
 		"jev-check: bias: both arms are scored against the conductor's DISPATCHED level — which is the blind " +
 			"line as recorded, so blind agreement is 100% by construction — over runs that worked. That is a " +
@@ -1372,23 +1388,10 @@ function reportCalibration(provenancePath = DEFAULT_PROVENANCE_LOG, outcomesPath
 			"aware=disp".padStart(12) +
 			"  delta (aware vs disp)",
 	);
-	const sorted = [...buckets.values()].sort((a, b) => b.n - a.n || a.model.localeCompare(b.model));
-	const unstated = (buckets.get(MODEL_UNSTATED) ?? { n: 0 }).n;
-	const totals = { model: "total", n: 0, sufficient: 0, blindAgree: 0, awareN: 0, awareAgree: 0, delta: { above: 0, below: 0, equal: 0 } };
-	for (const bucket of sorted) {
-		console.log(formatCalibrationRow(bucket));
-		totals.n += bucket.n;
-		totals.sufficient += bucket.sufficient;
-		totals.blindAgree += bucket.blindAgree;
-		totals.awareN += bucket.awareN;
-		totals.awareAgree += bucket.awareAgree;
-		totals.delta.above += bucket.delta.above;
-		totals.delta.below += bucket.delta.below;
-		totals.delta.equal += bucket.delta.equal;
-	}
+	for (const bucket of sorted) console.log(formatCalibrationRow(bucket));
 	console.log(formatCalibrationRow(totals));
 	console.log(
-		`jev-check: ${buckets.size} model bucket(s), ${withModel}/${eligible.length} eligible row(s) record a model — ` +
+		`jev-check: ${sorted.length} model bucket(s), ${withModel}/${eligible.length} eligible row(s) record a model — ` +
 			`${eligible.length - unstated} with an id, ${unstated} ${MODEL_UNSTATED}`,
 	);
 	console.log(
