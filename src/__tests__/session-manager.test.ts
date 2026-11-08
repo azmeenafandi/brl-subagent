@@ -109,6 +109,7 @@ import { __setOutputDir } from "../transcript";
 import { persistRunRecord, registerInflightRun } from "../run-registry";
 import { recoverInflightRuns, defaultRecoveryDeps } from "../recovery";
 import { collectInterruptedRuns, offeredInterruptedRuns } from "../recovery-surface";
+import { readHeadState } from "../headstate";
 
 // Issue #98: spawnBackgroundSession persists session run entries via
 // pi.appendEntry (same store the foreground path writes to).
@@ -1591,6 +1592,9 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 		// Issue #122 nit: the usage merge must preserve the branch's real
 		// exitCode (0 on the completed path — not clobbered by the seed).
 		expect(after?.result?.exitCode).toBe(0);
+		// Issue #466: the tree is verified off the work branch, so the durable
+		// record has nothing left to repair.
+		expect(readHeadState(fakeCtx.cwd).state).toBe("absent");
 	});
 
 	it("captures any partial diff and discards the branch on failure", async () => {
@@ -1673,6 +1677,51 @@ describe("spawnBackgroundSession gitMode branch lifecycle (issue #28 W4)", () =>
 			"brl-subagent-abc12345"
 		);
 		expect(getAgent(agent.id)?.status).toBe("stopped");
+	});
+
+	// Issue #466: the durable head state is the write-ahead half of the branch
+	// lifecycle — written BEFORE the branch exists (M1/M2), and cleared only once
+	// the tree is verified off the branch (M3/M4).
+	it("writes the durable head state BEFORE the work branch exists (M1/M2)", async () => {
+		resetGitMocks();
+		let duringCheckout: ReturnType<typeof readHeadState> | undefined;
+		mocks.git.createWorkBranch.mockImplementation(() => {
+			duringCheckout = readHeadState(fakeCtx.cwd);
+			return { ok: false, error: "checkout failed" };
+		});
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "test head state write point",
+				gitMode: "branch",
+			})
+		).rejects.toThrow(/Refusing to spawn the background agent unisolated/);
+
+		const written = duringCheckout?.state === "ok" ? duringCheckout.record : undefined;
+		expect(written?.workBranch).toBe("brl-subagent-abc12345");
+		expect(written?.base).toMatchObject({ branch: "main", sha: "abc123def456", detached: false });
+		expect(written?.kind).toBe("background");
+		// The checkout failed, so nothing was created and nothing needs repair.
+		expect(readHeadState(fakeCtx.cwd).state).toBe("absent");
+	});
+
+	it("a FAILED restore keeps the head state, and a verified one clears it (M3/M4)", async () => {
+		resetGitMocks();
+		mocks.git.restoreHead.mockReturnValue({ ok: false, error: "would be overwritten" });
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const { spawnBackgroundSession } = await import("../session-manager");
+		await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "test failed restore keeps the record",
+			gitMode: "branch",
+		});
+		await new Promise((r) => setTimeout(r, 0));
+
+		// The tree is still on the work branch: the record is the only copy of the base.
+		expect(readHeadState(fakeCtx.cwd).state).toBe("ok");
 	});
 });
 

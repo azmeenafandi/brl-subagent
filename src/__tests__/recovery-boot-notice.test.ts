@@ -54,10 +54,14 @@ vi.mock("@earendil-works/pi-tui", () => {
 
 import initExtension from "../index";
 import { registerInflightRun, markInterrupted } from "../run-registry";
+import { HEAD_STATE_NOTICE_CUSTOM_TYPE, HEAD_STATE_VERSION, readHeadState, writeHeadState } from "../headstate";
+import { getCurrentBranch, getRepoRoot, listWorkBranches } from "../git";
+import { commitFile, createTempGitRepo, gitRun } from "./fixtures/temp-git-repo";
 import { CUSTOM_ENTRY_TYPES, type RecoveryMode } from "../types";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 
 const env = createTempEnv("brl-u3-notice");
 const ID = "11111111-2222-3333-4444-555555555555";
@@ -207,5 +211,75 @@ describe("U3 boot notice — delivery (T2)", () => {
 		seedInterruptedRun({ recoveryPosture: "off" });
 		await startSession("offer");
 		expect(recoveryMessages()).toHaveLength(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #466 (ADR 0026 D2/D5): the head-state step of the same boot
+// ---------------------------------------------------------------------------
+
+function gitAvailable(): boolean {
+	try {
+		execFileSync("git", ["--version"], { encoding: "utf-8" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+describe.skipIf(!gitAvailable())("head-state boot step (#466)", () => {
+	const WORK = "brl-subagent-boot0001";
+	const repos: string[] = [];
+
+	/** A real repo left on a clean orphan branch, with its durable record. */
+	async function seedCleanOrphan(): Promise<string> {
+		const repo = await createTempGitRepo("brl-boot-hs-");
+		repos.push(repo);
+		const baseSha = gitRun(repo, ["rev-parse", "HEAD"]);
+		gitRun(repo, ["checkout", "-q", "-b", WORK]);
+		await commitFile(repo, "work.txt", "run work\n", "run work");
+		writeHeadState({
+			version: HEAD_STATE_VERSION,
+			repoRoot: getRepoRoot(repo) ?? repo,
+			runId: ID,
+			kind: "background",
+			base: { sha: baseSha, branch: "main", detached: false },
+			workBranch: WORK,
+			owner: { pid: 999_999, start: "0" },
+			createdAt: new Date().toISOString(),
+		});
+		return repo;
+	}
+
+	function headStateMessages(): Captured[] {
+		return captured.filter((c) => c.message.customType === HEAD_STATE_NOTICE_CUSTOM_TYPE);
+	}
+
+	afterAll(async () => {
+		await Promise.all(repos.map((dir) => fs.promises.rm(dir, { recursive: true, force: true })));
+	});
+
+	it("restores the recorded base at boot and says so once, at a turn boundary", async () => {
+		const repo = await seedCleanOrphan();
+		await startSession("offer");
+
+		expect(getCurrentBranch(repo)).toBe("main");
+		// D3: the work branch is the only copy — kept, with its commit.
+		expect(listWorkBranches(repo)).toEqual([WORK]);
+		expect(readHeadState(repo).state).toBe("absent");
+		const notices = headStateMessages();
+		expect(notices).toHaveLength(1);
+		expect(notices[0].options).toMatchObject({ deliverAs: "nextTurn", triggerTurn: true });
+		expect(String(notices[0].message.content)).toContain(WORK);
+		expect(String(notices[0].message.content)).toContain("main");
+	});
+
+	it("repairs under posture 'off' and stays silent — the repair is never gated", async () => {
+		const repo = await seedCleanOrphan();
+		await startSession("off");
+
+		expect(getCurrentBranch(repo)).toBe("main");
+		expect(readHeadState(repo).state).toBe("absent");
+		expect(headStateMessages()).toHaveLength(0);
 	});
 });
