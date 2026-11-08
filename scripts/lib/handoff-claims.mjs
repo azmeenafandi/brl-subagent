@@ -139,12 +139,12 @@ const SUITE_RE = new RegExp(`\\bSuite:[ \\t]*\\**\\s*(\\d+)[ \\t]+files?[ \\t]*/
 // same exclusions the size regex makes by lookahead.
 const MODULES_RE = /(?<![\d/])\b(\d+)[ \t]+modules\b/g;
 const ADRS_RE = /(?<![\d/])\b(\d+)[ \t]+ADRs\b/g;
-// `` `name.ts` (is) **N** ``, but never a historical shape: `**2,006 → 353**`, `5+/2−`, or `(1,429)`
-// (a parenthesis breaks the immediate-number rule). The lookahead is what keeps history out of a
-// current-size check.
+// `` `name.ts` (is) **N** ``, but never a historical shape: `**2,006 → 353**`, `5+/2−`, `(1,429)`
+// (a parenthesis breaks the immediate-number rule), or a comparison (`2,249 vs 2,248`, #505). The
+// lookahead is what keeps history out of a current-size check.
 const SIZE_RE = new RegExp(
 	"`((?:[\\w.-]+/)*[\\w.-]+\\.ts)`(?:[ \\t]+is)?[ \\t]*\\*{0,2}([\\d,]+)\\*{0,2}" +
-		"(?![\\d,]*[ \\t]*(?:→|->|\\+|/))",
+		"(?![\\d,]*[ \\t]*(?:→|->|\\+|/|versus\\b|vs\\b))",
 	"g",
 );
 

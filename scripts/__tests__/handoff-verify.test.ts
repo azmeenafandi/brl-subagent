@@ -148,13 +148,37 @@ describe("handoff-verify — the parser", () => {
 	it("never reads a historical shape as a current size claim", () => {
 		const claims = claimsOf("correct");
 		const names = claims.sizes.map((size: { name: string }) => size.name);
-		// `alpha.ts` **20 → 10** and `beta.ts` (9) live in `### Since the last handover`, and only the
-		// current size (`10`, `3`) is a claim.
+		// `alpha.ts` **20 → 10**, `beta.ts` (9), `alpha.ts` 2,249 vs/versus 2,248 and `alpha.ts`
+		// 5+/2− live in `### Since the last handover`, and only the current size (`10`, `3`) is a claim.
 		expect(claims.sizes).toEqual([
 			{ name: "alpha.ts", lines: 10 },
 			{ name: "beta.ts", lines: 3 },
 		]);
 		expect(names).toHaveLength(2);
+	});
+
+	it("keeps a bare number, a comma and a closing backtick as claims", () => {
+		// The other half of the #505 pin: the exclusions must not swallow a present claim.
+		const claims = parseClaims(
+			[
+				"## STATE",
+				"Verified: 4c1d9ab",
+				"- **dev** @ `4c1d9ab`.",
+				"`alpha.ts` 2,249, and `beta.ts` 10.",
+			].join("\n"),
+		);
+		expect(claims.sizes).toEqual([
+			{ name: "alpha.ts", lines: 2249 },
+			{ name: "beta.ts", lines: 10 },
+		]);
+	});
+
+	it("still drifts on a present claim stated with `is`", () => {
+		const present = parseClaims(text("correct").replace("`alpha.ts` is **10**", "`alpha.ts` is 2,249"));
+		expect(present.sizes).toContainEqual({ name: "alpha.ts", lines: 2249 });
+		const { drifts } = evaluate(present, stub());
+		expect(drifts.map((drift) => drift.code)).toEqual([CODES.fileSizeDrift]);
+		expect(drifts[0].actual).toBe("2249 lines");
 	});
 
 	it("ignores a quoted field name — a mention is not a claim", () => {
