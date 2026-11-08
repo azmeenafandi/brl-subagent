@@ -81,6 +81,8 @@ comment naming the merge commit).
 ## A PR is not complete until CI is green
 
 Check `gh pr checks <n>` before reporting the PR ready (and again after every push). The README
-**test-count guard** is a common red: `scripts/check-readme-test-count.mjs` fails when README's
-`"<N>+ test suite"` claim overstates the run or trails it by more than 100 — update the claim in the
-same commit as the test-count change.
+**test-count guard** (`scripts/check-readme-test-count.mjs`) runs in two modes since #469: on a task
+PR it enforces **truth only** — the `"<N>+ test suite"` claim must never overstate the run, so
+adding tests can never turn it red. The **freshness** half (trailing by more than 100) is enforced at
+the release seam only, because it is a property of the merged tree, and the release ritual bumps it
+mechanically with `--bump`.
