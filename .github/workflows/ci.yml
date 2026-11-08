@@ -23,10 +23,21 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
-      # The README's "<N>+ test suite" claim is pinned to reality (docs-pinning class, issue #166):
-      # the JSON report feeds a drift check — the claim may trail the real count by at most 100.
+      # The README's "<N>+ test suite" claim is pinned to reality (docs-pinning class, issue #166).
+      # Two invariants, two seams: TRUTH (the claim must never overstate the suite) is a property of
+      # the branch, so every PR and push checks it. FRESHNESS (the claim may trail the real count by
+      # at most 100) is a property of the *merged tree* — a task PR based on `dev` cannot satisfy it,
+      # and that merge-ref race cost #459 a cycle. So the default arm is deliberately lenient, and the
+      # release seam is the enforcement point: the release PR (base `main`) and the push that lands
+      # it. Bump the claim there with `scripts/check-readme-test-count.mjs <report> --bump`
+      # (release ritual, step 5). `GITHUB_BASE_REF` is empty on `push`, hence the explicit ref arm.
       - run: npx vitest run --reporter=default --reporter=json --outputFile=vitest-report.json
-      - run: node scripts/check-readme-test-count.mjs vitest-report.json
+      - name: README count — truth (every branch)
+        if: ${{ !(github.event_name == 'pull_request' && github.base_ref == 'main') && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+        run: node scripts/check-readme-test-count.mjs vitest-report.json
+      - name: README count — truth + freshness (release seam only)
+        if: ${{ (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+        run: node scripts/check-readme-test-count.mjs vitest-report.json --strict
       # The suite's growth budget (issue #368): wall time <= 60 s and test:source
       # LOC ratio <= 2.0. Ceilings, not targets — growth needs a reason.
       - run: node scripts/check-test-budget.mjs vitest-report.json
