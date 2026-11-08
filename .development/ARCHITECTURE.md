@@ -85,6 +85,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `messaging.ts` | Inter-subagent messaging: the Intercom channel and `[TO:id]` output parsing. |
 | `metrics.ts` | SLA metrics over run history: p50/p95/p99 latency, success and cost rates, degradation detection. |
 | `mode-prologue.ts` | The batch-mode prologue (cost → depth → resolve → targets → preflight → H1), one call per foreground batch handler. |
+| `mode-runners.ts` | The three foreground batch-mode runners (chain, parallel, graph) plus their per-unit helpers, built over one runtime context. |
 | `model-availability.ts` | Model identity + auth-aware availability: parse a provider/model-id string and check catalog presence plus configured provider auth. |
 | `notify-completion.ts` | Builds and sends the completion-push wake message for terminal background runs. |
 | `params.ts` | Param resolution: per-call + preset merge, thinking caps, timeout normalization, tool and git/approval resolution, auto-routing. |
@@ -121,7 +122,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**50 modules** — every one is listed because a new module without a purpose fails CI.
+**51 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

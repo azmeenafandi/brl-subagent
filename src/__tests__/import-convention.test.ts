@@ -30,10 +30,10 @@ const SCRIPT = join(ROOT, "scripts", "check-imports.mjs");
 const SRC = join(ROOT, "src");
 
 /** `src/*.ts` as last re-pointed: 48 at the convention's introduction (issue #476),
- * 49 after `unit-params.ts` (ADR 0027 S1), 50 after `runtime.ts` (ADR 0027 S2).
- * Re-point it with the commit that adds or removes a module — never to match a
- * scan that silently stopped matching. */
-const SRC_FILE_COUNT = 50;
+ * 49 after `unit-params.ts` (ADR 0027 S1), 51 after `runtime.ts` + `mode-runners.ts`
+ * (ADR 0027 S2). Re-point it with the commit that adds or removes a module — never
+ * to match a scan that silently stopped matching. */
+const SRC_FILE_COUNT = 51;
 
 const scratch = mkdtempSync(join(tmpdir(), "brl-476-imports-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
