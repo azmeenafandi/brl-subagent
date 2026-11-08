@@ -132,7 +132,10 @@ export function findNewestReport(dir = tmpdir()) {
 		.sort((left, right) => right.mtime - left.mtime || (left.path < right.path ? 1 : -1));
 	for (const candidate of candidates) {
 		try {
-			return readSuiteReport(candidate.path);
+			const report = readSuiteReport(candidate.path);
+			// A zero-test report is a capture artefact (a probe or a filtered run), never a baseline: it would
+			// turn a correct handoff into a false suite-count-drift. Skip it like an unparseable file.
+			if (report.tests > 0) return report;
 		} catch {
 			// not a vitest report — keep looking
 		}

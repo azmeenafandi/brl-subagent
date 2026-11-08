@@ -546,6 +546,17 @@ describe("handoff-verify — the seams", () => {
 		expect(findNewestReport(dir)?.path).toBe(older);
 	});
 
+	it("skips a newer zero-test capture so it cannot fake a suite-count drift", () => {
+		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-verify-"));
+		const baseline = join(dir, "vitest-baseline.json");
+		const scratch = join(dir, "hv-report.json");
+		writeFileSync(baseline, readFileSync(REPORT, "utf8"));
+		writeFileSync(scratch, JSON.stringify({ numTotalTests: 0, testResults: [{ assertionResults: [] }] }));
+		utimesSync(baseline, new Date(1000), new Date(1000));
+		utimesSync(scratch, new Date(2000), new Date(2000));
+		expect(findNewestReport(dir)?.path).toBe(baseline);
+	});
+
 	it("reads an injected issue list, numbers or objects", () => {
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-verify-"));
 		const file = join(dir, "issues.json");
