@@ -109,6 +109,12 @@ const VOCABULARY_ALLOWLIST = new Map<string, string>([
 		"src/unit-run.ts|worktree",
 		"Module specifier only (./worktree-report) — resolved by the loader, never rendered.",
 	],
+	[
+		"src/terminal-notifier.ts|worktree",
+		"Module specifier only (./worktree-report) — resolved by the loader, never rendered. " +
+			"Re-pointed by ADR 0027 S4: the failure block's builder moved here with " +
+			"`deliverCompletionAlert`.",
+	],
 ]);
 
 // ---------------------------------------------------------------------------
