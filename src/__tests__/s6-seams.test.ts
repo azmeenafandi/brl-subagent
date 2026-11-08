@@ -24,7 +24,13 @@ import { createDelegateHandler, type DelegateHandlerDeps } from "../delegate-han
 import { SessionState } from "../state";
 import { __setRegistryDir } from "../run-registry";
 import { __setOutputDir } from "../transcript";
-import { CUSTOM_ENTRY_TYPES, type SubagentRun, type TaskTemplate } from "../types";
+import {
+	CUSTOM_ENTRY_TYPES,
+	MAX_CHAIN_STEPS,
+	MAX_PARALLEL_TASKS,
+	type SubagentRun,
+	type TaskTemplate,
+} from "../types";
 
 /**
  * The runner is the only subprocess seam the foreground path has. Its
@@ -84,6 +90,7 @@ interface SentMessage {
 interface Harness {
 	tool: ReturnType<typeof createDelegateHandler>;
 	state: SessionState;
+	pi: ExtensionAPI;
 	sent: SentMessage[];
 	notifies: Array<{ message: string; level: string }>;
 	warns: Array<{ message: string; data?: Record<string, unknown> }>;
@@ -154,7 +161,7 @@ function makeHarness(): Harness {
 		{ pi, log: log as never, state },
 		deps as unknown as DelegateHandlerDeps,
 	);
-	return { tool, state, sent, notifies, warns, infos, deps };
+	return { tool, state, pi, sent, notifies, warns, infos, deps };
 }
 
 /** The notification sink of the CURRENT test's harness (set by makeHarness). */
@@ -759,6 +766,115 @@ describe("seam C — the background default and the batch guard", () => {
 			unitShape: "background",
 			noticeEmitted: true,
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Seam D — routeDispatch
+// ---------------------------------------------------------------------------
+
+describe("seam D — routing to the injected instance", () => {
+	it("rejects a chain over the step limit before any runner", async () => {
+		const h = makeHarness();
+		const chain = Array.from({ length: MAX_CHAIN_STEPS + 1 }, (_, i) => ({ task: `step ${i}` }));
+		const result = await h.tool.execute("call-d", { chain } as never, undefined, undefined, makeCtx());
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toBe(`Chain exceeds max ${MAX_CHAIN_STEPS} steps.`);
+		expect(h.deps.runChainMode).not.toHaveBeenCalled();
+	});
+
+	it("rejects a parallel group over the task limit before any runner", async () => {
+		const h = makeHarness();
+		const tasks = Array.from({ length: MAX_PARALLEL_TASKS + 1 }, (_, i) => ({ task: `task ${i}` }));
+		const result = await h.tool.execute(
+			"call-d",
+			{ tasks, background: false } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toBe(`Parallel exceeds max ${MAX_PARALLEL_TASKS} tasks.`);
+		expect(h.deps.runParallelMode).not.toHaveBeenCalled();
+		expect(h.deps.runBackgroundFanOut).not.toHaveBeenCalled();
+	});
+
+	it("calls each shape's OWN injected instance, with the dispatch params and the batch guard", async () => {
+		const h = makeHarness();
+		const ctx = makeCtx();
+		const params = { chain: [{ task: "a" }, { task: "b" }] };
+		await h.tool.execute("call-d", params as never, undefined, undefined, ctx);
+
+		expect(h.deps.runChainMode).toHaveBeenCalledTimes(1);
+		const [sentParams, sentSignal, sentUpdate, sentCtx, sentGuard] = h.deps.runChainMode.mock.calls[0];
+		// Identity, not equality: the runner must see the SAME dispatch object
+		// (a copy would drop the background record the pre-flight just wrote).
+		expect(sentParams).toBe(params);
+		expect(sentSignal).toBeUndefined();
+		expect(sentUpdate).toBeUndefined();
+		expect(sentCtx).toBe(ctx);
+		expect(sentGuard).toMatchObject({ unitShape: "foreground", noticeEmitted: false });
+	});
+
+	it("hands the fan-out the tool's pi and ctx, and the retry source on a spawn", async () => {
+		const fanOut = makeHarness();
+		const ctx = makeCtx();
+		await fanOut.tool.execute(
+			"call-d",
+			{ tasks: [{ task: "a" }], background: true } as never,
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(fanOut.deps.runBackgroundFanOut.mock.calls[0][0]).toBe(fanOut.pi);
+		expect(fanOut.deps.runBackgroundFanOut.mock.calls[0][1]).toBe(ctx);
+		expect(fanOut.deps.runParallelMode).not.toHaveBeenCalled();
+
+		const spawn = makeHarness();
+		const source = recordedRun();
+		await spawn.tool.execute(
+			"call-d",
+			{ retryRunId: source.id, task: "a", background: true } as never,
+			undefined,
+			undefined,
+			makeCtx(withEntry(source)),
+		);
+		expect(spawn.deps.spawnBackgroundRun.mock.calls[0][0]).toBe(spawn.pi);
+		// Arg 5 is the identity the retry carries into the background spawn.
+		expect(spawn.deps.spawnBackgroundRun.mock.calls[0][3]).toBe("a");
+	});
+
+	it("returns the runner's promise without awaiting it for shape work", async () => {
+		const h = makeHarness();
+		let resolve: (value: unknown) => void = () => {};
+		h.deps.runGraphMode.mockReturnValue(new Promise((r) => { resolve = r; }));
+		const pending = h.tool.execute(
+			"call-d",
+			{ graph: [{ id: "a", task: "a" }] } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		// Nothing else may run: the foreground path (cost gate, run record) must
+		// stay unreached while the injected runner's promise is unsettled.
+		expect(h.state.persistRun).toBeDefined();
+		resolve({ content: [{ type: "text", text: "graph" }], details: undefined });
+		const result = await pending;
+		expect(textOf(result)).toBe("graph");
+		expect(runner.runSubagent).not.toHaveBeenCalled();
+	});
+
+	it("keeps a single dispatch on the foreground path", async () => {
+		const h = makeHarness();
+		const result = await h.tool.execute("call-d", { task: "summarize the design notes" } as never, undefined, undefined, makeCtx());
+
+		expect(result.isError).toBeFalsy();
+		expect(h.deps.spawnBackgroundRun).not.toHaveBeenCalled();
+		expect(runner.runSubagent).toHaveBeenCalledTimes(1);
+		expect(runnerTask()).toBe("summarize the design notes");
 	});
 });
 

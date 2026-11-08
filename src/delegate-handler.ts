@@ -772,6 +772,117 @@ function prepareShape(
 	return { ok: true, value: { useBackground, batchGuard } };
 }
 
+/** The injected entry points seam D routes to (the composition root's instances). */
+type RouteRunners = Pick<
+	DelegateHandlerDeps,
+	"runChainMode" | "runParallelMode" | "runGraphMode" | "runBackgroundFanOut" | "spawnBackgroundRun"
+>;
+
+/** What seam D reads: the tool call's live arguments and the injected runners. */
+interface RouteDeps {
+	pi: ExtensionAPI;
+	ctx: ExtensionContext;
+	signal: AbortSignal | undefined;
+	onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined;
+	/** The run a `retryRunId` resolved to — the background spawn's identity. */
+	retrySourceRun: SubagentRun | undefined;
+	runners: RouteRunners;
+}
+
+/**
+ * Seam D's value. `returned` carries the injected runner's result — possibly a
+ * PROMISE, which the caller returns as-is: awaiting it inside the seam would
+ * add a settlement turn the inline call did not have. `foreground` means the
+ * dispatch is a single foreground run, carrying the task it will block on.
+ */
+type RouteOutcome =
+	| { kind: "returned"; result: ToolResult | Promise<ToolResult> }
+	| { kind: "foreground"; singleTask: string };
+
+/**
+ * Seam D — route the dispatch to the one thing that runs it (issue #430).
+ *
+ * A selector, not an executor: every branch hands the call to an entry point
+ * the composition root INJECTED (ADR 0027 D5) — never a locally built runner or
+ * pipeline, whose second spawn queue / notice latch would be invisible to the
+ * rest of the session. The two batch limits are checked here rather than in the
+ * runners so every shape is rejected at the same seam.
+ *
+ * Single mode falls through to the foreground path and hands back the task.
+ * `params.task` is a non-empty string by then (seam B's exactly-one check plus
+ * the sanitizer); the assertion mirrors the `params.chain!`/`params.tasks!`
+ * reads for the same reason — TS cannot narrow through the boolean count.
+ */
+function routeDispatch(
+	params: DelegateTaskParams,
+	selection: DispatchSelection,
+	prepared: ShapePreparation,
+	deps: RouteDeps,
+): RouteOutcome {
+	const { pi, ctx, signal, onUpdate, retrySourceRun, runners } = deps;
+	const { isChain, isParallel, isGraph } = selection;
+	const { useBackground, batchGuard } = prepared;
+
+	if (isChain) {
+		if (params.chain!.length > MAX_CHAIN_STEPS) {
+			return {
+				kind: "returned",
+				result: {
+					content: [
+						{
+							type: "text" as const,
+							text: `Chain exceeds max ${MAX_CHAIN_STEPS} steps.`,
+						},
+					],
+					details: undefined,
+					isError: true,
+				},
+			};
+		}
+		return { kind: "returned", result: runners.runChainMode(params, signal, onUpdate, ctx, batchGuard) };
+	}
+
+	if (isParallel) {
+		if (params.tasks!.length > MAX_PARALLEL_TASKS) {
+			return {
+				kind: "returned",
+				result: {
+					content: [
+						{
+							type: "text" as const,
+							text: `Parallel exceeds max ${MAX_PARALLEL_TASKS} tasks.`,
+						},
+					],
+					details: undefined,
+					isError: true,
+				},
+			};
+		}
+		if (useBackground) {
+			return { kind: "returned", result: runners.runBackgroundFanOut(pi, ctx, params, signal, batchGuard) };
+		}
+		return { kind: "returned", result: runners.runParallelMode(params, signal, onUpdate, ctx, batchGuard) };
+	}
+
+	if (isGraph) {
+		return { kind: "returned", result: runners.runGraphMode(params, signal, onUpdate, ctx, batchGuard) };
+	}
+
+	// Single mode: isSingle is true (modeCount===1, none of chain/parallel/graph),
+	// so params.task is a non-empty string. TS can't infer this through the
+	// boolean-array filter — assert, mirroring params.chain!/params.tasks! above.
+	const singleTask = params.task!; // non-empty (sanitizer guarantees; isSingle confirms)
+
+	if (useBackground) {
+		return {
+			kind: "returned",
+			result: runners.spawnBackgroundRun(pi, ctx, params, singleTask, retrySourceRun),
+		};
+	}
+
+	return { kind: "foreground", singleTask };
+}
+
 /**
  * Build the `delegate_task` definition over one runtime context (ADR 0027 D1/D3).
  *
@@ -890,51 +1001,25 @@ export function createDelegateHandler(
 			if (!prepared.ok) return prepared.result;
 			const { useBackground, batchGuard } = prepared.value;
 
-			if (isChain) {
-				if (params.chain!.length > MAX_CHAIN_STEPS) {
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: `Chain exceeds max ${MAX_CHAIN_STEPS} steps.`,
-							},
-						],
-						details: undefined,
-						isError: true,
-					};
-				}
-				return runChainMode(params, signal, onUpdate, ctx, batchGuard);
-			}
-
-			if (isParallel) {
-				if (params.tasks!.length > MAX_PARALLEL_TASKS) {
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: `Parallel exceeds max ${MAX_PARALLEL_TASKS} tasks.`,
-							},
-						],
-						details: undefined,
-						isError: true,
-					};
-				}
-				if (useBackground) return runBackgroundFanOut(pi, ctx, params, signal, batchGuard);
-				return runParallelMode(params, signal, onUpdate, ctx, batchGuard);
-			}
-
-			if (isGraph) {
-				return runGraphMode(params, signal, onUpdate, ctx, batchGuard);
-			}
-
-			// Single mode: isSingle is true (modeCount===1, none of chain/parallel/graph),
-			// so params.task is a non-empty string. TS can't infer this through the
-			// boolean-array filter — assert, mirroring params.chain!/params.tasks! above.
-			const singleTask = params.task!; // non-empty (sanitizer guarantees; isSingle confirms)
-
-			if (useBackground) {
-				return spawnBackgroundRun(pi, ctx, params, singleTask, retrySourceRun);
-			}
+			// Seam D: hand the dispatch to the injected runner, or keep the single
+			// foreground run below. The runner's own promise is RETURNED, never
+			// awaited here — a seam that awaited it would add a settlement turn.
+			const route = routeDispatch(params, shape.value, prepared.value, {
+				pi,
+				ctx,
+				signal,
+				onUpdate,
+				retrySourceRun,
+				runners: {
+					runChainMode,
+					runParallelMode,
+					runGraphMode,
+					runBackgroundFanOut,
+					spawnBackgroundRun,
+				},
+			});
+			if (route.kind === "returned") return route.result;
+			const singleTask = route.singleTask;
 
 			// R5: Check session cost limit before spawning
 			// Use a default per-task estimate of $0.05 if no perTaskCostEstimate is set
