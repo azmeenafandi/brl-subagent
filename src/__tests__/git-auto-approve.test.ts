@@ -44,8 +44,12 @@ vi.mock("../runner", () => ({
 const gitMocks = vi.hoisted(() => ({
 	hasUncommittedChanges: vi.fn(),
 	createWorkBranch: vi.fn(),
+	newWorkBranchName: vi.fn(),
 	captureDiff: vi.fn(),
 	getHeadState: vi.fn(),
+	getHeadBranch: vi.fn(),
+	getRepoRoot: vi.fn(),
+	listWorkBranches: vi.fn(),
 	restoreHead: vi.fn(),
 	deleteBranch: vi.fn(),
 	mergeWorkBranch: vi.fn(),
@@ -54,8 +58,12 @@ const gitMocks = vi.hoisted(() => ({
 vi.mock("../git", () => ({
 	hasUncommittedChanges: gitMocks.hasUncommittedChanges,
 	createWorkBranch: gitMocks.createWorkBranch,
+	newWorkBranchName: gitMocks.newWorkBranchName,
 	captureDiff: gitMocks.captureDiff,
 	getHeadState: gitMocks.getHeadState,
+	getHeadBranch: gitMocks.getHeadBranch,
+	getRepoRoot: gitMocks.getRepoRoot,
+	listWorkBranches: gitMocks.listWorkBranches,
 	restoreHead: gitMocks.restoreHead,
 	deleteBranch: gitMocks.deleteBranch,
 	mergeWorkBranch: gitMocks.mergeWorkBranch,
@@ -191,6 +199,8 @@ beforeEach(() => {
 
 	gitMocks.hasUncommittedChanges.mockReset().mockReturnValue(false);
 	gitMocks.getHeadState.mockReset();
+	gitMocks.newWorkBranchName.mockReset().mockReturnValue(WORK_BRANCH);
+	gitMocks.getRepoRoot.mockReset().mockReturnValue(undefined);
 	gitMocks.createWorkBranch.mockReset().mockReturnValue({ ok: true, branch: WORK_BRANCH });
 	gitMocks.captureDiff.mockReset().mockReturnValue({ ok: true, diff: "diff --git a/x b/x\n+work\n" });
 	gitMocks.restoreHead.mockReset().mockReturnValue({ ok: true });
