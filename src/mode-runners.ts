@@ -37,8 +37,9 @@ import { shouldDropUnitTimeout, THINKING_UNIT_TIMEOUT_DROP_NOTICE, type UnitShap
 import { formatValidationWarnings, rejection, resolveModeModel, validateUnitPrePass } from "./prelude";
 import { buildSubagentPrompt, describePromptMode } from "./prompt";
 import { runSubagent } from "./runner";
-import { buildCrashResult, capOutput } from "./sanitize";
+import { buildCrashResult, capOutput, sanitizeErrorMessage } from "./sanitize";
 import { topologicalSort, validateGraph } from "./scheduler";
+import { describeWorktreeState } from "./worktree-report";
 import {
 	EMPTY_USAGE,
 	DEFAULT_PRIORITY,
@@ -171,9 +172,15 @@ function graphTaskToSubTaskParams(node: GraphTask): SubTaskParams {
  * added to `SubTaskResult` could be silently forgotten at one of the sites —
  * and `errorCategory` could be passed through unclassified. Callers add their
  * own mode-specific fields (`step`/`task`/`label`) around this mapping.
+ *
+ * Issue #474: the failure-only `worktreeState` rides the same mapping, probed at
+ * `cwd` — the unit's OWN resolved cwd, which the caller has and this function
+ * cannot guess. It is a subprocess read, so it runs only for a FAILED unit
+ * (successful runs pay nothing and carry no block).
  */
 function toSubTaskResult(
 	result: SubagentResult,
+	cwd: string,
 ): Pick<
 	SubTaskResult,
 	| "exitCode"
@@ -186,6 +193,7 @@ function toSubTaskResult(
 	| "errorCategory"
 	| "gitBranch"
 	| "gitDiff"
+	| "worktreeState"
 > {
 	return {
 		exitCode: result.exitCode,
@@ -200,7 +208,43 @@ function toSubTaskResult(
 		errorCategory: classifyError(result),
 		gitBranch: result.gitBranch,
 		gitDiff: result.gitDiff,
+		...(isSubagentError(result) ? { worktreeState: describeWorktreeState(cwd) } : {}),
 	};
+}
+
+/**
+ * Issue #474: the `SubTaskResult` an allSettled REJECTION earns.
+ *
+ * Before this, a unit whose run threw (and whose crash finalizer rethrew) was
+ * logged and then silently dropped from the aggregate; every other unit's row
+ * survived, so the conductor read a shorter list as "nothing failed there".
+ * The synthesized row states the failure, carries the unit's own worktree block
+ * and classifies through the SAME `classifyError` as a real result (a subagent
+ * with this shape classifies identically — exitCode 1, the sanitized reason).
+ */
+function rejectedUnitResult(
+	task: string,
+	label: string | undefined,
+	cwd: string,
+	reason: unknown,
+): SubTaskResult {
+	const entry: SubTaskResult = {
+		task,
+		label,
+		exitCode: 1,
+		messages: [],
+		// The raw reason persists for post-mortems, like a real unit's stderr;
+		// `errorMessage` is the sanitized half the conductor reads.
+		stderr: String(reason),
+		usage: { ...EMPTY_USAGE },
+		errorMessage: sanitizeErrorMessage(
+			reason instanceof Error ? reason.message || String(reason) : String(reason),
+			cwd,
+		),
+		worktreeState: describeWorktreeState(cwd),
+	};
+	entry.errorCategory = classifyError(entry);
+	return entry;
 }
 	// C3: Resolve a step's model override (step.model > global resolved model).
 	// Parsed + availability-checked; falls back to the global model on failure.
@@ -541,7 +585,9 @@ function toSubTaskResult(
 				finalizeUnitRun(state, pi, ctx, run, result, log);
 
 				// Fill SubTaskResult (one shared field mapping — issue #376/D3).
-				Object.assign(subTaskResult, toSubTaskResult(result));
+				// Issue #474: the step's OWN cwd, so a failed step reports the tree
+				// it ran in rather than the dispatch's.
+				Object.assign(subTaskResult, toSubTaskResult(result, stepCwds[i]));
 
 				chainResults.push(subTaskResult);
 
@@ -887,7 +933,8 @@ function toSubTaskResult(
 				);
 
 				// Fill SubTaskResult (one shared field mapping — issue #376/D3).
-				Object.assign(subTaskResult, toSubTaskResult(result));
+				// Issue #474: probed at THIS task's own cwd.
+				Object.assign(subTaskResult, toSubTaskResult(result, unitCwd));
 
 				results[index] = subTaskResult;
 				completedCount++;
@@ -990,7 +1037,20 @@ function toSubTaskResult(
 			}
 		});
 
-		await Promise.allSettled(promises);
+		const settledUnits = await Promise.allSettled(promises);
+		// Issue #474: a rejected unit is a FAILED unit, not an absent one — it earns
+		// a row (the crash finalizer rethrows, so "rejected" is the only trace of a
+		// unit that died). `results[index]` is never set on that path (the rejection
+		// skips the assignment inside `runTask`), so the guard is belt-and-braces.
+		settledUnits.forEach((settled, index) => {
+			if (settled.status !== "rejected" || results[index]) return;
+			results[index] = rejectedUnitResult(
+				taskList[index].task,
+				taskList[index].label,
+				taskCwds[index],
+				settled.reason,
+			);
+		});
 
 		// Compute final aggregates
 		const finalResults = results.filter(Boolean);
@@ -1345,7 +1405,8 @@ function toSubTaskResult(
 						const subTaskResult: SubTaskResult = {
 							task: merged.task,
 							label: merged.label,
-							...toSubTaskResult(result),
+							// Issue #474: probed at THIS node's own cwd.
+							...toSubTaskResult(result, nodeCwd),
 						};
 
 						// Issue #133: finalize the per-node run entry — status, duration,
@@ -1379,12 +1440,24 @@ function toSubTaskResult(
 				const waveResults = await Promise.allSettled(wavePromises);
 				const graphWaveTasks: SubTaskResult[] = [];
 
-				for (const settled of waveResults) {
+				for (const [nodeIndex, settled] of waveResults.entries()) {
 					if (settled.status === "fulfilled") {
 						resultMap.set(settled.value.id, settled.value.result);
 						graphWaveTasks.push(settled.value.result);
 					} else {
 						log.error("Graph wave task rejected", { error: String(settled.reason) });
+						// Issue #474: the rejected node keeps its place in the wave as a
+						// FAILED row — a dropped row made a crashed node read as an
+						// absent one, and the aggregate could settle `done`.
+						const node = wave[nodeIndex];
+						graphWaveTasks.push(
+							rejectedUnitResult(
+								node.task,
+								node.label,
+								nodeCwds.get(node.id) ?? resolvedCwd,
+								settled.reason,
+							),
+						);
 					}
 				}
 

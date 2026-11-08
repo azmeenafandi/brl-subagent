@@ -9,6 +9,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { EMPTY_USAGE, DEFAULT_OUTPUT_CAP_BYTES } from "./types";
+import { appendWorktreeState } from "./worktree-report";
 
 // ---------------------------------------------------------------------------
 // F1: Input sanitization
@@ -357,6 +358,13 @@ export function sanitizeErrorMessage(msg: string, cwd?: string): string {
  *   serializes `content` into the LLM context, while the raw text persists to
  *   the session file for post-mortems (issue #68 framing: extraction is DRY,
  *   not a stderr-content change).
+ *
+ * Issue #474: this is the ONE crash seam (single, chain, graph and the per-unit
+ * finalizer all build their envelope here), so the worktree-state block is
+ * appended here rather than at seven call sites. `err` may carry the crashing
+ * UNIT's own block (`finalizeUnitRunCrash` attaches it) and that wins over
+ * `cwd`, which a mode-level caller only knows as the dispatch cwd. The block is
+ * appended, never spliced: the cause reads first, the residue after.
  */
 export function buildCrashResult(mode: string, err: unknown, cwd: string): {
 	content: Array<{ type: "text"; text: string }>;
@@ -374,7 +382,9 @@ export function buildCrashResult(mode: string, err: unknown, cwd: string): {
 		cwd,
 	);
 	return {
-		content: [{ type: "text", text: `${mode} crashed: ${errorMessage}` }],
+		content: [
+			{ type: "text", text: appendWorktreeState(`${mode} crashed: ${errorMessage}`, cwd, err) },
+		],
 		details: {
 			messages: [],
 			usage: { ...EMPTY_USAGE },

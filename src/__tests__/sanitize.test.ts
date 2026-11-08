@@ -488,8 +488,11 @@ describe("buildCrashResult", () => {
 		const result = buildCrashResult("Chain mode", err, cwd);
 
 		expect(result.isError).toBe(true);
-		// Content is what pi serializes into the LLM context — cwd masked.
-		expect(result.content).toEqual([{ type: "text", text: "Chain mode crashed: config load failed: <cwd>/.pi/settings.json" }]);
+		// Content is what pi serializes into the LLM context — cwd masked. Issue
+		// #474 appends the worktree block AFTER the cause (the block's own content
+		// is pinned in worktree-report.test.ts; here only its position matters).
+		expect(result.content[0].text.startsWith("Chain mode crashed: config load failed: <cwd>/.pi/settings.json\n\n")).toBe(true);
+		expect(result.content[0].text).toContain("Worktree state (git, at failure):");
 		expect(result.content[0].text).not.toContain(cwd);
 
 		// Details shape matches the pre-extraction inline construction exactly.
@@ -507,13 +510,13 @@ describe("buildCrashResult", () => {
 	it("keeps the mode prefix and sanitizes non-Error throws", () => {
 		const result = buildCrashResult("Graph mode", `boom at ${cwd}/src/x.ts`, cwd);
 
-		expect(result.content[0].text).toBe("Graph mode crashed: boom at <cwd>/src/x.ts");
+		expect(result.content[0].text.startsWith("Graph mode crashed: boom at <cwd>/src/x.ts\n\n")).toBe(true);
 		expect(result.details.stderr).toBe(`boom at ${cwd}/src/x.ts`);
 		expect(result.details.errorMessage).toBe("boom at <cwd>/src/x.ts");
 	});
 
 	it("preserves the exact mode strings used by the three call sites", () => {
-		expect(buildCrashResult("Subagent", "x", cwd).content[0].text).toBe("Subagent crashed: x");
+		expect(buildCrashResult("Subagent", "x", cwd).content[0].text.startsWith("Subagent crashed: x\n\n")).toBe(true);
 	});
 
 	it("falls back to String(err) when an Error is thrown with an empty message", () => {
@@ -521,6 +524,19 @@ describe("buildCrashResult", () => {
 
 		// An empty-message Error renders as its class name, never an empty string.
 		expect(result.details.errorMessage).toBe("Error");
-		expect(result.content[0].text).toBe("Chain mode crashed: Error");
+		expect(result.content[0].text.startsWith("Chain mode crashed: Error\n\n")).toBe(true);
+	});
+
+	it("prefers the crashing unit's own worktree block over the mode cwd (#474)", () => {
+		// The mode's outer catch only knows the dispatch cwd; finalizeUnitRunCrash
+		// attaches the CRASHING UNIT's block to the rethrown error. Reverting to
+		// `cwd` here would report a sibling's tree — the mutant this kills.
+		const err = Object.assign(new Error("step died"), {
+			worktreeState: "Worktree state (git, at failure):\n  branch: unit-branch",
+		});
+		const result = buildCrashResult("Chain mode", err, cwd);
+
+		expect(result.content[0].text).toContain("branch: unit-branch");
+		expect(result.content[0].text).not.toContain("state: unavailable");
 	});
 });
