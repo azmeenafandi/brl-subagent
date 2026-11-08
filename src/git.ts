@@ -1,22 +1,33 @@
-// Purpose: Branch-based git workflow for worktree runs: branch creation, diff capture, switch-back, cleanup.
+// Purpose: Branch-based git workflow for worktree runs (branch, diff, switch-back, cleanup) plus the read-only worktree probe.
 /**
  * brl-subagent — Git Integration (P3)
  *
  * Branch-based git workflow for subagent isolation.
- * All git commands use execFileSync with a 10-second timeout.
+ * All git commands use execFileSync, with a 10-second default timeout.
+ *
+ * Issue #474 added `probeWorktree` — the READ-ONLY half: it reports what a
+ * settled-failure run may have left behind, and it must not write (the index
+ * refresh `git status` performs opportunistically is exactly the write the
+ * caller is trying to avoid). It is also the only entry point here that never
+ * throws: a probe failure is a classified value, so reporting can never change
+ * a run's failure classification.
  */
 
 import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+
+/** Default bound for one git command (the long-standing 10 s). */
+const GIT_TIMEOUT_MS = 10_000;
 
 // ---------------------------------------------------------------------------
 // Options for git commands
 // ---------------------------------------------------------------------------
 
-function gitOpts(cwd: string) {
+function gitOpts(cwd: string, timeoutMs: number = GIT_TIMEOUT_MS) {
 	return {
 		cwd,
 		encoding: "utf-8" as const,
-		timeout: 10_000,
+		timeout: timeoutMs,
 		// Capture child stderr instead of inheriting it: expected git failures
 		// (e.g. deleting a checked-out branch) are caught and returned as
 		// {ok:false, error}; execFileSync still puts the captured stderr in the
@@ -128,18 +139,24 @@ export interface HeadBranch {
 	unborn: boolean;
 }
 
-/** Read the current HEAD branch tolerate-ably (detached and unborn included). */
-export function getHeadBranch(cwd: string): HeadBranch {
+/** Read the current HEAD branch tolerate-ably (detached and unborn included).
+ *
+ * `timeoutMs` exists for the #474 probe, which must keep its own short bound:
+ * the detached/unborn semantics belong here (a second copy of "a failed
+ * symbolic-ref read means detached" is exactly the drift this helper
+ * prevents), but the probe's budget is not the 10 s the lifecycle calls use.
+ */
+export function getHeadBranch(cwd: string, timeoutMs: number = GIT_TIMEOUT_MS): HeadBranch {
 	let branch: string | undefined;
 	try {
-		branch = execFileSync("git", ["symbolic-ref", "--short", "-q", "HEAD"], gitOpts(cwd)).trim() || undefined;
+		branch = execFileSync("git", ["symbolic-ref", "--short", "-q", "HEAD"], gitOpts(cwd, timeoutMs)).trim() || undefined;
 	} catch {
 		// Detached (or not a repo): no symbolic ref to read.
 		branch = undefined;
 	}
 	let unborn = false;
 	try {
-		execFileSync("git", ["rev-parse", "--verify", "-q", "HEAD"], gitOpts(cwd));
+		execFileSync("git", ["rev-parse", "--verify", "-q", "HEAD"], gitOpts(cwd, timeoutMs));
 	} catch {
 		unborn = true;
 	}
@@ -324,4 +341,194 @@ export function captureWorkingDiff(cwd: string): string | undefined {
 		} catch { /* ignore */ }
 		return undefined;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Read-only worktree probe (issue #474)
+// ---------------------------------------------------------------------------
+
+/**
+ * One git command inside the probe. Three reads, so the probe is bounded at
+ * ~9 s, and the branch read (shared with `getHeadBranch`) takes the same bound.
+ */
+const PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * Every probe read is a READ, and `git status` / `git diff` are only read-only
+ * by intent: without `GIT_OPTIONAL_LOCKS=0` git refreshes `.git/index` as an
+ * optional side effect, so the "read" moves a file in the tree it is reporting
+ * (measured: identical bytes, changed mtime — the index-safe test pins both).
+ * `LC_ALL=C` pins `--shortstat` to the parseable English wording.
+ */
+function probeOpts(cwd: string) {
+	return {
+		cwd,
+		encoding: "utf-8" as const,
+		timeout: PROBE_TIMEOUT_MS,
+		stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
+		env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
+	};
+}
+
+/** What the probe found, or why it could not look (issue #474). */
+export type WorktreeProbe =
+	| {
+			kind: "ok";
+			/** The checked-out branch; undefined when HEAD is detached. */
+			branch: string | undefined;
+			detached: boolean;
+			/** HEAD is a symbolic ref to a branch with no commit yet. */
+			unborn: boolean;
+			/** Entries with worktree changes, plus untracked files. */
+			dirtyFiles: number;
+			/** Entries with index changes (never the `??` untracked rows). */
+			stagedFiles: number;
+			/** Tracked unstaged line counts; absent when `git diff` reported none (or failed). */
+			insertions?: number;
+			deletions?: number;
+	  }
+	/** The cwd is not inside a git repository (or is a bare repo). */
+	| { kind: "not-repo" }
+	/** The repository could not be read; `reason` is git's own diagnosis. */
+	| { kind: "unavailable"; reason: string };
+
+/** Longest reason reported — the block rides a tool result, not a log file. */
+const MAX_PROBE_REASON_LENGTH = 160;
+
+/**
+ * The first line git printed, as the reason. git's stderr is the diagnosable
+ * half AND the safe half: the wrapper message `execFileSync` builds names the
+ * command line, and for a vanished cwd it names the absolute path (F7 — the
+ * failure path must never echo the cwd raw). Measured: an `ENOENT`/`ETIMEDOUT`
+ * spawn carries an EMPTY stderr, so those classify below instead.
+ *
+ * A deleted cwd and a missing git both surface as `ENOENT` (node reports the
+ * failed spawn, not which half failed), so the cwd is probed to tell them
+ * apart — the two need different fixes and the report is the reader's only
+ * evidence.
+ */
+function probeFailureReason(cwd: string, err: unknown): string {
+	const stderr = (err as { stderr?: unknown } | null)?.stderr;
+	const text = typeof stderr === "string" ? stderr : stderr ? String(stderr) : "";
+	const line = text
+		.split("\n")
+		.map((part) => part.trim())
+		.find((part) => part.length > 0);
+	if (line) {
+		return line.length > MAX_PROBE_REASON_LENGTH ? `${line.slice(0, MAX_PROBE_REASON_LENGTH)}…` : line;
+	}
+	const code = (err as { code?: unknown } | null)?.code;
+	if (code === "ETIMEDOUT") return "git timed out";
+	if (code === "ENOENT") return fs.existsSync(cwd) ? "git is not installed" : "cwd does not exist";
+	if (typeof code === "string") return `git failed (${code})`;
+	return "git failed";
+}
+
+/**
+ * Classify a failed `rev-parse --is-inside-work-tree`: git's own "not a git
+ * repository" is the ONE expected failure (it is the answer, not an error),
+ * and everything else — a deleted cwd, a missing git, a timeout — is
+ * unavailable with a reason. `getRepoRoot`'s catch-all is deliberately NOT
+ * reused: it returns undefined for both cases, which would report a hung git
+ * as "not a git repository".
+ */
+function classifyProbeFailure(cwd: string, err: unknown): WorktreeProbe {
+	const reason = probeFailureReason(cwd, err);
+	if (/not a git repository/i.test(reason)) return { kind: "not-repo" };
+	return { kind: "unavailable", reason };
+}
+
+/**
+ * Count `git status --porcelain -z` rows, split into worktree-dirty and staged.
+ *
+ * `-z` means NUL-separated records and never-quoted paths, and it changes the
+ * rename shape: `R  <new>\0<old>` — the destination row followed by a BARE
+ * source path. Counting NUL fields would read one `git mv` as two dirty files,
+ * so the source field is skipped (and only renames/copies emit one).
+ */
+function countStatusEntries(porcelain: string): { dirty: number; staged: number } {
+	let dirty = 0;
+	let staged = 0;
+	let skipNext = false;
+	for (const field of porcelain.split("\0")) {
+		if (field.length === 0) continue;
+		if (skipNext) {
+			skipNext = false;
+			continue;
+		}
+		const x = field[0];
+		const y = field[1];
+		if (x === undefined || y === undefined) continue;
+		if (x === "?") {
+			dirty++; // untracked file (or, with -uall, every file in an untracked dir)
+			continue;
+		}
+		if (x === "R" || x === "C") skipNext = true;
+		if (y !== " ") dirty++;
+		if (x !== " ") staged++;
+	}
+	return { dirty, staged };
+}
+
+/** ` 3 files changed, 10 insertions(+), 2 deletions(-)` → line counts, or undefined. */
+function parseShortstat(output: string): { insertions: number; deletions: number } | undefined {
+	if (!/\d+ files? changed/.test(output)) return undefined;
+	const insertions = /(\d+) insertions?\(\+\)/.exec(output);
+	const deletions = /(\d+) deletions?\(-\)/.exec(output);
+	return {
+		insertions: insertions ? Number(insertions[1]) : 0,
+		deletions: deletions ? Number(deletions[1]) : 0,
+	};
+}
+
+/**
+ * Report the state of the worktree at `cwd` — branch, dirty/staged counts,
+ * unstaged line counts — for the failure report (issue #474). NEVER THROWS:
+ * every failure is a classified value.
+ *
+ * This is a BEST-EFFORT read of a moving tree, not an atomic snapshot: the
+ * status and the diff are two commands, so a write between them can make the
+ * counts disagree with each other. It is deliberately not made consistent —
+ * the reader is a conductor deciding whether to look before reusing the tree,
+ * and a torn count is still evidence, while a lock (or a second retry) on the
+ * failure path is not.
+ */
+export function probeWorktree(cwd: string): WorktreeProbe {
+	let inside: string;
+	try {
+		inside = execFileSync("git", ["rev-parse", "--is-inside-work-tree"], probeOpts(cwd)).trim();
+	} catch (err) {
+		return classifyProbeFailure(cwd, err);
+	}
+	// A bare repository exits 0 with "false" — there is no worktree to report.
+	if (inside !== "true") return { kind: "not-repo" };
+
+	let porcelain: string;
+	try {
+		porcelain = execFileSync("git", ["status", "--porcelain", "-z", "-uall"], probeOpts(cwd));
+	} catch (err) {
+		return { kind: "unavailable", reason: probeFailureReason(cwd, err) };
+	}
+	const { dirty, staged } = countStatusEntries(porcelain);
+	// Undefined branch + not unborn = detached HEAD (getHeadBranch owns that reading).
+	const head = getHeadBranch(cwd, PROBE_TIMEOUT_MS);
+
+	// The line counts are the optional half: losing them costs a detail, never
+	// the report, so a failed `diff` degrades the block instead of emptying it.
+	let lineCounts: { insertions: number; deletions: number } | undefined;
+	try {
+		lineCounts = parseShortstat(execFileSync("git", ["diff", "--shortstat"], probeOpts(cwd)));
+	} catch {
+		lineCounts = undefined;
+	}
+
+	return {
+		kind: "ok",
+		branch: head.branch,
+		detached: head.branch === undefined && !head.unborn,
+		unborn: head.unborn,
+		dirtyFiles: dirty,
+		stagedFiles: staged,
+		...(lineCounts ?? {}),
+	};
 }
