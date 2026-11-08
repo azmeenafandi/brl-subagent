@@ -15,7 +15,8 @@ Cycle: fixture cycle.
   `alpha.ts` is **10**; `beta.ts` 3.
 
 ### Since the last handover
-- Nothing. History shapes stay out of the check: `alpha.ts` **20 → 10**, `beta.ts` (9).
+- Nothing. History shapes stay out of the check: `alpha.ts` **20 → 10**, `beta.ts` (9),
+  `alpha.ts` 2,249 vs 2,248, `alpha.ts` 2,249 versus 2,248, `alpha.ts` 5+/2−.
 
 ### Next actions
 1. Nothing. The `Open:` list is checked against the board.
