@@ -1,7 +1,9 @@
-// Purpose: Entry point: tool/command registration, the delegate_task handlers, and the execution-mode runners.
+// Purpose: Entry point: tool/command registration, the delegate_task handlers, dispatch, single mode and the background fan-out.
 /**
  * brl-subagent — multi-agent orchestration for pi.
- * Entry point: tool registrations, command surface, and the multi-mode runners.
+ * Entry point: tool registrations, command surface, dispatch (mode selection,
+ * guard construction, single mode and the background fan-out). The three
+ * batch-mode runners live in `mode-runners.ts` (ADR 0027 S2).
  * See AGENT.md for the conductor-facing capability reference.
  */
 
