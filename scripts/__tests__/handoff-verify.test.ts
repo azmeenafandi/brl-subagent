@@ -23,7 +23,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { createRepoProbe, EXIT, findNewestReport, main, parseArgs, parseRangeLog, readIssues, readSuiteReport, resolveModulePath, ROOT } from "../handoff-verify.mjs";
 import { collectDecisions } from "../docs-decisions.mjs";
 import { collectModules } from "../docs-arch.mjs";
@@ -636,6 +636,13 @@ describe("handoff-verify — the seams", () => {
  */
 describe("handoff-verify — the CLI seam", () => {
 	const SCRIPT = join(ROOT, "scripts", "handoff-verify.mjs");
+
+	// CI checks out a single ref: `dev` may not exist as a local branch there, and every CLI run resolves it.
+	// Create it once at HEAD when absent (a no-op in the cockpit and in any worktree, where `dev` exists).
+	beforeAll(() => {
+		const has = spawnSync("git", ["-C", ROOT, "rev-parse", "--verify", "--quiet", "dev"], { encoding: "utf8" });
+		if (has.status !== 0) spawnSync("git", ["-C", ROOT, "branch", "dev", "HEAD"], { encoding: "utf8" });
+	});
 
 	function runCli(argv: string[], env: Record<string, string> = {}): Run {
 		const result = spawnSync(process.execPath, [SCRIPT, ...argv], { encoding: "utf8", env: { ...process.env, ...env } });
