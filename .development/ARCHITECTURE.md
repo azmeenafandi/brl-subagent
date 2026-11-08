@@ -102,6 +102,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `router.ts` | Auto-route: keyword classification of a task description to the best preset. |
 | `run-registry.ts` | Durable per-run in-flight registry + the single run-record persist choke point that mirrors into it. |
 | `runner.ts` | Foreground execution: spawns the `pi` subprocess, parses its JSON-line stream, and folds usage. |
+| `runtime.ts` | The per-invocation runtime context (pi, log, state) the composition root builds once and hands to the mode runners. |
 | `sanitize.ts` | Input validation, environment allowlisting, and output sanitization (task, cwd, outputFile, agent ids). |
 | `scheduler.ts` | Dependency-graph scheduler: cycle detection, topological waves, and graph validation. |
 | `schema.ts` | The registered `delegate_task` parameter schema — the single source of truth for its types. |
@@ -120,7 +121,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**49 modules** — every one is listed because a new module without a purpose fails CI.
+**50 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
