@@ -85,7 +85,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `git.ts` | Branch-based git workflow for worktree runs (branch, diff, switch-back, cleanup) plus the read-only worktree probe. |
 | `headstate.ts` | Durable per-repository head state (ADR 0026): the record a branch run writes before its branch exists, the guarded boot reconciliation, and the age sweep. |
 | `history.ts` | Run-record store: creation, finalization, retry lookup, and history pruning. |
-| `index.ts` | Entry point: tool/command registration, the delegate_task handlers, dispatch and single mode. |
+| `index.ts` | Entry point: the composition root — runtime, registration surface, session lifecycle handlers and the terminal notifier. |
 | `kill-escalation.ts` | The one SIGTERM → grace → SIGKILL escalation shared by foreground reap, abort/timeout, and boot recovery. |
 | `loader.ts` | Shared markdown-tier loader — scan dirs for `.md`, parse frontmatter, validate, map to a typed record. |
 | `logging.ts` | Leveled structured logging with file output and rotation under `.pi/subagent-logs/`. |

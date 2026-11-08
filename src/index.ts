@@ -1,11 +1,26 @@
-// Purpose: Entry point: tool/command registration, the delegate_task handlers, dispatch and single mode.
+// Purpose: Entry point: the composition root — runtime, registration surface, session lifecycle handlers and the terminal notifier.
 /**
  * brl-subagent — multi-agent orchestration for pi.
- * Entry point: tool registrations, command surface, dispatch (mode selection,
- * guard construction, single mode). The three batch-mode runners live in
- * `mode-runners.ts` (ADR 0027 S2) and the background pipeline (the fan-out,
- * the shared spawn tail and the single-background spawn) in
- * `background-pipeline.ts` (ADR 0027 S3).
+ *
+ * Entry point: the COMPOSITION ROOT. It builds the runtime once per invocation
+ * and registers the surface (ADR 0027 D7) — the `pi.registerCommand` and the
+ * four `pi.registerTool` calls below stay here, and every surface they register
+ * is a definition returned by a factory:
+ *
+ *   - `commands.ts` (ADR 0027 S5) — the `/brl-subagent` definition;
+ *   - `delegate-handler.ts` (ADR 0027 S5) — the `delegate_task` definition
+ *     (dispatch pre-flight and the foreground run path);
+ *   - `agent-tools.ts` (ADR 0027 S5) — the three agent-lifecycle tools;
+ *   - `mode-runners.ts` (ADR 0027 S2) — the three batch-mode runners;
+ *   - `background-pipeline.ts` (ADR 0027 S3) — the fan-out, the shared spawn
+ *     tail and the single-background spawn;
+ *   - `boot-recovery.ts` + `terminal-notifier.ts` (ADR 0027 S4) — the boot scan
+ *     with its notices, and the completion-push notifier.
+ *
+ * What is left here is what cannot be handed out: the two config writers
+ * (`applyConfig`, `resetState`), the session lifecycle handlers, and the deps
+ * assembly that guarantees each factory gets the SAME instances (D5) — one
+ * runtime, one spawn queue, one notice latch.
  * See AGENT.md for the conductor-facing capability reference.
  */
 
