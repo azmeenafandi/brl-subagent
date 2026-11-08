@@ -28,17 +28,22 @@
  * The move is verbatim. The factory's own first lines destructure the runtime
  * (the S2/S3 pattern) so the moved statements keep the names they read from
  * their old closure; a body line that differs from 876bb5d is a bug in this
- * commit, not a refactor. S6 (#430) splits the validation/pre-flight/run seams
- * INSIDE this module — that is why the seams stay inline here rather than being
- * pre-factored into helpers.
+ * commit, not a refactor.
+ *
+ * S6 (#430) then splits the validation/pre-flight/run seams INSIDE this module
+ * into the private same-file helpers below. They are private on purpose (D7):
+ * nothing outside this file may depend on a seam, and the tests drive them
+ * through `createDelegateHandler` — a seam is an implementation detail of the
+ * definition, not a second public surface.
  */
 
 import type { createBackgroundPipeline } from "./background-pipeline";
 import type { createBootRecovery } from "./boot-recovery";
+import type { Logger } from "./logging";
 import type { BatchGuardContext, createModeRunners } from "./mode-runners";
 import type { RuntimeContext } from "./runtime";
 import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
-import type { ExtensionContext, Theme, ToolDefinition, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import {
 	DEFAULT_PRIORITY,
@@ -81,7 +86,7 @@ import {
 	resolveSubagentModelPrecedence,
 } from "./prelude";
 import { loadBuiltinPresets, formatPresetRestriction, formatToolRestriction } from "./presets";
-import { resolveTerminalRunEntry } from "./state";
+import { resolveTerminalRunEntry, type SessionState } from "./state";
 import { makeLiveOnUpdate, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import {
@@ -185,6 +190,357 @@ export type DelegateTaskTool = ToolDefinition<
 	DelegateTaskDetails
 >;
 
+// ---------------------------------------------------------------------------
+// Dispatch seams (issue #430) — private to this module, driven by `execute`
+// ---------------------------------------------------------------------------
+
+/**
+ * What `execute` returns: `ToolDefinition`'s result for this tool. Named once
+ * so an `Outcome` can carry an early rejection without re-spelling the
+ * `AgentToolResult<DelegateTaskDetails>` generic at every seam boundary.
+ */
+type ToolResult = AgentToolResult<DelegateTaskDetails>;
+
+/**
+ * The seam result type: either the value the next seam needs, or a finished
+ * tool result the caller returns unchanged.
+ *
+ * A rejection is a RETURNED result rather than a thrown error because every
+ * early exit in the original body returned a tool result. Throwing would land
+ * in the foreground `catch`, which builds a crash result — the caller would
+ * see different content, and the trace contract (issue #430) forbids that.
+ */
+type Outcome<T> = { ok: true; value: T } | { ok: false; result: ToolResult };
+
+/**
+ * What seam A reads from its surroundings. A narrow `Pick`-style object, not
+ * the whole `RuntimeContext`: A needs `ctx`/`pi` for the retry lookup and the
+ * two notification channels, and `visibleRunsFor` for the registry fallback.
+ */
+interface NormalizeDeps {
+	state: SessionState;
+	ctx: ExtensionContext;
+	pi: ExtensionAPI;
+	log: Logger;
+	/** S4's run-visibility bridge — the retry restore's post-boot fallback. */
+	visibleRunsFor: DelegateHandlerDeps["visibleRunsFor"];
+}
+
+/** Seam A's value: the resolved inputs every later seam reads. */
+interface NormalizedDispatch {
+	/** The original object (mutated in place) or the retry-rebound replacement. */
+	params: DelegateTaskParams;
+	/** The run a `retryRunId` resolved to — identity and source retirement. */
+	retrySourceRun: SubagentRun | undefined;
+}
+
+/** Seam B's value: the sanitized params plus the one shape the dispatch names. */
+interface DispatchSelection {
+	/** The same object seam A produced (the sanitizer writes `params.task`). */
+	params: DelegateTaskParams;
+	isChain: boolean;
+	isParallel: boolean;
+	isGraph: boolean;
+	dispatchShape: DispatchShape;
+}
+
+/**
+ * Seam A1 — the unknown-param warning (issues #99/#110).
+ *
+ * Typebox allows additional properties by default (pi's validateToolArguments
+ * passes unknown keys through), so a typo like `thinkinglevel` or a
+ * schema-drifted param is otherwise silently ignored. Warn-not-reject: never
+ * break a delegation. Both channels speak — `log.warn` for the file, and
+ * `pi.sendMessage` because pi's TUI swallows extension console output, so the
+ * LLM (followUp) and the human (session transcript) both see the correction.
+ */
+function warnUnknownParams(
+	params: DelegateTaskParams,
+	deps: Pick<NormalizeDeps, "pi" | "log">,
+): void {
+	const { pi, log } = deps;
+	const unknownKeys = findUnknownParams(params, KNOWN_DELEGATE_KEYS);
+	if (unknownKeys.length === 0) return;
+	log.warn("delegate_task: unknown param(s) ignored — check spelling or add to schema", { unknown: unknownKeys });
+	pi.sendMessage({
+		customType: "delegate-notification",
+		content: `delegate_task: unknown param(s) ignored — check spelling or add to schema: ${unknownKeys.join(", ")}`,
+		display: true,
+		details: { unknown: unknownKeys },
+	}, { deliverAs: "followUp" });
+}
+
+/**
+ * Seam A2 — apply a task template to the dispatch params (issues #57/#175).
+ *
+ * MUST run before the single-mode sanitize seam: a template ASSIGNS
+ * `params.task`, so resolving first lets the sanitizer validate the real
+ * resolved body (a template-only call has no task yet) and lets mode detection
+ * see a non-empty task.
+ *
+ * Two rules that look contradictory and are not: the resolved BODY is
+ * template-wins (it replaces any supplied `task` unconditionally — issue #57),
+ * while the template's other fields are DEFAULTS an explicit param overrides.
+ * A supplied task the sanitizer would have rejected is reported rather than
+ * silently dropped — but only when it would actually have failed, so a valid
+ * task alongside a template stays the intended override, not noise.
+ *
+ * Mutates `params` and returns the same object's outcome; no notice is a value.
+ */
+function applyTemplate(
+	params: DelegateTaskParams,
+	templates: readonly TaskTemplate[],
+	deps: Pick<NormalizeDeps, "pi" | "log">,
+): Outcome<void> {
+	const { pi, log } = deps;
+	if (!params.template) return { ok: true, value: undefined };
+
+	const templateEntry = templates.find((t) => t.name === params.template);
+	if (!templateEntry) {
+		const available = templates.map((t) => t.name).join(", ") || "none";
+		return {
+			ok: false,
+			result: {
+				content: [
+					{
+						type: "text" as const,
+						text: `Template '${params.template}' not found. Available: ${available}`,
+					},
+				],
+				details: undefined,
+				isError: true,
+			},
+		};
+	}
+
+	const resolved = resolveTemplate(templateEntry, params.params ?? {});
+	if (!resolved.ok) {
+		return {
+			ok: false,
+			result: {
+				content: [
+					{
+						type: "text" as const,
+						text: `Template '${params.template}' resolution failed: ${resolved.error}`,
+					},
+				],
+				details: undefined,
+				isError: true,
+			},
+		};
+	}
+
+	const tv = resolved.value;
+	// Issue #175 review (fix 4): template-wins silently replaces a supplied
+	// `task`. If that task would itself have failed sanitization (e.g.
+	// over-length), the caller gets no signal — pre-#175 `dev` rejected it.
+	// Warn (never reject — #99/#110 precedent, same pi.sendMessage channel as
+	// the unknown-param warning) so both the LLM and the human see the ignored
+	// task. Emitted ONLY when the supplied task actually fails sanitization: a
+	// valid task alongside a template is the intended template-wins override
+	// (issue #57), not noise.
+	if (params.task !== undefined) {
+		const suppliedTask = sanitizeTask(params.task);
+		if (!suppliedTask.ok) {
+			log.warn("delegate_task: supplied task ignored because a template was given", {
+				template: params.template,
+				error: suppliedTask.error,
+			});
+			pi.sendMessage({
+				customType: "delegate-notification",
+				content: `delegate_task: the supplied 'task' was ignored because a template ('${params.template}') was given. The task would otherwise have been rejected: ${suppliedTask.error}`,
+				display: true,
+				details: { template: params.template, rejectedTask: suppliedTask.error },
+			}, { deliverAs: "followUp" });
+		}
+	}
+	// Issue #175 review (fix direction item 4): this assignment is
+	// UNCONDITIONAL — the resolved template task replaces any supplied `task`
+	// (template-wins, issue #57); it is NOT a default the caller can override.
+	// The fields below, by contrast, ARE defaults: an explicitly provided param
+	// wins over the template's value.
+	params.task = tv.task;
+	if (tv.preset && !params.preset) params.preset = tv.preset;
+	if (tv.thinkingLevel && !params.thinkingLevel) params.thinkingLevel = tv.thinkingLevel;
+	if (tv.outputFile && !params.outputFile) params.outputFile = tv.outputFile;
+	if (tv.timeout !== undefined && params.timeout === undefined) params.timeout = tv.timeout;
+	if (tv.tools && !params.tools) params.tools = tv.tools;
+	if (tv.excludeTools && !params.excludeTools) params.excludeTools = tv.excludeTools;
+	if (tv.noBuiltinTools !== undefined && params.noBuiltinTools === undefined) params.noBuiltinTools = tv.noBuiltinTools;
+	if (tv.inheritSystemPrompt !== undefined && params.inheritSystemPrompt === undefined) params.inheritSystemPrompt = tv.inheritSystemPrompt;
+	return { ok: true, value: undefined };
+}
+
+/**
+ * Seam A — resolve the dispatch inputs: unknown-param warning, template
+ * resolution, retry restore (issue #430).
+ *
+ * ORDER IS THE CONTRACT. Template resolution MUST run first: it ASSIGNS
+ * `params.task`, so the sanitizer in seam B validates the real resolved body
+ * and mode detection sees a non-empty task (issue #175). The retry restore
+ * MUST run after it: `resolveRetryParams` returns a fresh object that DROPS
+ * `template`, so resolving first keeps a combined template + retryRunId call
+ * from silently disabling template resolution (issue #175 review).
+ *
+ * RETURNS SYNCHRONOUSLY unless the retry needs the visibility bridge. The lazy
+ * `import('./session-manager')` is the only asynchronous arm and is entered
+ * only when the session store has no entry for the id — an unconditional
+ * `async` here would suspend every dispatch a microtask earlier than it ran
+ * before, which the S6 timing probe pins (issue #430 amendment 2).
+ */
+function normalizeInput(
+	params: DelegateTaskParams,
+	deps: NormalizeDeps,
+): Outcome<NormalizedDispatch> | Promise<Outcome<NormalizedDispatch>> {
+	const { state, ctx, pi, log, visibleRunsFor } = deps;
+
+	// A1: the two pre-resolution notices (unknown keys, ignored task) and the
+	// template application itself.
+	warnUnknownParams(params, { pi, log });
+	const templated = applyTemplate(params, state.config.templates, { pi, log });
+	if (!templated.ok) return templated;
+
+	// Handle retryRunId — MUST run after template resolution and before the
+	// single-mode sanitize block. resolveRetryParams assigns params.task from
+	// the recorded run, so the sanitizer must see the retried body (a
+	// retry-only call has no task yet). It MUST run AFTER template resolution:
+	// resolveRetryParams returns a fresh object that DROPS `template`, so
+	// resolving templates first keeps a combined template + retryRunId call
+	// from silently disabling template resolution (issue #175 review).
+	if (!params.retryRunId) {
+		return { ok: true, value: { params, retrySourceRun: undefined } };
+	}
+
+	const retryRunId = params.retryRunId;
+	// Fix A: prefer the session spawn entry (it carries `originalParams`);
+	// a run that exists ONLY in the durable registry after a fresh boot
+	// resolves through the visibility bridge instead of being rejected as
+	// not found — the id the boot notice names must resolve here.
+	const sessionEntry = state.findSpawnRunById(ctx, retryRunId);
+	if (sessionEntry) return resolveRetrySource(params, retryRunId, sessionEntry, log);
+
+	// The one asynchronous arm. `then` keeps the continuation in the turn the
+	// original `await import(...)` resumed in; only the caller's own `await`
+	// of this promise adds a turn, and only on this path (the import already
+	// suspends through the module loader, so that turn is inside an existing
+	// suspension — see the S6 timing probe).
+	return import("./session-manager").then(({ getAgent }) =>
+		resolveRetrySource(
+			params,
+			retryRunId,
+			resolveTerminalRunEntry(visibleRunsFor(ctx, getAgent), retryRunId),
+			log,
+		),
+	);
+}
+
+/**
+ * The tail of the retry restore, shared by the session hit and the visibility
+ * bridge so the two cannot diverge on the not-found message (issue #98: a
+ * silent no-op here made retries of background runs start as FRESH runs with
+ * no signal to the caller).
+ */
+function resolveRetrySource(
+	params: DelegateTaskParams,
+	retryRunId: string,
+	runEntry: SubagentRun | undefined,
+	log: Logger,
+): Outcome<NormalizedDispatch> {
+	if (runEntry) {
+		return {
+			ok: true,
+			value: {
+				params: resolveRetryParams(params, runEntry) as DelegateTaskParams,
+				retrySourceRun: runEntry,
+			},
+		};
+	}
+	log.warn("Retry run ID not found", { retryRunId });
+	return {
+		ok: false,
+		result: {
+			content: [{
+				type: "text" as const,
+				text: `Retry run ID not found: ${retryRunId}. The run may have been pruned, or it was a background run created before the run-entry fix. Pass the run's agent ID — for background runs the agent ID and run ID are now the same.`,
+			}],
+			details: undefined,
+			isError: true,
+		},
+	};
+}
+
+/**
+ * Seam B — sanitize the single-task body and classify the dispatch shape
+ * (issue #430).
+ *
+ * Mutates `params.task` to the sanitizer's value and then reads that value for
+ * `isSingle`, exactly as the inline block did: the sanitizer's trim/normalize
+ * is what makes "   " a rejection rather than a single-task dispatch. The
+ * shape flags stay the raw `params.chain/tasks/graph` truthiness tests; the
+ * exactly-one check is what turns them into a dispatch.
+ */
+function resolveShape(
+	params: DelegateTaskParams,
+	log: Logger,
+): Outcome<DispatchSelection> {
+	// F1: Sanitize task input — skip for chain/parallel/graph modes
+	const hasChain = params.chain && params.chain.length > 0;
+	const hasParallel = params.tasks && params.tasks.length > 0;
+	const hasGraph = params.graph && params.graph.length > 0;
+	if (!hasChain && !hasParallel && !hasGraph) {
+		// task is optional per the schema; single mode requires it. When absent,
+		// feed "" to the sanitizer — same rejection path ("Task must not be
+		// empty.") as when task was a required field.
+		const taskResult = sanitizeTask(params.task ?? "");
+		if (!taskResult.ok) {
+			log.warn("Task rejected by sanitizer", { error: taskResult.error });
+			return {
+				ok: false,
+				result: {
+					content: [{ type: "text" as const, text: `Invalid task: ${taskResult.error}` }],
+					details: undefined,
+					isError: true,
+				},
+			};
+		}
+		params.task = taskResult.value;
+	}
+
+	// P1+P2+P10: Mode detection — graph > chain > parallel > single
+	const isChain = Boolean(hasChain);
+	const isParallel = Boolean(hasParallel);
+	const isGraph = Boolean(hasGraph);
+	const isSingle = typeof params.task === "string" && params.task.length > 0;
+
+	const modeCount = [isChain, isParallel, isGraph, isSingle].filter(Boolean).length;
+	if (modeCount !== 1) {
+		return {
+			ok: false,
+			result: {
+				content: [
+					{
+						type: "text" as const,
+						text:
+							"Provide exactly one of: task (single), chain (sequential), tasks (parallel), or graph (dependency graph).",
+					},
+				],
+				details: undefined,
+				isError: true,
+			},
+		};
+	}
+
+	const dispatchShape: DispatchShape = isChain
+		? "chain"
+		: isGraph
+			? "graph"
+			: isParallel
+				? "parallel"
+				: "single";
+
+	return { ok: true, value: { params, isChain, isParallel, isGraph, dispatchShape } };
+}
+
 /**
  * Build the `delegate_task` definition over one runtime context (ADR 0027 D1/D3).
  *
@@ -280,190 +636,22 @@ export function createDelegateHandler(
 			onUpdate: AgentToolUpdateCallback<DelegateTaskDetails> | undefined,
 			ctx: ExtensionContext,
 		) {
-			// Option B U1: the run a retryRunId resolves to (spawn entry). Internal
-			// record identity — dispatchId/resumeOf/attempt are threaded onto the new
-			// record, NOT through the delegate-param surface (D4).
-			let retrySourceRun: SubagentRun | undefined;
-			// Issue #99: warn on unknown params — typebox allows additional properties
-			// by default (pi's validateToolArguments passes unknown keys through), so a
-			// typo like `thinkinglevel` or a schema-drifted param is otherwise silently
-			// ignored. Warn-not-reject: never break a delegation.
-			const unknownKeys = findUnknownParams(params, KNOWN_DELEGATE_KEYS);
-			if (unknownKeys.length > 0) {
-				log.warn("delegate_task: unknown param(s) ignored — check spelling or add to schema", { unknown: unknownKeys });
-				// Issue #110: log.warn alone is invisible — pi's TUI swallows extension
-				// console output. Route through pi.sendMessage (the subagent-notification
-				// pattern, index.ts ~2312) so BOTH the LLM (followUp enters the
-				// conversation) and the human (session transcript) see the correction.
-				pi.sendMessage({
-					customType: "delegate-notification",
-					content: `delegate_task: unknown param(s) ignored — check spelling or add to schema: ${unknownKeys.join(", ")}`,
-					display: true,
-					details: { unknown: unknownKeys },
-				}, { deliverAs: "followUp" });
-			}
+			// Seam A: unknown-param warning, template resolution, retry restore.
+			// Synchronous unless the retry falls back through the visibility bridge.
+			const normalized = normalizeInput(params, { state, ctx, pi, log, visibleRunsFor });
+			const pre: Outcome<NormalizedDispatch> =
+				normalized instanceof Promise ? await normalized : normalized;
+			if (!pre.ok) return pre.result;
+			params = pre.value.params;
+			// Option B U1: the run the retryRunId resolved to (spawn entry).
+			// Internal record identity — dispatchId/resumeOf/attempt are threaded
+			// onto the new record, NOT through the delegate-param surface (D4).
+			const retrySourceRun = pre.value.retrySourceRun;
 
-			// Handle template resolution — MUST run before the single-mode sanitize
-			// block below: a template ASSIGNS params.task, so resolving first lets the
-			// sanitizer validate the real resolved body (a template-only call has no
-			// task yet) and lets mode detection see a non-empty task (issue #175).
-			if (params.template) {
-				const templateEntry = state.config.templates.find((t) => t.name === params.template);
-				if (!templateEntry) {
-					const available = state.config.templates.map((t) => t.name).join(", ") || "none";
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: `Template '${params.template}' not found. Available: ${available}`,
-							},
-						],
-						details: undefined,
-						isError: true,
-					};
-				}
-
-				const resolved = resolveTemplate(templateEntry, params.params ?? {});
-				if (!resolved.ok) {
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: `Template '${params.template}' resolution failed: ${resolved.error}`,
-							},
-						],
-						details: undefined,
-						isError: true,
-					};
-				}
-
-				const tv = resolved.value;
-				// Issue #175 review (fix 4): template-wins silently replaces a
-				// supplied `task`. If that task would itself have failed sanitization
-				// (e.g. over-length), the caller gets no signal — pre-#175 `dev`
-				// rejected it. Warn (never reject — #99/#110 precedent, same
-				// pi.sendMessage channel as the unknown-param warning) so both the LLM
-				// and the human see the ignored task. Emitted ONLY when the supplied
-				// task actually fails sanitization: a valid task alongside a template
-				// is the intended template-wins override (issue #57), not noise.
-				if (params.task !== undefined) {
-					const suppliedTask = sanitizeTask(params.task);
-					if (!suppliedTask.ok) {
-						log.warn("delegate_task: supplied task ignored because a template was given", {
-							template: params.template,
-							error: suppliedTask.error,
-						});
-						pi.sendMessage({
-							customType: "delegate-notification",
-							content: `delegate_task: the supplied 'task' was ignored because a template ('${params.template}') was given. The task would otherwise have been rejected: ${suppliedTask.error}`,
-							display: true,
-							details: { template: params.template, rejectedTask: suppliedTask.error },
-						}, { deliverAs: "followUp" });
-					}
-				}
-				// Issue #175 review (fix direction item 4): this assignment is
-				// UNCONDITIONAL — the resolved template task replaces any supplied
-				// `task` (template-wins, issue #57); it is NOT a default the caller can
-				// override. The fields below, by contrast, ARE defaults: an explicitly
-				// provided param wins over the template's value.
-				params.task = tv.task;
-				if (tv.preset && !params.preset) params.preset = tv.preset;
-				if (tv.thinkingLevel && !params.thinkingLevel) params.thinkingLevel = tv.thinkingLevel;
-				if (tv.outputFile && !params.outputFile) params.outputFile = tv.outputFile;
-				if (tv.timeout !== undefined && params.timeout === undefined) params.timeout = tv.timeout;
-				if (tv.tools && !params.tools) params.tools = tv.tools;
-				if (tv.excludeTools && !params.excludeTools) params.excludeTools = tv.excludeTools;
-				if (tv.noBuiltinTools !== undefined && params.noBuiltinTools === undefined) params.noBuiltinTools = tv.noBuiltinTools;
-				if (tv.inheritSystemPrompt !== undefined && params.inheritSystemPrompt === undefined) params.inheritSystemPrompt = tv.inheritSystemPrompt;
-			}
-
-			// Handle retryRunId — MUST run after template resolution and before the
-			// single-mode sanitize block. resolveRetryParams assigns params.task from
-			// the recorded run, so the sanitizer must see the retried body (a
-			// retry-only call has no task yet). It MUST run AFTER template resolution:
-			// resolveRetryParams returns a fresh object that DROPS `template`, so
-			// resolving templates first keeps a combined template + retryRunId call
-			// from silently disabling template resolution (issue #175 review).
-			if (params.retryRunId) {
-				// Fix A: prefer the session spawn entry (it carries `originalParams`);
-				// a run that exists ONLY in the durable registry after a fresh boot
-				// resolves through the visibility bridge instead of being rejected as
-				// not found — the id the boot notice names must resolve here.
-				let runEntry = state.findSpawnRunById(ctx, params.retryRunId);
-				if (!runEntry) {
-					const { getAgent } = await import("./session-manager");
-					runEntry = resolveTerminalRunEntry(
-						visibleRunsFor(ctx, getAgent),
-						params.retryRunId,
-					);
-				}
-				if (runEntry) {
-					retrySourceRun = runEntry;
-					params = resolveRetryParams(params, runEntry) as DelegateTaskParams;
-				} else {
-					// Issue #98: a silent no-op here made retries of background runs
-					// (which previously never wrote run entries) start as FRESH runs
-					// with no signal to the caller. Fail loudly instead.
-					log.warn("Retry run ID not found", { retryRunId: params.retryRunId });
-					return {
-						content: [{
-							type: "text" as const,
-							text: `Retry run ID not found: ${params.retryRunId}. The run may have been pruned, or it was a background run created before the run-entry fix. Pass the run's agent ID — for background runs the agent ID and run ID are now the same.`,
-						}],
-						details: undefined,
-						isError: true,
-					};
-				}
-			}
-
-			// F1: Sanitize task input — skip for chain/parallel/graph modes
-			const hasChain = params.chain && params.chain.length > 0;
-			const hasParallel = params.tasks && params.tasks.length > 0;
-			const hasGraph = params.graph && params.graph.length > 0;
-			if (!hasChain && !hasParallel && !hasGraph) {
-				// task is optional per the schema; single mode requires it. When absent,
-				// feed "" to the sanitizer — same rejection path ("Task must not be
-				// empty.") as when task was a required field.
-				const taskResult = sanitizeTask(params.task ?? "");
-				if (!taskResult.ok) {
-					log.warn("Task rejected by sanitizer", { error: taskResult.error });
-					return {
-						content: [{ type: "text" as const, text: `Invalid task: ${taskResult.error}` }],
-						details: undefined,
-						isError: true,
-					};
-				}
-				params.task = taskResult.value;
-			}
-
-			// P1+P2+P10: Mode detection — graph > chain > parallel > single
-			const isChain = hasChain;
-			const isParallel = hasParallel;
-			const isGraph = hasGraph;
-			const isSingle = typeof params.task === "string" && params.task.length > 0;
-
-			const modeCount = [isChain, isParallel, isGraph, isSingle].filter(Boolean).length;
-			if (modeCount !== 1) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text:
-								"Provide exactly one of: task (single), chain (sequential), tasks (parallel), or graph (dependency graph).",
-						},
-					],
-					details: undefined,
-					isError: true,
-				};
-			}
-
-			const dispatchShape: DispatchShape = isChain
-				? "chain"
-				: isGraph
-					? "graph"
-					: isParallel
-						? "parallel"
-						: "single";
+			// Seam B: sanitize the single-task body, then classify the shape.
+			const shape = resolveShape(params, log);
+			if (!shape.ok) return shape.result;
+			const { isChain, isParallel, isGraph, dispatchShape } = shape.value;
 
 			// Capture the caller's value BEFORE the default is recorded on
 			// `params.background` below. The guard must judge what the caller
