@@ -6,8 +6,8 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md`, `-2026-11-06.md`, `-2026-11-07b.md` (the pre-sweep snapshot), `-2026-11-08.md` (a superseded mid-sweep STATE) — not current state.
 
 ## STATE
-Verified: a685561 (2026-11-08)
-Cycle: the composition-root cycle (open 2026-11-08) — #474 P0 first, then #476, the runtime-context ADR, and #430 as the first seam
+Verified: 74f5b9f (2026-11-08)
+Cycle: the composition-root cycle (open 2026-11-08) — #476, the runtime-context ADR, #474 before #430, then #430 and the seams
 
 - **dev** @ `7809e56` (release commit `436d56b` + the release docs). Merged today, in order: #457 (#440), #458 (#436), #459 (#455), #461 (#434), #462 (#439), #463 (#456), #464 (#447), #467 (#453), #470 (#469), #471 (#468), #472 (#465), #473 (#466), then PR #475 (`dev → main`, release). Docs: ADR 0023 (deadline ownership), ADR 0024 (unit projection), ADR 0025 (Jev level as observation), ADR 0026 (headState boot repair), the #453/#460/#466 dossiers. **No worktrees beyond the cockpit pair**; `git worktree list` = `main` + `dev`.
 - **Released:** **v2.8.0 LIVE** (2026-11-08) — GitHub release published `2026-11-08T04:14:51Z`, npm `latest` **2.8.0**, `main` and `dev` both @ `436d56b` (tag `v2.8.0`). **Published-build probe: 70 packed files, every one byte-identical to the tag, zero missing** (`npm pack brl-subagent@2.8.0` against `git archive v2.8.0`). **Release checkpoint CLOSED.** Running install: **`npm:brl-subagent` 2.8.0** — the dev install was removed, and the installed copy is **byte-identical to the published tarball** (70 files, 0 mismatches). Step 9 complete.
@@ -28,7 +28,7 @@ Cycle: the composition-root cycle (open 2026-11-08) — #474 P0 first, then #476
 - **Budget corrected.** 114 files / **2400** tests, ratio **1.96** (50,773 test / 25,900 source). Headroom is ~**1,027 test lines**, *larger* than before (~470) because #466 grew source by ~900 — the ceiling is a ratio, so source growth buys test capacity. The earlier "last comfortable unit" framing was wrong in direction.
 
 ### Next actions
-1. **#476 / #450 / #430 / #426** — #476 is Track A (imports + guard; small, imports-only, C1); #450 is low hardening, #430 the `execute` split, #426 needs the maintainer's call.
+1. **#476 / #450 / #430 / #426** — #476 is Track A (imports + guard; small, imports-only, C2); #450 is low hardening, #430 the `execute` split, #426 needs the maintainer's call.
 2. **Release** — checkpoint CLOSED: v2.8.0 shipped the nine fixes (published build verified byte-identical to the tag). The next release belongs to the next cycle; never propose one unprompted.
 3. **Follow-ups with no issue yet** — the shared `vi.mock("../git")` fixture (three copies; the merge broke one), `spawnBackgroundSession` (~1,100 lines, now a third responsibility), and the `branch-lock.ts` extraction the #466 dossier names. None is a defect; all are maintenance hazards.
 4. **Next cycle** — opens with a `Cycle:` line when a direction is agreed; **#474 is its P0** (the failure path reports the worktree state). The cockpit can stay on disk at the release commit; it is now the *worktree*, not the install.
@@ -51,6 +51,7 @@ Cycle: the composition-root cycle (open 2026-11-08) — #474 P0 first, then #476
 - **Mutation choice decides coverage:** name the mutant and its killer in the spec, and prefer a realistic mutant — a weak one can make a sound pin look vacuous (2026-11-06: `(meta.timeout as number)` survived a pin that `Number(meta.timeout)` killed).
 - **Acceptance bars must be measurable here:** no coverage percentages (ADR 0021 §1 — no provider, and adding one is foreclosed); use a branch checklist + named mutants. A metric no tool in this repo can produce is a spec defect, not an aspiration.
 - **Releases:** no calendar pressure; never propose one unprompted.
+- **Autonomous mode (maintainer decision, 2026-11-08):** for the composition-root cycle the conductor dispatches the queued units without a separate user spec gate; every spec goes to the **plan critique** first. Genuinely blocking decisions get the critique's opinion first, then the maintainer's call if still unresolved. Rule 16's user gate is superseded for this cycle only.
 - **Gates:** `npx vitest run` · `npx tsc --noEmit` · `node scripts/docs-arch.mjs` · `node scripts/docs-decisions.mjs` · `git diff --check` · merge step 7 `codegraph-refresh.sh`.
 - **Never `npm install` in the cockpit** — `worktree-prep.sh` only, and `--force-isolated` for any dependency-bump worktree. `.pi/brl-subagent/{presets,templates}` are gitignored local config, so the tracked record of a convention change lives here.
 
