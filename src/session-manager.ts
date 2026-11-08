@@ -1948,7 +1948,10 @@ export async function spawnBackgroundSession(
       // #460 §4.4 — `failPreStart` alone stops at the run entry). Record flip ->
       // run entry -> transcript, then the throw that reaches the caller's
       // spawn-failure result; each step is contained so a cleanup fault can
-      // never mask the refusal itself.
+      // never mask the refusal itself. `finalizeRunEntry` already retires the
+      // registry entry (a non-running write clears it); the explicit call is the
+      // belt for a finalize that threw — registry residue is what boot recovery
+      // reads, and this dispatch provably never started.
       try {
         updateAgentStatus(id, 'failed', reason);
         finalizeRunEntry('failed', reason);
