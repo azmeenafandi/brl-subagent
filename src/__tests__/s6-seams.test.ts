@@ -15,14 +15,35 @@
  * FOREGROUND path live in the later describes.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createDelegateHandler, type DelegateHandlerDeps } from "../delegate-handler";
 import { SessionState } from "../state";
+import { __setRegistryDir } from "../run-registry";
+import { __setOutputDir } from "../transcript";
 import { CUSTOM_ENTRY_TYPES, type SubagentRun, type TaskTemplate } from "../types";
+
+/**
+ * The runner is the only subprocess seam the foreground path has. Its
+ * `getPiInvocation` is also what the REAL preflight check resolves, so this
+ * mock is what makes the foreground path runnable without a `pi` binary:
+ * an executable command satisfies `checkPiBinary`.
+ */
+const runner = vi.hoisted(() => ({
+	runSubagent: vi.fn(),
+	getPiInvocation: vi.fn(() => ({ command: process.execPath, args: [] as string[] })),
+}));
+vi.mock("../runner", () => ({
+	runSubagent: runner.runSubagent,
+	getPiInvocation: runner.getPiInvocation,
+	cleanupTempDirs: vi.fn(async () => 0),
+	reapActiveChildren: vi.fn(async () => []),
+	accumulateUsage: vi.fn(),
+	parseSubagentLine: vi.fn(),
+}));
 
 vi.mock("@earendil-works/pi-tui", () => {
 	class Container {}
@@ -39,7 +60,20 @@ vi.mock("@earendil-works/pi-tui", () => {
 
 const GLOBAL_MODEL = { provider: "test", id: "test-model" };
 const workdir = mkdtempSync(join(tmpdir(), "brl-s6-seams-"));
-afterAll(() => rmSync(workdir, { recursive: true, force: true }));
+/** The durable registry + the transcript dir, redirected out of the repo. */
+const registryDir = mkdtempSync(join(tmpdir(), "brl-s6-seams-registry-"));
+const transcriptDir = mkdtempSync(join(tmpdir(), "brl-s6-seams-transcript-"));
+beforeEach(() => {
+	__setRegistryDir(registryDir);
+	__setOutputDir(transcriptDir);
+});
+afterAll(() => {
+	__setRegistryDir(undefined);
+	__setOutputDir(undefined);
+	rmSync(workdir, { recursive: true, force: true });
+	rmSync(registryDir, { recursive: true, force: true });
+	rmSync(transcriptDir, { recursive: true, force: true });
+});
 
 interface SentMessage {
 	customType?: string;
@@ -51,7 +85,9 @@ interface Harness {
 	tool: ReturnType<typeof createDelegateHandler>;
 	state: SessionState;
 	sent: SentMessage[];
+	notifies: Array<{ message: string; level: string }>;
 	warns: Array<{ message: string; data?: Record<string, unknown> }>;
+	infos: Array<{ message: string; data?: Record<string, unknown> }>;
 	deps: {
 		runChainMode: ReturnType<typeof vi.fn>;
 		runParallelMode: ReturnType<typeof vi.fn>;
@@ -67,9 +103,26 @@ const okResult = (text: string) => ({
 	details: undefined,
 });
 
+/** What the mocked `runSubagent` returns: a successful child result. */
+function childResult(text = "child output") {
+	return {
+		messages: [{ role: "assistant", content: [{ type: "text", text }] }],
+		usage: { input: 4, output: 2, cost: 0.001 },
+		exitCode: 0,
+		stderr: "",
+	};
+}
+
+beforeEach(() => {
+	runner.runSubagent.mockResolvedValue(childResult());
+});
+
 function makeHarness(): Harness {
 	const sent: SentMessage[] = [];
+	const notifies: Array<{ message: string; level: string }> = [];
+	activeNotifies = notifies;
 	const warns: Array<{ message: string; data?: Record<string, unknown> }> = [];
+	const infos: Array<{ message: string; data?: Record<string, unknown> }> = [];
 	const pi = {
 		sendMessage: (msg: SentMessage) => {
 			sent.push(msg);
@@ -78,7 +131,9 @@ function makeHarness(): Harness {
 	} as unknown as ExtensionAPI;
 	const log = {
 		debug: () => {},
-		info: () => {},
+		info: (message: string, data?: Record<string, unknown>) => {
+			infos.push({ message, data });
+		},
 		warn: (message: string, data?: Record<string, unknown>) => {
 			warns.push({ message, data });
 		},
@@ -99,8 +154,11 @@ function makeHarness(): Harness {
 		{ pi, log: log as never, state },
 		deps as unknown as DelegateHandlerDeps,
 	);
-	return { tool, state, sent, warns, deps };
+	return { tool, state, sent, notifies, warns, infos, deps };
 }
+
+/** The notification sink of the CURRENT test's harness (set by makeHarness). */
+let activeNotifies: Array<{ message: string; level: string }> = [];
 
 function makeCtx(entries: unknown[] = []): ExtensionContext {
 	return {
@@ -114,10 +172,48 @@ function makeCtx(entries: unknown[] = []): ExtensionContext {
 			hasConfiguredAuth: () => true,
 		},
 		getSystemPrompt: () => "SYSTEM",
-		ui: { notify: () => {}, setStatus: () => {}, theme: { fg: (_c: string, t: string) => t } },
+		ui: {
+			notify: (message: string, level: string) => {
+				activeNotifies.push({ message, level });
+			},
+			setStatus: () => {},
+			theme: { fg: (_c: string, t: string) => t },
+		},
 		sessionManager: { getEntries: () => entries, appendCustomEntry: () => {} },
 		hasUI: false,
 	} as unknown as ExtensionContext;
+}
+
+/**
+ * A cwd whose package.json opts into the umbrella `processChecks` flag
+ * (ADR 0019) — the #412 pre-flight's gate. One directory per call so a test
+ * cannot leak the flag into another.
+ */
+function processChecksCwd(name: string): string {
+	const dir = join(workdir, name);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(
+		join(dir, "package.json"),
+		JSON.stringify({ name, "brl-subagent": { processChecks: true } }),
+	);
+	return dir;
+}
+
+/** The ctx for a specific cwd (the pre-flight reads the manifest at dispatch cwd). */
+function ctxAt(cwd: string, entries: unknown[] = []): ExtensionContext {
+	const ctx = makeCtx(entries) as unknown as { cwd: string };
+	ctx.cwd = cwd;
+	return ctx as unknown as ExtensionContext;
+}
+
+/** The timeout the child was spawned with (arg 9 of runSubagent). */
+function runnerTimeout(): number | undefined {
+	return runner.runSubagent.mock.calls[0][8] as number | undefined;
+}
+
+/** The task the child was spawned with (arg 5 of runSubagent). */
+function runnerTask(): string | undefined {
+	return runner.runSubagent.mock.calls[0][4] as string | undefined;
 }
 
 const textOf = (result: { content: Array<{ type: string; text?: string }> }): string =>
@@ -155,6 +251,7 @@ function withEntry(run: SubagentRun): unknown[] {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	runner.runSubagent.mockResolvedValue(childResult());
 });
 
 // ---------------------------------------------------------------------------
@@ -418,6 +515,250 @@ describe("seam B — sanitize + shape", () => {
 				if (name !== expected && name !== "visibleRunsFor") expect(dep).not.toHaveBeenCalled();
 			}
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Seam C — prepareShape (the #412 pre-flight, the background default, #434)
+// ---------------------------------------------------------------------------
+
+describe("seam C — the #412 dispatch pre-flight", () => {
+	it("switches a high-thinking explicit-foreground dispatch to background and drops its deadline", async () => {
+		const h = makeHarness();
+		const ctx = ctxAt(processChecksCwd("switch"));
+		const result = await h.tool.execute(
+			"call-c",
+			{
+				task: "summarize the design notes",
+				thinkingLevel: "high",
+				timeout: 5_000,
+				background: false,
+				approvalMode: "auto",
+			} as never,
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(result.isError).toBeFalsy();
+		// The shape MOVED: the injected background spawn is the one that ran.
+		expect(h.deps.spawnBackgroundRun).toHaveBeenCalledTimes(1);
+		expect(runner.runSubagent).not.toHaveBeenCalled();
+		// ... and the deadline was dropped, not carried into the background run.
+		const spawned = spawnedParams(h);
+		expect(spawned.background).toBe(true);
+		expect(spawned.timeout).toBeUndefined();
+		// The caller was told, on both channels.
+		expect(h.sent.some((m) => m.content.includes("now background"))).toBe(true);
+		expect(h.notifies.some((n) => n.message.includes("now background"))).toBe(true);
+	});
+
+	it("keeps the shape and drops only the deadline when the approval mode forbids background (#431)", async () => {
+		const h = makeHarness();
+		const ctx = ctxAt(processChecksCwd("drop-timeout"));
+		const result = await h.tool.execute(
+			"call-c",
+			{
+				task: "summarize the design notes",
+				thinkingLevel: "high",
+				timeout: 5_000,
+				background: false,
+				approvalMode: "always",
+				// The project opts into the process checks, so the foreground path
+				// needs the Jev line bypass to reach the runner at all.
+				noJev: "s6 seam test",
+			} as never,
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(h.deps.spawnBackgroundRun).not.toHaveBeenCalled();
+		expect(runner.runSubagent).toHaveBeenCalledTimes(1);
+		// The date was dropped on the FOREGROUND run — the child got no timeout.
+		expect(runnerTimeout()).toBeUndefined();
+		// The #431 notice, not the #412 switch notice.
+		expect(h.sent.some((m) => m.content.includes("stays FOREGROUND"))).toBe(true);
+		expect(h.sent.some((m) => m.content.includes("now background"))).toBe(false);
+	});
+
+	it("does not touch a high-thinking dispatch when the project has not opted in", async () => {
+		const h = makeHarness();
+		const result = await h.tool.execute(
+			"call-c",
+			{
+				task: "summarize the design notes",
+				thinkingLevel: "high",
+				timeout: 5_000,
+				background: false,
+			} as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(runnerTimeout()).toBe(5_000);
+		expect(h.sent).toHaveLength(0);
+	});
+
+	it("records the override instead of switching when force is set", async () => {
+		const h = makeHarness();
+		const ctx = ctxAt(processChecksCwd("forced"));
+		const result = await h.tool.execute(
+			"call-c",
+			{
+				task: "summarize the design notes",
+				thinkingLevel: "high",
+				timeout: 5_000,
+				background: false,
+				approvalMode: "auto",
+				force: true,
+				noJev: "s6 seam test",
+			} as never,
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(runnerTimeout()).toBe(5_000);
+		expect(h.sent).toHaveLength(0);
+		expect(h.infos.some((i) => i.message.includes("forced"))).toBe(true);
+	});
+
+	it("rejects a declared thinking level outside the vocabulary before any run record", async () => {
+		const h = makeHarness();
+		const result = await h.tool.execute(
+			"call-c",
+			{ task: "summarize the design notes", thinkingLevel: "High" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("Invalid thinkingLevel");
+		expect(textOf(result)).toContain("matched exactly");
+		expect(runner.runSubagent).not.toHaveBeenCalled();
+		expect(h.deps.spawnBackgroundRun).not.toHaveBeenCalled();
+	});
+});
+
+describe("seam C — the background default and the batch guard", () => {
+	it("rejects an EXPLICIT background: true chain", async () => {
+		const h = makeHarness();
+		const result = await h.tool.execute(
+			"call-c",
+			{ chain: [{ task: "a" }], background: true } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("background: true is not supported with chain");
+		expect(h.deps.runChainMode).not.toHaveBeenCalled();
+		expect(h.deps.runBackgroundFanOut).not.toHaveBeenCalled();
+	});
+
+	it("lets an OMITTED background chain run foreground — the guard judges the caller, not the default", async () => {
+		const h = makeHarness();
+		const result = await h.tool.execute(
+			"call-c",
+			{ chain: [{ task: "a" }], approvalMode: "auto" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(h.deps.runChainMode).toHaveBeenCalledTimes(1);
+	});
+
+	it("defaults an omitted background only when the effective approval mode is auto", async () => {
+		const background = makeHarness();
+		await background.tool.execute(
+			"call-c",
+			{ task: "summarize the design notes", approvalMode: "auto" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+		expect(background.deps.spawnBackgroundRun).toHaveBeenCalledTimes(1);
+		expect(background.deps.spawnBackgroundRun.mock.calls[0][2]).toMatchObject({ background: true });
+
+		const foreground = makeHarness();
+		await foreground.tool.execute(
+			"call-c",
+			{ task: "summarize the design notes", approvalMode: "writes" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+		expect(foreground.deps.spawnBackgroundRun).not.toHaveBeenCalled();
+		expect(runner.runSubagent).toHaveBeenCalledTimes(1);
+	});
+
+	it("hands the batch runners the #434 unit projection, resolved once per dispatch", async () => {
+		const chain = makeHarness();
+		await chain.tool.execute(
+			"call-c",
+			{ chain: [{ task: "a" }], thinkingLevel: "high", force: true } as never,
+			undefined,
+			undefined,
+			ctxAt(processChecksCwd("batch-guard-chain")),
+		);
+		expect(chain.deps.runChainMode.mock.calls[0][4]).toEqual({
+			processChecks: true,
+			dispatchDeclaredLevel: "high",
+			force: true,
+			unitShape: "foreground",
+			noticeEmitted: false,
+		});
+
+		const fanOut = makeHarness();
+		await fanOut.tool.execute(
+			"call-c",
+			{ tasks: [{ task: "a" }], background: true, force: true } as never,
+			undefined,
+			undefined,
+			ctxAt(processChecksCwd("batch-guard-fanout")),
+		);
+		expect(fanOut.deps.runBackgroundFanOut.mock.calls[0][4]).toEqual({
+			processChecks: true,
+			dispatchDeclaredLevel: undefined,
+			force: true,
+			unitShape: "background",
+			noticeEmitted: false,
+		});
+	});
+
+	it("marks noticeEmitted when the dispatch's own arm spoke (#434 double-report guard)", async () => {
+		const h = makeHarness();
+		const ctx = ctxAt(processChecksCwd("batch-guard-notice"));
+		// A `tasks` fan-out that the pre-flight switched: the dispatch announced
+		// the change, so its units must not announce it again. The explicit
+		// `background: false` is what makes the switch arm fire (an OMITTED
+		// background under `auto` already defaults to the fan-out, `none` above).
+		await h.tool.execute(
+			"call-c",
+			{
+				tasks: [{ task: "a" }],
+				thinkingLevel: "high",
+				timeout: 5_000,
+				background: false,
+				approvalMode: "auto",
+			} as never,
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(h.deps.runBackgroundFanOut.mock.calls[0][4]).toMatchObject({
+			unitShape: "background",
+			noticeEmitted: true,
+		});
 	});
 });
 

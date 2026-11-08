@@ -541,6 +541,237 @@ function resolveShape(
 	return { ok: true, value: { params, isChain, isParallel, isGraph, dispatchShape } };
 }
 
+/** What seam C reads from its surroundings — the #412 pre-flight's inputs. */
+interface ShapeDeps {
+	state: SessionState;
+	ctx: ExtensionContext;
+	pi: ExtensionAPI;
+	log: Logger;
+}
+
+/** Seam C's value: the routing decisions every downstream seam reads. */
+interface ShapePreparation {
+	/** Whether the dispatch runs detached (background) or blocks (foreground). */
+	useBackground: boolean;
+	/** The #434 unit-projection inputs the batch runners consume. */
+	batchGuard: BatchGuardContext;
+}
+
+/**
+ * Seam C — the dispatch pre-flight and the background default (issues #361,
+ * #412, #415, #431, #434, #443) — plus the recorded background decision.
+ *
+ * This is the seam where the dispatch can be CHANGED (the #412 high-thinking
+ * switch / #431 timeout drop) and REJECTED (a declared thinking level outside
+ * the cap, an explicit `background: true` batch). The order is load-bearing:
+ *
+ *   1. `explicitBackground` is captured BEFORE the default is recorded on
+ *      `params.background` — the batch guard judges what the caller asked for,
+ *      not what the default made true;
+ *   2. the switch is applied BEFORE `useBackground` resolves and before any
+ *      run record exists, so the spawn, the retry snapshot and the pending-work
+ *      record all see the switched shape;
+ *   3. `useBackground` resolves ONCE (single + fan-out share it) from the
+ *      EFFECTIVE approval mode, so the default can never route a run into a
+ *      background context that needs an interactive gate;
+ *   4. `batchGuard` closes over the switch outcome so a unit never re-announces
+ *      a notice the dispatch already delivered.
+ *
+ * Effects: `log.*`, `pi.sendMessage` and `ctx.ui.notify` on the switch arms;
+ * `params.background`/`params.timeout` mutations. Returns the caller's
+ * rejection unchanged when a gate trips.
+ */
+function prepareShape(
+	params: DelegateTaskParams,
+	shape: Pick<DispatchSelection, "dispatchShape" | "isParallel">,
+	deps: ShapeDeps,
+): Outcome<ShapePreparation> {
+	const { state, ctx, pi, log } = deps;
+	const { dispatchShape, isParallel } = shape;
+
+	// Capture the caller's value BEFORE the default is recorded on
+	// `params.background` below. The guard must judge what the caller
+	// actually asked for; reading the recorded value would make it depend
+	// on the default. Keeping the capture first makes that ordering
+	// self-evident (issue #361 review).
+	const explicitBackground = params.background;
+
+	// Issue #412 (rule 2: "no deadline ⇒ durable path") — the dispatch-shape
+	// pre-flight. A high/xhigh-thinking run the conductor asked to run
+	// FOREGROUND with an explicit timeout is the shape that lost 14 minutes of
+	// plan critique on 2026-10-31: foreground runs persist nothing, so the
+	// deadline kills the work outright, while a background run keeps its
+	// session and is retried on a transport error. The switch is applied HERE
+	// — after template/retry resolution and BEFORE `useBackground` is resolved
+	// and before any run record is written — so the shape every downstream
+	// reader sees (the spawn, the retry snapshot, the pending-work record) is
+	// the switched one. Moving it after `snapshotOriginalParams` would record
+	// `background:false` and silently cost the run its transport auto-retry
+	// (`transport-retry.ts` classifies off that snapshot).
+	// Issue #415: the switch is OUR process (a conductor decision rule), not
+	// product behavior — a user's explicit foreground timeout is usually a
+	// budget cap, so a GLOBAL switch could triple time and cost against
+	// their instruction. The umbrella project-local `processChecks` flag
+	// gates it (fail-open: no/malformed manifest → off). Resolve the
+	// dispatch cwd ONCE, the way the target validation below will.
+	const processChecksCwd =
+		params.cwd === undefined ? ctx.cwd : path.resolve(ctx.cwd, params.cwd);
+	const processChecks = readProcessChecks(processChecksCwd);
+	// The preset the dispatch will actually run with — an auto-routed
+	// `code-reviewer`/`debugger` is a high-thinking run even though the
+	// caller declared no level, so the pre-flight resolves the SAME preset
+	// the merge below will (one rule, `resolveDispatchPreset`).
+	const declaredPresetForSwitch = resolveDispatchPreset(params, state).preset;
+	// Issue #443: guard the EFFECTIVE DECLARED level here — the per-call value
+	// or the selected preset's (named, or auto-routed by the line above) —
+	// BEFORE `resolveSubagentParams` clamps it. `params.thinkingLevel` is
+	// already the post-template, post-`retryRunId` value by this point, so a
+	// level restored from a run record is judged too; a preset object injected
+	// in memory never passed a schema or the preset-file validator, so this
+	// is its only check. Everything below runs through this one seam: the
+	// single, background, chain, parallel and graph handlers are all reached
+	// from here, and the per-unit declarations are guarded by the pre-passes.
+	const effectiveDeclaredThinkingLevel = declaredThinkingLevel(
+		params.thinkingLevel,
+		declaredPresetForSwitch?.thinkingLevel,
+	);
+	const declaredThinkingError = invalidThinkingLevelRejection(effectiveDeclaredThinkingLevel);
+	if (declaredThinkingError) return { ok: false, result: declaredThinkingError };
+	// The EFFECTIVE approval mode (call param, else the configured default) —
+	// the same resolver `resolveSubagentParams` and the #361 default use, so the
+	// pre-flight cannot judge a mode the child will not run with. Reading
+	// `params.approvalMode` raw here would miss a config-tier mode entirely.
+	const effectiveApprovalModeForSwitch = resolveEffectiveApprovalMode(
+		params.approvalMode,
+		state,
+	);
+	const thinkingSwitch = resolveThinkingDispatchSwitch({
+		processChecks,
+		thinkingLevel: effectiveDeclaredThinkingLevel as ThinkingLevel | undefined,
+		explicitBackground,
+		timeout: params.timeout,
+		force: params.force,
+		shape: dispatchShape,
+		effectiveApprovalMode: effectiveApprovalModeForSwitch,
+	});
+	if (thinkingSwitch === "switch") {
+		params.background = true;
+		// Drop the foreground deadline: the 30-minute background default
+		// (DEFAULT_BACKGROUND_DEADLINE_MS) applies instead. Recorded as
+		// undefined, so a retry re-derives it rather than restoring the cap.
+		params.timeout = undefined;
+		log.info("Dispatch pre-flight: high-thinking foreground switched to background", {
+			thinkingLevel: params.thinkingLevel,
+			timeout: "dropped (background default applies)",
+		});
+		pi.sendMessage({
+			customType: "delegate-notification",
+			content: THINKING_SWITCH_NOTICE,
+			display: true,
+			details: { thinkingLevel: params.thinkingLevel, previousTimeout: "dropped" },
+		}, { deliverAs: "followUp" });
+		ctx.ui.notify(THINKING_SWITCH_NOTICE, "warning");
+	} else if (thinkingSwitch === "drop-timeout") {
+		// Issue #431 — the second arm: the shape cannot move (an effective
+		// 'always'/'writes' run needs the interactive gate, and switching an
+		// explicit-foreground 'always' dispatch would be REJECTED — #433), so
+		// the only thing the pre-flight can remove is the deadline. Clearing it
+		// HERE, before `snapshotOriginalParams` records the run (:3035
+		// foreground, :2374 background), is what makes a retry re-derive an
+		// absent deadline instead of restoring the cap (ADR 0009).
+		const previousTimeout = params.timeout;
+		params.timeout = undefined;
+		log.info("Dispatch pre-flight: high-thinking foreground timeout dropped, shape kept", {
+			thinkingLevel: params.thinkingLevel,
+			previousTimeout,
+			effectiveApprovalMode: effectiveApprovalModeForSwitch,
+		});
+		pi.sendMessage({
+			customType: "delegate-notification",
+			content: THINKING_TIMEOUT_DROP_NOTICE,
+			display: true,
+			details: {
+				thinkingLevel: params.thinkingLevel,
+				// The ACTUAL ms value, not "dropped": the friction log needs the
+				// number to tell a budget cap from a tight clock.
+				previousTimeout,
+				effectiveApprovalMode: effectiveApprovalModeForSwitch,
+			},
+		}, { deliverAs: "followUp" });
+		ctx.ui.notify(THINKING_TIMEOUT_DROP_NOTICE, "warning");
+	} else if (thinkingSwitch === "forced") {
+		// The override is recorded, not silent: the dispatch text is the reason
+		// (`force` has no reason field — ADR 0007's contract stays unchanged).
+		log.info("Dispatch pre-flight: high-thinking foreground forced", {
+			thinkingLevel: params.thinkingLevel,
+			timeout: params.timeout,
+		});
+	}
+
+	// background: true with chain/graph was silently ignored — the batch ran
+	// foreground (blocking until every unit finished) while the caller believed
+	// it was background. Both remain rejected loudly at dispatch validation;
+	// tasks (parallel) fans out into independent background agents instead.
+	// Only an EXPLICIT true trips this (issue #361): an omitted `background`
+	// now defaults to foreground here rather than being rejected.
+	if (shouldRejectBackgroundForBatch(dispatchShape, explicitBackground)) {
+		const batchMode = dispatchShape === "chain" ? "chain" : "graph";
+		return {
+			ok: false,
+			result: {
+				content: [
+					{
+						type: "text" as const,
+						text: `background: true is not supported with ${batchMode} — batch modes run foreground and would block until every unit finishes. Remove background to run it foreground, or start each unit as its own single-task background call and sequence the dependencies yourself.`,
+					},
+				],
+				details: undefined,
+				isError: true,
+			},
+		};
+	}
+
+	// Issue #361: background is the CONDITIONAL default for the shapes that
+	// can run unattended. Resolved ONCE per dispatch and reused by the
+	// single and fan-out paths below, so the decision cannot drift between
+	// them. The approval mode is the EFFECTIVE one (call param, else the
+	// configured default — presets declare no approvalMode today) — the same
+	// value the child will run with — so the default never routes a run into a
+	// background context that would break or silently auto-approve it
+	// ('always' has no dialog; 'writes' gates the diff on approval).
+	const useBackground =
+		params.background ??
+		defaultBackgroundFor(dispatchShape, resolveEffectiveApprovalMode(params.approvalMode, state));
+	// Record the EFFECTIVE value on the dispatch (a no-op when the caller was
+	// explicit): a run started by the default must retry as what it actually
+	// was instead of re-deriving the default, which may since have moved with
+	// the config. Fan-out units still record no background of their own — a
+	// unit retries as a single foreground run (issue #229), unaffected here.
+	params.background ??= useBackground;
+
+	// Issue #434: the unit projection's inputs, resolved ONCE here so no
+	// unit site can re-derive them (a relative `params.cwd` re-read of the
+	// manifest measured `false` where this resolution measured `true`).
+	// `noticeEmitted` starts true when the DISPATCH arm announced its own
+	// change: the drop still reaches every eligible unit, but the dispatch
+	// already spoke, and a second notice would double-report one decision.
+	// (`forced` emits nothing — the caller asked for the explicit pair, so
+	// there is nothing to announce and no arm acted.)
+	const batchGuard: BatchGuardContext = {
+		processChecks,
+		dispatchDeclaredLevel: effectiveDeclaredThinkingLevel as ThinkingLevel | undefined,
+		force: params.force as boolean | undefined,
+		// A `tasks` fan-out spawns detached background units (their deadline is
+		// the legitimate budget); every other batch handler runs its units
+		// foreground. Chain/graph can never be background: an explicit
+		// `background: true` batch was rejected above.
+		unitShape: isParallel && useBackground ? "background" : "foreground",
+		noticeEmitted: thinkingSwitch === "switch" || thinkingSwitch === "drop-timeout",
+	};
+
+	return { ok: true, value: { useBackground, batchGuard } };
+}
+
 /**
  * Build the `delegate_task` definition over one runtime context (ADR 0027 D1/D3).
  *
@@ -653,182 +884,11 @@ export function createDelegateHandler(
 			if (!shape.ok) return shape.result;
 			const { isChain, isParallel, isGraph, dispatchShape } = shape.value;
 
-			// Capture the caller's value BEFORE the default is recorded on
-			// `params.background` below. The guard must judge what the caller
-			// actually asked for; reading the recorded value would make it depend
-			// on the default. Keeping the capture first makes that ordering
-			// self-evident (issue #361 review).
-			const explicitBackground = params.background;
-
-			// Issue #412 (rule 2: "no deadline ⇒ durable path") — the dispatch-shape
-			// pre-flight. A high/xhigh-thinking run the conductor asked to run
-			// FOREGROUND with an explicit timeout is the shape that lost 14 minutes of
-			// plan critique on 2026-10-31: foreground runs persist nothing, so the
-			// deadline kills the work outright, while a background run keeps its
-			// session and is retried on a transport error. The switch is applied HERE
-			// — after template/retry resolution and BEFORE `useBackground` is resolved
-			// and before any run record is written — so the shape every downstream
-			// reader sees (the spawn, the retry snapshot, the pending-work record) is
-			// the switched one. Moving it after `snapshotOriginalParams` would record
-			// `background:false` and silently cost the run its transport auto-retry
-			// (`transport-retry.ts` classifies off that snapshot).
-			// Issue #415: the switch is OUR process (a conductor decision rule), not
-			// product behavior — a user's explicit foreground timeout is usually a
-			// budget cap, so a GLOBAL switch could triple time and cost against
-			// their instruction. The umbrella project-local `processChecks` flag
-			// gates it (fail-open: no/malformed manifest → off). Resolve the
-			// dispatch cwd ONCE, the way the target validation below will.
-			const processChecksCwd =
-				params.cwd === undefined ? ctx.cwd : path.resolve(ctx.cwd, params.cwd);
-			const processChecks = readProcessChecks(processChecksCwd);
-			// The preset the dispatch will actually run with — an auto-routed
-			// `code-reviewer`/`debugger` is a high-thinking run even though the
-			// caller declared no level, so the pre-flight resolves the SAME preset
-			// the merge below will (one rule, `resolveDispatchPreset`).
-			const declaredPresetForSwitch = resolveDispatchPreset(params, state).preset;
-			// Issue #443: guard the EFFECTIVE DECLARED level here — the per-call value
-			// or the selected preset's (named, or auto-routed by the line above) —
-			// BEFORE `resolveSubagentParams` clamps it. `params.thinkingLevel` is
-			// already the post-template, post-`retryRunId` value by this point, so a
-			// level restored from a run record is judged too; a preset object injected
-			// in memory never passed a schema or the preset-file validator, so this
-			// is its only check. Everything below runs through this one seam: the
-			// single, background, chain, parallel and graph handlers are all reached
-			// from here, and the per-unit declarations are guarded by the pre-passes.
-			const effectiveDeclaredThinkingLevel = declaredThinkingLevel(
-				params.thinkingLevel,
-				declaredPresetForSwitch?.thinkingLevel,
-			);
-			const declaredThinkingError = invalidThinkingLevelRejection(effectiveDeclaredThinkingLevel);
-			if (declaredThinkingError) return declaredThinkingError;
-			// The EFFECTIVE approval mode (call param, else the configured default) —
-			// the same resolver `resolveSubagentParams` and the #361 default use, so the
-			// pre-flight cannot judge a mode the child will not run with. Reading
-			// `params.approvalMode` raw here would miss a config-tier mode entirely.
-			const effectiveApprovalModeForSwitch = resolveEffectiveApprovalMode(
-				params.approvalMode,
-				state,
-			);
-			const thinkingSwitch = resolveThinkingDispatchSwitch({
-				processChecks,
-				thinkingLevel: effectiveDeclaredThinkingLevel as ThinkingLevel | undefined,
-				explicitBackground,
-				timeout: params.timeout,
-				force: params.force,
-				shape: dispatchShape,
-				effectiveApprovalMode: effectiveApprovalModeForSwitch,
-			});
-			if (thinkingSwitch === "switch") {
-				params.background = true;
-				// Drop the foreground deadline: the 30-minute background default
-				// (DEFAULT_BACKGROUND_DEADLINE_MS) applies instead. Recorded as
-				// undefined, so a retry re-derives it rather than restoring the cap.
-				params.timeout = undefined;
-				log.info("Dispatch pre-flight: high-thinking foreground switched to background", {
-					thinkingLevel: params.thinkingLevel,
-					timeout: "dropped (background default applies)",
-				});
-				pi.sendMessage({
-					customType: "delegate-notification",
-					content: THINKING_SWITCH_NOTICE,
-					display: true,
-					details: { thinkingLevel: params.thinkingLevel, previousTimeout: "dropped" },
-				}, { deliverAs: "followUp" });
-				ctx.ui.notify(THINKING_SWITCH_NOTICE, "warning");
-			} else if (thinkingSwitch === "drop-timeout") {
-				// Issue #431 — the second arm: the shape cannot move (an effective
-				// 'always'/'writes' run needs the interactive gate, and switching an
-				// explicit-foreground 'always' dispatch would be REJECTED — #433), so
-				// the only thing the pre-flight can remove is the deadline. Clearing it
-				// HERE, before `snapshotOriginalParams` records the run (:3035
-				// foreground, :2374 background), is what makes a retry re-derive an
-				// absent deadline instead of restoring the cap (ADR 0009).
-				const previousTimeout = params.timeout;
-				params.timeout = undefined;
-				log.info("Dispatch pre-flight: high-thinking foreground timeout dropped, shape kept", {
-					thinkingLevel: params.thinkingLevel,
-					previousTimeout,
-					effectiveApprovalMode: effectiveApprovalModeForSwitch,
-				});
-				pi.sendMessage({
-					customType: "delegate-notification",
-					content: THINKING_TIMEOUT_DROP_NOTICE,
-					display: true,
-					details: {
-						thinkingLevel: params.thinkingLevel,
-						// The ACTUAL ms value, not "dropped": the friction log needs the
-						// number to tell a budget cap from a tight clock.
-						previousTimeout,
-						effectiveApprovalMode: effectiveApprovalModeForSwitch,
-					},
-				}, { deliverAs: "followUp" });
-				ctx.ui.notify(THINKING_TIMEOUT_DROP_NOTICE, "warning");
-			} else if (thinkingSwitch === "forced") {
-				// The override is recorded, not silent: the dispatch text is the reason
-				// (`force` has no reason field — ADR 0007's contract stays unchanged).
-				log.info("Dispatch pre-flight: high-thinking foreground forced", {
-					thinkingLevel: params.thinkingLevel,
-					timeout: params.timeout,
-				});
-			}
-
-			// background: true with chain/graph was silently ignored — the batch ran
-			// foreground (blocking until every unit finished) while the caller believed
-			// it was background. Both remain rejected loudly at dispatch validation;
-			// tasks (parallel) fans out into independent background agents instead.
-			// Only an EXPLICIT true trips this (issue #361): an omitted `background`
-			// now defaults to foreground here rather than being rejected.
-			if (shouldRejectBackgroundForBatch(dispatchShape, explicitBackground)) {
-				const batchMode = dispatchShape === "chain" ? "chain" : "graph";
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `background: true is not supported with ${batchMode} — batch modes run foreground and would block until every unit finishes. Remove background to run it foreground, or start each unit as its own single-task background call and sequence the dependencies yourself.`,
-						},
-					],
-					details: undefined,
-					isError: true,
-				};
-			}
-
-			// Issue #361: background is the CONDITIONAL default for the shapes that
-			// can run unattended. Resolved ONCE per dispatch and reused by the
-			// single and fan-out paths below, so the decision cannot drift between
-			// them. The approval mode is the EFFECTIVE one (call param, else the
-			// configured default — presets declare no approvalMode today) — the same
-			// value the child will run with — so the default never routes a run into a
-			// background context that would break or silently auto-approve it
-			// ('always' has no dialog; 'writes' gates the diff on approval).
-			const useBackground =
-				params.background ??
-				defaultBackgroundFor(dispatchShape, resolveEffectiveApprovalMode(params.approvalMode, state));
-			// Record the EFFECTIVE value on the dispatch (a no-op when the caller was
-			// explicit): a run started by the default must retry as what it actually
-			// was instead of re-deriving the default, which may since have moved with
-			// the config. Fan-out units still record no background of their own — a
-			// unit retries as a single foreground run (issue #229), unaffected here.
-			params.background ??= useBackground;
-
-			// Issue #434: the unit projection's inputs, resolved ONCE here so no
-			// unit site can re-derive them (a relative `params.cwd` re-read of the
-			// manifest measured `false` where this resolution measured `true`).
-			// `noticeEmitted` starts true when the DISPATCH arm announced its own
-			// change: the drop still reaches every eligible unit, but the dispatch
-			// already spoke, and a second notice would double-report one decision.
-			// (`forced` emits nothing — the caller asked for the explicit pair, so
-			// there is nothing to announce and no arm acted.)
-			const batchGuard: BatchGuardContext = {
-				processChecks,
-				dispatchDeclaredLevel: effectiveDeclaredThinkingLevel as ThinkingLevel | undefined,
-				force: params.force as boolean | undefined,
-				// A `tasks` fan-out spawns detached background units (their deadline is
-				// the legitimate budget); every other batch handler runs its units
-				// foreground. Chain/graph can never be background: an explicit
-				// `background: true` batch was rejected above.
-				unitShape: isParallel && useBackground ? "background" : "foreground",
-				noticeEmitted: thinkingSwitch === "switch" || thinkingSwitch === "drop-timeout",
-			};
+			// Seam C: the #412 pre-flight, the background default and the #434
+			// unit-projection inputs — one resolution per dispatch.
+			const prepared = prepareShape(params, shape.value, { state, ctx, pi, log });
+			if (!prepared.ok) return prepared.result;
+			const { useBackground, batchGuard } = prepared.value;
 
 			if (isChain) {
 				if (params.chain!.length > MAX_CHAIN_STEPS) {
