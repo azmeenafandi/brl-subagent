@@ -158,7 +158,7 @@ function describeImport(statement, text, sourceFile) {
 				}))
 			: [],
 		sideEffect: !clause,
-		hasAttributes: Boolean(statement.attributes && statement.attributes.length > 0),
+		hasAttributes: Boolean(statement.attributes),
 		hasComment: hasCommentOutsideStrings(raw),
 		multiline: raw.includes("\n"),
 	};
