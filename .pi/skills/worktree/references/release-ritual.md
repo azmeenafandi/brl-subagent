@@ -60,6 +60,20 @@ because nothing checked them and no test pins them.
    pins the format. *(The git-install example tag was dropped in
    #171 — npm is the sole user-facing install/update path.)*
 
+   **The test-count claim is mechanical now (issue #469):** `README.md`'s
+   `"<N>+ test suite"` line is an output of the release, not a hand edit. Against the
+   release run's JSON report, bump then prove it:
+
+   ```bash
+   node scripts/check-readme-test-count.mjs <vitest-json-report> --bump    # floor(actual/100)*100
+   node scripts/check-readme-test-count.mjs <vitest-json-report> --strict  # truth + 100-test limit
+   ```
+
+   `--bump` is idempotent and says so when the suite shrank (the claim moves down).
+   The release PR's CI is the mechanical enforcement: `--strict` runs only there
+   (base `main`) and on the push to `main`, never on a task PR — a branch cannot satisfy
+   a property of the merged tree.
+
    **Tarball smoke, user path (issue #415):** before publishing, `npm pack` the
    release commit and exercise the tarball from a temp project **without** the
    `brl-subagent.processChecks` field — one explicit `background: false` +
