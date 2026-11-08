@@ -61,8 +61,8 @@ import { describeWorktreeState } from "./worktree-report";
 interface TerminalNotifierDeps {
 	/**
 	 * ADR 0027 D2: `sessionCtx` stays a `let` in the composition root
-	 * (`getSession: () => sessionCtx`). Read at the same two spots the closure read
-	 * the binding, so the capture timing is unchanged.
+	 * (`getSession: () => sessionCtx`). Read at the same spot the closure read the
+	 * binding (`deliverCompletionAlert`), so the capture timing is unchanged.
 	 */
 	getSession: () => ExtensionContext | undefined;
 	/**
