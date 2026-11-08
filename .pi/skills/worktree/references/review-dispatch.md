@@ -70,6 +70,14 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   worktree as `REVIEW_PR<n>.md` (and cross-checks it against the final message)
   instead of transcribing from prose; a missing file is itself a finding to
   raise, not a reason to reconstruct one from memory.
+
+- **Re-run the PR's evidence block before any verdict.** If the body carries a
+  `<!-- pr-evidence:begin -->` block, run
+  `node scripts/pr-evidence.mjs --check --pr <n> --base dev` and paste the exit
+  code. Exit 0 is required evidence; **any non-zero exit blocks the verdict**
+  exactly like a failing suite — the body's numbers are then either stale or
+  unattributed, and a review that approves over them is certifying counts it did
+  not check. The tool recomputes from the tree; it never executes the body.
 - Output your verdict in this exact format in your final response:
   verdict line (`approve` / `approve-with-nits` / `changes-requested`),
   `Reviewed head: <sha>` (the commit you actually reviewed — `git -C <worktree>
