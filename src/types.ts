@@ -835,6 +835,13 @@ export interface BackgroundAgent {
 	error?: string;
 	result?: SubagentResult;
 	finalOutput?: string;
+	/**
+	 * Issue #465: the work branch this run's `gitMode=branch` isolation created,
+	 * stamped when the branch is created so a DURABLE record names it even if the
+	 * run never settles (a stuck owner never writes `result.gitBranch`, which is
+	 * settle-only). Serializable on purpose — a refusal's message is built from it.
+	 */
+	workBranch?: string;
 	/** @internal — session reference for live monitor polling */
 	_sessionRef?: import('@earendil-works/pi-coding-agent').AgentSession;
 	/**

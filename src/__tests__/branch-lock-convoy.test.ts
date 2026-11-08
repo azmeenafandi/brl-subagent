@@ -81,6 +81,7 @@ import {
 	listPersistedAgents,
 	spawnBackgroundSession,
 	updateAgentStatus,
+	__setStuckOwnerGraceMs,
 	__testResetGitBranchLocks,
 } from "../session-manager";
 import { listInflightRuns } from "../run-registry";
@@ -96,6 +97,24 @@ let gates: Array<() => void> = [];
 
 const tick = (ms = 40): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Release every prompt gate currently registered, then let the settles run.
+ * Repeats, because a queued spawn only reaches `prompt()` after the run it
+ * waited for settles — its gate does not exist yet on the first pass.
+ */
+async function settleAll(rounds = 4): Promise<void> {
+	for (let i = 0; i < rounds; i++) {
+		for (const gate of gates.splice(0)) gate();
+		await tick();
+	}
+}
+
+/** Release exactly one registered prompt gate (index into the spawn order). */
+function releasePrompt(index: number): void {
+	const gate = gates.splice(index, 1)[0];
+	gate?.();
+}
+
 /** "resolved" | "rejected" | "PENDING" after `ms` — the convoy probe shape. */
 async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<string> {
 	return Promise.race([
@@ -106,7 +125,9 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<str
 
 function resetGit(): void {
 	for (const fn of Object.values(mocks.git)) fn.mockReset();
-	mocks.git.getRepoRoot.mockReturnValue("/repo");
+	// One cwd per repository: `getRepoRoot` echoes the cwd it is given, so two
+	// cwds are two lock keys (#224's keying, taken as given here).
+	mocks.git.getRepoRoot.mockImplementation((cwd: string) => cwd);
 	mocks.git.getHeadState.mockReturnValue({ sha: "abc123def456", detached: false, branch: "main" });
 	mocks.git.getCurrentBranch.mockReturnValue("brl-subagent-owner");
 	mocks.git.createWorkBranch.mockReturnValue({ ok: true, branch: "brl-subagent-owner" });
@@ -118,11 +139,15 @@ function resetGit(): void {
 	mocks.git.captureWorkingDiff.mockReturnValue("");
 }
 
-/** Spawn with a prompt that never settles until the test releases its gate. */
-function spawn(task: string, gitMode?: "branch"): Promise<unknown> {
+/**
+ * Spawn with a prompt that never settles until the test releases its gate.
+ * `cwd` selects the repository (one lock key per cwd, see `resetGit`).
+ */
+function spawn(task: string, gitMode?: "branch", cwd?: string): Promise<unknown> {
 	return spawnBackgroundSession(fakePi as never, fakeCtx as never, {
 		task,
 		...(gitMode === undefined ? {} : { gitMode }),
+		...(cwd === undefined ? {} : { cwd }),
 	});
 }
 
@@ -139,6 +164,7 @@ beforeEach(() => {
 	mocks.createAgentSession.mockReset();
 	mocks.createAgentSession.mockImplementation(async () => ({ session: mocks.session }));
 	resetGit();
+	__setStuckOwnerGraceMs(30_000);
 	__testResetGitBranchLocks();
 });
 
@@ -150,14 +176,14 @@ describe("issue #465 (d) — the per-repo git wait is outside the spawn-queue cr
 	it("a non-git dispatch resolves while a branch-mode run holds its repository", async () => {
 		// A: branch mode, prompt never settles → A's repo lock is held for its
 		// whole lifetime (by design; #460 §1.1).
-		await spawn("A: branch holder", "branch");
+		await spawn("A: branch holder", "branch", "/repo-1");
 		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(1);
 
 		// B: the SAME repo, branch mode → queues on A's git lock. Pre-fix, B also
 		// held the module-level spawn queue while it waited (measured: the whole
 		// process stalled behind one run's repository).
 		let bSettled = false;
-		const bPromise = spawn("B: same repo", "branch").then(
+		const bPromise = spawn("B: same repo", "branch", "/repo-1").then(
 			() => { bSettled = true; },
 			() => { bSettled = true; },
 		);
@@ -173,12 +199,96 @@ describe("issue #465 (d) — the per-repo git wait is outside the spawn-queue cr
 		expect(bSettled).toBe(false);
 		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(1);
 
-		// Drain: A settles → B acquires, prompts; then B and C settle.
-		gates[0]?.();
-		await tick();
+		// Drain: A settles → B acquires the lock and prompts → B and C settle.
+		await settleAll(4);
 		await bPromise;
-		gates[1]?.();
-		gates[2]?.();
+	});
+});
+
+describe("issue #465 (b) — a terminal-but-unsettled owner refuses later branch-mode dispatches", () => {
+	it("refuses before waiting, names the owner and its work branch, and leaves no zombie", async () => {
+		// The measured #460 shape: the deadline wrote `stopped` + `completedAt`,
+		// the prompt ignored the abort, so the settle (the only releaser of the
+		// branch lock) never ran and `_sessionRef` is still held.
+		__setStuckOwnerGraceMs(0);
+		const owner = (await spawn("A: wedged owner", "branch", "/repo-1")) as { id: string };
+		updateAgentStatus(owner.id, "stopped", "Timed out after 120ms");
+
+		const refusal = await spawn("B: refused", "branch", "/repo-1").catch((err: Error) => err);
+		expect(refusal).toBeInstanceOf(Error);
+		expect((refusal as Error).message).toMatch(/gitMode 'branch' refused/);
+		expect((refusal as Error).message).toContain(owner.id);
+		expect((refusal as Error).message).toContain("brl-subagent-owner");
+
+		// The refused dispatch is provably never-started: refused BEFORE its chain
+		// link, so it never touched git.
+		expect(mocks.git.createWorkBranch).toHaveBeenCalledTimes(1);
+
+		// No zombie: the record is terminal, not `running` (the measured gap in
+		// #460 §4.4 — `failPreStart` alone leaves `running`).
+		const refusedRecord = listPersistedAgents().find((r) => r.task === "B: refused");
+		expect(refusedRecord?.status).toBe("failed");
+		const refusedId = refusedRecord!.id;
+
+		// Run entries are an APPEND log: the spawn record stays `running` and the
+		// terminal record is added on top. "No zombie" therefore means exactly one
+		// terminal entry and that entry being the last one for this id (#453's
+		// one-logical-run reading contract).
+		const entries = fakePi.appendEntry.mock.calls
+			.map((call) => call[1] as Record<string, unknown>)
+			.filter((entry) => entry.task === "B: refused");
+		const terminal = entries.filter((e) => e.status !== "running");
+		expect(terminal).toHaveLength(1);
+		expect(terminal[0].status).toBe("failed");
+		expect(entries[entries.length - 1]).toBe(terminal[0]);
+
+		// Registry entry cleared, session dir pruned (#404 gate → refused = prune).
+		expect(listInflightRuns().filter((run) => run.id === refusedId)).toHaveLength(0);
+		expect(existsSync(backgroundSessionDir(refusedId))).toBe(false);
+
+		// Drain A so its lock does not leak into the next case.
+		await settleAll();
+	});
+
+	it("the owner map is per repository: another repo's release does not clear it", async () => {
+		// A holds R1 (never settles). B holds R2 and settles cooperatively, which
+		// releases R2's lock and its owner.
+		const ownerA = (await spawn("A: R1 wedged", "branch", "/repo-1")) as { id: string };
+		await spawn("B: R2 cooperative", "branch", "/repo-2");
+		// A's gate (0) stays OPEN on purpose — only B settles.
+		releasePrompt(1);
 		await tick();
+		await tick();
+
+		// A is now terminal-but-unsettled in R1.
+		__setStuckOwnerGraceMs(0);
+		updateAgentStatus(ownerA.id, "stopped", "Timed out after 120ms");
+
+		// R1: refused. If B's release had cleared ownership beyond its own key,
+		// R1 would have NO owner and this dispatch would block instead — hence the
+		// bounded verdict before the message is read.
+		const cSpawn = spawn("C: R1 must be refused", "branch", "/repo-1");
+		expect(await settlesWithin(cSpawn, 2000)).toBe("rejected");
+		expect(((await cSpawn.catch((e: Error) => e)) as Error).message).toContain(ownerA.id);
+
+		// R2: B is gone, so a fresh branch-mode dispatch there proceeds normally.
+		const r2 = await settlesWithin(spawn("D: R2 proceeds", "branch", "/repo-2"), 1000);
+		expect(r2).toBe("resolved");
+
+		await settleAll();
+	});
+
+	it("a cooperative run that settles is never refused, even with the grace at zero", async () => {
+		__setStuckOwnerGraceMs(0);
+		await spawn("A: cooperative", "branch", "/repo-1");
+		releasePrompt(0);
+		await tick();
+		await tick();
+
+		// A settled: `_sessionRef` cleared and the lock released — nothing is
+		// wedged, so the second dispatch into the same repo must proceed.
+		expect(await settlesWithin(spawn("B: after a real settle", "branch", "/repo-1"), 1000)).toBe("resolved");
+
+		await settleAll();
 	});
 });
