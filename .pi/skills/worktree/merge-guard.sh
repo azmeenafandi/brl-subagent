@@ -2,6 +2,7 @@
 # merge-guard.sh — the mechanical merge gate: CI green, verdict present, reviewed head matches.
 #
 # Usage: merge-guard.sh <pr-number> <review-record-path> [--repo-root <path>]
+#        merge-guard.sh --check-record <record> [--pr <n>] [--head <sha>]
 #        merge-guard.sh --selftest
 #
 # Why (friction log 2026-10-27, `unreviewed final fix`): review round 2 on PR #395 returned
@@ -33,9 +34,18 @@
 # Run it from the COCKPIT (dev) checkout: the subagent log lives in the cockpit's local,
 # gitignored `.pi/subagent-logs/`. `JEV_LOG` overrides the log path.
 #
+# `--check-record` is the offline half: checks (b), (c), (d) and (f)'s field rules only, with no
+# `gh`, no network and no provenance log — it runs `scripts/review-record.mjs --check`, which uses
+# the same definition (`scripts/lib/record-fields.mjs`) that WRITES the record, so a generated
+# record passing here and failing the gate cannot happen. `--pr` / `--head` are optional: pass them
+# and the check also demands the record names that PR and covers that head; omit them for a
+# shape-only check. (a) CI, (e) the dispatch audit and (f)'s `recheck-<pr>` row stay in the full
+# gate — none of them can be answered offline.
+#
 # Exit: 0 all checks pass · 1 at least one reason failed (every reason is listed) · 2 usage/input error.
 #
-# Record requirements the checks assume (see references/review-dispatch.md):
+# Record requirements the checks assume (see references/review-dispatch.md). Write the record with
+# `scripts/review-record.mjs` — it emits exactly this block; do not transcribe it by hand:
 #   Reviewed head: <sha>        or  @ <sha>  anywhere in the record
 #   Verdict: approve | approve-with-nits | changes-requested
 #   conductor-verified: <sha> — <what was verified and how>   (post-verdict commit only)
@@ -204,6 +214,37 @@ check_recheck() {
     else
         fail_line "(f) recheck: ${reason}"
     fi
+}
+
+# ── --check-record — the offline half, from the SAME definition that writes the record ──
+
+# Delegate to `scripts/review-record.mjs --check`, which uses `scripts/lib/record-fields.mjs` — one
+# definition, so a record the generator emits passing here and failing the gate on a field rule is
+# not possible. No `gh`, no network, no provenance log: (a), (e) and (f)'s `recheck-<pr>` row need
+# the full gate. `pr` / `head` are optional (shape-only check); pass them to demand both.
+run_record_check() {
+    local record="$1" pr="$2" head="$3"
+    local tool="${REPO_ROOT}/scripts/review-record.mjs"
+    if [[ ! -f "${tool}" ]]; then
+        echo "merge-guard: ${tool} is missing — a checkout older than #487 cannot check a record" >&2
+        return 2
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        echo "merge-guard: node is not installed — cannot run the record check" >&2
+        return 2
+    fi
+    if [[ ! -f "${record}" || ! -r "${record}" ]]; then
+        echo "merge-guard: review record not readable: ${record}" >&2
+        return 2
+    fi
+    local args=(--check "${record}")
+    if [[ -n "${pr}" ]]; then
+        args+=(--pr "${pr}")
+    fi
+    if [[ -n "${head}" ]]; then
+        args+=(--head "${head}")
+    fi
+    node "${tool}" "${args[@]}"
 }
 
 # ── The gate ─────────────────────────────────────────────────────────────────────────────
@@ -635,6 +676,29 @@ EOF
     # the risk class is equal (the guard reads the risk, never the level).
     check_f_ok "(f) a recheck LEVEL below the dispatch level passes when the risk class is equal (#468)" "${dir}/recheck-level-below.md" "" "level-drop"
 
+    # --- --check-record: the offline mode is the generator's own definition ----------------
+    # Quiet helpers: the node tool's own report is covered by scripts/__tests__/review-record.test.ts;
+    # here the point is only that the mode exists and agrees with the generator.
+    check_record_ok() { run_record_check "$1" "$2" "$3" >/dev/null 2>&1; }
+
+    cat >"${dir}/written-by-the-generator.md" <<EOF
+# Review record — PR #412
+
+Reviewed head: ${head}
+Verdict: approve-with-nits
+Risk class: C1
+jev-recheck: jev: medium (0.63) · C1 · worktree y
+
+## Findings
+
+No findings recorded.
+EOF
+
+    expect_ok "--check-record accepts a well-formed record" check_record_ok "${dir}/written-by-the-generator.md" 412 "${head}"
+    expect_fail "--check-record rejects a malformed recheck" check_record_ok "${dir}/recheck-malformed.md" 412 ""
+    expect_fail "--check-record rejects a declared tier weaker than the recheck" check_record_ok "${dir}/recheck-weak.md" 412 ""
+    expect_fail "--check-record rejects a record that does not cover the head" check_record_ok "${dir}/written-by-the-generator.md" 412 "${other}"
+
     local total=$((SELFTEST_PASS + SELFTEST_FAIL))
     echo "merge-guard --selftest: ${SELFTEST_PASS}/${total} passed — $([[ ${SELFTEST_FAIL} -eq 0 ]] && echo PASS || echo FAIL)"
     [[ ${SELFTEST_FAIL} -eq 0 ]]
@@ -643,7 +707,7 @@ EOF
 # ── CLI ─────────────────────────────────────────────────────────────────────────────────
 
 main() {
-    local args=() repo_root_override=""
+    local args=() repo_root_override="" check_record_path="" check_pr="" check_head=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --selftest) run_selftest; return $? ;;
@@ -651,6 +715,18 @@ main() {
             --repo-root)
                 [[ $# -ge 2 ]] || { echo "merge-guard: --repo-root needs a path" >&2; return 2; }
                 repo_root_override="$2"
+                shift 2 ;;
+            --check-record)
+                [[ $# -ge 2 ]] || { echo "merge-guard: --check-record needs a record path" >&2; return 2; }
+                check_record_path="$2"
+                shift 2 ;;
+            --pr)
+                [[ $# -ge 2 ]] || { echo "merge-guard: --pr needs a PR number" >&2; return 2; }
+                check_pr="$2"
+                shift 2 ;;
+            --head)
+                [[ $# -ge 2 ]] || { echo "merge-guard: --head needs a sha" >&2; return 2; }
+                check_head="$2"
                 shift 2 ;;
             *)
                 args+=("$1")
@@ -663,6 +739,12 @@ main() {
     fi
     JEV_LOG="${JEV_LOG_ENV:-${REPO_ROOT}/.pi/subagent-logs/brl-subagent.log}"
     JEV_PROVENANCE="${JEV_PROVENANCE_ENV:-${REPO_ROOT}/.pi/jev-lines.log}"
+
+    # `--check-record` is a mode, not a third positional: it never reaches the network.
+    if [[ -n "${check_record_path}" ]]; then
+        run_record_check "${check_record_path}" "${check_pr}" "${check_head}"
+        return $?
+    fi
 
     if [[ ${#args[@]} -ne 2 ]]; then
         echo "merge-guard: expected <pr-number> <review-record-path> (got ${#args[@]} argument(s))" >&2
