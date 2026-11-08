@@ -6,11 +6,11 @@
 > Historical content: `.development/HANDOFF-ARCHIVE-2026-10-17.md`, `-2026-11-06.md`, `-2026-11-07b.md` (the pre-sweep snapshot), `-2026-11-08.md` (a superseded mid-sweep STATE) — not current state.
 
 ## STATE
-Verified: 7eb7b14 (2026-11-08)
+Verified: 5e0b239 (2026-11-08)
 
 - **dev** @ `729c51a` (PR #467 merge). Merged today, in order: #457 (#440), #458 (#436), #459 (#455), #461 (#434), #462 (#439), #463 (#456), #464 (#447), #467 (#453). Docs: ADR 0023 (deadline ownership), ADR 0024 (unit projection), the #453 and #460 dossiers, `12a722e` (a bulleted `Verdict:` is invisible to the merge gate). **No worktrees beyond the cockpit pair**; `git worktree list` = `main` + `dev`.
 - **Released:** **v2.7.0 LIVE** — `main` @ `98bd36e`, tag `v2.7.0`, npm `latest` 2.7.0. **Release checkpoint OPEN** (rule #6): every fix from this sweep is extension code, merged and unreleased. Release on the maintainer's go only — never propose a version unprompted. All eight now have `## Unreleased` entries (`328cb36`).
-- **Board:** the autonomous bug sweep closed **eight** issues — #440, #436, #455, #434, #439, #447, #453, #460 — plus #456 (filed and closed inside the sweep). Open now: **#465** (fix, decided from the #460 dossier: narrow the spawn queue + refuse an unsettled branch-lock owner), **#466** (design: durable `headState` + boot repair after an orphan work branch), **#450** (harden, low), **#430** (refactor), **#426** (design-open), PR #402 held.
+- **Board:** the autonomous bug sweep closed **eight** issues — #440, #436, #455, #434, #439, #447, #453, #460 — plus #456 (filed and closed inside the sweep). Open now: **#465** (fix, decided from the #460 dossier: narrow the spawn queue + refuse an unsettled branch-lock owner), **#466** (design: durable `headState` + boot repair after an orphan work branch), **#450** (harden, low), **#430** (refactor), **#426** (design-open), **#468** (tooling, design-decided: demote the Jev level to an observation + a two-arm model-aware measurement, falsifier at N=20), PR #402 held.
 - **Suite:** 110 files / **2358** green on dev; typecheck clean; docs guards current (47 modules, 24 ADRs); budget **1.98** (49,528 test / 24,998 source, ceiling 2.0 → ~470 test lines of headroom — thin again, the next test-heavy PR must trim or add source).
 - **Merge gate:** `merge-guard.sh <pr> <record>` from the **cockpit**. (a) CI runs the **merge ref** (a branch-green PR can be red on README count drift); (b) `#<pr>`; (c) **line-start** `Verdict:` (a bullet is invisible); (d) reviewed head **or** `conductor-verified:`; (e) exact-text provenance match; (f) `recheck-<pr>` + its own `Risk class:`. Merge commits; PRs to `dev` never auto-close — close by hand.
 - **Merge-conflict routine (three hits today):** the conflict is **CHANGELOG ordering only** — keep both entries newest-first, commit the merge, re-run the gates, add a `Post-review merge:` line naming the merge commit and the re-verified numbers to the record, then push.
@@ -31,6 +31,7 @@ Verified: 7eb7b14 (2026-11-08)
 4. **Release checkpoint** — the sweep's eight fixes are merged and unreleased; the call is the maintainer's.
 
 ## Open items
+- **#468 tooling, design-decided** — B+C: the Jev level stops gating (provenance + risk + worktree still do) and becomes an observation; the row gains the executing `model` and a settled `--outcome`, with a second model-aware classification arm beside the blind one. Pre-committed falsifier: after 20 mixed-model dispatches, if model-aware agreement with the observed-sufficient level is no better than blind, delete the model input. Tooling only (no release checkpoint); selftest, not vitest.
 - **#426 design-open** — subagent timeouts: soft stage, stall watchdog vs cliff, extension, calibration. Filed 2026-11-03; no direction chosen. Do not implement from it.
 - **PR #402 held** — re-evaluate only when pi's typebox pin moves off 1.3.27.
 - **Watch-CI** — the `recovery.test.ts` family (#299 A1 load flake) is fixed by #455; the earlier group-empty fast-path note is superseded. The lesson stands: a load-only failure is a PRODUCT defect until a before-commit comparison proves otherwise.
