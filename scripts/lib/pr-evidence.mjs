@@ -114,7 +114,7 @@ const FIELDS = Object.freeze({
  */
 const COUNT_RE = /(?<![\w.])[\d][\d,]*[ \t]+(?:[\w'-]+[ \t]+){0,2}(?:files?|tests?|lines?)\b/gi;
 
-const FENCE_RE = /^(```|~~~)/;
+const FENCE_RE = /^(`{3,}|~{3,})/;
 
 /** A number token in a body is prose: `1,024` is one thousand and twenty-four. */
 function parseCount(text) {
@@ -253,7 +253,8 @@ export function unattributedCounts(lines, ranges) {
 		const trimmed = line.trim();
 		const marker = FENCE_RE.exec(trimmed);
 		if (fence !== "") {
-			if (marker !== null && marker[1] === fence) fence = "";
+			// CommonMark: a fence closes only with the same character and at least the opening length.
+			if (marker !== null && marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = "";
 			continue;
 		}
 		if (marker !== null) {
