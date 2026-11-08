@@ -53,9 +53,12 @@ const SIZES: Record<string, { path: string; lines: number }> = {
 /**
  * The repo side of every check, stubbed: no git, no `gh`, no network, no real report. `correct.md`'s
  * claims are exactly these facts, which is why the fixture is a contract rather than a sample.
+ *
+ * `devClaimSha` FOLLOWS `devSha` unless a test states it separately: in the repo the claim is derived from
+ * the ref (`resolveDevClaim`), so a stub that moved one and not the other would be a repo that cannot exist.
  */
 function stub(overrides: Record<string, unknown> = {}) {
-	return {
+	const probe = {
 		root: "/repo",
 		headSha: () => HEAD,
 		devSha: () => DEV,
@@ -69,6 +72,7 @@ function stub(overrides: Record<string, unknown> = {}) {
 		report: () => ({ path: REPORT, files: 2, tests: 12 }),
 		...overrides,
 	};
+	return { ...probe, devClaimSha: overrides.devClaimSha ?? probe.devSha };
 }
 
 function text(name: string): string {
@@ -629,6 +633,100 @@ describe("handoff-verify — the seams", () => {
 });
 
 /**
+ * The dev claim (#497) — the false alarm the tool shipped with. A commit that touches only the handoff moves
+ * `git rev-parse dev` but NOT the claim §STATE records: the repo's convention is that the claim is the last
+ * non-handoff commit (the merge), with the handoff on top. On the pre-fix head every one of these reports a
+ * `dev-sha-drift` for a handoff that is correct, which is the failure mode the tool exists to prevent.
+ */
+describe("handoff-verify — the dev claim ignores the handoff's own commit (#497)", () => {
+	/** A throwaway repo: one code commit on `dev`, the handoff commit on top. The claim is the code commit. */
+	function scratch() {
+		const dir = mkdtempSync(join(tmpdir(), "brl-dev-claim-"));
+		const git = (...args: string[]) => spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+		git("init", "-q", "-b", "dev");
+		git("config", "user.email", "test@example.com");
+		git("config", "user.name", "Test");
+		writeFileSync(join(dir, "code.ts"), "export {};\n");
+		git("add", ".");
+		git("commit", "-qm", "code");
+		const devClaim = git("rev-parse", "HEAD").stdout.trim();
+		mkdirSync(join(dir, ".development"), { recursive: true });
+		writeFileSync(join(dir, ".development", "HANDOFF.md"), `- **dev** @ \`${devClaim}\`.\n`);
+		git("add", ".");
+		git("commit", "-qm", "handoff");
+		return { dir, git, devClaim, handoff: git("rev-parse", "HEAD").stdout.trim() };
+	}
+
+	/** The real git facts for the dev checks, the stub for everything else (board, suite, sizes). */
+	function probeFor(dir: string, commitsAfter: () => { sha: string; paths: string[] }[]) {
+		const repo = createRepoProbe(dir, { report: REPORT });
+		return { ...stub(), devSha: repo.devSha, devClaimSha: repo.devClaimSha, isAncestor: () => true, commitsAfter };
+	}
+
+	/** `correct.md` with its dev claim moved onto a real sha of the scratch repo. */
+	function claimsAt(sha: string) {
+		return parseClaims(text("correct").replace(/4c1d9ab/g, sha));
+	}
+
+	it("resolves dev past the handoff commit, so the claim still holds", () => {
+		const { dir, devClaim, handoff } = scratch();
+		const probe = probeFor(dir, () => [{ sha: handoff, paths: [".development/HANDOFF.md"] }]);
+		expect(probe.devSha()).toBe(handoff); // the ref IS the handoff commit
+		expect(probe.devClaimSha()).toBe(devClaim); // the claim is the last non-handoff commit
+		expect(evaluate(claimsAt(devClaim), probe).drifts).toEqual([]);
+	});
+
+	it("still names dev-sha-drift when a code commit lands on top — the rule swallows no real drift", () => {
+		const { dir, git, devClaim, handoff } = scratch();
+		writeFileSync(join(dir, "later.ts"), "export {};\n");
+		git("add", ".");
+		git("commit", "-qm", "code after the handoff");
+		const tip = git("rev-parse", "HEAD").stdout.trim();
+		const probe = probeFor(dir, () => [{ sha: handoff, paths: [".development/HANDOFF.md"] }]);
+		expect(probe.devClaimSha()).toBe(tip);
+		const { drifts, results } = evaluate(claimsAt(devClaim), probe);
+		expect(drifts.map((drift) => drift.code)).toEqual([CODES.devShaDrift, CODES.installShaDrift]);
+		for (const drift of drifts) {
+			expect(drift.expected).toBe(tip);
+			expect(drift.actual).toBe(devClaim);
+		}
+		for (const failure of results.filter((result: { ok: boolean }) => !result.ok)) {
+			// Here the claim IS the raw ref (the code commit is the tip), so the ref is the honest phrase.
+			expect(failure.line).toContain(`git rev-parse dev is ${tip}`);
+		}
+	});
+
+	it("compares the install line against the same claim, never the raw ref", () => {
+		const { dir, devClaim, handoff } = scratch();
+		const probe = probeFor(dir, () => [{ sha: handoff, paths: [".development/HANDOFF.md"] }]);
+		// The install line names the handoff commit — drift, and the message names the claim's own rule.
+		const claims = parseClaims(
+			text("correct")
+				.replace(/4c1d9ab/g, devClaim)
+				.replace(`this repo, \`dev @ ${devClaim}\``, `this repo, \`dev @ ${handoff}\``),
+		);
+		const { drifts, results } = evaluate(claims, probe);
+		expect(drifts.map((drift) => drift.code)).toEqual([CODES.installShaDrift]);
+		expect(drifts[0].claim).toBe(`Running install: dev @ ${handoff}`);
+		expect(drifts[0].expected).toBe(devClaim);
+		expect(results.find((result: { ok: boolean }) => !result.ok).line).toContain("the last non-handoff commit on dev is");
+	});
+
+	it("refuses to guess when the walk cannot terminate — a fault, never a drift", () => {
+		const dir = mkdtempSync(join(tmpdir(), "brl-dev-claim-"));
+		const git = (...args: string[]) => spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+		git("init", "-q", "-b", "dev");
+		git("config", "user.email", "test@example.com");
+		git("config", "user.name", "Test");
+		mkdirSync(join(dir, ".development"), { recursive: true });
+		writeFileSync(join(dir, ".development", "HANDOFF.md"), "state\n");
+		git("add", ".");
+		git("commit", "-qm", "handoff only");
+		expect(() => createRepoProbe(dir).devClaimSha()).toThrow(/cannot resolve the dev claim/);
+	});
+});
+
+/**
  * The CLI seam — a REAL process, because that is the gap the review found: `--report` and `--issues` were
  * parsed, then dropped between `main` and `createRepoProbe` (the two sides named the options differently),
  * and every test above passed because `main`'s probe was a stub. A test through `io.probe` cannot see a
@@ -655,7 +753,9 @@ describe("handoff-verify — the CLI seam", () => {
 	 * own stale values and the assertion could not tell the injected fact from them.
 	 */
 	function liveHandoff({ suite, open }: { suite: string; open: string }): string {
-		const dev = spawnSync("git", ["-C", ROOT, "rev-parse", "dev"], { encoding: "utf8" }).stdout.trim();
+		// The dev CLAIM, not the raw ref: the convention is that the claim names the last non-handoff commit
+		// (#497), so a handoff commit sitting on `dev` must not make this fixture drift on its own.
+		const dev = createRepoProbe(ROOT).devClaimSha();
 		const modules = collectModules().length;
 		const adrs = collectDecisions().length;
 		return [

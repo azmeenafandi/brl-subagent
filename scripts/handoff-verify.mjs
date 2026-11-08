@@ -21,7 +21,9 @@
 //
 // Fact sources, and the flags that make them injectable:
 //   verified/dev/install  `git` in THIS checkout — never a hard-coded cockpit path; `git rev-parse dev`
-//                         works from a worktree, which is where a unit runs.
+//                         works from a worktree, which is where a unit runs. The `dev @` CLAIM is not that
+//                         ref: it is the ref with its trailing handoff commits walked back (#497), because
+//                         the convention is that the claim names the last merge and the handoff sits on top.
 //   open set              `gh issue list --state open --limit 1000`, or `--issues <json>` (a gh-format
 //                         array). `--issues` wins over `--no-network`: the check then runs offline.
 //                         `--no-network` without `--issues` skips the check AND prints that it skipped.
@@ -49,7 +51,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { countLines } from "./check-test-budget.mjs";
 import { collectDecisions } from "./docs-decisions.mjs";
 import { collectModules } from "./docs-arch.mjs";
-import { InputError, evaluate, parseClaims } from "./lib/handoff-claims.mjs";
+import { InputError, evaluate, isHandoffOwnCommit, parseClaims } from "./lib/handoff-claims.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The checkout this script lives in — never a hard-coded cockpit path; `git rev-parse dev` works here. */
@@ -221,6 +223,37 @@ function gitOrThrow(root, args, what) {
 }
 
 /**
+ * The dev CLAIM: `dev` with its trailing handoff commits walked back (issue #497). The repo's convention is
+ * that the `dev @ <sha>` claim names the last MERGE sha and the handoff commit sits on top of it, so
+ * comparing the claim against the raw ref cries wolf after every handoff commit — the failure mode the tool
+ * exists to prevent, on the file it exists to check. Check 1 already applies the same rule (`Verified:` plus
+ * "nothing but the handoff after it"); this is the one resolution checks 2 and 3 share, so a `dev @` line and
+ * the install line can never be compared against two different tips.
+ *
+ * A walk with no floor is an environment fault, never a guess: a dev whose every commit back to the root is
+ * handoff-only exits 2 and says so. A shallow checkout needs no special case — git reports a shallow boundary
+ * commit as adding every file, so it is not handoff-only and the walk stops at the ref.
+ */
+export function resolveDevClaim(root) {
+	let sha = gitOrThrow(root, ["rev-parse", "dev"], "dev").trim();
+	for (let steps = 1; ; steps += 1) {
+		const [commit] = parseRangeLog(
+			gitOrThrow(root, ["log", "-1", "--format=%x01%H", "--name-status", "-z", "-M", sha], "dev"),
+		);
+		if (commit === undefined) throw new InputError(`dev: git log -1 ${sha} reported no commit — cannot resolve the dev claim`);
+		// A merge commit reports no paths, so it is never handoff-only: the walk stops where the convention says.
+		if (!isHandoffOwnCommit(commit)) return sha;
+		const parent = git(root, ["rev-parse", "--verify", `${sha}^`]);
+		if (parent.status !== 0) {
+			throw new InputError(
+				`dev: ${steps} commit(s) back from the tip touch only the handoff and the walk has no parent left — cannot resolve the dev claim`,
+			);
+		}
+		sha = parent.stdout.trim();
+	}
+}
+
+/**
  * The repo side of every check, as one plain object — the single seam the tests replace. It takes the
  * SAME option names `parseArgs` produces (`report`, `issues`), because the two are joined by `main` and a
  * renamed side is how `--report <json>` and `--issues <json>` were silently dropped once. `report` is
@@ -231,6 +264,7 @@ export function createRepoProbe(root, { report = "", issues = "" } = {}) {
 		root,
 		headSha: () => gitOrThrow(root, ["rev-parse", "HEAD"], "HEAD").trim(),
 		devSha: () => gitOrThrow(root, ["rev-parse", "dev"], "dev").trim(),
+		devClaimSha: () => resolveDevClaim(root),
 		// An unknown revision is NOT "cannot check": the handoff names a commit that is not here, which is
 		// exactly the drift `verified-not-ancestor` exists for. Only a git that cannot run is a usage fault.
 		isAncestor: (sha) => {
