@@ -1229,6 +1229,20 @@ export async function spawnBackgroundSession(
   let resolveNext!: () => void;
   spawnQueue = new Promise<void>(r => { resolveNext = r; });
   await prev;
+
+  // Issue #465 (d): the queue's critical section is the pi API access below
+  // (the dynamic import + createAgentSession), NOT the per-repo git wait
+  // further down — which can last a whole run. The release is therefore
+  // explicit AND idempotent: the branch block releases before it waits on
+  // another run's repository, and the `finally` still releases on every other
+  // exit path (measured before this: a healthy branch-mode run made an
+  // unrelated non-git spawn stay PENDING for its entire duration).
+  let spawnQueueReleased = false;
+  const releaseSpawnQueue = (): void => {
+    if (spawnQueueReleased) return;
+    spawnQueueReleased = true;
+    resolveNext();
+  };
   
   try {
   const id = generateUUID();
@@ -1853,6 +1867,12 @@ export async function spawnBackgroundSession(
     // branch). The lock is released in cleanupWorkBranch (or on setup throw).
     // Key: resolved repository root, cwd fallback for non-repo paths (#224).
     const lockKey = getRepoRoot(gitCwd) ?? gitCwd;
+    // Issue #465 (d): release the process-wide spawn queue BEFORE the per-repo
+    // wait below — that wait is bounded by another run's lifetime, so holding
+    // the queue through it blocks every spawn in the process, not just this
+    // repository's. The git chain itself is unchanged: this spawn still cannot
+    // touch the working tree until the lock is handed over.
+    releaseSpawnQueue();
     const prev = gitBranchLocks.get(lockKey) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>(r => { release = r; });
@@ -2409,6 +2429,6 @@ export async function spawnBackgroundSession(
   
   return agent;
   } finally {
-    resolveNext();
+    releaseSpawnQueue();
   }
 }
