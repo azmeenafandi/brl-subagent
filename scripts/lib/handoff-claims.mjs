@@ -16,9 +16,10 @@
 //   1 verified      `Verified:` is an ancestor of HEAD, and every commit after it touches only the handoff
 //                   and its archives — the extension's own rule (`.pi/extensions/handoff/lib.ts`), so the
 //                   staleness banner and this check agree by construction.
-//   2 dev-sha       `dev @ <sha>` equals `git rev-parse dev` (short or full form, prefix either way).
-//   3 install       the `Running install:` path exists; a `dev @ <sha>` on that line equals
-//                   `git rev-parse dev`.
+//   2 dev-sha       `dev @ <sha>` equals the dev CLAIM — `git rev-parse dev` with its trailing handoff commits
+//                   walked back (#497), so the handoff commit on top of the merge is not drift (short or full
+//                   form, prefix either way).
+//   3 install       the `Running install:` path exists; a `dev @ <sha>` on that line equals the same claim.
 //   4 open-set      the `Open:` issue set equals `gh issue list --state open` (a `PR #402` mention is not
 //                   an issue). `--no-network` skips it — a SKIP is printed, never counted as a pass.
 //   5 suite-count   `Suite: N files / M tests` equals the counts in a vitest JSON report. Passed tests,
@@ -240,7 +241,7 @@ export function parseClaims(text) {
 // Verdict — claims and facts in, named results out. No IO, no exits.
 //
 // The probe is the seam the caller fills in:
-//   headSha() devSha() · isAncestor(sha) · commitsAfter(sha) -> [{sha, paths}] · exists(path)
+//   headSha() devSha() devClaimSha() · isAncestor(sha) · commitsAfter(sha) -> [{sha, paths}] · exists(path)
 //   lineCount(name) -> {path, lines} | null · modules() · adrs() · openIssues() -> number[]
 //   report() -> {path, files, tests} | null · root
 // Every fact is a function so an unanswerable check fails at its own check, with its own message.
@@ -307,35 +308,51 @@ function repeated(values) {
 	return values.length < 2 ? "" : ` (the STATE states ${values.join(" and ")})`;
 }
 
+/**
+ * The dev tip as the two facts checks 2 and 3 need, read ONCE: the ref itself (`devSha`) and the claim
+ * resolved from it (`devClaimSha` — the last non-handoff commit, #497). One resolution for both checks, so a
+ * `dev @` line and the install line can never be compared against two different tips.
+ */
+function devTip(probe) {
+	return { raw: probe.devSha(), sha: probe.devClaimSha() };
+}
+
+/**
+ * How a message names the dev tip it compared against. `git rev-parse dev` is a WRONG phrase once a handoff
+ * commit sits on top of the merge the claim names — that phrasing was #497's false drift — so the raw ref is
+ * only ever named when the two agree.
+ */
+function devPhrase({ raw, sha }) {
+	return raw === sha ? `git rev-parse dev is ${sha}` : `the last non-handoff commit on dev is ${sha}`;
+}
+
 /** One result per `dev @ <sha>` line: a duplicate that agrees passes twice, one that disagrees drifts. */
-function checkDev(claims, probe) {
-	const devSha = probe.devSha();
+function checkDev(claims, dev) {
 	if (claims.dev.length === 0) {
 		return [
 			drift(
 				CODES.devClaimMissing,
 				"dev @ <sha>",
-				`a dev line naming ${short(devSha)}`,
+				`a dev line naming ${short(dev.sha)}`,
 				"none",
 				"the STATE has no `dev @ <sha>` line, so the snapshot names no dev tip",
 			),
 		];
 	}
 	return claims.dev.map((sha) =>
-		sameRevision(sha, devSha)
-			? pass(`dev @ ${sha}`, `dev @ ${sha} — git rev-parse dev`)
+		sameRevision(sha, dev.sha)
+			? pass(`dev @ ${sha}`, `dev @ ${sha} — ${devPhrase(dev)}`)
 			: drift(
 					CODES.devShaDrift,
 					`dev @ ${sha}`,
-					devSha,
+					dev.sha,
 					sha,
-					`the STATE claims dev @ ${sha} but git rev-parse dev is ${devSha} — the dev line is a snapshot of another tip${repeated(claims.dev)}`,
+					`the STATE claims dev @ ${sha} but ${devPhrase(dev)} — the dev line is a snapshot of another tip${repeated(claims.dev)}`,
 				),
 	);
 }
 
-function checkInstall(claims, probe) {
-	const devSha = probe.devSha();
+function checkInstall(claims, probe, dev) {
 	if (claims.install === null) {
 		return drift(
 			CODES.installClaimMissing,
@@ -355,13 +372,13 @@ function checkInstall(claims, probe) {
 			`the Running install: path ${install.path.value} does not exist — the install recipe points at a tree that is gone`,
 		);
 	}
-	if (install.sha !== null && !sameRevision(install.sha, devSha)) {
+	if (install.sha !== null && !sameRevision(install.sha, dev.sha)) {
 		return drift(
 			CODES.installShaDrift,
 			`Running install: dev @ ${install.sha}`,
-			devSha,
+			dev.sha,
 			install.sha,
-			`the Running install: line names dev @ ${install.sha} but git rev-parse dev is ${devSha}`,
+			`the Running install: line names dev @ ${install.sha} but ${devPhrase(dev)}`,
 		);
 	}
 	const where =
@@ -516,10 +533,13 @@ function checkSizes(claims, probe) {
  */
 export function evaluate(claims, probe, options = {}) {
 	const context = { noNetwork: options.noNetwork === true, injected: options.issuesInjected === true };
+	// One resolution for both dev checks: resolving twice would let a `dev @` line and the install line be
+	// compared against tips that moved between them (#497).
+	const dev = devTip(probe);
 	const results = [
 		checkVerified(claims, probe),
-		...checkDev(claims, probe),
-		checkInstall(claims, probe),
+		...checkDev(claims, dev),
+		checkInstall(claims, probe, dev),
 		checkOpenSet(claims, probe, context),
 		checkSuite(claims, probe),
 		...checkModules(claims, probe),
