@@ -41,6 +41,38 @@ is open, and what is next.
    forced it. This is the durable home of the rule — `HANDOFF.md` is regenerated at every
    handover, so a sentence that lives only there is one rewrite away from being lost.
 
+## Mechanical claims — run the checker
+
+`node scripts/handoff-verify.mjs` diffs §STATE's mechanical claims against the repo and names every
+drift. Run it **before** committing the handoff:
+
+```
+node scripts/handoff-verify.mjs                 # exit 0 every claim holds · 1 drift · 2 cannot check
+node scripts/handoff-verify.mjs --report <json> # pin the suite report (default: newest under /tmp)
+node scripts/handoff-verify.mjs --issues <json> # pin the board (`gh issue list --json number`) — no network
+node scripts/handoff-verify.mjs --no-network    # skip the gh open-set check, and print that it skipped
+```
+
+It checks seven things: the `Verified:` range (an ancestor of HEAD, and every commit on `dev` after it
+touching only the handoff and its archives), the `dev @ <sha>` line, the `Running install:` path and its
+sha, the `Open:` issue set against `gh issue list --state open`, the `Suite:` counts against a vitest JSON
+report, the `modules`/`ADRs` counts against `docs-arch`/`docs-decisions`, and every `` `name.ts` <n> ``
+line count against `wc -l`. A single-value claim (`dev`, `modules`, `ADRs`) stated twice is checked twice:
+agreeing duplicates are one claim, a disagreeing one is a named drift.
+
+**Out of scope by design — narrative claims.** The cycle queue, `### Next actions` and the
+`### Since the last handover` bullets are *not* checked, and the checker prints that scope with every
+verdict. They are prose, and the only mechanical reading of them is a guess at which queue item is
+"current" — a heuristic there would fail closed on a legitimate rewrite, which is a worse trade than a
+human reading three lines. The stale `Next: U6` after U6 had merged was the third drift found in the wild;
+it is closed by reading the queue, not by a check.
+
+**A drift means the claim is wrong — fix the claim, never the script.** The checker reads the shapes
+above and nothing else: prose, `### Since the last handover` history (`2,006 → 353`) and a quoted field
+name ("the `Open:` list") are not claims, so a false positive is a bug in the checker, not a reason to
+loosen it. It is deliberately **not in CI**: it needs `gh` and the local install, and §STATE is this
+machine's state, not the repo's.
+
 ## The `Verified:` protocol
 
 - The line is `Verified: <sha> (<date>)` as the **first line inside `## STATE`**.
@@ -69,9 +101,11 @@ Run this before any compaction (manual `/compact` or the context threshold):
 
 1. **Rewrite `## STATE`** — tree, running install, board, cycle, in-flight work.
 2. **Update `Verified:`** to the dev HEAD being described (`/handoff mark`).
-3. **Prune `## Open items`** — drop what closed, keep what is live.
-4. **Confirm `## Pointers`** — every linked file still exists.
-5. **Move history out** — anything narrative goes to git/investigations/archive.
+3. **Run `node scripts/handoff-verify.mjs`** — exit 0 before the commit; a drift is a claim to fix (the
+   checker's names are the code: `dev-sha-drift`, `open-set-drift`, `suite-count-drift`, …).
+4. **Prune `## Open items`** — drop what closed, keep what is live.
+5. **Confirm `## Pointers`** — every linked file still exists.
+6. **Move history out** — anything narrative goes to git/investigations/archive.
 
 The extension has no `session_before_compact` hook by design: pi-vcc owns that
 event and the runner keeps the last non-null result, so cancelling could
@@ -103,6 +137,7 @@ a header saying it is historical and not current state — never delete it.
 | tips | `git log -1 --oneline dev` (`git log -1 --oneline main`) |
 | install | `pi list` |
 | board | `gh issue list` |
+| STATE's mechanical claims | `node scripts/handoff-verify.mjs` (all seven checks, exit 1 on drift) |
 | release | `gh release list` (and `git tag --list \| tail -3`) |
 | deps | `cat package.json` — the `@earendil-works/*` pins + `typebox` (held at the pi host pin) |
 | suite | `npx vitest run` |

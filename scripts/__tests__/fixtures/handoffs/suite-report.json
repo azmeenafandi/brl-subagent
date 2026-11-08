@@ -1,0 +1,12 @@
+{
+	"numTotalTestSuites": 3,
+	"numTotalTests": 12,
+	"numPassedTests": 12,
+	"numFailedTests": 0,
+	"startTime": 0,
+	"success": true,
+	"testResults": [
+		{ "name": "/fixture/alpha.test.ts", "startTime": 0, "endTime": 1, "status": "passed", "assertionResults": [] },
+		{ "name": "/fixture/beta.test.ts", "startTime": 0, "endTime": 1, "status": "passed", "assertionResults": [] }
+	]
+}
