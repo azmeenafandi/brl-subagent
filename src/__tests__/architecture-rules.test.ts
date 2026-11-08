@@ -309,11 +309,22 @@ describe("architecture rules (issue #251)", () => {
 		// assertion must come with a recorded reason, like the other allow-lists
 		// in this file.
 		const indexSource = readFileSync(join(SRC, "index.ts"), "utf8");
+		// ADR 0027 (S2): the three mode runners moved to `mode-runners.ts`. The
+		// prohibition follows the code — the moved range carries zero
+		// `as {` and a new one there is exactly as unchecked as it was in the
+		// composition root. Only the documented retry cast below stays, and it
+		// stays pinned to `index.ts` (where the retry path lives).
+		const modeRunnersSource = readFileSync(join(SRC, "mode-runners.ts"), "utf8");
 
-		expect(
-			/\bas\s*\{/.test(indexSource),
-			"src/index.ts must contain zero `as { … }` object-literal assertions — depend on a declared type instead",
-		).toBe(false);
+		for (const [file, source] of [
+			["src/index.ts", indexSource],
+			["src/mode-runners.ts", modeRunnersSource],
+		] as const) {
+			expect(
+				/\bas\s*\{/.test(source),
+				`${file} must contain zero \`as { … }\` object-literal assertions — depend on a declared type instead`,
+			).toBe(false);
+		}
 
 		// The retry path is the ONE remaining named cast. It exists because
 		// resolveRetryParams rebuilds from a run record whose priority/gitMode/
@@ -342,13 +353,18 @@ describe("architecture rules (issue #251)", () => {
 		// source shape is ratcheted here. The helper must be CALLED by each
 		// handler at its existing position — never invoked from the prologue — so
 		// this pins one call per batch handler rather than a call count alone.
-		const indexSource = readFileSync(join(SRC, "index.ts"), "utf8");
-		const calls = [...indexSource.matchAll(/\bvalidateUnitPrePass\(\{/g)].map((m) => m.index!);
+		// ADR 0027 (S2): the three batch handlers moved to `mode-runners.ts` —
+		// the ratchet follows them, so a runner that stops calling the helper is
+		// still a build failure. The calls must sit inside `mode-runners.ts`
+		// AND in each handler's own region: a call hoisted out of a handler
+		// (e.g. into the prologue) still fails the ordering assertions.
+		const runnersSource = readFileSync(join(SRC, "mode-runners.ts"), "utf8");
+		const calls = [...runnersSource.matchAll(/\bvalidateUnitPrePass\(\{/g)].map((m) => m.index!);
 		expect(calls, "chain, parallel and graph each call validateUnitPrePass").toHaveLength(3);
 
 		const regions = ["runChainMode", "runParallelMode", "runGraphMode"].map((name) => {
-			const start = indexSource.indexOf(`async function ${name}(`);
-			expect(start, `${name} must exist in src/index.ts`).toBeGreaterThanOrEqual(0);
+			const start = runnersSource.indexOf(`async function ${name}(`);
+			expect(start, `${name} must exist in src/mode-runners.ts`).toBeGreaterThanOrEqual(0);
 			return start;
 		});
 		expect(calls[0]).toBeGreaterThan(regions[0]);
@@ -360,7 +376,9 @@ describe("architecture rules (issue #251)", () => {
 		// The batch copies' prefix bindings are gone. The background fan-out
 		// keeps its own loop and its `taskPrefix` binding (a different sequence,
 		// design note §2.4/IN8) — outside this commit's scope, so exactly one
-		// such binding may remain.
+		// such binding may remain. These assertions stay on `index.ts`: the
+		// fan-out is the only batch loop still there (S3 moves it).
+		const indexSource = readFileSync(join(SRC, "index.ts"), "utf8");
 		expect(indexSource).not.toContain("const stepPrefix =");
 		expect(indexSource).not.toContain("const nodePrefix =");
 		expect(indexSource.match(/const taskPrefix =/g) ?? []).toHaveLength(1);

@@ -78,13 +78,14 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `git.ts` | Branch-based git workflow for worktree runs: branch creation, diff capture, switch-back, cleanup. |
 | `headstate.ts` | Durable per-repository head state (ADR 0026): the record a branch run writes before its branch exists, the guarded boot reconciliation, and the age sweep. |
 | `history.ts` | Run-record store: creation, finalization, retry lookup, and history pruning. |
-| `index.ts` | Entry point: tool/command registration, the delegate_task handlers, and the execution-mode runners. |
+| `index.ts` | Entry point: tool/command registration, the delegate_task handlers, dispatch, single mode and the background fan-out. |
 | `kill-escalation.ts` | The one SIGTERM → grace → SIGKILL escalation shared by foreground reap, abort/timeout, and boot recovery. |
 | `loader.ts` | Shared markdown-tier loader — scan dirs for `.md`, parse frontmatter, validate, map to a typed record. |
 | `logging.ts` | Leveled structured logging with file output and rotation under `.pi/subagent-logs/`. |
 | `messaging.ts` | Inter-subagent messaging: the Intercom channel and `[TO:id]` output parsing. |
 | `metrics.ts` | SLA metrics over run history: p50/p95/p99 latency, success and cost rates, degradation detection. |
 | `mode-prologue.ts` | The batch-mode prologue (cost → depth → resolve → targets → preflight → H1), one call per foreground batch handler. |
+| `mode-runners.ts` | The three foreground batch-mode runners (chain, parallel, graph) plus their per-unit helpers, built over one runtime context. |
 | `model-availability.ts` | Model identity + auth-aware availability: parse a provider/model-id string and check catalog presence plus configured provider auth. |
 | `notify-completion.ts` | Builds and sends the completion-push wake message for terminal background runs. |
 | `params.ts` | Param resolution: per-call + preset merge, thinking caps, timeout normalization, tool and git/approval resolution, auto-routing. |
@@ -102,6 +103,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `router.ts` | Auto-route: keyword classification of a task description to the best preset. |
 | `run-registry.ts` | Durable per-run in-flight registry + the single run-record persist choke point that mirrors into it. |
 | `runner.ts` | Foreground execution: spawns the `pi` subprocess, parses its JSON-line stream, and folds usage. |
+| `runtime.ts` | The per-invocation runtime context (pi, log, state) the composition root builds once and hands to the mode runners. |
 | `sanitize.ts` | Input validation, environment allowlisting, and output sanitization (task, cwd, outputFile, agent ids). |
 | `scheduler.ts` | Dependency-graph scheduler: cycle detection, topological waves, and graph validation. |
 | `schema.ts` | The registered `delegate_task` parameter schema — the single source of truth for its types. |
@@ -120,7 +122,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**49 modules** — every one is listed because a new module without a purpose fails CI.
+**51 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
