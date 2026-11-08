@@ -167,14 +167,21 @@ describe("evaluate — each surface against its own ceiling", () => {
 		const { findings } = verdict([measured("src", 100, 150), measured("scripts", 100, 101)]);
 		expect(findings).toHaveLength(1);
 		expect(findings[0]).toContain('surface "scripts" test:source LOC ratio 1.01 (101 test / 100 source)');
-		expect(findings[0]).toContain("the 1.0 ceiling");
+		expect(findings[0]).toContain("exceeds the 1.0 ceiling by 1 test line (");
+	});
+
+	it("states the overage in whole lines, so a rounded ratio cannot read as equal", () => {
+		// 56198/28097 = 2.0004: two decimals print "2.00", so the finding must carry the line count.
+		const { findings } = verdict([measured("src", 28_097, 56_198)]);
+		expect(findings[0]).toContain("ratio 2.00 (56198 test / 28097 source)");
+		expect(findings[0]).toContain("exceeds the 2.0 ceiling by 4 test lines");
 	});
 
 	it("names the src surface and its 2.0 ceiling, never the scripts one", () => {
 		const { findings } = verdict([measured("src", 100, 201), measured("scripts", 100, 50)]);
 		expect(findings).toHaveLength(1);
 		expect(findings[0]).toContain('surface "src" test:source LOC ratio 2.01 (201 test / 100 source)');
-		expect(findings[0]).toContain("the 2.0 ceiling");
+		expect(findings[0]).toContain("exceeds the 2.0 ceiling by 1 test line (");
 	});
 
 	it("reports both breaches in one run rather than the first one found", () => {
@@ -201,7 +208,7 @@ describe("evaluate — each surface against its own ceiling", () => {
 
 	it("fails the wall ceiling above 60 s and passes it at exactly 60 s", () => {
 		expect(verdict([measured("src", 10, 10)], WALL_CEILING_MS + 10).findings[0]).toContain(
-			"wall time 60.01s exceeds the 60.00s ceiling",
+			"wall time 60.01s exceeds the 60.00s ceiling by 10 ms",
 		);
 		expect(verdict([measured("src", 10, 10)], WALL_CEILING_MS).findings).toEqual([]);
 	});
@@ -330,7 +337,7 @@ describe("main — the two streams and the exit codes", () => {
 		const path = report("wall", WALL_CEILING_MS + 10);
 		const { code, err } = run([path], root);
 		expect(code).toBe(1);
-		expect(err.join("\n")).toContain(`wall time 60.01s exceeds the 60.00s ceiling (report: ${path}`);
+		expect(err.join("\n")).toContain(`wall time 60.01s exceeds the 60.00s ceiling by 10 ms (report: ${path}`);
 	});
 
 	it("fails the floor when a gate script has no importer, naming the script", () => {
@@ -390,6 +397,5 @@ describe("the CLI as CI runs it", () => {
 		const result = spawnSync(process.execPath, [SCRIPT, report("spawn", 1_000)], { cwd: root, encoding: "utf8" });
 		expect(result.status).toBe(1);
 		expect(result.stdout).toContain("test-budget: scripts 2.00 (20 test / 10 source LOC, ceiling 1.0)");
-		expect(result.stderr).toContain('surface "scripts"');
-	});
+		expect(result.stderr).toContain('surface "scripts"');	});
 });

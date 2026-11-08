@@ -245,20 +245,28 @@ function headroom(surface) {
 	return Math.max(0, Math.floor(surface.ceiling * surface.sourceLoc) - surface.testLoc);
 }
 
+function lines(count) {
+	return `${count} test line${count === 1 ? "" : "s"}`;
+}
+
 export function evaluate({ reportPath, wallMs, wallCeilingMs = WALL_CEILING_MS, surfaces, untested = [] }) {
 	const findings = [];
 	const warnings = [];
 	if (wallMs > wallCeilingMs) {
 		findings.push(
-			`wall time ${formatMs(wallMs)} exceeds the ${formatMs(wallCeilingMs)} ceiling ` +
+			`wall time ${formatMs(wallMs)} exceeds the ${formatMs(wallCeilingMs)} ceiling by ${wallMs - wallCeilingMs} ms ` +
 				`(report: ${reportPath}; the ceiling is a limit, not a target).`,
 		);
 	}
 	for (const surface of surfaces) {
 		if (surface.ratio > surface.ceiling) {
+			// The overage is stated in whole lines: a ratio printed to two decimals can round to the
+			// ceiling it just breached (56198/28097 = 2.0004 prints as 2.00), and "2.00 exceeds 2.0"
+			// reads as a bug in the guard. The exact line count cannot round away.
 			findings.push(
 				`surface "${surface.name}" test:source LOC ratio ${surface.ratio.toFixed(2)} ` +
 					`(${surface.testLoc} test / ${surface.sourceLoc} source) exceeds the ${surface.ceiling.toFixed(1)} ceiling ` +
+					`by ${lines(surface.testLoc - Math.floor(surface.ceiling * surface.sourceLoc))} ` +
 					`(report: ${reportPath}; the ceiling is a limit, not a target).`,
 			);
 		} else if (surface.warnAt !== null && surface.ratio >= surface.warnAt) {
