@@ -16,25 +16,23 @@
  * block and the background/retry registration paths remain in index.ts.
  */
 
-import type {
-	AgentToolResult,
-	AgentToolUpdateCallback,
-} from "@earendil-works/pi-agent-core";
+import type { Logger } from "./logging";
+import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-
-import type {
-	SubagentResult,
-	SubagentRun,
-	SubagentToolOptions,
-	Priority,
-	RecoveryMode,
+import {
+	getFinalOutput,
+	classifyError,
+	DEFAULT_RECOVERY,
+	type SubagentResult,
+	type SubagentRun,
+	type SubagentToolOptions,
+	type Priority,
+	type RecoveryMode,
 } from "./types";
-import { getFinalOutput, classifyError, DEFAULT_RECOVERY } from "./types";
 import { snapshotOriginalParams } from "./params";
 import { currentProcessOwner } from "./recovery";
 import { capOutput, stripAnsi, buildCrashResult } from "./sanitize";
 import { finalizeRunRecord, pruneSessionRuns } from "./history";
-import type { Logger } from "./logging";
 import { SessionState } from "./state";
 
 // ---------------------------------------------------------------------------

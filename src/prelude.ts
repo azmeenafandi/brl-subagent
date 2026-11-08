@@ -45,11 +45,20 @@
  * extra log fields.
  */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ApprovalMode, GitMode, SubagentPreset, SubagentToolOptions, ThinkingLevel, ToolResult } from "./types";
-import { approvalBlocksBackground, isThinkingLevel, THINKING_LEVELS } from "./types";
-import type { SessionState } from "./state";
 import type { Logger } from "./logging";
+import type { SessionState } from "./state";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	approvalBlocksBackground,
+	isThinkingLevel,
+	THINKING_LEVELS,
+	type ApprovalMode,
+	type GitMode,
+	type SubagentPreset,
+	type SubagentToolOptions,
+	type ThinkingLevel,
+	type ToolResult,
+} from "./types";
 import { validateCwd, validateOutputFile } from "./sanitize";
 import { validatePreTask, type ValidateConfig } from "./validate";
 import { modelIsAvailable, parseModelString } from "./model-availability";

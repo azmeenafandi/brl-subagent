@@ -27,9 +27,9 @@
  * tracked repository file, not LLM-controlled output.
  */
 
+import type { Logger } from "./logging";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Logger } from "./logging";
 import { isProcessChecksEnabled } from "./project-flags";
 
 /** The tracked reference, relative to the project root. */

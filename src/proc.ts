@@ -18,12 +18,11 @@
  * that platform guard without mocking `node:fs` module-wide.
  */
 
+import type { RecoveryDeps } from "./recovery-engine";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ProcessOwner } from "./types";
-import { SIGKILL_GRACE_MS, SIGKILL_POLL_MS } from "./types";
+import { SIGKILL_GRACE_MS, SIGKILL_POLL_MS, type ProcessOwner } from "./types";
 import { CHILD_MARKER_ENV_KEY } from "./sanitize";
-import type { RecoveryDeps } from "./recovery-engine";
 import { supportsProcessGroupKill } from "./kill-escalation";
 
 const PROC_ROOT = "/proc";

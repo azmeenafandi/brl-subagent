@@ -23,10 +23,10 @@
  * every pid, wait one grace window, SIGKILL any survivor.
  */
 
+import type { Logger } from "./logging";
 import type { ProcessOwner, SubagentRun } from "./types";
 import { resolveTerminalRunEntry } from "./state";
 import { escalateKill, processTarget, type SignalGuard, type SignalPhase } from "./kill-escalation";
-import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
 // Dependency injection surface

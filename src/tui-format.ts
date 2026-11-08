@@ -12,8 +12,10 @@ import {
 	TEMPLATE_PARAM_RE,
 	formatTokens,
 	isInterruptedRun,
+	type ModeContext,
+	type SubagentRun,
+	type TaskTemplate,
 } from "./types";
-import type { ModeContext, SubagentRun, TaskTemplate } from "./types";
 
 /** Frame duration of the braille spinners (10 frames → a 1.5 s cycle). */
 export const LIVE_SPINNER_FRAME_MS = 150;

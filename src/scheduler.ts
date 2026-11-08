@@ -6,8 +6,7 @@
  * and graph validation for P10 dependency graph mode.
  */
 
-import type { GraphTask } from "./types";
-import { MAX_GRAPH_TASKS } from "./types";
+import { MAX_GRAPH_TASKS, type GraphTask } from "./types";
 
 // ---------------------------------------------------------------------------
 // Cycle detection — three-color DFS

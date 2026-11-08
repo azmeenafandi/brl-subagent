@@ -29,11 +29,10 @@
  * agent store's F6 discipline.
  */
 
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ProcessOwner, RecoveryMode, SubagentRun } from "./types";
-import { CUSTOM_ENTRY_TYPES, RECOVERY_MODES } from "./types";
+import { CUSTOM_ENTRY_TYPES, RECOVERY_MODES, type ProcessOwner, type RecoveryMode, type SubagentRun } from "./types";
 import { assertSafeAgentId } from "./sanitize";
 import { ensureOwnerOnlyDir } from "./store-permissions";
 

@@ -28,8 +28,7 @@
  */
 
 import { listInflightRuns, type InflightRun, type InflightRunKind } from "./run-registry";
-import type { SubagentRun } from "./types";
-import { isInterruptedRun, runRecoveryPosture, type RecoveryMode } from "./types";
+import { isInterruptedRun, runRecoveryPosture, type RecoveryMode, type SubagentRun } from "./types";
 import { resolveTerminalRunEntry } from "./state";
 import { sortNewestFirst } from "./history";
 import { claimTerminalNotice, type DeliveryResolution } from "./notify-completion";

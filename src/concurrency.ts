@@ -9,12 +9,10 @@
  * acquireSlot/releaseSlot, eliminating races between parallel completions.
  */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Priority } from "./types";
-import { PRIORITY_ORDER } from "./types";
 import type { SessionState } from "./state";
-import { LIVE_SPINNER_FRAME_MS, computeProgressTimes, formatProgressStatus } from "./tui-format";
-import type { LiveBudgetInput } from "./tui-format";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { PRIORITY_ORDER, type Priority } from "./types";
+import { LIVE_SPINNER_FRAME_MS, computeProgressTimes, formatProgressStatus, type LiveBudgetInput } from "./tui-format";
 
 // ---------------------------------------------------------------------------
 // Slot management

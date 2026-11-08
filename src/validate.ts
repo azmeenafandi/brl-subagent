@@ -7,8 +7,7 @@
  * LLM context), so it's consistent regardless of conductor state.
  */
 
-import type { ThinkingLevel, SubagentToolOptions } from './types';
-import { THINKING_LEVELS } from './types';
+import { THINKING_LEVELS, type ThinkingLevel, type SubagentToolOptions } from './types';
 import { DISPATCH_LINE_FORM, JEV_UNAVAILABLE, parseDispatchLine } from './dispatch-line';
 import { isProcessChecksEnabled } from './project-flags';
 

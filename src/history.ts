@@ -6,11 +6,21 @@
  * and duration formatting.
  */
 
-import type { SubagentRun, SubagentResult } from "./types";
-import { isSubagentError, getFinalOutput, isSubagentRunShape, classifyError, coherentFailureReason, CUSTOM_ENTRY_TYPES, MAX_RUN_HISTORY_ENTRIES, DEFAULT_OUTPUT_CAP_BYTES } from "./types";
+import type { ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	isSubagentError,
+	getFinalOutput,
+	isSubagentRunShape,
+	classifyError,
+	coherentFailureReason,
+	CUSTOM_ENTRY_TYPES,
+	MAX_RUN_HISTORY_ENTRIES,
+	DEFAULT_OUTPUT_CAP_BYTES,
+	type SubagentRun,
+	type SubagentResult,
+} from "./types";
 import { isOutputTruncated } from "./sanitize";
 import { transcriptDisplayPath } from "./transcript-path";
-import type { ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // Run pruning — R2: Disk usage policy

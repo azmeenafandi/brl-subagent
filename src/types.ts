@@ -5,11 +5,11 @@
  * All shared type definitions and constants for the brl-subagent extension.
  */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Static } from "typebox";
 import type { delegateTaskParamsSchema } from "./schema";
 import type { TranscriptMessage } from "./transcript-tail";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Static } from "typebox";
 
 // ---------------------------------------------------------------------------
 // Core types
