@@ -105,6 +105,10 @@ jev-check: provenance row appended to .pi/jev-lines.log (label "impl-468", model
 
 - **One line is printed.** The aware arm is a stderr diagnostic plus a record column; a second
   `jev:` line on stdout would let a reader paste the wrong arm.
+- **Rollout ordering.** The new columns may be written only **after** this tool is merged: the cockpit's
+  merge guard runs its own copy of `jev-check`, and that parser is fail-closed, so a `model:` or
+  `level-model:` row written early makes every merge fail structurally. A row without them is
+  legacy-shaped and safe on either side of the merge.
 - **Blind isolation.** The printed line is byte-identical with and without `--model`/
   `--classifier-model-aware`, so adding the measurement cannot change the dispatch.
 - **It never blocks.** `--classifier-model-aware` requires `--model` (exit 2 — an arm without a

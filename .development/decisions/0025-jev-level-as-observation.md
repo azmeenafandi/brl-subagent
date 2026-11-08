@@ -51,7 +51,7 @@ The level's prose controls are withdrawn: no deviation reason, no below-Jev revi
 accepts up to three keyed columns — `stated:worktree` (#456), `model:<provider>/<id>`,
 `level-model:<level> (<conf>)` — any subset, any order, each at most once (max 6 columns). Keyed, so
 the matched line never changes: 3-, 4-, 5- and 6-column rows coexist and `--require-provenance`
-stays an exact-text comparison (129 live rows parse unchanged). Fail-closed on an unknown key, a
+stays an exact-text comparison (every live row parses unchanged). Fail-closed on an unknown key, a
 duplicate key, a malformed value, a key before the line column, a tab inside a value, a truncated
 row, and a confidence outside `[0, 1]`. The model pattern allows **multiple** slashes: the ids
 actually dispatched include `openrouter/meta/muse-spark-1.3-contributor` and
@@ -125,7 +125,7 @@ settle ⇒ 2 naming the label), then the cohort (zero eligible ⇒ 0 `N=0`).
   feeds back into the model, and no claim here says it does.
 - **Levels are recorded as REQUESTED, not as capped.** A `thinkingLevel` cap can lower what the model
   actually runs at; the row cannot see that. `--calibrate` says so in its own output.
-- **Legacy rows have no model**, so the `(unstated)` bucket is where most of the first 129 rows land.
+- **Legacy rows have no model**, so the `(unstated)` bucket is where most of the live rows land.
   They are not rewritten: the log is a historical record.
 - **`--model-ran` is a manual correction, not detection**, and unverifiable by the tool — stated in
   the settle message, the docs, and here.
@@ -136,5 +136,12 @@ settle ⇒ 2 naming the label), then the cohort (zero eligible ⇒ 0 `N=0`).
 - **The sidecar is local and gitignored**, like the provenance log; there is no rotation and no
   retention policy. A corrupt or truncated file fails closed (exit 2) rather than reading as
   "nothing settled", and the recovery path is an operator decision, stated in the message.
+- **Rollout ordering is load-bearing.** New-format rows (`model:`, `level-model:`) may be written
+  only once this change is on `dev`. The merge guard runs its **own** copy of `jev-check` (check (e))
+  and that parser is fail-closed: a row carrying an unknown column written before the merge makes
+  every merge fail with a structural error, not just this one. Proven with the old parser against a
+  snapshot plus one 5-column row — `provenance log line … is malformed`, exit 2. Rows written without
+  `--model`/aware data are legacy-shaped and safe on either side, which is how the Rule 9 probe was
+  run; the `--model` probe from the cockpit waits for the merge.
 - **Nothing ships.** `.pi/skills/**` is outside `package.json.files`, so no release checkpoint and no
   shipped behaviour change follow from this record.
