@@ -72,9 +72,12 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 
 | Module | Purpose |
 |---|---|
+| `agent-tools.ts` | The three agent-lifecycle tools (get_subagent_result, steer_subagent, stop_subagent) as definitions, returned to the composition root to register. |
 | `background-pipeline.ts` | The background pipeline — the fan-out handler, the shared spawn tail and the single-background spawn — built over one runtime context. |
 | `boot-recovery.ts` | Boot recovery — the interrupted-run scan, the boot head-state reconcile and the recovery notices, built over one runtime context. |
+| `commands.ts` | The /brl-subagent command definition — its argument completions and the handler table — returned to the composition root to register. |
 | `concurrency.ts` | Session-bound concurrency queue: slot acquisition/release, priority insertion, and progress counters. |
+| `delegate-handler.ts` | The delegate_task tool — its definition, the dispatch pre-flight, the foreground run path — returned to the composition root to register. |
 | `diff.ts` | Parses git unified diffs into structured per-file summaries and hunks for the result UI. |
 | `dispatch-line.ts` | Parse and validate the Rule 22 dispatch line (the project-local opt-in lives in project-flags.ts). |
 | `engineering-bar.ts` | Builds the project's `<engineering-bar>` system-prompt section for every child spawn (issue #421). |
@@ -82,7 +85,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `git.ts` | Branch-based git workflow for worktree runs (branch, diff, switch-back, cleanup) plus the read-only worktree probe. |
 | `headstate.ts` | Durable per-repository head state (ADR 0026): the record a branch run writes before its branch exists, the guarded boot reconciliation, and the age sweep. |
 | `history.ts` | Run-record store: creation, finalization, retry lookup, and history pruning. |
-| `index.ts` | Entry point: tool/command registration, the delegate_task handlers, dispatch and single mode. |
+| `index.ts` | Entry point: the composition root — runtime, registration surface, session lifecycle handlers and the terminal notifier. |
 | `kill-escalation.ts` | The one SIGTERM → grace → SIGKILL escalation shared by foreground reap, abort/timeout, and boot recovery. |
 | `loader.ts` | Shared markdown-tier loader — scan dirs for `.md`, parse frontmatter, validate, map to a typed record. |
 | `logging.ts` | Leveled structured logging with file output and rotation under `.pi/subagent-logs/`. |
@@ -128,7 +131,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 | `worktree-report.ts` | Formats the read-only worktree state a failed or stopped run may have left behind (issue #474). |
 
-**55 modules** — every one is listed because a new module without a purpose fails CI.
+**58 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

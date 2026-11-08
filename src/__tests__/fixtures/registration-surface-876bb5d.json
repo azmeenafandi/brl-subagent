@@ -1,0 +1,493 @@
+{
+	"note": "captured from src/index.ts @ 876bb5d (pre-S5 registration surface)",
+	"command": {
+		"name": "brl-subagent",
+		"description": "Configure subagent model and thinking level"
+	},
+	"tools": {
+		"delegate_task": {
+			"name": "delegate_task",
+			"label": "Delegate Task",
+			"description": "Delegate a task to the brl-subagent with isolated context. The subagent inherits your current system prompt and runs with its configured model and thinking level (set via /brl-subagent). If no subagent model is configured, your current model is used. The subagent reports what it did when complete. Optionally provide a custom systemPrompt and control inheritance via inheritSystemPrompt.",
+			"promptSnippet": "Delegate tasks to a subagent for isolated, parallel or background work",
+			"promptGuidelines": [
+				"Use delegate_task when the user asks you to hand off work to a subagent, or when a task would benefit from an isolated context window (e.g., deep investigation, parallel research, long-running analysis).",
+				"The authoritative capability reference for delegation is the extension's AGENT.md — read it at <pkg>/AGENT.md, or ./AGENT.md in the project root when present, when planning delegation-heavy work.",
+				"The subagent inherits your system prompt and runs with its own model (configurable via /brl-subagent). It reports what it did when done.",
+				"You can customize per-call via inheritSystemPrompt and systemPrompt: set inheritSystemPrompt: false to save context, provide a systemPrompt for custom instructions, or use both to add instructions on top of inheritance.",
+				"Set thinkingLevel per call to match task complexity. The level is capped at the user's configured maximum. Map tasks to levels using this heuristic: off = file listing, grep, simple read. minimal = file diff, syntax check, find-and-replace. low = refactoring, test generation, documentation. medium = default — code review, debugging, moderate analysis. high = security audit, architecture review, complex debugging. xhigh = multi-step causal reasoning, research, novel problem solving. Default to 'off' or 'minimal' for trivial tasks — do not waste the user's budget.",
+				"Use outputFile to have the subagent write full findings to disk and return only a structured summary — saves context tokens for large investigations.",
+				"Set timeout (in ms) to limit how long a subagent can run. Useful for tasks that might hang or get stuck. Background runs default to a 30-minute deadline when no timeout is given; an explicit timeout is honored as given (30 minutes is a default, not a ceiling).",
+				"Set cwd to override the subagent's working directory. Defaults to the current project directory.",
+				"Set label to give the subagent a human-readable name (e.g., 'security-audit' or 'docs-review'). Labels appear in the status bar and tool call display.",
+				"Use preset to apply a delegation configuration (built-in or custom via /brl-subagent preset). Preset values are defaults — explicit parameters override them. IMPORTANT: some presets restrict tools — e.g. outputFile requires the subagent's write tool, which security-auditor and code-reviewer exclude. Built-in presets: code-reviewer (read-only: excludes write, edit, bash), data-analyst (tools: read, grep, find, ls, write), debugger (read-only: excludes write, edit), dev-agent (tools: read, grep, find, ls, write, edit, bash), rapid-prototyper, refactorer (tools: read, grep, find, ls, write, edit), security-auditor (read-only: excludes write, edit, bash), tech-writer (tools: read, grep, find, ls, write, edit), test-engineer (tools: read, grep, find, ls, write, edit, bash). Custom presets are NOT listed here — inspect them via /brl-subagent preset before combining with outputFile or tool-dependent work. When combining a preset with outputFile or tool-dependent work, verify the preset allows the required tools.",
+				"Templates are file-backed task starters with ${param} slots. Built-in templates: analyze-data (data analysis with patterns and recommendations; slots ${dataset}), code-review (review code for correctness, security, and style; slots ${target}), debug-issue (reproduce, isolate, and fix a bug; slots ${symptom}), implement-feature (feature implementation following project conventions; slots ${feature}), prototype (fast throwaway prototype; slots ${idea}), refactor (behavior-preserving structural refactor; slots ${target}), security-audit (security audit with severity-ranked findings; slots ${target}), write-docs (developer documentation with examples; slots ${topic}), write-tests (test generation with edge-case coverage; slots ${file}). Custom templates are NOT listed here — inspect them via /brl-subagent templates before choosing one.",
+				"To retry a failed subagent, pass its run ID as retryRunId. The retry restores the recorded params - including background, gitMode, approvalMode, force - with explicit values on this call winning. Multi-step runs degrade to a single task. See the retryRunId description for the full field list.",
+				"Set retryOnTimeout: true to automatically retry a FOREGROUND subagent that times out. Only retries once — the second timeout is treated as a final failure. A background run is not retried on its deadline, but it IS retried once automatically when it dies on a transport-class error (a dropped connection before the work started), recorded as attempt 2 and announced with a warning toast — do not re-dispatch it yourself. Any other background failure needs an explicit retryRunId.",
+				"Background is the CONDITIONAL default for delegate_task. With background omitted, a single task or a tasks fan-out runs in the BACKGROUND when the effective approvalMode is 'auto' (call param, else config): the tool returns an agent ID immediately, and with tasks it fans out — every task starts as its own background agent, one ID per task in task order, and the conductor is woken once per agent as each finishes. It stays FOREGROUND when the effective approvalMode is 'writes' or 'always' (a background run has no approval dialog, so a gate that needs the user must keep blocking), and for chain and graph (they block by definition; an explicit background: true with chain/graph is rejected). Pass background: false for a quick probe whose answer the next step needs inline; pass background: true to force a background run where the default would block. Background runs wake the conductor with a structured completion message when they finish — do not poll: polling is only correct when completion notifications are disabled (completionNotify \"off\"); one status check as a stall check is legitimate. A background run defaults to a 30-minute deadline when no timeout is given.",
+				"",
+				"## Conductor Guardrails",
+				"",
+				"Before delegating, verify the subagent configuration matches the task:",
+				"",
+				"2. **Thinking level**: Match thinking level to task complexity: off/minimal for trivial tasks (file listing, grep), low for refactoring/docs, medium for code review/debugging, high for security audits/complex debugging, xhigh for multi-step reasoning/novel problems.",
+				"3. **Git mode**: Use gitMode='branch' for tasks that create commits or PRs. Use gitMode='none' for read-only tasks.",
+				"4. **Tools**: Verify the subagent has the tools it needs. If the task writes files, ensure write and edit are not excluded. If the task runs commands, ensure bash is not excluded.",
+				"5. **Timeout**: Set timeout based on task complexity. Simple: 30s. Medium: 60s. Complex: 120s+. xhigh thinking: at least 120s. Background runs default to a 30-minute deadline when no timeout is set; an explicit timeout is honored.",
+				"",
+				"These guardrails prevent common misconfigurations. The extension also validates configuration before spawning (H1): tool warnings are surfaced in the returned result, but two mismatches are HARD errors that reject the delegation — outputFile with the write tool excluded, and a capability-critical task/toolset mismatch (a run/execute/test/compile/benchmark task without bash, or an exploration task with none of find/ls/grep/bash; pass force: true to override the capability class). Getting it right the first time is faster and more efficient.",
+				"",
+				"Before delegating, evaluate existing presets to find the best match for the task: tech-writer (documentation), code-reviewer (code review), security-auditor (security analysis), test-engineer (test writing), debugger (debugging), refactorer (refactoring), data-analyst (data analysis), rapid-prototyper (quick prototypes). Use the preset parameter to apply the best match. If no preset fits, use dev-agent for general development tasks.",
+				"The autoRoutePreset() function can automatically select the best preset based on task keywords. Consider using it for preset selection.",
+				"Prefer a preset when the delegation matches a standard shape — review/audit/test/docs; override per-call deliberately."
+			],
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"task": {
+						"type": "string",
+						"description": "Detailed description of the task for the subagent to complete (required for single mode, optional for chain/tasks/graph)"
+					},
+					"systemPrompt": {
+						"type": "string",
+						"description": "Custom system prompt or additional instructions for the subagent. When inheritSystemPrompt is true (default), this is appended after the inherited prompt. When inheritSystemPrompt is false, this replaces the inherited prompt entirely."
+					},
+					"inheritSystemPrompt": {
+						"type": "boolean",
+						"description": "Whether to inherit the main agent's system prompt. Default: true. Set to false to use only your custom systemPrompt, or to avoid passing a large inherited prompt to the subagent."
+					},
+					"thinkingLevel": {
+						"type": "string",
+						"enum": [
+							"off",
+							"minimal",
+							"low",
+							"medium",
+							"high",
+							"xhigh",
+							""
+						],
+						"description": "Requested thinking level for this subagent call. One of: off, minimal, low, medium, high, xhigh — matched exactly, so case and whitespace matter. An unknown value is rejected (pi's own `max` is not a delegated level). Capped at the user's configured maximum. If omitted, or an empty string, the user's configured level is used."
+					},
+					"outputFile": {
+						"type": "string",
+						"description": "Project-relative path where the subagent should write its full findings. When provided, the subagent is instructed to write complete output to this file and return only a structured summary."
+					},
+					"label": {
+						"type": "string",
+						"description": "Human-readable label for this subagent (e.g., 'security-audit', 'docs-review'). Appears in the status bar and tool call display. Omit to use the default anonymous counter."
+					},
+					"model": {
+						"type": "string",
+						"description": "Model override (provider/model-id). Defaults to the global subagent model."
+					},
+					"timeout": {
+						"type": "number",
+						"description": "Maximum time in milliseconds the subagent is allowed to run. If exceeded, the subagent is killed and an error is returned. Background runs default to a 30-minute deadline when no timeout is given; an explicit timeout is honored as given (30 minutes is a default, not a ceiling). A raw value ≥ 2^31-1 normalizes to the default."
+					},
+					"cwd": {
+						"type": "string",
+						"description": "Working directory for the subagent. Must be an existing directory. Defaults to the conductor's current working directory."
+					},
+					"tools": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Explicit allowlist of tool names for the subagent. Maps to pi's --tools flag. An EMPTY array means no child tools (pi --no-tools); omitting the field keeps pi's defaults."
+					},
+					"excludeTools": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Tool names to disable for the subagent. Maps to pi's --exclude-tools flag."
+					},
+					"noBuiltinTools": {
+						"type": "boolean",
+						"description": "Disable all built-in tools for the subagent. Maps to pi's --no-builtin-tools flag."
+					},
+					"preset": {
+						"type": "string",
+						"description": "Name of a saved delegation preset (created via /brl-subagent preset). Preset values are used as defaults; explicit parameters on this call override them."
+					},
+					"template": {
+						"type": "string",
+						"description": "Name of a saved task template. Use with params to fill template slots. Templates are file-backed: 9 builtin templates ship with the extension (browse via /brl-subagent templates); override or add via .md files in ~/.pi/agent/brl-subagent/templates/ or .pi/brl-subagent/templates/ (project-local wins over user-global over builtin)."
+					},
+					"params": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string"
+							}
+						},
+						"description": "Parameter values for template ${param} slots. Keys are param names, values are the substitution text."
+					},
+					"retryRunId": {
+						"type": "string",
+						"description": "ID of a previously failed subagent run to retry. The retry rebuilds the parameter object from a fixed field set, falling back to the original run's recorded values, with explicit values on this call winning: task, label, model, preset, systemPrompt, inheritSystemPrompt, thinkingLevel, priority, outputFile, timeout, cwd, tools, excludeTools, noBuiltinTools, background, gitMode, approvalMode, force. The execution-shape fields ARE restored: a retried background run stays background (with its completion wake), and a retried branch-mode run keeps its work branch, its approvalMode gating and its force override. Qualify that by the effective gitMode - when neither the record nor this call carries one, the configured default applies, which may still be 'branch'. Not restored: chain/tasks/graph and params, so a retried multi-step run silently degrades to a single task - re-issue it fresh. retryOnTimeout is explicit-only: never restored, honoured when passed. template is asymmetric: the original's template is NOT restored, but a template passed on the retry call DOES take effect (it is resolved before the retry merge). Fan-out units (parallel/chain/graph origin) record no background, so retrying one is a single foreground run - pass background: true for a background retry. Only works with runs that ended in failure (exitCode != 0, timeout, error, or abort)."
+					},
+					"gitMode": {
+						"type": "string",
+						"description": "Git integration mode for this subagent call. 'branch' creates a work branch, captures the diff, and switches back. 'none' (default) does nothing. Falls back to the configured default."
+					},
+					"retryOnTimeout": {
+						"type": "boolean",
+						"description": "If true and a FOREGROUND subagent times out, automatically retry with the same parameters. Only retries once — the second timeout is treated as a final failure. A background run is not retried on its deadline, but it is retried once automatically on a transport-class error; any other background failure needs an explicit retryRunId."
+					},
+					"approvalMode": {
+						"type": "string",
+						"description": "Change approval mode: auto (never ask), writes (ask when files changed), always (ask every time). Default is user config (/brl-subagent approval)."
+					},
+					"force": {
+						"type": "boolean",
+						"description": "Override for capability pre-flight errors (default false). A dispatch is blocked when the task clearly needs a capability the resolved toolset lacks — a run/execute/test/compile/benchmark task with no bash, or an exploration task (search/grep/find/list/locate/glob) with none of find/ls/grep/bash. Set force: true to dispatch anyway: the mismatch is then delivered as a warning in the result instead of rejecting the call. Warnings are surfaced either way. force never suppresses outputFile-without-write conflicts."
+					},
+					"noJev": {
+						"type": "string",
+						"minLength": 1,
+						"description": "Stated bypass for the Jev dispatch-line pre-flight, which is active ONLY in a project whose package.json sets the `brl-subagent.processChecks` field (this repository). A reason string that states WHY the line is missing: the dispatch proceeds and the reason is surfaced as a warning in the result, so the bypass is never silent. The reason is validated when the dispatch is handled, not by this schema: the argument validator coerces loosely typed input, so a boolean or a number arrives as its text (`true` becomes \"true\") and is REFUSED exactly like an absent bypass. It bypasses ONLY the line check — capability conflicts still reject (unlike force). Append `jev: unavailable` to the task instead when the classifier did not run."
+					},
+					"background": {
+						"type": "boolean",
+						"description": "Run the subagent in the background without blocking the conductor. When true, the tool returns immediately with an agent ID. The conductor is woken with a completion message; use get_subagent_result for post-wake retrieval and stall checks. Supports a single task or the tasks array (a fan-out that starts one background agent per task; with tasks the call returns one ID per task and the conductor is woken once per agent as each finishes); combining background with chain or graph is rejected. Default: conditional. Omitted, a single task or tasks fan-out runs in the BACKGROUND when the effective approvalMode is 'auto' (call param, else config); it stays foreground for 'writes'/'always' (a background run has no approval dialog, so the gate must stay in front of the user) and for chain/graph, which block by definition. Pass background: false for a quick probe whose answer the next step needs inline. Explicit true/false wins. ONE pre-flight exception exists, and only in a project that opted into its own process checks (package.json `brl-subagent.processChecks: true`; this repository): a high/xhigh-thinking dispatch that resolves FOREGROUND and carries an explicit timeout loses that timeout, because a foreground run persists nothing and a deadline there loses all its work. The shape it lands in depends on the effective approvalMode (call param, else config), in two outcomes: when a background run is possible (explicit background: false with 'auto'/'writes') the dispatch is switched to background, where the 30-minute default applies; when it is not (an effective 'always', which background cannot present a dialog for, or an omitted background whose approval mode keeps it foreground) the run STAYS FOREGROUND with NO deadline at all, so the call blocks until the child settles instead of being killed. Either outcome is announced to the conductor and the user; pass force: true to keep the explicit timeout. The same judgement is made PER BATCH UNIT: a tasks/chain/graph unit that declares its own high/xhigh thinking level with a positive timeout has that unit's timeout dropped before it runs, while a background fan-out unit keeps its own — there the deadline is the budget. Without that project opt-in the explicit shape and its timeout stand. A background run defaults to a 30-minute deadline when no timeout is given."
+					},
+					"priority": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "critical"
+							},
+							{
+								"type": "string",
+								"const": "high"
+							},
+							{
+								"type": "string",
+								"const": "normal"
+							},
+							{
+								"type": "string",
+								"const": "low"
+							}
+						],
+						"description": "Concurrency priority for this delegation: critical, high, normal, or low. Higher-priority delegations queue ahead. Defaults to normal."
+					},
+					"chain": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": [
+								"task"
+							],
+							"properties": {
+								"task": {
+									"type": "string",
+									"description": "Task description. Use {previous} to reference the previous step output."
+								},
+								"label": {
+									"type": "string"
+								},
+								"model": {
+									"type": "string",
+									"description": "Model override for this step (provider/model-id). Defaults to the global subagent model."
+								},
+								"thinkingLevel": {
+									"type": "string",
+									"enum": [
+										"off",
+										"minimal",
+										"low",
+										"medium",
+										"high",
+										"xhigh",
+										""
+									],
+									"description": "Thinking level override for this subtask. Same values and rules as the call-level thinkingLevel: off, minimal, low, medium, high, xhigh (exact match). An unknown value rejects the whole batch before anything starts. Empty inherits the call-level level."
+								},
+								"cwd": {
+									"type": "string"
+								},
+								"timeout": {
+									"type": "number"
+								},
+								"outputFile": {
+									"type": "string"
+								},
+								"tools": {
+									"type": "array",
+									"items": {
+										"type": "string"
+									}
+								},
+								"excludeTools": {
+									"type": "array",
+									"items": {
+										"type": "string"
+									}
+								},
+								"noBuiltinTools": {
+									"type": "boolean"
+								},
+								"systemPrompt": {
+									"type": "string"
+								},
+								"inheritSystemPrompt": {
+									"type": "boolean"
+								}
+							}
+						},
+						"description": "Sequential chain of tasks. Each step receives the previous step output via {previous} placeholder in the task string. Chain stops at the first failure. Max 10 steps."
+					},
+					"tasks": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": [
+								"task"
+							],
+							"properties": {
+								"task": {
+									"type": "string",
+									"description": "Task description for this parallel subtask"
+								},
+								"label": {
+									"type": "string"
+								},
+								"model": {
+									"type": "string",
+									"description": "Model override for this step (provider/model-id). Defaults to the global subagent model."
+								},
+								"thinkingLevel": {
+									"type": "string",
+									"enum": [
+										"off",
+										"minimal",
+										"low",
+										"medium",
+										"high",
+										"xhigh",
+										""
+									],
+									"description": "Thinking level override for this subtask. Same values and rules as the call-level thinkingLevel: off, minimal, low, medium, high, xhigh (exact match). An unknown value rejects the whole batch before anything starts. Empty inherits the call-level level."
+								},
+								"priority": {
+									"anyOf": [
+										{
+											"type": "string",
+											"const": "critical"
+										},
+										{
+											"type": "string",
+											"const": "high"
+										},
+										{
+											"type": "string",
+											"const": "normal"
+										},
+										{
+											"type": "string",
+											"const": "low"
+										}
+									],
+									"description": "Concurrency priority for this subtask (overrides the call-level default)."
+								},
+								"cwd": {
+									"type": "string"
+								},
+								"timeout": {
+									"type": "number"
+								},
+								"outputFile": {
+									"type": "string"
+								},
+								"tools": {
+									"type": "array",
+									"items": {
+										"type": "string"
+									}
+								},
+								"excludeTools": {
+									"type": "array",
+									"items": {
+										"type": "string"
+									}
+								},
+								"noBuiltinTools": {
+									"type": "boolean"
+								},
+								"systemPrompt": {
+									"type": "string"
+								},
+								"inheritSystemPrompt": {
+									"type": "boolean"
+								}
+							}
+						},
+						"description": "Parallel tasks to execute concurrently. All tasks run regardless of individual failures. Max 8 tasks."
+					},
+					"graph": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": [
+								"id",
+								"task"
+							],
+							"properties": {
+								"id": {
+									"type": "string",
+									"description": "Unique identifier for this task node"
+								},
+								"task": {
+									"type": "string",
+									"description": "Task description. Use {<nodeId>} to reference output from another task (the referenced node's own id, which must be a word-character id - letters, digits, underscore; ids like 'step-1' or 'node.a' are not matched and the braces are left as literal text)."
+								},
+								"label": {
+									"type": "string"
+								},
+								"model": {
+									"type": "string",
+									"description": "Model override for this step (provider/model-id). Defaults to the global subagent model."
+								},
+								"dependsOn": {
+									"type": "array",
+									"items": {
+										"type": "string"
+									},
+									"description": "IDs of tasks that must complete before this one starts"
+								},
+								"thinkingLevel": {
+									"type": "string",
+									"enum": [
+										"off",
+										"minimal",
+										"low",
+										"medium",
+										"high",
+										"xhigh",
+										""
+									],
+									"description": "Thinking level override for this subtask. Same values and rules as the call-level thinkingLevel: off, minimal, low, medium, high, xhigh (exact match). An unknown value rejects the whole batch before anything starts. Empty inherits the call-level level."
+								},
+								"priority": {
+									"anyOf": [
+										{
+											"type": "string",
+											"const": "critical"
+										},
+										{
+											"type": "string",
+											"const": "high"
+										},
+										{
+											"type": "string",
+											"const": "normal"
+										},
+										{
+											"type": "string",
+											"const": "low"
+										}
+									],
+									"description": "Concurrency priority for this subtask (overrides the call-level default)."
+								},
+								"cwd": {
+									"type": "string"
+								},
+								"timeout": {
+									"type": "number"
+								},
+								"outputFile": {
+									"type": "string"
+								},
+								"tools": {
+									"type": "array",
+									"items": {
+										"type": "string"
+									}
+								},
+								"excludeTools": {
+									"type": "array",
+									"items": {
+										"type": "string"
+									}
+								},
+								"noBuiltinTools": {
+									"type": "boolean"
+								},
+								"systemPrompt": {
+									"type": "string"
+								},
+								"inheritSystemPrompt": {
+									"type": "boolean"
+								}
+							}
+						},
+						"description": "Declare tasks with dependencies. The scheduler parallelizes independent tasks and sequences dependent ones. Max 12 tasks."
+					}
+				}
+			}
+		},
+		"get_subagent_result": {
+			"name": "get_subagent_result",
+			"label": "Get Subagent Result",
+			"description": "Check the status of a background agent and retrieve its result. The conductor is woken with a completion message when the agent finishes; use this for post-wake retrieval, stall checks, and detail access — not for polling. Accepts a full agent id or a unique 8-character id prefix. When the id belongs to a retried run, the answer names the latest attempt; a finished run that was superseded also reports its successor. Returns the agent's status, result (if completed), and transcript path.",
+			"parameters": {
+				"type": "object",
+				"required": [
+					"agent_id"
+				],
+				"properties": {
+					"agent_id": {
+						"type": "string",
+						"description": "The agent ID returned by delegate_task when background=true"
+					},
+					"verbose": {
+						"type": "boolean",
+						"description": "If true, include the full conversation log. Default: false."
+					}
+				}
+			}
+		},
+		"steer_subagent": {
+			"name": "steer_subagent",
+			"label": "Steer Subagent",
+			"description": "Send a steering message to a running background agent. The message is delivered after the agent's current tool call finishes, before its next model call. Use this to redirect an agent's work without restarting it.",
+			"parameters": {
+				"type": "object",
+				"required": [
+					"agent_id",
+					"message"
+				],
+				"properties": {
+					"agent_id": {
+						"type": "string",
+						"description": "The agent ID to steer"
+					},
+					"message": {
+						"type": "string",
+						"description": "The message to inject into the agent's conversation"
+					}
+				}
+			}
+		},
+		"stop_subagent": {
+			"name": "stop_subagent",
+			"label": "Stop Subagent",
+			"description": "Stop a running background agent by aborting its session. The agent's current operation is aborted and the session is marked stopped. Use this to halt a background agent that is no longer needed.",
+			"parameters": {
+				"type": "object",
+				"required": [
+					"agent_id"
+				],
+				"properties": {
+					"agent_id": {
+						"type": "string",
+						"description": "The agent ID to stop"
+					}
+				}
+			}
+		}
+	}
+}

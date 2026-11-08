@@ -11,9 +11,12 @@ import * as path from "node:path";
 import { SUBAGENT_INSTRUCTIONS } from "../prompt";
 import { loadBuiltinPresets, formatPresetRestriction } from "../presets";
 
-// Read source files for static analysis
-const INDEX_SRC = fs.readFileSync(
-	path.resolve(__dirname, "..", "index.ts"),
+// Read source files for static analysis.
+// ADR 0027 (S5): the delegate_task description/promptGuidelines moved to
+// `delegate-handler.ts` with the definition — the pin follows the text, so a
+// guardrail dropped at the new home is still a build failure.
+const DELEGATE_HANDLER_SRC = fs.readFileSync(
+	path.resolve(__dirname, "..", "delegate-handler.ts"),
 	"utf-8",
 );
 
@@ -23,29 +26,29 @@ const INDEX_SRC = fs.readFileSync(
 
 describe("promptGuidelines — conductor guardrails", () => {
 	it("contains the Conductor Guardrails section header", () => {
-		expect(INDEX_SRC).toContain("## Conductor Guardrails");
+		expect(DELEGATE_HANDLER_SRC).toContain("## Conductor Guardrails");
 	});
 
 	it("includes thinking level guidance", () => {
-		expect(INDEX_SRC).toContain("Match thinking level to task complexity");
+		expect(DELEGATE_HANDLER_SRC).toContain("Match thinking level to task complexity");
 	});
 
 	it("includes git mode guidance", () => {
-		expect(INDEX_SRC).toContain("gitMode='branch'");
-		expect(INDEX_SRC).toContain("gitMode='none'");
+		expect(DELEGATE_HANDLER_SRC).toContain("gitMode='branch'");
+		expect(DELEGATE_HANDLER_SRC).toContain("gitMode='none'");
 	});
 
 	it("includes tools verification guidance", () => {
-		expect(INDEX_SRC).toContain("Verify the subagent has the tools it needs");
+		expect(DELEGATE_HANDLER_SRC).toContain("Verify the subagent has the tools it needs");
 	});
 
 	it("includes timeout guidance", () => {
-		expect(INDEX_SRC).toContain("Set timeout based on task complexity");
+		expect(DELEGATE_HANDLER_SRC).toContain("Set timeout based on task complexity");
 	});
 
 	it("references H1 validation in guardrails context", () => {
 		// The guardrails should mention that H1 also validates, for context
-		expect(INDEX_SRC).toContain("validates configuration before spawning");
+		expect(DELEGATE_HANDLER_SRC).toContain("validates configuration before spawning");
 	});
 
 	it("exposes preset tool restrictions in the tool description (B1)", () => {
@@ -70,8 +73,8 @@ describe("promptGuidelines — conductor guardrails", () => {
 		expect(summary).toContain("security-auditor (read-only: excludes write, edit, bash)");
 		expect(summary).toContain("code-reviewer (read-only: excludes write, edit, bash)");
 		// And the guideline text references the computed summary + the warning.
-		expect(INDEX_SRC).toContain("IMPORTANT: some presets restrict tools");
-		expect(INDEX_SRC).toContain("outputFile requires the subagent's write tool");
+		expect(DELEGATE_HANDLER_SRC).toContain("IMPORTANT: some presets restrict tools");
+		expect(DELEGATE_HANDLER_SRC).toContain("outputFile requires the subagent's write tool");
 	});
 });
 
