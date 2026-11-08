@@ -206,6 +206,42 @@ describe("issue #423 — the INITIAL persisted record carries the effective budg
 	});
 });
 
+describe("issue #474 — the persisted record names the spawn cwd", () => {
+	/** The record as `persistAgent` wrote it — NOT the in-memory agent object. */
+	function persistedRecord(id: string): Record<string, unknown> {
+		return JSON.parse(readFileSync(join(env.storageDir, `${id}.json`), "utf8"));
+	}
+
+	it("stamps the RESOLVED cwd on the durable record", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {})); // stays running
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "cwd stamp",
+		});
+
+		expect(agent.cwd).toBe(fakeCtx.cwd);
+		// The mutation target is the PERSISTED field: the completion wake reads the
+		// record, not this returned object, so a stamp that never reaches disk
+		// leaves every failed wake reporting `unavailable (no cwd)`.
+		expect(persistedRecord(agent.id).cwd).toBe(fakeCtx.cwd);
+	});
+
+	it("an explicit params.cwd wins over the context cwd", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const dir = mkdtempSync(join(tmpdir(), "brl-474-cwd-"));
+		try {
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "explicit cwd",
+				cwd: dir,
+			});
+
+			expect(agent.cwd).toBe(dir);
+			expect(persistedRecord(agent.id).cwd).toBe(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("issue #408 — the real SDK-created session dir is repaired owner-only", () => {
 	it("chmods the per-run dir and its session file after createAgentSession", async () => {
 		// The REAL SessionManager creates the per-run dir with the process

@@ -29,6 +29,7 @@ import {
 	__resetTerminalClaims,
 	normalizeCompletionStatus,
 	resolveRunEntry,
+	withWorktreeState,
 } from "../notify-completion";
 
 // ---------------------------------------------------------------------------
@@ -639,5 +640,82 @@ describe("buildCompletionMessage — the budget part (issue #423)", () => {
 		const agent = makeAgent({ status: "failed", startedAt: 1_000, completedAt: 253_000 });
 
 		expect(buildCompletionMessage(agent, makeRun({ status: "failed" })).content).not.toContain("Budget:");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #474: the worktree block in the wake
+// ---------------------------------------------------------------------------
+
+/** The directive a built message closes with (derived, never re-spelled here). */
+function directiveOf(message: { content: string }): string {
+	return message.content.slice(message.content.lastIndexOf("\n\n") + 2);
+}
+
+const BLOCK = [
+	"Worktree state (git, at failure):",
+	"  branch: fix/474-failure-worktree-state",
+	"  dirty:  2 files (+41/−0)",
+	"  staged: 0",
+	"  — uncommitted work may be a partially applied edit or a mutant; inspect before reusing.",
+].join("\n");
+
+describe("withWorktreeState (issue #474)", () => {
+	it("inserts the block BEFORE the closing directive, not after it", () => {
+		const base = buildCompletionMessage(
+			makeAgent({ status: "failed", error: "provider died" }),
+			makeRun({ status: "failed", errorCategory: "exit_error" }),
+		);
+		const directive = directiveOf(base);
+		expect(directive.startsWith("Process this completion silently")).toBe(true);
+
+		const msg = withWorktreeState(base, BLOCK);
+
+		// Mutant killed: appending after the directive would put the block past
+		// the conductor's instruction — `endsWith` makes the position exact.
+		expect(msg.content.endsWith(`${BLOCK}\n\n${directive}`)).toBe(true);
+		expect(msg.content).toBe(`${base.content.slice(0, -(directive.length + 2))}\n\n${BLOCK}\n\n${directive}`);
+		// Everything else is preserved verbatim, directive count included.
+		expect(msg.content.split(directive)).toHaveLength(2);
+		expect(msg.details).toEqual(base.details);
+	});
+
+	it("splits only at the FINAL directive — a tail that CARRIES it is not a split point", () => {
+		// An agent's own tail can contain the WHOLE directive (it may have read it
+		// from an earlier wake). Mutant killed: `indexOf` (the first occurrence)
+		// inserts the block mid-tail, after which the content no longer ends with
+		// the block + directive pair.
+		const directive = directiveOf(
+			buildCompletionMessage(makeAgent({ status: "failed", error: "provider died" }), makeRun({ status: "failed" })),
+		);
+		const base = buildCompletionMessage(
+			makeAgent({ status: "failed", error: "provider died", finalOutput: `notes\n${directive}\n` }),
+			makeRun({ status: "failed", errorCategory: "exit_error" }),
+		);
+		// The quoted copy is really in the wake body: two occurrences, one tail + one closing.
+		expect(base.content.split(directive)).toHaveLength(3);
+
+		const msg = withWorktreeState(base, BLOCK);
+
+		expect(msg.content.endsWith(`${BLOCK}\n\n${directive}`)).toBe(true);
+		expect(msg.content.split(directive)).toHaveLength(3);
+		// The tail's copy survived ahead of the block, unchanged.
+		expect(msg.content.indexOf(directive)).toBeLessThan(msg.content.indexOf(BLOCK));
+	});
+
+	it("returns the message untouched when there is no block", () => {
+		const base = buildCompletionMessage(makeAgent({ status: "completed" }), makeRun());
+		expect(withWorktreeState(base, "")).toBe(base);
+	});
+
+	it("keeps the block when the content does not end with the directive", () => {
+		const base = buildCompletionMessage(makeAgent({ status: "completed" }), makeRun());
+		const reshaped = { ...base, content: `${base.content}\ntrailing note` };
+
+		const msg = withWorktreeState(reshaped, BLOCK);
+
+		// A missing report is the one outcome this must never produce.
+		expect(msg.content.endsWith(`${BLOCK}`)).toBe(true);
+		expect(msg.content).toContain("trailing note");
 	});
 });
