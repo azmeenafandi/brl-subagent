@@ -83,9 +83,13 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   findings body carrying its own line-start field — so verify the file before
   pasting with
   `bash .pi/skills/worktree/merge-guard.sh --check-record /tmp/REVIEW_<n>.md --pr <n> --head <sha>`
-  (offline: no `gh`, no provenance log). The conductor copies the file into the
-  worktree as `REVIEW_PR<n>.md` (and cross-checks it against the final message)
-  instead of transcribing from prose; a missing file is itself a finding to
+  (offline: no `gh`, no provenance log), and then mint the `record:` line with
+  `node scripts/review-record.mjs --verify /tmp/REVIEW_<n>.md` and paste it
+  **verbatim**. **A verdict without that line is incomplete** (#503): it is the
+  only part of a review a third party can recompute. The conductor copies the
+  file into the worktree as `REVIEW_PR<n>.md`, recomputes
+  `sha256sum <path>` against the pasted line, and compares — a line that does
+  not recompute, or a path with no file behind it, is itself a finding to
   raise, not a reason to reconstruct one from memory.
 
 - **Re-run the PR's evidence block before any verdict.** If the body carries a
@@ -101,7 +105,9 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   rev-parse HEAD`, not the sha quoted in the dispatch), findings table
   (severity | `Smell` | file:line | one-liner) — see *Findings by smell key*
   below, verified-OK list, and the efficacy gauge: the count of smell
-  findings, by key (the project-reviewer preset's mirror check feeds it).
+  findings, by key (the project-reviewer preset's mirror check feeds it), and
+  the `record:` line printed by `--verify`, pasted verbatim — the one line the
+  conductor recomputes.
 - Gate A: verify stateful claims (teardown, races, git/fs behavior)
   empirically — scratch repos in /tmp, real commands — do not just read code.
 - **Refactor PRs (moved/renamed/deleted exports):** verify the conductor's
@@ -149,6 +155,20 @@ record.
 same rules, no network and no `gh`. Run it on the generated file before dispatch to the
 conductor; it reports `changes-requested` as well-formed but unmergeable, because that record
 is exactly the one a reviewer must be able to write.
+- **`--verify <file> [--json]` prints the `record:` line** (#503), and that line is the proof:
+
+  ```
+  record: /tmp/REVIEW_412.md · verdict approve-with-nits · head <40-hex> · findings <n> · sha256 <64-hex>
+  ```
+
+  It applies `--check`'s rules plus a head the line can print (7-40 hex — the U2 record's
+  hand-written 41-character head is caught here, exit 1, named `invalid-head`), hashes the
+  file's **bytes** (so the comparison is `sha256sum <path>`, not a re-encoding), and counts
+  findings with the one definition `--check` reads — non-empty, non-header lines in the
+  findings body, with `No findings recorded.` counting zero. Exit 0 valid · 1 named reasons ·
+  2 usage, or a file that is not there (the message names the **resolved** path). The conductor
+  recomputes `sha256sum <path>` and compares: a claim that cannot be recomputed is not evidence,
+  and a missing file is now visible in one line instead of after a `/tmp` listing.
 
 | Line | Required | Checked by |
 |---|---|---|

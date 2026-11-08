@@ -163,6 +163,49 @@ export function recheckRisk(line) {
 	return middle === -1 ? "" : stripped.slice(middle + 2);
 }
 
+/** The generator's explicit empty body — a stated absence, not one finding. */
+export const NO_FINDINGS = "No findings recorded.";
+
+// A line-start ATX heading naming `Findings`, on the RAW line: the body is verbatim, fences included.
+const FINDINGS_HEADING_RE = /^#{1,6}[ \t]*Findings[ \t]*$/i;
+// A markdown table's rule row — only pipes, dashes, colons and spaces.
+const TABLE_RULE_RE = /^\|?[\s:|-]+\|?$/;
+// An ATX heading inside the body (a sub-section, not a finding).
+const ATX_RE = /^#{1,6}(\s|$)/;
+
+/**
+ * The findings body, verbatim: everything after the LAST `## Findings` heading, fences included (a
+ * quoted block in the body is content, not a field), or `[]` when the record has no such heading.
+ */
+export function findingsBody(text) {
+	const lines = String(text).split("\n");
+	let start = -1;
+	for (let index = 0; index < lines.length; index += 1) {
+		if (FINDINGS_HEADING_RE.test(lines[index].trim())) start = index;
+	}
+	return start === -1 ? [] : lines.slice(start + 1);
+}
+
+/**
+ * Non-empty, non-header finding lines in the findings body — the ONE definition of "how many
+ * findings" (#503), exposed on `parseRecord` so `--check` and `--verify` read the same number
+ * instead of each counting for itself. "Header" is the table's own header: the rule row and the row
+ * above it; an ATX heading in the body is not a finding either. The generator's
+ * `No findings recorded.` is a stated absence and counts zero.
+ */
+export function countFindings(text) {
+	const body = findingsBody(text);
+	let count = 0;
+	for (let index = 0; index < body.length; index += 1) {
+		const line = body[index].trim();
+		if (line === "" || line === NO_FINDINGS || ATX_RE.test(line) || TABLE_RULE_RE.test(line)) continue;
+		const next = body[index + 1];
+		if (next !== undefined && TABLE_RULE_RE.test(next.trim())) continue; // the table's header row
+		count += 1;
+	}
+	return count;
+}
+
 /** Everything the gate can read off a record, in one pass. Deterministic, no IO. */
 export function parseRecord(text) {
 	const recheck = lineField(text, FIELD.recheck);
@@ -175,6 +218,7 @@ export function parseRecord(text) {
 		risk: lineField(text, FIELD.risk),
 		recheck,
 		recheckRisk: recheckRisk(recheck),
+		findings: countFindings(text),
 	};
 }
 
@@ -281,6 +325,30 @@ export function checkRecord(text, { pr = "", head = "" } = {}) {
 	}
 
 	return problems;
+}
+
+/**
+ * The `--verify` head rule: the record must state a head a `record:` line can print and a conductor
+ * can compare — 7-40 hex, the generator's own `HEAD_RE`. It is NOT folded into `checkRecord`: the
+ * `--check` rules are frozen (#487, #494) and the gate itself accepts a >=7-char prefix, so this is
+ * `--verify`'s extra requirement (the U2 artifact's hand-written `Reviewed head:` was 41 chars).
+ */
+export function checkHeadShape(text) {
+	const head = parseRecord(text).head;
+	if (head === "") {
+		return [
+			problem("missing-head", `the record carries no "${FIELD.head} <sha>" line — a record: line needs a head`),
+		];
+	}
+	if (!HEAD_RE.test(head)) {
+		return [
+			problem(
+				"invalid-head",
+				`"${FIELD.head} ${head}" is ${String(head).length} characters, not 7-40 hex — that is not a commit sha (the #503/U2 record's 41-character head is this failure)`,
+			),
+		];
+	}
+	return [];
 }
 
 /**
