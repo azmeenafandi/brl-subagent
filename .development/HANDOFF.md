@@ -7,7 +7,7 @@
 
 ## STATE
 Verified: 1619875 (2026-11-08)
-Cycle: the composition-root cycle — **CLOSED 2026-11-08** (S0–S6 + #474); the next cycle is not yet declared
+Cycle: **the generated-artifacts cycle (open 2026-11-08)** — the three Rule 11 P0s (#487/#488/#489) and the generated-artifact tooling that prevents them recurring; U0 sets the two-surface test budget
 
 - **dev** @ `eaf6a2c`. Merged today, in order: #457 (#440), #458 (#436), #459 (#455), #461 (#434), #462 (#439), #463 (#456), #464 (#447), #467 (#453), #470 (#469), #471 (#468), #472 (#465), #473 (#466), PR #475 (`dev → main`, release), then #477 (#476 import guard + normalisation), then #478 (S1 `unit-params.ts`), then #479 (S2 runtime + mode runners), then #480 (#474 failure-path worktree state), then #481 (S3 background pipeline), then #484 (S4 boot recovery + terminal notifier), then #485 (S5 command + tool registrations), then #486 (S6 execute seams). Docs: ADR 0027, the cycle close in `METRICS.md` + `FRICTION_LOG.md`, and the two `## Unreleased` CHANGELOG entries (#474 + the composition root). ADR 0023 (deadline ownership), ADR 0024 (unit projection), ADR 0025 (Jev level as observation), ADR 0026 (headState boot repair), the #453/#460/#466 dossiers. **No worktrees beyond the cockpit pair**; `git worktree list` = `main` + `dev`.
 - **Released:** **v2.8.0 LIVE** (2026-11-08) — GitHub release published `2026-11-08T04:14:51Z`, npm `latest` **2.8.0**, `main` and `dev` both @ `436d56b` (tag `v2.8.0`). **Published-build probe: 70 packed files, every one byte-identical to the tag, zero missing** (`npm pack brl-subagent@2.8.0` against `git archive v2.8.0`). **Release checkpoint CLOSED.** Running install: **local-path dev checkout** (this repo, `dev @ 1619875`, i.e. the unreleased S1–S6 + #474) — the npm install was removed 2026-11-08 for dogfooding; revert with `pi remove <dev path>` → `pi install npm:brl-subagent` → `/reload` (user-triggered).
@@ -38,10 +38,10 @@ Cycle: the composition-root cycle — **CLOSED 2026-11-08** (S0–S6 + #474); th
 - **Budget corrected.** 114 files / **2400** tests, ratio **1.96** (50,773 test / 25,900 source). Headroom is ~**1,027 test lines**, *larger* than before (~470) because #466 grew source by ~900 — the ceiling is a ratio, so source growth buys test capacity. The earlier "last comfortable unit" framing was wrong in direction.
 
 ### Next actions
-1. **Next cycle — the maintainer declares it.** No theme is open. The three Rule 11 P0s (#487/#488/#489) are the recommended first units; #450 is low hardening and #426 needs a direction.
+1. **U0 — the two-surface test budget** (spec approved 2026-11-08): `src` keeps 2.0, `scripts/` gets 1.0, a 1.95 warning band, and an untested-script floor. Then U1 #487 (review-record generator), U2 `handoff-verify`, U3 #488 (PR-evidence generator + the ban list), U4 #489 (metrics reconcile), U5 merge-guard paths + `jev-check --dispatch`. Each unit lands with its generator, tests one command can prove, and a chokepoint wiring so it cannot be skipped.
 2. **Release** — v2.8.0 is the last release (its checkpoint closed). **A checkpoint remains OPEN:** S1–S6 and #474 are merged extension code, unreleased — the published artifact is still 2.8.0. It now rides into the next cycle with its `## Unreleased` entries written. The next release belongs to the maintainer; never propose one unprompted.
 3. **Follow-ups with no issue yet** — the shared `vi.mock("../git")` fixture (three copies; the merge broke one), `spawnBackgroundSession` (~1,100 lines, now a third responsibility), the `branch-lock.ts` extraction the #466 dossier names, and the budget ceiling at 1.99/2.0. None is a defect; all are maintenance hazards.
-4. **Cycle queue** — nothing queued. The composition root is 356 lines; `delegate_task`'s execute is 7; the cycle is closed and its record is in `METRICS.md` + `FRICTION_LOG.md`.
+4. **Cycle queue** — **the generated-artifacts cycle is OPEN.** U0 is approved; U1–U5 are the P0s and the two gate fixes. Non-goals for this cycle: no product behaviour change, no release, #450/#426 stay parked. The release checkpoint (S1–S6 + #474 unreleased) rides into this cycle unchanged.
 
 ## Open items
 - **#426 design-open** — subagent timeouts: soft stage, stall watchdog vs cliff, extension, calibration. Filed 2026-11-03; no direction chosen. Do not implement from it.
