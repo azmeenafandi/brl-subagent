@@ -31,10 +31,10 @@ const SRC = join(ROOT, "src");
 
 /** `src/*.ts` as last re-pointed: 48 at the convention's introduction (issue #476),
  * 49 after `unit-params.ts` (ADR 0027 S1), 51 after `runtime.ts` + `mode-runners.ts`
- * (ADR 0027 S2), 52 after `worktree-report.ts` (issue #474). Re-point it with the
- * commit that adds or removes a module — never to match a scan that silently
- * stopped matching. */
-const SRC_FILE_COUNT = 52;
+ * (ADR 0027 S2), 52 after `worktree-report.ts` (issue #474), 53 after
+ * `background-pipeline.ts` (ADR 0027 S3). Re-point it with the commit that adds or
+ * removes a module — never to match a scan that silently stopped matching. */
+const SRC_FILE_COUNT = 53;
 
 const scratch = mkdtempSync(join(tmpdir(), "brl-476-imports-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
