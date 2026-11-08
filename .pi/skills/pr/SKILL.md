@@ -38,9 +38,30 @@ One short paragraph. Then **at most one** visual, only if it clarifies: a diff-s
 ## 2. Evidence — what proves it works
 
 Paste the REAL command and its observed result (Rule 21 — claims cite evidence);
-show **before → after** where a before exists. Test counts relative to the baseline
-(e.g. "67 files / 1360 tests — was 66/1349"). Execution output is the S-tier here;
+show **before → after** where a before exists. Execution output is the S-tier here;
 screenshots only for TUI-visible change. Never just "tests pass".
+
+### The numbers are generated, not typed (#488)
+
+Every count in the body — changed files, `src/` diff lines, suite files/tests, the two
+budgets — lives in **one block**, and the block is emitted from the tree:
+
+```bash
+node scripts/pr-evidence.mjs --emit --base dev      # paste the output into Evidence
+node scripts/pr-evidence.mjs --apply --pr <n>       # or let it rewrite the block in the PR body
+node scripts/pr-evidence.mjs --check --pr <n>       # before requesting review
+```
+
+`--check` recomputes every key from the repo and names each mismatch
+(`stale-head`, `stale-changed-files`, `stale-src-diff`, `stale-suite`, `stale-budget`).
+Exit 0 clean · 1 drift · 2 usage, or a body that states a count with no block. A docs PR
+with no counts and no block passes — there is nothing to attribute.
+
+**A hand-typed count is a process gap, not a style nit.** Outside the block, a line that
+states a count (`N files`, `N tests`, `N lines`) drifts as `unattributed-count`; quote an
+old value inside a fenced block or a blockquote instead. The `← <command>` half of each
+block line is documentation for the human reviewer — the checker never executes it (§ 488
+non-goal: executing text from a PR body is a code-execution hole).
 
 **Every behavioral PR carries one explicit line in this shape:**
 
@@ -49,9 +70,11 @@ Verification: <command> → <observed result>
 ```
 
 One per claim that matters (typecheck, the suite, the doc guards), e.g.
-`Verification: npx vitest run → 95 files / 1919 tests passed`. The arrow separates the
-command from the result it actually printed, so a reader can tell a run from a
-recollection. If something could not be run, the line says
+`Verification: node scripts/pr-evidence.mjs --check --pr <n> → exit 0`, or
+`Verification: npx tsc --noEmit → 0 errors`. The arrow separates the command from the
+result it actually printed, so a reader can tell a run from a recollection. Suite counts
+stay in the evidence block — never restated in this line. If something could not be run,
+the line says
 `Verification: <check> → not run (<why>)` — silence is not evidence, and "unverified" is
 an honest state while an unmarked claim is not. A review record cites these lines
 (Conductor decision rule 3).
