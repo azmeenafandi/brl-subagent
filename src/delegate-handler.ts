@@ -2183,13 +2183,11 @@ export function createDelegateHandler(
 			// Seam B: sanitize the single-task body, then classify the shape.
 			const shape = resolveShape(params, log);
 			if (!shape.ok) return shape.result;
-			const { isChain, isParallel, isGraph, dispatchShape } = shape.value;
 
 			// Seam C: the #412 pre-flight, the background default and the #434
 			// unit-projection inputs — one resolution per dispatch.
 			const prepared = prepareShape(params, shape.value, { state, ctx, pi, log });
 			if (!prepared.ok) return prepared.result;
-			const { useBackground, batchGuard } = prepared.value;
 
 			// Seam D: hand the dispatch to the injected runner, or keep the single
 			// foreground run below. The runner's own promise is RETURNED, never
@@ -2216,25 +2214,6 @@ export function createDelegateHandler(
 			// every rejection here returns without persisting anything.
 			const admitted = prepareForeground(params, singleTask, { state, ctx, log });
 			if (!admitted.ok) return admitted.result;
-			const {
-				task,
-				label,
-				inheritSP,
-				customSP,
-				timeout,
-				thinkingLevel,
-				toolOptions,
-				resolvedGitMode,
-				resolvedApprovalMode,
-				resolvedPreset,
-				autoRoutedPreset,
-				autoRouteKeyword,
-				resolvedCwd,
-				resolvedOutputFile,
-				warningsNote,
-				subagentModel,
-				currentDepth,
-			} = admitted.value;
 
 			// Seam F–L: the single foreground run. Everything that outlives this
 			// call — the run record, the work branch, the slot, the child process,
