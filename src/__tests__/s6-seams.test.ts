@@ -1228,6 +1228,26 @@ describe("seam G — the work branch and its durable record", () => {
 		expect(listHeadStates()).toHaveLength(0);
 	});
 
+	it("cleanup keeps the durable record when ITS OWN restore fails (crash path)", async () => {
+		const h = makeHarness();
+		git.restoreFails = true;
+		runner.runSubagent.mockRejectedValue(new Error("boom"));
+
+		const result = await h.tool.execute(
+			"call-g",
+			{ task: "summarize the design notes", gitMode: "branch" } as never,
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+
+		// The cleanup closure is the only teardown the crash path reaches: a
+		// failed restore there must leave the record that names the base.
+		expect(result.isError).toBe(true);
+		expect(git.calls).toContain("deleteBranch");
+		expect(listHeadStates()).toHaveLength(1);
+	});
+
 	it("keeps the durable record when the restore fails (the base lives only there)", async () => {
 		const h = makeHarness();
 		git.restoreFails = true;
