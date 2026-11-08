@@ -444,6 +444,39 @@ mechanics, verdict format: `references/review-dispatch.md`.
 
 ## When to use each script
 
+- **`run.sh [--filter '<trusted shell>'] [--stderr] [--require-filter|--allow-filter-failure]
+  [--quiet] -- <command> [args...]`** — wrap EVERY command whose exit status you are about to
+  read through a filter (issue #504). `cmd | tail -2; echo $?` reports **`tail`'s** status, not
+  the command's: two such measurements certified four failing review records as exit 0 (U1), and
+  a tool that had exited 1 was reported as 0 (U4). The helper streams the output unchanged, pipes
+  it through the filter, and returns the **command's** status (from `PIPESTATUS[0]`, because
+  `pipefail` alone returns the rightmost non-zero — not the command's):
+
+  ```bash
+  bash .pi/skills/worktree/run.sh --filter 'tail -2' --stderr -- \
+    bash .pi/skills/worktree/merge-guard.sh --check-record /tmp/REVIEW_<n>.md   # exit 1 = rejected
+  bash .pi/skills/worktree/run.sh --filter 'tail -1' -- node scripts/handoff-verify.mjs  # 1 = drift
+  bash .pi/skills/worktree/run.sh --quiet --require-filter --filter 'grep -q "^record:"' -- \
+    node scripts/review-record.mjs --verify /tmp/REVIEW_<n>.md                 # the filter IS the check
+  ```
+
+  `--stderr` merges `2>&1` **before** the filter — diagnostics are usually stderr-only (the
+  malformed review records print 0 bytes on stdout and ~318 on stderr, so a stdout-only filter
+  shows nothing and looks clean). `--require-filter` makes a non-zero filter the exit status (the
+  opt-in for "the filter is the check"); `--allow-filter-failure` keeps the default and suppresses
+  the warning for a presentation-only filter expected to miss; `--quiet` drops the `$ <command>`
+  echo, never a diagnostic. **A non-zero filter is loud by default** — `run: filter exited <n>` on
+  stderr naming both statuses — because the default status is the command's and a vacuous `grep`
+  would otherwise look like a pass. Usage is 64 and not-found 127, both tagged `run:` so a helper
+  failure is never mistaken for a child that legitimately exits 64/127. A producer killed by a
+  broken pipe is reported as the producer's own status (141 under SIGPIPE on a normal shell; a
+  runner with SIGPIPE ignored reports its own non-zero) — never "completed normally". `--selftest`
+  proves the whole table (CI runs it beside the Jev and sprint-metrics selftests).
+
+  **Never put the pipe outside the helper.** `run -- cmd | filter; echo $?` — and
+  `run --filter '<f>' -- cmd | filter` — re-read the FILTER's status and re-open the exact defect
+  the helper exists to close. The filter goes INSIDE `--filter`; the status is the helper's exit
+  code.
 - **`check-repo.sh`** — before ANY worktree creation. If it fails, fix the
   cockpit checkout first (`npm ci` once, only while no worktree is linked; or
   `git pull --rebase`). Never create a worktree on a broken source of truth.

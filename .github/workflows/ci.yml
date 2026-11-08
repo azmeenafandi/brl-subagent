@@ -55,3 +55,11 @@ jobs:
       # Permanent guard for the sprint-metrics window parser (issue #336): a
       # time-suffixed bound must not silently drop its day (pre-fix: 22 vs 68).
       - run: python3 .pi/skills/worktree/sprint-metrics.py --selftest
+      # The `run` helper (issue #504): a command's exit status must survive its filter. Two
+      # `cmd | tail` / `cmd | grep` measurements, then `echo $?`, certified four FAILING review
+      # records as exit 0 (U1) and reported 0 for a tool that exited 1 (U4) — the status read
+      # was the filter's. This runs the whole table: command status vs filter status, a vacuous
+      # filter (loud by default, authoritative under --require-filter), a broken filter, SIGPIPE
+      # (141), --stderr routing, literal argv, the 64/127 overlap — plus both incidences as
+      # named cases with the pre-helper control beside the fix.
+      - run: bash .pi/skills/worktree/run.sh --selftest
