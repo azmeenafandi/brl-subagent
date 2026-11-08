@@ -116,10 +116,11 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `tui-format.ts` | Pure TUI row formatting shared by the monitor and dashboard (no TUI imports). |
 | `tui.ts` | All TUI surfaces: config menus, preset/template managers, history, live monitor, and result rendering. |
 | `types.ts` | Shared types, constants, and the error/termination classification taxonomy. |
+| `unit-params.ts` | The per-unit param merge (SubTask over global) and the unit display name, shared by chain/parallel/graph and the background fan-out. |
 | `unit-run.ts` | Per-unit run-entry helpers shared by chain, parallel, and graph modes. |
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 
-**48 modules** — every one is listed because a new module without a purpose fails CI.
+**49 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
