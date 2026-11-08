@@ -509,6 +509,22 @@ describe("valid declarations keep their behaviour", () => {
 		expect(foregroundLaunches()).toEqual([{ level: "low" }]);
 	});
 
+	it("graph: a node's declared level is still clamped by the configured cap", async () => {
+		// The per-mode merges pass `state.config.maxThinkingLevel` as the cap;
+		// the graph merge is the one whose cap argument was unpinned — fixing it
+		// to a literal ("xhigh") left every targeted suite passing, because no
+		// test drove a graph node that both declares a level and exceeds the
+		// cap. Cap `low` vs node `xhigh` is the widest gap that a global `low`
+		// cannot produce by accident: the merged level must be the CAP, so a
+		// fixed cap reports the node's own `xhigh` instead.
+		await seedConfig({ maxThinkingLevel: "low" });
+		await dispatch({
+			graph: [{ id: "n1", task: "read one file and answer inline", thinkingLevel: "xhigh", dependsOn: [] }],
+			background: false,
+		});
+		expect(foregroundLaunches()).toEqual([{ level: "low" }]);
+	});
+
 	it("still treats an omitted level as the configured maximum", async () => {
 		await seedConfig({ maxThinkingLevel: "medium" });
 		await dispatch({ task: "read one file and answer inline", background: false });
