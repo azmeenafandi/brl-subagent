@@ -92,6 +92,23 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   not recompute, or a path with no file behind it, is itself a finding to
   raise, not a reason to reconstruct one from memory.
 
+  **Read that exit code through the helper, never through a pipe** (#504). The record check,
+  `pr-evidence --check` and `handoff-verify` all answer with a status, and
+  `cmd | tail -2; echo $?` answers with **`tail`'s** 0 — the defect that certified four failing
+  records as passes (U1) and reported 0 for a tool that exited 1 (U4). The filter goes INSIDE
+  `--filter`; the helper returns the command's status:
+
+  ```bash
+  bash .pi/skills/worktree/run.sh --filter 'tail -2' --stderr -- \
+    bash .pi/skills/worktree/merge-guard.sh --check-record /tmp/REVIEW_<n>.md --pr <n> --head <sha>
+  bash .pi/skills/worktree/run.sh --filter 'tail -1' -- \
+    node scripts/pr-evidence.mjs --check --pr <n> --base dev     # exit 0 is the required evidence
+  ```
+
+  `run -- cmd | filter; echo $?` is **prohibited**: a pipe outside the helper re-reads the
+  filter's status. `--stderr` is what makes the stderr-only diagnostics visible to the filter;
+  `--require-filter` is for when the filter (`grep -q`) *is* the check.
+
 - **Re-run the PR's evidence block before any verdict.** If the body carries a
   `<!-- pr-evidence:begin -->` block, run
   `node scripts/pr-evidence.mjs --check --pr <n> --base dev` and paste the exit
