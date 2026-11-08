@@ -27,6 +27,17 @@
 //                   `docs-decisions`).
 //   7 file-size     every `` `name.ts` <n> `` claim in STATE equals `wc -l` of that file.
 //
+// A single-value claim (dev, modules, ADRs) may be STATED MORE THAN ONCE — the shape an edit leaves when
+// it adds a line instead of replacing one. Every occurrence is a claim, exactly as for file sizes, so a
+// duplicate that agrees is one ✓ and a duplicate that DISAGREES is a named drift, never a silent
+// first-wins. (`Open:` is last-wins by the record-fields convention; `Verified:`, the install line and
+// `Suite:` are single-line fields.)
+//
+// OUT OF SCOPE BY DESIGN: narrative claims — the cycle queue, `### Next actions` and the
+// `### Since the last handover` bullets. They are prose, and the only mechanical reading of them is a
+// guess at which queue item is "current"; a heuristic there would fail closed on a legitimate rewrite,
+// which is a worse trade than a human reading three lines. The spec's non-goals say the same.
+//
 // The drift codes, one per failure mode (the fixtures pin them):
 //   verified-missing · verified-not-ancestor · verified-drift
 //   dev-claim-missing · dev-sha-drift
@@ -114,7 +125,7 @@ export function stateSection(text) {
 const VERIFIED_RE = new RegExp(`^Verified:[ \\t]*(${SHA})\\b`, "m");
 // `dev @ <sha>` at line start, after an optional bullet — the shape of the STATE's dev line. The install
 // line's own `dev @ <sha>` is mid-line, so it can never be mistaken for this one.
-const DEV_RE = new RegExp(`^[ \\t]*[-*][ \\t]+\\**dev\\**[ \\t]*@[ \\t]*\`?(${SHA})`, "m");
+const DEV_RE = new RegExp(`^[ \\t]*[-*][ \\t]+\\**dev\\**[ \\t]*@[ \\t]*\`?(${SHA})`, "gm");
 const INSTALL_LINE_RE = /Running install:/g;
 const INSTALL_SHA_RE = new RegExp(`dev[ \\t]*@[ \\t]*\`?(${SHA})`);
 // `Open:` as a CLAIM, not as a mention: the write-side vocabulary quotes the field ("the `Open:` list
@@ -122,8 +133,11 @@ const INSTALL_SHA_RE = new RegExp(`dev[ \\t]*@[ \\t]*\`?(${SHA})`);
 // the record-fields convention.
 const OPEN_RE = /(?<!`)\bOpen:[ \t]*(.+)$/gm;
 const SUITE_RE = new RegExp(`\\bSuite:[ \\t]*\\**\\s*(\\d+)[ \\t]+files?[ \\t]*/[ \\t]*\\**\\s*([\\d,]+)`);
-const MODULES_RE = /\b(\d+)[ \t]+modules\b/;
-const ADRS_RE = /\b(\d+)[ \t]+ADRs\b/;
+// Every occurrence is a claim, so a historical mention must not be one: `18/48 modules import the same
+// specifier twice` states a ratio, not a module count, and the `/` before the number is what says so — the
+// same exclusions the size regex makes by lookahead.
+const MODULES_RE = /(?<![\d/])\b(\d+)[ \t]+modules\b/g;
+const ADRS_RE = /(?<![\d/])\b(\d+)[ \t]+ADRs\b/g;
 // `` `name.ts` (is) **N** ``, but never a historical shape: `**2,006 → 353**`, `5+/2−`, or `(1,429)`
 // (a parenthesis breaks the immediate-number rule). The lookahead is what keeps history out of a
 // current-size check.
@@ -142,6 +156,11 @@ function lastMatch(re, text) {
 	let found = null;
 	for (const match of text.matchAll(re)) found = match;
 	return found;
+}
+
+/** Every occurrence of a repeatable claim, in document order — the list a check iterates one by one. */
+function allMatches(re, text) {
+	return [...text.matchAll(re)].map((match) => match[1]);
 }
 
 /**
@@ -191,30 +210,28 @@ export function parseOpen(section) {
 }
 
 /**
- * Every mechanical claim §STATE makes, in one pass. An absent claim is `null` (a drift: a mechanical claim
- * that vanished is a claim the next session cannot check), not an error — the caller decides.
+ * Every mechanical claim §STATE makes, in one pass. An absent claim is `null` — or `[]` for the
+ * repeatable ones (`dev`, `modules`, `adrs`, `sizes`), which is a drift too: a mechanical claim that
+ * vanished is a claim the next session cannot check. Not an error — the caller decides.
  */
 export function parseClaims(text) {
 	const section = stateSection(text);
 	if (section === null) {
-		return { state: null, verified: null, dev: null, install: null, open: null, suite: null, modules: null, adrs: null, sizes: [] };
+		return { state: null, verified: null, dev: [], install: null, open: null, suite: null, modules: [], adrs: [], sizes: [] };
 	}
 	const verified = VERIFIED_RE.exec(section);
-	const dev = DEV_RE.exec(section);
 	const suite = SUITE_RE.exec(section);
-	const modules = MODULES_RE.exec(section);
-	const adrs = ADRS_RE.exec(section);
 	const sizes = [];
 	for (const match of section.matchAll(SIZE_RE)) sizes.push({ name: match[1], lines: parseCount(match[2]) });
 	return {
 		state: section,
 		verified: verified === null ? null : { sha: verified[1] },
-		dev: dev === null ? null : { sha: dev[1] },
+		dev: allMatches(DEV_RE, section),
 		install: parseInstall(section),
 		open: parseOpen(section),
 		suite: suite === null ? null : { files: Number(suite[1]), tests: parseCount(suite[2]) },
-		modules: modules === null ? null : Number(modules[1]),
-		adrs: adrs === null ? null : Number(adrs[1]),
+		modules: allMatches(MODULES_RE, section).map(Number),
+		adrs: allMatches(ADRS_RE, section).map(Number),
 		sizes,
 	};
 }
@@ -282,25 +299,38 @@ function checkVerified(claims, probe) {
 	return pass(`Verified: ${sha}`, `Verified: ${sha} — an ancestor of HEAD; no non-handoff commit on dev after it`);
 }
 
+/**
+ * A claim stated more than once, appended to the drift sentence: `(the STATE states 58 and 59)`. Without
+ * it a disagreeing duplicate would read as a plain mismatch and hide the second line that caused it.
+ */
+function repeated(values) {
+	return values.length < 2 ? "" : ` (the STATE states ${values.join(" and ")})`;
+}
+
+/** One result per `dev @ <sha>` line: a duplicate that agrees passes twice, one that disagrees drifts. */
 function checkDev(claims, probe) {
 	const devSha = probe.devSha();
-	if (claims.dev === null) {
-		return drift(
-			CODES.devClaimMissing,
-			"dev @ <sha>",
-			`a dev line naming ${short(devSha)}`,
-			"none",
-			"the STATE has no `dev @ <sha>` line, so the snapshot names no dev tip",
-		);
+	if (claims.dev.length === 0) {
+		return [
+			drift(
+				CODES.devClaimMissing,
+				"dev @ <sha>",
+				`a dev line naming ${short(devSha)}`,
+				"none",
+				"the STATE has no `dev @ <sha>` line, so the snapshot names no dev tip",
+			),
+		];
 	}
-	const { sha } = claims.dev;
-	if (sameRevision(sha, devSha)) return pass(`dev @ ${sha}`, `dev @ ${sha} — git rev-parse dev`);
-	return drift(
-		CODES.devShaDrift,
-		`dev @ ${sha}`,
-		devSha,
-		sha,
-		`the STATE claims dev @ ${sha} but git rev-parse dev is ${devSha} — the dev line is a snapshot of another tip`,
+	return claims.dev.map((sha) =>
+		sameRevision(sha, devSha)
+			? pass(`dev @ ${sha}`, `dev @ ${sha} — git rev-parse dev`)
+			: drift(
+					CODES.devShaDrift,
+					`dev @ ${sha}`,
+					devSha,
+					sha,
+					`the STATE claims dev @ ${sha} but git rev-parse dev is ${devSha} — the dev line is a snapshot of another tip${repeated(claims.dev)}`,
+				),
 	);
 }
 
@@ -409,24 +439,32 @@ function checkSuite(claims, probe) {
 	);
 }
 
-/** The shared half of checks 6: one claimed count against the repo's own counter, one named reason each. */
+/**
+ * The shared half of checks 6: each claimed count against the repo's own counter, one named reason each —
+ * one result per occurrence, so a repeated claim is checked rather than silently first-wins.
+ */
 function compareCount(claimed, actual, { label, missingCode, driftCode, source }) {
-	if (claimed === null) {
-		return drift(
-			missingCode,
-			`${label}: <n>`,
-			`a "${label}" count`,
-			"none",
-			`the STATE states no ${label} count, so the snapshot names no ${label} total`,
-		);
+	if (claimed.length === 0) {
+		return [
+			drift(
+				missingCode,
+				`${label}: <n>`,
+				`a "${label}" count`,
+				"none",
+				`the STATE states no ${label} count, so the snapshot names no ${label} total`,
+			),
+		];
 	}
-	if (claimed === actual) return pass(`${claimed} ${label}`, `${claimed} ${label} — ${source}`);
-	return drift(
-		driftCode,
-		`${claimed} ${label}`,
-		String(actual),
-		String(claimed),
-		`the STATE claims ${claimed} ${label} but ${source} counts ${actual}`,
+	return claimed.map((value) =>
+		value === actual
+			? pass(`${value} ${label}`, `${value} ${label} — ${source}`)
+			: drift(
+					driftCode,
+					`${value} ${label}`,
+					String(actual),
+					String(value),
+					`the STATE claims ${value} ${label} but ${source} counts ${actual}${repeated(claimed)}`,
+				),
 	);
 }
 
@@ -480,12 +518,12 @@ export function evaluate(claims, probe, options = {}) {
 	const context = { noNetwork: options.noNetwork === true, injected: options.issuesInjected === true };
 	const results = [
 		checkVerified(claims, probe),
-		checkDev(claims, probe),
+		...checkDev(claims, probe),
 		checkInstall(claims, probe),
 		checkOpenSet(claims, probe, context),
 		checkSuite(claims, probe),
-		checkModules(claims, probe),
-		checkAdrs(claims, probe),
+		...checkModules(claims, probe),
+		...checkAdrs(claims, probe),
 		...checkSizes(claims, probe),
 	];
 	const drifts = results

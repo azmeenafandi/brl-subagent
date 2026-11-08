@@ -20,11 +20,13 @@
  * surface's LOC ceiling, and grep-able when a shape costs a handover.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createRepoProbe, EXIT, findNewestReport, main, parseArgs, parseRangeLog, readIssues, readSuiteReport, resolveModulePath, ROOT } from "../handoff-verify.mjs";
+import { collectDecisions } from "../docs-decisions.mjs";
+import { collectModules } from "../docs-arch.mjs";
 import {
 	CODES,
 	InputError,
@@ -107,13 +109,13 @@ describe("handoff-verify — the parser", () => {
 	it("reads every mechanical claim out of the correct fixture", () => {
 		const claims = claimsOf("correct");
 		expect(claims.verified).toEqual({ sha: "4c1d9ab" });
-		expect(claims.dev).toEqual({ sha: "4c1d9ab" });
+		expect(claims.dev).toEqual(["4c1d9ab"]);
 		expect(claims.install?.sha).toBe("4c1d9ab");
 		expect(claims.install?.path).toEqual({ kind: "repo" });
 		expect(claims.open).toEqual([426, 450]);
 		expect(claims.suite).toEqual({ files: 2, tests: 12 });
-		expect(claims.modules).toBe(58);
-		expect(claims.adrs).toBe(27);
+		expect(claims.modules).toEqual([58]);
+		expect(claims.adrs).toEqual([27]);
 		expect(claims.sizes).toEqual([
 			{ name: "alpha.ts", lines: 10 },
 			{ name: "beta.ts", lines: 3 },
@@ -124,13 +126,16 @@ describe("handoff-verify — the parser", () => {
 		const claims = parseClaims(readFileSync(join(ROOT, ".development", "HANDOFF.md"), "utf8"));
 		expect(claims.state).not.toBeNull();
 		expect(claims.verified?.sha).toMatch(/^[0-9a-f]{7,40}$/);
-		expect(claims.dev?.sha).toMatch(/^[0-9a-f]{7,40}$/);
+		expect(claims.dev).toHaveLength(1);
+		expect(claims.dev[0]).toMatch(/^[0-9a-f]{7,40}$/);
 		expect(claims.install).not.toBeNull();
 		expect(claims.open?.length).toBeGreaterThan(0);
 		expect(claims.suite?.files).toBeGreaterThan(0);
 		expect(claims.suite?.tests).toBeGreaterThan(0);
-		expect(claims.modules).toBeGreaterThan(0);
-		expect(claims.adrs).toBeGreaterThan(0);
+		expect(claims.modules).toHaveLength(1);
+		expect(claims.modules[0]).toBeGreaterThan(0);
+		expect(claims.adrs).toHaveLength(1);
+		expect(claims.adrs[0]).toBeGreaterThan(0);
 		expect(claims.sizes.length).toBeGreaterThan(0);
 		// Every size claim names a file this checkout really has, resolved the way the check resolves it.
 		for (const size of claims.sizes) expect(resolveModulePath(ROOT, size.name)).not.toBeNull();
@@ -158,6 +163,45 @@ describe("handoff-verify — the parser", () => {
 		// `PR #402 held` is a PR, not an issue; `#488/#489` is two issues.
 		const claims = parseClaims(["## STATE", "Verified: 4c1d9ab", "- **dev** @ `4c1d9ab`.", "Open: **#488/#489**, PR #402 held."].join("\n"));
 		expect(claims.open).toEqual([488, 489]);
+	});
+
+	it("collects a repeated single-value claim instead of silently taking the first", () => {
+		// The shape an edit leaves when it ADDS a line instead of replacing one: dev, modules and ADRs are
+		// collected like the size claims, so the second value is checked instead of being dropped.
+		const agreeing = parseClaims(
+			[
+				"## STATE",
+				"Verified: 4c1d9ab",
+				"- **dev** @ `4c1d9ab`.",
+				"- **dev** @ `4c1d9ab`.",
+				"**58 modules**, **58 modules**, **27 ADRs**, **27 ADRs**",
+			].join("\n"),
+		);
+		expect(agreeing.dev).toEqual(["4c1d9ab", "4c1d9ab"]);
+		expect(agreeing.modules).toEqual([58, 58]);
+		expect(agreeing.adrs).toEqual([27, 27]);
+		const disagreeing = parseClaims(
+			[
+				"## STATE",
+				"Verified: 4c1d9ab",
+				"- **dev** @ `4c1d9ab`.",
+				"- **dev** @ `deadbee1`.",
+				"**58 modules**, **59 modules**, **27 ADRs**, **28 ADRs**",
+			].join("\n"),
+		);
+		expect(disagreeing.dev).toEqual(["4c1d9ab", "deadbee1"]);
+		expect(disagreeing.modules).toEqual([58, 59]);
+		expect(disagreeing.adrs).toEqual([27, 28]);
+	});
+
+	it("never reads a divided number as a modules/ADRs claim", () => {
+		// `18/48 modules` states a ratio (how many modules import a specifier twice), not a module count. A
+		// collect-all regex that ignored the `/` would drift on that historical bullet.
+		const claims = parseClaims(
+			["## STATE", "Verified: 4c1d9ab", "- **dev** @ `4c1d9ab`.", "**58 modules**, **27 ADRs**", "18/48 modules import `./types` twice."].join("\n"),
+		);
+		expect(claims.modules).toEqual([58]);
+		expect(claims.adrs).toEqual([27]);
 	});
 
 	it("stops the STATE section at the next level-2 heading", () => {
@@ -250,6 +294,31 @@ describe("handoff-verify — the verdict, check by check", () => {
 		expect(drifts.map((drift) => drift.code)).toEqual([CODES.devShaDrift]);
 		expect(drifts[0].expected).toBe(DEV);
 		expect(drifts[0].actual).toBe("deadbee1");
+	});
+
+	it("passes a duplicate dev line that agrees and names the one that disagrees", () => {
+		// The crafted STATE the review used: `4c1d9ab` then `deadbee1`. First-wins parsed the good line and
+		// reported only an unrelated drift, which is why the second value has to be checked.
+		const dupe = (name: string, from: string, to: string) => parseClaims(text(name).replace(from, to));
+		const agreeing = evaluate(dupe("correct", "- **dev** @ `4c1d9ab`.", "- **dev** @ `4c1d9ab`.\n- **dev** @ `4c1d9ab`."), stub());
+		expect(agreeing.drifts).toEqual([]);
+		const disagreeing = evaluate(dupe("correct", "- **dev** @ `4c1d9ab`.", "- **dev** @ `4c1d9ab`.\n- **dev** @ `deadbee1`."), stub());
+		expect(disagreeing.drifts.map((drift) => drift.code)).toEqual([CODES.devShaDrift]);
+		expect(disagreeing.drifts[0].expected).toBe(DEV);
+		expect(disagreeing.drifts[0].actual).toBe("deadbee1");
+		expect(disagreeing.results.find((result: { ok: boolean }) => !result.ok).line).toContain("states 4c1d9ab and deadbee1");
+	});
+
+	it("treats a repeated modules/ADRs count the same way: agreeing is no drift, disagreeing is named", () => {
+		const withExtra = (extra: string) => parseClaims(text("correct").replace("**58 modules**, **27 ADRs**", `**58 modules**, **27 ADRs**, ${extra}`));
+		expect(evaluate(withExtra("**58 modules**"), stub()).drifts).toEqual([]);
+		expect(evaluate(withExtra("**27 ADRs**"), stub()).drifts).toEqual([]);
+		const modules = evaluate(withExtra("**59 modules**"), stub()).drifts;
+		expect(modules.map((drift) => drift.code)).toEqual([CODES.modulesDrift]);
+		expect(modules[0].actual).toBe("59");
+		const adrs = evaluate(withExtra("**28 ADRs**"), stub()).drifts;
+		expect(adrs.map((drift) => drift.code)).toEqual([CODES.adrsDrift]);
+		expect(adrs[0].actual).toBe("28");
 	});
 
 	it("names install-missing for a recipe pointing at a tree that is gone", () => {
@@ -481,11 +550,11 @@ describe("handoff-verify — the seams", () => {
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-verify-"));
 		const file = join(dir, "issues.json");
 		writeFileSync(file, JSON.stringify([{ number: 426 }, { number: 450 }]));
-		expect(readIssues({ root: dir, issuesPath: file })).toEqual([426, 450]);
+		expect(readIssues({ root: dir, issues: file })).toEqual([426, 450]);
 		writeFileSync(file, JSON.stringify([450, 426]));
-		expect(readIssues({ root: dir, issuesPath: file })).toEqual([450, 426]);
+		expect(readIssues({ root: dir, issues: file })).toEqual([450, 426]);
 		writeFileSync(file, JSON.stringify({ not: "an array" }));
-		expect(() => readIssues({ root: dir, issuesPath: file })).toThrow(InputError);
+		expect(() => readIssues({ root: dir, issues: file })).toThrow(InputError);
 	});
 
 	it("parses a git range log, keeping both sides of a rename", () => {
@@ -517,7 +586,7 @@ describe("handoff-verify — the seams", () => {
 		git("commit", "-qm", "handoff");
 		const handoffSha = git("rev-parse", "HEAD").stdout.trim();
 
-		const probe = createRepoProbe(dir, { reportPath: REPORT });
+		const probe = createRepoProbe(dir, { report: REPORT });
 		expect(probe.devSha()).toBe(handoffSha);
 		expect(probe.headSha()).toBe(handoffSha);
 		expect(probe.isAncestor(base)).toBe(true);
@@ -545,5 +614,128 @@ describe("handoff-verify — the seams", () => {
 		expect(rename.paths).toContain("foreign.txt");
 		expect(isHandoffOwnCommit(rename)).toBe(false);
 		expect(foreignSha).not.toBe(renameSha);
+	});
+});
+
+/**
+ * The CLI seam — a REAL process, because that is the gap the review found: `--report` and `--issues` were
+ * parsed, then dropped between `main` and `createRepoProbe` (the two sides named the options differently),
+ * and every test above passed because `main`'s probe was a stub. A test through `io.probe` cannot see a
+ * flag that never reaches the probe, so these spawn the script itself.
+ */
+describe("handoff-verify — the CLI seam", () => {
+	const SCRIPT = join(ROOT, "scripts", "handoff-verify.mjs");
+
+	function runCli(argv: string[], env: Record<string, string> = {}): Run {
+		const result = spawnSync(process.execPath, [SCRIPT, ...argv], { encoding: "utf8", env: { ...process.env, ...env } });
+		return { code: result.status ?? -1, out: result.stdout ?? "", err: result.stderr ?? "" };
+	}
+
+	/**
+	 * A handoff that is TRUE of THIS checkout — the live dev tip and the counts the repo's own generators
+	 * report — so the only drift a CLI run can print is the one a test injects. A fixture would drift on its
+	 * own stale values and the assertion could not tell the injected fact from them.
+	 */
+	function liveHandoff({ suite, open }: { suite: string; open: string }): string {
+		const dev = spawnSync("git", ["-C", ROOT, "rev-parse", "dev"], { encoding: "utf8" }).stdout.trim();
+		const modules = collectModules().length;
+		const adrs = collectDecisions().length;
+		return [
+			"## STATE",
+			`Verified: ${dev} (2026-11-08)`,
+			"Cycle: fixture cycle.",
+			"",
+			`- **dev** @ \`${dev}\`. The live dev tip.`,
+			`- **Released:** nothing. Running install: **local-path dev checkout** (this repo, \`dev @ ${dev}\`).`,
+			`- **Board:** Open: ${open}, PR #402 held.`,
+			`- **Suite:** ${suite} green on dev; docs guards current (**${modules} modules**, **${adrs} ADRs**).`,
+		].join("\n");
+	}
+
+	/** Only the `✗` lines — a drift test that counted `✓` too would pass on a clean run. */
+	function failures(result: Run): string[] {
+		return result.out.split("\n").filter((line) => line.startsWith("✗"));
+	}
+
+	it("honours --report over the newest /tmp report, and fails with the INJECTED counts", () => {
+		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-cli-"));
+		const injected = join(dir, "injected.json");
+		// 3 files / 7 tests — nothing in /tmp looks like this, which is the point.
+		writeFileSync(injected, JSON.stringify({ numPassedTests: 7, testResults: [{}, {}, {}] }));
+		// The newest parseable report directly under the default scan root: the value `--report` was silently
+		// losing to. Its mtime is in the future so it wins the scan deterministically.
+		const planted = join(tmpdir(), `brl-handoff-verify-planted-${process.pid}.json`);
+		writeFileSync(planted, JSON.stringify({ numPassedTests: 99, testResults: Array.from({ length: 11 }, () => ({})) }));
+		const future = new Date(Date.now() + 3_600_000);
+		utimesSync(planted, future, future);
+		try {
+			const handoff = join(dir, "HANDOFF.md");
+			writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
+			const result = runCli(["--file", handoff, "--report", injected, "--no-network"]);
+			expect(result.code).toBe(EXIT.DRIFT);
+			expect(failures(result)).toHaveLength(1);
+			expect(failures(result)[0]).toContain(CODES.suiteCountDrift);
+			expect(failures(result)[0]).toContain("3 files / 7 tests");
+			expect(failures(result)[0]).toContain(`the vitest report at ${injected}`);
+			expect(failures(result)[0]).not.toContain(planted);
+		} finally {
+			rmSync(planted, { force: true });
+		}
+	});
+
+	it("honours --issues without ever invoking gh, and fails with the INJECTED board", () => {
+		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-cli-"));
+		// A board that matches no live issue list, so a run that reached `gh` could not print it.
+		const issues = join(dir, "issues.json");
+		writeFileSync(issues, JSON.stringify([{ number: 777 }, { number: 778 }]));
+		// `gh` on PATH is a shim that leaves a mark: the proof is the absent marker, not the exit code.
+		const bin = join(dir, "bin");
+		mkdirSync(bin);
+		const marker = join(dir, "gh-was-called");
+		writeFileSync(join(bin, "gh"), `#!/bin/sh\necho "$@" >> "${marker}"\nexit 1\n`, { mode: 0o755 });
+		const report = join(dir, "suite.json");
+		writeFileSync(report, JSON.stringify({ numPassedTests: 40, testResults: [{}, {}] }));
+		const handoff = join(dir, "HANDOFF.md");
+		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
+
+		const result = runCli(["--file", handoff, "--report", report, "--issues", issues], { PATH: `${bin}:${process.env.PATH ?? ""}` });
+		expect(existsSync(marker)).toBe(false);
+		expect(result.code).toBe(EXIT.DRIFT);
+		expect(failures(result)).toHaveLength(1);
+		expect(failures(result)[0]).toContain(CODES.openSetDrift);
+		expect(failures(result)[0]).toContain("#777, #778");
+	});
+
+	it("exits 2 on a malformed --report or --issues, never 1", () => {
+		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-cli-"));
+		const handoff = join(dir, "HANDOFF.md");
+		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
+		const garbage = join(dir, "garbage.json");
+		writeFileSync(garbage, "{ not json");
+
+		const report = runCli(["--file", handoff, "--report", garbage, "--no-network"]);
+		expect(report.code).toBe(EXIT.USAGE);
+		expect(report.err).toContain("not JSON");
+
+		const missing = runCli(["--file", handoff, "--issues", join(dir, "no-such-issues.json")]);
+		expect(missing.code).toBe(EXIT.USAGE);
+		expect(missing.err).toContain("cannot read the issue list");
+
+		const shape = join(dir, "issues.json");
+		writeFileSync(shape, JSON.stringify({ number: 495 }));
+		const notArray = runCli(["--file", handoff, "--issues", shape]);
+		expect(notArray.code).toBe(EXIT.USAGE);
+		expect(notArray.err).toContain("expected an array of issues");
+	});
+
+	it("declares the narrative claims out of scope in its own output", () => {
+		const result = run(["--file", join(FIXTURES, "correct.md"), "--no-network"]);
+		expect(result.out).toContain("out of scope by design: narrative claims");
+		expect(result.out).toContain("cycle queue");
+		expect(result.out).toContain("would fail closed on a legitimate rewrite");
+		// stdout stays JSON under --json, so the declaration moves to stderr instead of vanishing.
+		const json = run(["--file", join(FIXTURES, "correct.md"), "--no-network", "--json"]);
+		expect(() => JSON.parse(json.out)).not.toThrow();
+		expect(json.err).toContain("out of scope by design: narrative claims");
 	});
 });

@@ -49,6 +49,7 @@ drift. Run it **before** committing the handoff:
 ```
 node scripts/handoff-verify.mjs                 # exit 0 every claim holds · 1 drift · 2 cannot check
 node scripts/handoff-verify.mjs --report <json> # pin the suite report (default: newest under /tmp)
+node scripts/handoff-verify.mjs --issues <json> # pin the board (`gh issue list --json number`) — no network
 node scripts/handoff-verify.mjs --no-network    # skip the gh open-set check, and print that it skipped
 ```
 
@@ -56,7 +57,15 @@ It checks seven things: the `Verified:` range (an ancestor of HEAD, and every co
 touching only the handoff and its archives), the `dev @ <sha>` line, the `Running install:` path and its
 sha, the `Open:` issue set against `gh issue list --state open`, the `Suite:` counts against a vitest JSON
 report, the `modules`/`ADRs` counts against `docs-arch`/`docs-decisions`, and every `` `name.ts` <n> ``
-line count against `wc -l`.
+line count against `wc -l`. A single-value claim (`dev`, `modules`, `ADRs`) stated twice is checked twice:
+agreeing duplicates are one claim, a disagreeing one is a named drift.
+
+**Out of scope by design — narrative claims.** The cycle queue, `### Next actions` and the
+`### Since the last handover` bullets are *not* checked, and the checker prints that scope with every
+verdict. They are prose, and the only mechanical reading of them is a guess at which queue item is
+"current" — a heuristic there would fail closed on a legitimate rewrite, which is a worse trade than a
+human reading three lines. The stale `Next: U6` after U6 had merged was the third drift found in the wild;
+it is closed by reading the queue, not by a check.
 
 **A drift means the claim is wrong — fix the claim, never the script.** The checker reads the shapes
 above and nothing else: prose, `### Since the last handover` history (`2,006 → 353`) and a quoted field

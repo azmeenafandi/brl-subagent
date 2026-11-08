@@ -14,6 +14,11 @@
 // input, or an environment that cannot answer (no `dev` ref, no vitest report, `gh` unavailable). A drift
 // and an unanswerable check are never conflated: "cannot check" is exit 2, never a silent pass.
 //
+// OUT OF SCOPE BY DESIGN (said in the output, not just here): narrative claims — the cycle queue,
+// `### Next actions` and the `### Since the last handover` bullets. They are prose, and the only mechanical
+// reading of them is a guess at which queue item is "current"; a heuristic there would fail closed on a
+// legitimate rewrite, which is worse than a human reading three lines. See `SCOPE` below.
+//
 // Fact sources, and the flags that make them injectable:
 //   verified/dev/install  `git` in THIS checkout — never a hard-coded cockpit path; `git rev-parse dev`
 //                         works from a worktree, which is where a unit runs.
@@ -53,6 +58,14 @@ export const DEFAULT_FILE = join(".development", "HANDOFF.md");
 
 export const USAGE =
 	"usage: handoff-verify.mjs [--file <handoff>] [--report <vitest-json-report>] [--issues <gh-issue-list.json>] [--no-network] [--json]";
+
+/**
+ * The claims this tool refuses to check, printed with every verdict: a scope nobody states is a scope the
+ * reader fills in with their own guess. One sentence, and the reason — a heuristic here would FAIL CLOSED
+ * on a legitimate rewrite of the queue or of a "Since" bullet, which is a worse trade than prose.
+ */
+export const SCOPE =
+	"out of scope by design: narrative claims — the cycle queue, `Next actions`, `Since` bullets — are prose, and a heuristic there would fail closed on a legitimate rewrite";
 
 /** Exit codes, named so the docs and the tests cannot drift from the script. */
 export const EXIT = Object.freeze({ OK: 0, DRIFT: 1, USAGE: 2 });
@@ -128,21 +141,21 @@ export function findNewestReport(dir = tmpdir()) {
 }
 
 /** The open set the handoff is compared against: `gh issue list` here, a JSON file under `--issues`. */
-export function readIssues({ root, issuesPath = "" }) {
-	if (issuesPath !== "") {
+export function readIssues({ root, issues = "" }) {
+	if (issues !== "") {
 		let text;
 		try {
-			text = readFileSync(issuesPath, "utf8");
+			text = readFileSync(issues, "utf8");
 		} catch (error) {
-			throw new InputError(`${issuesPath}: cannot read the issue list (${describeError(error)})`);
+			throw new InputError(`${issues}: cannot read the issue list (${describeError(error)})`);
 		}
 		let parsed;
 		try {
 			parsed = JSON.parse(text);
 		} catch (error) {
-			throw new InputError(`${issuesPath}: not JSON (${describeError(error)})`);
+			throw new InputError(`${issues}: not JSON (${describeError(error)})`);
 		}
-		if (!Array.isArray(parsed)) throw new InputError(`${issuesPath}: expected an array of issues (gh issue list --json number)`);
+		if (!Array.isArray(parsed)) throw new InputError(`${issues}: expected an array of issues (gh issue list --json number)`);
 		return parsed.map((item) => (typeof item === "number" ? item : item?.number)).filter((number) => Number.isInteger(number));
 	}
 	// `--limit` matters: gh's default is 30, and a board larger than that would silently under-report.
@@ -205,10 +218,12 @@ function gitOrThrow(root, args, what) {
 }
 
 /**
- * The repo side of every check, as one plain object — the single seam the tests replace. `report` is
+ * The repo side of every check, as one plain object — the single seam the tests replace. It takes the
+ * SAME option names `parseArgs` produces (`report`, `issues`), because the two are joined by `main` and a
+ * renamed side is how `--report <json>` and `--issues <json>` were silently dropped once. `report` is
  * resolved lazily so `--no-network` and a usage fault never pay for a `/tmp` scan.
  */
-export function createRepoProbe(root, { reportPath = "", issuesPath = "" } = {}) {
+export function createRepoProbe(root, { report = "", issues = "" } = {}) {
 	return {
 		root,
 		headSha: () => gitOrThrow(root, ["rev-parse", "HEAD"], "HEAD").trim(),
@@ -229,8 +244,8 @@ export function createRepoProbe(root, { reportPath = "", issuesPath = "" } = {})
 		},
 		modules: () => collectModules().length,
 		adrs: () => collectDecisions().length,
-		openIssues: () => readIssues({ root, issuesPath }),
-		report: () => (reportPath === "" ? findNewestReport() : readSuiteReport(reportPath)),
+		openIssues: () => readIssues({ root, issues }),
+		report: () => (report === "" ? findNewestReport() : readSuiteReport(report)),
 	};
 }
 
@@ -308,10 +323,12 @@ export function main(argv = process.argv.slice(2), io = {}) {
 
 	if (options.json) {
 		out(JSON.stringify({ ok: drifts.length === 0, drifts }, null, 2));
-		// stdout is the machine's; a skip still has to be said out loud, so it goes to stderr.
+		// stdout is the machine's; a skip and the scope both still have to be said out loud, so stderr.
+		err(`handoff-verify: ${SCOPE}`);
 		for (const result of results.filter((item) => item.skipped)) err(`handoff-verify: ${result.claim} — skipped (${result.reason})`);
 	} else {
 		for (const result of results) out(result.line);
+		out(`handoff-verify: ${SCOPE}`);
 		out(`handoff-verify: ${drifts.length} drift(s)`);
 	}
 	return drifts.length === 0 ? EXIT.OK : EXIT.DRIFT;
