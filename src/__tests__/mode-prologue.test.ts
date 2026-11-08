@@ -642,8 +642,10 @@ describe("per-unit warning order and surfacing (#379 IN9)", () => {
 		// The warning block comes AFTER the JSON payload.
 		expect(text.indexOf("[pre-task validation warnings]")).toBeGreaterThan(text.indexOf("{"));
 
-		const first = text.indexOf(`Step 1 ("one"): Task involves git operations`);
-		const third = text.indexOf(`Step 3 ("three"): Task involves git operations`);
+		const first = text.indexOf(`Step 1 ("one"): gitMode is 'none'`);
+		const third = text.indexOf(`Step 3 ("three"): gitMode is 'none'`);
+		// The old wording inferred a capability loss that gitMode never implies (#491).
+		expect(text).not.toContain("subagent cannot create commits");
 		expect(first).toBeGreaterThanOrEqual(0);
 		expect(third).toBeGreaterThan(first);
 	});

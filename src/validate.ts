@@ -450,7 +450,7 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
   const gitPatterns = [/\b(commit|push|pull|merge|rebase|checkout|branch|pr|pull.request)\b/i];
   if (gitPatterns.some(p => p.test(taskText)) && config.gitMode === 'none') {
     warnings.push(
-      `Task involves git operations but gitMode is 'none' — subagent cannot create commits or branches`,
+      `gitMode is 'none' — the harness will not create or capture a branch; the task must run its own git commands`,
     );
   }
 
