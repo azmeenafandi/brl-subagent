@@ -315,10 +315,17 @@ describe("architecture rules (issue #251)", () => {
 		// composition root. Only the documented retry cast below stays, and it
 		// stays pinned to `index.ts` (where the retry path lives).
 		const modeRunnersSource = readFileSync(join(SRC, "mode-runners.ts"), "utf8");
+		// ADR 0027 (S3): same rule, same reason, for the moved background pipeline
+		// (`runBackgroundFanOut`, `startBackgroundAgent`, `spawnBackgroundRun`).
+		// The spawn request shape it takes is a NAMED interface for this reason —
+		// an inline `spawn: { … }` at the parameter list would be exactly the
+		// anonymous object-literal assertion this rule forbids.
+		const pipelineSource = readFileSync(join(SRC, "background-pipeline.ts"), "utf8");
 
 		for (const [file, source] of [
 			["src/index.ts", indexSource],
 			["src/mode-runners.ts", modeRunnersSource],
+			["src/background-pipeline.ts", pipelineSource],
 		] as const) {
 			expect(
 				/\bas\s*\{/.test(source),
@@ -375,13 +382,15 @@ describe("architecture rules (issue #251)", () => {
 
 		// The batch copies' prefix bindings are gone. The background fan-out
 		// keeps its own loop and its `taskPrefix` binding (a different sequence,
-		// design note §2.4/IN8) — outside this commit's scope, so exactly one
-		// such binding may remain. These assertions stay on `index.ts`: the
-		// fan-out is the only batch loop still there (S3 moves it).
-		const indexSource = readFileSync(join(SRC, "index.ts"), "utf8");
-		expect(indexSource).not.toContain("const stepPrefix =");
-		expect(indexSource).not.toContain("const nodePrefix =");
-		expect(indexSource.match(/const taskPrefix =/g) ?? []).toHaveLength(1);
+		// design note §2.4/IN8) — S3 moved that loop into `background-pipeline.ts`
+		// (`runBackgroundFanOut`'s per-task pre-pass), so ALL of these pins follow
+		// it: a re-copied `stepPrefix`/`nodePrefix` there is the drift this whole
+		// test exists to catch, and `index.ts` no longer holds a batch loop to
+		// check. The `taskPrefix` count is the live pin — exactly one.
+		const pipelineSource = readFileSync(join(SRC, "background-pipeline.ts"), "utf8");
+		expect(pipelineSource).not.toContain("const stepPrefix =");
+		expect(pipelineSource).not.toContain("const nodePrefix =");
+		expect(pipelineSource.match(/const taskPrefix =/g) ?? []).toHaveLength(1);
 	});
 
 	it("the transcript-path format is single-sourced in transcript-path.ts (#287)", () => {

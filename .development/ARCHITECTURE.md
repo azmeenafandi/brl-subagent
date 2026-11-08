@@ -51,7 +51,9 @@ awaited inside the spawn (issues #28, #147, #198).
 `delegate_task` → sanitize (`sanitize.ts`) → resolve params (`params.ts`: preset merge, thinking caps, timeout
 normalization, model resolution, edit→write fix, auto-routing) → template / retry resolution → validate
 (`validate.ts` H1 + capability pre-flight) → shared gates (`prelude.ts`: cost, approval, targets, H1, the
-per-unit pre-pass) → mode runner (`index.ts`) → spawn → run records + monitor → result or wake.
+per-unit pre-pass) → handler (`mode-runners.ts` for chain/parallel/graph, `background-pipeline.ts` for the
+background fan-out and the single background spawn) → spawn (foreground `runner.ts`, background
+`session-manager.ts`) → run records + monitor → result or wake.
 
 The three foreground batch handlers (chain, parallel, graph) run their prologue through one helper,
 `mode-prologue.ts` (`runModePrologue`: DAG hook → cost → depth → resolve → targets → preflight → H1) and
@@ -70,6 +72,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 
 | Module | Purpose |
 |---|---|
+| `background-pipeline.ts` | The background pipeline — the fan-out handler, the shared spawn tail and the single-background spawn — built over one runtime context. |
 | `concurrency.ts` | Session-bound concurrency queue: slot acquisition/release, priority insertion, and progress counters. |
 | `diff.ts` | Parses git unified diffs into structured per-file summaries and hunks for the result UI. |
 | `dispatch-line.ts` | Parse and validate the Rule 22 dispatch line (the project-local opt-in lives in project-flags.ts). |
@@ -78,7 +81,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `git.ts` | Branch-based git workflow for worktree runs (branch, diff, switch-back, cleanup) plus the read-only worktree probe. |
 | `headstate.ts` | Durable per-repository head state (ADR 0026): the record a branch run writes before its branch exists, the guarded boot reconciliation, and the age sweep. |
 | `history.ts` | Run-record store: creation, finalization, retry lookup, and history pruning. |
-| `index.ts` | Entry point: tool/command registration, the delegate_task handlers, dispatch, single mode and the background fan-out. |
+| `index.ts` | Entry point: tool/command registration, the delegate_task handlers, dispatch and single mode. |
 | `kill-escalation.ts` | The one SIGTERM → grace → SIGKILL escalation shared by foreground reap, abort/timeout, and boot recovery. |
 | `loader.ts` | Shared markdown-tier loader — scan dirs for `.md`, parse frontmatter, validate, map to a typed record. |
 | `logging.ts` | Leveled structured logging with file output and rotation under `.pi/subagent-logs/`. |
@@ -123,7 +126,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 | `worktree-report.ts` | Formats the read-only worktree state a failed or stopped run may have left behind (issue #474). |
 
-**52 modules** — every one is listed because a new module without a purpose fails CI.
+**53 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
