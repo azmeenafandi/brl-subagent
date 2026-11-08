@@ -39,7 +39,7 @@
 //   CI: npx vitest run --reporter=default --reporter=json --outputFile=vitest-report.json
 // Exit: 0 within budget (warnings allowed) · 1 a finding · 2 usage, unreadable report or tree.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { basename, extname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Local suite wall-time ceiling (ms). Current local wall: ~18 s. Global to every surface. */
@@ -210,12 +210,15 @@ export function importSpecifiers(text) {
 
 /**
  * Top-level `scripts/*.mjs` files that no `scripts/__tests__/**.test.ts` imports, sorted.
+ * A specifier is resolved against the importing test's own directory, so the match is the script's
+ * path and not a lookalike `guard.mjs` in a fixture directory; a bare specifier is a package.
  * A missing test directory is a floor failure (nothing imports anything), not an IO failure.
  */
 export function findUntestedScripts(root = process.cwd()) {
+	const scriptsDir = join(root, FLOOR.dir);
 	let scriptNames;
 	try {
-		scriptNames = readdirSync(join(root, FLOOR.dir), { withFileTypes: true })
+		scriptNames = readdirSync(scriptsDir, { withFileTypes: true })
 			.filter((entry) => entry.isFile() && entry.name.endsWith(FLOOR.scriptExtension))
 			.map((entry) => entry.name)
 			.sort();
@@ -229,11 +232,10 @@ export function findUntestedScripts(root = process.cwd()) {
 	const imported = new Set();
 	for (const file of testFiles) {
 		for (const specifier of importSpecifiers(readFileSync(file, "utf8"))) {
-			// A relative specifier is a file in this repo; a bare one is a package, never a script.
-			if (specifier.startsWith(".")) imported.add(basename(specifier));
+			if (specifier.startsWith(".")) imported.add(resolve(dirname(file), specifier));
 		}
 	}
-	return scriptNames.filter((name) => !imported.has(name));
+	return scriptNames.filter((name) => !imported.has(join(scriptsDir, name)));
 }
 
 // ---------------------------------------------------------------------------

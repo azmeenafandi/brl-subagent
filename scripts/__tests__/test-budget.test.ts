@@ -274,6 +274,15 @@ describe("findUntestedScripts — an import, not a mention", () => {
 		expect(findUntestedScripts(tree("floor-absent", { "scripts/guard.mjs": 1 }))).toEqual(["guard.mjs"]);
 	});
 
+	it("resolves the specifier, so a lookalike basename in a fixture directory proves nothing", () => {
+		const root = tree("floor-basename", {
+			"scripts/guard.mjs": 1,
+			"scripts/__tests__/fixtures/guard.mjs": 1,
+			"scripts/__tests__/fixture.test.ts": ['import "./fixtures/guard.mjs";'],
+		});
+		expect(findUntestedScripts(root)).toEqual(["guard.mjs"]);
+	});
+
 	it("reads only module requests, never a prose mention", () => {
 		expect(importSpecifiers('import { a } from "../x.mjs";\n// ../comment.mjs\nconst s = "../string.mjs";')).toEqual(["../x.mjs"]);
 	});
