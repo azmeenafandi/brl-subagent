@@ -465,22 +465,36 @@ selftest() {
 	# U1: a FAILING merge-guard record read through `tail`. Pre-helper control FIRST, with
 	# `pipefail` explicitly off — the shell the incident ran in.
 	local record='scripts/__tests__/fixtures/review-records/s4-no-recheck.md'
-	if [[ -f "${SCRIPT_DIR}/../../../${record}" ]]; then
-		case_begin 'U1 pre-helper control: merge-guard --check-record <s4> | tail -2 → 0 (THE DEFECT)'
-		(set +o pipefail
-			bash "${SCRIPT_DIR}/merge-guard.sh" --check-record "${SCRIPT_DIR}/../../../${record}" 2>&1 | tail -2 >/dev/null)
-		_rc=$?
-		assert_rc 0
-		case_end
+	local fixture
+	for fixture in s4-no-recheck s5-fused-fields s6-findings-bank; do
+		record="scripts/__tests__/fixtures/review-records/${fixture}.md"
+		if [[ -f "${SCRIPT_DIR}/../../../${record}" ]]; then
+			case_begin "U1 pre-helper control: merge-guard --check-record <${fixture}> | tail -2 → 0 (THE DEFECT)"
+			(set +o pipefail
+				bash "${SCRIPT_DIR}/merge-guard.sh" --check-record "${SCRIPT_DIR}/../../../${record}" 2>&1 | tail -2 >/dev/null)
+			_rc=$?
+			assert_rc 0
+			case_end
 
-		case_begin 'U1 through run: merge-guard --check-record <s4> → 1, the reason visible'
-		invoke --filter 'tail -2' --stderr -- bash "${SCRIPT_DIR}/merge-guard.sh" --check-record "${SCRIPT_DIR}/../../../${record}"
-		assert_rc 1
-		assert_out_has 'record-check: 1 reason(s)'
-		case_end
-	else
-		printf '  ~ fixture %s not found — U1 replay skipped (this is a finding, not a pass)\n' "${record}"
-	fi
+			case_begin "U1 through run: merge-guard --check-record <${fixture}> → 1, the reason visible"
+			invoke --filter 'tail -2' --stderr -- bash "${SCRIPT_DIR}/merge-guard.sh" --check-record "${SCRIPT_DIR}/../../../${record}"
+			assert_rc 1
+			assert_out_has 'is not a record the gate can read'
+			case_end
+		else
+			printf '  ~ fixture %s not found — U1 replay skipped (this is a finding, not a pass)\n' "${record}"
+		fi
+	done
+
+	# The risk-weaker CLI case from the same incident: no filter hides it — the tool itself
+	# refuses a declared tier weaker than the recheck. Pinned here so the replay matches the plan.
+	case_begin 'U1 risk-weaker CLI: review-record refuses C3 declared over a C2 recheck → 1'
+	invoke -- node "${SCRIPT_DIR}/../../../scripts/review-record.mjs" --pr 1 --verdict approve \
+		--head 0123456789abcdef0123456789abcdef01234567 --risk C3 \
+		--recheck 'jev: medium (0.75) · C2 · worktree y' --findings - </dev/null
+	assert_rc 1
+	assert_err_has 'risk-weaker-than-recheck'
+	case_end
 
 	# U4: a tool exiting 1 with its output piped to `grep`, reported as 0. The original pipeline
 	# was never preserved — this is a NAMED SYNTHETIC, not the historical run.
