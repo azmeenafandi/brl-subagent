@@ -80,8 +80,6 @@ import {
 	invalidThinkingLevelRejection,
 	modelNotConfiguredRejection,
 	rejectApprovalAlwaysInBackground,
-	rejection,
-	resolveModeModel,
 	resolveSubagentModelPrecedence,
 	runPreTaskValidation,
 	validateDelegationTargets,
@@ -96,7 +94,7 @@ import {
 	formatToolRestriction,
 } from "./presets";
 import { resolveTerminalRunEntry, type SessionState } from "./state";
-import { makeLiveOnUpdate, createUnitRun, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
+import { makeLiveOnUpdate, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import {
 	defaultBackgroundFor,
@@ -159,7 +157,7 @@ import {
 	renderDelegateCall,
 	renderDelegateResult,
 } from "./tui";
-import { createLogger, setLogCwd, type Logger } from "./logging";
+import { setLogCwd } from "./logging";
 import {
 	collectInterruptedRuns,
 	offeredInterruptedRuns,
