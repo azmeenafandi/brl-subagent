@@ -1,6 +1,6 @@
 # brl-subagent — Audit: Strengths & Weaknesses
 
-> Generated: 2026-08-03 | Version: 2.7.0 (released 2026-11-01). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.7.0 (see the follow-up sections below).
+> Generated: 2026-08-03 | Version: 2.8.0 (released 2026-11-08). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.8.0 (see the follow-up sections below).
 
 ## What's Been Fixed (since v1.3.0)
 
@@ -607,6 +607,14 @@ A follow-on sweep in which **every item traces to something the 2.3.5 release ex
 - **#164 CLOSED — the obsolete update notifier removed.** It duplicated pi's native notice, misdirected users to the GitHub release, and — under staged publishing — could announce a version npm did not yet have. `src/update.ts` and its test deleted; the module count drops **31 → 30**. The C2 focused review proved backwards compatibility **empirically** (legacy session keys ignored, not rejected; the guard did not go soft elsewhere) and mutation-tested the README pinning test four ways.
 - **Corrections**: module count 31 → **30** (update.ts removed). Two spec-scoping gaps were surfaced by the **implementer**, not the conductor — an e2e fixture list referencing the deleted module by *name* (symbol greps cannot see it) and a self-contradictory grep check. Both logged; the name-vs-symbol lesson is the second instance this sprint of *'the query did not cover the evidence'*.
 - **Toolchain**: vitest 4 → 5 (major; CI-verified) and typebox 1.3.25 → 1.3.29. The typebox dev/runtime divergence from pi's bundled **1.3.7** was verified **inert** for our nine-primitive-builder surface (byte-identical schema output across 1.3.7/1.3.25/1.3.29) and is now recorded in the Distribution & Packaging section so it need not be re-investigated.
+
+## v2.8.0 Audit Follow-up (2026-11-08)
+
+- **The "flaky test" was a producer defect.** `escalateKill` sampled death in the same instant it sent SIGKILL — 40/40 probes read alive — so the `#299 A1` load flake was the product, not the test. The fix drains a bounded window and bounds both loops twice (a no-op sleep defeated the clock bound alone: 61,657 samples in 100 ms). Lesson recorded: a load-only failure is a product defect until a before-commit comparison proves otherwise.
+- **Two silent drop classes closed by type pressure.** The preset frontmatter mapper was a hand-written literal, so `outputFile` was dropped without an error; it is now a table pinned to `Exclude<keyof SubagentPreset, …>`, and the one deliberate omission (`timeout`) is allowlisted and type-pinned. The batch pre-flight had the same shape: units bypassed the dispatch predicate entirely; one projection now serves both levels and judges the declared level.
+- **A started run can no longer be reported as a failed spawn** (#439), and a dispatch that never reached the prompt is no longer offered as an interrupted run (#447) — the two directions of the same ambiguity. The deadline now has one owner (#453) and the timer owns no filesystem or git resource (ADR 0023), with `projectLogicalRuns` as the one reading contract for raw entries.
+- **Two new crash-path behaviours, both C1-reviewed.** A stuck terminal owner now makes later branch dispatches fail fast with the owner and branch named (#465); the boot restores the base branch only for a provable orphan (ADR 0026), keeps the work branch, and names everything it cannot repair. The admitted hazard is measured: a SIGKILLed conductor leaves a detached child writing at 38 B/s, recoverable and never a commit.
+- **Process:** "CI did not trigger" was a **conflicting PR** — GitHub builds the merge ref before queuing `pull_request`, so no checks can exist. The reviewer preset's own bulleted template was the cause of four record normalizations (fixed at the instruction). The Jev level was demoted to an observation (ADR 0025) with a model-aware measurement arm against outcomes; the README count's freshness gate moved to the release PR. Suite **2400 tests / 114 files**, budget 1.96, one Rule 11 P0 (#474).
 
 ## v2.7.0 Audit Follow-up (2026-11-01)
 
