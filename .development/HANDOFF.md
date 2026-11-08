@@ -26,7 +26,7 @@ Verified: 20be657 (2026-11-08)
 
 ### Next actions
 1. **#465** — decided and briefed in its body; implement when scheduled (`(b)` refusal + `(d)` one-line queue narrowing). Not a release blocker.
-2. **#466** — design decided (O2) in `.development/investigations/issue-466-headstate-2026-11-08.md`; write ADR 0026 and the implementation brief next (≈150 source / ≈260 test lines — the budget's last comfortable unit). Its measured hazard: a SIGKILLed conductor leaves a **detached child alive** (38 B/s) whose writes land in the base tree after a restore — recoverable, never a commit, and stated as a limit.
+2. **#466** — design decided (O2) in `.development/investigations/issue-466-headstate-2026-11-08.md`, **ADR 0026 accepted**; the implementation brief is next (≈150 source / ≈260 test lines — the budget's last comfortable unit). Its measured hazard: a SIGKILLed conductor leaves a **detached child alive** (38 B/s) whose writes land in the base tree after a restore — recoverable, never a commit, and stated as a limit.
 3. **#450 / #430 / #426** — unchanged priorities; #450 is low hardening, #430 the `execute` split, #426 needs the maintainer's call.
 4. **Release checkpoint** — the sweep's eight extension fixes are merged and unreleased (#468/#469 are tooling and do not ship); the call is the maintainer's.
 
