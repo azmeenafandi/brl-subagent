@@ -21,11 +21,22 @@
 //                    still only reachable through a 0700 root, and refusing it would refuse
 //                    `mktemp -d`-style directories for no gain.
 //
+// THE MOUNT PROPERTY (issue #516). Mode, ownership and non-writable ancestors say nothing about
+// whether the bytes survive a reboot, and `/run/user/1000` is a `0700` directory we own on a `tmpfs`
+// mount — it passed every clause above. So the root predicate now also consults `statfs` and refuses
+// `tmpfs` (`TMPFS_MAGIC`), on the DEEPEST EXISTING directory of the chain: a directory we would
+// create cannot be a mount point, so its filesystem type is the nearest existing ancestor's, and
+// `init` therefore refuses before it creates anything. LINUX ONLY — `f_type` magic numbers are not
+// portable and this module does not guess other platforms' numbers; off Linux the mount check is
+// skipped, and an undeterminable type on Linux is a refusal rather than a silent pass. An explicit
+// `--out` directory is validated for ownership and write authority only, not for mount type: the
+// mount property is a claim about the private root.
+//
 // A policy failure is a NAMED RESULT, never a throw: `{ ok: true, … } | { ok: false, code, message }`.
 // The codes are the contract (the CLI prints them, the tests assert them):
 //
 //   not-absolute · too-shallow · not-directory · symlink-component · untrusted-owner ·
-//   ancestor-writable · root-not-owner · root-mode · outside-root · target-outside-dir ·
+//   ancestor-writable · root-not-owner · root-mode · tmpfs · outside-root · target-outside-dir ·
 //   already-exists · symlink-leaf · not-regular · missing · lock-held · lock-stale · no-lock ·
 //   lock-changed · io · unresolvable · unsupported-platform
 //
@@ -36,9 +47,11 @@
 // `O_NOFOLLOW`, so a no-follow claim would be an accident of `O_EXCL` rather than a stated intent).
 //
 // LIMITS, stated rather than implied: a mount-namespace substitution by a user who already holds
-// privileges, NFS (where `O_NOFOLLOW`/`rename` semantics belong to the server), and a non-Linux host
-// with no `/proc/sys/kernel/random/boot_id` (the lock then records `bootId: null`, and staleness
-// rests on pid liveness plus the recorded start time alone). Documented limits, not coverage.
+// privileges, NFS (where `O_NOFOLLOW`/`rename` semantics belong to the server), a root that becomes
+// a mount point AFTER it was validated, non-Linux mount types (the `tmpfs` check is Linux-only, by
+// design), and a non-Linux host with no `/proc/sys/kernel/random/boot_id` (the lock then records
+// `bootId: null`, and staleness rests on pid liveness plus the recorded start time alone).
+// Documented limits, not coverage.
 import { randomBytes } from "node:crypto";
 import {
 	closeSync,
@@ -50,6 +63,7 @@ import {
 	openSync,
 	readFileSync,
 	renameSync,
+	statfsSync,
 	unlinkSync,
 	writeSync,
 } from "node:fs";
@@ -66,6 +80,7 @@ export const CODES = Object.freeze({
 	ANCESTOR_WRITABLE: "ancestor-writable",
 	ROOT_NOT_OWNER: "root-not-owner",
 	ROOT_MODE: "root-mode",
+	TMPFS: "tmpfs",
 	OUTSIDE_ROOT: "outside-root",
 	TARGET_OUTSIDE_DIR: "target-outside-dir",
 	ALREADY_EXISTS: "already-exists",
@@ -92,6 +107,13 @@ export const MIN_ROOT_DEPTH = 2;
 
 /** `O_NOFOLLOW`, read once. A host without it gets no write at all: the leaf guarantee is the point. */
 const O_NOFOLLOW = fsConstants.O_NOFOLLOW;
+
+/**
+ * Linux `TMPFS_MAGIC` — the `f_type` `statfs` reports for a `tmpfs` mount (`/tmp`, `/dev/shm`,
+ * `/run/user/<uid>`). A magic number is a per-filesystem constant, not a portable one, which is why
+ * the check that reads it runs on Linux alone.
+ */
+export const TMPFS_MAGIC = 0x01021994;
 
 /** Lock polling, in ms — bounded, so a held lock is a refusal rather than a hang. */
 export const LOCK_DEFAULTS = Object.freeze({ timeoutMs: 2000, intervalMs: 25 });
@@ -161,6 +183,14 @@ function notOurs(path, uid) {
 }
 
 /**
+ * A mode as the four octal digits that are ON DISK — `1777`, not `0777`. A refusal is the line a
+ * reviewer reads as proof, and `(mode & 0o777)` silently drops the sticky, setgid and setuid bits.
+ */
+export function formatMode(mode) {
+	return (mode & 0o7777).toString(8).padStart(4, "0");
+}
+
+/**
  * One component's verdict. The symlink and non-directory refusals come first in every zone, because
  * every later clause is a statement about a real directory.
  */
@@ -174,7 +204,7 @@ function checkComponent(path, stats, zone, uid) {
 	if (!stats.isDirectory()) {
 		return fail(CODES.NOT_DIRECTORY, `${path} is not a directory`);
 	}
-	const mode = (stats.mode & 0o777).toString(8);
+	const mode = formatMode(stats.mode);
 	if (zone === "above") {
 		if (stats.uid !== 0 && stats.uid !== uid) {
 			return fail(
@@ -185,7 +215,7 @@ function checkComponent(path, stats, zone, uid) {
 		if ((stats.mode & 0o022) !== 0) {
 			return fail(
 				CODES.ANCESTOR_WRITABLE,
-				`${path} is mode 0${mode} — group/other write is rename authority over the entries below it`,
+				`${path} is mode ${mode} — group/other write is rename authority over the entries below it`,
 			);
 		}
 		return { ok: true };
@@ -194,15 +224,15 @@ function checkComponent(path, stats, zone, uid) {
 	if (zone === "root" && (stats.mode & 0o077) !== 0) {
 		return fail(
 			CODES.ROOT_MODE,
-			`${path} is mode 0${mode} — the root must be 0700 (group/other access to the record bytes is the boundary this root exists for)`,
+			`${path} is mode ${mode} — the root must be 0700 (group/other access to the record bytes is the boundary this root exists for)`,
 		);
 	}
 	return { ok: true };
 }
 
 /** The cheap refusals, before anything touches the disk: platform, absolute, depth, and `$HOME`. */
-function prepareRootPath(candidate, { home }) {
-	if (process.platform === "win32") {
+function prepareRootPath(candidate, { home, platform }) {
+	if (platform === "win32") {
 		return fail(
 			CODES.UNSUPPORTED_PLATFORM,
 			"the private scratch root is POSIX-only (it rests on O_NOFOLLOW, uid ownership and 0700 modes) — there is no Windows root and no temp-directory fallback",
@@ -266,6 +296,8 @@ function walkRoot(root, { lstat, uid, create, mkdir }) {
 function optionsWith(options = {}) {
 	return {
 		lstat: options.lstat ?? lstatSync,
+		statfs: options.statfs ?? statfsSync,
+		platform: options.platform ?? process.platform,
 		uid: options.uid ?? currentUid(),
 		home: options.home ?? homedir(),
 		mkdir: options.mkdir ?? mkdirSync,
@@ -273,14 +305,65 @@ function optionsWith(options = {}) {
 }
 
 /**
- * Validate an existing root chain. Never creates, never throws.
- * `{ ok: true, root } | { ok: false, code, message }`.
+ * The deepest existing REAL directory on `root`'s chain — the component whose filesystem a directory
+ * we create would inherit. `path: null` means the chain already holds something that is not a real
+ * directory (a symlink, a file, an unreadable component): the walk refuses it for its own reason, so
+ * there is no filesystem to report and no `statfs` to run.
+ */
+function deepestExisting(root, lstat) {
+	let deepest = sep;
+	for (const path of directoryChain(root)) {
+		const found = statComponent(path, lstat);
+		if (!found.ok) return found.missing ? { ok: true, path: deepest } : found;
+		if (found.stats.isSymbolicLink() || !found.stats.isDirectory()) return { ok: true, path: null };
+		deepest = path;
+	}
+	return { ok: true, path: deepest };
+}
+
+/**
+ * Refuse a root whose filesystem is `tmpfs` — **Linux only** (the magic numbers are not portable, and
+ * this module does not guess another platform's). The probe is the DEEPEST EXISTING component, so a
+ * root that does not exist yet is judged by the ancestor it would be created in, and `init` refuses
+ * before it creates anything. An unreadable mount type is a refusal (`unresolvable`), not a pass: a
+ * durability property that cannot be checked is the defect #516 was filed for.
+ */
+function mountVerdict(root, { lstat, statfs, platform }) {
+	if (platform !== "linux") return { ok: true };
+	const deepest = deepestExisting(root, lstat);
+	if (!deepest.ok) return deepest;
+	if (deepest.path === null) return { ok: true };
+	let stats;
+	try {
+		stats = statfs(deepest.path);
+	} catch (error) {
+		return fail(
+			CODES.UNRESOLVABLE,
+			`cannot determine the filesystem of ${deepest.path} (${codeOf(error) || describe(error)}) — the root's mount type is checked on Linux, and an unchecked mount is not the property this root exists to provide`,
+		);
+	}
+	if (stats.type !== TMPFS_MAGIC) return { ok: true };
+	const inherited =
+		deepest.path === root
+			? ""
+			: ` (${root} does not exist yet, and a directory created inside ${deepest.path} inherits its filesystem)`;
+	return fail(
+		CODES.TMPFS,
+		`${deepest.path} is on a tmpfs — a record there does not survive a reboot, which is the property this root exists to provide${inherited}`,
+	);
+}
+
+/**
+ * Validate an existing root chain. Never creates, never throws, and refuses a `tmpfs` root on Linux
+ * (`mountVerdict`) as well as every mode/ownership clause. `{ ok: true, root } | { ok: false, code, message }`.
  */
 export function validateRoot(candidate, options = {}) {
 	const opts = optionsWith(options);
 	if (opts.uid === null) return fail(CODES.UNSUPPORTED_PLATFORM, "this host has no uid — ownership cannot be established");
 	const prepared = prepareRootPath(candidate, opts);
 	if (!prepared.ok) return prepared;
+	const mount = mountVerdict(prepared.root, opts);
+	if (!mount.ok) return mount;
 	return walkRoot(prepared.root, { ...opts, create: false });
 }
 
@@ -288,12 +371,16 @@ export function validateRoot(candidate, options = {}) {
  * Create the chain at 0700 if it is missing, then validate it — the fail-closed equivalent of
  * `mkdir -p` for a root. A component that already exists is validated, never repaired: changing a
  * mode we did not set would be a silent privilege grab, so a bad mode is a refusal naming `init`.
+ * The mount check runs FIRST, so a `tmpfs` root is refused with nothing created on it.
  */
 export function ensureRoot(candidate, options = {}) {
 	const opts = optionsWith(options);
 	if (opts.uid === null) return fail(CODES.UNSUPPORTED_PLATFORM, "this host has no uid — ownership cannot be established");
 	const prepared = prepareRootPath(candidate, opts);
 	if (!prepared.ok) return prepared;
+	// Before the creating walk: a tmpfs root must be refused with nothing created on it.
+	const mount = mountVerdict(prepared.root, opts);
+	if (!mount.ok) return mount;
 	return walkRoot(prepared.root, { ...opts, create: true });
 }
 
@@ -437,6 +524,27 @@ function openNoFollow(path, flags, { exclusive }) {
 	}
 }
 
+/**
+ * An exclusive `open` refused with `EEXIST`: name what is standing there. ADVISORY ONLY — the safety
+ * property is the `O_CREAT|O_EXCL|O_NOFOLLOW` open that already refused, so this classification can
+ * never widen a write. The path can change between that `open` and this `lstat` (it may vanish, or an
+ * ordinary file may be swapped for a link); either answer is still a correct refusal, and a failed
+ * `lstat` keeps the errno's own `already-exists`.
+ */
+function classifyExisting(path, refusal, lstat) {
+	try {
+		if (lstat(path).isSymbolicLink()) {
+			return fail(
+				CODES.SYMLINK_LEAF,
+				`${path} is a symlink, planted where the file was to be created — creation never follows it, and the link's target is untouched`,
+			);
+		}
+	} catch {
+		// Raced away or unreadable: the errno's answer stands, and it is the safe one.
+	}
+	return refusal;
+}
+
 function writeAll(fd, data) {
 	const buffer = Buffer.isBuffer(data) ? data : Buffer.from(String(data), "utf8");
 	let offset = 0;
@@ -448,10 +556,11 @@ function writeAll(fd, data) {
 
 /**
  * Create a file exclusively, no-follow: `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW`, mode 0600. An existing
- * path — file, symlink or dangling symlink — is `already-exists`. `root` is required: this module has
- * no unconfined write.
+ * path — file, symlink or dangling symlink — is refused; a symlink is named `symlink-leaf` by an
+ * advisory `lstat` after the refusal (`classifyExisting`), everything else `already-exists`. `root` is
+ * required: this module has no unconfined write.
  */
-export function createExclusive(target, data, { root } = {}) {
+export function createExclusive(target, data, { root, lstat = lstatSync } = {}) {
 	if (root === undefined) return fail(CODES.OUTSIDE_ROOT, "createExclusive needs the root it is confined to");
 	const confined = confine(root, target);
 	if (!confined.ok) return confined;
@@ -459,7 +568,9 @@ export function createExclusive(target, data, { root } = {}) {
 	const opened = openNoFollow(path, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, {
 		exclusive: true,
 	});
-	if (!opened.ok) return opened;
+	if (!opened.ok) {
+		return opened.code === CODES.ALREADY_EXISTS ? classifyExisting(path, opened, lstat) : opened;
+	}
 	const { fd } = opened;
 	try {
 		const bytes = writeAll(fd, data);
@@ -476,6 +587,10 @@ export function createExclusive(target, data, { root } = {}) {
  * Append to a file, creating it if missing: `O_CREAT|O_WRONLY|O_APPEND|O_NOFOLLOW`, mode 0600. A
  * planted leaf symlink is refused by `O_NOFOLLOW` with the target untouched, and a second legitimate
  * append still works — that is the findings bank.
+ *
+ * `bytes` is the chunk just written and `total` is the file's size afterwards (#516): two appends of
+ * a 4-byte line read `bytes: 4` both times, so a caller printing only `bytes` makes a 4-then-8-byte
+ * log indistinguishable from two 4-byte files.
  */
 export function appendBytes(target, data, { root } = {}) {
 	if (root === undefined) return fail(CODES.OUTSIDE_ROOT, "appendBytes needs the root it is confined to");
@@ -489,7 +604,7 @@ export function appendBytes(target, data, { root } = {}) {
 	const { fd } = opened;
 	try {
 		const bytes = writeAll(fd, data);
-		return { ok: true, path, bytes };
+		return { ok: true, path, bytes, total: fstatSync(fd).size };
 	} catch (error) {
 		return fail(CODES.IO, `cannot append to ${path} (${codeOf(error) || describe(error)})`);
 	} finally {
@@ -526,7 +641,7 @@ export function readRegular(target, { root = null } = {}) {
 		if (!stats.isFile()) {
 			return fail(
 				CODES.NOT_REGULAR,
-				`${path} is not a regular file (mode 0${(stats.mode & 0o777).toString(8)}) — a FIFO would block the reader and a device is not a record`,
+				`${path} is not a regular file (mode ${formatMode(stats.mode)}) — a FIFO would block the reader and a device is not a record`,
 			);
 		}
 		return { ok: true, path, bytes: readFileSync(fd) };

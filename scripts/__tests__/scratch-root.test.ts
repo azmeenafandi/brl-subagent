@@ -20,16 +20,22 @@
  *    null` and staleness rests on pid liveness plus the start-time comparison alone;
  *  - a live reboot. Persistence is inferred from the record's mount being non-tmpfs (`findmnt`), which
  *    is what the acceptance states — the reboot itself is not performed.
+ *  - the mount check itself (#516) is Linux-only, so these probes do NOT cover a non-Linux mount type
+ *    (macOS/BSD `f_type` values are never consulted), NFS (the server decides), or a root that becomes
+ *    a mount point AFTER it was validated. The `/dev/shm` probe is a REAL tmpfs on this host, and it
+ *    prints why it skipped when the host has none — a CI run must say what it did not check.
  */
 import { spawn, spawnSync } from "node:child_process";
 import {
 	chmodSync,
+	existsSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	readdirSync,
 	rmSync,
+	statfsSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -38,6 +44,7 @@ import { join, relative } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
 	FILE_MODE,
+	TMPFS_MAGIC,
 	acquireLock,
 	appendBytes,
 	atomicReplace,
@@ -50,6 +57,7 @@ import {
 	describeHolder,
 	ensureDir,
 	ensureRoot,
+	formatMode,
 	liveness,
 	lockPath,
 	processStartTime,
@@ -67,6 +75,21 @@ const CLI = join(REPO, "scripts", "scratch-root.mjs");
 const UID = currentUid();
 const hasMkfifo = spawnSync("mkfifo", ["--version"], { encoding: "utf8" }).status === 0;
 const hasFindmnt = spawnSync("findmnt", ["--version"], { encoding: "utf8" }).status === 0;
+
+/** `/dev/shm` is a real `tmpfs` on a normal Linux host — the one mount probe that is not a seam. */
+const SHM = "/dev/shm";
+const shmIsTmpfs = (() => {
+	try {
+		return statfsSync(SHM).type === TMPFS_MAGIC;
+	} catch {
+		return false;
+	}
+})();
+if (!shmIsTmpfs) {
+	console.warn(
+		`[scratch-root] SKIP real-tmpfs probe: ${SHM} is absent or not a tmpfs here — the tmpfs refusal was NOT checked against a real mount`,
+	);
+}
 
 /**
  * Scratch roots live inside the checkout, NOT under `/tmp`: `/tmp` is mode 1777, so a root under it is
@@ -235,6 +258,77 @@ describe("scratch-root — the root predicate (two zones, trust by ownership)", 
 	});
 });
 
+describe("scratch-root — the mount property is enforced, not asserted (#516)", () => {
+	it("refuses a tmpfs root through the statfs seam, and init creates nothing on it", () => {
+		const base = sandbox("tmpfs-seam");
+		const root = join(base, "created", "deeper");
+		const verdict = ensureRoot(root, { statfs: () => ({ type: TMPFS_MAGIC }), platform: "linux" });
+		expect(verdict).toMatchObject({ ok: false, code: "tmpfs" });
+		expect(verdict.message).toContain("does not survive a reboot");
+		// The probe is the DEEPEST EXISTING component: the root does not exist, so the ancestor decides.
+		expect(verdict.message).toContain(base);
+		expect(verdict.message).toContain("does not exist yet");
+		expect(list(base)).toEqual([]);
+	});
+
+	it("probes the deepest existing component — the root itself when it exists", () => {
+		const root = sandbox("deepest");
+		const seen: string[] = [];
+		const statfs = (path: string) => {
+			seen.push(path);
+			return { type: 0 };
+		};
+		expect(validateRoot(root, { statfs, platform: "linux" }).ok).toBe(true);
+		expect(seen).toEqual([root]);
+		seen.length = 0;
+		expect(ensureRoot(join(root, "not", "yet"), { statfs, platform: "linux" }).ok).toBe(true);
+		expect(seen).toEqual([root]);
+	});
+
+	it("refuses when the mount type cannot be determined — fail-closed, never a silent pass", () => {
+		const root = sandbox("statfs-error");
+		const statfs = () => {
+			throw Object.assign(new Error("vanished"), { code: "ENOENT" });
+		};
+		expect(validateRoot(root, { statfs, platform: "linux" })).toMatchObject({ ok: false, code: "unresolvable" });
+	});
+
+	it("skips the mount check off Linux — asserted through the platform seam, not the real one", () => {
+		const root = sandbox("mount-elsewhere");
+		const statfs = () => {
+			throw new Error("statfs must not be consulted off Linux");
+		};
+		expect(validateRoot(root, { statfs, platform: "darwin" }).ok).toBe(true);
+		expect(ensureRoot(join(root, "made-elsewhere"), { statfs, platform: "freebsd" }).ok).toBe(true);
+	});
+
+	it.skipIf(!shmIsTmpfs)(`refuses a REAL tmpfs mount (${SHM}) with nothing created on it`, () => {
+		const root = join(SHM, `brl-516-probe-${process.pid}`);
+		const verdict = ensureRoot(root);
+		expect(verdict, JSON.stringify(verdict)).toMatchObject({ ok: false, code: "tmpfs" });
+		expect(verdict.message).toContain(SHM);
+		expect(existsSync(root)).toBe(false);
+	});
+
+	it("prints 1777 for a sticky directory — the mode on disk, not the low nine bits", () => {
+		expect(formatMode(0o1777)).toBe("1777");
+		expect(formatMode(0o755)).toBe("0755");
+		expect(formatMode(0o40755)).toBe("0755");
+		const base = sandbox("sticky");
+		const root = join(base, "root");
+		mkdirSync(root, { mode: 0o700 });
+		chmodSync(base, 0o1777);
+		try {
+			const verdict = validateRoot(root);
+			expect(verdict).toMatchObject({ ok: false, code: "ancestor-writable" });
+			expect(verdict.message).toContain("1777");
+		} finally {
+			chmodSync(base, 0o700);
+		}
+		expect(validateRoot(root).ok).toBe(true);
+	});
+});
+
 describe("scratch-root — create, append, read (explicit numeric flags, no follows)", () => {
 	it("creates exclusively at 0600 and never clobbers", () => {
 		const root = sandbox("create");
@@ -246,15 +340,34 @@ describe("scratch-root — create, append, read (explicit numeric flags, no foll
 		expect(read(file)).toBe("one\n");
 	});
 
-	it("refuses a planted leaf symlink on create, and its target is unchanged", () => {
+	it("refuses a planted leaf symlink on create, names the link, and its target is unchanged", () => {
 		const root = sandbox("create-symlink");
 		const victim = join(root, "victim.md");
 		writeFileSync(victim, "untouched\n", { mode: 0o600 });
 		const planted = join(root, "planted.md");
 		symlinkSync(victim, planted);
-		expect(createExclusive(planted, "attacker\n", { root })).toMatchObject({ ok: false, code: "already-exists" });
+		const refused = createExclusive(planted, "attacker\n", { root });
+		expect(refused).toMatchObject({ ok: false, code: "symlink-leaf" });
+		expect(refused.message).toContain("symlink");
+		expect(refused.message).toContain("untouched");
 		expect(read(victim)).toBe("untouched\n");
 		expect(lstatSync(planted).isSymbolicLink()).toBe(true);
+		// A dangling link is planted for the same reason and is classified the same way.
+		const dangling = join(root, "dangling.md");
+		symlinkSync(join(root, "never-created.md"), dangling);
+		expect(createExclusive(dangling, "attacker\n", { root })).toMatchObject({ ok: false, code: "symlink-leaf" });
+		expect(existsSync(join(root, "never-created.md"))).toBe(false);
+	});
+
+	it("separates an ordinary existing file from a planted link, and appends report the resulting size", () => {
+		const root = sandbox("append-total");
+		const file = join(root, "bank.md");
+		// An ordinary file keeps the errno's own answer: nothing is wrapped in a second vocabulary.
+		writeFileSync(file, "one\n", { mode: 0o600 });
+		expect(createExclusive(file, "two\n", { root })).toMatchObject({ ok: false, code: "already-exists" });
+		expect(appendBytes(file, "two\n", { root })).toMatchObject({ ok: true, bytes: 4, total: 8 });
+		expect(appendBytes(file, "three\n", { root })).toMatchObject({ ok: true, bytes: 6, total: 14 });
+		expect(read(file)).toBe("one\ntwo\nthree\n");
 	});
 
 	it("refuses a planted leaf symlink on append, and a second legitimate append still works", () => {
@@ -489,6 +602,20 @@ describe("scratch-root — the CLI a bash-only reviewer uses", () => {
 		const escape = cli(["create", join(sandbox("cli-outside"), "x.md"), "--root", root], "x");
 		expect(escape.status).toBe(EXIT.REFUSED);
 		expect(escape.stderr).toContain("outside-root");
+	});
+
+	it("prints the appended bytes AND the resulting size, so a log line is unambiguous", () => {
+		const root = sandbox("cli-total");
+		const first = cli(["append", "bank.md", "--root", root], "one\n");
+		expect(first.status, first.stderr).toBe(EXIT.OK);
+		expect(first.stdout).toContain("appended 4 bytes to");
+		expect(first.stdout).toContain("(total 4)");
+		const second = cli(["append", "bank.md", "--root", root], "two\n");
+		expect(second.stdout).toContain("appended 4 bytes to");
+		expect(second.stdout).toContain("(total 8)");
+		// `--json` carries the same two numbers, so a shell caller need not parse the prose.
+		const json = JSON.parse(cli(["append", "bank.md", "--root", root, "--json"], "3\n").stdout);
+		expect(json).toMatchObject({ ok: true, command: "append", bytes: 2, total: 10 });
 	});
 
 	it("exits 2 on a bad invocation and reports one object with --json", () => {
