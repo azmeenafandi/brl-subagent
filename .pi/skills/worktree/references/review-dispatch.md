@@ -68,11 +68,15 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
 
   The verdict still lives in the final response; banking exists so a drop/timeout
   leaves a resumable artifact (Rule 21's live artifact) — a re-dispatch then starts
-  with "read the banked file first". `<root>` is `~/.cache/brl-subagent` (0700, ours),
-  NOT `/tmp`: `/tmp` is `tmpfs` and world-writable, so a record there dies at reboot and
-  anyone can pre-create the path. `scratch-root.mjs append` creates the file at 0600 with
+  with "read the banked file first". `<root>` is `~/.cache/brl-subagent` — **0700, owned by us,
+  reached through ancestors with no group/other write, and (Linux) refused `tmpfs`**: that is the
+  enforced predicate, not a claim about `/tmp`, which a root can never be (too shallow, and `1777`
+  where a root needs `0700`). A record on a `tmpfs` filesystem dies at reboot, so the tool refuses
+  one with `refused (tmpfs)` naming the filesystem rather than writing into it.
+  `scratch-root.mjs append` creates the file at 0600 with
   `O_NOFOLLOW`, so a planted symlink is refused rather than followed, and a second append
-  still works.
+  still works — its line says `appended <n> bytes to <path> (total <m>)`, so the log states both
+  the chunk and the file size after it.
 - **The record is written by `scripts/review-record.mjs`, with bash, BEFORE the
   final message** — one command, not a heredoc (the heredoc is how S4/S5/S6 got
   their shape; #487):
@@ -186,12 +190,17 @@ node scripts/review-record.mjs --pr <n> \
 ```
 
 - **The destination is private and keyed to the PR** (#512): with no `--out` the record goes to
-`<root>/review-<n>/REVIEW_<n>.md`, where `<root>` is `~/.cache/brl-subagent` (0700, owned by
-us, on a non-tmpfs mount). The directory is created at 0700 if missing and the file at 0600,
-written to a temp name in that directory and renamed into place, so a reader sees the old
-complete record or the new one. An explicit `--out` is honoured but its **directory** must pass
-the same predicate — `/tmp` is refused `ancestor-writable` and the message names the default —
-because group/other write on a directory is rename authority over the file in it. `--check` and
+`<root>/review-<n>/REVIEW_<n>.md`, where `<root>` is `~/.cache/brl-subagent`. The root is
+**enforced**, and this is the whole list: mode `0700`, owned by us, every ancestor a real directory
+with no group/other write, and — **on Linux only** — refused `tmpfs` when the deepest existing
+directory of the chain is on a `tmpfs` filesystem (off Linux the mount check is skipped; the magic
+numbers are not portable and are not guessed). The directory is created at 0700 if missing and the
+file at 0600, written to a temp name in that directory and renamed into place, so a reader sees the
+old complete record or the new one. An explicit `--out` is honoured but its **directory** must pass
+the ownership and write-authority clauses — `/tmp` is refused `ancestor-writable` and the message
+names the default — because group/other write on a directory is rename authority over the file in
+it; a `--out` directory is not mount-checked, so the durability promise belongs to the private
+root, not to an explicit destination. `--check` and
 `--verify` stay unrestricted, so a record written before #512 still verifies.
 - **Every write path takes a lock** (#512): `<dir>/.REVIEW_<n>.md.lock` is taken BEFORE the prior
 record is read, so the head refusal and the supersede chain are decided on the bytes on disk now

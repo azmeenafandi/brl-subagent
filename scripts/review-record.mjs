@@ -19,8 +19,10 @@
 //   PR, not to the run: a second review of the same PR meets the same prior record, the same
 //   prior-head refusal and the same supersede chain.
 //
-//   private     the default destination is a validated 0700 root (`scripts/lib/scratch-root.mjs`).
-//               An explicit `--out` is still honoured, but its directory must pass the same
+//   private     the default destination is a validated 0700 root (`scripts/lib/scratch-root.mjs`),
+//               owned by us, with no group/other write on any ancestor — and, on Linux, refused
+//               `tmpfs` when the filesystem is one, because a record there does not survive a
+//               reboot. An explicit `--out` is still honoured, but its directory must pass the same
 //               predicate — `/tmp` is refused `ancestor-writable`, and the message names the default
 //               — because group/other write on a directory is rename authority over the file in it.
 //               There is no temp-directory fallback: an invalid root is a refusal, not a relocation.
