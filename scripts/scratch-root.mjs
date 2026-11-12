@@ -18,6 +18,11 @@
 // `<root>/review-<pr>/`. A path outside the root is refused `outside-root` — there is no
 // unconfined write here, and no fallback to a system temp directory.
 //
+// `init`/`check` refuse a root whose filesystem is `tmpfs` on Linux (`refused (tmpfs)`) before
+// creating anything (#516): the root exists so a record survives a reboot, and `/run/user/<uid>` is a
+// 0700 directory we own on a filesystem that does not. `append` prints the appended bytes AND the
+// resulting size — `appended 4 bytes to <path> (total 8)` — so a log line is unambiguous.
+//
 // Exit: 0 ok · 1 a named refusal (the code is in the message) · 2 usage. `--json` prints one object
 // on every exit, so a caller never has to parse prose.
 import { readFileSync } from "node:fs";
@@ -168,7 +173,11 @@ export function main(argv = process.argv.slice(2), io = {}) {
 					root: rootCheck.root,
 					path: result.path,
 					bytes: result.bytes,
-					line: `${command === "create" ? "created" : "appended to"} ${result.path} (${result.bytes} bytes)`,
+					total: result.total,
+					line:
+						command === "create"
+							? `created ${result.path} (${result.bytes} bytes)`
+							: `appended ${result.bytes} bytes to ${result.path} (total ${result.total})`,
 				}
 			: { ok: false, command, root: rootCheck.root, path: target, ...result },
 	);
