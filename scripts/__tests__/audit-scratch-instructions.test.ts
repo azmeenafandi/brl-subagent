@@ -156,6 +156,22 @@ describe("audit — the tracked corpus gates", () => {
 		expect(result.out).toContain("fails closed");
 	});
 
+	it("finds the repository's own tracked corpus clean — the migration this audit shipped with", () => {
+		// The one case that is about THIS checkout rather than a planted one: #513 migrated every durable
+		// artifact path in `.pi/skills/**` to the private root, and this is the assertion that keeps it so.
+		const out: string[] = [];
+		const code = main(["--tracked", "--root", ROOT], { out: (line: string) => void out.push(line), err: () => undefined });
+		const hits = out.filter((line) => line.startsWith("hit:"));
+		expect(hits).toEqual([]);
+		expect(code).toBe(EXIT.OK);
+		expect(out.join("\n")).toContain("audit: 0 hit(s)");
+		// The probe-space and refusal mentions that legitimately stay in `/tmp` are printed, not dropped.
+		const printed = out.join("\n");
+		expect(printed).toContain("ok:  .pi/skills/worktree/references/engineering-bar.md");
+		expect(printed).toContain("probe-scratch");
+		expect(printed).toContain("refusal");
+	});
+
 	it("refuses an empty corpus — a scan of nothing is not a pass", () => {
 		const root = join(WORK, `empty-${(counter += 1)}`);
 		mkdirSync(join(root, TRACKED_CORPUS), { recursive: true });

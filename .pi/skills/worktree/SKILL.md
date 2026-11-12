@@ -174,18 +174,47 @@ never re-type their logic by hand. Full design:
     Default: dev-agent + no template — the safe fallback, never wrong.
 
     **Every brief banks its state (issue #401).** An IMPLEMENTATION brief names
-    the bank `/tmp/brl-<label>-bank.md` (`<label>` = the dispatch label) and
+    the bank `<root>/bank/<label>.md` (`<label>` = the dispatch label) and
     instructs: "append your working state before each major step / commit".
-    Reviews already bank `<root>/review-<n>/findings.md` — appended with
-    `node scripts/scratch-root.mjs append review-<n>/findings.md`, `<root>` =
-    `~/.cache/brl-subagent` (#512; `references/review-dispatch.md`) — and plan
-    critiques bank the same
-    `/tmp/brl-<label>-bank.md` shape. The bank is what a drop leaves behind: the
+    `<root>` is `~/.cache/brl-subagent` — the private root of #512: mode 0700,
+    ours, every ancestor non-writable, and (Linux) refused `tmpfs` — so the
+    append goes through the helper CLI, which creates the directory at 0700 and
+    the file at 0600 with `O_NOFOLLOW`:
+
+    ```bash
+    printf '%s\n' '<note>' | node scripts/scratch-root.mjs append bank/<label>.md
+    ```
+
+    Reviews bank `<root>/review-<n>/findings.md` the same way, and plan
+    critiques bank the same `<root>/bank/<label>.md` shape
+    (#512/#513; `references/review-dispatch.md`). **A bank in a system temp
+    directory is the one thing this convention refuses** (#513): `/tmp` does not
+    survive a reboot, and a resume is exactly the case where the machine may
+    have gone down. The bank is what a drop leaves behind: the
     transport auto-retry's resume block points the replayed run at it, so a
     reconnect re-reads instead of redoing. Implementation briefs also restate
     **commit-per-step**: commit + push each green step, so the retry's
     `git log` is the progress report (the 2026-10-06 `connection-drop-grind`
     lesson — eight dead runs, ~3 minutes lost).
+
+    **The ignored overrides outrank the shipped text (issue #513).**
+    `.pi/brl-subagent/templates/*.md` and `.pi/brl-subagent/presets/*.md` are
+    gitignored, project-local, and resolved BEFORE the shipped files at dispatch
+    time (`src/templates.ts`, `src/presets.ts` — the shipped copy is the
+    fallback, not the default). Two consequences a conductor has to hold:
+    (a) a worktree does not have them, so a dispatch reads the cockpit's copy;
+    (b) **editing the shipped template or preset is not enforcement** — a local
+    override carrying live instructions wins no matter what the repo says. The
+    check, since nothing can enforce them for you:
+
+    ```bash
+    node scripts/audit-scratch-instructions.mjs                          # tracked corpus; exits 1 on a hit
+    node scripts/audit-scratch-instructions.mjs --overrides               # names every override with a temp path (warns)
+    node scripts/audit-scratch-instructions.mjs --overrides --strict      # gate instead of warn
+    ```
+
+    It prints its corpus, its exclusions and the rule it applied, so a verdict
+    is auditable; it never writes the files it names.
 15. **Spec environment verification (Rule 15).** Before dispatching any
     delegation, verify that every file, directory, and resource referenced in
     the spec exists in the subagent's WORKTREE (the cockpit is a different
@@ -235,7 +264,7 @@ never re-type their logic by hand. Full design:
     of omitting — background runs default to a 30-minute deadline (`DEFAULT_BACKGROUND_DEADLINE_MS`, applied as
     `spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS`), which cut the #295 review's mutation probes on
     2026-10-09. The 2h cap is ~8–10× the observed p90 of successful dispatches; the banking convention
-    (`/tmp` findings files) makes a cap-hit cheap to resume. The bound is the user's monitor + the worktree
+    (`<root>/bank/<label>.md`) makes a cap-hit cheap to resume. The bound is the user's monitor + the worktree
     oracle, never a tight clock.
 19. **Coverage assertion (Rule 19 — the partial-read class).** A search or read
     whose silent truncation or filter boundary is read as completeness is this
@@ -273,7 +302,7 @@ never re-type their logic by hand. Full design:
     - **Liveness** → the run-status surface or the user-visible monitor. **Never**
       infer death from a settle-time artifact: `.pi/output/agent-<id>.jsonl` is
       written when a run SETTLES, so a frozen file says nothing about a live run.
-      The incremental `/tmp` findings file is the live artifact.
+      The incremental `<root>/review-<n>/findings.md` findings file is the live artifact.
     - **State** ("nothing is in flight", "the tree is clean") → the command that
       showed it.
 
