@@ -47,11 +47,19 @@ is open, and what is next.
 drift. Run it **before** committing the handoff:
 
 ```
+node scripts/suite-report.mjs --capture             # run the suite into <root>/reports/<head>.json + provenance
 node scripts/handoff-verify.mjs                 # exit 0 every claim holds · 1 drift · 2 cannot check
-node scripts/handoff-verify.mjs --report <json> # pin the suite report (default: newest under /tmp)
+node scripts/handoff-verify.mjs --report <json> # pin the suite report (default: <root>/reports — one per head)
+node scripts/handoff-verify.mjs --report-dir <dir> # scan another directory instead (two candidates = a refusal)
 node scripts/handoff-verify.mjs --issues <json> # pin the board (`gh issue list --json number`) — no network
 node scripts/handoff-verify.mjs --no-network    # skip the gh open-set check, and print that it skipped
 ```
+
+`<root>` is `~/.cache/brl-subagent`, the private root of #512. The report is read through
+`scripts/lib/suite-report.mjs` (#513): the test count is DERIVED from `assertionResults`, so a
+report whose results are empty is refused by a named code instead of counted, and the count line
+carries the report's provenance — the head it was captured at, `unattributed (dirty tree)`, or
+`provenance: absent`. Capture with `--capture` and the default path always has provenance.
 
 It checks seven things: the `Verified:` range (an ancestor of HEAD, and every commit on `dev` after it
 touching only the handoff and its archives), the `dev @ <sha>` line, the `Running install:` path and its

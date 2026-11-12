@@ -342,7 +342,7 @@ dates, and historical framing. The binding rules (with their numbers) live in
     - **Liveness** → the run-status surface or the user-visible monitor. **Never** infer
       death from a settle-time artifact: `.pi/output/agent-<id>.jsonl` is written when a
       run SETTLES (its mtime equals the settle timestamp), so a frozen file says nothing
-      about a live run. The incremental `/tmp` findings file is the live artifact.
+      about a live run. The incremental `<root>/review-<n>/findings.md` findings file is the live artifact.
     - **State** ("nothing is in flight", "the tree is clean") → the command that showed it.
     The #204 class applied to prose: a partial or absent observation presented as complete.
 

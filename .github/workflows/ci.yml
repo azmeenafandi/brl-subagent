@@ -47,6 +47,12 @@ jobs:
       # ratio PER SURFACE — src <= 2.0 (warning band at 1.95) and scripts <= 1.0 — plus a floor
       # check: every top-level scripts/*.mjs must be imported by a test. Ceilings, not targets.
       - run: node scripts/check-test-budget.mjs vitest-report.json
+      # The tracked instruction surface (#513): a durable artifact — a bank, a findings file, a report —
+      # may not be placed in a system temp directory, because the resume it exists for is exactly the
+      # case where the machine went down. Probe scratch ("scratch repos in /tmp") and a description of
+      # the #512 refusal are printed as non-hits, not failed. The gitignored .pi/brl-subagent overrides
+      # are a separate, warn-only scan and are deliberately NOT gated here: they are not in the repo.
+      - run: node scripts/audit-scratch-instructions.mjs
       # The Jev ritual's mechanical gate (issue #366): the dispatch-line formatter's selftest, then
       # an audit of the calibration log — every row since the strict-Jev cutoff (2026-10-12) must
       # carry a queried confidence or an explicit gap marker. A bare level is a finding.

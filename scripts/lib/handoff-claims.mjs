@@ -243,7 +243,7 @@ export function parseClaims(text) {
 // The probe is the seam the caller fills in:
 //   headSha() devSha() devClaimSha() · isAncestor(sha) · commitsAfter(sha) -> [{sha, paths}] · exists(path)
 //   lineCount(name) -> {path, lines} | null · modules() · adrs() · openIssues() -> number[]
-//   report() -> {path, files, tests} | null · root
+//   report() -> {path, files, tests, label} | null · root
 // Every fact is a function so an unanswerable check fails at its own check, with its own message.
 // ---------------------------------------------------------------------------
 
@@ -439,20 +439,23 @@ function checkSuite(claims, probe) {
 	if (report === null) {
 		// "Cannot check" is never a pass: no report means the count has no evidence this run.
 		throw new InputError(
-			"no vitest JSON report found — run `npx vitest run --reporter=json --outputFile=<path>` or pass --report <path>",
+			"no vitest JSON report found — capture one with `node scripts/suite-report.mjs --capture`, or pass --report <path>",
 		);
 	}
+	// The provenance travels with the count (#513): a pass line that names only a path lets a report of
+	// another tree, or of a dirty one, read as if it were this tree's.
+	const provenance = typeof report.label === "string" && report.label !== "" ? ` (${report.label})` : "";
 	const expected = `${report.files} file${report.files === 1 ? "" : "s"} / ${report.tests} test${report.tests === 1 ? "" : "s"}`;
 	const claim = `Suite: ${claims.suite.files} files / ${claims.suite.tests} tests`;
 	if (report.files === claims.suite.files && report.tests === claims.suite.tests) {
-		return pass(claim, `${claim} — the vitest report at ${report.path}`);
+		return pass(claim, `${claim} — the vitest report at ${report.path}${provenance}`);
 	}
 	return drift(
 		CODES.suiteCountDrift,
 		claim,
 		expected,
 		`${claims.suite.files} files / ${claims.suite.tests} tests`,
-		`the STATE claims ${claims.suite.files} files / ${claims.suite.tests} tests but the vitest report at ${report.path} has ${expected}`,
+		`the STATE claims ${claims.suite.files} files / ${claims.suite.tests} tests but the vitest report at ${report.path}${provenance} has ${expected}`,
 	);
 }
 

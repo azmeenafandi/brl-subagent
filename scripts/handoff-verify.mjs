@@ -8,7 +8,8 @@
 // without a repo, a network or a subprocess.
 //
 //   node scripts/handoff-verify.mjs [--file .development/HANDOFF.md] [--report <vitest.json>]
-//                                   [--issues <gh-issue-list.json>] [--no-network] [--json]
+//                                   [--report-dir <dir>] [--issues <gh-issue-list.json>]
+//                                   [--no-network] [--json]
 //
 // Exit 0 every claim holds · 1 drift, one named code per failing claim · 2 usage, a missing/unreadable
 // input, or an environment that cannot answer (no `dev` ref, no vitest report, `gh` unavailable). A drift
@@ -27,9 +28,12 @@
 //   open set              `gh issue list --state open --limit 1000`, or `--issues <json>` (a gh-format
 //                         array). `--issues` wins over `--no-network`: the check then runs offline.
 //                         `--no-network` without `--issues` skips the check AND prints that it skipped.
-//   suite counts          a vitest JSON report: `--report <path>`, else the newest parseable report
-//                         directly under /tmp. The report's path is printed with the verdict, so a count
-//                         is never shown without the provenance of what produced it (Rule 11, #488).
+//   suite counts          a vitest JSON report, validated by `scripts/lib/suite-report.mjs` (#513):
+//                         `--report <path>` wins, else the reports under `--report-dir` (default
+//                         `<root>/reports`, the #512 private root) are scanned — and two candidates are a
+//                         refusal naming both, never "newest". The report's path AND its provenance
+//                         (head · dirty · absent) are printed with the verdict, so a count is never shown
+//                         without the provenance of what produced it (Rule 11, #488).
 //   module/ADR counts     the repo's own generators (`docs-arch`, `docs-decisions`), imported rather than
 //                         re-counted so the guard and the generator cannot disagree.
 //   file sizes            `wc -l` — `countLines` from `scripts/check-test-budget.mjs`, one definition of
@@ -44,14 +48,14 @@
 //   • A drift means the CLAIM is wrong: fix the claim, never this script. It reads the shapes the handoff
 //     contract promises and nothing else — prose is not parsed, nothing is rewritten, nothing is fixed.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { countLines } from "./check-test-budget.mjs";
 import { collectDecisions } from "./docs-decisions.mjs";
 import { collectModules } from "./docs-arch.mjs";
 import { InputError, evaluate, isHandoffOwnCommit, parseClaims } from "./lib/handoff-claims.mjs";
+import { resolveReport } from "./lib/suite-report.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The checkout this script lives in — never a hard-coded cockpit path; `git rev-parse dev` works here. */
@@ -59,7 +63,7 @@ export const ROOT = join(HERE, "..");
 export const DEFAULT_FILE = join(".development", "HANDOFF.md");
 
 export const USAGE =
-	"usage: handoff-verify.mjs [--file <handoff>] [--report <vitest-json-report>] [--issues <gh-issue-list.json>] [--no-network] [--json]";
+	"usage: handoff-verify.mjs [--file <handoff>] [--report <vitest-json-report>] [--report-dir <dir>] [--issues <gh-issue-list.json>] [--no-network] [--json]";
 
 /**
  * The claims this tool refuses to check, printed with every verdict: a scope nobody states is a scope the
@@ -84,63 +88,6 @@ function describeError(error) {
 export function resolveModulePath(root, name) {
 	for (const candidate of [join(root, "src", name), join(root, name)]) {
 		if (existsSync(candidate)) return candidate;
-	}
-	return null;
-}
-
-/** The counts a vitest JSON report states: one per test file, and the PASSED tests (the claim says "green"). */
-export function readSuiteReport(path) {
-	let text;
-	try {
-		text = readFileSync(path, "utf8");
-	} catch (error) {
-		throw new InputError(`${path}: cannot read the vitest JSON report (${describeError(error)})`);
-	}
-	let report;
-	try {
-		report = JSON.parse(text);
-	} catch (error) {
-		throw new InputError(`${path}: not JSON (${describeError(error)})`);
-	}
-	const results = report?.testResults;
-	if (!Array.isArray(results) || results.length === 0) {
-		throw new InputError(`${path}: no testResults — is this vitest's json reporter output?`);
-	}
-	const tests =
-		typeof report.numPassedTests === "number"
-			? report.numPassedTests
-			: results.reduce((total, file) => total + (Array.isArray(file?.assertionResults) ? file.assertionResults.length : 0), 0);
-	return { path, files: results.length, tests };
-}
-
-/**
- * The newest parseable vitest JSON report directly under `dir` — mtime descending, then name descending so
- * a tie is still deterministic. Candidates that do not parse as a vitest report are skipped, which is why a
- * stray `/tmp/*.json` cannot make the check unanswerable.
- */
-export function findNewestReport(dir = tmpdir()) {
-	const candidates = readdirSync(dir, { withFileTypes: true })
-		.filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-		.map((entry) => {
-			const path = join(dir, entry.name);
-			try {
-				return { path, mtime: statSync(path).mtimeMs };
-			} catch {
-				// The entry vanished between the listing and the stat: not a candidate, not a fault.
-				return { path, mtime: -1 };
-			}
-		})
-		.filter((candidate) => candidate.mtime >= 0)
-		.sort((left, right) => right.mtime - left.mtime || (left.path < right.path ? 1 : -1));
-	for (const candidate of candidates) {
-		try {
-			const report = readSuiteReport(candidate.path);
-			// A zero-test report is a capture artefact (a probe or a filtered run), never a baseline: it would
-			// turn a correct handoff into a false suite-count-drift. Skip it like an unparseable file.
-			if (report.tests > 0) return report;
-		} catch {
-			// not a vitest report — keep looking
-		}
 	}
 	return null;
 }
@@ -257,9 +204,12 @@ export function resolveDevClaim(root) {
  * The repo side of every check, as one plain object — the single seam the tests replace. It takes the
  * SAME option names `parseArgs` produces (`report`, `issues`), because the two are joined by `main` and a
  * renamed side is how `--report <json>` and `--issues <json>` were silently dropped once. `report` is
- * resolved lazily so `--no-network` and a usage fault never pay for a `/tmp` scan.
+ * resolved lazily so `--no-network` and a usage fault never pay for a directory scan.
+ *
+ * The suite report itself is not read here any more (#513): `scripts/lib/suite-report.mjs` owns that, so
+ * the handoff's suite check and the PR body's `suite:` key cannot disagree about what a report is.
  */
-export function createRepoProbe(root, { report = "", issues = "" } = {}) {
+export function createRepoProbe(root, { report = "", reportDir = "", issues = "" } = {}) {
 	return {
 		root,
 		headSha: () => gitOrThrow(root, ["rev-parse", "HEAD"], "HEAD").trim(),
@@ -282,7 +232,7 @@ export function createRepoProbe(root, { report = "", issues = "" } = {}) {
 		modules: () => collectModules().length,
 		adrs: () => collectDecisions().length,
 		openIssues: () => readIssues({ root, issues }),
-		report: () => (report === "" ? findNewestReport() : readSuiteReport(report)),
+		report: () => resolveReport({ report, dir: reportDir }),
 	};
 }
 
@@ -293,6 +243,7 @@ export function createRepoProbe(root, { report = "", issues = "" } = {}) {
 const VALUE_FLAGS = new Map([
 	["--file", "file"],
 	["--report", "report"],
+	["--report-dir", "reportDir"],
 	["--issues", "issues"],
 ]);
 const BOOLEAN_FLAGS = new Map([
@@ -302,7 +253,7 @@ const BOOLEAN_FLAGS = new Map([
 
 /** `{ ok: true, options }` or `{ ok: false, message }` — never throws, never exits. */
 export function parseArgs(argv) {
-	const options = { file: "", report: "", issues: "", noNetwork: false, json: false };
+	const options = { file: "", report: "", reportDir: "", issues: "", noNetwork: false, json: false };
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
 		const booleanKey = BOOLEAN_FLAGS.get(argument);

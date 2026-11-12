@@ -57,6 +57,13 @@ node scripts/pr-evidence.mjs --check --pr <n>       # before requesting review
 Exit 0 clean · 1 drift · 2 usage, or a body that states a count with no block. A docs PR
 with no counts and no block passes — there is nothing to attribute.
 
+The `suite:` key is measured from a report resolved by `scripts/lib/suite-report.mjs` (#513):
+`<root>/reports/<head>.json` under the private root of #512, captured with
+`node scripts/suite-report.mjs --capture`, or pinned with `--report <path>`. `--check --pr <n>`
+passes the PR's head as the expected provenance, so a report captured at another commit is exit 2
+(`provenance-mismatch`), and a report whose count has no assertion results behind it is exit 2
+(`hollow-report`) — neither can become a passing `suite:` line.
+
 **A hand-typed count is a process gap, not a style nit.** Outside the block, a line that
 states a count (`N files`, `N tests`, `N lines`) drifts as `unattributed-count`; quote an
 old value inside a fenced block or a blockquote instead. The `← <command>` half of each
