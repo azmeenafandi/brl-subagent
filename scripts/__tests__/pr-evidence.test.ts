@@ -26,6 +26,10 @@
  * expected provenance, so the cases here pin the wiring rather than the validator: a hollow report
  * cannot become a `suite:` line, `--report` beats `--report-dir`, and a report captured at another
  * commit is refused. The validator's own cases live in `suite-report.test.ts`.
+ *
+ * COVERAGE — what these probes do NOT cover, stated rather than implied: a report mutated between
+ * validation and use (the values are read once and never re-read), and non-Linux paths (the `tmpfs`
+ * clause of the private root is not portable, so a root Linux would refuse is unexamined there).
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

@@ -20,6 +20,11 @@
  *
  * The fixtures are `.md` (and one `.json` report) under `fixtures/handoffs/` — invisible to the `scripts`
  * surface's LOC ceiling, and grep-able when a shape costs a handover.
+ *
+ * COVERAGE — what these probes do NOT cover, stated rather than implied: a report MUTATED between the
+ * read that validated it and the read that uses it (the tool consumes the validated snapshot and never
+ * re-opens the path), and non-Linux hosts (the private root's `tmpfs` clause is Linux-only, so a root
+ * that Linux refuses may be accepted where the mount type cannot be read).
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
