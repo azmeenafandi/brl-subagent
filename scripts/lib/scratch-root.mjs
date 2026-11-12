@@ -824,6 +824,11 @@ export function releaseLock(dir, name, holder = null) {
 		if (current.ok && !sameHolder(current.holder, holder)) {
 			return fail(CODES.LOCK_CHANGED, `${path} now belongs to ${describeHolder(current.holder)} — not ours to release`);
 		}
+		// An unreadable lock file is not proof that ours is gone: fail-closed, and leave it for the
+		// operator rather than deleting a file whose holder cannot be identified.
+		if (!current.ok && current.code !== CODES.NO_LOCK) {
+			return fail(CODES.LOCK_CHANGED, `cannot confirm ${path} is still ours (${current.code}) — leaving it in place`);
+		}
 	}
 	try {
 		unlinkSync(path);

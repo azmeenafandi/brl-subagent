@@ -449,6 +449,10 @@ describe("scratch-root — the lock: evidence, not age", () => {
 		// An unidentifiable lock file is reported, not silently unlinked either.
 		writeFileSync(lockPath(root, NAME), "not json\n");
 		expect(readLock(root, NAME)).toMatchObject({ ok: false, code: "unresolvable" });
+		// …and releasing cannot confirm it is ours, so it stays for the operator (fail-closed).
+		const unresolvable = releaseLock(root, NAME, { pid: process.pid, bootId: currentBootId(), startTime: "0" });
+		expect(unresolvable).toMatchObject({ ok: false, code: "lock-changed" });
+		expect(read(lockPath(root, NAME))).toBe("not json\n");
 	});
 });
 
