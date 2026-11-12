@@ -135,7 +135,10 @@ export function markReport(reportPath, options = {}) {
 	}
 	const written = atomicReplace(dirname(path), `${path}${PROVENANCE_SUFFIX}`, provenanceRecord(record), { root });
 	if (!written.ok) throw new ReportError(written.code, written.message);
-	return { path, sidecar: written.path, record, report };
+	// Re-read what landed instead of reusing the in-memory report: that object was read BEFORE the sidecar
+	// existed, so its label says `provenance: absent` and the capture line would report a label the file on
+	// disk does not carry. Reading it back is also what the gate will do, which is the claim being made.
+	return { path, sidecar: written.path, record, report: readSuiteReport(path) };
 }
 
 /**

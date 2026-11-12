@@ -365,6 +365,10 @@ describe("suite-report — the producer: --mark and --capture", () => {
 		const head = String(spawnSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout).trim();
 		const marked = markReport(path, { root, repo, now: () => "2026-11-11T00:00:00.000Z" });
 		expect(marked.record).toEqual({ head, dirty: false, capturedAt: "2026-11-11T00:00:00.000Z" });
+		// The report returned is the one that landed: its label is the sidecar just written, not the
+		// `provenance: absent` the file carried before this call.
+		expect(marked.report.label).toBe(`head ${head}`);
+		expect(marked.report.provenance).toEqual(marked.record);
 		expect(JSON.parse(readFileSync(marked.sidecar, "utf8"))).toEqual(marked.record);
 		expect(readProvenance(path).provenance?.head).toBe(head);
 
