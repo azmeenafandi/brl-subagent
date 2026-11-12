@@ -284,7 +284,13 @@ export function main(argv = process.argv.slice(2), io = {}) {
 			return EXIT.USAGE;
 		}
 		if (report.files.length === 0) {
-			err(`audit-scratch-instructions: ${mode}: the corpus is empty — a scan of nothing is not a pass`);
+			// Fail closed, with the fix: an empty corpus answers nothing, and the common cause is a
+			// worktree — which by design does not carry the gitignored overrides the dispatch reads.
+			const hint =
+				mode === MODES.OVERRIDES
+					? `no .pi/brl-subagent overrides under ${root} — a worktree does not carry them; pass --root <cockpit> to audit the checkout a dispatch actually reads`
+					: `no .md files under ${join(root, TRACKED_CORPUS)}`;
+			err(`audit-scratch-instructions: ${mode}: the corpus is empty (${hint}) — a scan of nothing is not a pass`);
 			return EXIT.USAGE;
 		}
 		for (const line of renderReport({ mode, report, strict })) out(line);
