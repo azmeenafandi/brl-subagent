@@ -21,6 +21,11 @@
  *
  * The git seam is exercised for real in a throwaway repo (head resolution, the diff counts, and the
  * `src-diff-lines: 0` landmine), while `gh` is replaced by a plain object — the suite needs no network.
+ *
+ * The suite report is read through `scripts/lib/suite-report.mjs` (#513) with THIS tree's head as the
+ * expected provenance, so the cases here pin the wiring rather than the validator: a hollow report
+ * cannot become a `suite:` line, `--report` beats `--report-dir`, and a report captured at another
+ * commit is refused. The validator's own cases live in `suite-report.test.ts`.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -45,6 +50,22 @@ import {
 const FIXTURES = join(ROOT, "scripts", "__tests__", "fixtures", "pr-evidence");
 const HEAD = "8e7f6a5c4b3a2918171615141312111009080706";
 const OTHER = "4c1d9ab2f1e0c3d4e5f60718293a4b5c6d7e8f90";
+
+/** `n` passed assertions — the only shape that makes a report evidence (#513). */
+function assertions(n: number): { fullName: string; status: string }[] {
+	return Array.from({ length: n }, (_unused, index) => ({ fullName: `t${index}`, status: "passed" }));
+}
+
+/** A green report body of `tests` assertions in `files` result entries. */
+function suiteBody(files: number, tests: number): unknown {
+	return {
+		numTotalTests: tests,
+		numPassedTests: tests,
+		testResults: Array.from({ length: files }, (_unused, index) => ({
+			assertionResults: assertions(index === 0 ? tests - (files - 1) : 1),
+		})),
+	};
+}
 
 function text(name: string): string {
 	return readFileSync(join(FIXTURES, `${name}.md`), "utf8");
@@ -328,6 +349,15 @@ describe("pr-evidence — the CLI", () => {
 		expect(JSON.parse(json.out).evidence.suite).toEqual(ACTUAL.suite);
 	});
 
+	it("prints the report's path AND its provenance on stderr, never inside the block", async () => {
+		const labelled = run(["--emit"], stubProbe({ suite: () => ({ files: ACTUAL.suite.files, tests: ACTUAL.suite.tests, path: "/reports/head.json", label: "unattributed (dirty tree)" }) }));
+		expect(labelled.code).toBe(EXIT.OK);
+		expect(labelled.err).toContain("/reports/head.json (unattributed (dirty tree))");
+		// Determinism: the path and the label are provenance, not block content.
+		expect(labelled.out).not.toContain("/reports/head.json");
+		expect(labelled.out).not.toContain("dirty tree");
+	});
+
 	it("--emit is byte-identical between runs", async () => {
 		expect(run(["--emit"]).out).toBe(run(["--emit"]).out);
 	});
@@ -412,8 +442,9 @@ describe("pr-evidence — the CLI", () => {
 		expect(run(["--check", "--body", "/no/such/body.md"]).code).toBe(EXIT.USAGE);
 	});
 
-	it("parseArgs accepts the three modes and rejects a second one", () => {
+	it("parseArgs accepts the three modes, --report-dir, and rejects a second mode", () => {
 		expect(parseArgs(["--emit"])).toMatchObject({ ok: true, options: { mode: "emit", base: "" } });
+		expect(parseArgs(["--check", "--body", "b.md", "--report-dir", "d"]).options).toMatchObject({ mode: "check", reportDir: "d" });
 		expect(parseArgs(["--check", "--body", "b.md"]).ok).toBe(true);
 		expect(parseArgs(["--apply", "--pr", "9"]).ok).toBe(true);
 		expect(parseArgs(["--emit", "--check"])).toMatchObject({ ok: false, message: "one mode at a time" });
@@ -490,9 +521,35 @@ describe("pr-evidence — the git seam (real git, no gh)", () => {
 	it("reads a suite report and refuses to invent one", async () => {
 		const { dir } = repo("report");
 		const report = join(dir, "report.json");
-		writeFileSync(report, JSON.stringify({ startTime: 0, testResults: [{ endTime: 10 }, { endTime: 20 }], numPassedTests: 7 }));
-		expect(createEvidenceProbe(dir, { report }).suite()).toEqual({ files: 2, tests: 7, path: report });
+		writeFileSync(report, JSON.stringify({ numPassedTests: 7, testResults: [{ assertionResults: assertions(3) }, { assertionResults: assertions(4) }] }));
+		expect(createEvidenceProbe(dir, { report }).suite()).toMatchObject({ files: 2, tests: 7, path: report, label: "provenance: absent" });
 		expect(() => createEvidenceProbe(dir, { report: join(dir, "nope.json") }).suite()).toThrow(/cannot read/);
+	});
+
+	it("refuses a hollow report, so a pass count with nothing behind it cannot become a suite line", async () => {
+		const { dir } = repo("hollow");
+		const report = join(dir, "hollow.json");
+		writeFileSync(report, JSON.stringify({ numPassedTests: 9999, testResults: [{}] }));
+		expect(() => createEvidenceProbe(dir, { report }).suite()).toThrow(/hollow-report/);
+	});
+
+	it("resolves --report-dir against the head the numbers describe, and never ranks candidates", async () => {
+		const { dir } = repo("report-dir");
+		const reports = join(dir, "reports");
+		mkdirSync(reports);
+		const mine = join(reports, "mine.json");
+		const theirs = join(reports, "theirs.json");
+		writeFileSync(mine, JSON.stringify(suiteBody(2, 7)));
+		writeFileSync(theirs, JSON.stringify(suiteBody(2, 11)));
+		const writeSidecar = (report: string, head: string) =>
+			writeFileSync(`${report}.provenance.json`, JSON.stringify({ head, dirty: false, capturedAt: "2026-11-11T00:00:00.000Z" }));
+		writeSidecar(mine, HEAD);
+		writeSidecar(theirs, OTHER);
+		expect(createEvidenceProbe(dir, { reportDir: reports }).suite(HEAD)).toMatchObject({ path: mine, tests: 7 });
+		// Without a head, two candidates are a refusal naming both — never "the newest".
+		expect(() => createEvidenceProbe(dir, { reportDir: reports }).suite()).toThrow(/ambiguous-reports/);
+		// A report captured at another tree is not evidence about this one.
+		expect(() => createEvidenceProbe(dir, { report: theirs }).suite(HEAD)).toThrow(/provenance-mismatch/);
 	});
 
 	it("sums numstat text without turning a binary diff into NaN", async () => {

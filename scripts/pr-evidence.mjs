@@ -7,9 +7,9 @@
 // #488's first answer (`value ← command`, re-run in review) still trusts a paste; this tool removes the
 // paste: the block is EMITTED from the repo, and `--check` RECOMPUTES every key and compares.
 //
-//   node scripts/pr-evidence.mjs --emit   [--base <ref>] [--head <sha>] [--report <json>]
-//   node scripts/pr-evidence.mjs --check  (--body <file> | --pr <n>) [--base <ref>] [--report <json>]
-//   node scripts/pr-evidence.mjs --apply  --pr <n>            [--base <ref>] [--report <json>]
+//   node scripts/pr-evidence.mjs --emit   [--base <ref>] [--head <sha>] [--report <json>] [--report-dir <dir>]
+//   node scripts/pr-evidence.mjs --check  (--body <file> | --pr <n>) [--base <ref>] [--report <json>] [--report-dir <dir>]
+//   node scripts/pr-evidence.mjs --apply  --pr <n>            [--base <ref>] [--report <json>] [--report-dir <dir>]
 //   every mode also takes --json.
 //
 // Exit 0 clean · 1 drift (one named code per finding) · 2 usage, an input that cannot be read, an
@@ -26,9 +26,11 @@
 // WHERE THE NUMBERS COME FROM, and the seam the tests replace (`io.probe`):
 //   head · changed-files · src-diff-lines   git in THIS checkout — `git diff <base>...<head>`, so a
 //                                           rebased base still measures the merge-base, like the PR does
-//   suite · budget                          a vitest JSON report (`--report`, else the newest parseable
-//                                           report under /tmp) and the repo's own guard
-//                                           (`measureSurface`, one definition of each ratio)
+//   suite · budget                          a vitest JSON report, validated by `scripts/lib/suite-report.mjs`
+//                                           (#513): `--report` wins, else the reports under
+//                                           `--report-dir` (default `<root>/reports`) are scanned with
+//                                           THIS tree's head as the expected provenance; and the repo's
+//                                           own guard (`measureSurface`, one definition of each ratio)
 //   --pr bodies                             `gh pr view <n> --json headRefOid,body`
 //
 // Suite and budget are measured from the CHECKED-OUT TREE, so a `--pr` check requires that the PR's head
@@ -38,14 +40,15 @@
 //
 // Determinism: values are read from the repo, the block is byte-identical between runs, findings are in
 // the block's key order, and no timestamp appears anywhere. The `←` commands are the canonical
-// reproduction commands, not the report path of the moment — a `/tmp` path in the block would make two
-// emits differ for no reason. The path that WAS read is printed on stderr, as provenance (Rule 11).
+// reproduction commands, not the report path of the moment — an absolute path in the block would make
+// two emits differ for no reason. The path that WAS read, and its provenance label, are printed on
+// stderr (Rule 11).
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { SURFACES, measureSurface } from "./check-test-budget.mjs";
-import { findNewestReport, readSuiteReport } from "./handoff-verify.mjs";
+import { resolveReport } from "./lib/suite-report.mjs";
 import { EXIT, SCOPE, checkBody, renderBlock, sameHead, upsertBlock } from "./lib/pr-evidence.mjs";
 import { InputError } from "./lib/handoff-claims.mjs";
 
@@ -58,7 +61,8 @@ export const DEFAULT_BASE = "dev";
 
 export const USAGE =
 	"usage: pr-evidence.mjs --emit [--base <ref>] [--head <sha>] | " +
-	"--check (--body <file> | --pr <n>) [--base <ref>] | --apply --pr <n> | [--report <json>] [--json]";
+	"--check (--body <file> | --pr <n>) [--base <ref>] | --apply --pr <n> | " +
+	"[--report <json>] [--report-dir <dir>] [--json]";
 
 export { EXIT, SCOPE };
 
@@ -116,24 +120,22 @@ export function sumNumstat(text) {
 
 /**
  * The repo side of every key, as one plain object — the single seam the tests replace (no git, no `gh`,
- * no report on disk). `report` is resolved lazily, so a usage fault or an `--apply` never pays for a
- * `/tmp` scan.
+ * no report on disk). `report` is resolved lazily, so a usage fault never pays for a directory scan.
+ *
+ * `suite(expectHead)` takes the head the numbers must describe: the report is the evidence for THIS
+ * tree, so the scanner's provenance disambiguator is that head (#513). A stub that ignores the
+ * argument still works, which is what keeps the seam cheap.
  */
-export function createEvidenceProbe(root, { report = "" } = {}) {
+export function createEvidenceProbe(root, { report = "", reportDir = "" } = {}) {
 	return {
 		root,
 		resolveHead: (ref) => gitOrThrow(root, ["rev-parse", "--verify", `${ref}^{commit}`], ref).trim(),
 		changedFiles: (base, head) => countPaths(gitOrThrow(root, ["diff", "--name-only", `${base}...${head}`], `${base}...${head}`)),
 		srcDiffLines: (base, head) =>
 			sumNumstat(gitOrThrow(root, ["diff", "--numstat", `${base}...${head}`, "--", "src"], `${base}...${head} -- src`)),
-		suite: () => {
-			const found = report === "" ? findNewestReport() : readSuiteReport(report);
-			if (found === null) {
-				throw new InputError(
-					"suite: no vitest JSON report found — run `npx vitest run --reporter=json --outputFile=vitest-report.json`, or pass --report <path>",
-				);
-			}
-			return { files: found.files, tests: found.tests, path: found.path };
+		suite: (expectHead = "") => {
+			const found = resolveReport({ report, dir: reportDir, expectHead });
+			return { files: found.files, tests: found.tests, path: found.path, label: found.label };
 		},
 		// Every surface the guard measures, by name: the ratio a block states IS that guard's number.
 		budget: () => {
@@ -176,11 +178,12 @@ const VALUE_FLAGS = new Map([
 	["--body", "body"],
 	["--pr", "pr"],
 	["--report", "report"],
+	["--report-dir", "reportDir"],
 ]);
 
 /** `{ ok: true, options }` or `{ ok: false, message }` — never throws, never exits. */
 export function parseArgs(argv) {
-	const options = { mode: "", base: "", head: "", body: "", pr: "", report: "", json: false };
+	const options = { mode: "", base: "", head: "", body: "", pr: "", report: "", reportDir: "", json: false };
 	const modes = [];
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
@@ -223,11 +226,12 @@ export function parseArgs(argv) {
 	return { ok: true, options };
 }
 
-/** The measured evidence, plus the report path (provenance for stderr, never inside the block). */
+/** The measured evidence, plus the report path and label (provenance for stderr, never inside the block). */
 function measure(probe, base, head) {
-	const suite = probe.suite();
+	const suite = probe.suite(head);
 	return {
 		reportPath: suite.path === undefined ? "" : suite.path,
+		reportLabel: suite.label === undefined ? "" : suite.label,
 		evidence: {
 			head,
 			changedFiles: probe.changedFiles(base, head),
@@ -248,11 +252,11 @@ function runEmit(options, probe, out, err) {
 	const base = options.base === "" ? DEFAULT_BASE : options.base;
 	const headRef = options.head === "" ? "HEAD" : options.head;
 	const head = probe.resolveHead(headRef);
-	const { evidence, reportPath } = measure(probe, base, head);
+	const { evidence, reportPath, reportLabel } = measure(probe, base, head);
 	const block = renderBlock(evidence, { base, headRef });
 	if (options.json) out(JSON.stringify({ ok: true, base, block, evidence }, null, 2));
 	else out(block);
-	if (reportPath !== "") err(`pr-evidence: suite/budget read from ${reportPath}`);
+	if (reportPath !== "") err(`pr-evidence: suite/budget read from ${reportPath} (${reportLabel})`);
 	return EXIT.OK;
 }
 
@@ -284,9 +288,9 @@ function readSubject(options, probe) {
 function runCheck(options, probe, out, err) {
 	const base = options.base === "" ? DEFAULT_BASE : options.base;
 	const subject = readSubject(options, probe);
-	const { evidence, reportPath } = measure(probe, base, subject.head);
+	const { evidence, reportPath, reportLabel } = measure(probe, base, subject.head);
 	const verdict = checkBody(subject.body, evidence);
-	if (reportPath !== "") err(`pr-evidence: suite/budget read from ${reportPath}`);
+	if (reportPath !== "") err(`pr-evidence: suite/budget read from ${reportPath} (${reportLabel})`);
 	if (options.json) {
 		out(JSON.stringify({ ok: verdict.exit === EXIT.OK, exit: verdict.exit, blocks: verdict.blocks, findings: verdict.findings }, null, 2));
 		err(`pr-evidence: ${SCOPE}`);
@@ -303,10 +307,10 @@ function runCheck(options, probe, out, err) {
 function runApply(options, probe, out, err) {
 	const base = options.base === "" ? DEFAULT_BASE : options.base;
 	const subject = readSubject(options, probe);
-	const { evidence, reportPath } = measure(probe, base, subject.head);
+	const { evidence, reportPath, reportLabel } = measure(probe, base, subject.head);
 	const block = renderBlock(evidence, { base, headRef: "HEAD" });
 	probe.prEdit(options.pr, upsertBlock(subject.body, block));
-	if (reportPath !== "") err(`pr-evidence: suite/budget read from ${reportPath}`);
+	if (reportPath !== "") err(`pr-evidence: suite/budget read from ${reportPath} (${reportLabel})`);
 	if (options.json) out(JSON.stringify({ ok: true, pr: Number(options.pr), head: subject.head, block }, null, 2));
 	else out(block);
 	return EXIT.OK;

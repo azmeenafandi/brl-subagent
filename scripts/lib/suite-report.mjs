@@ -99,10 +99,14 @@ export const LABELS = Object.freeze({
 /**
  * A refused report. Extends `InputError` so every existing `catch (error instanceof InputError)` in the
  * two CLIs keeps answering "cannot check" (exit 2) — the code is the addition, not a new exit path.
+ *
+ * The code is part of the MESSAGE, not only the field: a refusal a caller cannot tell apart from another
+ * refusal is the same defect one layer up, and every one of these messages is read by a human deciding
+ * what to do next. Carrying it here also means no CLI has to remember to print it.
  */
 export class ReportError extends InputError {
 	constructor(code, message) {
-		super(message);
+		super(`${code}: ${message}`);
 		this.name = "ReportError";
 		this.code = code;
 	}

@@ -11,9 +11,11 @@
  *    claims. The real `.development/HANDOFF.md` is parsed as the anti-rot case;
  * 2. the VERDICT names one code per drift, and every fixture in `fixtures/handoffs/` fails with its own
  *    code and exit 1 — three of them are the shapes that drifted in the wild at U1;
- * 3. the SEAMS hold: the git range (`Verified..dev`, renames included), the vitest report reader and the
+ * 3. the SEAMS hold: the git range (`Verified..dev`, renames included), the report resolution and the
  *    injected issue list are exercised for real in a throwaway repo, while `gh` and the network are
- *    replaced by a plain object, so the suite needs neither;
+ *    replaced by a plain object, so the suite needs neither. The report reader itself lives in
+ *    `scripts/lib/suite-report.mjs` (#513) and is pinned by `suite-report.test.ts`; this file pins the
+ *    fact that this tool keeps no second definition of it;
  * 4. a SKIP is said out loud (`--no-network`), never silently counted as a pass.
  *
  * The fixtures are `.md` (and one `.json` report) under `fixtures/handoffs/` — invisible to the `scripts`
@@ -24,7 +26,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { createRepoProbe, EXIT, findNewestReport, main, parseArgs, parseRangeLog, readIssues, readSuiteReport, resolveModulePath, ROOT } from "../handoff-verify.mjs";
+import { createRepoProbe, EXIT, main, parseArgs, parseRangeLog, readIssues, resolveModulePath, ROOT } from "../handoff-verify.mjs";
+import { LABELS, readSuiteReport } from "../lib/suite-report.mjs";
 import { collectDecisions } from "../docs-decisions.mjs";
 import { collectModules } from "../docs-arch.mjs";
 import {
@@ -542,9 +545,11 @@ describe("handoff-verify — the command", () => {
 	});
 
 	it("parses the documented flags", () => {
-		expect(parseArgs(["--file", "a.md", "--report", "r.json", "--issues", "i.json", "--no-network", "--json"])).toEqual({
+		expect(
+			parseArgs(["--file", "a.md", "--report", "r.json", "--report-dir", "d", "--issues", "i.json", "--no-network", "--json"]),
+		).toEqual({
 			ok: true,
-			options: { file: "a.md", report: "r.json", issues: "i.json", noNetwork: true, json: true },
+			options: { file: "a.md", report: "r.json", reportDir: "d", issues: "i.json", noNetwork: true, json: true },
 		});
 		expect(parseArgs([]).ok).toBe(true);
 		expect(parseArgs(["--json", "--json"]).ok).toBe(true);
@@ -552,37 +557,59 @@ describe("handoff-verify — the command", () => {
 });
 
 describe("handoff-verify — the seams", () => {
-	it("reads a vitest report: one count per file, and the PASSED tests", () => {
-		expect(readSuiteReport(REPORT)).toEqual({ path: REPORT, files: 2, tests: 12 });
+	it("reads reports through the shared lib, and keeps no competing definition (#513)", async () => {
+		// The defect #513 removes is a SECOND definition: the handoff's suite check and the PR body's
+		// `suite:` key both read ~/scripts/handoff-verify.mjs, so a fix in one place was not a fix.
+		const handoffVerify = await import("../handoff-verify.mjs");
+		expect(handoffVerify).not.toHaveProperty("readSuiteReport");
+		expect(handoffVerify).not.toHaveProperty("findNewestReport");
+		expect(readSuiteReport(REPORT)).toMatchObject({ path: REPORT, files: 2, tests: 12 });
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-verify-"));
-		const broken = join(dir, "broken.json");
-		writeFileSync(broken, "{ not json");
-		expect(() => readSuiteReport(broken)).toThrow(InputError);
 		const notReport = join(dir, "vitest-config.json");
 		writeFileSync(notReport, JSON.stringify({ testResults: [] }));
 		expect(() => readSuiteReport(notReport)).toThrow(/no testResults/);
 	});
 
-	it("finds the newest report that IS a vitest report", () => {
+	it("refuses a hollow report in --report-dir instead of using it as a baseline", () => {
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-verify-"));
-		const older = join(dir, "vitest-older.json");
-		const newer = join(dir, "unrelated.json");
-		writeFileSync(older, readFileSync(REPORT, "utf8"));
-		writeFileSync(newer, JSON.stringify({ hello: "world" }));
-		utimesSync(older, new Date(1000), new Date(1000));
-		utimesSync(newer, new Date(2000), new Date(2000));
-		expect(findNewestReport(dir)?.path).toBe(older);
+		const reports = join(dir, "reports");
+		mkdirSync(reports);
+		writeFileSync(join(reports, "hollow.json"), JSON.stringify({ numPassedTests: 9999, testResults: [{}] }));
+		const probe = createRepoProbe(dir, { reportDir: reports });
+		expect(() => probe.report()).toThrow(/hollow-report/);
+		expect(() => probe.report()).toThrow(/hollow\.json/);
+		// The CLI answers "cannot check" (2), never a drift (1): a hollow report is an input that cannot
+		// answer, not evidence that the claim is wrong.
+		const result = run(["--file", join(FIXTURES, "correct.md"), "--no-network"], stub({ report: () => probe.report() }));
+		expect(result.code).toBe(EXIT.USAGE);
+		expect(result.err).toContain("hollow-report");
 	});
 
-	it("skips a newer zero-test capture so it cannot fake a suite-count drift", () => {
+	it("refuses two reports under --report-dir by naming both, never selecting one", () => {
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-verify-"));
-		const baseline = join(dir, "vitest-baseline.json");
-		const scratch = join(dir, "hv-report.json");
-		writeFileSync(baseline, readFileSync(REPORT, "utf8"));
-		writeFileSync(scratch, JSON.stringify({ numTotalTests: 0, testResults: [{ assertionResults: [] }] }));
-		utimesSync(baseline, new Date(1000), new Date(1000));
-		utimesSync(scratch, new Date(2000), new Date(2000));
-		expect(findNewestReport(dir)?.path).toBe(baseline);
+		const older = join(dir, "older.json");
+		const newer = join(dir, "newer.json");
+		writeFileSync(older, readFileSync(REPORT, "utf8"));
+		writeFileSync(newer, readFileSync(REPORT, "utf8"));
+		utimesSync(older, new Date(1000), new Date(1000));
+		utimesSync(newer, new Date(2000), new Date(2000));
+		const probe = createRepoProbe(dir, { reportDir: dir });
+		expect(() => probe.report()).toThrow(/ambiguous-reports/);
+		try {
+			probe.report();
+		} catch (error) {
+			// Both paths, not just the one mtime would have preferred.
+			expect((error as Error).message).toContain(older);
+			expect((error as Error).message).toContain(newer);
+		}
+	});
+
+	it("carries the report's provenance in the suite line", () => {
+		const dirty = run(["--file", join(FIXTURES, "correct.md"), "--no-network"], stub({ report: () => ({ path: REPORT, files: 2, tests: 12, label: LABELS.DIRTY }) }));
+		expect(dirty.out).toContain(LABELS.DIRTY);
+		const clean = run(["--file", join(FIXTURES, "correct.md"), "--no-network"]);
+		// The stub without a label prints no parenthesised claim rather than "undefined".
+		expect(clean.out).not.toContain("undefined");
 	});
 
 	it("reads an injected issue list, numbers or objects", () => {
@@ -799,30 +826,48 @@ describe("handoff-verify — the CLI seam", () => {
 		return result.out.split("\n").filter((line) => line.startsWith("✗"));
 	}
 
-	it("honours --report over the newest /tmp report, and fails with the INJECTED counts", () => {
+	/** A report body that IS evidence: `files` result entries holding `tests` assertions in total. */
+	function suiteBody(files: number, tests: number): unknown {
+		const perFile = (index: number) => ({
+			assertionResults: Array.from({ length: index === 0 ? tests - (files - 1) : 1 }, (_unused, at) => ({ fullName: `f${index}-${at}`, status: "passed" })),
+		});
+		return { numTotalTests: tests, numPassedTests: tests, testResults: Array.from({ length: files }, (_unused, index) => perFile(index)) };
+	}
+
+	it("honours --report over --report-dir, and fails with the INJECTED counts", () => {
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-cli-"));
 		const injected = join(dir, "injected.json");
-		// 3 files / 7 tests — nothing in /tmp looks like this, which is the point.
-		writeFileSync(injected, JSON.stringify({ numPassedTests: 7, testResults: [{}, {}, {}] }));
-		// The newest parseable report directly under the default scan root: the value `--report` was silently
-		// losing to. Its mtime is in the future so it wins the scan deterministically.
-		const planted = join(tmpdir(), `brl-handoff-verify-planted-${process.pid}.json`);
-		writeFileSync(planted, JSON.stringify({ numPassedTests: 99, testResults: Array.from({ length: 11 }, () => ({})) }));
-		const future = new Date(Date.now() + 3_600_000);
-		utimesSync(planted, future, future);
-		try {
-			const handoff = join(dir, "HANDOFF.md");
-			writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
-			const result = runCli(["--file", handoff, "--report", injected, "--no-network"]);
-			expect(result.code).toBe(EXIT.DRIFT);
-			expect(failures(result)).toHaveLength(1);
-			expect(failures(result)[0]).toContain(CODES.suiteCountDrift);
-			expect(failures(result)[0]).toContain("3 files / 7 tests");
-			expect(failures(result)[0]).toContain(`the vitest report at ${injected}`);
-			expect(failures(result)[0]).not.toContain(planted);
-		} finally {
-			rmSync(planted, { force: true });
-		}
+		// 3 files / 7 tests — nothing under the scanned directory looks like this, which is the point.
+		writeFileSync(injected, JSON.stringify(suiteBody(3, 7)));
+		// A report at the scanned location with DIFFERENT counts: the value `--report` would lose to if the
+		// two were not explicitly ordered. No mtime is involved — --report simply wins.
+		const scanned = join(dir, "scanned");
+		mkdirSync(scanned);
+		writeFileSync(join(scanned, "planted.json"), JSON.stringify(suiteBody(11, 99)));
+		const handoff = join(dir, "HANDOFF.md");
+		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
+		const result = runCli(["--file", handoff, "--report", injected, "--report-dir", scanned, "--no-network"]);
+		expect(result.code).toBe(EXIT.DRIFT);
+		expect(failures(result)).toHaveLength(1);
+		expect(failures(result)[0]).toContain(CODES.suiteCountDrift);
+		expect(failures(result)[0]).toContain("3 files / 7 tests");
+		expect(failures(result)[0]).toContain(`the vitest report at ${injected}`);
+		expect(failures(result)[0]).not.toContain(join(scanned, "planted.json"));
+	});
+
+	it("exits 2 on an ambiguous --report-dir, naming every candidate", () => {
+		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-cli-"));
+		const reports = join(dir, "reports");
+		mkdirSync(reports);
+		writeFileSync(join(reports, "a.json"), JSON.stringify(suiteBody(2, 40)));
+		writeFileSync(join(reports, "b.json"), JSON.stringify(suiteBody(2, 40)));
+		const handoff = join(dir, "HANDOFF.md");
+		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
+		const result = runCli(["--file", handoff, "--report-dir", reports, "--no-network"]);
+		expect(result.code).toBe(EXIT.USAGE);
+		expect(result.err).toContain("ambiguous-reports");
+		expect(result.err).toContain(join(reports, "a.json"));
+		expect(result.err).toContain(join(reports, "b.json"));
 	});
 
 	it("honours --issues without ever invoking gh, and fails with the INJECTED board", () => {
@@ -836,7 +881,7 @@ describe("handoff-verify — the CLI seam", () => {
 		const marker = join(dir, "gh-was-called");
 		writeFileSync(join(bin, "gh"), `#!/bin/sh\necho "$@" >> "${marker}"\nexit 1\n`, { mode: 0o755 });
 		const report = join(dir, "suite.json");
-		writeFileSync(report, JSON.stringify({ numPassedTests: 40, testResults: [{}, {}] }));
+		writeFileSync(report, JSON.stringify(suiteBody(2, 40)));
 		const handoff = join(dir, "HANDOFF.md");
 		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
 

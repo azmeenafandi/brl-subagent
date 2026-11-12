@@ -196,8 +196,8 @@ export function main(argv = process.argv.slice(2), io = {}) {
 		return EXIT.OK;
 	} catch (error) {
 		if (error instanceof InputError) {
-			const code = typeof error === "object" && error !== null && typeof error.code === "string" ? `${error.code}: ` : "";
-			err(`suite-report: ${code}${describe(error)}`);
+			// The message already starts with the code (see `ReportError`), so nothing is prefixed twice.
+			err(`suite-report: ${describe(error)}`);
 			return EXIT.REFUSED;
 		}
 		throw error;

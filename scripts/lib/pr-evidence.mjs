@@ -20,7 +20,7 @@
 //   head: <sha>                                  ← git rev-parse HEAD
 //   changed-files: <n>                           ← git diff --name-only <base>...<head> | wc -l
 //   src-diff-lines: <n>                          ← git diff --numstat <base>...<head> -- src | awk …
-//   suite: <N> files / <M> tests                 ← npx vitest run --reporter=json … (testResults / numPassedTests)
+//   suite: <N> files / <M> tests                 ← node scripts/suite-report.mjs --capture (files = testResults · tests = Σ assertionResults)
 //   budget: src <r> · scripts <r>                ← node scripts/check-test-budget.mjs --report …
 //   <!-- pr-evidence:end -->
 //
@@ -200,7 +200,7 @@ export function renderBlock(evidence, { base = "dev", headRef = "HEAD" } = {}) {
 		`head: ${head} ${ARROW} git rev-parse ${headRef}`,
 		`changed-files: ${evidence.changedFiles} ${ARROW} git diff --name-only ${scope} | wc -l`,
 		`src-diff-lines: ${evidence.srcDiffLines} ${ARROW} git diff --numstat ${scope} -- src | awk '{s+=$1+$2} END {print s+0}'`,
-		`suite: ${evidence.suite.files} files / ${evidence.suite.tests} tests ${ARROW} npx vitest run --reporter=json --outputFile=vitest-report.json (testResults / numPassedTests)`,
+		`suite: ${evidence.suite.files} files / ${evidence.suite.tests} tests ${ARROW} node scripts/suite-report.mjs --capture (files = testResults · tests = Σ assertionResults)`,
 		`budget: src ${formatRatio(evidence.budget.src)} · scripts ${formatRatio(evidence.budget.scripts)} ${ARROW} node scripts/check-test-budget.mjs --report vitest-report.json`,
 		BLOCK.end,
 	].join("\n");
