@@ -70,9 +70,11 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   leaves a resumable artifact (Rule 21's live artifact) — a re-dispatch then starts
   with "read the banked file first". `<root>` is `~/.cache/brl-subagent` — **0700, owned by us,
   reached through ancestors with no group/other write, and (Linux) refused `tmpfs`**: that is the
-  enforced predicate, not a claim about `/tmp`, which a root can never be (too shallow, and `1777`
-  where a root needs `0700`). A record on a `tmpfs` filesystem dies at reboot, so the tool refuses
-  one with `refused (tmpfs)` naming the filesystem rather than writing into it.
+  enforced predicate, not an assumption about where the default happens to sit. `/tmp` is never the
+  root: too shallow, `1777` where a root needs `0700`, and on Linux `tmpfs` — the mount check runs
+  before any directory is created, so a path under it is refused `tmpfs` rather than
+  `ancestor-writable`. A record on a `tmpfs` filesystem dies at reboot, which is the property the
+  refusal names (`refused (tmpfs): <path> is on a tmpfs — a record there does not survive a reboot`).
   `scratch-root.mjs append` creates the file at 0600 with
   `O_NOFOLLOW`, so a planted symlink is refused rather than followed, and a second append
   still works — its line says `appended <n> bytes to <path> (total <m>)`, so the log states both
