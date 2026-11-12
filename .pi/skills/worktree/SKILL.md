@@ -176,8 +176,10 @@ never re-type their logic by hand. Full design:
     **Every brief banks its state (issue #401).** An IMPLEMENTATION brief names
     the bank `/tmp/brl-<label>-bank.md` (`<label>` = the dispatch label) and
     instructs: "append your working state before each major step / commit".
-    Reviews already bank `/tmp/review-<unit>-findings.md`
-    (`references/review-dispatch.md`) and plan critiques bank the same
+    Reviews already bank `<root>/review-<n>/findings.md` — appended with
+    `node scripts/scratch-root.mjs append review-<n>/findings.md`, `<root>` =
+    `~/.cache/brl-subagent` (#512; `references/review-dispatch.md`) — and plan
+    critiques bank the same
     `/tmp/brl-<label>-bank.md` shape. The bank is what a drop leaves behind: the
     transport auto-retry's resume block points the replayed run at it, so a
     reconnect re-reads instead of redoing. Implementation briefs also restate
@@ -454,10 +456,10 @@ mechanics, verdict format: `references/review-dispatch.md`.
 
   ```bash
   bash .pi/skills/worktree/run.sh --filter 'tail -2' --stderr -- \
-    bash .pi/skills/worktree/merge-guard.sh --check-record /tmp/REVIEW_<n>.md   # exit 1 = rejected
+    bash .pi/skills/worktree/merge-guard.sh --check-record ~/.cache/brl-subagent/review-<n>/REVIEW_<n>.md   # exit 1 = rejected
   bash .pi/skills/worktree/run.sh --filter 'tail -1' -- node scripts/handoff-verify.mjs  # 1 = drift
   bash .pi/skills/worktree/run.sh --quiet --require-filter --filter 'grep -q "^record:"' -- \
-    node scripts/review-record.mjs --verify /tmp/REVIEW_<n>.md                 # the filter IS the check
+    node scripts/review-record.mjs --verify ~/.cache/brl-subagent/review-<n>/REVIEW_<n>.md   # the filter IS the check
   ```
 
   `--stderr` merges `2>&1` **before** the filter — diagnostics are usually stderr-only (the

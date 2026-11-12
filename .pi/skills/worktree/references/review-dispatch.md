@@ -57,12 +57,22 @@ investigating a stray, capture `git -C <review-wt> status -sb` and
 **The instruction MUST demand the verdict in the final output** — never tell
 the reviewer to write a repo file (it has no `write`/`edit` tools):
 
-- Do NOT write repo files. **Banking to a `/tmp/review-<unit>-findings.md`
-  scratch file IS sanctioned and expected**: instruct the reviewer to append
-  verified findings, pending items, and expected mutation signatures there as
-  it goes (bash-side). The verdict still lives in the final response; banking
-  exists so a drop/timeout leaves a resumable artifact (Rule 21's live
-  artifact) — a re-dispatch then starts with "read the banked file first".
+- Do NOT write repo files. **Banking to the private scratch root IS sanctioned and
+  expected**: instruct the reviewer to append verified findings, pending items, and
+  expected mutation signatures to `<root>/review-<n>/findings.md` as it goes
+  (bash-side, with the helper CLI — #512):
+
+  ```bash
+  printf '%s\n' '<finding>' | node scripts/scratch-root.mjs append review-<n>/findings.md
+  ```
+
+  The verdict still lives in the final response; banking exists so a drop/timeout
+  leaves a resumable artifact (Rule 21's live artifact) — a re-dispatch then starts
+  with "read the banked file first". `<root>` is `~/.cache/brl-subagent` (0700, ours),
+  NOT `/tmp`: `/tmp` is `tmpfs` and world-writable, so a record there dies at reboot and
+  anyone can pre-create the path. `scratch-root.mjs append` creates the file at 0600 with
+  `O_NOFOLLOW`, so a planted symlink is refused rather than followed, and a second append
+  still works.
 - **The record is written by `scripts/review-record.mjs`, with bash, BEFORE the
   final message** — one command, not a heredoc (the heredoc is how S4/S5/S6 got
   their shape; #487):
@@ -74,23 +84,39 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   ```
 
   `--findings -` reads the findings body from stdin; the script writes the
-  canonical block to `/tmp/REVIEW_<n>.md` (override with `--out`) **and**
-  prints it — paste the printed block into the final response. `/tmp` is
-  scratch, not a repo path, so the read-only reviewer can write it (the preset
-  excludes `write`/`edit`, keeps `bash`), and a truncated or dropped final
-  message no longer costs the whole review. The script pre-flights the gate's
+  canonical block to `<root>/review-<n>/REVIEW_<n>.md` **and** prints it — paste the
+  printed block into the final response. The destination is outside the repo (the
+  preset excludes `write`/`edit`, keeps `bash`), so a truncated or dropped final
+  message no longer costs the whole review, and `--out <path>` is only for a
+  deliberate alternative: an `--out` directory that fails the private-root predicate
+  is REFUSED with the default named, so `/tmp/REVIEW_<n>.md` is now an error rather
+  than a habit (#512). The script pre-flights the gate's
   rules — it refuses a declared `Risk class` weaker than the recheck's and a
   findings body carrying its own line-start field — so verify the file before
   pasting with
-  `bash .pi/skills/worktree/merge-guard.sh --check-record /tmp/REVIEW_<n>.md --pr <n> --head <sha>`
+  `bash .pi/skills/worktree/merge-guard.sh --check-record <root>/review-<n>/REVIEW_<n>.md --pr <n> --head <sha>`
   (offline: no `gh`, no provenance log), and then mint the `record:` line with
-  `node scripts/review-record.mjs --verify /tmp/REVIEW_<n>.md` and paste it
+  `node scripts/review-record.mjs --verify <root>/review-<n>/REVIEW_<n>.md` and paste it
   **verbatim**. **A verdict without that line is incomplete** (#503): it is the
   only part of a review a third party can recompute. The conductor copies the
   file into the worktree as `REVIEW_PR<n>.md`, recomputes
   `sha256sum <path>` against the pasted line, and compares — a line that does
   not recompute, or a path with no file behind it, is itself a finding to
   raise, not a reason to reconstruct one from memory.
+
+  **A held lock is a refusal, not a hang** (#512). Every path that reads prior state
+  and then writes takes `<dir>/.REVIEW_<n>.md.lock` first, so a `--new-head` supersede,
+  a same-head rerun and an explicit `--out` cannot interleave. If a writer dies, the
+  next run exits 1 with `lock-held` and the holder's pid, boot id and start time —
+  nothing is ever auto-removed by age. Recovery is an operator action, and the reviewer
+  should NOT take it on its own:
+
+  ```bash
+  node scripts/review-record.mjs --break-lock <root>/review-<n>/REVIEW_<n>.md          # exit 1, prints the evidence
+  node scripts/review-record.mjs --break-lock <root>/review-<n>/REVIEW_<n>.md --yes    # only if the evidence says "gone"
+  ```
+
+  A live holder is refused even with `--yes`.
 
   **Read that exit code through the helper, never through a pipe** (#504). The record check,
   `pr-evidence --check` and `handoff-verify` all answer with a status, and
@@ -100,7 +126,7 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
 
   ```bash
   bash .pi/skills/worktree/run.sh --filter 'tail -2' --stderr -- \
-    bash .pi/skills/worktree/merge-guard.sh --check-record /tmp/REVIEW_<n>.md --pr <n> --head <sha>
+    bash .pi/skills/worktree/merge-guard.sh --check-record <root>/review-<n>/REVIEW_<n>.md --pr <n> --head <sha>
   bash .pi/skills/worktree/run.sh --filter 'tail -1' -- \
     node scripts/pr-evidence.mjs --check --pr <n> --base dev     # exit 0 is the required evidence
   ```
@@ -135,7 +161,7 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
 
 The conductor retrieves the final output (never sleep-waits — the user
 watches the monitor and pings when done), **copies the reviewer's
-`/tmp/REVIEW_<n>.md` into the worktree as `REVIEW_PR*.md`** (gitignored) —
+`<root>/review-<n>/REVIEW_<n>.md` into the worktree as `REVIEW_PR*.md`** (gitignored) —
 verifying it agrees with the final message rather than re-typing the verdict —
 and presents it for the user loop.
 
@@ -156,8 +182,23 @@ node scripts/review-record.mjs --pr <n> \
   --head <sha> --risk C1|C2|C3 \
   --recheck 'jev: <level> (<conf>) · Cx · worktree <y|n>' \
   --findings <path|-> [--conductor-verified "<what was verified, and how>"] \
-  [--out /tmp/REVIEW_<n>.md] [--new-head]
+  [--out <path>] [--new-head]
 ```
+
+- **The destination is private and keyed to the PR** (#512): with no `--out` the record goes to
+`<root>/review-<n>/REVIEW_<n>.md`, where `<root>` is `~/.cache/brl-subagent` (0700, owned by
+us, on a non-tmpfs mount). The directory is created at 0700 if missing and the file at 0600,
+written to a temp name in that directory and renamed into place, so a reader sees the old
+complete record or the new one. An explicit `--out` is honoured but its **directory** must pass
+the same predicate — `/tmp` is refused `ancestor-writable` and the message names the default —
+because group/other write on a directory is rename authority over the file in it. `--check` and
+`--verify` stay unrestricted, so a record written before #512 still verifies.
+- **Every write path takes a lock** (#512): `<dir>/.REVIEW_<n>.md.lock` is taken BEFORE the prior
+record is read, so the head refusal and the supersede chain are decided on the bytes on disk now
+— a delayed writer queues behind a committed supersede instead of erasing it. The holder's pid,
+boot id and start time are in the lock file; a held lock is exit 1 `lock-held` naming them, and
+`--break-lock <record> [--yes]` is the only thing that removes one (stale evidence plus `--yes`;
+a live holder is refused even with `--yes`).
 
 - **One definition.** `scripts/lib/record-fields.mjs` holds the parse/validate rules the bash
 gate applies; the generator and `merge-guard.sh --check-record` both use it, so a record the
@@ -175,7 +216,7 @@ is exactly the one a reviewer must be able to write.
 - **`--verify <file> [--json]` prints the `record:` line** (#503), and that line is the proof:
 
   ```
-  record: /tmp/REVIEW_412.md · verdict approve-with-nits · head <40-hex> · findings <n> · sha256 <64-hex>
+  record: /home/<user>/.cache/brl-subagent/review-412/REVIEW_412.md · verdict approve-with-nits · head <40-hex> · findings <n> · sha256 <64-hex>
   ```
 
   It applies `--check`'s rules plus a head the line can print (7-40 hex — the U2 record's
@@ -185,7 +226,7 @@ is exactly the one a reviewer must be able to write.
   findings body, with `No findings recorded.` counting zero. Exit 0 valid · 1 named reasons ·
   2 usage, or a file that is not there (the message names the **resolved** path). The conductor
   recomputes `sha256sum <path>` and compares: a claim that cannot be recomputed is not evidence,
-  and a missing file is now visible in one line instead of after a `/tmp` listing.
+  and a missing file is now visible in one line instead of after a directory listing.
 
 | Line | Required | Checked by |
 |---|---|---|
