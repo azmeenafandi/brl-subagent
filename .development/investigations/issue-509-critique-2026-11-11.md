@@ -94,3 +94,32 @@ In-process SDK session vs foreground spawn seam confirmed in source; `terminal-n
 
 - **#511** — the shipped half: `src/terminal-notifier.ts` bank path (and its four pinned assertions), the in-process-capable path mechanism, the `os.tmpdir()` preflight, macOS/Windows roots, and the **9+9 shipped templates/presets**.
 - **#512** — governance: the review presets/templates are unversioned local overrides with no tracked counterpart, so review instructions live outside version control.
+
+## Round 3 — `needs-work` (focused critique of #512)
+
+Narrow round: three decisions made *after* round 2, plus the falsifiability of #512's acceptance. Audited HEAD `66d5a32`, clean tree. Jev `high (0.77) · C1 · worktree n` (label `critique-512`), settled `done`. Cost $0.13 / 2m (attempt 1 died on a socket error; attempt 2 completed).
+
+### Blocker
+
+| decision | gap | evidence | fix |
+|---|---|---|---|
+| 1 — ownership | A `0755` ancestor owned by an **untrusted** user passes "not group/other-writable", but its owner can replace the validated root after inspection — rename authority comes from write permission on the *parent* | two-UID `unshare --map-auto --map-root-user` probe: the foreign owner renamed a victim-owned `0700` root, substituted a symlink, and the victim's `O_EXCL\|O_NOFOLLOW` leaf write landed in the alternate directory | above-root owners must be **trusted** (root or the current uid), not merely non-writable; or use race-resistant descriptor-relative traversal. Falsifier: the two-UID swap produces any outside effect |
+
+### Majors
+
+| decision | gap | evidence | fix |
+|---|---|---|---|
+| 2 — serialization | locking only `--new-head` leaves other read/check/write paths able to overwrite a committed supersede | probe: unlocked read of `A`, locked commit of `B supersedes A`, then the old writer finished → final contents `A`; `git grep` finds `readPrior(spec.out)` and `writeFileSync(spec.out, record)` in `scripts/review-record.mjs` | serialize **all** writers that inspect or replace the same record, including same-head reruns and explicit `--out`. Falsifier: a delayed writer erases a committed head |
+| 2 — lock recovery | staleness detection is not recovery: a killed owner leaves the lock indefinitely, and age cannot prove a slow writer is dead | `SIGKILL` after `O_CREAT\|O_EXCL` left the lock; the next acquisition returned `EEXIST`, including after aging it one hour | operator recovery with ownership/liveness evidence and a stated threshold; never remove a live writer's lock; test kill-before-rename and a live writer past the threshold |
+| acceptance — reboot proxy | a fresh process proves path rediscovery, not survival of a reboot or cache purge | a `/tmp` record verified in a fresh process; `findmnt -T /tmp` reports `tmpfs`; after a simulated purge, `--verify` exited 2 | define the persistence promise and test it with a real reboot/remount or an explicitly limited substitute that includes cache eviction |
+
+### Minors
+
+- "Above the root … a directory" must say **`lstat`**, not `stat`: a followed symlink classifies as a directory (`stat -L` → `directory 755`), contradicting the acceptance that requires refusing a symlinked ancestor.
+- **Node `"wx"` does not include `O_NOFOLLOW`**: it maps to `O_TRUNC|O_CREAT|O_WRONLY|O_EXCL`. `O_EXCL` still rejects a symlink with `EEXIST`, so behaviour is safe, but the flag claim in #512 was wrong — use explicit numeric flags if no-follow semantics are intended.
+
+### Verified sound
+The ordinary home chain satisfies the mode rule (`/` and `/home` root `0755`, home `0755`, `.cache` `0700`); a POSIX ACL granting another user write turns the mask `775`, which the rule rejects. Exclusive creation rejects a symlink (`EEXIST`); `rename` replaces a target symlink rather than following it; readers see the old complete file, then the replacement. The merged unit is reviewable as one C1 boundary (writer 360 lines, its tests 458, plus the helper). Scripts ratio `0.639`, no untested top-level scripts at this HEAD (a baseline, not a projection).
+
+### Open questions
+Are NFS and mount-namespace substitutions inside the threat/support model? A user-namespace bind-mount probe substituted a same-uid `0700` directory with matching superficial checks; it does not establish that an unprivileged foreign user can mount into the victim's namespace. And: what persistence period is promised — reboot only, or cache-manager eviction too?
