@@ -252,9 +252,23 @@ describe("scratch root — the chain predicate (a refusal per defect)", () => {
 		// must refuse — AFTER validating, before writing.
 		expect(mustOk(resolveIn(home)).root).toBe(root);
 		const created = ensureRunDir(root, "run-1");
-		expect(created).toMatchObject({ ok: false, code: "ancestor-not-dir" });
+		expect(created).toMatchObject({ ok: false, code: "below-not-dir" });
 		expect(created.ok === false && created.message).toContain(join(root, RUNS_DIR));
 		expect(readdirSync(elsewhere)).toEqual([]);
+	});
+
+	// The same zone code for the other shape the below-zone ladder refuses: a pre-created FILE where the
+	// run directory goes. The component is below the root, so it must not be reported as an *ancestor*
+	// defect — a caller matching on `ancestor-not-dir` would be sent to the wrong zone (#527 item 3).
+	it("refuses a file where the run directory goes as below-not-dir", () => {
+		const home = sandbox();
+		const root = rootOf(home);
+		mkdirSync(join(root, RUNS_DIR), { recursive: true, mode: 0o700 });
+		writeFileSync(join(root, RUNS_DIR, "run-1"), "not a directory");
+
+		const created = ensureRunDir(root, "run-1");
+		expect(created).toMatchObject({ ok: false, code: "below-not-dir" });
+		expect(created.ok === false && created.message).toContain(join(root, RUNS_DIR, "run-1"));
 	});
 
 	// `chown` needs privileges a suite must not assume: skipped, and it SAYS so, rather than passing

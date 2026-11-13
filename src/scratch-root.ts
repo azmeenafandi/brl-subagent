@@ -13,11 +13,10 @@
  * MIRRORED, NOT IMPORTED. The tooling half (`scripts/lib/scratch-root.mjs`, #512/#516) owns the same
  * rules for the cockpit, but it is not shipped and it lives on a different surface (untyped `.mjs`
  * plus a CLI). The RULES are mirrored here: the two-zone chain predicate (every ancestor must be a real
- * directory owned by root or by us — a FOREIGN OWNER is refused — and the root itself must be ours and
- * exactly 0700), `lstat` as the first read with a link refused at the ROOT and resolved — then
- * validated — above it, and an explicit `chmod` after `mkdir` so the mode does not depend on the
- * umask. Three DELIBERATE differences: the first two narrow the shipped contract, the third relaxes one
- * clause and says why.
+ * directory owned by root or by us — a FOREIGN OWNER is refused — and the root itself must be ours), an
+ * explicit `chmod` after `mkdir` so the mode does not depend on the umask, and `lstat` as the first read
+ * on every component. FOUR DELIBERATE differences: the first two narrow the shipped contract, the third
+ * relaxes one clause and says why, and the fourth is the LINK rule, which is not shared at all.
  *
  *   1. a Linux `tmpfs` root is a WARNING, not a refusal. A user may legitimately keep `$HOME` (and
  *      therefore `~/.cache`) on a `tmpfs` — a live session does exactly that — and refusing would
@@ -33,6 +32,21 @@
  *      relaxed is OWNERSHIP: an ancestor owned by a third uid is a different trust boundary (its owner
  *      can rename what is below it whatever the mode), so it keeps refusing under its own code,
  *      `ancestor-not-owned`.
+ *   4. the LINK rule is NOT the tooling's. The tooling refuses EVERY symlink and never resolves one
+ *      (`scripts/lib/scratch-root.mjs:198`; its `checkComponent` cannot walk above a target it never
+ *      follows). This module refuses a link at the ROOT (`root-symlink`, because the `chmod` would
+ *      follow it) and RESOLVES — then validates — a link ABOVE it, walking the resolved target's own
+ *      chain (`checkResolvedAncestor`, `checkTargetAncestors`): a user who moved `~/.cache` to another
+ *      disk must still be able to delegate, and the parent question is answered by where the link lands.
+ *
+ * STRICTER, NOT MIRRORED — the ROOT's mode clause. Both surfaces refuse a shareable root, but the
+ * tooling refuses group/other access only (`(mode & 0o077) !== 0`, `scripts/lib/scratch-root.mjs:224`),
+ * so a `4700` root passes it, while this module demands exactly `0700` (`(mode & 0o7777) !== 0o700`) and
+ * refuses that root. The strictness is deliberate and is not relaxed (the clause in `checkComponent`
+ * carries the same reason in place): the root is the CONFIDENTIALITY BOUNDARY for the bank's bytes
+ * (every run directory and marker is reachable only through it), this module creates it at `0700` and
+ * never repairs a mode it did not set, so any setuid/setgid/sticky bit on it is a state this module
+ * cannot account for — worth refusing rather than interpreting.
  *
  * NO TEMP FALLBACK, EVER. A root that cannot be placed is `home-unresolvable`, a named error. Falling
  * back to `os.tmpdir()` would reintroduce exactly the defect this module removes.
@@ -112,6 +126,10 @@ export const SCRATCH_ROOT_CODES = Object.freeze([
 	"ancestor-writable",
 	"ancestor-not-owned",
 	"ancestor-not-dir",
+	// The SAME clause as `ancestor-not-dir`/`root-not-dir`, spelled for the zone it fires in: a link or
+	// non-directory at `runs` or `runs/<runId>` is BELOW the root, and a caller matching on the code must
+	// not be told a zone the refused component is not in (#527 item 3).
+	"below-not-dir",
 	"bad-run-id",
 	"create-failed",
 ] as const);
@@ -391,6 +409,25 @@ function checkResolvedAncestor(link: string, uid: number | null): Verdict {
 	return { ok: true, warning: combineWarnings([targetVerdict.warning, aboveVerdict.warning]) };
 }
 
+/*
+ * THE INSPECT LADDER IS TRIPLICATED ON PURPOSE — accepted, not refactored (#527 item 5). Three walks ask
+ * the same four questions of every component they visit (missing? unreadable? a link? a directory?):
+ *
+ *   - `checkTargetAncestors` (this function) — the chain ABOVE a resolved symlink target, NEAREST-first,
+ *     zone `ancestor`, reached only from `checkResolvedAncestor`;
+ *   - `validateChain` (below) — the LITERAL chain from `/` down to the root, ROOT-MOST-first, zones
+ *     `ancestor` and `root`;
+ *   - `validateBelow` (below) — the two fixed paths under the root (`runs`, then `runs/<runId>`), in
+ *     that order, zone `below`.
+ *
+ * Each has its own ZONE, its own refusal spelling for the same clause (`ancestor-not-dir` /
+ * `root-not-dir` / `below-not-dir`), its own labels (the two symlink label forms, the path itself) and
+ * its own traversal order — because those are what the caller's code matches on and what the reader's
+ * message names. A shared table would have to flatten the zone-specific sentences into one, which is
+ * exactly the loss the repetition avoids; two occurrences is the DRY threshold, and these are one ladder
+ * written out three times against three contracts. Accepted deliberately — do not "simplify" it into a
+ * table without deciding what each zone's message should then stop saying.
+ */
 /**
  * The directories ABOVE a resolved target, judged by the ancestor clauses — the residual the target
  * clause alone does not see. A link into a non-sticky world-writable directory (`/srv/shared` at
@@ -455,12 +492,17 @@ function checkComponent(path: string, stats: Stats, zone: Zone, uid: number | nu
 					`${path} is a symlink — the root is inspected with lstat and never followed (and never chmod-ed through: a chmod on a link retargets the link's target, which is someone else's choice of where the bank lands)`,
 				)
 			: fail(
-					"ancestor-not-dir",
+					"below-not-dir",
 					`${path} is a symlink — at and below the root nothing is followed (a chmod, a create or a marker write would land wherever the link points), so a link there is refused rather than resolved`,
 				);
 	}
 	if (!stats.isDirectory()) {
-		return zone === "root" ? fail("root-not-dir", `${path} is not a directory`) : fail("ancestor-not-dir", `${path} is not a directory`);
+		// One spelling per zone: the code names where the refused component sits, so `root-not-dir`,
+		// `ancestor-not-dir` and `below-not-dir` are the same clause reported three ways.
+		if (zone === "root") return fail("root-not-dir", `${path} is not a directory`);
+		return zone === "ancestor"
+			? fail("ancestor-not-dir", `${path} is not a directory`)
+			: fail("below-not-dir", `${path} is not a directory`);
 	}
 	// No uid means no ownership model to judge (Windows). The directory and symlink clauses above are
 	// the whole predicate there; `fs` synthesizes mode bits on Windows, so a mode clause would be noise.
@@ -472,6 +514,14 @@ function checkComponent(path: string, stats: Stats, zone: Zone, uid: number | nu
 				`${path} is owned by uid ${stats.uid}, not by you (uid ${uid}) — the root and everything below it must be yours`,
 			);
 		}
+		// WHY EXACTLY 0700, WHEN THE TOOLING HALF ACCEPTS ANY MODE WITHOUT GROUP/OTHER BITS
+		// (`(mode & 0o077) !== 0`, `scripts/lib/scratch-root.mjs:224`, which a `4700` root satisfies)?
+		// The root is the confidentiality boundary for the bank's bytes — every run directory and every
+		// marker is reachable only through it — so its mode is judged WHOLE (`0o7777`), not as a write
+		// check: setuid, setgid or sticky on this directory is a state nothing here sets, and an
+		// unexpected state on the boundary is refused rather than interpreted. That is a deliberate
+		// strictness gap against the tooling half (the header states it), not a relaxed clause, so do not
+		// "align" the mask with the tooling's without a decision to make the shipped root shareable.
 		if ((stats.mode & 0o7777) !== ROOT_MODE) {
 			return fail(
 				"root-mode",
@@ -491,6 +541,8 @@ function checkComponent(path: string, stats: Stats, zone: Zone, uid: number | nu
  * component ends the judgement — everything below it is missing too, and a missing root is not a
  * failure here (creation is `ensureRunDir`'s job): what has been read is the part that exists, and the
  * part that exists is the part whose ownership and writability decide whether the rest is safe.
+ *
+ * One of the three deliberately-repeated walks: see the ladder note above `checkTargetAncestors`.
  *
  * The walk COLLECTS advisories (one per group/other-writable ancestor, root-most first) instead of
  * dropping them, so a chain with two writable parents reports both. A refusal is returned, never joined
@@ -519,7 +571,10 @@ function validateChain(root: string, uid: number | null): ChainWalk {
 	return { ok: true, warnings };
 }
 
-/** `<root>/runs` and `<root>/runs/<runId>`, re-read after creation. */
+/**
+ * `<root>/runs` and `<root>/runs/<runId>`, re-read after creation. One of the three deliberately-repeated
+ * walks (see the ladder note above `checkTargetAncestors`); fixed paths, in this order, zone `below`.
+ */
 function validateBelow(root: string, runId: string, uid: number | null): ScratchRootError | undefined {
 	for (const path of [join(root, RUNS_DIR), join(root, RUNS_DIR, runId)]) {
 		const found = inspect(path);
@@ -699,6 +754,16 @@ function createComponent(path: string, zone: Zone, uid: number | null, created: 
 	created.push(path);
 	const made = inspect(path);
 	if (made.kind !== "found") return fail("create-failed", `${path} vanished after mkdir`);
+	// DEFENCE IN DEPTH, NOT AN ATTACKER PATH, AND DELIBERATELY UNTESTED (#527 item 4). To lose this race
+	// someone needs rename authority over `path` — write permission on its PARENT, which is a component
+	// this same call created at `0700` or validated as ours on the way down. A parent that is still
+	// group/other-writable is one of the relaxations this module states rather than hides (an ancestor
+	// warns — difference 3; the below zone has no mode clause, since it is reachable only through the
+	// `0700` root), and that is a stated consequence rather than something this guard could close. So the
+	// window is not a gap the chain predicate left open, and no deterministic test can construct the swap
+	// without an fs seam this security core deliberately does not have (a seam on this path would be a
+	// hook into the `chmod`). Deleting these three lines leaves the suite green — which is exactly why the
+	// guard states its unverifiable status here rather than implying a test pins it.
 	if (made.stats.isSymbolicLink()) {
 		return fail("create-failed", `${path} is a symlink immediately after mkdir — refusing to chmod through it`);
 	}
