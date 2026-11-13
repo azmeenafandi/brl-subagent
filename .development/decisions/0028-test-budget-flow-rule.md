@@ -33,6 +33,17 @@ A stock ratio cannot distinguish "a 500-line module merged with no test" (it bar
 two blockers worth recording: the evidence check **skipped any body without a block**, and the merge
 gate **ran the PR tree's own copy of the checker**, so a PR could weaken the rule that judged it.
 
+## Correction (2026-11-13, after U0b)
+
+Two numbers in Context were artifacts of a throwaway scan and are **withdrawn**: the "61 assertion-free
+blocks" came from a brace matcher defeated by `it("…", async () => {…}, 20_000)` — re-derived, it is
+**7 of 2,745**, and all seven legitimately assert through a helper or a throw; and the "101
+shape-duplicate groups" came from blanking string literals — the five "identical" guardrail bodies
+assert five different sentences, and literals-preserved equality finds **no** cross-file duplicate in
+the doc-guard quartet. The decision below does not rest on those numbers (the stock ratio's flaw is
+structural), but the corrected record matters: the suite was not padded, and the pointed audit
+recovered **9 lines**, not hundreds. Cited from U0b (PR #524).
+
 ## Decision
 
 **(A) The stock is a report; a per-PR flow is the gate.**
