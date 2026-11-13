@@ -626,11 +626,6 @@ describe("DEFAULT_MAX_SUBAGENT_DEPTH", () => {
 	it("is set to 3", () => {
 		expect(DEFAULT_MAX_SUBAGENT_DEPTH).toBe(3);
 	});
-
-	it("is a positive integer", () => {
-		expect(DEFAULT_MAX_SUBAGENT_DEPTH).toBeGreaterThan(0);
-		expect(Number.isInteger(DEFAULT_MAX_SUBAGENT_DEPTH)).toBe(true);
-	});
 });
 
 
