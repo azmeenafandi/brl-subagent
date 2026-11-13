@@ -8,7 +8,10 @@
  * a `0777` umask that would defeat `mkdirSync`'s mode. A symlinked ANCESTOR is a supported setup (a
  * `~/.cache` moved to another disk), so it is pinned in both directions: a link to a real `0700`
  * directory we own resolves and is created THROUGH, while a link to a `0775` directory, a broken link,
- * a link cycle and a link two levels up each get their own observed code. TWO exceptions, both stated:
+ * a link cycle and a link two levels up each get their own observed code. The directory a link LANDS ON
+ * is not the whole chain: a `0700` target under a non-sticky `0777` parent is re-pointable by anyone,
+ * so that shape is pinned as a refusal naming the link, the target and the offending directory — and
+ * the same shape under a `0755` chain is pinned as accepted. TWO exceptions, both stated:
  *
  *  - the tmpfs probe is a SEAM (`statfs` is injected), because whether `$HOME` is on a `tmpfs` is a
  *    property of the machine and not of the code — and on this surface it is a WARNING, not a refusal;
@@ -268,6 +271,70 @@ describe("scratch root — a symlinked ancestor is resolved, then validated", ()
 		expect(verdict.message).toContain(link);
 		expect(verdict.message).toContain("does not resolve");
 		expect(ensureRunDir(rootOf(home), "run-1")).toMatchObject({ ok: false, code: "ancestor-not-dir" });
+		// The mount probe is never reached: a link that resolves to nothing has no filesystem to name, so
+		// no `statfs` call, no warning and no throw — the refusal is the whole answer, and it returns.
+		const probed: string[] = [];
+		const warnings: string[] = [];
+		const probedVerdict = resolveIn(home, {
+			statfs: (path: string) => {
+				probed.push(path);
+				return { type: TMPFS_MAGIC };
+			},
+			warn: (message) => warnings.push(message),
+		});
+		expect(probedVerdict).toMatchObject({ ok: false, code: "ancestor-not-dir" });
+		expect(probed).toEqual([]);
+		expect(warnings).toEqual([]);
+	});
+
+	it("refuses a link whose resolved target sits under a non-sticky 0777 directory, naming all three paths", () => {
+		const home = sandbox();
+		// `/srv/shared` at `0777` with our own `0700` child: the target passes its own clauses, and the
+		// directory ABOVE it is rename authority over it for every local user.
+		const shared = join(WORK, `unsafe-shared-${(counter += 1)}`);
+		mkdirSync(shared, { mode: 0o777 });
+		chmodSync(shared, 0o777);
+		const target = join(shared, "cache");
+		mkdirSync(target, { mode: 0o700 });
+		chmodSync(target, 0o700);
+		const link = join(home, ".cache");
+		symlinkSync(target, link);
+		const resolved = realpathSync(link);
+		const offender = realpathSync(shared);
+
+		const verdict = resolveIn(home);
+		expect(verdict).toMatchObject({ ok: false, code: "ancestor-writable" });
+		if (verdict.ok) throw new Error("expected a refusal");
+		// The target is OURS and exactly 0700 — a target-only clause accepts this link, which is the
+		// residual this fixture exists for.
+		expect(statSync(resolved).mode & 0o7777).toBe(ROOT_MODE);
+		expect(statSync(resolved).uid).toBe(statSync(home).uid);
+		expect(verdict.message).toContain(link);
+		expect(verdict.message).toContain(resolved);
+		expect(verdict.message).toContain(offender);
+		expect(verdict.message).toContain("0777");
+		// Creation refuses too, before anything is written through the link.
+		expect(ensureRunDir(rootOf(home), "run-1")).toMatchObject({ ok: false, code: "ancestor-writable" });
+		expect(existsSync(join(resolved, "brl-subagent"))).toBe(false);
+	});
+
+	it("accepts the same shape when the chain above the target is ours and not group/other-writable", () => {
+		const home = sandbox();
+		const shared = join(WORK, `safe-shared-${(counter += 1)}`);
+		mkdirSync(shared, { mode: 0o755 });
+		chmodSync(shared, 0o755);
+		const target = join(shared, "cache");
+		mkdirSync(target, { mode: 0o700 });
+		chmodSync(target, 0o700);
+		const link = join(home, ".cache");
+		symlinkSync(target, link);
+
+		// 0755 owned by us passes the clause that 0777 fails: the walk above the target is a check, not
+		// a blanket refusal of links that land anywhere but `$HOME`.
+		expect(resolveIn(home)).toEqual({ ok: true, root: rootOf(home) });
+		const created = mustOk(ensureRunDir(rootOf(home), "run-1"));
+		expect(created.runDir).toBe(join(rootOf(home), RUNS_DIR, "run-1"));
+		expect(existsSync(join(realpathSync(link), "brl-subagent", RUNS_DIR, "run-1"))).toBe(true);
 	});
 
 	it("refuses a symlink cycle without walking it, and never loops", () => {
@@ -406,6 +473,37 @@ describe("scratch root — the mount probe is a warning, not a refusal", () => {
 		).toEqual({ ok: true, root: join(home, "Library", "Caches", "brl-subagent") });
 		expect(probed).toEqual([]);
 		expect(warnings).toEqual([]);
+	});
+
+	it("warns on a tmpfs root reached through a symlinked ancestor, probing the canonical path", () => {
+		const home = sandbox();
+		const target = join(WORK, `cache-tmpfs-${(counter += 1)}`);
+		mkdirSync(target, { mode: 0o700 });
+		chmodSync(target, 0o700);
+		const link = join(home, ".cache");
+		symlinkSync(target, link);
+		const canonicalTarget = realpathSync(link);
+
+		const probed: string[] = [];
+		const warnings: string[] = [];
+		const verdict = resolveIn(home, {
+			statfs: (path: string) => {
+				probed.push(path);
+				return { type: TMPFS_MAGIC };
+			},
+			warn: (message) => warnings.push(message),
+		});
+
+		expect(verdict.ok).toBe(true);
+		expect(verdict.ok === true && verdict.warning).toContain("will not survive a reboot");
+		expect(warnings).toHaveLength(1);
+		// The probe is the CANONICAL path — the directory the kernel will create the root in — and not the
+		// link: `statfs` on the link path would answer about the link's own mount. Before the fix the probe
+		// never ran at all here (`null` on the first symlink), which is why the durability signal vanished
+		// for exactly the users link support was added for.
+		expect(probed).toEqual([canonicalTarget]);
+		expect(warnings[0]).toContain(canonicalTarget);
+		expect(warnings[0]).toContain("does not exist yet");
 	});
 });
 

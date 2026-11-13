@@ -36,12 +36,11 @@
  * LIMITS, stated rather than implied: a mount-namespace substitution by a user who already holds
  * privileges; NFS, where ownership and `chmod` semantics belong to the server; a root that becomes a
  * mount point, or is renamed by its owner, AFTER it was validated; a symlinked ancestor whose resolved
- * directory is renamed or re-pointed between the `realpath` and the `mkdir` (the same window, one link
- * further out); the WRITABILITY of the directories ABOVE the resolved target — the link is judged where
- * it lands, and `realpath` resolves the rest without judging it, so a `1777` directory far above the
- * target is a substitution risk this clause does not see; and Windows, where `fs` reports no
- * meaningful `uid` and synthesized mode bits — the ownership and 0700 clauses are POSIX-only and are
- * skipped there (the symlink and directory clauses still hold).
+ * directory is renamed or re-pointed between the `realpath` and the `mkdir` (the TOCTOU window, one
+ * link further out, and not closable without an `openat`-style primitive that holds the directory open
+ * while it is judged); and Windows, where `fs` reports no meaningful `uid` and synthesized mode bits —
+ * the ownership and 0700 clauses are POSIX-only and are skipped there (the symlink and directory
+ * clauses still hold, above a resolved target's chain exactly as along the literal one).
  */
 
 import {
@@ -264,9 +263,11 @@ function inspect(path: string): Inspection {
 }
 
 /**
- * The ANCESTOR's two clauses (ownership, then group/other write), shared by a real directory and by the
- * directory a link resolves to. `label` is how a message names the component: the path itself, or
- * `<link> (a symlink to <target>)`, so the reader is never sent to a mode the link does not have.
+ * The ANCESTOR's two clauses (ownership, then group/other write), shared by a real directory, by the
+ * directory a link resolves to, and by the directories ABOVE that resolved target (`checkTargetAncestors`).
+ * `label` is how a message names the component: the path itself, `<link> (a symlink to <target>)`, or
+ * `<link> (a symlink to <target>), whose parent <dir>`, so the reader is never sent to a mode the link
+ * does not have.
  *
  * Ownership is checked BEFORE the mode: a `0755` directory owned by a third party passes a mode-only
  * rule, and that owner can rename the validated root afterwards and substitute a symlink. Write
@@ -301,6 +302,10 @@ function checkAncestorClauses(label: string, stats: Stats, uid: number): Verdict
  * `realpathSync` walks the whole chain in one call, so a nested link or a LOOP is refused here rather
  * than walked component by component (`ELOOP` on `a -> b -> a`, `ENOENT` on a broken link): a link that
  * names no directory names no parent, and there is nothing for the clause below to be true of.
+ *
+ * THE TARGET IS NOT THE WHOLE STORY: the directories ABOVE the target carry the same rename authority
+ * over it that the target carries over the root, so they are judged by the same clauses (see
+ * `checkTargetAncestors`).
  */
 function checkResolvedAncestor(link: string, uid: number | null): Verdict {
 	let target: string;
@@ -324,7 +329,55 @@ function checkResolvedAncestor(link: string, uid: number | null): Verdict {
 	if (!stats.isDirectory()) return fail("ancestor-not-dir", `${link} is a symlink to ${target}, which is not a directory`);
 	// No uid means no ownership model to judge (Windows), exactly as for a real ancestor in this zone.
 	if (uid === null) return { ok: true };
-	return checkAncestorClauses(`${link} (a symlink to ${target})`, stats, uid);
+	const targetVerdict = checkAncestorClauses(`${link} (a symlink to ${target})`, stats, uid);
+	if (!targetVerdict.ok) return targetVerdict;
+	return checkTargetAncestors(link, target, uid);
+}
+
+/**
+ * The directories ABOVE a resolved target, judged by the ancestor clauses — the residual the target
+ * clause alone does not see. A link into a non-sticky world-writable directory (`/srv/shared` at
+ * `0777`) whose child is our own `0700` directory is re-pointable by any local user: write authority
+ * over `shared` is rename authority over the child the link lands on, which is the class the ancestor
+ * rule exists to stop, one hop past the resolution.
+ *
+ * The target itself is EXCLUDED (its own clauses just ran, and its parents are what this walks). The
+ * walk goes from the target's PARENT up to `/`, nearest first: the closest writable parent is the one
+ * whose ordinary rename reaches the validated directory, so that is the name a refusal should print.
+ *
+ * `realpathSync` canonicalised the target, so every component of its chain is a real directory; the
+ * clauses are still applied through `inspect` because the tree can change between that call and this
+ * walk, and a component that has become a link (or vanished) is a change to fail closed on — the
+ * resolved chain is not re-resolved here, since re-resolving it would judge a path the root is no
+ * longer reached through.
+ */
+function checkTargetAncestors(link: string, target: string, uid: number): Verdict {
+	const chain = directoryChain(target);
+	for (let index = chain.length - 2; index >= 0; index -= 1) {
+		const path = chain[index];
+		// One label for both clauses, so a refusal always names the LINK, the TARGET and the DIRECTORY.
+		const label = `${link} (a symlink to ${target}), whose parent ${path}`;
+		const found = inspect(path);
+		if (found.kind === "missing") {
+			return fail(
+				"ancestor-not-dir",
+				`${label} no longer exists — the target was canonicalised a moment ago, so the tree changed under this check (a chain that moved is not one to trust)`,
+			);
+		}
+		if (found.kind === "unreadable") {
+			return fail("ancestor-not-dir", `${label} cannot be inspected (${codeOf(found.error) || describe(found.error)})`);
+		}
+		if (found.stats.isSymbolicLink()) {
+			return fail(
+				"ancestor-not-dir",
+				`${label} is a symlink — the target's chain was canonicalised, so a link here means it was re-pointed under this check, and the re-pointed chain is not the one the target was validated against`,
+			);
+		}
+		if (!found.stats.isDirectory()) return fail("ancestor-not-dir", `${label} is not a directory`);
+		const verdict = checkAncestorClauses(label, found.stats, uid);
+		if (!verdict.ok) return verdict;
+	}
+	return { ok: true };
 }
 
 /**
@@ -416,29 +469,48 @@ function validateBelow(root: string, runId: string, uid: number | null): Scratch
 // The mount probe — advisory on the shipped surface
 // ---------------------------------------------------------------------------
 
+/** `realpathSync` without throwing: the canonical path, or `null` when it does not resolve. */
+function canonical(path: string): string | null {
+	try {
+		return realpathSync(path);
+	} catch {
+		return null;
+	}
+}
+
 /**
- * The deepest existing REAL directory on `root`'s chain — the component whose filesystem a directory
- * we create would inherit. `null` means the chain holds something that is not a real directory (a file,
- * or a symlink). A symlinked ANCESTOR passes validation (it is resolved and judged), so this probe
- * stops short of it on purpose: `statfs` is not consulted for a link's target here, and the consequence
- * is stated rather than left to be discovered — a cache directory reached through a symlink gets no
- * `tmpfs` advisory on this surface.
+ * The deepest existing component on `root`'s chain, CANONICALISED — the path whose filesystem a
+ * directory we create would inherit. `null` means nothing on the chain resolves (the deepest existing
+ * component is a broken link), and then there is no mount to name.
+ *
+ * A symlink is NOT a reason to stop: a cache directory reached through a link is exactly the setup the
+ * link support exists for, and returning `null` there would silently drop the durability advisory for
+ * those users. So the walk keeps the deepest component that EXISTS (link or not), and the answer is
+ * resolved before it is returned: `statfs` must be asked about the canonical path, because that is the
+ * directory the kernel will put a new child in, and the warning has to name the path the user can act
+ * on rather than a link whose own mount is the link's parent's.
+ *
+ * A FILE component ends the walk without being recorded: a directory cannot be created inside it, so
+ * the prefix above it is the deepest component whose filesystem a new directory would inherit.
  */
 function deepestExisting(root: string): string | null {
 	let deepest: string | null = null;
 	for (const path of directoryChain(root)) {
 		const inspected = inspect(path);
 		if (inspected.kind !== "found") break;
-		if (inspected.stats.isSymbolicLink() || !inspected.stats.isDirectory()) return null;
+		if (!inspected.stats.isSymbolicLink() && !inspected.stats.isDirectory()) break;
 		deepest = path;
 	}
-	return deepest;
+	if (deepest === null) return null;
+	return canonical(deepest);
 }
 
 /**
  * A `tmpfs` root is a WARNING on this surface, not a refusal (difference 1 in the header): the bank
  * does not survive a reboot, and the user is told so. The probe is the deepest existing component, so
- * a root that does not exist yet is judged by the ancestor it would be created in.
+ * a root that does not exist yet is judged by the ancestor it would be created in — and a root reached
+ * through a symlinked ancestor is judged by the directory the link lands on, which is the filesystem
+ * the refused-to-be-dropped advisory would otherwise be missing.
  *
  * LINUX ONLY, documented inline: `f_type` magic numbers are not portable and this module does not
  * guess another platform's. An unreadable mount type yields no warning either — the property is
@@ -455,8 +527,10 @@ function mountWarning(root: string, platform: NodeJS.Platform, statfs: (path: st
 		return undefined;
 	}
 	if (type !== TMPFS_MAGIC) return undefined;
+	// "Does the root exist yet" asked canonically: `probe` is canonical, so a root that resolves to it
+	// exists (through a link or not) and there is nothing to explain. No new import, and no second read.
 	const inherited =
-		probe === resolve(root)
+		canonical(resolve(root)) === probe
 			? ""
 			: ` (${resolve(root)} does not exist yet, and a directory created inside ${probe} inherits its filesystem)`;
 	return `${probe} is on a tmpfs — the progress bank will not survive a reboot${inherited}`;
