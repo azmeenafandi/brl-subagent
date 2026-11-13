@@ -395,6 +395,7 @@ afterEach(() => {
 
 afterAll(async () => {
 	await env.tearDown();
+	for (const dir of createdRunDirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe("deliverCompletionAlert — transport auto-retry (issue #365)", () => {
@@ -594,10 +595,12 @@ describe("deliverCompletionAlert — transport auto-retry (issue #365)", () => {
 // inspect-first block on the CHILD'S SYSTEM PROMPT (a `<resume-context>` entry;
 // #411 moved it there, out of the `<task>` fence). Two invariants are pinned here:
 //
-//   1. the preamble is present (marker, source id, bank path), names no
-//      start/steering stub, and names the retained session directory ONLY when
-//      it exists (issue #404) — with an ABSOLUTE path, since the retry's child
-//      can run in a different cwd;
+//   1. the preamble is present (marker, source id, the run's own bank path),
+//      names no start/steering stub, and names the retained session directory
+//      ONLY when it exists (issue #404) — with an ABSOLUTE path, since the
+//      retry's child can run in a different cwd. Issue #511 (U3) changed the
+//      bank half: it is `<scratchDir>/bank.md`, named only when that directory
+//      really exists, and never a system-temp path;
 //   2. the preamble is system-prompt-only — `resolveSubagentParams` and the H1
 //      pre-task validation still see the RECORDED ORIGINAL task, so routing,
 //      thinking level, model and capability warnings cannot be steered by text
@@ -621,17 +624,31 @@ function retrySpawn(): Record<string, unknown> {
 	return h.spawnBackgroundSession.mock.calls[0][2] as Record<string, unknown>;
 }
 
+/** Run directories minted by this suite, removed in `afterAll`. */
+const createdRunDirs: string[] = [];
+
+/**
+ * A real run directory for the durable-bank pins (issue #511 U3). Inside the
+ * repository's gitignored `.tmp/` chain, never the developer's real cache root.
+ */
+function makeRunDir(name: string): string {
+	const dir = fs.mkdtempSync(path.join(process.cwd(), ".tmp", `${name}-`));
+	createdRunDirs.push(dir);
+	return dir;
+}
+
 describe("transport auto-retry — resume preamble (issue #401)", () => {
 	it("names the retained session only when it exists, with an absolute path", async () => {
 		vi.useFakeTimers();
 		try {
 			const sourceId = "9a1e2d3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
 			const sessionDir = backgroundSessionDir(sourceId);
+			const runDir = makeRunDir("u3-preamble-bank");
 			fs.mkdirSync(sessionDir, { recursive: true });
 			fs.writeFileSync(path.join(sessionDir, "2026-10-31T10-00-00.jsonl"), "{}\n");
 			try {
 				registerSettledAgent(sourceId, "Connection error.");
-				persistRunEntry(settledRun({ id: sourceId, label: "review-docs" }));
+				persistRunEntry(settledRun({ id: sourceId, label: "review-docs", scratchDir: runDir }));
 
 				await settle(sourceId);
 
@@ -644,7 +661,13 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 				// The inspect-first instruction: working tree, recent history, bank.
 				expect(resumeContext).toContain("git status --short");
 				expect(resumeContext).toContain("git log --oneline -8");
-				expect(resumeContext).toContain("/tmp/brl-review-docs-bank.md");
+				// Issue #511 (U3): the bank is the run's OWN file, ABSOLUTE, and no
+				// shipped sentence points at a system temp directory any more. (The
+				// preamble can still carry `/tmp` through the SUITE's own temp agent
+				// dir, so the assertion is scoped to the bank line.)
+				const bankLine = resumeContext.split("\n").find((line) => line.includes("progress bank"));
+				expect(bankLine).toContain(path.join(runDir, "bank.md"));
+				expect(bankLine).not.toContain("/tmp");
 				// The retained session, ABSOLUTE (the child's cwd can differ).
 				const pointerLine = resumeContext.split("\n").find((line) => line.includes("retained at"));
 				expect(pointerLine).toBeDefined();
@@ -680,7 +703,14 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 			await settle(sourceId);
 
 			const resumeContext = String(retrySpawn().resumeContext);
-			expect(resumeContext).toContain(`/tmp/brl-review-docs-bank.md`);
+			// Issue #511 (U3): the record carries no `scratchDir` and its computed
+			// directory does not exist, so there is no bank sentence at all — a dead
+			// path is worse than no path.
+			expect(resumeContext).not.toContain("progress bank");
+			expect(resumeContext).not.toContain("/tmp");
+			expect(resumeContext).toContain(
+				"Before acting, inspect: `git status --short` and `git log --oneline -8`.",
+			);
 			expect(resumeContext).not.toContain(path.resolve(sessionDir));
 			expect(resumeContext).not.toContain("retained at");
 			expect(resumeContext).not.toContain("newest .jsonl inside");
@@ -691,18 +721,22 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 		}
 	});
 
-	it("an all-separator label falls back to the sanitized id for the bank path", async () => {
+	it("a separators-only label cannot reach the bank path — it is id-based", async () => {
 		vi.useFakeTimers();
 		try {
 			const sourceId = "7c1e2d3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+			const runDir = makeRunDir("u3-label");
 			registerSettledAgent(sourceId, "Connection error.");
-			persistRunEntry(settledRun({ id: sourceId, label: "---", resumeOf: undefined }));
+			persistRunEntry(settledRun({ id: sourceId, label: "---", resumeOf: undefined, scratchDir: runDir }));
 
 			await settle(sourceId);
 
 			const resumeContext = String(retrySpawn().resumeContext);
-			expect(resumeContext).toContain(`/tmp/brl-${sourceId}-bank.md`);
-			expect(resumeContext).not.toContain("/tmp/brl----bank.md");
+			// The path is the run's own directory: no label sanitisation exists to
+			// get wrong, and no `/tmp/brl-<label>-bank.md` can be built from it.
+			expect(resumeContext).toContain(path.join(runDir, "bank.md"));
+			expect(resumeContext).not.toContain("/tmp");
+			expect(resumeContext).not.toContain("brl----bank");
 		} finally {
 			vi.clearAllTimers();
 			vi.useRealTimers();
@@ -712,17 +746,20 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 	it("a preamble carrying preset and capability keywords does not change resolution (routing isolation)", async () => {
 		vi.useFakeTimers();
 		try {
-			// The label survives bank-path sanitization, so these keywords (a
-			// security-auditor preset keyword AND a bash-class H1 keyword) really
-			// are in the preamble. If resolution saw it, the preset would flip to
-			// security-auditor and the H1 gate would block the missing 'bash'.
+			// Issue #511 (U3): the label no longer reaches the preamble, but the run
+			// directory does — so these keywords (a security-auditor preset keyword AND
+			// a bash-class H1 keyword) really are in the preamble. If resolution saw
+			// it, the preset would flip to security-auditor and the H1 gate would block
+			// the missing 'bash'.
 			const sourceId = "bg-401-security-audit-implement-source";
+			const runDir = makeRunDir("security-audit-run-123");
 			registerSettledAgent(sourceId, "Connection error.");
 			persistRunEntry(
 				settledRun({
 					id: sourceId,
 					label: "security-audit-run-123",
 					task: "review the docs",
+					scratchDir: runDir,
 				}),
 			);
 
@@ -731,7 +768,8 @@ describe("transport auto-retry — resume preamble (issue #401)", () => {
 			const spawn = retrySpawn();
 			const resumeContext = String(spawn.resumeContext);
 			// The keywords ARE in the resume context (system-prompt side)…
-			expect(resumeContext).toContain("/tmp/brl-security-audit-run-123-bank.md");
+			expect(resumeContext).toContain(path.join(runDir, "bank.md"));
+			expect(resumeContext).toContain("security-audit-run-123");
 			// …and never in the task or the shipped system prompt — the resume
 			// context is its own trusted section, so the label keyword cannot
 			// reach resolution or the preset guidance.
