@@ -305,8 +305,8 @@ try {
 	// dispatch (`<home>/.cache/brl-subagent/runs/<id>`) and creates it for real —
 	// the in-process vitest redirect cannot reach a child process. The HOME is
 	// therefore redirected here, inside the repository's `.tmp` chain (a `/tmp`
-	// HOME would be refused as ancestor-writable), so this suite never writes
-	// into the developer's real cache. `getAgentDir()` is only read by the
+	// HOME would carry a writable-ancestor warning on every resolve), so this
+	// suite never writes into the developer's real cache. `getAgentDir()` is only read by the
 	// background path, which these tests do not exercise.
 	const harnessHome = join(TMP_SCRIPT_DIR, "harness-home");
 	mkdirSync(join(harnessHome, ".cache"), { recursive: true, mode: 0o700 });

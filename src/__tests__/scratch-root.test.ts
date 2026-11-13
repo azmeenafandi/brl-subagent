@@ -7,19 +7,31 @@
  * and mtime are read back), a group-writable ancestor, a `1777` ancestor that has the `/tmp` shape, and
  * a `0777` umask that would defeat `mkdirSync`'s mode. A symlinked ANCESTOR is a supported setup (a
  * `~/.cache` moved to another disk), so it is pinned in both directions: a link to a real `0700`
- * directory we own resolves and is created THROUGH, while a link to a `0775` directory, a broken link,
- * a link cycle and a link two levels up each get their own observed code. The directory a link LANDS ON
- * is not the whole chain: a `0700` target under a non-sticky `0777` parent is re-pointable by anyone,
- * so that shape is pinned as a refusal naming the link, the target and the offending directory — and
- * the same shape under a `0755` chain is pinned as accepted. TWO exceptions, both stated:
+ * directory we own resolves and is created THROUGH, while a broken link, a link cycle and a link two
+ * levels up each get their own observed code. The directory a link LANDS ON is not the whole chain: a
+ * `0700` target under a non-sticky `0777` parent is re-pointable by anyone, so that shape is pinned as
+ * a WARNING naming the link, the target and the offending directory — and the same shape under a
+ * `0755` chain is pinned as silently accepted.
  *
+ * THE TWO ANCESTOR CLAUSES HAVE DIFFERENT POLARITIES, and that split is what this file pins. A
+ * group/other WRITE BIT is a WARNING and the run proceeds (`0775`, and the `1777` `/tmp` shape — both
+ * were refusals before the policy change), because a shipped extension must run on a shared or
+ * corporate machine. A FOREIGN OWNER is still a REFUSAL, under its own code `ancestor-not-owned`: its
+ * owner can rename what is below it whatever the mode, so it is a different trust boundary rather than
+ * a different mode. The root's own clauses (`root-mode`, `root-symlink`) and the below-root zone are
+ * untouched, and are pinned here so the relaxation cannot spread.
+ *
+ * THREE exceptions, all stated:
  *  - the tmpfs probe is a SEAM (`statfs` is injected), because whether `$HOME` is on a `tmpfs` is a
  *    property of the machine and not of the code — and on this surface it is a WARNING, not a refusal;
- *  - the ownership case needs `chown`, so it is skipped unless the suite runs as root.
+ *  - the ownership case needs `chown`, so a non-root suite proves it by STUBBING the current uid
+ *    (`process.getuid`) instead. The two are complementary — the chown fixture runs only as root, the
+ *    stub only as a normal user — so the foreign-owner clause is exercised either way;
+ *  - a fixture we can create is ours: without one of those two seams a foreign owner is unprovable.
  *
- * The sandbox lives under `<repo>/.tmp` (gitignored), never under `/tmp`: `/tmp` is `1777`, so a root
- * under it is refused `ancestor-writable` — which is the unit's point, and would make every test here a
- * test of that one refusal.
+ * The sandbox lives under `<repo>/.tmp` (gitignored), never under `/tmp`: `/tmp` is `1777`, so a fixture
+ * there would carry an ancestor WARNING on every resolve — and the `toEqual({ ok: true, root })` probes
+ * below are the ones that must observe NO advisory at all.
  *
  * COVERAGE — what these probes do NOT cover, stated rather than implied: a mount-namespace substitution
  * by a user who already holds privileges; NFS, where ownership and `chmod` semantics belong to the
@@ -29,7 +41,7 @@
  */
 import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
 	BANK_FILENAME,
 	DONE_MARKER,
@@ -128,10 +140,18 @@ describe("scratch root — the chain predicate (a refusal per defect)", () => {
 		const home = sandbox();
 		const root = rootOf(home);
 		mkdirSync(root, { recursive: true, mode: 0o700 });
-		chmodSync(root, 0o750);
-		const verdict = resolveIn(home);
-		expect(verdict).toMatchObject({ ok: false, code: "root-mode" });
-		expect(verdict.ok === false && verdict.message).toContain("0750");
+		// Every shape that is not 0700 refuses, group-writable included: the ROOT is the confidentiality
+		// boundary for the bank's bytes, and the ancestor relaxation does not reach it. `04700` pins that
+		// the test is the whole `0o7777` mask, not a write-bit check.
+		for (const mode of [0o750, 0o770, 0o4700]) {
+			chmodSync(root, mode);
+			const verdict = resolveIn(home);
+			expect(verdict, formatMode(mode)).toMatchObject({ ok: false, code: "root-mode" });
+			expect(verdict.ok === false && verdict.message, formatMode(mode)).toContain(formatMode(mode));
+			// A refused root is refused by creation too, and nothing is created inside it.
+			expect(ensureRunDir(root, "run-1"), formatMode(mode)).toMatchObject({ ok: false, code: "root-mode" });
+			expect(existsSync(join(root, RUNS_DIR)), formatMode(mode)).toBe(false);
+		}
 		chmodSync(root, 0o700);
 		expect(resolveIn(home).ok).toBe(true);
 	});
@@ -163,31 +183,47 @@ describe("scratch root — the chain predicate (a refusal per defect)", () => {
 		expect(resolveIn(home)).toMatchObject({ ok: false, code: "root-not-dir" });
 	});
 
-	it("refuses a group-writable ancestor", () => {
+	it("WARNS on a group-writable ancestor and lets the run proceed", () => {
 		const home = sandbox();
 		const cache = join(home, ".cache");
 		mkdirSync(rootOf(home), { recursive: true, mode: 0o700 });
 		chmodSync(cache, 0o775);
-		const verdict = resolveIn(home);
-		expect(verdict).toMatchObject({ ok: false, code: "ancestor-writable" });
-		expect(verdict.ok === false && verdict.message).toContain("0775");
-		chmodSync(cache, 0o700);
-		expect(resolveIn(home).ok).toBe(true);
+		try {
+			const warnings: string[] = [];
+			const verdict = mustOk(resolveIn(home, { warn: (message) => warnings.push(message) }));
+			// The sentence must name the path, the ON-DISK mode and the consequence: an advisory that says
+			// "some parent is writable" cannot be acted on.
+			expect(verdict.warning).toContain(cache);
+			expect(verdict.warning).toContain("0775");
+			expect(verdict.warning).toContain("replace");
+			expect(verdict.warningKinds).toEqual(["ancestor-writable"]);
+			// One advisory report, on both channels: the result and the injected sink agree.
+			expect(warnings).toEqual([verdict.warning]);
+			// Creation proceeds — this is the shape a shared or corporate machine actually has.
+			const created = mustOk(ensureRunDir(rootOf(home), "run-1"));
+			expect(existsSync(created.runDir)).toBe(true);
+			expect(statSync(created.runDir).mode & 0o7777).toBe(ROOT_MODE);
+		} finally {
+			chmodSync(cache, 0o700);
+		}
 	});
 
-	it("refuses a 1777 ancestor — the /tmp shape — even when the leaf is 0700", () => {
+	it("WARNS on a 1777 ancestor — the /tmp shape — and still creates the run dir", () => {
 		const home = sandbox();
 		const cache = join(home, ".cache");
 		mkdirSync(rootOf(home), { recursive: true, mode: 0o700 });
 		chmodSync(cache, 0o1777);
 		try {
-			const verdict = resolveIn(home);
-			expect(verdict).toMatchObject({ ok: false, code: "ancestor-writable" });
-			expect(verdict.ok === false && verdict.message).toContain("1777");
-			// The same shape through creation: refused BEFORE anything is created.
-			const created = ensureRunDir(join(cache, "other-root"), "run-1");
-			expect(created).toMatchObject({ ok: false, code: "ancestor-writable" });
-			expect(existsSync(join(cache, "other-root"))).toBe(false);
+			const verdict = mustOk(resolveIn(home));
+			expect(verdict.warning).toContain(formatMode(0o1777));
+			expect(verdict.warning).toContain(cache);
+			// The sticky bit changes the CONSEQUENCE, so the sentence says so instead of claiming a co-worker
+			// can replace a directory we own: only pre-creation is left, and the root's own clauses refuse
+			// that. A message that over-claims is the defect this assertion exists to catch.
+			expect(verdict.warning).toContain("sticky bit");
+			expect(verdict.warning).not.toContain("can replace the run directory, and the bank path with it");
+			const created = mustOk(ensureRunDir(rootOf(home), "run-1"));
+			expect(existsSync(created.runDir)).toBe(true);
 		} finally {
 			chmodSync(cache, 0o700);
 		}
@@ -201,6 +237,26 @@ describe("scratch root — the chain predicate (a refusal per defect)", () => {
 		expect(verdict.ok === false && verdict.message).toContain(join(other, ".cache"));
 	});
 
+	// The relaxation is scoped to the ANCESTOR zone's write bit; nothing below the root moved. A link
+	// there is where a chmod, a create or a marker write would land, so it is still refused, and nothing
+	// is written through it.
+	it("still refuses a symlink BELOW the root, where nothing is followed", () => {
+		const home = sandbox();
+		const root = rootOf(home);
+		mkdirSync(root, { recursive: true, mode: 0o700 });
+		const elsewhere = join(WORK, `below-target-${(counter += 1)}`);
+		mkdirSync(elsewhere, { mode: 0o700 });
+		symlinkSync(elsewhere, join(root, RUNS_DIR));
+
+		// `resolveRoot` sees a perfectly good root: the defect is below it, so creation is the seam that
+		// must refuse — AFTER validating, before writing.
+		expect(mustOk(resolveIn(home)).root).toBe(root);
+		const created = ensureRunDir(root, "run-1");
+		expect(created).toMatchObject({ ok: false, code: "ancestor-not-dir" });
+		expect(created.ok === false && created.message).toContain(join(root, RUNS_DIR));
+		expect(readdirSync(elsewhere)).toEqual([]);
+	});
+
 	// `chown` needs privileges a suite must not assume: skipped, and it SAYS so, rather than passing
 	// silently as if the ownership clause had been checked against a real foreign uid.
 	it.skipIf(process.getuid?.() !== 0)("refuses a foreign-owned root (root-only: chown)", () => {
@@ -212,6 +268,34 @@ describe("scratch root — the chain predicate (a refusal per defect)", () => {
 		expect(verdict).toMatchObject({ ok: false, code: "root-not-owned" });
 		expect(verdict.ok === false && verdict.message).toContain("uid 1");
 	});
+
+	// The complement of the fixture above: on a normal user's machine a directory we can create is ours,
+	// so the FOREIGN owner is fabricated by moving the CURRENT uid instead of the file's. Both arms test
+	// the same clause ("owned by neither root nor us") and exactly one of them can run per host.
+	it.skipIf(process.getuid?.() === 0)(
+		"refuses a foreign-owned ANCESTOR as ancestor-not-owned (current uid stubbed)",
+		() => {
+			const home = sandbox();
+			const actual = process.getuid?.() ?? 0;
+			const spy = vi.spyOn(process, "getuid").mockReturnValue(actual + 1);
+			try {
+				// The walk goes root-first, so the FIRST foreign component is the one named — on a normal host
+				// that is the home directory itself, which is why the assertion is about the numbers and the
+				// clause rather than about a path this suite cannot own.
+				const verdict = resolveIn(home);
+				expect(verdict).toMatchObject({ ok: false, code: "ancestor-not-owned" });
+				if (verdict.ok) throw new Error("expected a refusal");
+				expect(verdict.message).toContain(`uid ${actual}`);
+				expect(verdict.message).toContain(`uid ${actual + 1}`);
+				expect(verdict.message).toContain("owned by");
+				// Creation refuses on the same clause, and creates nothing.
+				expect(ensureRunDir(rootOf(home), "run-1")).toMatchObject({ ok: false, code: "ancestor-not-owned" });
+				expect(existsSync(rootOf(home))).toBe(false);
+			} finally {
+				spy.mockRestore();
+			}
+		},
+	);
 });
 
 describe("scratch root — a symlinked ancestor is resolved, then validated", () => {
@@ -240,7 +324,7 @@ describe("scratch root — a symlinked ancestor is resolved, then validated", ()
 		for (const path of created.created) expect(statSync(realpathSync(path)).mode & 0o7777, path).toBe(ROOT_MODE);
 	});
 
-	it("refuses a link that lands on a group-writable directory, naming the link and the target", () => {
+	it("WARNS on a link that lands on a group-writable directory, naming the link and the target", () => {
 		const home = sandbox();
 		const target = join(WORK, `cache-writable-${(counter += 1)}`);
 		mkdirSync(target, { mode: 0o700 });
@@ -249,16 +333,16 @@ describe("scratch root — a symlinked ancestor is resolved, then validated", ()
 		symlinkSync(target, link);
 		const resolved = realpathSync(target);
 
-		const verdict = resolveIn(home);
-		expect(verdict).toMatchObject({ ok: false, code: "ancestor-writable" });
-		if (verdict.ok) throw new Error("expected a refusal");
+		const verdict = mustOk(resolveIn(home));
 		// Both paths are named: "<link> is mode 0775" would send the reader to a mode the link lacks.
-		expect(verdict.message).toContain("0775");
-		expect(verdict.message).toContain(link);
-		expect(verdict.message).toContain(resolved);
-		// Creation refuses too, before anything is written through the link.
-		expect(ensureRunDir(rootOf(home), "run-1")).toMatchObject({ ok: false, code: "ancestor-writable" });
-		expect(existsSync(join(resolved, "brl-subagent"))).toBe(false);
+		expect(verdict.warning).toContain("0775");
+		expect(verdict.warning).toContain(link);
+		expect(verdict.warning).toContain(resolved);
+		expect(verdict.warning).toContain("replace");
+		// Creation proceeds THROUGH the link: the target's mode is advised on, not refused.
+		const created = mustOk(ensureRunDir(rootOf(home), "run-1"));
+		expect(existsSync(created.runDir)).toBe(true);
+		expect(statSync(join(resolved, "brl-subagent", RUNS_DIR, "run-1")).mode & 0o7777).toBe(ROOT_MODE);
 	});
 
 	it("refuses a broken link ancestor as ancestor-not-dir, naming the link", () => {
@@ -287,7 +371,7 @@ describe("scratch root — a symlinked ancestor is resolved, then validated", ()
 		expect(warnings).toEqual([]);
 	});
 
-	it("refuses a link whose resolved target sits under a non-sticky 0777 directory, naming all three paths", () => {
+	it("WARNS on a link whose resolved target sits under a non-sticky 0777 directory, naming all three paths", () => {
 		const home = sandbox();
 		// `/srv/shared` at `0777` with our own `0700` child: the target passes its own clauses, and the
 		// directory ABOVE it is rename authority over it for every local user.
@@ -302,20 +386,41 @@ describe("scratch root — a symlinked ancestor is resolved, then validated", ()
 		const resolved = realpathSync(link);
 		const offender = realpathSync(shared);
 
-		const verdict = resolveIn(home);
-		expect(verdict).toMatchObject({ ok: false, code: "ancestor-writable" });
-		if (verdict.ok) throw new Error("expected a refusal");
-		// The target is OURS and exactly 0700 — a target-only clause accepts this link, which is the
-		// residual this fixture exists for.
+		const verdict = mustOk(resolveIn(home));
+		// The target is OURS and exactly 0700 — a target-only clause sees nothing here, which is the
+		// residual this fixture exists for: the sentence must name the DIRECTORY that is re-pointable.
 		expect(statSync(resolved).mode & 0o7777).toBe(ROOT_MODE);
 		expect(statSync(resolved).uid).toBe(statSync(home).uid);
-		expect(verdict.message).toContain(link);
-		expect(verdict.message).toContain(resolved);
-		expect(verdict.message).toContain(offender);
-		expect(verdict.message).toContain("0777");
-		// Creation refuses too, before anything is written through the link.
-		expect(ensureRunDir(rootOf(home), "run-1")).toMatchObject({ ok: false, code: "ancestor-writable" });
-		expect(existsSync(join(resolved, "brl-subagent"))).toBe(false);
+		expect(verdict.warning).toContain(link);
+		expect(verdict.warning).toContain(resolved);
+		expect(verdict.warning).toContain(offender);
+		expect(verdict.warning).toContain("0777");
+		expect(verdict.warning).toContain("replace");
+		// Creation proceeds through the link, and still lands at 0700 on disk.
+		const created = mustOk(ensureRunDir(rootOf(home), "run-1"));
+		expect(existsSync(created.runDir)).toBe(true);
+	});
+
+	it("carries BOTH sentences when the root is on a tmpfs AND an ancestor is group-writable", () => {
+		const home = sandbox();
+		const cache = join(home, ".cache");
+		mkdirSync(rootOf(home), { recursive: true, mode: 0o700 });
+		chmodSync(cache, 0o775);
+		try {
+			const warnings: string[] = [];
+			const verdict = mustOk(
+				resolveIn(home, { statfs: () => ({ type: TMPFS_MAGIC }), warn: (message) => warnings.push(message) }),
+			);
+			// Neither advisory may drop the other: the join is the contract, and both KINDS are reported so a
+			// caller can dedupe by kind rather than by wording.
+			expect(verdict.warning).toContain("will not survive a reboot");
+			expect(verdict.warning).toContain(cache);
+			expect(verdict.warning).toContain("0775");
+			expect(verdict.warningKinds).toEqual(["ancestor-writable", "tmpfs"]);
+			expect(warnings).toEqual([verdict.warning]);
+		} finally {
+			chmodSync(cache, 0o700);
+		}
 	});
 
 	it("accepts the same shape when the chain above the target is ours and not group/other-writable", () => {

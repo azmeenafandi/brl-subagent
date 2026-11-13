@@ -8,7 +8,8 @@
  * Every case injects `{ root: { home } }` (the seam added for exactly this), so
  * no test reads or writes the developer's real cache root. Fixtures live under
  * the repository's gitignored `.tmp/` chain, never under `/tmp`: `/tmp` is
- * `1777`, and the resolver refuses an ancestor-writable parent.
+ * `1777`, so the resolver would warn about a writable ancestor on every resolve
+ * and a test expecting no advisory could not tell its own silence from that one.
  */
 
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";

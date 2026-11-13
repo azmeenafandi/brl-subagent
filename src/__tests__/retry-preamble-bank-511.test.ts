@@ -60,8 +60,8 @@ const created: string[] = [];
 
 /**
  * A throwaway directory inside the repository's gitignored `.tmp/` chain — never
- * `os.tmpdir()`, because the shipped resolver refuses an ancestor-writable root
- * and `/tmp` is exactly that on a normal Linux host.
+ * `os.tmpdir()`, because `/tmp` (`1777`) makes the shipped resolver warn about a
+ * writable ancestor on every resolve — noise in a suite about a different thing.
  */
 function makeTempDir(name: string): string {
 	const dir = mkdtempSync(join(process.cwd(), ".tmp", `${name}-`));

@@ -48,9 +48,9 @@ export interface TempEnv {
 	readonly testCwd: string;
 	/**
 	 * Issue #511 (U2): the throwaway scratch root every spawn in this test
-	 * resolves under. It is NOT under `os.tmpdir()`: the shipped resolver
-	 * refuses an ancestor-writable parent, and `/tmp` is exactly that — the root
-	 * lives inside the repository's gitignored `.tmp/` chain instead.
+	 * resolves under. It is NOT under `os.tmpdir()`: `/tmp` is `1777`, so the
+	 * shipped resolver warns about a writable ancestor on every resolve — the
+	 * root lives inside the repository's gitignored `.tmp/` chain instead.
 	 */
 	readonly scratchRoot: string;
 }
@@ -72,7 +72,8 @@ let counter = 0;
  * The repository-local root the scratch directories hang off. Created at 0700
  * and reused across fixtures: `.tmp/` is gitignored, and every ancestor above it
  * (the repo root, the home directory, `/`) is a non-group/other-writable
- * directory owned by this user or root — which is what the resolver requires.
+ * directory owned by this user or root — so a fixture here resolves with no
+ * advisory at all (a writable ancestor is warned about, not refused).
  */
 function repoTmp(): string {
 	const dir = path.join(process.cwd(), ".tmp");

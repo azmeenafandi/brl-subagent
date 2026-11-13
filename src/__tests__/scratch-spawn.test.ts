@@ -14,13 +14,16 @@
  *      nested child resolves a DIFFERENT run.
  *   4. Failure is named and PRE-SPAWN: no child starts.
  *   5. Settle writes `.done`; prune removes only settled, aged runs.
- *   6. The tmpfs advisory is one line per process, not one per run.
+ *   6. The root advisory (a `tmpfs` mount, a group/other-writable ancestor,
+ *      or both joined into one string) is one line per KIND per process, not
+ *      one per run — and one kind never swallows the other.
  *
- * Fixtures live under the repository's gitignored `.tmp/` chain: the shipped
- * resolver refuses an ancestor-writable parent, and `os.tmpdir()` is exactly
- * that on a normal Linux host.
+ * Fixtures live under the repository's gitignored `.tmp/` chain, never under
+ * `os.tmpdir()`: a fixture under `/tmp` (`1777`) would carry an ancestor
+ * advisory on every resolve, so a test that expects NO advisory could not tell
+ * its own silence from that one.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -200,6 +203,59 @@ describe("prepareRunScratch — resolve, create, prune", () => {
 		expect(prepareRunScratch("run-2", { root, log: sink.log }).ok).toBe(true);
 
 		expect(sink.warns.filter((m) => m.includes("tmpfs"))).toHaveLength(1);
+	});
+
+	it("logs a writable-ancestor advisory once per process, and still logs a different KIND", () => {
+		// The shape a shared or corporate machine actually has: `~/.cache` at `0775`. The run proceeds and
+		// the advisory is a line, not a refusal.
+		const writableHome = sandbox();
+		mkdirSync(join(writableHome, ".cache"), { recursive: true, mode: 0o700 });
+		chmodSync(join(writableHome, ".cache"), 0o775);
+		const sink = recorder();
+		const writable = { platform: "linux" as const, env: {}, home: writableHome, statfs: EXT4 };
+
+		expect(prepareRunScratch("run-anc-1", { root: writable, log: sink.log }).ok).toBe(true);
+		expect(prepareRunScratch("run-anc-2", { root: writable, log: sink.log }).ok).toBe(true);
+		expect(sink.warns.filter((m) => m.includes("0775"))).toHaveLength(1);
+		expect(sink.warns.filter((m) => m.includes("0775"))[0]).toContain(join(writableHome, ".cache"));
+
+		// A DIFFERENT kind must still be logged — one flag for both kinds would swallow the second.
+		const tmpfsHome = sandbox();
+		expect(
+			prepareRunScratch("run-tmpfs", {
+				root: { platform: "linux", env: {}, home: tmpfsHome, statfs: () => ({ type: TMPFS_MAGIC }) },
+				log: sink.log,
+			}).ok,
+		).toBe(true);
+		expect(sink.warns.filter((m) => m.includes("tmpfs"))).toHaveLength(1);
+		// …and the first kind is not re-logged by the second run.
+		expect(sink.warns.filter((m) => m.includes("0775"))).toHaveLength(1);
+	});
+
+	it("logs one line carrying BOTH sentences when a tmpfs root has a writable ancestor", () => {
+		// Both kinds in ONE report: the seam must not pick a winner. The root does not exist yet, so the
+		// mount sentence carries its "does not exist yet" clause on this first run and loses it on the
+		// second — which is why the once-rule keys on the KIND and not on the wording.
+		const home = sandbox();
+		mkdirSync(join(home, ".cache"), { recursive: true, mode: 0o700 });
+		chmodSync(join(home, ".cache"), 0o775);
+		const sink = recorder();
+		const root = { platform: "linux" as const, env: {}, home, statfs: () => ({ type: TMPFS_MAGIC }) };
+		try {
+			expect(prepareRunScratch("run-both-1", { root, log: sink.log }).ok).toBe(true);
+			const lines = sink.warns.filter((m) => m.startsWith("scratch root:"));
+			expect(lines).toHaveLength(1);
+			expect(lines[0]).toContain("will not survive a reboot");
+			expect(lines[0]).toContain(join(home, ".cache"));
+			expect(lines[0]).toContain("0775");
+
+			// Second run: the root now exists (so the mount sentence's wording would change) and both kinds
+			// are already known — nothing is re-logged, under either spelling.
+			expect(prepareRunScratch("run-both-2", { root, log: sink.log }).ok).toBe(true);
+			expect(sink.warns.filter((m) => m.startsWith("scratch root:"))).toHaveLength(1);
+		} finally {
+			chmodSync(join(home, ".cache"), 0o700);
+		}
 	});
 
 	it("a THROWING prune never fails the spawn — it is logged and the directory stands", () => {
