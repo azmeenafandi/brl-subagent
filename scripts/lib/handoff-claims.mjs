@@ -243,7 +243,9 @@ export function parseClaims(text) {
 // The probe is the seam the caller fills in:
 //   headSha() devSha() devClaimSha() · isAncestor(sha) · commitsAfter(sha) -> [{sha, paths}] · exists(path)
 //   lineCount(name) -> {path, lines} | null · modules() · adrs() · openIssues() -> number[]
-//   report() -> {path, files, tests, label} | null · root
+//   report(expectHead) -> {path, files, tests, label} | null · root
+// `expectHead` is the `Verified:` sha of the handoff being checked — the report that proves a suite claim
+// is the one captured at the tree the claim describes, so it is passed in rather than guessed at.
 // Every fact is a function so an unanswerable check fails at its own check, with its own message.
 // ---------------------------------------------------------------------------
 
@@ -435,7 +437,7 @@ function checkSuite(claims, probe) {
 			"the STATE has no `Suite: N files / M tests` line, so the snapshot names no suite",
 		);
 	}
-	const report = probe.report();
+	const report = probe.report(claims.verified === null ? "" : claims.verified.sha);
 	if (report === null) {
 		// "Cannot check" is never a pass: no report means the count has no evidence this run.
 		throw new InputError(

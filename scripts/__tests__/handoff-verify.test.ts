@@ -15,7 +15,8 @@
  *    injected issue list are exercised for real in a throwaway repo, while `gh` and the network are
  *    replaced by a plain object, so the suite needs neither. The report reader itself lives in
  *    `scripts/lib/suite-report.mjs` (#513) and is pinned by `suite-report.test.ts`; this file pins the
- *    fact that this tool keeps no second definition of it;
+ *    fact that this tool keeps no second definition of it — and (#520) that the handoff's `Verified:`
+ *    sha is what reaches that resolver, because the lazily-resolved report is the half that was missing;
  * 4. a SKIP is said out loud (`--no-network`), never silently counted as a pass.
  *
  * The fixtures are `.md` (and one `.json` report) under `fixtures/handoffs/` — invisible to the `scripts`
@@ -609,6 +610,25 @@ describe("handoff-verify — the seams", () => {
 		}
 	});
 
+	/**
+	 * #520 — the handoff's `Verified:` sha must REACH the resolver, and it must be read from the handoff being
+	 * checked (the resolver is what makes one capture-per-head a working default). Reading `Verified:` first
+	 * and resolving second is the whole fix; the stub records the argument so a lazy probe that resolves
+	 * before the STATE is parsed fails here.
+	 */
+	it("hands the handoff's Verified sha to the report resolver (#520)", () => {
+		const seen: string[] = [];
+		const probe = stub({
+			report: (expectHead: string) => {
+				seen.push(expectHead);
+				return { path: REPORT, files: 2, tests: 12 };
+			},
+		});
+		const result = run(["--file", join(FIXTURES, "correct.md"), "--no-network"], probe);
+		expect(result.code).toBe(EXIT.OK);
+		expect(seen).toEqual(["4c1d9ab"]);
+	});
+
 	it("carries the report's provenance in the suite line", () => {
 		const dirty = run(["--file", join(FIXTURES, "correct.md"), "--no-network"], stub({ report: () => ({ path: REPORT, files: 2, tests: 12, label: LABELS.DIRTY }) }));
 		expect(dirty.out).toContain(LABELS.DIRTY);
@@ -860,7 +880,11 @@ describe("handoff-verify — the CLI seam", () => {
 		expect(failures(result)[0]).not.toContain(join(scanned, "planted.json"));
 	});
 
-	it("exits 2 on an ambiguous --report-dir, naming every candidate", () => {
+	it("exits 2 on several unmarked --report-dir candidates, naming every one and its absent provenance", () => {
+		// #520: with a `Verified:` head to match against, two reports that carry NO sidecar cannot be ranked —
+		// not by age and not by the head — so the refusal names `no-provenance-match` rather than the generic
+		// `ambiguous-reports`. The paths and the provenance are both in the message, because a reader picking
+		// one by hand needs to know that neither claims a tree.
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-cli-"));
 		const reports = join(dir, "reports");
 		mkdirSync(reports);
@@ -870,9 +894,61 @@ describe("handoff-verify — the CLI seam", () => {
 		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
 		const result = runCli(["--file", handoff, "--report-dir", reports, "--no-network"]);
 		expect(result.code).toBe(EXIT.USAGE);
-		expect(result.err).toContain("ambiguous-reports");
+		expect(result.err).toContain("no-provenance-match");
 		expect(result.err).toContain(join(reports, "a.json"));
 		expect(result.err).toContain(join(reports, "b.json"));
+		expect(result.err).toContain(LABELS.ABSENT);
+	});
+
+	/**
+	 * The documented default, with the state a SECOND `--capture` produces: one report per head, never pruned.
+	 * Before #520 the handoff-verify probe passed no expected head, so this state was `ambiguous-reports` —
+	 * the tool's own documented path refused to run after the second capture. The `Verified:` line is the
+	 * disambiguator, and the report it selects is the one whose counts the suite check reads.
+	 */
+	it("resolves several captures by the handoff's Verified head (#520)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-verified-"));
+		const reports = join(dir, "reports");
+		mkdirSync(reports);
+		const head = createRepoProbe(ROOT).devClaimSha();
+		const other = "0123456789abcdef0123456789abcdef01234567";
+		// The report of ANOTHER tree carries counts that would drift; the report of the verified tree matches.
+		const stale = join(reports, `${other}.json`);
+		writeFileSync(stale, JSON.stringify(suiteBody(11, 99)));
+		writeFileSync(`${stale}.provenance.json`, JSON.stringify({ head: other, dirty: false, capturedAt: "2026-11-08T00:00:00.000Z" }));
+		const mine = join(reports, `${head}.json`);
+		writeFileSync(mine, JSON.stringify(suiteBody(2, 40)));
+		writeFileSync(`${mine}.provenance.json`, JSON.stringify({ head, dirty: false, capturedAt: "2026-11-08T00:00:01.000Z" }));
+		const handoff = join(dir, "HANDOFF.md");
+		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
+		const result = runCli(["--file", handoff, "--report-dir", reports, "--no-network"]);
+		expect(result.err).not.toContain("ambiguous-reports");
+		expect(result.out).toContain(`head ${head}`);
+		expect(result.code).toBe(EXIT.OK);
+	});
+
+	/**
+	 * Two marked reports of the SAME head are a duplicate, not a tie: `--capture` cannot produce this (one
+	 * file per head), so it is a hand-copied report — and the message has to say which shape it is, because
+	 * "pass --report" is the wrong instruction for two files that describe one tree.
+	 */
+	it("names a duplicate copy of one head instead of calling it a tie (#520)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-dupe-"));
+		const reports = join(dir, "reports");
+		mkdirSync(reports);
+		const head = createRepoProbe(ROOT).devClaimSha();
+		for (const name of ["copy.json", `${head}.json`]) {
+			const path = join(reports, name);
+			writeFileSync(path, JSON.stringify(suiteBody(2, 40)));
+			writeFileSync(`${path}.provenance.json`, JSON.stringify({ head, dirty: false, capturedAt: "2026-11-08T00:00:00.000Z" }));
+		}
+		const handoff = join(dir, "HANDOFF.md");
+		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
+		const result = runCli(["--file", handoff, "--report-dir", reports, "--no-network"]);
+		expect(result.code).toBe(EXIT.USAGE);
+		expect(result.err).toContain("ambiguous-reports");
+		expect(result.err).toContain(`SAME head ${head}`);
+		expect(result.err).toContain("duplicate copy");
 	});
 
 	it("honours --issues without ever invoking gh, and fails with the INJECTED board", () => {

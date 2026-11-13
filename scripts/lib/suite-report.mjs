@@ -46,6 +46,19 @@
 // preference, not evidence — the report that proves a claim is the one that tested the tree the claim
 // describes.
 //
+// THE RESOLUTION RULES, in full (#520 — the shape the documented default actually produces, because
+// `--capture` keeps one report per head and never prunes):
+//   explicit `--report`  wins, and is validated like any other candidate (a supplied head that its sidecar
+//                        contradicts is `provenance-mismatch`);
+//   one head match       exactly one candidate whose sidecar names the expected head → that one;
+//   several head matches `ambiguous-reports`, SAYING they claim the same head — that shape is a duplicate
+//                        copy (a hand-copied or twice-marked report), not a tie, and it is never auto-deduped:
+//                        two files that may already disagree are a fact the gate must not bury;
+//   no match, one unmarked candidate → that one, labelled `provenance: absent` (the documented degrade);
+//   no match, another   `no-provenance-match` (several) or `provenance-mismatch` (one, with a sidecar),
+//                        naming each candidate AND its head or `absent` — never just its path.
+// "Same head" is `sameRevision` — a 7-char prefix names the commit it prefixes — never string equality.
+//
 // LIMITS, stated rather than implied: a report mutated between validation and use (the reader returns a
 // snapshot, and nothing re-reads it); `assertionResults` counts assertions, so a `test.each` row is one
 // result and the derivation follows vitest's own JSON shape rather than any other runner's; and the
@@ -271,8 +284,16 @@ export function collectReportCandidates(dir, { maxDepth = MAX_DEPTH } = {}) {
 	return found.sort();
 }
 
+/**
+ * One candidate as a refusal names it: the path AND the tree it claims. `head <sha>` or `provenance:
+ * absent` — never the label alone, because `unattributed (dirty tree)` says why the head is not trusted
+ * without saying which head it is, and the whole point of naming a candidate is that the reader can pick one.
+ */
 function describeCandidate(candidate) {
-	return `${candidate.path} (${candidate.label})`;
+	const { provenance } = candidate;
+	if (provenance === null) return `${candidate.path} (${LABELS.ABSENT})`;
+	if (provenance.dirty) return `${candidate.path} (head ${provenance.head}, ${LABELS.DIRTY})`;
+	return `${candidate.path} (head ${provenance.head})`;
 }
 
 /**
@@ -310,7 +331,19 @@ export function findReports(dir, { expectHead = "", maxDepth = MAX_DEPTH } = {})
 	if (expectHead === "") return candidates.length === 1 ? chosen(candidates[0]) : refused(ambiguous(candidates));
 	const matching = candidates.filter((candidate) => candidate.provenance !== null && sameRevision(candidate.provenance.head, expectHead));
 	if (matching.length === 1) return chosen(matching[0]);
-	if (matching.length > 1) return refused(ambiguous(matching));
+	if (matching.length > 1) {
+		// Several candidates for the SAME tree are a copy, not a tie: `--capture` writes one report per head
+		// and never prunes, so only a hand-copied (or twice-marked) report produces this shape. Naming it as
+		// a duplicate is what tells the reader which one to delete — auto-dedupe would silently pick one of
+		// two files that may already disagree, and a disagreement between two reports of one head is a fact
+		// the gate must not bury.
+		return refused(
+			new ReportError(
+				CODES.AMBIGUOUS,
+				`${matching.length} candidate reports under ${dir} claim the SAME head ${expectHead} — ${summary(matching)}; that is a duplicate copy, not a tie, so pass --report <path> to name the one this claim is about`,
+			),
+		);
+	}
 	// No sidecar matches the expected head. An absent provenance is accepted when it is the ONLY
 	// candidate (a report nobody marked is still the only evidence there is); a mismatch never is.
 	if (candidates.length === 1 && candidates[0].provenance === null) return chosen(candidates[0]);
@@ -364,7 +397,9 @@ export function resolveReport({ report = "", dir = "", expectHead = "", root = d
 	if (found.error !== null) throw found.error;
 	if (found.report !== null) return found.report;
 	if (found.rejected.length > 0) {
-		const detail = found.rejected.map((entry) => `${entry.path} (${entry.code}: ${entry.message})`).join("; ");
+		// `ReportError` carries the code INSIDE its message by contract (see the class), so the detail joins the
+		// messages as they are: re-prefixing the code read `hollow-report: hollow-report: …` (#520).
+		const detail = found.rejected.map((entry) => entry.message).join("; ");
 		throw new ReportError(
 			CODES.REJECTED,
 			`${found.rejected.length} report(s) under ${target} are not evidence — ${detail}; capture one with \`node scripts/suite-report.mjs --capture\` or pass --report <path>`,

@@ -30,10 +30,13 @@
 //                         `--no-network` without `--issues` skips the check AND prints that it skipped.
 //   suite counts          a vitest JSON report, validated by `scripts/lib/suite-report.mjs` (#513):
 //                         `--report <path>` wins, else the reports under `--report-dir` (default
-//                         `<root>/reports`, the #512 private root) are scanned — and two candidates are a
-//                         refusal naming both, never "newest". The report's path AND its provenance
-//                         (head · dirty · absent) are printed with the verdict, so a count is never shown
-//                         without the provenance of what produced it (Rule 11, #488).
+//                         `<root>/reports`, the #512 private root) are scanned — and the handoff's own
+//                         `Verified:` sha disambiguates them (#520), because the report that proves the
+//                         `Suite:` line is the one captured at the tree §STATE describes. Several reports
+//                         for the SAME head are a named duplicate copy, never a tie; no head in the STATE
+//                         and several reports is still a refusal naming both, never "newest". The report's
+//                         path AND its provenance (head · dirty · absent) are printed with the verdict, so a
+//                         count is never shown without the provenance of what produced it (Rule 11, #488).
 //   module/ADR counts     the repo's own generators (`docs-arch`, `docs-decisions`), imported rather than
 //                         re-counted so the guard and the generator cannot disagree.
 //   file sizes            `wc -l` — `countLines` from `scripts/check-test-budget.mjs`, one definition of
@@ -206,6 +209,11 @@ export function resolveDevClaim(root) {
  * renamed side is how `--report <json>` and `--issues <json>` were silently dropped once. `report` is
  * resolved lazily so `--no-network` and a usage fault never pay for a directory scan.
  *
+ * `report(expectHead)` takes the handoff's `Verified:` sha, and the caller supplies it: the scanner keeps
+ * one report per capture and never prunes, so by the second capture the default directory holds several
+ * candidates. The verified head is the only honest disambiguator (#520) — resolution by it lives in
+ * `scripts/lib/suite-report.mjs`, and the order (read `Verified:`, THEN resolve) is the caller's, here.
+ *
  * The suite report itself is not read here any more (#513): `scripts/lib/suite-report.mjs` owns that, so
  * the handoff's suite check and the PR body's `suite:` key cannot disagree about what a report is.
  */
@@ -232,7 +240,7 @@ export function createRepoProbe(root, { report = "", reportDir = "", issues = ""
 		modules: () => collectModules().length,
 		adrs: () => collectDecisions().length,
 		openIssues: () => readIssues({ root, issues }),
-		report: () => resolveReport({ report, dir: reportDir }),
+		report: (expectHead = "") => resolveReport({ report, dir: reportDir, expectHead }),
 	};
 }
 

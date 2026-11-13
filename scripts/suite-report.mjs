@@ -27,12 +27,24 @@
 // its sidecar are written inside it. A refusal names the code; there is no path here that writes to a
 // system temp directory.
 //
+// THAT APPLIES TO `--mark`'s REPORT TOO, and it is the one place the requirement surprised a conductor
+// (#520): `--mark <report>` refuses a report whose DIRECTORY is not at or below the private root, which
+// means a report at `/tmp/report.json` is refused `outside-root` (or `tmpfs` on a tmpfs `/tmp`), and a
+// 0755 root is refused `root-mode`. That is one policy, not two: a sidecar says "these bytes describe this
+// tree", and a claim is only as private as the file beside it. The fix is always the same and the message
+// names it — `--root <valid root>`, or copy the report under `<root>/reports` and mark it there.
+//
+// ONE MODE FOR BOTH FILES. `vitest --outputFile` writes the report `0644` and the sidecar lands `0600`
+// inside the 0700 root. Nothing leaks through the root, but the mode travels with the file when the root
+// does not (a copy, a tarball, a CI artifact), so `--mark` sets the report to `0600` as well (#520).
+//
 // Exit: 0 ok · 1 a named refusal (the code is in the message) · 2 usage.
 import { spawnSync } from "node:child_process";
+import { chmodSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { InputError } from "./lib/handoff-claims.mjs";
-import { atomicReplace, defaultRoot, ensureDir, ensureRoot, validateDir } from "./lib/scratch-root.mjs";
+import { FILE_MODE, CODES as SCRATCH_CODES, atomicReplace, defaultRoot, ensureDir, ensureRoot, validateDir } from "./lib/scratch-root.mjs";
 import { CODES, PROVENANCE_SUFFIX, REPORTS_DIR_NAME, ReportError, provenanceRecord, readSuiteReport } from "./lib/suite-report.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -47,7 +59,10 @@ export const USAGE = `usage: suite-report.mjs --capture [--label <text>] [--root
   --capture   run the suite into <root>/reports/<head>.json and mark it
   --mark      write <report>${PROVENANCE_SUFFIX} = {head, dirty, capturedAt}
 
-  <root> defaults to ~/.cache/brl-subagent (the private root, mode 0700).
+  <root> defaults to ~/.cache/brl-subagent (the private root, mode 0700, not tmpfs).
+  --mark's <report> must have its DIRECTORY at or below that root: a report at /tmp/x.json is
+  refused (outside-root / tmpfs) and a 0755 root is refused (root-mode). Fix: pass
+  --root <valid root>, or copy the report under <root>/reports and mark it there.
   exit 0 ok · 1 a named refusal · 2 usage`;
 
 function describe(error) {
@@ -116,6 +131,26 @@ export function testedTree(repo, { run = git } = {}) {
 // ---------------------------------------------------------------------------
 
 /**
+ * The fix every `--mark` refusal names, in one spelling: the constraint is a single policy, so the repair is
+ * a single sentence. "It worked yesterday" is the report this exists to prevent (#520) — a conductor who
+ * could not tell a tmpfs from a mode from a containment fault had no move to make.
+ */
+export const MARK_FIX =
+	"a report and its sidecar live at or below the private root; pass --root <valid root>, or copy the report under <root>/reports and mark it there";
+
+/**
+ * The refusal for a directory that cannot hold the sidecar. `outside-root` IS a containment statement, so it
+ * keeps the containment wording. `root-mode` and `tmpfs` are verdicts about the ROOT ITSELF, and the
+ * containment template applied to them read `<root> is not a directory inside <root>` — true,
+ * self-referential, and silent about what actually failed (#520). Those branches say what failed instead.
+ */
+export function markRefusal(dir, { root, code, message }) {
+	const detail = `(${code}: ${message})`;
+	if (code === SCRATCH_CODES.OUTSIDE_ROOT) return `${dir} is not a directory inside ${root} ${detail} — ${MARK_FIX}`;
+	return `cannot mark a report in ${dir} ${detail} — ${MARK_FIX}`;
+}
+
+/**
  * Write the provenance sidecar beside `reportPath`: `{head, dirty, capturedAt}`, atomically, inside the
  * private root. The report is validated first — a sidecar is a claim that these bytes came from this
  * tree, and a file that is not a report has nothing to claim. Returns the record it wrote.
@@ -127,14 +162,13 @@ export function markReport(reportPath, options = {}) {
 	const tree = testedTree(repo, run === undefined ? {} : { run });
 	const record = { head: tree.head, dirty: tree.dirty, capturedAt: now() };
 	const ensured = validateDir(dirname(path), { root });
-	if (!ensured.ok) {
-		throw new ReportError(
-			ensured.code,
-			`${dirname(path)} is not a directory inside ${root} (${ensured.code}: ${ensured.message}) — a report and its sidecar live at or below the private root`,
-		);
-	}
+	if (!ensured.ok) throw new ReportError(ensured.code, markRefusal(dirname(path), { root, code: ensured.code, message: ensured.message }));
 	const written = atomicReplace(dirname(path), `${path}${PROVENANCE_SUFFIX}`, provenanceRecord(record), { root });
 	if (!written.ok) throw new ReportError(written.code, written.message);
+	// The sidecar lands 0600 inside a 0700 root; `vitest --outputFile` writes the report 0644. Contained, so
+	// no leak — but one record in two modes is a distinction nobody asked for, and the mode travels with
+	// the file whenever the root does not. Both files, one mode (#520).
+	chmodSync(path, FILE_MODE);
 	// Re-read what landed instead of reusing the in-memory report: that object was read BEFORE the sidecar
 	// existed, so its label says `provenance: absent` and the capture line would report a label the file on
 	// disk does not carry. Reading it back is also what the gate will do, which is the claim being made.
