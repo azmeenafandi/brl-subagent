@@ -92,6 +92,7 @@ import {
 import { loadBuiltinPresets, formatPresetRestriction, formatToolRestriction } from "./presets";
 import { resolveTerminalRunEntry, type SessionState } from "./state";
 import { makeLiveOnUpdate, pruneHistoryIfNeeded, registerLiveRun } from "./unit-run";
+import { prepareRunScratch } from "./scratch-spawn";
 import { validatePreTask, diagnoseFailure } from "./validate";
 import {
 	defaultBackgroundFor,
@@ -1251,6 +1252,8 @@ async function runForeground(
 			undefined, // intercom
 			undefined, // subagentId
 			run.childMarker,
+			// Issue #511 (U2): the run record's id names the scratch directory.
+			run.id,
 		);
 
 		// Auto-retry on timeout
@@ -1301,6 +1304,8 @@ async function runForeground(
 				undefined, // intercom
 				undefined, // subagentId
 				run.childMarker,
+				// Issue #511 (U2): the run record's id names the scratch directory.
+				run.id,
 			);
 		}
 
@@ -1520,6 +1525,11 @@ function registerForegroundRun(
 	// dispatchId and records resumeOf/attempt; a fresh marker keys the
 	// child process for boot-time orphan discovery.
 	const identity = newDispatchIdentity(retrySourceRun);
+	// Issue #511 (U2): create this run's scratch directory at record creation so
+	// the record can name it (the retry preamble, U3, reads `scratchDir`). The
+	// spawn seam in `runner.ts` re-prepares idempotently and is the gate that
+	// refuses to start the child when the root cannot be placed.
+	const scratch = prepareRunScratch(runId, { log });
 	const run: SubagentRun = {
 		id: runId,
 		task,
@@ -1539,6 +1549,9 @@ function registerForegroundRun(
 		childMarker: crypto.randomUUID(),
 		// U3 (D4): the session recovery posture at dispatch.
 		recoveryPosture: state.config.recovery,
+		// Issue #511 (U2): absent only when the root could not be placed — the
+		// spawn seam then refuses the child and reports the named code.
+		scratchDir: scratch.ok ? scratch.runDir : undefined,
 	};
 	state.persistRun(pi, run, "foreground");
 

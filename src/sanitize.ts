@@ -153,6 +153,14 @@ export function assertSafeAgentId(id: string): void {
 const SAFE_ENV_KEYS = new Set([
 	"PATH",
 	"HOME",
+	// Issue #511 (U2): the Windows halves of the same question. The shipped
+	// scratch root is `%LOCALAPPDATA%\brl-subagent` there, and `USERPROFILE` is
+	// what a nested child needs to find its own home at all — `HOME` alone leaves
+	// a Windows grandchild with no root to resolve. Symmetric with `HOME`, and
+	// deliberately NOT a place for `BRL_SCRATCH`: that value is per-run, so it is
+	// overridden at the spawn seam and stripped from anything inherited.
+	"USERPROFILE",
+	"LOCALAPPDATA",
 	"USER",
 	"LANG",
 	"LC_ALL",

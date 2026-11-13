@@ -181,6 +181,35 @@ describe("getSafeEnv", () => {
 		if (process.env.PATH) expect(env.PATH).toBeDefined();
 	});
 
+	it("keeps the Windows halves of the same question (issue #511 U2)", () => {
+		// A nested child on Windows resolves `%LOCALAPPDATA%\brl-subagent`, so
+		// LOCALAPPDATA and USERPROFILE must survive the allowlist exactly as HOME
+		// does on POSIX. This is the allowlist's behaviour on ANY host — the keys
+		// are read from `process.env`, not from a platform branch here.
+		process.env.LOCALAPPDATA = "C:\\Users\\me\\AppData\\Local";
+		process.env.USERPROFILE = "C:\\Users\\me";
+		const env = getSafeEnv();
+		expect(env.LOCALAPPDATA).toBe("C:\\Users\\me\\AppData\\Local");
+		expect(env.USERPROFILE).toBe("C:\\Users\\me");
+		delete process.env.LOCALAPPDATA;
+		delete process.env.USERPROFILE;
+	});
+
+	it("strips an inherited BRL_SCRATCH and takes the override (issue #511 U2)", () => {
+		// The scratch directory is a PER-RUN value: an inherited one would name a
+		// parent's run (or a planted path), so it must never be forwarded — and a
+		// grandchild must resolve its own. The spawn seam supplies it as an
+		// override instead, which `getSafeEnv` applies LAST.
+		process.env.BRL_SCRATCH = "/tmp/hijack";
+		expect(getSafeEnv().BRL_SCRATCH).toBeUndefined();
+		expect(getSafeEnv({ BRL_SCRATCH: "/home/me/.cache/brl-subagent/runs/run-1" }).BRL_SCRATCH).toBe(
+			"/home/me/.cache/brl-subagent/runs/run-1",
+		);
+		// The override replaces the inherited value rather than merging beside it.
+		expect(getSafeEnv({ BRL_SCRATCH: "/derived" }).BRL_SCRATCH).toBe("/derived");
+		delete process.env.BRL_SCRATCH;
+	});
+
 	it("does not forward BRL_PI_BIN (issue #271 — children resolve their own pi)", () => {
 		// The override is read from the PARENT process to decide the spawn command;
 		// it must not leak into the child's environment (the child would otherwise

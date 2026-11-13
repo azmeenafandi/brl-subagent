@@ -26,6 +26,7 @@ import { __setOutputDir } from "../../transcript";
 import { __setStorageDir } from "../../session-manager";
 import { __setRegistryDir } from "../../run-registry";
 import { __setHeadStateDir } from "../../headstate";
+import { __setScratchRoot } from "../../scratch-spawn";
 import { setLogCwd } from "../../logging";
 
 export interface TempEnvOptions {
@@ -45,6 +46,13 @@ export interface TempEnv {
 	readonly headStateDir: string;
 	/** Only meaningful when the env was created with `withCwd` (the default). */
 	readonly testCwd: string;
+	/**
+	 * Issue #511 (U2): the throwaway scratch root every spawn in this test
+	 * resolves under. It is NOT under `os.tmpdir()`: the shipped resolver
+	 * refuses an ancestor-writable parent, and `/tmp` is exactly that — the root
+	 * lives inside the repository's gitignored `.tmp/` chain instead.
+	 */
+	readonly scratchRoot: string;
 }
 
 function requireDir(helper: string, name: string, value: string | undefined): string {
@@ -57,6 +65,21 @@ function requireDir(helper: string, name: string, value: string | undefined): st
 	return value;
 }
 
+/** A per-process counter so two fixtures in one tick never share a scratch root. */
+let counter = 0;
+
+/**
+ * The repository-local root the scratch directories hang off. Created at 0700
+ * and reused across fixtures: `.tmp/` is gitignored, and every ancestor above it
+ * (the repo root, the home directory, `/`) is a non-group/other-writable
+ * directory owned by this user or root — which is what the resolver requires.
+ */
+function repoTmp(): string {
+	const dir = path.join(process.cwd(), ".tmp");
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	return dir;
+}
+
 export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEnv {
 	const withCwd = opts.withCwd ?? true;
 
@@ -66,6 +89,7 @@ export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEn
 	let registryDir: string | undefined;
 	let headStateDir: string | undefined;
 	let testCwd: string | undefined;
+	let scratchRoot: string | undefined;
 
 	const remove = (dir: string | undefined): void => {
 		if (dir !== undefined) fs.rmSync(dir, { recursive: true, force: true });
@@ -79,6 +103,7 @@ export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEn
 			setLogCwd(undefined);
 			remove(baseDir);
 			remove(testCwd);
+			remove(scratchRoot);
 			baseDir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-pi-`));
 			testCwd = withCwd
 				? fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
@@ -91,6 +116,12 @@ export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEn
 			__setStorageDir(storageDir);
 			__setRegistryDir(registryDir);
 			__setHeadStateDir(headStateDir);
+			// Issue #511 (U2): a spawn resolves + creates its run's scratch
+			// directory, so the root is redirected too — otherwise a suite would
+			// write into the developer's real `~/.cache/brl-subagent`. `.tmp/` is
+			// gitignored and its chain passes the resolver's ancestor rule.
+			scratchRoot = path.join(repoTmp(), `scratch-${process.pid}-${Date.now()}-${(counter += 1)}`);
+			__setScratchRoot(scratchRoot);
 		},
 		async tearDown(): Promise<void> {
 			// Same order as setUp's crossing: clear -> drain -> remove.
@@ -98,12 +129,21 @@ export function createTempEnv(prefix: string, opts: TempEnvOptions = {}): TempEn
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			remove(baseDir);
 			remove(testCwd);
+			remove(scratchRoot);
+			// The redirect is deliberately NOT reset here: the global setup file
+			// points it at the run's base, and `setUp()` replaces it again for the
+			// next test. Resetting to `undefined` would let the gap between two
+			// tests resolve the DEVELOPER's real cache root.
 			baseDir = undefined;
 			outputDir = undefined;
 			storageDir = undefined;
 			registryDir = undefined;
 			headStateDir = undefined;
 			testCwd = undefined;
+			scratchRoot = undefined;
+		},
+		get scratchRoot(): string {
+			return requireDir(`prefix "${prefix}"`, "scratchRoot", scratchRoot);
 		},
 		get baseDir(): string {
 			return requireDir(`prefix "${prefix}"`, "baseDir", baseDir);

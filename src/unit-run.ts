@@ -32,6 +32,7 @@ import {
 import { snapshotOriginalParams } from "./params";
 import { currentProcessOwner } from "./recovery";
 import { capOutput, stripAnsi, buildCrashResult } from "./sanitize";
+import { prepareRunScratch } from "./scratch-spawn";
 import { finalizeRunRecord, pruneSessionRuns } from "./history";
 import { SessionState } from "./state";
 import { attachWorktreeState } from "./worktree-report";
@@ -112,6 +113,12 @@ export function createUnitRun(
 	recoveryPosture: RecoveryMode = DEFAULT_RECOVERY,
 ): { runId: string; run: SubagentRun } {
 	const runId = crypto.randomUUID();
+	// Issue #511 (U2): the unit's scratch directory is created HERE, at record
+	// creation, so the record can carry it. Best-effort: the spawn seam in
+	// `runner.ts` re-prepares (idempotently) and is the gate that refuses to
+	// start a child whose root could not be placed — this call only decides what
+	// the durable record says.
+	const scratch = prepareRunScratch(runId);
 	const run: SubagentRun = {
 		id: runId,
 		task: source.task,
@@ -138,6 +145,13 @@ export function createUnitRun(
 		// U3 (D4): snapshot the posture so the boot notice/offer reads what was
 		// in force at dispatch.
 		recoveryPosture,
+		// Issue #511 (U2): attach the unit's scratch directory to the record at
+		// creation, so a retry of this run (the retry preamble, U3) can name the
+		// bank path from the durable record. Best-effort HERE: the spawn seam in
+		// `runner.ts` is the gate that refuses to start a child without one, so a
+		// refusal here persists a record with no `scratchDir` and the runner reports
+		// the named code.
+		scratchDir: scratch.ok ? scratch.runDir : undefined,
 		// The execution-shape fields (background/gitMode/approvalMode/force) are
 		// deliberately omitted: a fan-out unit retries as a SINGLE run, so it must
 		// not inherit the fan-out's background-ness. A retry that wants background

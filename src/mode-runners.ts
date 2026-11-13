@@ -567,6 +567,8 @@ function rejectedUnitResult(
 						undefined, // intercom
 						undefined, // subagentId
 						run.childMarker,
+						// Issue #511 (U2): the run record's id names the scratch directory.
+						run.id,
 					);
 				} catch (err) {
 					// Issue #133 (mirrors the #119 R1/C1 discipline): finalize the
@@ -930,6 +932,8 @@ function rejectedUnitResult(
 					intercom,
 					subagentId,
 					run.childMarker,
+					// Issue #511 (U2): the run record's id names the scratch directory.
+					run.id,
 				);
 
 				// Fill SubTaskResult (one shared field mapping — issue #376/D3).
@@ -1398,6 +1402,8 @@ function rejectedUnitResult(
 							intercom,
 							subagentId,
 							run.childMarker,
+							// Issue #511 (U2): the run record's id names the scratch directory.
+							run.id,
 						);
 
 						// One shared field mapping — issue #376/D3 (the graph literal was a

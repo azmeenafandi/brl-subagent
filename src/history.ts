@@ -20,6 +20,7 @@ import {
 	type SubagentResult,
 } from "./types";
 import { isOutputTruncated } from "./sanitize";
+import { markSettled } from "./scratch-spawn";
 import { transcriptDisplayPath } from "./transcript-path";
 
 // ---------------------------------------------------------------------------
@@ -139,6 +140,13 @@ export function finalizeRunRecord(
 		: result.stopReason;
 	run.outputSummary = finalOutput.slice(0, 200);
 	run.fullOutput = finalOutput || undefined;
+	// Issue #511 (U2): settling includes the scratch directory's `.done` marker,
+	// and this is the ONE function every foreground terminal path calls — the
+	// success, failure, crash and pre-start-rejection arms all land here — so the
+	// marker cannot be forgotten by a future caller. Best-effort by contract:
+	// `markSettled` logs a failure and never throws, and it is a no-op for a run
+	// with no scratch directory to mark.
+	markSettled(run);
 }
 
 // ---------------------------------------------------------------------------

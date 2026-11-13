@@ -413,6 +413,19 @@ export interface SubagentRun {
 	// dispatched. Additive: a pre-U3 record lacks it and reads as "offer".
 	recoveryPosture?: RecoveryMode;
 	/**
+	 * Issue #511 (U2): the absolute path of this run's scratch directory
+	 * (`<root>/runs/<id>`, owner-only 0700), written at spawn by the seam in
+	 * `scratch-spawn.ts`. The progress bank lives at `<scratchDir>/bank.md`, and a
+	 * terminal settle leaves a `.done` marker in the same directory.
+	 *
+	 * Additive and optional: a run whose scratch preparation was refused before
+	 * anything was created never reaches the record, and a pre-U2 record simply
+	 * lacks the key (readers must treat absence as "no known scratch dir", not as
+	 * a path to derive). The retry preamble (U3) reads it, which is why it is
+	 * persisted at spawn rather than reconstructed at settle.
+	 */
+	scratchDir?: string;
+	/**
 	 * Issue #447: the acceptance marker. `null` at creation — the dispatch is
 	 * TRACKED (agent record + run entry + registry entry written) but has not
 	 * reached `session.prompt()`; an ISO timestamp written immediately before
