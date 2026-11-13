@@ -114,6 +114,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `sanitize.ts` | Input validation, environment allowlisting, and output sanitization (task, cwd, outputFile, agent ids). |
 | `scheduler.ts` | Dependency-graph scheduler: cycle detection, topological waves, and graph validation. |
 | `schema.ts` | The registered `delegate_task` parameter schema — the single source of truth for its types. |
+| `scratch-root.ts` | The shipped scratch root — platform cache resolution, the validated owner-only root, per-run directories, the settle marker, and retention pruning. |
 | `session-manager.ts` | Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths. |
 | `state.ts` | Session-bound state container with versioned validation and migration for persisted settings. |
 | `store-permissions.ts` | Owner-only repair for the persistent stores' directories and files — mkdirSync's mode applies only on CREATE. |
@@ -131,7 +132,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 | `worktree-report.ts` | Formats the read-only worktree state a failed or stopped run may have left behind (issue #474). |
 
-**58 modules** — every one is listed because a new module without a purpose fails CI.
+**59 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
