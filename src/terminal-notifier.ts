@@ -35,12 +35,19 @@
  * non-verbatim pieces are named in the PR: the factory wrapper (`rt`/`deps`
  * destructure + the `return`), `getSession()` replacing the `sessionCtx` read, and
  * `buildRetryResumePreamble` moving with its only caller.
+ *
+ * Issue #511 (U3) edits the one exception to that verbatim rule, and says so: the
+ * resume-preamble builder is no longer byte-identical to 91b286d (its bank path
+ * became the run's own `<scratchDir>/bank.md`), and it was hoisted to module
+ * scope — it reads no factory state — so the path logic could be unit-tested over
+ * a disposable run directory instead of through a spawned child.
  */
 
 import type { RuntimeContext } from "./runtime";
 import type { DelegateTaskParams, SubagentEvent, SubagentEventListener, SubagentRun, ToolResult } from "./types";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
+import { join } from "node:path";
 import * as eventBus from "./event-bus";
 import { resolveRetryParams } from "./history";
 import {
@@ -51,6 +58,7 @@ import {
 	sendCompletionNotification,
 	withWorktreeState,
 } from "./notify-completion";
+import { bankPath, resolveRoot, RUNS_DIR, type RootOptions } from "./scratch-root";
 import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "./transport-retry";
 import { describeWorktreeState } from "./worktree-report";
 
@@ -87,6 +95,115 @@ interface TerminalNotifierDeps {
  */
 interface TerminalNotifier {
 	release: () => void;
+}
+
+/**
+ * Where the bank pointer's two filesystem questions are answered, injected by
+ * the tests: `exists` lets a unit test stand a run directory up somewhere
+ * disposable, and `root` moves the resolver's layout off the real home. Neither
+ * is needed in production, so both default to the real thing.
+ */
+export interface RetryPreambleOptions {
+	/** Injectable existence probe; defaults to `fs.existsSync`. */
+	exists?: (path: string) => boolean;
+	/** Root-resolution inputs (`home` is the one that moves the layout); defaults to `resolveRoot()`. */
+	root?: RootOptions;
+}
+
+/** A run id is ONE path segment — the resolver's id rule, restated where the path is joined. */
+function isPathSegment(id: string): boolean {
+	return id !== "" && id !== "." && id !== ".." && !id.includes("/") && !id.includes("\\");
+}
+
+/**
+ * The run's own directory — the durable record's `scratchDir` when it has one,
+ * otherwise `<root>/runs/<id>` recomputed. The crash-time in-flight registry
+ * carries no `scratchDir` (U2 of #511), and the path is deterministic from the
+ * run id, so a registry-only retry still names the right directory. The
+ * fallback is a recomputation, never a system-temp path: a bank in `/tmp` is
+ * the defect `scratch-root.ts` exists to remove.
+ */
+function runDirectoryOf(run: SubagentRun, options: RetryPreambleOptions): string | undefined {
+	if (run.scratchDir !== undefined) return run.scratchDir;
+	if (!isPathSegment(run.id)) return undefined;
+	try {
+		const resolved = resolveRoot(options.root);
+		return resolved.ok ? join(resolved.root, RUNS_DIR, run.id) : undefined;
+	} catch {
+		// `resolveRoot` reports rather than throws; a host whose home cannot be read
+		// at all (`os.homedir()` can raise) lands here. A prompt line is never worth a
+		// throw, so the sentence is simply dropped.
+		return undefined;
+	}
+}
+
+/**
+ * The bank's absolute path, or `undefined` when the run's directory is not
+ * really there. The gate is the same one the retained-session pointer uses, for
+ * the same reason: a legacy run (no `scratchDir`, no computed directory) and a
+ * pruned run must get no bank sentence at all rather than a dead path.
+ */
+function bankPointer(run: SubagentRun, options: RetryPreambleOptions): string | undefined {
+	const exists = options.exists ?? fs.existsSync;
+	const runDir = runDirectoryOf(run, options);
+	return runDir !== undefined && exists(runDir) ? bankPath(runDir) : undefined;
+}
+
+/**
+ * Issue #401/#411: the resume preamble a transport auto-retry builds and delivers
+ * as a `<resume-context>` section on the child's system prompt — never inside
+ * the `<task>` fence. A dropped connection costs the child its context, not its
+ * files: the retry spawns into the same directory, so the work it already did
+ * (commits, written files, a bank) is still there. The preamble turns a blind
+ * replay into a resume by naming what to inspect first.
+ *
+ * Issue #511 (U3): the bank is the run's OWN file — `<runDir>/bank.md` under the
+ * shipped scratch root — named by its absolute path, and named only when the run
+ * directory exists. The pre-#511 `/tmp/brl-<label>-bank.md` convention (and the
+ * label sanitisation that existed only to build that filename) is gone: the path
+ * is id-based, so a label cannot reach it, and nothing in this builder points at
+ * a system temp directory.
+ *
+ * Kept bounded (5 lines max) and deliberately vetted for runtime vocabulary —
+ * it is prompt text a user can see in the child's system prompt.
+ *
+ * Issue #404: it also names the retained SDK session directory when one exists.
+ * That is the only artifact that holds attempt 1's CONVERSATION — the output log
+ * is a start/steering stub — and the settle path retains it for exactly this
+ * class of run. The pointer is absolute and computed conductor-side at build
+ * time: the retry's child can run in a different cwd (worktree/branch mode), so
+ * a relative path would point at the wrong tree. The exists gate is deliberate:
+ * an attempt whose session was not retained (size floor, marker failure, a
+ * legacy run) gets the bank-only preamble, never a dead path.
+ *
+ * A pure function at module scope on purpose: it reads no runtime context and no
+ * factory state, which is what lets it be unit-tested over a disposable run
+ * directory instead of through a spawned child.
+ */
+export function buildRetryResumePreamble(
+	run: SubagentRun,
+	nextAttempt: number,
+	retainedSessionDir?: string,
+	options: RetryPreambleOptions = {},
+): string {
+	const bank = bankPointer(run, options);
+	const lines = [
+		`[attempt ${nextAttempt} — the previous attempt (${run.id}) died on a transport failure.`,
+		"This directory may already contain its uncommitted edits.",
+		bank === undefined
+			? "Before acting, inspect: `git status --short` and `git log --oneline -8`."
+			: `Before acting, inspect: \`git status --short\`, \`git log --oneline -8\`, and the progress bank at ${bank} if it exists.`,
+		"Continue from what exists; do NOT redo committed, written, or banked work.]",
+	];
+	if (retainedSessionDir) {
+		// Insert before the closing line so the block still reads as one unit.
+		lines.splice(
+			lines.length - 1,
+			0,
+			`The previous attempt's session is retained at ${retainedSessionDir} — read the newest .jsonl inside (ISO-prefixed names sort lexicographically) to recover what it had worked out.`,
+		);
+	}
+	return lines.join("\n");
 }
 
 /**
@@ -157,53 +274,6 @@ export function createTerminalNotifier(rt: RuntimeContext, deps: TerminalNotifie
 		terminalSubscriptions.push({ type, listener });
 		eventBus.on(type, listener);
 	}
-
-/**
- * Issue #401/#411: the resume preamble a transport auto-retry builds and delivers
- * as a `<resume-context>` section on the child's system prompt — never inside
- * the `<task>` fence. A dropped connection costs the child its context, not its
- * files: the retry spawns into the same directory, so the work it already did
- * (commits, written files, a bank) is still there. The preamble turns a blind
- * replay into a resume by naming what to inspect first.
- *
- * Kept bounded (5 lines max) and deliberately vetted for runtime vocabulary —
- * it is prompt text a user can see in the child's system prompt.
- *
- * Issue #404: it also names the retained SDK session directory when one exists.
- * That is the only artifact that holds attempt 1's CONVERSATION — the output log
- * is a start/steering stub — and the settle path retains it for exactly this
- * class of run. The pointer is absolute and computed conductor-side at build
- * time: the retry's child can run in a different cwd (worktree/branch mode), so
- * a relative path would point at the wrong tree. The exists gate is deliberate:
- * an attempt whose session was not retained (size floor, marker failure, a
- * legacy run) gets the bank-only preamble, never a dead path.
- */
-function buildRetryResumePreamble(
-	run: SubagentRun,
-	nextAttempt: number,
-	retainedSessionDir?: string,
-): string {
-	const sanitize = (value: string): string => value.replace(/[^A-Za-z0-9._-]/g, "-");
-	const label = sanitize(run.label ?? "");
-	// A label made only of separators ("---") is not a filename; fall back to the
-	// (UUID-shaped, hence already safe) id.
-	const bankLabel = /[A-Za-z0-9]/.test(label) ? label : sanitize(run.id);
-	const lines = [
-		`[attempt ${nextAttempt} — the previous attempt (${run.id}) died on a transport failure.`,
-		"This directory may already contain its uncommitted edits.",
-		`Before acting, inspect: \`git status --short\`, \`git log --oneline -8\`, and the progress bank at /tmp/brl-${bankLabel}-bank.md if it exists.`,
-		"Continue from what exists; do NOT redo committed, written, or banked work.]",
-	];
-	if (retainedSessionDir) {
-		// Insert before the closing line so the block still reads as one unit.
-		lines.splice(
-			lines.length - 1,
-			0,
-			`The previous attempt's session is retained at ${retainedSessionDir} — read the newest .jsonl inside (ISO-prefixed names sort lexicographically) to recover what it had worked out.`,
-		);
-	}
-	return lines.join("\n");
-}
 
 	/**
 	 * Issue #365: re-dispatch a background run that settled with a transport-class
