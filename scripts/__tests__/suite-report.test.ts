@@ -296,6 +296,34 @@ describe("suite-report — the scanner walks, never ranks", () => {
 		expect(message).toContain(LABELS.ABSENT);
 		expect(message).toContain(other);
 		expect(message).toContain(LABELS.DIRTY);
+		// #520: the details name each candidate's HEAD, or `absent` — a dirty report's label says why the head
+		// is not trusted without saying which head it is, and a reader choosing by hand needs both.
+		expect(message).toContain("head 4c1d9ab2f1e0c3d4e5f60718293a4b5c6d7e8f90, " + LABELS.DIRTY);
+	});
+
+	it("degrades to the one unmarked candidate, labelled provenance: absent (#520)", () => {
+		const { reports } = rootWith();
+		const sole = green(reports, "sole.json", 5);
+		const resolved = resolveReport({ dir: reports, expectHead: "8e7f6a5c4b3a2918171615141312111009080706" });
+		expect(resolved.path).toBe(sole);
+		expect(resolved.label).toBe(LABELS.ABSENT);
+	});
+
+	it("names two reports of the SAME head as a duplicate copy, never as a tie (#520)", () => {
+		const { reports } = rootWith();
+		const head = "8e7f6a5c4b3a2918171615141312111009080706";
+		// The shape is a hand-copied report: `--capture` writes one file per head and never prunes.
+		const canonical = green(reports, `${head}.json`, 12);
+		const copy = green(reports, "copy.json", 12);
+		for (const path of [canonical, copy]) writeSidecar(path, { head, dirty: false, capturedAt: "2026-11-11T00:00:00.000Z" });
+		const message = messageOf(() => resolveReport({ dir: reports, expectHead: head.slice(0, 7) }));
+		expect(codeOf(() => resolveReport({ dir: reports, expectHead: head }))).toBe(CODES.AMBIGUOUS);
+		expect(message).toContain("SAME head");
+		expect(message).toContain("duplicate copy");
+		expect(message).toContain(canonical);
+		expect(message).toContain(copy);
+		// Nothing dedupes them: two files that may already disagree are not a decision this module makes.
+		expect(findReports(reports, { expectHead: head }).report).toBeNull();
 	});
 });
 

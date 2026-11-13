@@ -271,8 +271,16 @@ export function collectReportCandidates(dir, { maxDepth = MAX_DEPTH } = {}) {
 	return found.sort();
 }
 
+/**
+ * One candidate as a refusal names it: the path AND the tree it claims. `head <sha>` or `provenance:
+ * absent` — never the label alone, because `unattributed (dirty tree)` says why the head is not trusted
+ * without saying which head it is, and the whole point of naming a candidate is that the reader can pick one.
+ */
 function describeCandidate(candidate) {
-	return `${candidate.path} (${candidate.label})`;
+	const { provenance } = candidate;
+	if (provenance === null) return `${candidate.path} (${LABELS.ABSENT})`;
+	if (provenance.dirty) return `${candidate.path} (head ${provenance.head}, ${LABELS.DIRTY})`;
+	return `${candidate.path} (head ${provenance.head})`;
 }
 
 /**
@@ -310,7 +318,19 @@ export function findReports(dir, { expectHead = "", maxDepth = MAX_DEPTH } = {})
 	if (expectHead === "") return candidates.length === 1 ? chosen(candidates[0]) : refused(ambiguous(candidates));
 	const matching = candidates.filter((candidate) => candidate.provenance !== null && sameRevision(candidate.provenance.head, expectHead));
 	if (matching.length === 1) return chosen(matching[0]);
-	if (matching.length > 1) return refused(ambiguous(matching));
+	if (matching.length > 1) {
+		// Several candidates for the SAME tree are a copy, not a tie: `--capture` writes one report per head
+		// and never prunes, so only a hand-copied (or twice-marked) report produces this shape. Naming it as
+		// a duplicate is what tells the reader which one to delete — auto-dedupe would silently pick one of
+		// two files that may already disagree, and a disagreement between two reports of one head is a fact
+		// the gate must not bury.
+		return refused(
+			new ReportError(
+				CODES.AMBIGUOUS,
+				`${matching.length} candidate reports under ${dir} claim the SAME head ${expectHead} — ${summary(matching)}; that is a duplicate copy, not a tie, so pass --report <path> to name the one this claim is about`,
+			),
+		);
+	}
 	// No sidecar matches the expected head. An absent provenance is accepted when it is the ONLY
 	// candidate (a report nobody marked is still the only evidence there is); a mismatch never is.
 	if (candidates.length === 1 && candidates[0].provenance === null) return chosen(candidates[0]);
