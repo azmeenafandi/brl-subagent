@@ -461,9 +461,13 @@ export function ensureDir(dir, options = {}) {
 
 /**
  * Validate a directory that will HOLD a file we write, outside the private root (an explicit
- * `--out`). Same predicate, different placement: the directory itself is held to the ancestor rule,
- * because group/other write on it is rename authority over the file — which is exactly why `/tmp` is
- * refused `ancestor-writable` rather than by a special case. Never created: it is not our directory.
+ * `--out`). Two of the root walk's clauses, deliberately not the third: the directory is held to the
+ * ancestor rule (real directory, owned by root or us, no group/other write) and the leaf must be
+ * ours, because group/other write on it is rename authority over the file — which is exactly why
+ * `/tmp` is refused `ancestor-writable` rather than by a special case. It is NOT mount-checked: an
+ * explicit `--out` is the caller's override, and durability is the private root's property, so a
+ * record written here carries whatever filesystem the caller chose. Never created: it is not our
+ * directory.
  */
 export function validateWriteDir(dir, options = {}) {
 	const opts = optionsWith(options);
