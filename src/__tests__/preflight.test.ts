@@ -122,11 +122,9 @@ describe("preflightCheck", () => {
 	// CWD readability checks
 	// ------------------------------------------------------------------
 
-	it("passes when cwd is readable and is a directory", () => {
-		const result = preflightCheck(realCwd, { root: { home } });
-		expect(result.ok).toBe(true);
-	});
-
+	// There is no positive control here on purpose (#525): the pi-section control above passes the same
+	// byte-identical input (`preflightCheck(realCwd, { root: { home } })`) and is the general positive
+	// control for the whole preflight — the branch below is this section's own coverage.
 	it("fails when cwd is not a directory, or does not exist", () => {
 		const notADirectory = preflightCheck(notADir, { root: { home } });
 		expect(notADirectory.ok).toBe(false);
