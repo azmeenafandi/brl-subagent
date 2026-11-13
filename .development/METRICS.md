@@ -37,3 +37,6 @@
 
 > **The composition-root row was reconciled by hand.** `sprint-metrics` counted **11** dispatches (direct `delegate_task` toolCalls); **21 of the cycle's dispatches ran inside `codemode` scripts** and are invisible to that scan. The extension log shows **31** `Background agent spawned` events in the window plus the one foreground dispatch = **32**, which equals the **32** settled runs. The dispatch count, fg/bg split and polls-per-dispatch were corrected from that source (23 polls / 32 = 0.72); the template and preset columns remain floors for the same reason. Filed as #489 (mechanical fix).
 | scratch-hygiene | 12 | 0/12 | 80.0% (12/15) | 20.0% (3) | 0 | 0% (0/0) | 0 (0.0%) | 0.92 | 0 | 0 |
+| shipped-half | 20 | 3/17 | 79.2% (19/24) | 20.8% (5) | 0 | 0% (0/0) | 0 (0.0%) | 0.6 | 0 | 0 |
+> **The shipped-half row is tool-reconciled.** `dispatches: 20 (direct 20 + codemode 0) · spawns: 24 · Δ 4`, allowance 5 (five transport auto-retry starts, zero fan-out units) — every spawn is explained. The `Retries` cell still counts only explicit `retryRunId` dispatches (0), which is why the transport retries appear in the reconcile line and not in the column; the earlier rows carry the same gap.
+
