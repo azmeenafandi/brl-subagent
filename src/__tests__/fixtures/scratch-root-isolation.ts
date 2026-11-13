@@ -6,8 +6,8 @@
  * the guarantee).
  *
  * The root sits inside the repository's gitignored `.tmp/` chain, NOT under
- * `os.tmpdir()`: the shipped resolver refuses an ancestor-writable parent, and
- * `/tmp` is exactly that on a normal Linux host.
+ * `os.tmpdir()`: `/tmp` is `1777`, so the shipped resolver would warn about a
+ * writable ancestor on every resolve (warned, never refused — but noise).
  */
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

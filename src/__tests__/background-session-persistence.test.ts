@@ -813,9 +813,9 @@ describe("issue #511 (U2) — the scratch seam on the background surface", () =>
 
 	it("a refused root is PRE-SPAWN: no session, no agent record, a named error", async () => {
 		// A regular file where the root must be a directory. It lives in the
-		// repository's `.tmp` chain, NOT under `os.tmpdir()`: a `/tmp` root is
-		// refused one clause earlier (ancestor-writable), which is a different
-		// refusal and would not prove THIS one is pre-spawn.
+		// repository's `.tmp` chain, NOT under `os.tmpdir()`: a `/tmp` root only
+		// produces a warning (a writable ancestor is advised on, never refused),
+		// which would not prove THIS refusal is pre-spawn.
 		const notARoot = join(process.cwd(), ".tmp", `brl-511-not-a-root-${process.pid}`);
 		writeFileSync(notARoot, "");
 		try {

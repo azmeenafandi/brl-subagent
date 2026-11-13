@@ -12,11 +12,12 @@
  *
  * MIRRORED, NOT IMPORTED. The tooling half (`scripts/lib/scratch-root.mjs`, #512/#516) owns the same
  * rules for the cockpit, but it is not shipped and it lives on a different surface (untyped `.mjs`
- * plus a CLI). The RULES are mirrored here: the two-zone chain predicate (every ancestor must be a
- * directory owned by root or by us with no group/other write bit; the root itself must be ours and
+ * plus a CLI). The RULES are mirrored here: the two-zone chain predicate (every ancestor must be a real
+ * directory owned by root or by us — a FOREIGN OWNER is refused — and the root itself must be ours and
  * exactly 0700), `lstat` as the first read with a link refused at the ROOT and resolved — then
  * validated — above it, and an explicit `chmod` after `mkdir` so the mode does not depend on the
- * umask. Two DELIBERATE differences, both narrowing the shipped contract:
+ * umask. Three DELIBERATE differences: the first two narrow the shipped contract, the third relaxes one
+ * clause and says why.
  *
  *   1. a Linux `tmpfs` root is a WARNING, not a refusal. A user may legitimately keep `$HOME` (and
  *      therefore `~/.cache`) on a `tmpfs` — a live session does exactly that — and refusing would
@@ -25,6 +26,13 @@
  *      one (see `rootLayout`). `XDG_CACHE_HOME` is deliberately ignored: a path from a user-writable
  *      environment variable is a path an attacker chooses, and this module's whole job is that the
  *      location is ours.
+ *   3. a GROUP/OTHER-WRITABLE ANCESTOR is a WARNING, not a refusal (the tooling half still refuses it).
+ *      A shipped extension must not refuse to run on a shared or corporate machine whose home — or
+ *      whose `~/.cache` — is group-writable (`0775`/`0770`), and the bank is a CONVENIENCE: the tmpfs
+ *      warning (difference 1) already accepts a stated risk rather than refusing to work. What is NOT
+ *      relaxed is OWNERSHIP: an ancestor owned by a third uid is a different trust boundary (its owner
+ *      can rename what is below it whatever the mode), so it keeps refusing under its own code,
+ *      `ancestor-not-owned`.
  *
  * NO TEMP FALLBACK, EVER. A root that cannot be placed is `home-unresolvable`, a named error. Falling
  * back to `os.tmpdir()` would reintroduce exactly the defect this module removes.
@@ -33,7 +41,10 @@
  * `pruneRuns` is the one best-effort operation (a sweep must not break a run), so a removal failure is
  * reported in its return value and never thrown. `markRunDone`/`ensureRunDir` report their failures.
  *
- * LIMITS, stated rather than implied: a mount-namespace substitution by a user who already holds
+ * LIMITS, stated rather than implied: group/other write on an ancestor (WARNED here — difference 3 — and
+ * refused by the tooling half, so a co-worker with write on that parent can still replace the run
+ * directory, and the bank path with it; the warning names the path, the mode and that consequence); a
+ * mount-namespace substitution by a user who already holds
  * privileges; NFS, where ownership and `chmod` semantics belong to the server; a root that becomes a
  * mount point, or is renamed by its owner, AFTER it was validated; a symlinked ancestor whose resolved
  * directory is renamed or re-pointed between the `realpath` and the `mkdir` (the TOCTOU window, one
@@ -95,7 +106,11 @@ export const SCRATCH_ROOT_CODES = Object.freeze([
 	"root-not-dir",
 	"root-not-owned",
 	"root-mode",
+	// RETAINED, though this surface no longer produces it: the tooling half still refuses under this
+	// spelling (difference 3 in the header), and the relaxed clause here is the warning KIND of the same
+	// name. Dropping the spelling would split one vocabulary across two surfaces for no gain.
 	"ancestor-writable",
+	"ancestor-not-owned",
 	"ancestor-not-dir",
 	"bad-run-id",
 	"create-failed",
@@ -111,9 +126,26 @@ export interface ScratchRootError {
 	message: string;
 }
 
-/** `resolveRoot`: the root to use, plus the one advisory a valid root can carry (a `tmpfs` warning). */
+/**
+ * The kinds of advisory a valid root can carry. One kind is one sentence inside the joined `warning`
+ * string — `tmpfs` (the bank does not survive a reboot) and `ancestor-writable` (a co-worker with write
+ * on a parent can replace the run directory). A separate field because the SENTENCE is not a stable key:
+ * the mount sentence gains a "does not exist yet" clause when the root is created between two calls, so
+ * a log-once rule keyed on the text would print the same advisory twice under two spellings.
+ */
+export const ROOT_WARNING_KINDS = Object.freeze(["tmpfs", "ancestor-writable"] as const);
+
+/** The kind of an advisory, as the caller dedupes it: one kind, one log line per process. */
+export type RootWarningKind = (typeof ROOT_WARNING_KINDS)[number];
+
+/**
+ * `resolveRoot`: the root to use, plus the advisory a valid root can carry — a `tmpfs` mount warning, an
+ * ancestor-writability warning, or both joined with `"; "`. One string, because a valid root has one
+ * advisory report; the caller logs it, never parses it, and `warningKinds` names what is inside it so a
+ * caller can dedupe by KIND rather than by wording.
+ */
 export type ResolveRootResult =
-	| { ok: true; root: string; warning?: string }
+	| { ok: true; root: string; warning?: string; warningKinds?: RootWarningKind[] }
 	| ScratchRootError;
 
 /** `ensureRunDir`: the run's own directory, and what this call had to create to get there. */
@@ -132,7 +164,7 @@ export interface RootOptions {
 	home?: string;
 	/** Injectable `statfs` (the mount-type probe). Defaults to `fs.statfsSync`. */
 	statfs?: (path: string) => { type: number };
-	/** Where the one advisory goes. No logger import: the caller decides. */
+	/** Where the advisory goes (the same joined string the result carries). No logger import: the caller decides. */
 	warn?: (message: string) => void;
 }
 
@@ -249,7 +281,18 @@ function directoryChain(absolute: string): string[] {
 
 type Zone = "ancestor" | "root" | "below";
 
-type Verdict = { ok: true } | ScratchRootError;
+/**
+ * A component's (or a walk's) verdict. The `ok` arm can carry an ADVISORY: a chain can be safe to use
+ * and still be worth a sentence (group/other write on a parent), so the warning travels with the verdict
+ * that produced it rather than being re-derived by the caller — one place decides what a warning says.
+ */
+type Verdict = { ok: true; warning?: string } | ScratchRootError;
+
+/** One warning string out of several sentences, or `undefined` when there are none. Never reorders. */
+function combineWarnings(parts: (string | undefined)[]): string | undefined {
+	const kept = parts.filter((part): part is string => part !== undefined && part !== "");
+	return kept.length === 0 ? undefined : kept.join("; ");
+}
 
 type Inspection = { kind: "found"; stats: Stats } | { kind: "missing" } | { kind: "unreadable"; error: unknown };
 
@@ -263,28 +306,39 @@ function inspect(path: string): Inspection {
 }
 
 /**
- * The ANCESTOR's two clauses (ownership, then group/other write), shared by a real directory, by the
- * directory a link resolves to, and by the directories ABOVE that resolved target (`checkTargetAncestors`).
- * `label` is how a message names the component: the path itself, `<link> (a symlink to <target>)`, or
- * `<link> (a symlink to <target>), whose parent <dir>`, so the reader is never sent to a mode the link
- * does not have.
+ * The ANCESTOR's two clauses, shared by a real directory, by the directory a link resolves to, and by the
+ * directories ABOVE that resolved target (`checkTargetAncestors`). `label` is how a message names the
+ * component: the path itself, `<link> (a symlink to <target>)`, or `<link> (a symlink to <target>),
+ * whose parent <dir>`, so the reader is never sent to a mode the link does not have.
  *
- * Ownership is checked BEFORE the mode: a `0755` directory owned by a third party passes a mode-only
- * rule, and that owner can rename the validated root afterwards and substitute a symlink. Write
- * authority over a parent — by mode or by ownership — is rename authority.
+ * The two clauses have DIFFERENT polarities on purpose (difference 3 in the header). OWNERSHIP refuses:
+ * a third-party owner can rename the validated root afterwards and substitute a symlink whatever the
+ * mode, so a foreign owner is `ancestor-not-owned` — a different trust boundary, not a different mode.
+ * WRITABILITY WARNS: a group/other write bit on a machine shared with co-workers is ordinary
+ * (`0775`/`0770` homes, the `1777` `/tmp` shape), the bank is a convenience, and refusing would refuse to
+ * run at all on such a host. The sentence names the path, the on-disk mode and the consequence — and the
+ * consequence is stated per shape, because the sticky bit changes it.
+ *
+ * Ownership is still checked BEFORE the mode: a `0755` directory owned by a third party passes a
+ * mode-only rule, and that owner can rename the validated root afterwards.
  */
 function checkAncestorClauses(label: string, stats: Stats, uid: number): Verdict {
 	if (stats.uid !== 0 && stats.uid !== uid) {
 		return fail(
-			"ancestor-writable",
+			"ancestor-not-owned",
 			`${label} is owned by uid ${stats.uid}, not by root or by you (uid ${uid}) — ownership of a parent is write (and therefore rename) authority over the root below it`,
 		);
 	}
 	if ((stats.mode & 0o022) !== 0) {
-		return fail(
-			"ancestor-writable",
-			`${label} is mode ${formatMode(stats.mode)} — group/other write on a parent is rename authority over the root below it`,
-		);
+		// One consequence, stated per shape: on a plain writable parent the write bit IS rename authority
+		// over our child, while the sticky bit (`1777`, the `/tmp` shape) stops a co-worker replacing what
+		// we already own and leaves only pre-creation — which the root's own ownership and 0700 clauses
+		// then refuse. A single sentence for both would over-claim on the sticky shape.
+		const consequence =
+			(stats.mode & 0o1000) !== 0
+				? "group/other write on a parent lets a co-worker create that path before you do, though the sticky bit stops them replacing the run directory once you own it (and the bank path with it)"
+				: "group/other write on a parent is rename authority: a co-worker with write on this parent can replace the run directory, and the bank path with it";
+		return { ok: true, warning: `${label} is mode ${formatMode(stats.mode)} — ${consequence}` };
 	}
 	return { ok: true };
 }
@@ -331,19 +385,23 @@ function checkResolvedAncestor(link: string, uid: number | null): Verdict {
 	if (uid === null) return { ok: true };
 	const targetVerdict = checkAncestorClauses(`${link} (a symlink to ${target})`, stats, uid);
 	if (!targetVerdict.ok) return targetVerdict;
-	return checkTargetAncestors(link, target, uid);
+	const aboveVerdict = checkTargetAncestors(link, target, uid);
+	if (!aboveVerdict.ok) return aboveVerdict;
+	// Both levels can be worth a sentence, and neither may swallow the other.
+	return { ok: true, warning: combineWarnings([targetVerdict.warning, aboveVerdict.warning]) };
 }
 
 /**
  * The directories ABOVE a resolved target, judged by the ancestor clauses — the residual the target
  * clause alone does not see. A link into a non-sticky world-writable directory (`/srv/shared` at
  * `0777`) whose child is our own `0700` directory is re-pointable by any local user: write authority
- * over `shared` is rename authority over the child the link lands on, which is the class the ancestor
- * rule exists to stop, one hop past the resolution.
+ * over `shared` is rename authority over the child the link lands on, one hop past the resolution. On
+ * this surface that is WARNED (difference 3), and a foreign owner here is refused as
+ * `ancestor-not-owned`, exactly as along the literal chain.
  *
  * The target itself is EXCLUDED (its own clauses just ran, and its parents are what this walks). The
  * walk goes from the target's PARENT up to `/`, nearest first: the closest writable parent is the one
- * whose ordinary rename reaches the validated directory, so that is the name a refusal should print.
+ * whose ordinary rename reaches the validated directory, so that is the name the message prints.
  *
  * `realpathSync` canonicalised the target, so every component of its chain is a real directory; the
  * clauses are still applied through `inspect` because the tree can change between that call and this
@@ -353,9 +411,10 @@ function checkResolvedAncestor(link: string, uid: number | null): Verdict {
  */
 function checkTargetAncestors(link: string, target: string, uid: number): Verdict {
 	const chain = directoryChain(target);
+	const warnings: string[] = [];
 	for (let index = chain.length - 2; index >= 0; index -= 1) {
 		const path = chain[index];
-		// One label for both clauses, so a refusal always names the LINK, the TARGET and the DIRECTORY.
+		// One label for both clauses, so a message always names the LINK, the TARGET and the DIRECTORY.
 		const label = `${link} (a symlink to ${target}), whose parent ${path}`;
 		const found = inspect(path);
 		if (found.kind === "missing") {
@@ -376,8 +435,9 @@ function checkTargetAncestors(link: string, target: string, uid: number): Verdic
 		if (!found.stats.isDirectory()) return fail("ancestor-not-dir", `${label} is not a directory`);
 		const verdict = checkAncestorClauses(label, found.stats, uid);
 		if (!verdict.ok) return verdict;
+		if (verdict.warning !== undefined) warnings.push(verdict.warning);
 	}
-	return { ok: true };
+	return { ok: true, warning: combineWarnings(warnings) };
 }
 
 /**
@@ -431,14 +491,21 @@ function checkComponent(path: string, stats: Stats, zone: Zone, uid: number | nu
  * component ends the judgement — everything below it is missing too, and a missing root is not a
  * failure here (creation is `ensureRunDir`'s job): what has been read is the part that exists, and the
  * part that exists is the part whose ownership and writability decide whether the rest is safe.
+ *
+ * The walk COLLECTS advisories (one per group/other-writable ancestor, root-most first) instead of
+ * dropping them, so a chain with two writable parents reports both. A refusal is returned, never joined
+ * with a warning: what fails does not also get an advisory.
  */
-function validateChain(root: string, uid: number | null): ScratchRootError | undefined {
+type ChainWalk = { ok: true; warnings: string[] } | ScratchRootError;
+
+function validateChain(root: string, uid: number | null): ChainWalk {
 	const chain = directoryChain(root);
+	const warnings: string[] = [];
 	for (let index = 0; index < chain.length; index += 1) {
 		const path = chain[index];
 		const zone: Zone = index === chain.length - 1 ? "root" : "ancestor";
 		const found = inspect(path);
-		if (found.kind === "missing") return undefined;
+		if (found.kind === "missing") return { ok: true, warnings };
 		if (found.kind === "unreadable") {
 			const error = codeOf(found.error) || describe(found.error);
 			return zone === "root"
@@ -447,8 +514,9 @@ function validateChain(root: string, uid: number | null): ScratchRootError | und
 		}
 		const verdict = checkComponent(path, found.stats, zone, uid);
 		if (!verdict.ok) return verdict;
+		if (verdict.warning !== undefined) warnings.push(verdict.warning);
 	}
-	return undefined;
+	return { ok: true, warnings };
 }
 
 /** `<root>/runs` and `<root>/runs/<runId>`, re-read after creation. */
@@ -542,7 +610,8 @@ function mountWarning(root: string, platform: NodeJS.Platform, statfs: (path: st
 
 /**
  * Resolve the root for this platform and validate its chain WITHOUT creating anything:
- * `{ ok: true, root }` (plus `warning` when it is on a `tmpfs`), or a named refusal.
+ * `{ ok: true, root }` (plus `warning` for a `tmpfs` mount, a group/other-writable ancestor, or both), or
+ * a named refusal.
  *
  * A root that does not exist yet is valid — `ensureRunDir` creates it — as long as the components that
  * DO exist pass the predicate.
@@ -556,12 +625,18 @@ export function resolveRoot(options: RootOptions = {}): ResolveRootResult {
 	});
 	if (!layout.ok) return layout;
 	const uid = currentUid(platform);
-	const refusal = validateChain(layout.root, uid);
-	if (refusal !== undefined) return refusal;
-	const warning = mountWarning(layout.root, platform, options.statfs ?? statfsSync);
+	const chain = validateChain(layout.root, uid);
+	if (!chain.ok) return chain;
+	// Both kinds at once: a writable ancestor AND a tmpfs root is a real host shape, and the one string
+	// carries both sentences (joined with "; ") so neither drops the other.
+	const mount = mountWarning(layout.root, platform, options.statfs ?? statfsSync);
+	const warning = combineWarnings([...chain.warnings, mount]);
 	if (warning === undefined) return { ok: true, root: layout.root };
+	const warningKinds: RootWarningKind[] = [];
+	if (chain.warnings.length > 0) warningKinds.push("ancestor-writable");
+	if (mount !== undefined) warningKinds.push("tmpfs");
 	options.warn?.(warning);
-	return { ok: true, root: layout.root, warning };
+	return { ok: true, root: layout.root, warning, warningKinds };
 }
 
 /**
@@ -647,6 +722,11 @@ function createComponent(path: string, zone: Zone, uid: number | null, created: 
  * that has not passed, and the directory a link resolves to has passed before `mkdir` runs through it.
  * The RETURNED paths are the caller's (the link's), because the preamble has to name what the user
  * sees, and `realpath` is not what they typed.
+ *
+ * THIS FUNCTION CARRIES NO ADVISORY, on purpose: its result type reports what it created, and the
+ * advisory belongs to `resolveRoot` (the seam's one report per spawn, logged once per process). A
+ * writable ancestor is therefore not re-derived here — the chain is validated for SAFETY, and the
+ * sentence was already emitted by the call that resolved the root.
  */
 export function ensureRunDir(root: string, runId: string, options: { platform?: NodeJS.Platform } = {}): EnsureRunDirResult {
 	const defect = runIdDefect(runId);
@@ -660,7 +740,7 @@ export function ensureRunDir(root: string, runId: string, options: { platform?: 
 	const platform = options.platform ?? process.platform;
 	const uid = currentUid(platform);
 	const before = validateChain(base, uid);
-	if (before !== undefined) return before;
+	if (!before.ok) return before;
 
 	const created: string[] = [];
 	const chain = directoryChain(base);
@@ -674,7 +754,8 @@ export function ensureRunDir(root: string, runId: string, options: { platform?: 
 		if (!verdict.ok) return rollback(created, verdict);
 	}
 
-	const after = validateChain(base, uid) ?? validateBelow(base, runId, uid);
+	const revalidated = validateChain(base, uid);
+	const after = revalidated.ok ? validateBelow(base, runId, uid) : revalidated;
 	if (after !== undefined) return rollback(created, after);
 	return { ok: true, root: base, runDir, created };
 }

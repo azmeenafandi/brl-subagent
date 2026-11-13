@@ -49,7 +49,15 @@
  */
 
 import { createLogger, type Logger } from "./logging";
-import { ensureRunDir, markRunDone, pruneRuns, resolveRoot, type RootOptions, type ScratchRootCode } from "./scratch-root";
+import {
+	ensureRunDir,
+	markRunDone,
+	pruneRuns,
+	resolveRoot,
+	type RootOptions,
+	type RootWarningKind,
+	type ScratchRootCode,
+} from "./scratch-root";
 
 /**
  * The child environment key carrying the run's scratch directory. Set through
@@ -114,25 +122,34 @@ export function __setScratchRoot(root: string | undefined): void {
 	rootRedirect = root;
 }
 
-/** TEST-ONLY: forget the once-per-process tmpfs warning. */
+/** TEST-ONLY: forget the once-per-process root advisory. */
 export function __resetScratchWarning(): void {
-	warnedTmpfs = false;
+	warnedRoot.clear();
 }
 
 // ---------------------------------------------------------------------------
-// The tmpfs advisory — once per process, never once per run
+// The root advisory — once per process, never once per run
 // ---------------------------------------------------------------------------
 
 /**
- * `true` once the advisory has been emitted. A `tmpfs` root is a legitimate
- * setup (U1 deliberate difference 1), so this is a warning that must not repeat:
- * a fan-out of twenty units would otherwise print twenty identical lines.
+ * The advisory KINDS already emitted, not one boolean. The resolver can carry two different warnings
+ * (a `tmpfs` mount and a group/other-writable ancestor, or both joined into one string), and a single
+ * flag would let the first kind swallow the second: the process would learn about the writable parent
+ * only if it happened to be resolved first. Keyed by kind rather than by text, because the mount
+ * sentence legitimately changes wording once the root exists (see `ROOT_WARNING_KINDS`).
  */
-let warnedTmpfs = false;
+const warnedRoot = new Set<RootWarningKind>();
 
-function warnTmpfsOnce(warning: string, log: Logger): void {
-	if (warnedTmpfs) return;
-	warnedTmpfs = true;
+/**
+ * One line per advisory KIND per process: a fan-out of twenty units prints one line, never twenty. A
+ * report can carry both kinds at once, and then that ONE line carries both sentences; a kind already
+ * reported never re-logs on its own, which is the whole point of keying on kinds rather than on one
+ * boolean — a single flag would let the first kind swallow the second.
+ */
+function warnRootOnce(warning: string, kinds: readonly RootWarningKind[], log: Logger): void {
+	const fresh = kinds.filter((kind) => !warnedRoot.has(kind));
+	if (fresh.length === 0) return;
+	for (const kind of fresh) warnedRoot.add(kind);
 	log.warn(`scratch root: ${warning}`);
 }
 
@@ -168,7 +185,7 @@ export function prepareRunScratch(runId: string, options: PrepareScratchOptions 
 		log.warn(`scratch root: refusing the spawn (${resolved.code}) — ${resolved.message}`);
 		return { ok: false, code: resolved.code, message: resolved.message };
 	}
-	if (resolved.warning !== undefined) warnTmpfsOnce(resolved.warning, log);
+	if (resolved.warning !== undefined) warnRootOnce(resolved.warning, resolved.warningKinds ?? [], log);
 
 	const run = ensureRunDir(resolved.root, runId, options.root?.platform ? { platform: options.root.platform } : {});
 	if (!run.ok) {
