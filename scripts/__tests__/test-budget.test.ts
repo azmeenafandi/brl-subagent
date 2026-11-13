@@ -784,7 +784,10 @@ describe("main — the two streams and the exit codes", () => {
 		expect(ratioIn(out, "src")).toBeLessThanOrEqual(2.05);
 		const floors = out.find((line: string) => line.startsWith("test-budget: floors"));
 		expect(floors).toBeDefined();
-		expect(/\bsrc (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["58", "58"]);
+		// Re-pointed with the commit that adds a src module (`scratch-root.ts`, issue #511 U1) —
+		// the floor is "every module reachable", so its total tracks the tree, never a scan that
+		// silently stopped matching.
+		expect(/\bsrc (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["59", "59"]);
 		expect(/\bscripts (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["12", "12"]);
 		expect(measureFloors(ROOT).every((floor) => floor.unreachable.length === 0)).toBe(true);
 	});

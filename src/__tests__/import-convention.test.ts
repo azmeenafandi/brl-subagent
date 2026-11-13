@@ -34,10 +34,11 @@ const SRC = join(ROOT, "src");
  * (ADR 0027 S2), 52 after `worktree-report.ts` (issue #474), 53 after
  * `background-pipeline.ts` (ADR 0027 S3), 55 after `boot-recovery.ts` +
  * `terminal-notifier.ts` (ADR 0027 S4), 58 after `commands.ts` +
- * `delegate-handler.ts` + `agent-tools.ts` (ADR 0027 S5). Re-point it with the
+ * `delegate-handler.ts` + `agent-tools.ts` (ADR 0027 S5), 59 after
+ * `scratch-root.ts` (issue #511, U1). Re-point it with the
  * commit that adds or removes a module — never to match a scan that silently
  * stopped matching. */
-const SRC_FILE_COUNT = 58;
+const SRC_FILE_COUNT = 59;
 
 const scratch = mkdtempSync(join(tmpdir(), "brl-476-imports-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
