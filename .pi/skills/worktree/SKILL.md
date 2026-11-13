@@ -475,6 +475,22 @@ mechanics, verdict format: `references/review-dispatch.md`.
 
 ## When to use each script
 
+- **`check-test-budget.mjs <report> | --flow [--base <ref>] --head <sha> | --declaration`** — the
+  test-size policy (v2). The stock ratio is **reported, not enforced**: `src` against a 2.0
+  reference with a 1.95 warning band, `scripts` against 1.0 — crossing a reference prints a
+  warning and exits 0 (the wall ceiling, 60 s global, is still a finding). What gates is the
+  per-PR **flow**: `--flow` measures NET test:source lines from
+  `git diff --no-renames --numstat <base>...<head>` (git only; the head need not be checked out)
+  and allows `120 + 2 × max(Δsource, 0)` test lines **per surface** — exit 0 within, 1 over,
+  2 unanswerable (`unknown-head`, `already-merged`, `diff-failed`; fail closed, so a post-merge
+  replay cannot pass). Net lines mean **replacement measures zero**, so a rewrite is never a
+  spending event; an accepted limit is that **+120 test lines per test-only PR accumulates**, and
+  the reported ratio is what makes it visible. An `over` PR needs a line-start
+  `Test budget: <reason>` in its body, judged by `--declaration` (outside fences, blockquotes and
+  the pr-evidence block). The other hard check is the **floor**, on both surfaces: every non-test
+  source module must be **reachable** from a `*.test.ts` through runtime import edges — a comment,
+  a string, `import type … from` and `export … from` are not edges. CI runs the report half;
+  `merge-guard.sh` (g) runs `--flow` from this repository's own copy (never the PR tree's).
 - **`run.sh [--filter '<trusted shell>'] [--stderr] [--require-filter|--allow-filter-failure]
   [--quiet] -- <command> [args...]`** — wrap EVERY command whose exit status you are about to
   read through a filter (issue #504). `cmd | tail -2; echo $?` reports **`tail`'s** status, not
@@ -575,14 +591,22 @@ mechanics, verdict format: `references/review-dispatch.md`.
   approve/approve-with-nits, the PR's **current head** is in the record (or a
   `conductor-verified:` line documents the post-verdict commit), `jev-check --log`
   passes, the record's `jev-recheck:` is bound to a `recheck-<pr>` row at no weaker a tier,
-  and the PR body's numbers recompute (`pr-evidence --check --pr <n>`; `(g) not applicable`
-  when the body carries neither a block nor a count). Exit 1 lists every failed reason at
+  and the PR body's numbers recompute (`pr-evidence --check --pr <n>`). **(g) has two halves and
+  both run on every PR:** the test-budget FLOW (`check-test-budget.mjs --flow --base dev --head
+  <sha>`, always the cockpit's own copy — a PR cannot ship the rule that judges it) and the body's
+  `<!-- pr-evidence:begin -->` block. A `within` flow passes; an `over` flow needs a line-start
+  `Test budget: <reason>` outside fences, blockquotes and the pr-evidence block (`test-flow-override`
+  when present, `test-flow-undeclared` when absent); an unanswerable flow (`unknown-head`,
+  `already-merged`, `diff-failed`) blocks with that named reason. The block half still says
+  `nothing to recompute` when the body carries neither a block nor a count — a skip of THAT half
+  only, never of (g). Exit 1 lists every failed reason at
   once; run it from the cockpit. The header echoes `pr #<n>`, the RESOLVED record path and
   `record sha256: <hash>` — a relative record path resolves against the caller's cwd, and a
-  missing one says `record: <abs path> — not found` instead of a shell error. `(g)` measures
-  the checkout at the PR head (`git worktree list` finds it — normally the review worktree;
-  `--pr-tree <path>` names it), and a `no checks reported` failure carries the
-  `gh pr view <n> --json mergeable,mergeStateStatus` hint (#465), never a pass.
+  missing one says `record: <abs path> — not found` instead of a shell error. The block half
+  measures the checkout at the PR head (`git worktree list` finds it — normally the review
+  worktree; `--pr-tree <path>` names it); the flow half needs no checkout at all. A
+  `no checks reported` failure carries the `gh pr view <n> --json mergeable,mergeStateStatus` hint
+  (#465), never a pass.
   `--check-record <record> [--pr <n>] [--head <sha>]` is the offline half — the same field
   rules, no `gh`, no network, no provenance log — so a generated record can be checked
   before dispatch; write the record with `scripts/review-record.mjs` (#487), never by hand.

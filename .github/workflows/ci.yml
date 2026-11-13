@@ -43,9 +43,11 @@ jobs:
       - name: README count — truth + freshness (release seam only)
         if: ${{ (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: node scripts/check-readme-test-count.mjs vitest-report.json --strict
-      # The suite's growth budget (issues #368, #490): wall time <= 60 s, and a test:source LOC
-      # ratio PER SURFACE — src <= 2.0 (warning band at 1.95) and scripts <= 1.0 — plus a floor
-      # check: every top-level scripts/*.mjs must be imported by a test. Ceilings, not targets.
+      # The suite's growth budget (issues #368, #490, test-budget policy v2): wall time <= 60 s
+      # (still a ceiling), the test:source LOC ratio PER SURFACE as a REPORT (src against a 2.0
+      # reference with a 1.95 warning band, scripts against 1.0 — crossing neither fails CI), and the
+      # floors: every non-test source module must be reachable from a *.test.ts through runtime
+      # import edges. The per-PR gate is `--flow`, run by merge-guard (g), not by this report.
       - run: node scripts/check-test-budget.mjs vitest-report.json
       # The tracked instruction surface (#513): a durable artifact — a bank, a findings file, a report —
       # may not be placed in a system temp directory, because the resume it exists for is exactly the
