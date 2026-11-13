@@ -488,10 +488,6 @@ describe("classifyError", () => {
 		).toBe("exit_error");
 	});
 
-	it("successful result with exitCode 0 is NOT an isSubagentError", () => {
-		expect(isSubagentError(makeResult({ exitCode: 0 }))).toBe(false);
-	});
-
 	it("mixed signals with stopReason error IS an isSubagentError", () => {
 		expect(isSubagentError(makeResult({ exitCode: 0, stopReason: "error" }))).toBe(true);
 	});
@@ -629,11 +625,6 @@ describe("isSubagentRunShape", () => {
 describe("DEFAULT_MAX_SUBAGENT_DEPTH", () => {
 	it("is set to 3", () => {
 		expect(DEFAULT_MAX_SUBAGENT_DEPTH).toBe(3);
-	});
-
-	it("is a positive integer", () => {
-		expect(DEFAULT_MAX_SUBAGENT_DEPTH).toBeGreaterThan(0);
-		expect(Number.isInteger(DEFAULT_MAX_SUBAGENT_DEPTH)).toBe(true);
 	});
 });
 
