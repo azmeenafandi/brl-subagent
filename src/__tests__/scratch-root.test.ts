@@ -5,7 +5,10 @@
  * The adversary here is another uid on the same host, so the security properties are pinned with REAL
  * filesystem objects wherever a mock could not tell the two apart: a planted symlink (its target's mode
  * and mtime are read back), a group-writable ancestor, a `1777` ancestor that has the `/tmp` shape, and
- * a `0777` umask that would defeat `mkdirSync`'s mode. TWO exceptions, both stated:
+ * a `0777` umask that would defeat `mkdirSync`'s mode. A symlinked ANCESTOR is a supported setup (a
+ * `~/.cache` moved to another disk), so it is pinned in both directions: a link to a real `0700`
+ * directory we own resolves and is created THROUGH, while a link to a `0775` directory, a broken link,
+ * a link cycle and a link two levels up each get their own observed code. TWO exceptions, both stated:
  *
  *  - the tmpfs probe is a SEAM (`statfs` is injected), because whether `$HOME` is on a `tmpfs` is a
  *    property of the machine and not of the code — and on this surface it is a WARNING, not a refusal;
@@ -21,7 +24,7 @@
  * host (the `win32` layout is asserted from injected values on POSIX, where `node:path` uses POSIX
  * separators — the comparison is against `join(…)` for exactly that reason).
  */
-import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -187,16 +190,12 @@ describe("scratch root — the chain predicate (a refusal per defect)", () => {
 		}
 	});
 
-	it("refuses a symlinked or file ancestor as ancestor-not-dir", () => {
-		const home = sandbox();
-		const real = join(WORK, `cache-real-${(counter += 1)}`);
-		mkdirSync(real, { mode: 0o700 });
-		symlinkSync(real, join(home, ".cache"));
-		expect(resolveIn(home)).toMatchObject({ ok: false, code: "ancestor-not-dir" });
-
+	it("refuses a file ancestor as ancestor-not-dir", () => {
 		const other = sandbox();
 		writeFileSync(join(other, ".cache"), "not a directory");
-		expect(resolveIn(other)).toMatchObject({ ok: false, code: "ancestor-not-dir" });
+		const verdict = resolveIn(other);
+		expect(verdict).toMatchObject({ ok: false, code: "ancestor-not-dir" });
+		expect(verdict.ok === false && verdict.message).toContain(join(other, ".cache"));
 	});
 
 	// `chown` needs privileges a suite must not assume: skipped, and it SAYS so, rather than passing
@@ -209,6 +208,100 @@ describe("scratch root — the chain predicate (a refusal per defect)", () => {
 		const verdict = resolveIn(home);
 		expect(verdict).toMatchObject({ ok: false, code: "root-not-owned" });
 		expect(verdict.ok === false && verdict.message).toContain("uid 1");
+	});
+});
+
+describe("scratch root — a symlinked ancestor is resolved, then validated", () => {
+	it("resolves a cache directory that is a link to a real 0700 directory, and creates through it", () => {
+		const home = sandbox();
+		const target = join(WORK, `cache-disk-${(counter += 1)}`);
+		mkdirSync(target, { mode: 0o700 });
+		chmodSync(target, 0o700);
+		const link = join(home, ".cache");
+		symlinkSync(target, link);
+
+		// The RETURNED path is the link — what the user typed, and what the preamble must name.
+		expect(resolveIn(home)).toEqual({ ok: true, root: rootOf(home) });
+
+		const created = mustOk(ensureRunDir(rootOf(home), "run-1"));
+		expect(created.runDir).toBe(join(rootOf(home), RUNS_DIR, "run-1"));
+		// Read through the link …
+		expect(existsSync(created.runDir)).toBe(true);
+		// … and on disk, where the bytes actually are: a real 0700 directory owned by us.
+		const onDisk = join(realpathSync(link), "brl-subagent", RUNS_DIR, "run-1");
+		expect(existsSync(onDisk)).toBe(true);
+		expect(lstatSync(onDisk).isSymbolicLink()).toBe(false);
+		expect(statSync(onDisk).mode & 0o7777).toBe(ROOT_MODE);
+		// Nothing on the way down escaped the mode: every created component is 0700 on disk.
+		expect(created.created).toEqual([rootOf(home), join(rootOf(home), RUNS_DIR), created.runDir]);
+		for (const path of created.created) expect(statSync(realpathSync(path)).mode & 0o7777, path).toBe(ROOT_MODE);
+	});
+
+	it("refuses a link that lands on a group-writable directory, naming the link and the target", () => {
+		const home = sandbox();
+		const target = join(WORK, `cache-writable-${(counter += 1)}`);
+		mkdirSync(target, { mode: 0o700 });
+		chmodSync(target, 0o775);
+		const link = join(home, ".cache");
+		symlinkSync(target, link);
+		const resolved = realpathSync(target);
+
+		const verdict = resolveIn(home);
+		expect(verdict).toMatchObject({ ok: false, code: "ancestor-writable" });
+		if (verdict.ok) throw new Error("expected a refusal");
+		// Both paths are named: "<link> is mode 0775" would send the reader to a mode the link lacks.
+		expect(verdict.message).toContain("0775");
+		expect(verdict.message).toContain(link);
+		expect(verdict.message).toContain(resolved);
+		// Creation refuses too, before anything is written through the link.
+		expect(ensureRunDir(rootOf(home), "run-1")).toMatchObject({ ok: false, code: "ancestor-writable" });
+		expect(existsSync(join(resolved, "brl-subagent"))).toBe(false);
+	});
+
+	it("refuses a broken link ancestor as ancestor-not-dir, naming the link", () => {
+		const home = sandbox();
+		const link = join(home, ".cache");
+		symlinkSync(join(WORK, `absent-${(counter += 1)}`), link);
+		const verdict = resolveIn(home);
+		expect(verdict).toMatchObject({ ok: false, code: "ancestor-not-dir" });
+		if (verdict.ok) throw new Error("expected a refusal");
+		expect(verdict.message).toContain(link);
+		expect(verdict.message).toContain("does not resolve");
+		expect(ensureRunDir(rootOf(home), "run-1")).toMatchObject({ ok: false, code: "ancestor-not-dir" });
+	});
+
+	it("refuses a symlink cycle without walking it, and never loops", () => {
+		const home = sandbox();
+		const a = join(WORK, `cycle-a-${(counter += 1)}`);
+		const b = join(WORK, `cycle-b-${(counter += 1)}`);
+		symlinkSync(b, a);
+		symlinkSync(a, b);
+		const link = join(home, ".cache");
+		symlinkSync(a, link);
+
+		const verdict = resolveIn(home);
+		expect(verdict).toMatchObject({ ok: false, code: "ancestor-not-dir" });
+		if (verdict.ok) throw new Error("expected a refusal");
+		expect(verdict.message).toContain(link);
+		// The loop is the platform's refusal (`ELOOP`), not a walk of our own: one call, one verdict.
+		expect(() => realpathSync(link)).toThrow();
+		expect(ensureRunDir(rootOf(home), "run-1")).toMatchObject({ ok: false, code: "ancestor-not-dir" });
+		// Nothing was followed, created or repaired: both ends of the cycle are still links.
+		expect(lstatSync(a).isSymbolicLink()).toBe(true);
+		expect(lstatSync(b).isSymbolicLink()).toBe(true);
+	});
+
+	it("resolves a symlinked ancestor two levels up — the home directory itself", () => {
+		const realHome = sandbox();
+		const linkHome = join(WORK, `home-link-${(counter += 1)}`);
+		symlinkSync(realHome, linkHome);
+
+		expect(resolveIn(linkHome)).toEqual({ ok: true, root: rootOf(linkHome) });
+		const created = mustOk(ensureRunDir(rootOf(linkHome), "run-2"));
+		expect(created.runDir).toBe(join(rootOf(linkHome), RUNS_DIR, "run-2"));
+		const onDisk = join(realHome, ".cache", "brl-subagent", RUNS_DIR, "run-2");
+		expect(existsSync(onDisk)).toBe(true);
+		expect(statSync(onDisk).mode & 0o7777).toBe(ROOT_MODE);
 	});
 });
 
@@ -236,11 +329,25 @@ describe("scratch root — creation is umask-independent", () => {
 		}
 	});
 
-	it("refuses a run id that is not one path segment, creating nothing", () => {
+	it("refuses a run id that is not one path segment with bad-run-id, creating nothing", () => {
 		const home = sandbox();
 		const root = rootOf(home);
-		for (const runId of ["", ".", "..", "../escape", "a/b", "a\\b", "nul\0"]) {
-			expect(ensureRunDir(root, runId), JSON.stringify(runId)).toMatchObject({ ok: false, code: "create-failed" });
+		// The REASON is what the refusal names, never the raw value: a value carrying a NUL (or a
+		// newline) must not be pasted into a message a human reads.
+		const cases: [string, string][] = [
+			["", "it is empty"],
+			[".", "it is ., which names a directory"],
+			["..", "it is .., which names a directory"],
+			["../escape", "it contains a path separator"],
+			["a/b", "it contains a path separator"],
+			["a\\b", "it contains a path separator"],
+			["nul\0", "it contains a NUL byte"],
+		];
+		for (const [runId, reason] of cases) {
+			const verdict = ensureRunDir(root, runId);
+			expect(verdict, JSON.stringify(runId)).toMatchObject({ ok: false, code: "bad-run-id" });
+			expect(verdict.ok === false && verdict.message, JSON.stringify(runId)).toContain(reason);
+			expect(verdict.ok === false && verdict.message, JSON.stringify(runId)).not.toContain("\0");
 		}
 		expect(existsSync(root)).toBe(false);
 	});
@@ -252,7 +359,9 @@ describe("scratch root — creation is umask-independent", () => {
 		const root = rootOf(home);
 		// One path segment the filesystem refuses (> `NAME_MAX`): `<root>` and `<root>/runs` exist by the
 		// time the deepest `mkdir` fails, which is the only way to reach the rollback path without a
-		// fault-injection seam this module deliberately does not have.
+		// fault-injection seam this module deliberately does not have. Its code is `create-failed`, NOT
+		// `bad-run-id`: `NAME_MAX` belongs to the filesystem, so an `ENAMETOOLONG` here is a real fs
+		// failure and only `mkdir` can say so.
 		const tooLong = "r".repeat(300);
 		try {
 			mkdirSync(join(WORK, tooLong));

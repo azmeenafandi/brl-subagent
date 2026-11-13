@@ -13,9 +13,10 @@
  * MIRRORED, NOT IMPORTED. The tooling half (`scripts/lib/scratch-root.mjs`, #512/#516) owns the same
  * rules for the cockpit, but it is not shipped and it lives on a different surface (untyped `.mjs`
  * plus a CLI). The RULES are mirrored here: the two-zone chain predicate (every ancestor must be a
- * real directory owned by root or by us with no group/other write bit; the root itself must be ours
- * and exactly 0700), `lstat` and never a followed link, and an explicit `chmod` after `mkdir` so the
- * mode does not depend on the umask. Two DELIBERATE differences, both narrowing the shipped contract:
+ * directory owned by root or by us with no group/other write bit; the root itself must be ours and
+ * exactly 0700), `lstat` as the first read with a link refused at the ROOT and resolved — then
+ * validated — above it, and an explicit `chmod` after `mkdir` so the mode does not depend on the
+ * umask. Two DELIBERATE differences, both narrowing the shipped contract:
  *
  *   1. a Linux `tmpfs` root is a WARNING, not a refusal. A user may legitimately keep `$HOME` (and
  *      therefore `~/.cache`) on a `tmpfs` — a live session does exactly that — and refusing would
@@ -34,7 +35,11 @@
  *
  * LIMITS, stated rather than implied: a mount-namespace substitution by a user who already holds
  * privileges; NFS, where ownership and `chmod` semantics belong to the server; a root that becomes a
- * mount point, or is renamed by its owner, AFTER it was validated; and Windows, where `fs` reports no
+ * mount point, or is renamed by its owner, AFTER it was validated; a symlinked ancestor whose resolved
+ * directory is renamed or re-pointed between the `realpath` and the `mkdir` (the same window, one link
+ * further out); the WRITABILITY of the directories ABOVE the resolved target — the link is judged where
+ * it lands, and `realpath` resolves the rest without judging it, so a `1777` directory far above the
+ * target is a substitution risk this clause does not see; and Windows, where `fs` reports no
  * meaningful `uid` and synthesized mode bits — the ownership and 0700 clauses are POSIX-only and are
  * skipped there (the symlink and directory clauses still hold).
  */
@@ -47,10 +52,12 @@ import {
 	lstatSync,
 	mkdirSync,
 	openSync,
+	realpathSync,
 	readdirSync,
 	rmdirSync,
 	rmSync,
 	statfsSync,
+	statSync,
 	type Stats,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -91,6 +98,7 @@ export const SCRATCH_ROOT_CODES = Object.freeze([
 	"root-mode",
 	"ancestor-writable",
 	"ancestor-not-dir",
+	"bad-run-id",
 	"create-failed",
 ] as const);
 
@@ -256,11 +264,78 @@ function inspect(path: string): Inspection {
 }
 
 /**
+ * The ANCESTOR's two clauses (ownership, then group/other write), shared by a real directory and by the
+ * directory a link resolves to. `label` is how a message names the component: the path itself, or
+ * `<link> (a symlink to <target>)`, so the reader is never sent to a mode the link does not have.
+ *
+ * Ownership is checked BEFORE the mode: a `0755` directory owned by a third party passes a mode-only
+ * rule, and that owner can rename the validated root afterwards and substitute a symlink. Write
+ * authority over a parent — by mode or by ownership — is rename authority.
+ */
+function checkAncestorClauses(label: string, stats: Stats, uid: number): Verdict {
+	if (stats.uid !== 0 && stats.uid !== uid) {
+		return fail(
+			"ancestor-writable",
+			`${label} is owned by uid ${stats.uid}, not by root or by you (uid ${uid}) — ownership of a parent is write (and therefore rename) authority over the root below it`,
+		);
+	}
+	if ((stats.mode & 0o022) !== 0) {
+		return fail(
+			"ancestor-writable",
+			`${label} is mode ${formatMode(stats.mode)} — group/other write on a parent is rename authority over the root below it`,
+		);
+	}
+	return { ok: true };
+}
+
+/**
+ * A symlinked ANCESTOR is resolved, and the directory it lands on is judged by the SAME clause. The
+ * rule is "follow it, then validate where it lands", not "never follow": a user who moved `~/.cache`
+ * to another disk — a symlink to a real `0700` directory they own — must still be able to delegate,
+ * and the question a parent is asked ("can someone else rename what is below you?") is answered by
+ * the target exactly as a real directory in the same place would answer it.
+ *
+ * The ROOT is never resolved (see the `root-symlink` clause): there the link would carry the `chmod`
+ * too, and a `chmod` through a link retargets the LINK's choice of where the bytes land.
+ *
+ * `realpathSync` walks the whole chain in one call, so a nested link or a LOOP is refused here rather
+ * than walked component by component (`ELOOP` on `a -> b -> a`, `ENOENT` on a broken link): a link that
+ * names no directory names no parent, and there is nothing for the clause below to be true of.
+ */
+function checkResolvedAncestor(link: string, uid: number | null): Verdict {
+	let target: string;
+	try {
+		target = realpathSync(link);
+	} catch (error) {
+		return fail(
+			"ancestor-not-dir",
+			`${link} is a symlink that does not resolve to a directory (${codeOf(error) || describe(error)}) — a broken or looping link names nothing, so it cannot be the parent of the root`,
+		);
+	}
+	let stats: Stats;
+	try {
+		stats = statSync(target);
+	} catch (error) {
+		return fail(
+			"ancestor-not-dir",
+			`${link} is a symlink to ${target}, which cannot be inspected (${codeOf(error) || describe(error)})`,
+		);
+	}
+	if (!stats.isDirectory()) return fail("ancestor-not-dir", `${link} is a symlink to ${target}, which is not a directory`);
+	// No uid means no ownership model to judge (Windows), exactly as for a real ancestor in this zone.
+	if (uid === null) return { ok: true };
+	return checkAncestorClauses(`${link} (a symlink to ${target})`, stats, uid);
+}
+
+/**
  * One component's verdict. The symlink and non-directory clauses come first in every zone, because
  * every later clause is a statement about a REAL directory.
  */
 function checkComponent(path: string, stats: Stats, zone: Zone, uid: number | null): Verdict {
 	if (stats.isSymbolicLink()) {
+		// Above the root a link is RESOLVED and its target judged; at and below it the link is refused,
+		// because there the chmod (and the bank) would follow it.
+		if (zone === "ancestor") return checkResolvedAncestor(path, uid);
 		return zone === "root"
 			? fail(
 					"root-symlink",
@@ -268,7 +343,7 @@ function checkComponent(path: string, stats: Stats, zone: Zone, uid: number | nu
 				)
 			: fail(
 					"ancestor-not-dir",
-					`${path} is a symlink — the chain is validated with lstat and never followed, because whoever chose the link's target also chose where the bytes would land`,
+					`${path} is a symlink — at and below the root nothing is followed (a chmod, a create or a marker write would land wherever the link points), so a link there is refused rather than resolved`,
 				);
 	}
 	if (!stats.isDirectory()) {
@@ -292,24 +367,7 @@ function checkComponent(path: string, stats: Stats, zone: Zone, uid: number | nu
 		}
 		return { ok: true };
 	}
-	if (zone === "ancestor") {
-		// Ownership is checked BEFORE the mode: a `0755` directory owned by a third party passes a
-		// mode-only rule, and that owner can rename the validated root afterwards and substitute a
-		// symlink. Write authority over a parent — by mode or by ownership — is rename authority.
-		if (stats.uid !== 0 && stats.uid !== uid) {
-			return fail(
-				"ancestor-writable",
-				`${path} is owned by uid ${stats.uid}, not by root or by you (uid ${uid}) — ownership of a parent is write (and therefore rename) authority over the root below it`,
-			);
-		}
-		if ((stats.mode & 0o022) !== 0) {
-			return fail(
-				"ancestor-writable",
-				`${path} is mode ${formatMode(stats.mode)} — group/other write on a parent is rename authority over the root below it`,
-			);
-		}
-		return { ok: true };
-	}
+	if (zone === "ancestor") return checkAncestorClauses(path, stats, uid);
 	// Below the root: no mode clause (a group-writable subdirectory is still only reachable through a
 	// 0700 root, and refusing it would refuse `mktemp -d`-style directories for no gain).
 	return stats.uid === uid ? { ok: true } : fail("root-not-owned", `${path} is owned by uid ${stats.uid}, not by you (uid ${uid})`);
@@ -360,8 +418,11 @@ function validateBelow(root: string, runId: string, uid: number | null): Scratch
 
 /**
  * The deepest existing REAL directory on `root`'s chain — the component whose filesystem a directory
- * we create would inherit. `null` means the chain holds something that is not a real directory (a
- * symlink, a file): the walk refuses it for its own reason, so there is no mount to report.
+ * we create would inherit. `null` means the chain holds something that is not a real directory (a file,
+ * or a symlink). A symlinked ANCESTOR passes validation (it is resolved and judged), so this probe
+ * stops short of it on purpose: `statfs` is not consulted for a link's target here, and the consequence
+ * is stated rather than left to be discovered — a cache directory reached through a symlink gets no
+ * `tmpfs` advisory on this surface.
  */
 function deepestExisting(root: string): string | null {
 	let deepest: string | null = null;
@@ -429,17 +490,21 @@ export function resolveRoot(options: RootOptions = {}): ResolveRootResult {
 	return { ok: true, root: layout.root, warning };
 }
 
-/** A run id is ONE path segment: no separators, no `.`/`..`, nothing that could name another path. */
-function isSafeRunId(runId: unknown): runId is string {
-	return (
-		typeof runId === "string" &&
-		runId !== "" &&
-		runId !== "." &&
-		runId !== ".." &&
-		!runId.includes("\0") &&
-		!runId.includes("/") &&
-		!runId.includes("\\")
-	);
+/**
+ * WHY a run id is refused, or `undefined` when it is ONE path segment. The REASON is the message rather
+ * than the value: the value is whatever bytes the caller sent, and a refusal line is not the place to
+ * print a NUL or a newline. Nothing about the name's LENGTH is here on purpose — `NAME_MAX` (255 on
+ * most filesystems, not on all of them) belongs to the filesystem, so a `mkdir` that fails
+ * `ENAMETOOLONG` is the authority and reports `create-failed`; that is a real fs failure, not an
+ * invalid id.
+ */
+function runIdDefect(runId: unknown): string | undefined {
+	if (typeof runId !== "string") return `it is not a string (it is ${typeof runId})`;
+	if (runId === "") return "it is empty";
+	if (runId === "." || runId === "..") return `it is ${runId}, which names a directory rather than a run`;
+	if (runId.includes("\0")) return "it contains a NUL byte";
+	if (runId.includes("/") || runId.includes("\\")) return "it contains a path separator";
+	return undefined;
 }
 
 /**
@@ -503,13 +568,18 @@ function createComponent(path: string, zone: Zone, uid: number | null, created: 
  *
  * Missing components above `<root>` (`~/.cache`, for instance, on a fresh account) are created too —
  * they are part of the same chain, and a root cannot be created without them. An EXISTING component is
- * validated and never repaired: changing a mode we did not set would be a silent privilege grab.
+ * validated and never repaired: changing a mode we did not set would be a silent privilege grab. A
+ * validated symlink ANCESTOR is one such existing component — nothing is created inside a directory
+ * that has not passed, and the directory a link resolves to has passed before `mkdir` runs through it.
+ * The RETURNED paths are the caller's (the link's), because the preamble has to name what the user
+ * sees, and `realpath` is not what they typed.
  */
 export function ensureRunDir(root: string, runId: string, options: { platform?: NodeJS.Platform } = {}): EnsureRunDirResult {
-	if (!isSafeRunId(runId)) {
+	const defect = runIdDefect(runId);
+	if (defect !== undefined) {
 		return fail(
-			"create-failed",
-			`refusing run id ${JSON.stringify(runId)} — a run id is one path segment (no separators, no "." or ".."), because it is joined onto the root and must not be able to name anything outside it`,
+			"bad-run-id",
+			`refusing the run id: ${defect} — a run id is one path segment joined onto the root, so it must not be able to name anything outside it`,
 		);
 	}
 	const base = resolve(root);
