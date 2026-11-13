@@ -587,6 +587,14 @@ mechanics, verdict format: `references/review-dispatch.md`.
   rules, no `gh`, no network, no provenance log — so a generated record can be checked
   before dispatch; write the record with `scripts/review-record.mjs` (#487), never by hand.
   `--selftest` covers the record parsing with temp fixtures.
+- **Re-capture before the gate after ANY post-verdict commit.** The order is
+  `git commit` → `node scripts/suite-report.mjs --capture` → `merge-guard.sh`. The sidecar
+  records the head the suite was tested at, and `pr-evidence --check` compares it against the
+  PR's `headRefOid`: a report of another head is refused `provenance-mismatch`, **exit 2, never
+  a drift**. A docs-only commit moves the expected head exactly as a code commit does, so the
+  capture follows the last commit, not the last code change — and what it re-runs is the evidence
+  the gate reads. Skip it and the gate answers with a correct, fail-closed refusal that reads like
+  a broken gate (#520). Capture from the worktree: the git facts come from the cwd's checkout.
 
 ## Notes
 
