@@ -112,6 +112,10 @@ export const SCRATCH_ROOT_CODES = Object.freeze([
 	"ancestor-writable",
 	"ancestor-not-owned",
 	"ancestor-not-dir",
+	// The SAME clause as `ancestor-not-dir`/`root-not-dir`, spelled for the zone it fires in: a link or
+	// non-directory at `runs` or `runs/<runId>` is BELOW the root, and a caller matching on the code must
+	// not be told a zone the refused component is not in (#527 item 3).
+	"below-not-dir",
 	"bad-run-id",
 	"create-failed",
 ] as const);
@@ -455,12 +459,17 @@ function checkComponent(path: string, stats: Stats, zone: Zone, uid: number | nu
 					`${path} is a symlink — the root is inspected with lstat and never followed (and never chmod-ed through: a chmod on a link retargets the link's target, which is someone else's choice of where the bank lands)`,
 				)
 			: fail(
-					"ancestor-not-dir",
+					"below-not-dir",
 					`${path} is a symlink — at and below the root nothing is followed (a chmod, a create or a marker write would land wherever the link points), so a link there is refused rather than resolved`,
 				);
 	}
 	if (!stats.isDirectory()) {
-		return zone === "root" ? fail("root-not-dir", `${path} is not a directory`) : fail("ancestor-not-dir", `${path} is not a directory`);
+		// One spelling per zone: the code names where the refused component sits, so `root-not-dir`,
+		// `ancestor-not-dir` and `below-not-dir` are the same clause reported three ways.
+		if (zone === "root") return fail("root-not-dir", `${path} is not a directory`);
+		return zone === "ancestor"
+			? fail("ancestor-not-dir", `${path} is not a directory`)
+			: fail("below-not-dir", `${path} is not a directory`);
 	}
 	// No uid means no ownership model to judge (Windows). The directory and symlink clauses above are
 	// the whole predicate there; `fs` synthesizes mode bits on Windows, so a mode clause would be noise.
