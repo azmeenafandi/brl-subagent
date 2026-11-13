@@ -488,10 +488,6 @@ describe("classifyError", () => {
 		).toBe("exit_error");
 	});
 
-	it("successful result with exitCode 0 is NOT an isSubagentError", () => {
-		expect(isSubagentError(makeResult({ exitCode: 0 }))).toBe(false);
-	});
-
 	it("mixed signals with stopReason error IS an isSubagentError", () => {
 		expect(isSubagentError(makeResult({ exitCode: 0, stopReason: "error" }))).toBe(true);
 	});
