@@ -27,7 +27,9 @@
  * quotes so a `//` inside a string cannot open a comment and hide a real literal
  * later on the same line. It is a character scanner, NOT a parser: a CONSTRUCTED
  * path (`"/" + "tmp"`, `path.join`) is out of scope — a grep-class guard, and an
- * AST would not catch it either; a regex literal is not modelled; a template
+ * AST would not catch it either; an env-derived path (`process.env.TMPDIR + "/x"`)
+ * is likewise out of scope, and in any case a path the environment supplies is not
+ * a path this code chose; a regex literal is not modelled; a template
  * SUBSTITUTION (`${…}`) is scanned as literal text, so a comment inside one is
  * not masked (a false positive, never a false negative); and only `*.ts` under
  * `src` outside `__tests__` is covered, because tests legitimately build

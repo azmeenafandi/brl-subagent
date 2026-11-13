@@ -25,7 +25,7 @@ vi.mock("../runner", () => ({
 }));
 
 // Import after mocks are set up
-const { preflightCheck } = await import("../preflight");
+const { nextProbeName, preflightCheck } = await import("../preflight");
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -254,5 +254,15 @@ describe("preflightCheck validates the BRL_PI_BIN override (issue #271)", () => 
 
 		const result = preflightCheck(realCwd, { root: { home } });
 		expect(result.ok).toBe(true);
+	});
+});
+
+describe("probe naming — the overlap fix", () => {
+	it("gives each call its own name, so two overlapping probes cannot collide", () => {
+		const first = nextProbeName();
+		const second = nextProbeName();
+		expect(first).not.toBe(second);
+		expect(first).toContain(String(process.pid));
+		expect(second).toContain(String(process.pid));
 	});
 });

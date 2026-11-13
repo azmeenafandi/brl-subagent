@@ -160,6 +160,16 @@ const PROBE_PREFIX = ".brl-preflight-probe";
 let probeSequence = 0;
 
 /**
+ * The probe's filename for THIS call: prefix, pid and a per-call sequence.
+ * Exported so a test can pin the part that matters — two calls must not share a
+ * name, because a pid-only name is exactly the race above.
+ */
+export function nextProbeName(): string {
+	probeSequence += 1;
+	return `${PROBE_PREFIX}-${process.pid}-${probeSequence}`;
+}
+
+/**
  * The nearest ancestor of `target` that exists — the directory a root that is
  * not there yet would be CREATED in, and therefore the one that must be
  * writable.
@@ -220,8 +230,7 @@ function checkScratchRootWritable(options: PreflightOptions): PreflightResult {
 	}
 
 	const probeDir = nearestExistingAncestor(resolved.root);
-	probeSequence += 1;
-	const probeFile = path.join(probeDir, `${PROBE_PREFIX}-${process.pid}-${probeSequence}`);
+	const probeFile = path.join(probeDir, nextProbeName());
 
 	try {
 		fs.writeFileSync(probeFile, "ok", { encoding: "utf-8", mode: FILE_MODE });
