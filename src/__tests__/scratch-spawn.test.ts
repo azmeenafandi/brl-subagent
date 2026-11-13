@@ -218,6 +218,24 @@ describe("prepareRunScratch — resolve, create, prune", () => {
 		expect(existsSync(join(rootOf(home), "runs", "run-prune"))).toBe(true);
 		expect(sink.warns.some((m) => m.includes("prune failed"))).toBe(true);
 	});
+
+	it("excludes the current run from its own sweep — a re-prepared run keeps its directory", () => {
+		// The re-prepare is real, not hypothetical: the foreground record site and the
+		// spawn seam both prepare, and a retry re-enters with the same id. Age and mark
+		// the directory so ONLY the exclusion can save it — without it, the sweep
+		// deletes the very directory the spawn is about to use.
+		const home = sandbox();
+		const root = { platform: "linux" as const, env: {}, home, statfs: EXT4 };
+		const first = prepareRunScratch("same-id", { root });
+		if (!first.ok) throw new Error(first.message);
+		writeFileSync(join(first.runDir, DONE_MARKER), "");
+		const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+		utimesSync(join(first.runDir, DONE_MARKER), old, old);
+
+		const second = prepareRunScratch("same-id", { root });
+		expect(second.ok).toBe(true);
+		expect(existsSync(first.runDir)).toBe(true);
+	});
 });
 
 // ---------------------------------------------------------------------------
