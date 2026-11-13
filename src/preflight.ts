@@ -18,10 +18,11 @@
  * missing root stays missing (the spawn creates it), so a probe that passes on
  * a writable ancestor says "the root can be created here", not "the root is
  * sound"; a process killed between the write and the unlink leaves one 0600
- * `.brl-preflight-probe-<pid>` file in the root or its nearest existing
- * ancestor, recognisable and harmless; and no system-temp path is probed, used
- * as a fallback, or advised in a message any more (`src/__tests__/no-temp-paths`
- * is the guard).
+ * `.brl-preflight-probe-<pid>-<n>` file in the root or its nearest existing
+ * ancestor, recognisable and inert (nothing reads it, and no validation looks
+ * at it); and no system-temp
+ * path is probed, used as a fallback, or advised in a message any more
+ * (`src/__tests__/no-temp-paths` is the guard).
  */
 
 import * as fs from "node:fs";
@@ -148,6 +149,17 @@ function checkCwdReadable(cwd: string): PreflightResult {
 const PROBE_PREFIX = ".brl-preflight-probe";
 
 /**
+ * A per-process sequence, appended to the probe's name.
+ *
+ * The pid alone is not enough: `preflightCheck` runs BEFORE the concurrency slot
+ * is taken, so two overlapping dispatches in one process can probe at the same
+ * moment — and both would then write and unlink the SAME path, letting one
+ * call's unlink make the other report "not writable" for a directory that is
+ * perfectly writable. A distinct name per call removes the race without a lock.
+ */
+let probeSequence = 0;
+
+/**
  * The nearest ancestor of `target` that exists — the directory a root that is
  * not there yet would be CREATED in, and therefore the one that must be
  * writable.
@@ -208,7 +220,8 @@ function checkScratchRootWritable(options: PreflightOptions): PreflightResult {
 	}
 
 	const probeDir = nearestExistingAncestor(resolved.root);
-	const probeFile = path.join(probeDir, `${PROBE_PREFIX}-${process.pid}`);
+	probeSequence += 1;
+	const probeFile = path.join(probeDir, `${PROBE_PREFIX}-${process.pid}-${probeSequence}`);
 
 	try {
 		fs.writeFileSync(probeFile, "ok", { encoding: "utf-8", mode: FILE_MODE });

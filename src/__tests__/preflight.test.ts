@@ -3,8 +3,7 @@
  *
  * THE THIRD CHECK IS A SCRATCH-ROOT PROBE (issue #511, U4). It used to write a
  * file into `os.tmpdir()`; it now resolves the shipped scratch root (U1) and
- * probes where that root lives — inside the root when it exists, otherwise in
- * its nearest existing ancestor, which is where the root would be created.
+ * probes where its root lives or would be created.
  *
  * Every case injects `{ root: { home } }` (the seam added for exactly this), so
  * no test reads or writes the developer's real cache root. Fixtures live under
@@ -147,6 +146,7 @@ describe("preflightCheck", () => {
 		mkdirSync(root, { mode: 0o700 });
 
 		expect(preflightCheck(realCwd, { root: { home } }).ok).toBe(true);
+		expect(preflightCheck(realCwd, { root: { home } }).ok).toBe(true); // a second probe: same verdict
 		expect(readdirSync(root)).toEqual([]);
 	});
 
