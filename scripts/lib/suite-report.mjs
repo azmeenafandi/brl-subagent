@@ -46,6 +46,19 @@
 // preference, not evidence — the report that proves a claim is the one that tested the tree the claim
 // describes.
 //
+// THE RESOLUTION RULES, in full (#520 — the shape the documented default actually produces, because
+// `--capture` keeps one report per head and never prunes):
+//   explicit `--report`  wins, and is validated like any other candidate (a supplied head that its sidecar
+//                        contradicts is `provenance-mismatch`);
+//   one head match       exactly one candidate whose sidecar names the expected head → that one;
+//   several head matches `ambiguous-reports`, SAYING they claim the same head — that shape is a duplicate
+//                        copy (a hand-copied or twice-marked report), not a tie, and it is never auto-deduped:
+//                        two files that may already disagree are a fact the gate must not bury;
+//   no match, one unmarked candidate → that one, labelled `provenance: absent` (the documented degrade);
+//   no match, another   `no-provenance-match` (several) or `provenance-mismatch` (one, with a sidecar),
+//                        naming each candidate AND its head or `absent` — never just its path.
+// "Same head" is `sameRevision` — a 7-char prefix names the commit it prefixes — never string equality.
+//
 // LIMITS, stated rather than implied: a report mutated between validation and use (the reader returns a
 // snapshot, and nothing re-reads it); `assertionResults` counts assertions, so a `test.each` row is one
 // result and the derivation follows vitest's own JSON shape rather than any other runner's; and the
