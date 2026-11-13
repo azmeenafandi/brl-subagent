@@ -325,7 +325,7 @@ function neutralizePathPrefix(text: string, prefix: string, replacement: string)
  * 4. Caps length at 2000 chars with an ellipsis marker.
  *
  * Remaining-absolute-path policy: paths OUTSIDE the project root and its
- * parent are left as-is (e.g. `/etc/passwd`, `/usr/bin/node`, `/tmp/x.log`).
+ * parent are left as-is (e.g. `/etc/passwd`, `/usr/bin/node`, `/var/log/x.log`).
  * Issue #30 is specifically about CWD/home disclosure; system paths carry no
  * personal structure and keeping them preserves debugging value. Messages
  * that are short and clean (no ANSI, no cwd/parent prefixes) pass through

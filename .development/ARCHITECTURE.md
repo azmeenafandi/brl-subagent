@@ -97,7 +97,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `notify-completion.ts` | Builds and sends the completion-push wake message for terminal background runs. |
 | `params.ts` | Param resolution: per-call + preset merge, thinking caps, timeout normalization, tool and git/approval resolution, auto-routing. |
 | `paths.ts` | Package-root path resolution (`pkgPath()`) so shipped assets resolve from the extension directory. |
-| `preflight.ts` | Pre-spawn environment checks: pi binary, temp-dir writability, cwd readability. |
+| `preflight.ts` | Pre-spawn environment checks: pi binary, scratch-root writability, cwd readability. |
 | `prelude.ts` | Shared guard/validation prelude for delegation modes: the individual gates (cost, approval, targets, H1), the per-unit pre-pass, and the batch modes' model tail. |
 | `presets.ts` | Preset loading, parsing, validation, and the file-backed custom-preset tier. |
 | `proc.ts` | Production process primitives — Linux/POSIX /proc reads, feature detection, and the default recovery deps. |
