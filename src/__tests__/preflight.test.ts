@@ -6,10 +6,10 @@
  * probes where that root lives — inside the root when it exists, otherwise in
  * its nearest existing ancestor, which is where the root would be created.
  *
- * Every case here injects `{ root: { home } }` (the seam added for exactly
- * this), so no test reads or writes the developer's real cache root. Fixtures
- * live under the repository's gitignored `.tmp/` chain, never under `/tmp`:
- * `/tmp` is `1777`, and the resolver refuses an ancestor-writable parent.
+ * Every case injects `{ root: { home } }` (the seam added for exactly this), so
+ * no test reads or writes the developer's real cache root. Fixtures live under
+ * the repository's gitignored `.tmp/` chain, never under `/tmp`: `/tmp` is
+ * `1777`, and the resolver refuses an ancestor-writable parent.
  */
 
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
@@ -58,19 +58,7 @@ const permissionDenialsApply = process.platform !== "win32" && process.getuid?.(
 
 afterEach(() => {
 	vi.restoreAllMocks();
-	while (created.length > 0) {
-		const path = created.pop();
-		if (path === undefined) continue;
-		// Restore owner-write first: a case that made a fixture unwritable must not
-		// make its own cleanup fail (and leave the tree dirty).
-		try {
-			chmodSync(path, 0o700);
-			chmodSync(join(path, "home"), 0o700);
-		} catch {
-			// Already gone, or never created with that shape.
-		}
-		rmSync(path, { recursive: true, force: true });
-	}
+	while (created.length > 0) rmSync(created.pop() as string, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -139,33 +127,27 @@ describe("preflightCheck", () => {
 		expect(result.ok).toBe(true);
 	});
 
-	it("fails when cwd is not a directory", () => {
-		const result = preflightCheck(notADir, { root: { home } });
-		expect(result.ok).toBe(false);
-		if (!result.ok) {
-			expect(result.error).toMatch(/is not a directory/);
-		}
-	});
+	it("fails when cwd is not a directory, or does not exist", () => {
+		const notADirectory = preflightCheck(notADir, { root: { home } });
+		expect(notADirectory.ok).toBe(false);
+		if (!notADirectory.ok) expect(notADirectory.error).toMatch(/is not a directory/);
 
-	it("fails when cwd does not exist", () => {
-		const result = preflightCheck(nonExistentDir, { root: { home } });
-		expect(result.ok).toBe(false);
-		if (!result.ok) {
-			expect(result.error).toMatch(/not readable/);
-		}
+		const missing = preflightCheck(nonExistentDir, { root: { home } });
+		expect(missing.ok).toBe(false);
+		if (!missing.ok) expect(missing.error).toMatch(/not readable/);
 	});
 
 	// ------------------------------------------------------------------
 	// Scratch-root checks (issue #511, U4 — the probe that left /tmp)
 	// ------------------------------------------------------------------
 
-	it("passes when the scratch root exists and is writable", () => {
+	it("passes when the scratch root exists and is writable, leaving no probe file behind", () => {
 		const root = rootUnder(home);
 		mkdirSync(join(home, ".cache"), { mode: 0o700 });
 		mkdirSync(root, { mode: 0o700 });
 
-		const result = preflightCheck(realCwd, { root: { home } });
-		expect(result.ok).toBe(true);
+		expect(preflightCheck(realCwd, { root: { home } }).ok).toBe(true);
+		expect(readdirSync(root)).toEqual([]);
 	});
 
 	it("passes when the root is absent but its nearest existing ancestor is writable", () => {
@@ -184,28 +166,23 @@ describe("preflightCheck", () => {
 			const root = rootUnder(home);
 			chmodSync(home, 0o500); // no write: the root cannot be created here
 
-			const result = preflightCheck(realCwd, { root: { home } });
-			expect(result.ok).toBe(false);
-			if (!result.ok) {
-				// The message names the RESOLVED root (the path the spawn would use) and
-				// the directory that refused the probe — never a system temp directory,
-				// and no "set TMPDIR" advice any more.
-				expect(result.error).toContain(root);
-				expect(result.error).toContain("is not writable");
-				expect(result.error).toContain(home);
-				expect(result.error).not.toContain("TMPDIR");
+			try {
+				const result = preflightCheck(realCwd, { root: { home } });
+				expect(result.ok).toBe(false);
+				if (!result.ok) {
+					// The message names the RESOLVED root (the path the spawn would use) and
+					// the directory that refused the probe — never a system temp directory,
+					// and no "set TMPDIR" advice any more.
+					expect(result.error).toContain(root);
+					expect(result.error).toContain("is not writable");
+					expect(result.error).toContain(home);
+					expect(result.error).not.toContain("TMPDIR");
+				}
+			} finally {
+				chmodSync(home, 0o700); // so this case's own cleanup can remove the fixture
 			}
 		},
 	);
-
-	it("leaves no probe file behind in the root", () => {
-		const root = rootUnder(home);
-		mkdirSync(join(home, ".cache"), { mode: 0o700 });
-		mkdirSync(root, { mode: 0o700 });
-
-		expect(preflightCheck(realCwd, { root: { home } }).ok).toBe(true);
-		expect(readdirSync(root)).toEqual([]);
-	});
 
 	it("surfaces a resolver refusal as a named preflight failure, with the code", () => {
 		// An unresolvable home is the resolver's `home-unresolvable` refusal: the
