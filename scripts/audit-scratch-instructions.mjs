@@ -31,6 +31,18 @@
 // anything it cannot read as a refusal or as probe space is an `artifact`, so a new durable path cannot
 // slip through by using vocabulary nobody taught it.
 //
+// A PATH IS NOT A WORD (#520). The vocabulary tests run on the line with every system-temp path span masked
+// out (`/tmp/probe-519/x.md` → `<temp-path>`), because the words that decide the category are the words of
+// the INSTRUCTION — what is being said about the location — and a filename is not a statement about
+// anything. Before that mask, `/tmp/brl-probe-bank.md` classified every line naming it as probe space: the
+// audit's own fail-closed claim ("anything it cannot read as a refusal or as probe space is an artifact")
+// was defeated by a directory name, and the exact convention this cycle retired read as throwaway space.
+// The fix is structural, not a denylist: masking removes the ambiguity for every vocabulary word at once,
+// so no future filename can supply one. Surrounding prose is kept, which is why a genuine probe-scratch
+// sentence — "`scratch` files go under /tmp/probe-519/" — still reads as one: its `scratch` is outside the
+// path. The one thing masking makes STRICTER is a line whose only scratch word was inside the path; it is
+// now a hit, which is the fail-closed direction and the sentence can be reworded.
+//
 // Exit: 0 clean (or warn-only overrides) · 1 hits in a gated corpus · 2 usage, or a missing corpus.
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -74,6 +86,21 @@ export const CATEGORIES = Object.freeze({
 export const TEMP_PATH = /(?<![\w./-])(?:\/var\/tmp|\/tmp|%TEMP%|\$TMPDIR|os\.tmpdir\(\))(?![\w])/;
 
 /**
+ * The same token with the rest of the path it starts: `/tmp/x/y.md`, `$TMPDIR/report.json`, `%TEMP%\a.md`.
+ * The run stops at whitespace and at the punctuation that ends a path inside a sentence, so masking removes
+ * the path and nothing else. `os.tmpdir()` is a call, not a path, and masks on its own.
+ */
+const TEMP_PATH_SPAN = /(?<![\w./-])(?:\/var\/tmp|\/tmp|%TEMP%|\$TMPDIR|os\.tmpdir\(\))(?:\/[^\s,;:)\]`'"|*<>]*)?/g;
+
+/** What a masked path reads as, in the words-only text the classifier tests. */
+const PATH_PLACEHOLDER = "<temp-path>";
+
+/** The line with every system-temp path replaced by one placeholder — the text the vocabulary tests see. */
+export function maskTempPaths(text) {
+	return String(text).replace(TEMP_PATH_SPAN, PATH_PLACEHOLDER);
+}
+
+/**
  * Probe vocabulary: the line is describing space that is meant to be thrown away. Deliberately narrow —
  * "temporary" and "copy" are left out because they describe durable artifacts at least as often as they
  * describe scratch, and a word that swings both ways is not a classifier.
@@ -105,11 +132,16 @@ function describe(error) {
  *    letting it through would exempt the very next instruction from the scan. The one corner this leaves
  *    open is a line carrying BOTH vocabularies ("a probe scratch dir in /tmp is refused"): it reads as
  *    probe space, which is the fail-open direction, and no line in either corpus is shaped that way.
+ * 3. Both lines are masked first (#520): a path is not a word, so a vocabulary test never sees one.
  */
 export function classify(previous, line) {
-	const refusal = REFUSAL_WORDS.test(line) && !SCRATCH_WORDS.test(line);
+	// Mask BOTH sides before any word test — the previous line is tested for probe space, and a path there
+	// would supply the word just as readily as a path on this line.
+	const current = maskTempPaths(line);
+	const before = maskTempPaths(previous);
+	const refusal = REFUSAL_WORDS.test(current) && !SCRATCH_WORDS.test(current);
 	if (refusal) return CATEGORIES.REFUSAL;
-	if (SCRATCH_WORDS.test(`${previous}\n${line}`)) return CATEGORIES.PROBE_SCRATCH;
+	if (SCRATCH_WORDS.test(`${before}\n${current}`)) return CATEGORIES.PROBE_SCRATCH;
 	return CATEGORIES.ARTIFACT;
 }
 
@@ -192,6 +224,8 @@ export function rules() {
 		`  ${CATEGORIES.ARTIFACT}      a durable artifact is placed there (bank, findings, report, record): a HIT`,
 		`  ${CATEGORIES.REFUSAL}       the text says that location is refused (#512): not a hit`,
 		`  ${CATEGORIES.PROBE_SCRATCH} real scratch for a probe, meant to be thrown away: not a hit`,
+		"a path is not a word: the temp path itself is masked before the vocabulary is read, so a filename cannot",
+		"supply 'probe' or 'scratch' — only the surrounding instruction can",
 		"anything the classifier cannot read as a refusal or as probe space is an artifact — it fails closed",
 	];
 }

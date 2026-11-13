@@ -12,6 +12,9 @@
  * the exit code IS the contract: `--tracked` gates, `--overrides` warns unless `--strict`.
  *
  * COVERAGE — what these probes do NOT cover, stated rather than implied:
+ *  - a path containing whitespace: the mask stops at a space, so the tail of such a path is read as prose.
+ *    The failure direction is the safe one (a leftover word is either harmless or a hit) and no corpus
+ *    carries one, but it is a bound of the mask rather than a property of it (#520);
  *  - the ignored override corpus as it exists on THIS machine. The seven files live in the cockpit
  *    checkout and are gitignored, so they are not in a worktree; the probe plants the same seven paths
  *    with the same shapes, and the real run is quoted in the PR body rather than asserted here;
@@ -37,6 +40,7 @@ import {
 	classify,
 	collectMarkdown,
 	main,
+	maskTempPaths,
 	parseArgs,
 	renderReport,
 	scanFile,
@@ -99,6 +103,31 @@ describe("audit — the classification is three-way, and printed", () => {
 		expect(classify("", "scratch repos in `/tmp` — never trust a claim you have not checked")).toBe(CATEGORIES.PROBE_SCRATCH);
 	});
 
+	/**
+	 * #520 — A PATH IS NOT A WORD. The classifier tests vocabulary, and a filename is not vocabulary; before
+	 * the mask, `/tmp/brl-probe-bank.md` made every line that named it read as throwaway space, so the
+	 * audit's own fail-closed claim was defeated by a directory name. Each case below is the exact shape the
+	 * probe filed, plus the two that must NOT change: a genuine probe-scratch sentence keeps its category
+	 * when the word is outside the path.
+	 */
+	it("does not read a path as a vocabulary hint (#520)", () => {
+		// The retired convention's own bank path — durable, and a `probe` in the filename is not a statement.
+		expect(classify("", "bank: /tmp/brl-probe-bank.md")).toBe(CATEGORIES.ARTIFACT);
+		expect(classify("", "Append your working state to /tmp/brl-probe-bank.md as you work.")).toBe(CATEGORIES.ARTIFACT);
+		// The same sentences with the vocabulary OUTSIDE the path keep their categories.
+		expect(classify("", "scratch repos in /tmp, real commands")).toBe(CATEGORIES.PROBE_SCRATCH);
+		expect(classify("", "Scratch files go under /tmp/probe-519/")).toBe(CATEGORIES.PROBE_SCRATCH);
+		// ... and a wrapped sentence still reads across the break, path or no path.
+		expect(classify("reproduce them in a scratch", "directory under /tmp")).toBe(CATEGORIES.PROBE_SCRATCH);
+	});
+
+	it("masks the path span, not the words around it (#520)", () => {
+		expect(maskTempPaths("bank: /tmp/brl-probe-bank.md")).toBe("bank: <temp-path>");
+		expect(maskTempPaths("see (/tmp/x/y.md).")).toBe("see (<temp-path>).");
+		expect(maskTempPaths("join(os.tmpdir(), 'x')")).toBe("join(<temp-path>, 'x')");
+		expect(maskTempPaths("scratch repos in /tmp, real commands")).toBe("scratch repos in <temp-path>, real commands");
+	});
+
 	it("recognises the spellings of the same location, and no false positive", () => {
 		expect(TEMP_PATH.test("a file in /var/tmp/x.md")).toBe(true);
 		expect(TEMP_PATH.test("a file in $TMPDIR/x.md")).toBe(true);
@@ -145,6 +174,18 @@ describe("audit — the tracked corpus gates", () => {
 		expect(result.out).toContain(`ok:  ${TRACKED_CORPUS}/mixed.md:4 · refusal`);
 		expect(result.out).toContain(`hit: ${TRACKED_CORPUS}/mixed.md:5 · artifact`);
 		expect(result.out).toContain("1 hit(s)");
+	});
+
+	it("gates the retired convention's own bank path, probe in the filename and all (#520)", () => {
+		// The probe's literal reproduction, through the CLI the gate runs: the same two lines the issue filed
+		// as exits 0, now hits — a durable bank instruction is not throwaway space because of its name.
+		const body = "bank: /tmp/brl-probe-bank.md\n\nAppend your working state to /tmp/brl-probe-bank.md as you work.\n";
+		const root = checkout({ [`${TRACKED_CORPUS}/bank.md`]: body });
+		const result = run(root);
+		expect(result.code).toBe(EXIT.HITS);
+		expect(result.out).toContain(`hit: ${TRACKED_CORPUS}/bank.md:1 · artifact`);
+		expect(result.out).toContain(`hit: ${TRACKED_CORPUS}/bank.md:3 · artifact`);
+		expect(result.out).toContain("2 hit(s)");
 	});
 
 	it("prints the exclusions and the rule table with every run", () => {
