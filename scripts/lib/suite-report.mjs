@@ -384,7 +384,9 @@ export function resolveReport({ report = "", dir = "", expectHead = "", root = d
 	if (found.error !== null) throw found.error;
 	if (found.report !== null) return found.report;
 	if (found.rejected.length > 0) {
-		const detail = found.rejected.map((entry) => `${entry.path} (${entry.code}: ${entry.message})`).join("; ");
+		// `ReportError` carries the code INSIDE its message by contract (see the class), so the detail joins the
+		// messages as they are: re-prefixing the code read `hollow-report: hollow-report: …` (#520).
+		const detail = found.rejected.map((entry) => entry.message).join("; ");
 		throw new ReportError(
 			CODES.REJECTED,
 			`${found.rejected.length} report(s) under ${target} are not evidence — ${detail}; capture one with \`node scripts/suite-report.mjs --capture\` or pass --report <path>`,

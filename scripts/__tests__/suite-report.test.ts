@@ -20,9 +20,13 @@
  *    portable, so a root that would be refused on Linux is accepted here when the mount type cannot be
  *    read. The suite runs on Linux in CI, and a skip prints why;
  *  - a `test.each` row that vitest reports as one assertion (the derivation follows vitest's own JSON
- *    shape; another runner's report is simply not a suite report and is refused `empty-results`).
+ *    shape; another runner's report is simply not a suite report and is refused `empty-results`);
+ *  - a real `tmpfs` root for a `--mark` refusal (#520): the refusal WORDING is driven through
+ *    `markRefusal` with a `tmpfs` verdict, because whether this checkout's `.tmp` is on a `tmpfs` is a
+ *    property of the host. The message shape is what the change is about; the mount is pinned in
+ *    `scratch-root.test.ts`.
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -41,7 +45,7 @@ import {
 	reportsDir,
 	resolveReport,
 } from "../lib/suite-report.mjs";
-import { EXIT, captureReport, describeCapture, main, markReport, parseArgs, testedTree } from "../suite-report.mjs";
+import { EXIT, captureReport, describeCapture, main, markRefusal, markReport, parseArgs, testedTree } from "../suite-report.mjs";
 
 const REPO = process.cwd();
 const FIXTURES = join(REPO, "scripts", "__tests__", "fixtures", "handoffs");
@@ -338,6 +342,9 @@ describe("suite-report — resolution: the one seam both gates call", () => {
 		expect(codeOf(() => resolveReport({ dir: reports }))).toBe(CODES.REJECTED);
 		expect(message).toContain(hollow);
 		expect(message).toContain(CODES.HOLLOW_REPORT);
+		// The code is inside `ReportError.message` already, so the detail must not prefix it again (#520):
+		// `hollow-report: hollow-report: …` was the doubled shape.
+		expect(message.split(CODES.HOLLOW_REPORT).length - 1).toBe(1);
 	});
 
 	it("prefers an explicit --report over the directory, and validates it the same way", () => {
@@ -415,6 +422,45 @@ describe("suite-report — the producer: --mark and --capture", () => {
 		expect(codeOf(() => markReport(path, { root, repo: join(WORK, "no-such-repo") }))).toBe(CODES.GIT_UNAVAILABLE);
 	});
 
+	/**
+	 * #520 — the constraint is one policy, and every branch of it has to name what failed and the fix. The
+	 * containment template fits `outside-root` (where the report really is not inside the root) and reads
+	 * `<root> is not a directory inside <root>` when the ROOT is the thing at fault — true, self-referential,
+	 * and silent about the mode or the filesystem. The fix sentence is the same in every branch.
+	 */
+	it("names what failed and the fix, never '<root> is not a directory inside <root>' (#520)", () => {
+		const { root, reports } = rootWith("mark-mode");
+		const repo = gitRepo("mark-mode-repo");
+		const path = green(reports, "g.json", 3);
+		chmodSync(root, 0o755);
+		const modeRefusal = messageOf(() => markReport(path, { root, repo }));
+		expect(modeRefusal).toContain("root-mode");
+		expect(modeRefusal).toContain("cannot mark a report in");
+		expect(modeRefusal).not.toContain(`is not a directory inside ${root}`);
+		expect(modeRefusal).toContain("--root <valid root>");
+		// Containment keeps the containment wording: that shape IS the statement being made.
+		const outside = mkdtempSync(join(BASE, "mark-outside-"));
+		const stray = green(outside, "g.json", 3);
+		const contained = messageOf(() => markReport(stray, { root, repo }));
+		expect(contained).toContain(`is not a directory inside ${root}`);
+		chmodSync(root, 0o700);
+		// The tmpfs branch says what failed too — driven directly, because a tmpfs root cannot be relied on
+		// here (this checkout's `.tmp` is on the repo's filesystem, and CI's is not guaranteed to be anything).
+		const onTmpfs = markRefusal("/tmp/r", { root: "/tmp/r", code: "tmpfs", message: "/tmp/r is on a tmpfs" });
+		expect(onTmpfs).toContain("cannot mark a report in");
+		expect(onTmpfs).not.toContain("is not a directory inside");
+	});
+
+	it("leaves the report and its sidecar in one mode, 0600 (#520)", () => {
+		const { root, reports } = rootWith("mark-mode-bits");
+		const repo = gitRepo("mark-bits-repo");
+		const path = green(reports, "g.json", 3);
+		expect(statSync(path).mode & 0o777).toBe(0o644); // what a writer outside this tool leaves behind
+		const marked = markReport(path, { root, repo, now: () => "2026-11-11T00:00:00.000Z" });
+		expect(statSync(marked.path).mode & 0o777).toBe(0o600);
+		expect(statSync(marked.sidecar).mode & 0o777).toBe(0o600);
+	});
+
 	it("captures into <root>/reports/<head>.json and marks it in one command", () => {
 		const { root } = rootWith("capture");
 		const repo = gitRepo("capture-repo");
@@ -438,6 +484,8 @@ describe("suite-report — the producer: --mark and --capture", () => {
 		expect(result.record.head).toBe(head);
 		expect(describeCapture(result)).toContain("[unit]");
 		expect(describeCapture(result)).toContain("12 tests in 2 files");
+		// #520: the capture's report is 0600 like its sidecar — the mode travels with the file.
+		expect(statSync(result.path).mode & 0o777).toBe(0o600);
 		// The default path is a path the gate can then read with its provenance intact.
 		expect(resolveReport({ dir: join(root, REPORTS_DIR_NAME), expectHead: head }).path).toBe(result.path);
 	});
