@@ -166,7 +166,8 @@ describe("retry preamble — the durable bank path (issue #511 U3)", () => {
 		}
 	});
 
-	it("drops the sentence when the root cannot be resolved — and never throws", () => {		// An empty home is the resolver's own `home-unresolvable` refusal: the one
+	it("drops the sentence when the root cannot be resolved — and never throws", () => {
+		// An empty home is the resolver's own `home-unresolvable` refusal: the one
 		// case where there is no root to recompute from at all.
 		const refused = resolveRoot({ home: "" });
 		expect(refused.ok).toBe(false);
