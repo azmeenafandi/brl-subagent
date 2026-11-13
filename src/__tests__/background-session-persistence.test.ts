@@ -848,4 +848,27 @@ describe("issue #511 (U2) — the scratch seam on the background surface", () =>
 		expect(getAgent(agent.id)?.status).toBe("completed");
 		expect(existsSync(join(dir, ".done"))).toBe(true);
 	});
+
+	it("a STOPPED (deadline/abort) run is marked too — `.done` is the settle marker, not a success marker", async () => {
+		let resolvePrompt: () => void = () => {};
+		mocks.session.prompt.mockReturnValue(
+			new Promise<void>((r) => {
+				resolvePrompt = r;
+			}),
+		);
+		mocks.session.messages = [
+			{ role: "assistant", content: [], stopReason: "aborted", errorMessage: "Aborted" },
+		];
+		mocks.session.abort.mockImplementation(async () => resolvePrompt());
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "stopped run",
+			timeout: 5,
+		});
+		const dir = join(scratchRoot(), "runs", agent.id);
+		await tick();
+
+		expect(getAgent(agent.id)?.status).toBe("stopped");
+		expect(existsSync(join(dir, ".done"))).toBe(true);
+	});
 });
