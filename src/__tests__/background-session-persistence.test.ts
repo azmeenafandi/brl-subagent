@@ -83,6 +83,7 @@ import {
 	stopAgent,
 } from "../session-manager";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { __setScratchRoot } from "../scratch-spawn";
 import { DEFAULT_BACKGROUND_DEADLINE_MS } from "../validate";
 
 const fakePi = { appendEntry: vi.fn() };
@@ -768,5 +769,83 @@ describe("U3 T7 — prune on the remaining settle paths", () => {
 		await tick();
 		expect(getAgent(agent.id)?.status).toBe("completed");
 		expect(existsSync(dir)).toBe(false);
+	});
+});
+
+/**
+ * Issue #511 (U2) — the scratch root at the BACKGROUND spawn seam.
+ *
+ * A background agent is an in-process SDK session, so this surface has no child
+ * environment to carry `BRL_SCRATCH` (the SDK composes the shell env from
+ * `process.env` at command time). The carrier here is the run's directory plus
+ * the `scratchDir` on its durable run entry — and both must exist BEFORE the
+ * prompt is issued, because a child that starts without them banks nowhere.
+ */
+describe("issue #511 (U2) — the scratch seam on the background surface", () => {
+	/** This test's redirected scratch root (set by `createTempEnv`, per test). */
+	const scratchRoot = (): string => env.scratchRoot;
+
+	/** The run directories under this test's redirected scratch root. */
+	const runDirs = (): string[] => {
+		const root = join(scratchRoot(), "runs");
+		return existsSync(root) ? readdirSync(root) : [];
+	};
+
+	it("creates `<root>/runs/<id>` at 0700 BEFORE the prompt, and records it", async () => {
+		let seenAtPrompt: string[] = [];
+		mocks.session.prompt.mockImplementation(() => {
+			seenAtPrompt = runDirs();
+			return new Promise(() => {});
+		});
+		fakePi.appendEntry.mockClear();
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "scratch seam" });
+
+		const dir = join(scratchRoot(), "runs", agent.id);
+		// Read AT the prompt: a directory created after it would fail here.
+		expect(seenAtPrompt).toContain(agent.id);
+		expect(statSync(dir).mode & 0o777).toBe(0o700);
+		const runEntry = fakePi.appendEntry.mock.calls
+			.map((c) => c[1] as { id?: string; status?: string; scratchDir?: string })
+			.find((d) => d?.id === agent.id && d?.status === "running");
+		expect(runEntry?.scratchDir).toBe(dir);
+	});
+
+	it("a refused root is PRE-SPAWN: no session, no agent record, a named error", async () => {
+		// A regular file where the root must be a directory. It lives in the
+		// repository's `.tmp` chain, NOT under `os.tmpdir()`: a `/tmp` root is
+		// refused one clause earlier (ancestor-writable), which is a different
+		// refusal and would not prove THIS one is pre-spawn.
+		const notARoot = join(process.cwd(), ".tmp", `brl-511-not-a-root-${process.pid}`);
+		writeFileSync(notARoot, "");
+		try {
+			__setScratchRoot(notARoot);
+			mocks.createAgentSession.mockClear();
+
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "refused" }),
+			).rejects.toThrow(/scratch root unavailable \(root-not-dir\)/);
+			expect(mocks.createAgentSession).not.toHaveBeenCalled();
+		} finally {
+			rmSync(notARoot, { force: true });
+		}
+	});
+
+	it("a settled run has its `.done` marker (the settle path marks it)", async () => {
+		const d = deferred();
+		mocks.session.prompt.mockReturnValue(d.promise);
+		mocks.session.messages = [
+			{ role: "user", content: "task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "settle marker" });
+		const dir = join(scratchRoot(), "runs", agent.id);
+		expect(existsSync(join(dir, ".done"))).toBe(false);
+
+		d.resolve();
+		await tick();
+
+		expect(getAgent(agent.id)?.status).toBe("completed");
+		expect(existsSync(join(dir, ".done"))).toBe(true);
 	});
 });
