@@ -755,14 +755,15 @@ function createComponent(path: string, zone: Zone, uid: number | null, created: 
 	const made = inspect(path);
 	if (made.kind !== "found") return fail("create-failed", `${path} vanished after mkdir`);
 	// DEFENCE IN DEPTH, NOT AN ATTACKER PATH, AND DELIBERATELY UNTESTED (#527 item 4). To lose this race
-	// someone needs rename authority over `path` — write permission on its PARENT. Below the root that
-	// parent is the `0700` directory this call just created; further out (an ancestor this call created or
-	// validated on the way down) its ownership was validated here, and any group/other write it carries is
-	// the already-WARNED residual of difference 3, which this guard could not close anyway. So the window
-	// is not a gap the chain predicate left open, and no deterministic test can construct the swap without
-	// an fs seam this security core deliberately does not have (a seam on this path would be a hook into
-	// the `chmod`). Deleting these three lines leaves the suite green — which is exactly why the guard
-	// states its unverifiable status here rather than implying a test pins it.
+	// someone needs rename authority over `path` — write permission on its PARENT, which is a component
+	// this same call created at `0700` or validated as ours on the way down. A parent that is still
+	// group/other-writable is one of the relaxations this module states rather than hides (an ancestor
+	// warns — difference 3; the below zone has no mode clause, since it is reachable only through the
+	// `0700` root), and that is a stated consequence rather than something this guard could close. So the
+	// window is not a gap the chain predicate left open, and no deterministic test can construct the swap
+	// without an fs seam this security core deliberately does not have (a seam on this path would be a
+	// hook into the `chmod`). Deleting these three lines leaves the suite green — which is exactly why the
+	// guard states its unverifiable status here rather than implying a test pins it.
 	if (made.stats.isSymbolicLink()) {
 		return fail("create-failed", `${path} is a symlink immediately after mkdir — refusing to chmod through it`);
 	}
