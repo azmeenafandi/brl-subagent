@@ -30,13 +30,25 @@
 #       can be invented (2026-10-31: a dispatched `medium (0.70)` was really `high (0.32)`), so a
 #       dispatch line must have a row written by `jev-check --classifier '<raw answers>' --label <name>`
 #       (`--line --label` requires `--legacy-line`: format-only input cannot claim a classifier).
-#   (g) the PR BODY's numbers are recomputed (#500): `pr-evidence --check --pr <n>` runs here, not in
-#       the conductor's head. The check is only applicable when the body carries a
-#       `<!-- pr-evidence:begin -->` block or states a count (the tool's own predicate — its fenced
-#       block and blockquote exemptions stay); otherwise it prints `(g) not applicable`. A drift
-#       blocks with the tool's named code, and an unanswerable run (exit 2) blocks too — "cannot
-#       check" is never a pass. The body's TEXT is only ever handed to the tool's pure parser;
-#       nothing read from a PR body is executed.
+#   (g) TWO HALVES, both run on EVERY PR.
+#
+#       (i) THE TEST-BUDGET FLOW (policy v2). `check-test-budget.mjs --flow --base dev --head <sha>`
+#       measures THIS PR's net test:source delta, so the gate judges what the PR spends rather than
+#       the tree's stock ratio. The tool is ALWAYS the cockpit's copy (`$REPO_ROOT/scripts/…`),
+#       never the PR tree's: a PR must not be able to change the rule that judges it. A `within`
+#       flow passes; an `over` flow needs a line-start `Test budget: <reason>` in the body outside
+#       fences, blockquotes and the `<!-- pr-evidence:begin -->` block — absent is
+#       `test-flow-undeclared` (blocked), present is `test-flow-override` (passed, with the line
+#       echoed). An unanswerable flow (exit 2: `unknown-head`, `already-merged`, `diff-failed`)
+#       blocks with that named reason — "cannot measure" is never a pass.
+#
+#       (ii) THE PR BODY'S NUMBERS are recomputed (#500): `pr-evidence --check --pr <n>` runs here,
+#       not in the conductor's head, against a checkout whose HEAD is the PR head. The block half
+#       is only applicable when the body carries a `<!-- pr-evidence:begin -->` block or states a
+#       count (the tool's own predicate — its fenced block and blockquote exemptions stay);
+#       otherwise it says there is nothing to recompute. A drift blocks with the tool's named code,
+#       and an unanswerable run (exit 2) blocks too. The body's TEXT is only ever handed to the
+#       tools' pure parsers; nothing read from a PR body is executed.
 #
 # Run it from the COCKPIT (dev) checkout: the subagent log lives in the cockpit's local,
 # gitignored `.pi/subagent-logs/`. `JEV_LOG` overrides the log path.
@@ -48,11 +60,14 @@
 # confirm they are the bytes the reviewer produced (a transcribed record once passed a claim about a
 # file the gate never saw).
 #
-# Check (g) measures the PR's head, and suite/budget are read from a CHECKED-OUT TREE, so the tool
-# runs the copy of `scripts/pr-evidence.mjs` that lives in a checkout whose HEAD is the PR's head
-# (`git worktree list` finds it; the review worktree normally is). `--pr-tree <path>` names it
-# explicitly. With neither, (g) blocks and says how to provide one — a body checked against the
-# wrong tree would be a confident wrong answer, which is exactly what the tool refuses to give.
+# Check (g)'s BLOCK half measures the PR's head, and suite/budget are read from a CHECKED-OUT TREE,
+# so the tool runs the copy of `scripts/pr-evidence.mjs` that lives in a checkout whose HEAD is the
+# PR's head (`git worktree list` finds it; the review worktree normally is). `--pr-tree <path>` names
+# it explicitly. With neither, the block half blocks and says how to provide one — a body checked
+# against the wrong tree would be a confident wrong answer, which is exactly what the tool refuses
+# to give. The FLOW half needs no checkout at all: it reads git (`git diff <base>...<head>`), and it
+# runs the COCKPIT's `scripts/check-test-budget.mjs` — never the PR tree's, so a PR cannot ship the
+# rule that judges it.
 #
 # `--check-record` is the offline half: checks (b), (c), (d) and (f)'s field rules only, with no
 # `gh`, no network and no provenance log — it runs `scripts/review-record.mjs --check`, which uses
@@ -269,14 +284,74 @@ check_recheck() {
     fi
 }
 
-# ── Check (g) — the PR body's numbers (#500) ───────────────────────────────────────────────
+# ── Check (g) — the flow rule and the PR body's numbers ────────────────────────────────────
+
+# (g) is TWO halves and BOTH run on every PR: the flow rule (this PR's net test delta) and the
+# body's five-key block recompute (#500). Neither half can return early for the other: an
+# over-allowance PR with a stale block must report both reasons.
+check_pr_evidence() {
+    check_test_flow "$1"
+    check_pr_evidence_block "$1"
+}
 
 # Both seams the selftest replaces, because (g) is otherwise a `gh` read plus a subprocess:
 #   PR_EVIDENCE_BODY_FILE  a body file on disk instead of `gh pr view <n> --json body`
 #   PR_EVIDENCE_CMD        the tool invocation instead of the PR tree's own pr-evidence.mjs
-# The defaults are the real thing; the selftest never reaches the network.
+# The defaults are the real thing; the selftest never reaches the network. A THIRD seam,
+# TEST_FLOW_CMD, replaces only the flow tool's invocation (its declaration scan stays the real one,
+# so the body fixtures are judged by the shipped parser).
 PR_EVIDENCE_BODY_FILE=""
 PR_EVIDENCE_CMD=()
+TEST_FLOW_CMD=()
+
+# The PR body, from the fixture file the selftest supplies or from `gh`. A failed read is the
+# caller's to name; this helper only forwards bytes (or `gh`'s status) to stdin.
+read_pr_body() {
+    local pr="$1"
+    if [[ -n "${PR_EVIDENCE_BODY_FILE}" ]]; then
+        cat "${PR_EVIDENCE_BODY_FILE}"
+    else
+        gh pr view "${pr}" --json body -q .body
+    fi
+}
+
+# The flow tool: ALWAYS the cockpit copy at REPO_ROOT — never anything under the PR tree. That is
+# the whole point of the seam: `scripts/check-test-budget.mjs` is the rule, and a PR cannot ship a
+# changed rule that judges itself. `--flow` reads git only, so the head need not be checked out.
+check_test_flow() {
+    local pr="$1" out rc=0 line reason rc_decl=0 declaration=""
+    local tool="${REPO_ROOT}/scripts/check-test-budget.mjs"
+    local -a cmd=(node "${tool}")
+    if [[ ${#TEST_FLOW_CMD[@]} -gt 0 ]]; then cmd=("${TEST_FLOW_CMD[@]}"); fi
+    if [[ -z "${HEAD_SHA}" ]]; then
+        fail_line "(g) test-flow: unknown-head — the PR head could not be resolved${HEAD_ERROR:+ (${HEAD_ERROR})}; the flow cannot be measured"
+        return
+    fi
+
+    out="$( cd "${REPO_ROOT}" && "${cmd[@]}" --flow --base dev --head "${HEAD_SHA}" 2>&1 )" || rc=$?
+    # The contract line (or the named refusal) is the LAST line the tool printed: a usage error
+    # prefixes the USAGE block, and every other path prints exactly one `test-flow: …` line.
+    line="${out##*$'\n'}"
+    line="${line#test-flow: }"
+    case "${rc}" in
+        0)
+            pass_line "(g) test-flow: ${line} — measured by the cockpit copy" ;;
+        1)
+            # Over-allowance: the body must CARRY the decision, judged by the same fence/blockquote/
+            # pr-evidence-aware scanner the tool ships (a fenced or quoted "Test budget:" is how a
+            # body DOCUMENTS the format, not how it authorises a spend).
+            declaration="$(read_pr_body "${pr}" | node "${tool}" --declaration 2>/dev/null)" || rc_decl=$?
+            if [[ ${rc_decl} -eq 0 && -n "${declaration}" ]]; then
+                pass_line "(g) test-flow: test-flow-override — ${line}; declared: ${declaration}"
+            else
+                fail_line "(g) test-flow: test-flow-undeclared — ${line}; add a line-start 'Test budget: <reason>' outside fences, blockquotes and the pr-evidence block to accept it"
+            fi ;;
+        *)
+            reason="${line}"
+            [[ -n "${reason}" ]] || reason="the tool exited ${rc} with no output"
+            fail_line "(g) test-flow: ${reason} (the flow could not be measured; fail closed)" ;;
+    esac
+}
 
 # Applicability, decided by the tool's OWN predicate: a block, or a count outside one (its fenced
 # block and blockquote exemptions included). Duplicating that regex here would be a second definition
@@ -339,11 +414,11 @@ pr_evidence_codes() {
     sed -nE 's/^pr-evidence: ([a-z-]+)( \(line [0-9]+\))?: .*/\1/p' | paste -sd, -
 }
 
-check_pr_evidence() {
+check_pr_evidence_block() {
     local pr="$1" verdict out rc=0 codes tree_label
 
     if ! verdict="$(
-        if [[ -n "${PR_EVIDENCE_BODY_FILE}" ]]; then cat "${PR_EVIDENCE_BODY_FILE}"; else gh pr view "${pr}" --json body -q .body; fi \
+        read_pr_body "${pr}" \
             | node --input-type=module -e "${PR_EVIDENCE_PREDICATE}" "${REPO_ROOT}/scripts/lib/pr-evidence.mjs"
     )"; then
         fail_line "(g) pr-evidence: could not read PR #${pr}'s body or the tool's own predicate (${REPO_ROOT}/scripts/lib/pr-evidence.mjs) — refusing to skip"
@@ -351,7 +426,10 @@ check_pr_evidence() {
     fi
     case "${verdict}" in
         "not applicable")
-            skip_line "(g) pr-evidence: no counts, no block — (g) not applicable"
+            # The body states no count and carries no block: there is nothing to recompute. This is
+            # a skip of the BLOCK half only — (g) itself already ran the flow half, and a skip
+            # never clears anything.
+            skip_line "(g) pr-evidence: the body states no counts and no block — nothing to recompute (the flow half above is the gate)"
             return ;;
         applicable) ;;
         *)
@@ -975,6 +1053,24 @@ EOF
 echo 'pr-evidence: missing-block (line 7): no <!-- pr-evidence:begin --> block, but line 7 states a count — a block is required once the body states one'
 exit 2
 EOF
+    # The FLOW half is stubbed (TEST_FLOW_CMD) so no case needs a git range; the DECLARATION scan
+    # stays the real `check-test-budget.mjs --declaration`, so the body fixtures below are judged by
+    # the shipped fence/blockquote/pr-evidence-aware parser rather than by a stub that agrees.
+    cat >"${dir}/stubs/flow-within.sh" <<'EOF'
+#!/usr/bin/env bash
+echo 'test-flow: +40/+250 src (allowance 620) — within (base 444454b)'
+exit 0
+EOF
+    cat >"${dir}/stubs/flow-over.sh" <<'EOF'
+#!/usr/bin/env bash
+echo 'test-flow: +500/+0 src (allowance 120) — over (base 444454b)'
+exit 1
+EOF
+    cat >"${dir}/stubs/flow-error.sh" <<'EOF'
+#!/usr/bin/env bash
+echo 'test-flow: already-merged (base 444454b) — HEAD is already an ancestor of dev; a post-merge replay must not silently pass.'
+exit 2
+EOF
     chmod +x "${dir}"/stubs/*.sh
 
     printf '# Docs only\n\nProse changes; there is nothing to attribute here.\n' >"${dir}/body-docs.md"
@@ -987,6 +1083,22 @@ suite: 88 files / 2604 tests ← npx vitest run
 <!-- pr-evidence:end -->
 EOF
     printf '## Evidence\n\nThe suite passes 88 files / 2604 tests.\n' >"${dir}/body-count.md"
+    printf '# A flow override\n\nTest budget: +500 test lines buying coverage for the new parser.\n' >"${dir}/body-declared.md"
+    printf '# A flow override\n\nTest budget:\n\nThis prose is unrelated to the budget and must not authorise a spend.\n' >"${dir}/body-blank-after-colon.md"
+    cat >"${dir}/body-fenced-declaration.md" <<'EOF'
+## Evidence
+
+The format is:
+
+```
+Test budget: +500 test lines for the new parser
+```
+EOF
+    cat >"${dir}/body-quoted-declaration.md" <<'EOF'
+## Evidence
+
+> Test budget: +500 test lines for the new parser
+EOF
     cat >"${dir}/body-quoted-count.md" <<'EOF'
 ## Evidence
 
@@ -1000,15 +1112,20 @@ An old reading, quoted:
 EOF
 
     # The check prints its line and the number of reasons it added: a skip adds NONE (it is not a
-    # pass, but it cannot block), a block adds exactly one.
+    # pass, but it cannot block), a block adds exactly one. Every case stubs the flow half so no git
+    # range is needed; HEAD_SHA is the fixture head the block cases already use.
     g_case() {
-        local label="$1" body="$2" stub="$3" want_line="$4" want_fails="$5" out
+        local label="$1" body="$2" stub="$3" want_line="$4" want_fails="$5" flow_stub="${6:-${dir}/stubs/flow-within.sh}" out saved_head="${HEAD_SHA}"
         PR_EVIDENCE_BODY_FILE="${body}"
         PR_EVIDENCE_CMD=("${stub}")
+        TEST_FLOW_CMD=("${flow_stub}")
+        HEAD_SHA="77338bfc929098cdcdf750a40933660edae6ed8"
         local before=${#FAIL_REASONS[@]}
         out="$(check_pr_evidence 412 2>&1; printf 'fails=%s' "$((${#FAIL_REASONS[@]} - before))")"
         PR_EVIDENCE_BODY_FILE=""
         PR_EVIDENCE_CMD=()
+        TEST_FLOW_CMD=()
+        HEAD_SHA="${saved_head}"
         if [[ ${before} -gt 0 ]]; then
             FAIL_REASONS=("${FAIL_REASONS[@]:0:${before}}")
         else
@@ -1023,16 +1140,87 @@ EOF
         fi
     }
 
-    g_case "(g) a docs-only body with no counts is SKIPPED, not passed" \
-        "${dir}/body-docs.md" "${dir}/stubs/clean.sh" "no counts, no block — (g) not applicable" 0
+    g_case "(g) a docs-only body with no counts says nothing to recompute" \
+        "${dir}/body-docs.md" "${dir}/stubs/clean.sh" "nothing to recompute" 0
     g_case "(g) a count inside a fence or a blockquote is the tool's exemption — skipped" \
-        "${dir}/body-quoted-count.md" "${dir}/stubs/clean.sh" "no counts, no block — (g) not applicable" 0
+        "${dir}/body-quoted-count.md" "${dir}/stubs/clean.sh" "nothing to recompute" 0
     g_case "(g) a stale block body is BLOCKED with the tool's named code" \
         "${dir}/body-stale.md" "${dir}/stubs/stale.sh" "stale-suite" 1
     g_case "(g) a count with no block is BLOCKED as missing-block" \
         "${dir}/body-count.md" "${dir}/stubs/missing-block.sh" "missing-block" 1
     g_case "(g) a clean block passes (g)" \
         "${dir}/body-stale.md" "${dir}/stubs/clean.sh" "recomputes clean" 0
+    g_case "(g) a WITHIN flow with a body that declares nothing passes" \
+        "${dir}/body-docs.md" "${dir}/stubs/clean.sh" "measured by the cockpit copy" 0
+
+    # --- the flow half on every PR: over needs a declaration, and a declaration is a LINE ---
+    # Falsifier 1: an over-allowance PR whose body is plain prose carries no block and no
+    # declaration; the gate must block it rather than find nothing to check.
+    g_case "(g) an over flow with plain prose and no block is BLOCKED as undeclared" \
+        "${dir}/body-docs.md" "${dir}/stubs/clean.sh" "test-flow-undeclared" 1 "${dir}/stubs/flow-over.sh"
+    g_case "(g) an over flow WITH a declared line passes, and the line is echoed" \
+        "${dir}/body-declared.md" "${dir}/stubs/clean.sh" "test-flow-override" 0 "${dir}/stubs/flow-over.sh"
+    g_case "(g) a declaration followed by a BLANK line is not a declaration" \
+        "${dir}/body-blank-after-colon.md" "${dir}/stubs/clean.sh" "test-flow-undeclared" 1 "${dir}/stubs/flow-over.sh"
+    g_case "(g) a FENCED declaration authorises nothing" \
+        "${dir}/body-fenced-declaration.md" "${dir}/stubs/clean.sh" "test-flow-undeclared" 1 "${dir}/stubs/flow-over.sh"
+    g_case "(g) a BLOCKQUOTED declaration authorises nothing" \
+        "${dir}/body-quoted-declaration.md" "${dir}/stubs/clean.sh" "test-flow-undeclared" 1 "${dir}/stubs/flow-over.sh"
+    g_case "(g) an unanswerable flow fails closed with its named reason" \
+        "${dir}/body-docs.md" "${dir}/stubs/clean.sh" "already-merged" 1 "${dir}/stubs/flow-error.sh"
+
+    # --- Falsifier 2: the flow verdict cannot be changed by the PR tree -----------------------
+    # Two PR trees differ ONLY in scripts/pr-evidence.mjs: one ships a clean tool, the other a
+    # tampered one (which reports a stale suite). The block half must see the difference — that
+    # proves the tree was read. The flow's authority is pinned STRUCTURALLY below: with the flow
+    # stubbed, a line-equality assertion would be vacuous by construction (the stub guarantees it),
+    # so the test asserts what actually regresses — `check_test_flow` resolves the cockpit copy and
+    # never reads `PR_TREE`.
+    mkdir -p "${dir}/clean-tree/scripts" "${dir}/pr-tree/scripts"
+    printf 'process.exit(0);\n' >"${dir}/clean-tree/scripts/pr-evidence.mjs"
+    printf 'console.log("pr-evidence: stale-suite (line 3): suite: 1 file / 1 test is stale (tree: 2 files / 2 tests)");\nprocess.exit(1);\n' \
+        >"${dir}/pr-tree/scripts/pr-evidence.mjs"
+    chmod +x "${dir}/clean-tree/scripts/pr-evidence.mjs" "${dir}/pr-tree/scripts/pr-evidence.mjs"
+    tree_run() {
+        local tree="$1" saved_tree="${PR_TREE_OVERRIDE}" saved_head="${HEAD_SHA}" before out
+        PR_EVIDENCE_BODY_FILE="${dir}/body-count.md"
+        PR_EVIDENCE_CMD=()
+        PR_TREE_OVERRIDE="${tree}"
+        TEST_FLOW_CMD=("${dir}/stubs/flow-over.sh")
+        HEAD_SHA="77338bfc929098cdcdf750a40933660edae6ed8"
+        before=${#FAIL_REASONS[@]}
+        out="$(check_pr_evidence 412 2>&1)"
+        PR_EVIDENCE_BODY_FILE=""
+        PR_EVIDENCE_CMD=()
+        PR_TREE_OVERRIDE="${saved_tree}"
+        TEST_FLOW_CMD=()
+        HEAD_SHA="${saved_head}"
+        if [[ ${before} -gt 0 ]]; then
+            FAIL_REASONS=("${FAIL_REASONS[@]:0:${before}}")
+        else
+            FAIL_REASONS=()
+        fi
+        printf '%s\n' "${out}"
+    }
+    local clean_out tampered_out flow_src
+    clean_out="$(tree_run "${dir}/clean-tree")"
+    tampered_out="$(tree_run "${dir}/pr-tree")"
+    flow_src="$(sed -n '/^check_test_flow()/,/^}/p' "${SCRIPT_DIR}/merge-guard.sh")"
+    if [[ -n "${flow_src}" && "${flow_src}" != *PR_TREE* && "${flow_src}" == *'${REPO_ROOT}/scripts/check-test-budget.mjs'* ]]; then
+        printf '  ✓ (g) the flow half resolves the cockpit tool and never reads PR_TREE\n'
+        SELFTEST_PASS=$((SELFTEST_PASS + 1))
+    else
+        printf '  ✗ (g) the flow half must resolve ${REPO_ROOT}/scripts/check-test-budget.mjs and read no PR_TREE\n'
+        SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+    fi
+    if [[ "${tampered_out}" == *"stale-suite"* && "${clean_out}" != *"stale-suite"* ]]; then
+        printf '  ✓ (g) the block half DID read the PR tree (so the flow case above is not vacuous)\n'
+        SELFTEST_PASS=$((SELFTEST_PASS + 1))
+    else
+        printf '  ✗ (g) the block half should read the PR tree and see its tampered tool (got: %s)\n' \
+            "${tampered_out//$'\n'/ }"
+        SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+    fi
 
     # The tree a body's numbers may be measured against: the one at the PR head. A PR head with no
     # local checkout is a NAMED failure, never a check against the caller's tree.
@@ -1094,7 +1282,8 @@ EOF
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────────────
 
-# `--pr-tree` names the checkout whose HEAD is the PR head for check (g); empty = discover it.
+# `--pr-tree` names the checkout whose HEAD is the PR head for check (g)'s block half; empty =
+# discover it. The flow half never reads a tree.
 PR_TREE_OVERRIDE=""
 
 main() {

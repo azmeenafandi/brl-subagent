@@ -202,12 +202,28 @@ Each rule below is enforced in code and pinned by tests; the pointer is where it
   session paths.
 - CI runs `npm run typecheck` and `npx vitest run`; `.pi/skills/worktree/check-repo.sh` mirrors the gate
   locally before a worktree is created.
-- The suite's growth budget is `scripts/check-test-budget.mjs` (issues #368, #490): wall time ≤ 60 s
-  (global) and a test:source LOC ratio **per surface** — `src` ≤ 2.0 (with a non-failing warning band at
-  1.95) and `scripts` ≤ 1.0 — read from the vitest JSON report and the source tree, with every surface
-  reported on every run. They are ceilings, not targets — growth needs a reason, shrinking is always
-  allowed. The ratio cannot see an untested gate script (adding source improves it), so a floor check
-  requires every top-level `scripts/*.mjs` to be **imported** by a `scripts/__tests__/**.test.ts`.
+- The suite's growth budget is `scripts/check-test-budget.mjs` (issues #368, #490, policy v2). Three
+  separate things, and only two of them gate:
+  - **The ratio is REPORTED, not enforced.** A test:source LOC ratio **per surface** — `src` against a
+    2.0 reference with a 1.95 warning band, `scripts` against 1.0 — read from the vitest JSON report
+    and the source tree. Crossing a reference prints a warning and exits 0; the numbers stay on every
+    CI run because the trend is information, not a gate. A stock ratio cannot tell a PR that adds 40
+    test lines for 200 new source lines from one that adds 400 for none (it only knows the tree total),
+    so it is the wrong instrument to gate a single unit's spending.
+  - **The FLOW rule gates each PR** (`--flow --base dev --head <sha>`): `allowance = 120 + 2 × max(Δsource,
+    0)` net test lines **per surface**, measured from `git diff --no-renames --numstat <base>...<head>`
+    (git only — the head need not be checked out). A PR is `within` only when every changed surface is.
+    Exit 0 within, 1 over, 2 unanswerable (`unknown-head`, `already-merged`, `diff-failed`) — fail closed,
+    so a post-merge replay cannot pass. An `over` PR must carry a line-start `Test budget: <reason>` in
+    its body (outside fences, blockquotes and the pr-evidence block); `merge-guard.sh` (g) enforces it
+    from the cockpit's own copy of the tool. Stated limits: **+120 test lines per test-only PR
+    accumulates** (the reported ratio is what makes it visible), and **replacement measures zero**
+    (net lines), so a rewrite is never a spending event.
+  - **The FLOORS gate both surfaces.** Every non-test source module must be **reachable** from a
+    `*.test.ts` through import edges (transitive; a helper is traversed only if a test reaches it). A
+    comment, a string, `import type … from` and `export … from` create no edge — a barrel would make
+    everything reachable and the floor would prove nothing. The wall-time ceiling (60 s, global) is the
+    third hard check.
 - The module map's own guard is `src/__tests__/architecture-doc.test.ts`: regeneration must equal the
   checked-in block, so a new module without a purpose header — or an edit that skips `npm run docs:arch` —
   fails the suite.
