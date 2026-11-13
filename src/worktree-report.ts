@@ -4,7 +4,7 @@
  *
  * Rule 11 escalated `connection-drop` after three hits in one cycle: six of
  * ~28 sweep dispatches ended without their unit, two leaving a **mutant applied**
- * in a worktree. The mitigations (auto-retry, `/tmp` banking, transcript
+ * in a worktree. The mitigations (auto-retry, a progress bank, transcript
  * retention) worked, but every death still cost the conductor a manual state
  * audit — memory, not mechanism. Three dispatches measured the same gap: a
  * settled failure reported the failure and nothing about the tree.
