@@ -22,7 +22,7 @@
 //
 // TWO SURFACES since #490. 2.0/1.0 were always meant per surface; the cycle's tooling lives in
 // `scripts/**/*.mjs`, which the old single-surface guard could not see. So each surface is measured
-// and reported on its own (src 58 modules, scripts 17 at the time of writing):
+// and reported on its own (src 58 modules, scripts 18 at the time of writing):
 //
 //   src      source `src/**/*.ts` minus `__tests__`; tests `src/**/__tests__/**/*.ts`
 //   scripts  source `scripts/**/*.mjs` minus `__tests__`; tests `scripts/__tests__/**/*.ts`

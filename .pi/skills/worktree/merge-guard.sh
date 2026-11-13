@@ -1172,8 +1172,10 @@ EOF
     # --- Falsifier 2: the flow verdict cannot be changed by the PR tree -----------------------
     # Two PR trees differ ONLY in scripts/pr-evidence.mjs: one ships a clean tool, the other a
     # tampered one (which reports a stale suite). The block half must see the difference — that
-    # proves the tree was read — while the flow half's line must be byte-identical, because it is
-    # computed by the cockpit copy.
+    # proves the tree was read. The flow's authority is pinned STRUCTURALLY below: with the flow
+    # stubbed, a line-equality assertion would be vacuous by construction (the stub guarantees it),
+    # so the test asserts what actually regresses — `check_test_flow` resolves the cockpit copy and
+    # never reads `PR_TREE`.
     mkdir -p "${dir}/clean-tree/scripts" "${dir}/pr-tree/scripts"
     printf 'process.exit(0);\n' >"${dir}/clean-tree/scripts/pr-evidence.mjs"
     printf 'console.log("pr-evidence: stale-suite (line 3): suite: 1 file / 1 test is stale (tree: 2 files / 2 tests)");\nprocess.exit(1);\n' \
@@ -1200,17 +1202,15 @@ EOF
         fi
         printf '%s\n' "${out}"
     }
-    local clean_out tampered_out clean_flow tampered_flow
+    local clean_out tampered_out flow_src
     clean_out="$(tree_run "${dir}/clean-tree")"
     tampered_out="$(tree_run "${dir}/pr-tree")"
-    clean_flow="$(printf '%s\n' "${clean_out}" | grep -F '(g) test-flow:' | head -1)"
-    tampered_flow="$(printf '%s\n' "${tampered_out}" | grep -F '(g) test-flow:' | head -1)"
-    if [[ -n "${clean_flow}" && "${clean_flow}" == "${tampered_flow}" ]]; then
-        printf '  ✓ (g) the flow line is unchanged by a tampered scripts/pr-evidence.mjs in the PR tree\n'
+    flow_src="$(sed -n '/^check_test_flow()/,/^}/p' "${SCRIPT_DIR}/merge-guard.sh")"
+    if [[ -n "${flow_src}" && "${flow_src}" != *PR_TREE* && "${flow_src}" == *'${REPO_ROOT}/scripts/check-test-budget.mjs'* ]]; then
+        printf '  ✓ (g) the flow half resolves the cockpit tool and never reads PR_TREE\n'
         SELFTEST_PASS=$((SELFTEST_PASS + 1))
     else
-        printf '  ✗ (g) a tampered PR-tree tool must not move the flow line (clean: %s; tampered: %s)\n' \
-            "${clean_flow}" "${tampered_flow}"
+        printf '  ✗ (g) the flow half must resolve ${REPO_ROOT}/scripts/check-test-budget.mjs and read no PR_TREE\n'
         SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
     fi
     if [[ "${tampered_out}" == *"stale-suite"* && "${clean_out}" != *"stale-suite"* ]]; then
