@@ -154,6 +154,17 @@ describe("retry preamble — the durable bank path (issue #511 U3)", () => {
 		expect(preamble).not.toContain("/tmp");
 	});
 
+	it("drops a RELATIVE stored scratchDir — the retry child may run in another cwd", () => {
+		const preamble = buildRetryResumePreamble(
+			run({ scratchDir: "relative/runs/rel" }),
+			2,
+			undefined,
+			{ exists: () => true },
+		);
+		expect(bankLine(preamble)).toBeUndefined();
+		expect(preamble).not.toContain("relative/runs/rel");
+	});
+
 	it("does not join an id that is not one path segment onto the root", () => {
 		const { home } = homeWithRunDir(RUN_ID);
 		// A record whose id names a path is not a run directory: `join` would happily

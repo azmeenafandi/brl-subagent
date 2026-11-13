@@ -47,7 +47,7 @@ import type { RuntimeContext } from "./runtime";
 import type { DelegateTaskParams, SubagentEvent, SubagentEventListener, SubagentRun, ToolResult } from "./types";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import * as eventBus from "./event-bus";
 import { resolveRetryParams } from "./history";
 import {
@@ -124,7 +124,10 @@ function isPathSegment(id: string): boolean {
  * the defect `scratch-root.ts` exists to remove.
  */
 function runDirectoryOf(run: SubagentRun, options: RetryPreambleOptions): string | undefined {
-	if (run.scratchDir !== undefined) return run.scratchDir;
+	// A stored path is only usable if it is ABSOLUTE: the retry child can run in a
+	// different cwd (worktree/branch mode), so a relative bank path would resolve
+	// somewhere else — the same rule the recomputed half enforces on the id.
+	if (run.scratchDir !== undefined) return isAbsolute(run.scratchDir) ? run.scratchDir : undefined;
 	if (!isPathSegment(run.id)) return undefined;
 	try {
 		const resolved = resolveRoot(options.root);
