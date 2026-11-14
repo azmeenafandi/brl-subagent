@@ -28,11 +28,14 @@ critique.
 
 ### 0a. Bank as you go
 
-Append verified findings, open questions and pending checks to
-`/tmp/brl-<label>-bank.md` as you work (bash-side), before each major step. The
-verdict still lives in the final response; the bank exists so a drop or a
-timeout leaves a resumable artifact — a retry or re-dispatch starts with "read
-the banked file first".
+Append verified findings, open questions and pending checks to the run's progress
+bank as you work (bash-side), before each major step — `<root>/runs/<id>/bank.md`
+under the private scratch root, which a foreground child also sees as
+`$BRL_SCRATCH`. That is the path the retry preamble names, and only when the file
+exists; never construct a bank path of your own, and never place one in a system
+temp directory. The verdict still lives in the final response; the bank exists so
+a drop or a timeout leaves a resumable artifact — a retry or re-dispatch starts
+with "read the banked file first".
 
 ### 1. Verify, don't opine
 
@@ -63,10 +66,13 @@ Hunt in this order — the first four are where plans usually break:
 
 ### 3. Bank as you go
 
-Append your working state to `/tmp/brl-<label>-bank.md` (the conductor names `<label>`;
-use the issue number if it is absent) before each major step — verified facts, open
-questions, the probe you are about to run. A transport drop costs the run its context, not
-its files: the bank is what a retry resumes from.
+Append your working state to the run's progress bank — `<root>/runs/<id>/bank.md`
+under the private scratch root, the path the retry preamble names (a foreground
+child also sees it as `$BRL_SCRATCH`), and only when that file exists — before each
+major step: verified facts, open questions, the probe you are about to run. Never
+construct a bank path of your own, and never place one in a system temp directory.
+A transport drop costs the run its context, not its files: the bank is what a retry
+resumes from.
 
 ### 4. Output — exactly
 
