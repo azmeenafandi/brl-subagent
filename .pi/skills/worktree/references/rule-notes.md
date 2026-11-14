@@ -47,9 +47,11 @@ dates, and historical framing. The binding rules (with their numbers) live in
    subagent to read them. Still gitignored (and absent from worktrees):
    `.codegraph/` (the structural index — conductor-side only, ADR 0016),
    `.pi` session state (`output/`, `subagents/`,
-   `subagent-logs/`, `subagent-tmp/`, `sessions/`), local config
-   (`.pi/brl-subagent/`), `REVIEW_*.md`, `.tmp/`.
-   **Subagents NEVER see gitignored files**, so specs must never ask a subagent
+   `subagent-logs/`, `subagent-tmp/`, `sessions/`), the extension state under
+   `.pi/brl-subagent/` (`state.json`, …), `REVIEW_*.md`, `.tmp/`. The dispatch
+   contract in that directory — `presets/`, `templates/` and its `README.md` — is
+   TRACKED since #514 and does materialize; only its state stays
+   local. **Subagents NEVER see gitignored files**, so specs must never ask a subagent
    to read or edit those — graph guidance
    (Rule 13) is used by the CONDUCTOR to scope/frame instructions, then the
    spec carries the distilled scope. Environment-dependent instructions get

@@ -49,7 +49,11 @@ never re-type their logic by hand. Full design:
    read them. Still gitignored (and absent from worktrees): `.codegraph/`
    (the structural index — conductor-side only, ADR 0016), `.pi` session state
    (`output/`, `subagents/`, `subagent-logs/`, `subagent-tmp/`, `sessions/`),
-   local config (`.pi/brl-subagent/`), `REVIEW_*.md`, `.tmp/`. **Subagents
+   the extension state under `.pi/brl-subagent/` (`state.json`, …),
+   `REVIEW_*.md`, `.tmp/`. The dispatch contract in that directory — `presets/`,
+   `templates/` and its `README.md` — is TRACKED since #514 and does materialize,
+   which is the point: a dispatch reads the same text in a clean checkout, a new
+   machine and a worktree. **Subagents
    NEVER see gitignored files** — specs must
    never ask them to read or edit those; environment-dependent instructions get
    an escape clause: "if X is not available in your worktree, report and skip —
