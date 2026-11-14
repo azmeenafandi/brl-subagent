@@ -29,8 +29,9 @@
 // `init` therefore refuses before it creates anything. LINUX ONLY — `f_type` magic numbers are not
 // portable and this module does not guess other platforms' numbers; off Linux the mount check is
 // skipped, and an undeterminable type on Linux is a refusal rather than a silent pass. An explicit
-// `--out` directory is validated for ownership and write authority only, not for mount type: the
-// mount property is a claim about the private root.
+// `--out` directory is validated for ownership and write authority (both refused), and its mount type
+// is a WARNING on Linux rather than a refusal (#518): the destination is the caller's choice, so the
+// ladder is "the default root refuses `tmpfs`, an explicit destination warns about it".
 //
 // A policy failure is a NAMED RESULT, never a throw: `{ ok: true, … } | { ok: false, code, message }`.
 // The codes are the contract (the CLI prints them, the tests assert them):
@@ -354,6 +355,35 @@ function mountVerdict(root, { lstat, statfs, platform }) {
 }
 
 /**
+ * Warn about an EXPLICIT destination on `tmpfs` — **Linux only**, and ADVISORY (#518).
+ *
+ * The private root REFUSES `tmpfs` (`mountVerdict`): its durability is the property this module
+ * provides for a directory WE choose. An explicit `--out` is the caller's own choice — a legacy path,
+ * a worktree, a deliberately temporary record — so the same fact is a warning and never a refusal.
+ * The ladder is: the default root refuses, an explicit destination warns.
+ *
+ * One line, naming the probed path, or `undefined` for silence. The probe is the DEEPEST EXISTING
+ * component, exactly as for the root: a destination that does not exist yet inherits the filesystem
+ * of the ancestor it would be created in. A probe that fails, or a chain holding something that is
+ * not a real directory, returns `undefined`: the root's fail-closed `unresolvable` posture is the
+ * root's, and it stays there — nothing advisory here may turn an unreadable mount type into a
+ * refusal of a destination the caller asked for.
+ */
+function mountWarning(dir, { lstat, statfs, platform }) {
+	if (platform !== "linux") return undefined;
+	const deepest = deepestExisting(dir, lstat);
+	if (!deepest.ok || deepest.path === null) return undefined;
+	let stats;
+	try {
+		stats = statfs(deepest.path);
+	} catch {
+		return undefined;
+	}
+	if (stats.type !== TMPFS_MAGIC) return undefined;
+	return `${deepest.path} is on a tmpfs — this record will not survive a reboot (the private root would)`;
+}
+
+/**
  * Validate an existing root chain. Never creates, never throws, and refuses a `tmpfs` root on Linux
  * (`mountVerdict`) as well as every mode/ownership clause. `{ ok: true, root } | { ok: false, code, message }`.
  */
@@ -464,9 +494,10 @@ export function ensureDir(dir, options = {}) {
  * `--out`). Two of the root walk's clauses, deliberately not the third: the directory is held to the
  * ancestor rule (real directory, owned by root or us, no group/other write) and the leaf must be
  * ours, because group/other write on it is rename authority over the file — which is exactly why
- * `/tmp` is refused `ancestor-writable` rather than by a special case. It is NOT mount-checked: an
- * explicit `--out` is the caller's override, and durability is the private root's property, so a
- * record written here carries whatever filesystem the caller chose. Never created: it is not our
+ * `/tmp` is refused `ancestor-writable` rather than by a special case. The third clause is NOT a
+ * refusal here: an explicit `--out` is the caller's override, so on Linux a `tmpfs` destination is
+ * WARNED about (`mountWarning` — one line, or `undefined`) and the write proceeds — the ladder is
+ * that the default root refuses and an explicit destination warns. Never created: it is not our
  * directory.
  */
 export function validateWriteDir(dir, options = {}) {
@@ -488,7 +519,7 @@ export function validateWriteDir(dir, options = {}) {
 		const owned = checkComponent(prefix, found.stats, "below", opts.uid);
 		if (!owned.ok) return owned;
 	}
-	return { ok: true, dir: path };
+	return { ok: true, dir: path, warning: mountWarning(path, opts) };
 }
 
 // ---------------------------------------------------------------------------

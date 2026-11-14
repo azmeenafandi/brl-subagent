@@ -201,8 +201,13 @@ file at 0600, written to a temp name in that directory and renamed into place, s
 old complete record or the new one. An explicit `--out` is honoured but its **directory** must pass
 the ownership and write-authority clauses — `/tmp` is refused `ancestor-writable` and the message
 names the default — because group/other write on a directory is rename authority over the file in
-it; a `--out` directory is not mount-checked, so the durability promise belongs to the private
-root, not to an explicit destination. `--check` and
+it; **on Linux** a `tmpfs` destination prints one `review-record: warning:` line on stderr — after
+the write has succeeded — and the write proceeds with the exit code and the record's bytes
+unchanged, because an explicit destination is the reviewer's own choice where the default root is
+the tool's (`/run/user/1000` in the `0700` case that opened #518 is the example: owner-checked, so
+warned, not refused). The ladder is: the default root refuses `tmpfs`, an explicit destination is
+warned about it — so the durability promise still belongs to the private root, not to an explicit
+destination, which keeps whatever filesystem it sits on. `--check` and
 `--verify` stay unrestricted, so a record written before #512 still verifies.
 - **Every write path takes a lock** (#512): `<dir>/.REVIEW_<n>.md.lock` is taken BEFORE the prior
 record is read, so the head refusal and the supersede chain are decided on the bytes on disk now

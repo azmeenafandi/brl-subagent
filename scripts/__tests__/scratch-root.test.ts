@@ -258,6 +258,48 @@ describe("scratch-root — the root predicate (two zones, trust by ownership)", 
 	});
 });
 
+describe("scratch-root — an explicit --out destination is WARNED on tmpfs, never refused (#518)", () => {
+	it("accepts the directory and names the probed path in one line of warning", () => {
+		const dir = sandbox("write-dir-tmpfs");
+		const verdict = validateWriteDir(dir, { statfs: () => ({ type: TMPFS_MAGIC }), platform: "linux" });
+		expect(verdict.ok).toBe(true);
+		expect(verdict.dir).toBe(dir);
+		expect(verdict.warning).toContain(dir);
+		expect(verdict.warning).toContain("tmpfs");
+		expect(verdict.warning).not.toContain("\n");
+	});
+
+	it("is silent on a filesystem that is not a tmpfs", () => {
+		const dir = sandbox("write-dir-ext4");
+		const verdict = validateWriteDir(dir, { statfs: () => ({ type: 0xef53 }), platform: "linux" });
+		expect(verdict).toMatchObject({ ok: true, dir });
+		expect(verdict.warning).toBeUndefined();
+	});
+
+	it("is silent off Linux — the probe is not even consulted", () => {
+		const dir = sandbox("write-dir-darwin");
+		let probes = 0;
+		const statfs = () => {
+			probes += 1;
+			return { type: TMPFS_MAGIC };
+		};
+		const verdict = validateWriteDir(dir, { statfs, platform: "darwin" });
+		expect(verdict.ok).toBe(true);
+		expect(verdict.warning).toBeUndefined();
+		expect(probes).toBe(0);
+	});
+
+	it("is silent when the probe throws — advisory, so an unreadable mount type never refuses", () => {
+		const dir = sandbox("write-dir-unreadable");
+		const statfs = () => {
+			throw Object.assign(new Error("vanished"), { code: "ENOENT" });
+		};
+		const verdict = validateWriteDir(dir, { statfs, platform: "linux" });
+		expect(verdict.ok).toBe(true);
+		expect(verdict.warning).toBeUndefined();
+	});
+});
+
 describe("scratch-root — the mount property is enforced, not asserted (#516)", () => {
 	it("refuses a tmpfs root through the statfs seam, and init creates nothing on it", () => {
 		const base = sandbox("tmpfs-seam");

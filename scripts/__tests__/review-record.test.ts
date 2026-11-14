@@ -36,7 +36,7 @@ import { basename, dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { checkRecord, parseRecord, recordLines, renderRecord, verifyRendered } from "../lib/record-fields.mjs";
-import { acquireLock, lockPath, recordPath } from "../lib/scratch-root.mjs";
+import { acquireLock, lockPath, recordPath, TMPFS_MAGIC } from "../lib/scratch-root.mjs";
 import { EXIT, recordBreakLock, recordCheck, recordVerify, writeRecord } from "../review-record.mjs";
 
 const ROOT = process.cwd();
@@ -626,6 +626,47 @@ describe("review-record — the private root replaces /tmp (#512)", () => {
 		} finally {
 			rmSync(legacyDir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("review-record — an --out on a tmpfs is warned about, never refused (#518)", () => {
+	const TMPFS = { statfs: () => ({ type: TMPFS_MAGIC }), platform: "linux" };
+
+	it("prints one warning on stderr, leaves stdout byte-identical to the record, and still exits 0", () => {
+		const dir = scratchDir("out-tmpfs");
+		const file = join(dir, "REVIEW_518.md");
+		const result = write(argvFor({ pr: "518" }, file), "", TMPFS);
+
+		expect(result.code, result.stderr).toBe(EXIT.WRITTEN);
+		// Exactly one, and it names the probed directory: the warning is a line, not a paragraph.
+		const warnings = result.stderr.split("\n").filter((line) => line.startsWith("review-record: warning: "));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain(dir);
+		expect(warnings[0]).toContain("tmpfs");
+		// stdout IS the record: a warning printed there would land in the pasted block.
+		expect(result.stdout).not.toContain("warning");
+		expect(result.stdout).toBe(readFileSync(file, "utf8"));
+	});
+
+	it("says nothing when the destination's filesystem is not a tmpfs", () => {
+		const dir = scratchDir("out-ext4");
+		const file = join(dir, "REVIEW_519.md");
+		const result = write(argvFor({ pr: "519" }, file), "", { statfs: () => ({ type: 0xef53 }), platform: "linux" });
+
+		expect(result.code, result.stderr).toBe(EXIT.WRITTEN);
+		expect(result.stderr).not.toContain("warning:");
+		expect(result.stdout).toBe(readFileSync(file, "utf8"));
+	});
+
+	it("says nothing for the DEFAULT destination even when the probe would report a tmpfs", () => {
+		// The ladder's other half: `ensureRoot` refuses a tmpfs root, so the default branch can never
+		// reach a destination that carries a warning.
+		const root = scratchDir("default-tmpfs-root");
+		const result = write(argvDefault({ pr: "520" }), "", { root, ...TMPFS });
+		expect(result.code).toBe(EXIT.REFUSED);
+		expect(result.stderr).toContain("tmpfs");
+		expect(result.stderr).not.toContain("warning:");
+		expect(result.stdout).toBe("");
 	});
 });
 
