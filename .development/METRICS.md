@@ -40,3 +40,6 @@
 | shipped-half | 20 | 3/17 | 79.2% (19/24) | 20.8% (5) | 0 | 0% (0/0) | 0 (0.0%) | 0.6 | 0 | 0 |
 > **The shipped-half row is tool-reconciled.** `dispatches: 20 (direct 20 + codemode 0) · spawns: 24 · Δ 4`, allowance 5 (five transport auto-retry starts, zero fan-out units) — every spawn is explained. The `Retries` cell still counts only explicit `retryRunId` dispatches (0), which is why the transport retries appear in the reconcile line and not in the column; the earlier rows carry the same gap.
 
+| review-debt | 2 | 0/2 | 100.0% (2/2) | 0.0% (0) | 0 | 0% (0/0) | 0 (0.0%) | 1.0 | 0 | 0 |
+
+> **The review-debt row reconciles exactly.** `dispatches: 2 (direct 2 + codemode 0) · spawns: 2 · Δ 0`, allowance 0 — both dispatches were background singles. Its `1.0` polls/dispatch is **two `get_subagent_result` calls, both post-wake reads of the final report** after the completion message — the metric cannot distinguish a completion read from stall polling, so the figure is a proxy, not babysitting evidence.
