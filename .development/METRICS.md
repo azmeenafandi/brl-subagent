@@ -43,3 +43,6 @@
 | review-debt | 2 | 0/2 | 100.0% (2/2) | 0.0% (0) | 0 | 0% (0/0) | 0 (0.0%) | 1.0 | 0 | 0 |
 
 > **The review-debt row reconciles exactly.** `dispatches: 2 (direct 2 + codemode 0) · spawns: 2 · Δ 0`, allowance 0 — both dispatches were background singles. Its `1.0` polls/dispatch is **two `get_subagent_result` calls, both post-wake reads of the final report** after the completion message — the metric cannot distinguish a completion read from stall polling, so the figure is a proxy, not babysitting evidence.
+| contract-debt | 4 | 0/4 | 80.0% (4/5) | 20.0% (1) | 0 | 0% (0/0) | 0 (0.0%) | 0.75 | 0 | 0 |
+
+> **The contract-debt row reconciles exactly.** `dispatches: 4 (direct 4 + codemode 0) · spawns: 5 · Δ 1`, allowance 1 (one transport auto-retry start, zero fan-out units) — every spawn is explained. The `0.75` polls/dispatch is three `get_subagent_result` post-wake reads, not stall polling; the single failed run is the pre-retry attempt the transport recovery replaced, so the 80.0% success rate is over spawns, not dispatches.
