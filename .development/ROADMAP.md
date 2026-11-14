@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Updated: 2026-11-08 | Released: **v2.8.0** (2026-11-08) | Integration: `dev` @ the v2.8.0 release commit (tag `v2.8.0`); see "Shipped (2026-11-08, v2.8.0)" below. Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
+> Updated: 2026-11-14 | Released: **v2.9.0** (2026-11-14) | Integration: `dev` @ the v2.9.0 release prep (tag `v2.9.0` at the release commit); see "Shipped (2026-11-14, v2.9.0)" below. Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -279,6 +279,26 @@ Goal: ship brl-subagent as a first-class pi package so installation and updates 
 **Outcome:** `brl-subagent@2.3.5` published to npm — installable via `pi install npm:brl-subagent`, updated via `pi update --extensions`, released through a token-free staged pipeline. 979 tests across 45 files; board clean.
 
 **Deferred → RESOLVED in v2.3.6:** pin doc version strings to `package.json` (the README ×2 and the AGENT.md header shipped stale in 2.3.5). Now enforced mechanically (#166).
+
+### Shipped (2026-11-14, v2.9.0)
+
+Six cycles in one release — the composition root, the generated-artifact toolchain, scratch hygiene, the shipped scratch root, review debt and the dispatch contract. `index.ts` fell from 4,720 to 356 lines, the progress bank moved off the system temp directory, and the review/tooling claims became generated evidence.
+
+| Issue | What shipped | PR |
+|---|---|---|
+| #476 | **Import guard:** one import convention, enforced in CI. | #477 |
+| — | **Composition root (ADR 0027):** the runtime context, the three mode runners, the background pipeline, boot recovery + the terminal notifier, the command/tool registrations and `delegate_task`'s execute are factories over one `RuntimeContext`; the execute seam fell from complexity 125 to 7, pinned across twelve dispatch paths by an ordered-effect-log harness committed before the move. | #478–#486 |
+| #474 | **Failure-path worktree state:** every settled-failure surface reports a read-only, index-safe `git status` probe of the run's working tree; a crashed graph node now settles `failed` instead of `done` (the old tests pinned the defect). | #480 |
+| — | **Generated-artifact toolchain:** the review record, PR evidence, handoff claims, cycle metrics and gate checks are generated and recomputed by command — the record carries a sha256 the conductor recomputes, the body's five keys are re-derived from the tree, and the metrics reconcile dispatches against spawns. | #492–#508 |
+| #511 | **Private scratch root:** the progress bank lives under a validated, owner-only cache root (`~/.cache/brl-subagent` / `~/Library/Caches` / `%LOCALAPPDATA%`), created `0700` and chain-validated; `BRL_SCRATCH` reaches foreground children; the pre-flight probes the root instead of the system temp directory; a guard keeps shipped code off `/tmp`; there is no system-temp fallback. | #515–#530 |
+| #518, #531 | **Ancestor policy:** a group/other-writable ancestor now **warns** (naming the path, the mode and what a co-worker could do), a foreign owner still **refuses**; a Linux tmpfs root warns that the bank will not survive a reboot. | #534, #531 |
+| #512–#520 | **Scratch-hygiene tooling:** the two-zone validator, the atomic record replace with a lock, report validation (the count derived from per-file results, a provenance sidecar), the resolution ladder, and the audit's path mask. | #515–#521 |
+| #523, #524 | **Test budget:** the ratio became a per-PR **flow** rule with reachability floors (ADR 0028); one pointed audit recovered 9 duplicated lines and withdrew its own candidate numbers. | #523, #524 |
+| #527, #525 | **Review debt:** the header's four divergences, `below-not-dir`, the defence-in-depth guard note, the accepted ladder note, and one duplicate positive control deleted with two recorded disproofs. | #532 |
+| #514 | **Dispatch contract versioned:** the five presets, five templates and a tracked README, one tracked audit corpus (`--overrides` retired), and a CI tracking check that fails on an untracked or missing contract file. | #535 |
+| #510 | **pi SDK lock parity:** the lockfile resolved 1.5.0 while the harness ran 1.5.2. | #510 |
+
+Cycle closes: **six** (composition-root, generated-artifacts, scratch-hygiene, shipped-half, review-debt, contract-debt). Rule 11 P0s from those cycles: #474, #487, #488, #489 fixed in-release; **#533** and **#537** open and carried. Suite **3027 tests / 142 files**; budget src **1.96** · scripts **0.77**; floors **60/60 · 13/13**; ADR **0027** (composition root) and **0028** (test-budget flow rule) added.
 
 ### Shipped (2026-11-08, v2.8.0)
 
