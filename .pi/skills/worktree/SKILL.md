@@ -197,24 +197,30 @@ never re-type their logic by hand. Full design:
     `git log` is the progress report (the 2026-10-06 `connection-drop-grind`
     lesson — eight dead runs, ~3 minutes lost).
 
-    **The ignored overrides outrank the shipped text (issue #513).**
-    `.pi/brl-subagent/templates/*.md` and `.pi/brl-subagent/presets/*.md` are
-    gitignored, project-local, and resolved BEFORE the shipped files at dispatch
-    time (`src/templates.ts`, `src/presets.ts` — the shipped copy is the
-    fallback, not the default). Two consequences a conductor has to hold:
-    (a) a worktree does not have them, so a dispatch reads the cockpit's copy;
-    (b) **editing the shipped template or preset is not enforcement** — a local
-    override carrying live instructions wins no matter what the repo says. The
-    check, since nothing can enforce them for you:
+    **The project-local contract is tracked and outranks the shipped text
+    (#513, #514).** `.pi/brl-subagent/templates/*.md` and
+    `.pi/brl-subagent/presets/*.md` are project-local and resolved BEFORE the
+    shipped files at dispatch time (`src/templates.ts`, `src/presets.ts` — the
+    shipped copy is the fallback, not the default), so since #514 they are
+    TRACKED: a clean checkout, a new machine and a contributor's worktree all
+    dispatch the bytes the repository reviewed. Two consequences a conductor
+    has to hold: (a) **editing the shipped template or preset is not
+    enforcement** — the project-local copy wins no matter what the shipped file
+    says; (b) **a new contract file must be tracked** — a personal variant
+    belongs to the user-global tier (`~/.pi/agent/brl-subagent/`), and
+    `.pi/brl-subagent/README.md` states the set, the precedence and the rules.
+    The two checks:
 
     ```bash
-    node scripts/audit-scratch-instructions.mjs                          # tracked corpus; exits 1 on a hit
-    node scripts/audit-scratch-instructions.mjs --overrides               # names every override with a temp path (warns)
-    node scripts/audit-scratch-instructions.mjs --overrides --strict      # gate instead of warn
+    node scripts/audit-scratch-instructions.mjs      # the whole contract: .pi/skills + the presets + the templates; exits 1 on a hit
+    node scripts/check-contract-tracking.mjs         # every *.md under .pi/brl-subagent is tracked (and not missing from disk); exits 1 otherwise
     ```
 
-    It prints its corpus, its exclusions and the rule it applied, so a verdict
-    is auditable; it never writes the files it names.
+    The audit prints its corpus, its exclusions and the rule it applied, so a
+    verdict is auditable; it never writes the files it names. The tracking
+    check is the "never silently untracked" clause: an untracked `*.md` in the
+    contract directory, or a tracked one missing from disk, fails — exit 1, one
+    line each, naming the file and the fix.
 15. **Spec environment verification (Rule 15).** Before dispatching any
     delegation, verify that every file, directory, and resource referenced in
     the spec exists in the subagent's WORKTREE (the cockpit is a different
