@@ -1,0 +1,191 @@
+[
+  {
+    "effect": "preflight.check",
+    "payload": {
+      "cwd": "<cwd>"
+    }
+  },
+  {
+    "effect": "log.warn",
+    "payload": {
+      "data": {
+        "warnings": [
+          "Task involves architectural work but thinkingLevel is 'off' — consider 'medium' or higher"
+        ]
+      },
+      "message": "Pre-task validation warnings"
+    }
+  },
+  {
+    "effect": "state.persistRun",
+    "payload": {
+      "kind": "foreground",
+      "status": "running"
+    }
+  },
+  {
+    "effect": "registry.write",
+    "payload": {
+      "kind": "foreground",
+      "status": "running"
+    }
+  },
+  {
+    "effect": "history.prune"
+  },
+  {
+    "effect": "live.register",
+    "payload": {
+      "task": "summarize the design notes"
+    }
+  },
+  {
+    "effect": "live.state.register",
+    "payload": {
+      "task": "summarize the design notes"
+    }
+  },
+  {
+    "effect": "git.getHeadState",
+    "payload": {
+      "cwd": "<cwd>"
+    }
+  },
+  {
+    "effect": "git.hasUncommittedChanges",
+    "payload": {
+      "cwd": "<cwd>"
+    }
+  },
+  {
+    "effect": "git.getRepoRoot",
+    "payload": {
+      "cwd": "<cwd>"
+    }
+  },
+  {
+    "effect": "git.newWorkBranchName"
+  },
+  {
+    "effect": "headstate.write",
+    "payload": {
+      "kind": "foreground"
+    }
+  },
+  {
+    "effect": "git.createWorkBranch",
+    "payload": {
+      "base": "0123456789abcdef0123456789abcdef01234567",
+      "branch": "brl-subagent-test-wb"
+    }
+  },
+  {
+    "effect": "log.error",
+    "payload": {
+      "data": {
+        "error": "checkout failed"
+      },
+      "message": "Failed to create work branch, falling back to 'none'"
+    }
+  },
+  {
+    "effect": "headstate.clear"
+  },
+  {
+    "effect": "slot.acquire",
+    "payload": {
+      "acquired": true,
+      "active": 1,
+      "priority": "normal"
+    }
+  },
+  {
+    "effect": "transcript.start",
+    "payload": {
+      "task": "summarize the design notes"
+    }
+  },
+  {
+    "effect": "runner.call",
+    "payload": {
+      "childDepth": 1,
+      "task": "summarize the design notes"
+    }
+  },
+  {
+    "effect": "state.persistRun",
+    "payload": {
+      "kind": "terminal",
+      "outputSummary": "done",
+      "status": "done"
+    }
+  },
+  {
+    "effect": "registry.write",
+    "payload": {
+      "kind": "terminal",
+      "status": "done"
+    }
+  },
+  {
+    "effect": "history.prune"
+  },
+  {
+    "effect": "live.state.finalize"
+  },
+  {
+    "effect": "transcript.complete",
+    "payload": {
+      "status": "completed"
+    }
+  },
+  {
+    "effect": "log.info",
+    "payload": {
+      "data": {
+        "cost": 0.01,
+        "runId": "<volatile>",
+        "sessionTotalCost": 0,
+        "tokensIn": 10,
+        "tokensOut": 5
+      },
+      "message": "Subagent completed successfully"
+    }
+  },
+  {
+    "effect": "slot.release",
+    "payload": {
+      "active": 0,
+      "completed": 1,
+      "failed": 0,
+      "success": true
+    }
+  },
+  {
+    "effect": "result",
+    "payload": {
+      "details": {
+        "exitCode": 0,
+        "messages": [
+          {
+            "content": [
+              {
+                "text": "done",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "stderr": "",
+        "usage": {
+          "cost": 0.01,
+          "input": 10,
+          "output": 5
+        }
+      },
+      "isError": false,
+      "text": "done\n\n[pre-task validation warnings]\n- Task involves architectural work but thinkingLevel is 'off' — consider 'medium' or higher"
+    }
+  }
+]

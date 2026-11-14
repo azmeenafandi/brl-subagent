@@ -12,24 +12,25 @@
  * drive the REAL function (no more silent test drift).
  */
 
+import type { Logger } from "./logging";
+import type { SessionState } from "./state";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-
-import type {
-	ThinkingLevel,
-	SubagentPreset,
-	GitMode,
-	ApprovalMode,
-	SubagentToolOptions,
-	ResolvedParams,
-	SnapshotParams,
-	DelegateTaskParams,
+import {
+	approvalBlocksBackground,
+	declaredThinkingLevel,
+	resolveThinkingLevel,
+	type ThinkingLevel,
+	type SubagentPreset,
+	type GitMode,
+	type ApprovalMode,
+	type SubagentToolOptions,
+	type ResolvedParams,
+	type SnapshotParams,
+	type DelegateTaskParams,
 } from "./types";
-import { approvalBlocksBackground, declaredThinkingLevel, resolveThinkingLevel } from "./types";
 import { getAllPresets, getPreset } from "./presets";
 import { classifyTask } from "./router";
 import { normalizeTimeout } from "./validate";
-import type { SessionState } from "./state";
-import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
 // delegate_task known keys (issue #99)

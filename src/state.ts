@@ -9,20 +9,9 @@
  * F9: State schema validation — validates on load, migrates legacy formats.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type {
-	SubagentState,
-	SubagentRun,
-	LiveSubagent,
-	ThinkingLevel,
-	ApprovalMode,
-	CompletionNotifyMode,
-	RecoveryMode,
-	CircuitBreakerState,
-	Priority,
-	ModeContext,
-} from "./types";
+import type { Logger } from "./logging";
 import type { TranscriptMessage } from "./transcript-tail";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	isSubagentStateShape,
 	isSubagentRunShape,
@@ -38,10 +27,19 @@ import {
 	MAX_CONSECUTIVE_FAILURES,
 	CIRCUIT_BREAKER_RESET_MS,
 	CIRCUIT_DEGRADED_THINKING,
+	type SubagentState,
+	type SubagentRun,
+	type LiveSubagent,
+	type ThinkingLevel,
+	type ApprovalMode,
+	type CompletionNotifyMode,
+	type RecoveryMode,
+	type CircuitBreakerState,
+	type Priority,
+	type ModeContext,
 } from "./types";
 import { cleanupRuns } from "./history";
 import { persistRunRecord, type InflightRunKind } from "./run-registry";
-import type { Logger } from "./logging";
 
 // ---------------------------------------------------------------------------
 // Live-monitor staleness sweep (issue #52 part 2)

@@ -1,11 +1,28 @@
 // Purpose: Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths.
 import { randomUUID } from 'crypto';
 import { basename, dirname, join, resolve } from 'path';
-import { writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync } from 'fs';
-import type { Dirent } from 'fs';
-import type { BackgroundAgent, AgentStatus, GitMode, RecoveryMode, SubagentResult, SubagentRun, ThinkingLevel, SubagentToolOptions, UsageStats, ErrorCategory } from './types';
-import { EMPTY_USAGE, classifyError, classifyTerminalOutcome, isProviderError, coherentFailureReason, SUBAGENT_ABORTED_MESSAGE, NO_ASSISTANT_OUTPUT_REASON, PROMPT_NEVER_ISSUED_MESSAGE } from './types';
-import type { AssistantEvidence } from './types';
+import { writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync, type Dirent } from 'fs';
+import {
+	EMPTY_USAGE,
+	classifyError,
+	classifyTerminalOutcome,
+	isProviderError,
+	coherentFailureReason,
+	SUBAGENT_ABORTED_MESSAGE,
+	NO_ASSISTANT_OUTPUT_REASON,
+	PROMPT_NEVER_ISSUED_MESSAGE,
+	type BackgroundAgent,
+	type AgentStatus,
+	type GitMode,
+	type RecoveryMode,
+	type SubagentResult,
+	type SubagentRun,
+	type ThinkingLevel,
+	type SubagentToolOptions,
+	type UsageStats,
+	type ErrorCategory,
+	type AssistantEvidence,
+} from './types';
 import { accumulateUsage } from './runner';
 import * as eventBus from './event-bus';
 import * as transcript from './transcript';
@@ -13,8 +30,20 @@ import { createEvent } from './event-bus';
 import { assertSafeAgentId, sanitizeErrorMessage } from './sanitize';
 import { wrapTask } from './prompt';
 import { createLogger } from './logging';
-import { getCurrentBranch, getHeadState, restoreHead, createWorkBranch, newWorkBranchName, captureDiff, deleteBranch, hasUncommittedChanges, getRepoRoot, commitAll, captureWorkingDiff } from './git';
-import type { HeadState } from './git';
+import {
+	getCurrentBranch,
+	getHeadState,
+	restoreHead,
+	createWorkBranch,
+	newWorkBranchName,
+	captureDiff,
+	deleteBranch,
+	hasUncommittedChanges,
+	getRepoRoot,
+	commitAll,
+	captureWorkingDiff,
+	type HeadState,
+} from './git';
 import { clearHeadState, readHeadState, writeHeadState, HEAD_STATE_VERSION } from './headstate';
 import { effectiveBackgroundBudget } from './validate';
 import { currentProcessOwner, classifyOwner, defaultRecoveryDeps } from './recovery';
@@ -22,6 +51,7 @@ import { persistRunRecord, listInflightRuns, clearInflightRun, type InflightRun 
 import { isTransportRetryable } from './transport-retry';
 import { ensureOwnerOnlyDir, repairOwnerOnlyFiles } from './store-permissions';
 import { buildEngineeringBarSection } from './engineering-bar';
+import { prepareRunScratch, markSettled } from './scratch-spawn';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -1339,6 +1369,26 @@ export async function spawnBackgroundSession(
   
   try {
   const id = generateUUID();
+  // Issue #511 (U2): the scratch seam for the BACKGROUND surface. This function
+  // is the single place a background agent record and run entry are created
+  // (single, fan-out and the transport retry all pass through it), so the run's
+  // directory is resolved and created HERE — before the SDK is asked for a
+  // session, and therefore before `session.prompt()` can start the child.
+  //
+  // A refusal is PRE-SPAWN and NAMED: it throws before any record exists, and
+  // both pipeline callers translate a throw from this function into their
+  // ordinary "Failed to spawn background agent: …" result — the same shape as
+  // every other spawn failure.
+  //
+  // NOTE, stated rather than implied: a background run is an IN-PROCESS SDK
+  // session, so there is no child environment to carry `BRL_SCRATCH` (the SDK
+  // composes the shell env from `process.env` at command time, which a per-run
+  // value cannot vary without race). The directory and the record's
+  // `scratchDir` are this surface's whole carrier.
+  const scratch = prepareRunScratch(id, { log });
+  if (!scratch.ok) {
+    throw new Error(`scratch root unavailable (${scratch.code}): ${scratch.message}`);
+  }
   const effectiveCwd = params.cwd ?? ctx.cwd;
   // Dynamic import — static import fails under concurrent jiti loads
   const { getAgentDir, createAgentSession, SessionManager, SettingsManager, DefaultResourceLoader } = await import('@earendil-works/pi-coding-agent');
@@ -1506,6 +1556,12 @@ export async function spawnBackgroundSession(
     model: params.model || 'unknown',
     thinkingLevel: params.thinkingLevel || 'medium',
     priority: params.priority,
+    // Issue #474: the directory this run was spawned in, stamped so a settled
+    // failure can report the worktree it may have left. `effectiveCwd` is the
+    // resolved, validated absolute path (params.cwd ?? ctx.cwd), and
+    // `persistAgent` strips only the live-only pointers — so this survives the
+    // record and the completion wake can read it.
+    cwd: effectiveCwd,
     dispatchId,
     resumeOf: params.resumeOf,
     attempt,
@@ -1545,6 +1601,10 @@ export async function spawnBackgroundSession(
     attempt,
     owner,
     recoveryPosture: params.recoveryPosture,
+    // Issue #511 (U2): the run's scratch directory (`<root>/runs/<id>`, 0700),
+    // created above. Persisted at spawn so the retry preamble (U3) and the
+    // settle path read one value rather than re-deriving a location.
+    scratchDir: scratch.runDir,
     // Issue #447: the acceptance marker starts `null` — the dispatch is
     // TRACKED from here on (agent record + registry entry) but the prompt has
     // not been issued. Only the write immediately above `session.prompt()`
@@ -1621,6 +1681,14 @@ export async function spawnBackgroundSession(
     error?: string,
     terminal?: { stopReason?: string; errorCategory?: ErrorCategory; prune?: boolean },
   ): SubagentRun | undefined => {
+    // Issue #511 (U2): settling includes the scratch directory's `.done` marker.
+    // This is the SINGLE terminal choke point for a background run (git-setup
+    // refusal, a synchronous prompt throw, the .then/.catch branches, the
+    // catch-all and the deadline), so the marker is written here and no settle
+    // path can forget it. Best-effort: `markSettled` logs and never throws, so
+    // it cannot change the run's outcome. A run with no directory (a pre-U2
+    // record) is a no-op.
+    markSettled(run, log);
     const usage = agent.result?.usage ?? EMPTY_USAGE;
     const finalOutput = agent.finalOutput ?? "";
     // The TRUE category of THIS call — see the note on `classifyFailure`.

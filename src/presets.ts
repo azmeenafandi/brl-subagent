@@ -7,13 +7,11 @@
  * Custom presets are stored in session state.
  */
 
+import type { Logger } from "./logging";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { SubagentPreset, ThinkingLevel } from "./types";
-import { THINKING_LEVELS } from "./types";
-import type { Logger } from "./logging";
-import { applyFrontmatterMappers, loadMarkdownRecords } from "./loader";
-import type { FrontmatterFieldMapper, FrontmatterMapContext } from "./loader";
+import { THINKING_LEVELS, type SubagentPreset, type ThinkingLevel } from "./types";
+import { applyFrontmatterMappers, loadMarkdownRecords, type FrontmatterFieldMapper, type FrontmatterMapContext } from "./loader";
 
 // `parseFrontmatter` moved to loader.ts when the four loader copies collapsed
 // into one walk (issue #380). Re-exported so the existing import sites keep

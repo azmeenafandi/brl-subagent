@@ -1,0 +1,12 @@
+[
+  {
+    "effect": "dep.runChainMode"
+  },
+  {
+    "effect": "result",
+    "payload": {
+      "isError": false,
+      "text": "chain"
+    }
+  }
+]

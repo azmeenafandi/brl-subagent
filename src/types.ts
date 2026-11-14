@@ -5,11 +5,11 @@
  * All shared type definitions and constants for the brl-subagent extension.
  */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Static } from "typebox";
 import type { delegateTaskParamsSchema } from "./schema";
 import type { TranscriptMessage } from "./transcript-tail";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Static } from "typebox";
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -413,6 +413,19 @@ export interface SubagentRun {
 	// dispatched. Additive: a pre-U3 record lacks it and reads as "offer".
 	recoveryPosture?: RecoveryMode;
 	/**
+	 * Issue #511 (U2): the absolute path of this run's scratch directory
+	 * (`<root>/runs/<id>`, owner-only 0700), written at spawn by the seam in
+	 * `scratch-spawn.ts`. The progress bank lives at `<scratchDir>/bank.md`, and a
+	 * terminal settle leaves a `.done` marker in the same directory.
+	 *
+	 * Additive and optional: a run whose scratch preparation was refused before
+	 * anything was created never reaches the record, and a pre-U2 record simply
+	 * lacks the key (readers must treat absence as "no known scratch dir", not as
+	 * a path to derive). The retry preamble (U3) reads it, which is why it is
+	 * persisted at spawn rather than reconstructed at settle.
+	 */
+	scratchDir?: string;
+	/**
 	 * Issue #447: the acceptance marker. `null` at creation — the dispatch is
 	 * TRACKED (agent record + run entry + registry entry written) but has not
 	 * reached `session.prompt()`; an ISO timestamp written immediately before
@@ -548,6 +561,12 @@ export interface SubTaskResult {
 	errorCategory?: ErrorCategory;
 	gitBranch?: string;
 	gitDiff?: string;
+	/**
+	 * Issue #474: the worktree-state block for a FAILED unit, probed at that
+	 * unit's OWN cwd (a step may declare one, distinct from the dispatch cwd).
+	 * Absent on success — the block is failure-path reporting, not noise.
+	 */
+	worktreeState?: string;
 }
 
 /** Aggregate result for chain and parallel modes. */
@@ -844,6 +863,13 @@ export interface BackgroundAgent {
 	workBranch?: string;
 	/** @internal — session reference for live monitor polling */
 	_sessionRef?: import('@earendil-works/pi-coding-agent').AgentSession;
+	/**
+	 * Issue #474: the directory this run was spawned in, stamped at spawn so a
+	 * settled failure can report the worktree it may have left. Absolute by
+	 * construction (the spawn's resolved cwd); additive, so a record written
+	 * before the field existed reads as "no recorded cwd".
+	 */
+	cwd?: string;
 	/**
 	 * @internal — Option B U2: the on-disk session file for this run, captured
 	 * from `SessionManager.getSessionFile()` at spawn. Used by the settle path to

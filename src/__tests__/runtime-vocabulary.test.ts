@@ -84,6 +84,43 @@ const VOCABULARY_ALLOWLIST = new Map<string, string>([
 			"when the file is missing the log entry names the path on disk, and the section itself " +
 			"only exists in a project that opted into processChecks (ADR 0019).",
 	],
+	[
+		"src/worktree-report.ts|worktree",
+		"The failure block's heading is issue #474's own contract wording — " +
+			"`Worktree state (git, at failure):` — and it is READ by a conductor whose dispatch " +
+			"just failed. `worktree` here is git's name for the (working) tree, the thing the block " +
+			"reports on; it is not this repo's process vocabulary, and the block states counts only.",
+	],
+	[
+		"src/index.ts|worktree",
+		"Module specifier only (./worktree-report): a specifier is resolved by the loader and is " +
+			"never rendered, so it cannot leak process vocabulary to a user. The same reason covers " +
+			"the three entries below.",
+	],
+	[
+		"src/mode-runners.ts|worktree",
+		"Module specifier only (./worktree-report) — resolved by the loader, never rendered.",
+	],
+	[
+		"src/delegate-handler.ts|worktree",
+		"Module specifier only (./worktree-report) — resolved by the loader, never rendered. " +
+			"Added by ADR 0027 S5: the failure block's call site moved here with the " +
+			"foreground run path.",
+	],
+	[
+		"src/sanitize.ts|worktree",
+		"Module specifier only (./worktree-report) — resolved by the loader, never rendered.",
+	],
+	[
+		"src/unit-run.ts|worktree",
+		"Module specifier only (./worktree-report) — resolved by the loader, never rendered.",
+	],
+	[
+		"src/terminal-notifier.ts|worktree",
+		"Module specifier only (./worktree-report) — resolved by the loader, never rendered. " +
+			"Re-pointed by ADR 0027 S4: the failure block's builder moved here with " +
+			"`deliverCompletionAlert`.",
+	],
 ]);
 
 // ---------------------------------------------------------------------------

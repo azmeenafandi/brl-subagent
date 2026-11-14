@@ -6,13 +6,7 @@
  * and what secrets may have been accessed.
  */
 
-import type {
-	SubagentRun,
-	FileAccessReport,
-	SecretsExposureEntry,
-	SecretsExposureReport,
-	ComplianceSummary,
-} from "./types";
+import type { SubagentRun, FileAccessReport, SecretsExposureEntry, SecretsExposureReport, ComplianceSummary } from "./types";
 import { computeSLAMetrics } from "./metrics";
 
 // ---------------------------------------------------------------------------

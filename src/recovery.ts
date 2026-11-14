@@ -31,13 +31,12 @@
  * ownership cannot be verified.
  */
 
+import type { Logger } from "./logging";
 import { listInflightRuns, type InflightRun } from "./run-registry";
 import { assertSafeAgentId } from "./sanitize";
 import { isProcAvailable, defaultRecoveryDeps } from "./proc";
 import { decideRecovery, classifyOwner, reapPids, type RecoveryDeps, type RecoveryRecord } from "./recovery-engine";
-import type { Logger } from "./logging";
-import type { SubagentRun } from "./types";
-import { PROMPT_NEVER_ISSUED_MESSAGE } from "./types";
+import { PROMPT_NEVER_ISSUED_MESSAGE, type SubagentRun } from "./types";
 
 // Re-export the pure engine and the production wiring so existing importers
 // (`index.ts`, the recovery/registry suites) keep their single entry point.

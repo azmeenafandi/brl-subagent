@@ -90,12 +90,23 @@ describe("footer repaint chokepoint — source boundary (issue #356)", () => {
 		expect(offenders.map(({ file }) => file)).toEqual([]);
 	});
 
-	it("src/index.ts routes every repaint through repaintStatus", () => {
-		const indexSource = readFileSync(join(SRC_DIR, "index.ts"), "utf8");
+	it("index.ts, mode-runners.ts and background-pipeline.ts route every repaint through repaintStatus", () => {
+		// ADR 0027 (S2): the runners moved to `mode-runners.ts`, and they carry
+		// real repaints (chain's per-step `repaintStatus`). The prohibition
+		// follows the code: reaching the paint implementation from there is the
+		// same chokepoint bypass it was in the composition root. ADR 0027 (S3):
+		// the background pipeline moved to `background-pipeline.ts` carrying SIX
+		// `repaintStatus` calls — all in `startBackgroundAgent`'s spawn tail
+		// (G1 bookkeeping, the four poller exits, the poller's crash catch), none
+		// in the fan-out. Without this line the file with the most repaints in the
+		// tree would be the one file exempt from the chokepoint scan.
+		for (const file of ["index.ts", "mode-runners.ts", "background-pipeline.ts"]) {
+			const source = readFileSync(join(SRC_DIR, file), "utf8");
 
-		expect(indexSource).not.toMatch(/\bupdateProgressStatus\b/);
-		expect(indexSource).not.toMatch(/\bupdateStatus\b/);
-		expect(indexSource).toMatch(/\brepaintStatus\s*\(/);
+			expect(source, `${file} calls the paint implementation`).not.toMatch(/\bupdateProgressStatus\b/);
+			expect(source, `${file} calls the idle line`).not.toMatch(/\bupdateStatus\b/);
+			expect(source, `${file} must route its repaints through repaintStatus`).toMatch(/\brepaintStatus\s*\(/);
+		}
 	});
 
 	it("only the chokepoint calls the paint implementation", () => {

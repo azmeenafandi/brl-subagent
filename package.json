@@ -29,6 +29,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "check:imports": "node scripts/check-imports.mjs",
     "docs:arch": "node scripts/docs-arch.mjs --write",
     "docs:decisions": "node scripts/docs-decisions.mjs --write"
   },
@@ -40,10 +41,10 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^1.5.0",
-    "@earendil-works/pi-ai": "^1.5.0",
-    "@earendil-works/pi-coding-agent": "^1.5.0",
-    "@earendil-works/pi-tui": "^1.5.0",
+    "@earendil-works/pi-agent-core": "^1.5.2",
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@earendil-works/pi-tui": "^1.5.2",
     "jiti": "^2.7.0",
     "typebox": "1.3.27",
     "typescript": "7.0.2",

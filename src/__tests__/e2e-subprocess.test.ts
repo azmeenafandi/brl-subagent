@@ -301,6 +301,16 @@ try {
 	// Ensure temp directory exists
 	mkdirSync(TMP_SCRIPT_DIR, { recursive: true });
 
+	// Issue #511 (U2): the harness process resolves the SCRATCH ROOT on every
+	// dispatch (`<home>/.cache/brl-subagent/runs/<id>`) and creates it for real —
+	// the in-process vitest redirect cannot reach a child process. The HOME is
+	// therefore redirected here, inside the repository's `.tmp` chain (a `/tmp`
+	// HOME would carry a writable-ancestor warning on every resolve), so this
+	// suite never writes into the developer's real cache. `getAgentDir()` is only read by the
+	// background path, which these tests do not exercise.
+	const harnessHome = join(TMP_SCRIPT_DIR, "harness-home");
+	mkdirSync(join(harnessHome, ".cache"), { recursive: true, mode: 0o700 });
+
 	// Reset the stub invocation log so assertions are per-test.
 	try {
 		await rm(STUB_LOG_PATH, { force: true });
@@ -319,7 +329,9 @@ try {
 			cwd: env.testCwd,
 			// Issue #271: pin the subprocess command so the extension spawns the
 			// controlled child instead of re-running this harness.
-			env: { ...process.env, BRL_PI_BIN: PI_BIN },
+			// Issue #511 (U2): HOME is the harness's own, so the scratch root it
+			// resolves and creates stays in the throwaway tree.
+			env: { ...process.env, BRL_PI_BIN: PI_BIN, HOME: harnessHome },
 		});
 		return {
 			exitCode: 0,

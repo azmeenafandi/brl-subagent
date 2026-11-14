@@ -36,6 +36,14 @@ which touches only the `Verified:` line). The content is the conductor's.
 3. **Write the handoff BEFORE a compaction, not after.** The summary cannot be
    trusted to carry §STATE; the pre-compaction checklist is in the reference.
 
+## Before committing the handoff
+
+Run `node scripts/handoff-verify.mjs`: it diffs §STATE's mechanical claims (the `Verified:` range, `dev`
+@ sha, install path and sha, `Open:` set, suite counts, module/ADR counts, every `name.ts` line count)
+against the repo. Exit 0 before you commit; a drift means **fix the claim, never the script**. `--json`
+for a machine, `--no-network` to skip the `gh` check (it says so), `--report <vitest.json>` to pin the
+suite report. Not in CI — it needs `gh` and the local install.
+
 ## Structure (short form)
 
 `# Handoff` → preamble (how to use) → `## STATE` (`Verified:` line + snapshot +

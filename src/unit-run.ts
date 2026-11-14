@@ -16,26 +16,26 @@
  * block and the background/retry registration paths remain in index.ts.
  */
 
-import type {
-	AgentToolResult,
-	AgentToolUpdateCallback,
-} from "@earendil-works/pi-agent-core";
+import type { Logger } from "./logging";
+import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-
-import type {
-	SubagentResult,
-	SubagentRun,
-	SubagentToolOptions,
-	Priority,
-	RecoveryMode,
+import {
+	getFinalOutput,
+	classifyError,
+	DEFAULT_RECOVERY,
+	type SubagentResult,
+	type SubagentRun,
+	type SubagentToolOptions,
+	type Priority,
+	type RecoveryMode,
 } from "./types";
-import { getFinalOutput, classifyError, DEFAULT_RECOVERY } from "./types";
 import { snapshotOriginalParams } from "./params";
 import { currentProcessOwner } from "./recovery";
 import { capOutput, stripAnsi, buildCrashResult } from "./sanitize";
+import { prepareRunScratch } from "./scratch-spawn";
 import { finalizeRunRecord, pruneSessionRuns } from "./history";
-import type { Logger } from "./logging";
 import { SessionState } from "./state";
+import { attachWorktreeState } from "./worktree-report";
 
 // ---------------------------------------------------------------------------
 // Structural source for a per-unit run entry
@@ -43,8 +43,9 @@ import { SessionState } from "./state";
 
 /**
  * The per-unit fields shared by chain/parallel/graph modes (`merged` from
- * mergeSubTaskParams). Kept structural so the call sites verify by shape —
- * mergeSubTaskParams itself is not imported (it lives in index.ts).
+ * mergeSubTaskParams, unit-params.ts). Kept structural so the call sites
+ * verify by shape — this module writes a run record and has no reason to
+ * depend on the merge itself.
  */
 export interface UnitRunSource {
 	task: string;
@@ -112,6 +113,12 @@ export function createUnitRun(
 	recoveryPosture: RecoveryMode = DEFAULT_RECOVERY,
 ): { runId: string; run: SubagentRun } {
 	const runId = crypto.randomUUID();
+	// Issue #511 (U2): the unit's scratch directory is created HERE, at record
+	// creation, so the record can carry it. Best-effort: the spawn seam in
+	// `runner.ts` re-prepares (idempotently) and is the gate that refuses to
+	// start a child whose root could not be placed — this call only decides what
+	// the durable record says.
+	const scratch = prepareRunScratch(runId);
 	const run: SubagentRun = {
 		id: runId,
 		task: source.task,
@@ -138,6 +145,13 @@ export function createUnitRun(
 		// U3 (D4): snapshot the posture so the boot notice/offer reads what was
 		// in force at dispatch.
 		recoveryPosture,
+		// Issue #511 (U2): attach the unit's scratch directory to the record at
+		// creation, so a retry of this run (the retry preamble, U3) can name the
+		// bank path from the durable record. Best-effort HERE: the spawn seam in
+		// `runner.ts` is the gate that refuses to start a child without one, so a
+		// refusal here persists a record with no `scratchDir` and the runner reports
+		// the named code.
+		scratchDir: scratch.ok ? scratch.runDir : undefined,
 		// The execution-shape fields (background/gitMode/approvalMode/force) are
 		// deliberately omitted: a fan-out unit retries as a SINGLE run, so it must
 		// not inherit the fan-out's background-ness. A retry that wants background
@@ -204,6 +218,11 @@ export function finalizeUnitRun(
  * node"); `logContext` carries the mode-specific context fields (chain passes
  * the step index, parallel passes the task index, graph passes the node id)
  * spread into the log call alongside runId/error.
+ *
+ * Issue #474: `resolvedCwd` is the UNIT's cwd, and the block for it is attached
+ * to the rethrown error BEFORE the rethrow — the mode's outer catch only knows
+ * the dispatch cwd, so without the attachment a unit crash in its own directory
+ * would report a sibling's tree. `buildCrashResult` prefers the attachment.
  */
 export function finalizeUnitRunCrash(
 	state: SessionState,
@@ -215,6 +234,7 @@ export function finalizeUnitRunCrash(
 	log: Logger,
 	logContext?: Record<string, unknown>,
 ): never {
+	attachWorktreeState(err, resolvedCwd);
 	const crash = buildCrashResult(modeLabel, err, resolvedCwd);
 	state.finalizeLiveSubagent(run.id);
 	const crashOutput = state.subagentSessions.get(run.id)?.liveOutput ?? "";

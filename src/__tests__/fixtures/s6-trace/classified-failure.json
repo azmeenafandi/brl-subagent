@@ -1,0 +1,148 @@
+[
+  {
+    "effect": "preflight.check",
+    "payload": {
+      "cwd": "<cwd>"
+    }
+  },
+  {
+    "effect": "log.warn",
+    "payload": {
+      "data": {
+        "warnings": [
+          "Task involves architectural work but thinkingLevel is 'off' — consider 'medium' or higher"
+        ]
+      },
+      "message": "Pre-task validation warnings"
+    }
+  },
+  {
+    "effect": "state.persistRun",
+    "payload": {
+      "kind": "foreground",
+      "status": "running"
+    }
+  },
+  {
+    "effect": "registry.write",
+    "payload": {
+      "kind": "foreground",
+      "status": "running"
+    }
+  },
+  {
+    "effect": "history.prune"
+  },
+  {
+    "effect": "live.register",
+    "payload": {
+      "task": "summarize the design notes"
+    }
+  },
+  {
+    "effect": "live.state.register",
+    "payload": {
+      "task": "summarize the design notes"
+    }
+  },
+  {
+    "effect": "slot.acquire",
+    "payload": {
+      "acquired": true,
+      "active": 1,
+      "priority": "normal"
+    }
+  },
+  {
+    "effect": "transcript.start",
+    "payload": {
+      "task": "summarize the design notes"
+    }
+  },
+  {
+    "effect": "runner.call",
+    "payload": {
+      "childDepth": 1,
+      "task": "summarize the design notes"
+    }
+  },
+  {
+    "effect": "state.persistRun",
+    "payload": {
+      "errorCategory": "model_unavailable",
+      "kind": "terminal",
+      "outputSummary": "partial",
+      "status": "failed"
+    }
+  },
+  {
+    "effect": "registry.write",
+    "payload": {
+      "errorCategory": "model_unavailable",
+      "kind": "terminal",
+      "status": "failed"
+    }
+  },
+  {
+    "effect": "history.prune"
+  },
+  {
+    "effect": "live.state.finalize"
+  },
+  {
+    "effect": "log.warn",
+    "payload": {
+      "data": {
+        "error": "Subagent failed: no such model",
+        "errorCategory": "model_unavailable",
+        "exitCode": 1,
+        "runId": "<volatile>"
+      },
+      "message": "Subagent failed"
+    }
+  },
+  {
+    "effect": "transcript.complete",
+    "payload": {
+      "status": "failed"
+    }
+  },
+  {
+    "effect": "slot.release",
+    "payload": {
+      "active": 0,
+      "completed": 0,
+      "failed": 1,
+      "success": false
+    }
+  },
+  {
+    "effect": "result",
+    "payload": {
+      "details": {
+        "errorCategory": "model_unavailable",
+        "errorMessage": "Subagent failed: no such model",
+        "exitCode": 1,
+        "messages": [
+          {
+            "content": [
+              {
+                "text": "partial",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "stderr": "",
+        "usage": {
+          "cost": 0.002,
+          "input": 3,
+          "output": 1
+        }
+      },
+      "isError": true,
+      "text": "Subagent failed: Subagent failed: no such model\n\n[pre-task validation warnings]\n- Task involves architectural work but thinkingLevel is 'off' — consider 'medium' or higher\n\nWorktree state (git, at failure):\n  state: unavailable (not a git repository)"
+    }
+  }
+]

@@ -1,0 +1,137 @@
+[
+  {
+    "effect": "dep.visibleRunsFor"
+  },
+  {
+    "effect": "preflight.check",
+    "payload": {
+      "cwd": "<cwd>"
+    }
+  },
+  {
+    "effect": "state.persistRun",
+    "payload": {
+      "kind": "foreground",
+      "status": "running"
+    }
+  },
+  {
+    "effect": "registry.write",
+    "payload": {
+      "kind": "foreground",
+      "status": "running"
+    }
+  },
+  {
+    "effect": "history.prune"
+  },
+  {
+    "effect": "live.register",
+    "payload": {
+      "task": "original task"
+    }
+  },
+  {
+    "effect": "live.state.register",
+    "payload": {
+      "task": "original task"
+    }
+  },
+  {
+    "effect": "slot.acquire",
+    "payload": {
+      "acquired": true,
+      "active": 1,
+      "priority": "normal"
+    }
+  },
+  {
+    "effect": "transcript.start",
+    "payload": {
+      "task": "original task"
+    }
+  },
+  {
+    "effect": "runner.call",
+    "payload": {
+      "childDepth": 1,
+      "task": "original task"
+    }
+  },
+  {
+    "effect": "state.persistRun",
+    "payload": {
+      "kind": "terminal",
+      "outputSummary": "retried",
+      "status": "done"
+    }
+  },
+  {
+    "effect": "registry.write",
+    "payload": {
+      "kind": "terminal",
+      "status": "done"
+    }
+  },
+  {
+    "effect": "history.prune"
+  },
+  {
+    "effect": "live.state.finalize"
+  },
+  {
+    "effect": "transcript.complete",
+    "payload": {
+      "status": "completed"
+    }
+  },
+  {
+    "effect": "log.info",
+    "payload": {
+      "data": {
+        "cost": 0.01,
+        "runId": "<volatile>",
+        "sessionTotalCost": 0,
+        "tokensIn": 10,
+        "tokensOut": 5
+      },
+      "message": "Subagent completed successfully"
+    }
+  },
+  {
+    "effect": "slot.release",
+    "payload": {
+      "active": 0,
+      "completed": 1,
+      "failed": 0,
+      "success": true
+    }
+  },
+  {
+    "effect": "result",
+    "payload": {
+      "details": {
+        "exitCode": 0,
+        "messages": [
+          {
+            "content": [
+              {
+                "text": "retried",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "stderr": "",
+        "usage": {
+          "cost": 0.01,
+          "input": 10,
+          "output": 5
+        }
+      },
+      "isError": false,
+      "text": "retried"
+    }
+  }
+]

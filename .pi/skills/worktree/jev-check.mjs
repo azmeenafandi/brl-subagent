@@ -961,7 +961,15 @@ function classifierPayloadToLine(raw, worktreeOverride) {
 	});
 }
 
-function reportClassifier(raw, label, provenancePath = DEFAULT_PROVENANCE_LOG, worktreeOverride, options = {}) {
+/**
+ * The one place a classifier answer becomes a line AND a provenance row. Both `--classifier` and
+ * `#500`'s `--dispatch` compose it, so the row they write is byte-identical by construction — a
+ * second writer would be a second format waiting to drift.
+ *
+ * Returns the printed line (the `paste:` text `--dispatch` adds); the row is appended when a label
+ * is given.
+ */
+function classifyAndRecord(raw, label, provenancePath = DEFAULT_PROVENANCE_LOG, worktreeOverride, options = {}) {
 	const { model, awareRaw } = options;
 	if (awareRaw !== undefined && model === undefined) {
 		throw new StructuralError(
@@ -991,6 +999,90 @@ function reportClassifier(raw, label, provenancePath = DEFAULT_PROVENANCE_LOG, w
 				`${model === undefined ? "" : `, model ${model}`}${levelModel === null ? "" : ", aware arm recorded"})`,
 		);
 	}
+	return line;
+}
+
+function reportClassifier(raw, label, provenancePath = DEFAULT_PROVENANCE_LOG, worktreeOverride, options = {}) {
+	classifyAndRecord(raw, label, provenancePath, worktreeOverride, options);
+	return 0;
+}
+
+/**
+ * Parse `--dispatch --classifier '<raw>' [--worktree y|n] --label <name> [--model <id>] [--kind impl|review|probe]`.
+ *
+ * `--label` is REQUIRED (exit 2). The row it appends is the label `--settle` joins on and the row the
+ * merge gate's `--require-provenance` looks for; a row with no label is invisible to both. That is the
+ * #500 slip: a review dispatched as `review-<pr>` had its row reconstructed by hand three times (S4,
+ * S5, U1) because printing the recheck line was mistaken for recording the dispatch.
+ */
+function parseDispatchArgs(args) {
+	let kind = null;
+	let flaggedRaw;
+	const rest = [];
+	for (let index = 0; index < args.length; index += 1) {
+		const take = (what) => {
+			if (index + 1 >= args.length) throw new StructuralError(`${what} needs a value`);
+			index += 1;
+			return args[index];
+		};
+		if (args[index] === "--classifier") {
+			if (flaggedRaw !== undefined) throw new StructuralError("--classifier was given twice — one classifier answer per dispatch");
+			flaggedRaw = take("--classifier");
+			continue;
+		}
+		if (args[index] === "--kind") {
+			kind = take("--kind");
+			if (!OUTCOME_KINDS.includes(kind)) {
+				throw new StructuralError(
+					`--dispatch --kind must be ${OUTCOME_KINDS.join("|")} (got ${JSON.stringify(kind)}) — it is the kind the settle will need`,
+				);
+			}
+			continue;
+		}
+		rest.push(args[index]);
+	}
+	const parsed = parseLineArgs(rest);
+	// The documented form is `--dispatch --classifier '<raw>'`; a bare positional raw (the bare
+	// `--classifier` mode's own form) is accepted too, and two payloads is a usage error.
+	if (flaggedRaw !== undefined && parsed.raw !== "") {
+		throw new StructuralError("--dispatch takes ONE classifier payload (`--classifier '<raw>'`), not two");
+	}
+	const raw = flaggedRaw ?? parsed.raw;
+	if (raw.trim() === "") {
+		throw new StructuralError(
+			"--dispatch needs the classifier's raw answers: --dispatch --classifier " +
+				`'{"answers":{"level":{"choice":"medium","confidence":0.84},"risk":{"choice":"C2"},"worktree":{"probability":0.9}}}' --label <name>`,
+		);
+	}
+	if (parsed.legacy) {
+		throw new StructuralError(
+			"--dispatch is the --classifier path — --legacy-line acknowledges a conductor-assigned line, and a row " +
+				"minted for one is exactly the spoofed evidence #452 removed",
+		);
+	}
+	const label = typeof parsed.label === "string" ? parsed.label.trim() : "";
+	if (label === "") {
+		throw new StructuralError(
+			"--dispatch needs --label <name> — the provenance row it appends is what `--settle <name>` joins on and " +
+				"what the merge gate looks for; a row with no label is invisible to both",
+		);
+	}
+	return { ...parsed, raw, label, kind };
+}
+
+/**
+ * `--dispatch` (#500): classify, print the line, append the row, and print the exact text to paste —
+ * one command, so the review dispatch cannot be recorded after the fact. The composition is
+ * `--classifier --label` plus a `paste:` line: same line, same row bytes, no new format.
+ */
+function reportDispatch(args, provenancePath = DEFAULT_PROVENANCE_LOG) {
+	const { raw, label, worktree, model, awareRaw, kind } = parseDispatchArgs(args);
+	const line = classifyAndRecord(raw, label, provenancePath, worktree, { model, awareRaw });
+	console.log(`paste: ${line}`);
+	console.error(
+		`jev-check: settle it with: jev-check.mjs --settle ${JSON.stringify(label)} --kind ` +
+			`${kind ?? OUTCOME_KINDS.join("|")} --outcome ${OUTCOME_VALUES.join("|")}`,
+	);
 	return 0;
 }
 
@@ -2576,6 +2668,86 @@ const SELFTEST_CASES = [
 		},
 	},
 
+	// --- #500: --dispatch (one command: line + row + paste text) -------------
+	{
+		name: "--dispatch: prints the line and the paste text, appends the row, and the row is BYTE-IDENTICAL to --classifier's",
+		run() {
+			const raw = JSON.stringify({ answers: { level: { choice: "high", confidence: 0.62 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } } });
+			withTempPair(
+				() => {},
+				({ provenance }) => {
+					const dispatched = captureConsole(() =>
+						reportDispatch(
+							["--classifier", raw, "--worktree", "y", "--label", "review-500", "--kind", "review", "--model", "deepseek/deepseek-flash"],
+							provenance,
+						),
+					);
+					assertEqual(dispatched.code, 0, "exit code");
+					assertEqual(dispatched.out.split("\n").length, 2, "two stdout lines: the line and the paste text");
+					const [line, paste] = dispatched.out.split("\n");
+					assertEqual(line, "jev: high (0.62) · C2 · worktree y", "the dispatch line");
+					assertEqual(paste, `paste: ${line}`, "the paste text is the exact line");
+					if (!/--settle "review-500" --kind review/.test(dispatched.err)) {
+						throw new Error(`expected the settle reminder, got ${JSON.stringify(dispatched.err)}`);
+					}
+
+					// The same inputs through `--classifier --label`: the two rows must differ ONLY in the
+					// timestamp column — a second row writer would be a second format waiting to drift.
+					captureConsole(() =>
+						reportClassifier(raw, "review-500b", provenance, true, { model: "deepseek/deepseek-flash" }),
+					);
+					const rows = readFileSync(provenance, "utf8")
+						.trimEnd()
+						.split("\n")
+						.filter((row) => !row.startsWith("#"));
+					assertEqual(rows.length, 2, "two rows");
+					const [viaDispatch, viaClassifier] = rows.map((row) => row.split("\t"));
+					if (!/^\d{4}-\d{2}-\d{2}T[0-9:.]+Z$/.test(viaDispatch[0])) {
+						throw new Error(`the at column must be an ISO instant, got ${JSON.stringify(viaDispatch[0])}`);
+					}
+					assertEqual(viaDispatch.slice(2).join("\t"), viaClassifier.slice(2).join("\t"), "rows identical after the at and label columns");
+					assertEqual(viaDispatch[1], "review-500", "the label is the one --settle will join on");
+					assertEqual(viaClassifier[1], "review-500b", "the control row's own label");
+				},
+			);
+		},
+	},
+	{
+		name: "--dispatch without --label exits 2 (a row with no label is invisible to --settle and the gate)",
+		run() {
+			const raw = JSON.stringify({ answers: { level: { choice: "low", "confidence": 0.5 }, risk: { choice: "C3" }, worktree: { probability: 0.2 } } });
+			withTempPair(
+				() => {},
+				({ provenance }) => {
+					assertStructural(() => reportDispatch([raw], provenance), /needs --label/, "missing label");
+					assertStructural(() => reportDispatch([raw, "--label", "  "], provenance), /needs --label/, "blank label");
+					assertStructural(() => reportDispatch([raw, "--label", "impl-500", "--kind", "deploy"], provenance), /--kind must be/, "unknown kind");
+					assertStructural(() => reportDispatch([raw, "--label", "impl-500", "--legacy-line"], provenance), /--classifier path/, "legacy line");
+					assertStructural(() => reportDispatch([raw, "--classifier", raw, "--label", "impl-500"], provenance), /not two|ONE classifier payload/, "two payloads");
+					assertStructural(() => reportDispatch(["--label", "impl-500"], provenance), /raw answers/, "no classifier payload");
+					assertEqual(readIfExists(provenance), null, "no refusal created a row");
+				},
+			);
+		},
+	},
+	{
+		name: "--dispatch then --settle on that label succeeds FIRST TRY (the #500 acceptance case)",
+		run() {
+			const raw = JSON.stringify({ answers: { level: { choice: "high", confidence: 0.62 }, risk: { choice: "C2" }, worktree: { probability: 0.8 } } });
+			withTempPair(
+				() => {},
+				({ provenance, outcomes }) => {
+					captureConsole(() => reportDispatch([raw, "--label", "review-500", "--kind", "review"], provenance));
+					const settled = captureConsole(() =>
+						reportSettle("review-500", { kind: "review", outcome: "done", verdict: "approve-with-nits", nits: 1 }, outcomes, provenance),
+					);
+					assertEqual(settled.code, 0, "settle exit code");
+					assertEqual(parseOutcomesLog(readFileSync(outcomes, "utf8"), outcomes).rows.length, 1, "one settled row");
+				},
+			);
+		},
+	},
+
 	// --- #468: --settle -----------------------------------------------------
 	{
 		name: "--settle: writes the instant cutoff header and one 7-column row",
@@ -2984,8 +3156,12 @@ function runSelftest() {
 // ---------------------------------------------------------------------------
 
 const USAGE = [
-	"usage: jev-check.mjs --classifier '<raw-answers>' [--model <id>] [--classifier-model-aware '<raw-answers>'] [--label <name>] | --line '<json>' [--label <name>] [--legacy-line] | --ledger [path] | --log [path] [--since YYYY-MM-DD] [--require-provenance] | --settle <label> --kind <k> --outcome <o> [--verdict <v>] [--nits N] [--model-ran <id>] | --calibrate | --selftest",
+	"usage: jev-check.mjs --dispatch --classifier '<raw-answers>' --label <name> [--worktree y|n] [--model <id>] [--kind impl|review|probe] | --classifier '<raw-answers>' [--model <id>] [--classifier-model-aware '<raw-answers>'] [--label <name>] | --line '<json>' [--label <name>] [--legacy-line] | --ledger [path] | --log [path] [--since YYYY-MM-DD] [--require-provenance] | --settle <label> --kind <k> --outcome <o> [--verdict <v>] [--nits N] [--model-ran <id>] | --calibrate | --selftest",
 	"",
+	"  --dispatch        ONE command for a dispatch (#500): classify, print the line, append the",
+	"                    provenance row under --label, and print the exact `paste:` text. --label is",
+	"                    required (exit 2): the row is what `--settle` joins on and the merge gate",
+	"                    looks for. --kind names the settle kind it prints as a reminder",
 	"  --line '<json>'   validate {level, conf, risk, worktree} and print",
 	'                    `jev: <level> (<conf>) · <Cx> · worktree <y|n>`',
 	`  --ledger [path]   audit the Jev calibration log (default: ${DEFAULT_LEDGER})`,
@@ -3088,6 +3264,9 @@ function main(argv) {
 	try {		if (mode === "--classifier") {
 			const { raw, label, worktree, model, awareRaw } = parseLineArgs(rest);
 			return reportClassifier(raw, label, DEFAULT_PROVENANCE_LOG, worktree, { model, awareRaw });
+		}
+		if (mode === "--dispatch") {
+			return reportDispatch(rest);
 		}
 		if (mode === "--line") {
 			const { raw, label, legacy, worktree, model, awareRaw } = parseLineArgs(rest);

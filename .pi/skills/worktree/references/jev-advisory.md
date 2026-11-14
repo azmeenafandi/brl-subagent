@@ -42,6 +42,44 @@ const r = await models.classify(jev, {
 return r;   // the RAW response — this is what --classifier consumes (never a hand-built summary)
 ```
 
+### The classifier brief — what actually goes in `state`
+
+**"Blind" means do not include the answer you have already chosen. It does not mean context-free.** The
+classifier has no filesystem, so an absolute path or a branch name is noise; the work itself is signal.
+Build the brief from six sections, in this order:
+
+1. **Task** — what changes, in one or two sentences, and why the current behaviour is wrong.
+2. **Architecture** — the module's role, the invariants it must preserve, the seams it touches. Name
+the module by its role ("the pre-dispatch validator"), never by absolute path.
+3. **Methodology** — how it will be done and proven: move-not-rewrite, an effect-log harness,
+deletion proofs, parity cases, fixtures.
+4. **Risk surface** — which of state, concurrency, teardown, persistence or security is actually at
+stake, and which is explicitly not.
+5. **Acceptance** — what would prove it wrong.
+6. **Model** (aware arm only) — the model that will run it and its known strengths and weaknesses.
+
+Exclude: absolute paths, branch/worktree names, the dispatch wrapper, and the harness's own warning
+text. They describe the environment, not the work.
+
+Worked example, same task (U6, issue #491), two inputs:
+
+> **Impoverished (used until 2026-11-08):** "Fix #491: the pre-task validation warning for gitMode
+> 'none' claims the subagent cannot create commits… One-line product change plus its test" plus the
+> worktree path and branch name.
+>
+> **Brief:** Task — the validator's advisory asserts a capability loss that the field never implies;
+> `gitMode` controls only whether the *harness* creates and captures a branch. Architecture —
+> `validate.ts` is a pure, synchronous pre-dispatch validator returning `{warnings, errors}`; its
+> output reaches the log and the tool result. Methodology — replace the string, keep the firing
+> condition identical, pin the new text and assert the old is absent, add no I/O. Risk surface —
+> display text only; no state, concurrency, teardown or persistence. Acceptance — suite green, the
+> diff is one string plus its test. Model — deepseek/deepseek-flash, fast, reliable at mechanical
+> edits.
+
+The `worktree` field is always **stated** with `--worktree y|n` (#456): nothing in a brief can make
+the model know a process fact. The `level` is telemetry; the `risk` class is a **tripwire** — a
+disagreement with the plan means re-read the plan, not obey the model.
+
 ## The line — format it with the helper, never by hand
 
 The classifier's **raw response** is the input to `.pi/skills/worktree/jev-check.mjs --classifier`,
@@ -86,6 +124,23 @@ one that writes provenance: `--line --label` is refused unless `--legacy-line` a
 conductor-assigned line, because a format-only check cannot tell a classified confidence from an
 invented one (2026-10-31: `medium (0.70)` typed, classifier said `high (0.32)`; 2026-11-04: the
 same shortcut, and the risk class was wrong — C2 dispatched, C1 classified).
+
+**One command per dispatch (#500):** `--dispatch` is the `--classifier --label` composition plus
+the paste text, so the line, the row and what goes into the task are one step:
+
+```bash
+$ node .pi/skills/worktree/jev-check.mjs --dispatch --classifier '<raw answers>' \
+    --worktree y --label review-447 --kind review
+jev: medium (0.64) · C1 · worktree y
+paste: jev: medium (0.64) · C1 · worktree y
+jev-check: provenance row appended to .pi/jev-lines.log (label "review-447")
+jev-check: settle it with: jev-check.mjs --settle "review-447" --kind review --outcome done|failed|stopped|unknown
+```
+
+Its row is byte-identical to `--classifier`'s (same writer, one definition), and `--label` is
+required — exit 2 — because a row with no label is invisible to `--settle` and to the gate. The
+three review dispatches that arrived with no `review-<pr>` row (S4, S5, U1) were all recorded
+*after* the fact; the one step is the fix.
 
 ### The model and the second arm (issue #468)
 

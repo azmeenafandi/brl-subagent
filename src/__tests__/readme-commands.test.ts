@@ -5,7 +5,10 @@ import { RESERVED_COMMAND_NAMES } from "../types";
 
 // ---------------------------------------------------------------------------
 // Issue #92: pin the README `### Commands` table against the real /brl-subagent
-// command dispatch (the `handlers` map in src/index.ts).
+// command dispatch (the `handlers` map, which ADR 0027 (S5) moved from
+// src/index.ts to src/commands.ts — the pin follows the table: the registration
+// call site is `pi.registerCommand(…, createCommands(rt, deps))`, and the map
+// that decides which key runs what is still this one).
 //
 // Drift class this catches:
 //   - `/brl-subagent backend`  — removed in v2.1.0, stale README row for months
@@ -13,7 +16,7 @@ import { RESERVED_COMMAND_NAMES } from "../types";
 //   - `/brl-subagent update-check` — present in dispatch, README row was missing
 // NOTE: /brl-subagent update-check was removed after v2.3.5 (see #164) — kept as the historical origin of this two-directional pinning test.
 //
-// The handler map (`const handlers = { ... }` in src/index.ts) is the source
+// The handler map (`const handlers = { ... }` in src/commands.ts) is the source
 // of truth. RESERVED_COMMAND_NAMES is NOT the source of truth: it contains
 // "graph", which is a reservation for delegate_task's graph mode (a
 // preset/template name collision guard), not a /brl-subagent command.
@@ -22,7 +25,7 @@ import { RESERVED_COMMAND_NAMES } from "../types";
 const repoRoot = join(__dirname, "..", "..");
 
 const readmeSource = readFileSync(join(repoRoot, "README.md"), "utf8");
-const indexSource = readFileSync(join(repoRoot, "src", "index.ts"), "utf8");
+const commandsSource = readFileSync(join(repoRoot, "src", "commands.ts"), "utf8");
 
 /** README table row: `| `/brl-subagent <key>` | <description> |` */
 const COMMAND_ROW_RE = /^\|\s*`\/brl-subagent ([a-z0-9-]+)`\s*\|/;
@@ -46,11 +49,11 @@ function readmeCommands(): string[] {
 	return commands;
 }
 
-/** Parse the `const handlers` dispatch block in src/index.ts → handler keys. */
+/** Parse the `const handlers` dispatch block in src/commands.ts → handler keys. */
 function handlerKeys(): string[] {
-	const lines = indexSource.split(/\r?\n/);
+	const lines = commandsSource.split(/\r?\n/);
 	const start = lines.findIndex((l) => l.includes("const handlers: Record<string"));
-	expect(start, "src/index.ts must contain the `const handlers` dispatch block").toBeGreaterThanOrEqual(0);
+	expect(start, "src/commands.ts must contain the `const handlers` dispatch block").toBeGreaterThanOrEqual(0);
 
 	const keys: string[] = [];
 	for (let i = start + 1; i < lines.length; i++) {

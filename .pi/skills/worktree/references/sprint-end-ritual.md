@@ -33,24 +33,31 @@ At cycle end, ALL FOUR run — they share one cadence:
    declaration. Review the row alongside the friction log: the log answers WHY, the metrics
    answer HOW MANY.
 
-   **Count reconciliation (do not trust the row blind).** Reconcile the row's `dispatches`
-   against the extension log's spawn count over the SAME window. Run this from the cockpit
-   (the dev checkout): the log lives where the extension runs, so a worktree lacks it.
+   **Count reconciliation is mechanical now (U4, #489).** The tool counts direct
+   `delegate_task` calls **and** codemode-routed ones, then reconciles the dispatch count
+   against the extension log's spawn starts over the SAME window. Run it from the cockpit
+   (the dev checkout): the spawn log lives where the extension runs, so a worktree lacks it
+   and the output says `reconcile unavailable ... the dispatch count is a session-log floor`.
 
-   ```bash
-   rg '"Background agent spawned"|"Background fan-out spawned"' \
-      .pi/subagent-logs/brl-subagent.log \
-      | rg '"timestamp":"2026-10-1[0-3]'      # ← narrow the date class to the cycle window
+   ```text
+   dispatches: N (direct A + codemode B) · spawns: M · Δ D
+   spawn source: <path> (found|NOT FOUND) — <starts, retries>
+   allowance: <retry starts + fan-out units beyond the first>
    ```
 
-   A **>20% delta ⇒ suspect the window / the counting** before trusting the row — a
-   bound that silently excludes a day is indistinguishable from a quiet cycle. The
-   #336 incident: a time-suffixed bound counted **22 dispatches against 68 logged
-   spawns**. The parser is itself guarded — run `python3
-   .pi/skills/worktree/sprint-metrics.py --selftest` (wired into CI) to prove
-   date-only vs time-suffixed bounds, inclusive ends, naive=UTC, and invalid values.
-   (Fan-out legitimately inflates spawns over dispatches — N agents per call — so treat
-   the delta as a signal to check the window, not as a hard failure.)
+   - `Δ` within the printed **allowance** is reconciled: fan-out and transport auto-retries
+     legitimately produce more spawns than dispatches, and the allowance is derived per
+     window, not guessed.
+   - `Δ` outside the allowance exits **3**, prints `RECONCILE FAILED`, and **does not append
+     the row** — fix the count first, do not hand-edit the table.
+   - `reconcile unavailable` is floor-only: the window is not reconciled, so say so in the
+     handoff rather than trusting the number.
+   - A codemode `tasks:` fan-out is not statically parseable; it surfaces as a loud
+     under-count (the safe direction) rather than a silent pass.
+
+   The #336 incident (a time-suffixed bound counted 22 dispatches against 68 logged spawns)
+   is now a loud failure, not a judgment call. The parser is itself guarded: run
+   `python3 .pi/skills/worktree/sprint-metrics.py --selftest` (wired into CI).
 3. **Environment sweep (bounded, advisory):** walk the cycle's record once against these
    categories — (1) **Navigation** (did finding files cost time? hidden dependencies?) ·
    (2) **Automated checks** (any guardrail missing, unwired, or silently broken — *"a check that

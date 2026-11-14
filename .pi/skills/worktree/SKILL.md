@@ -49,7 +49,11 @@ never re-type their logic by hand. Full design:
    read them. Still gitignored (and absent from worktrees): `.codegraph/`
    (the structural index — conductor-side only, ADR 0016), `.pi` session state
    (`output/`, `subagents/`, `subagent-logs/`, `subagent-tmp/`, `sessions/`),
-   local config (`.pi/brl-subagent/`), `REVIEW_*.md`, `.tmp/`. **Subagents
+   the extension state under `.pi/brl-subagent/` (`state.json`, …),
+   `REVIEW_*.md`, `.tmp/`. The dispatch contract in that directory — `presets/`,
+   `templates/` and its `README.md` — is TRACKED since #514 and does materialize,
+   which is the point: a dispatch reads the same text in a clean checkout, a new
+   machine and a worktree. **Subagents
    NEVER see gitignored files** — specs must
    never ask them to read or edit those; environment-dependent instructions get
    an escape clause: "if X is not available in your worktree, report and skip —
@@ -174,16 +178,53 @@ never re-type their logic by hand. Full design:
     Default: dev-agent + no template — the safe fallback, never wrong.
 
     **Every brief banks its state (issue #401).** An IMPLEMENTATION brief names
-    the bank `/tmp/brl-<label>-bank.md` (`<label>` = the dispatch label) and
+    the bank `<root>/bank/<label>.md` (`<label>` = the dispatch label) and
     instructs: "append your working state before each major step / commit".
-    Reviews already bank `/tmp/review-<unit>-findings.md`
-    (`references/review-dispatch.md`) and plan critiques bank the same
-    `/tmp/brl-<label>-bank.md` shape. The bank is what a drop leaves behind: the
+    `<root>` is `~/.cache/brl-subagent` — the private root of #512: mode 0700,
+    ours, every ancestor non-writable, and (Linux) refused `tmpfs` — so the
+    append goes through the helper CLI, which creates the directory at 0700 and
+    the file at 0600 with `O_NOFOLLOW`:
+
+    ```bash
+    printf '%s\n' '<note>' | node scripts/scratch-root.mjs append bank/<label>.md
+    ```
+
+    Reviews bank `<root>/review-<n>/findings.md` the same way, and plan
+    critiques bank the same `<root>/bank/<label>.md` shape
+    (#512/#513; `references/review-dispatch.md`). **A bank in a system temp
+    directory is the one thing this convention refuses** (#513): `/tmp` does not
+    survive a reboot, and a resume is exactly the case where the machine may
+    have gone down. The bank is what a drop leaves behind: the
     transport auto-retry's resume block points the replayed run at it, so a
     reconnect re-reads instead of redoing. Implementation briefs also restate
     **commit-per-step**: commit + push each green step, so the retry's
     `git log` is the progress report (the 2026-10-06 `connection-drop-grind`
     lesson — eight dead runs, ~3 minutes lost).
+
+    **The project-local contract is tracked and outranks the shipped text
+    (#513, #514).** `.pi/brl-subagent/templates/*.md` and
+    `.pi/brl-subagent/presets/*.md` are project-local and resolved BEFORE the
+    shipped files at dispatch time (`src/templates.ts`, `src/presets.ts` — the
+    shipped copy is the fallback, not the default), so since #514 they are
+    TRACKED: a clean checkout, a new machine and a contributor's worktree all
+    dispatch the bytes the repository reviewed. Two consequences a conductor
+    has to hold: (a) **editing the shipped template or preset is not
+    enforcement** — the project-local copy wins no matter what the shipped file
+    says; (b) **a new contract file must be tracked** — a personal variant
+    belongs to the user-global tier (`~/.pi/agent/brl-subagent/`), and
+    `.pi/brl-subagent/README.md` states the set, the precedence and the rules.
+    The two checks:
+
+    ```bash
+    node scripts/audit-scratch-instructions.mjs      # the whole contract: .pi/skills + the presets + the templates; exits 1 on a hit
+    node scripts/check-contract-tracking.mjs         # every *.md under .pi/brl-subagent is tracked (and not missing from disk); exits 1 otherwise
+    ```
+
+    The audit prints its corpus, its exclusions and the rule it applied, so a
+    verdict is auditable; it never writes the files it names. The tracking
+    check is the "never silently untracked" clause: an untracked `*.md` in the
+    contract directory, or a tracked one missing from disk, fails — exit 1, one
+    line each, naming the file and the fix.
 15. **Spec environment verification (Rule 15).** Before dispatching any
     delegation, verify that every file, directory, and resource referenced in
     the spec exists in the subagent's WORKTREE (the cockpit is a different
@@ -233,7 +274,7 @@ never re-type their logic by hand. Full design:
     of omitting — background runs default to a 30-minute deadline (`DEFAULT_BACKGROUND_DEADLINE_MS`, applied as
     `spawn.timeout ?? DEFAULT_BACKGROUND_DEADLINE_MS`), which cut the #295 review's mutation probes on
     2026-10-09. The 2h cap is ~8–10× the observed p90 of successful dispatches; the banking convention
-    (`/tmp` findings files) makes a cap-hit cheap to resume. The bound is the user's monitor + the worktree
+    (`<root>/bank/<label>.md`) makes a cap-hit cheap to resume. The bound is the user's monitor + the worktree
     oracle, never a tight clock.
 19. **Coverage assertion (Rule 19 — the partial-read class).** A search or read
     whose silent truncation or filter boundary is read as completeness is this
@@ -271,7 +312,7 @@ never re-type their logic by hand. Full design:
     - **Liveness** → the run-status surface or the user-visible monitor. **Never**
       infer death from a settle-time artifact: `.pi/output/agent-<id>.jsonl` is
       written when a run SETTLES, so a frozen file says nothing about a live run.
-      The incremental `/tmp` findings file is the live artifact.
+      The incremental `<root>/review-<n>/findings.md` findings file is the live artifact.
     - **State** ("nothing is in flight", "the tree is clean") → the command that
       showed it.
 
@@ -376,8 +417,13 @@ ships as product documentation — see `CONTRIBUTING.md`).
                 says how the post-verdict commit was verified, (e) `jev-check --log` is
                 green, (f) the record carries a `jev-recheck:` line (the classifier's
                 answer on the DISPATCH text, run at review time) with a `recheck-<pr>`
-                provenance row, and a `Risk class:` no weaker than the recheck. Any
-                failure blocks and lists every reason. Then merge commit to
+                provenance row, and a `Risk class:` no weaker than the recheck, and
+                (g) the PR BODY's `pr-evidence` block recomputes
+                (`pr-evidence --check --pr <n>`) — skipped as `(g) not applicable` for a
+                body with no block and no count. Any
+                failure blocks and lists every reason. The run echoes `pr #<n>`, the
+                RESOLVED record path and `record sha256: <hash>` first, so the conductor
+                can confirm the gate read the bytes the reviewer produced. Then merge commit to
                 `dev` (PRs target `dev`; `dev → main` is the release-time merge commit.
                 Never squash — per-issue commits must survive so release notes can read
                 them. Never merge a task PR straight to `main`.) Then run
@@ -439,6 +485,55 @@ mechanics, verdict format: `references/review-dispatch.md`.
 
 ## When to use each script
 
+- **`check-test-budget.mjs <report> | --flow [--base <ref>] --head <sha> | --declaration`** — the
+  test-size policy (v2). The stock ratio is **reported, not enforced**: `src` against a 2.0
+  reference with a 1.95 warning band, `scripts` against 1.0 — crossing a reference prints a
+  warning and exits 0 (the wall ceiling, 60 s global, is still a finding). What gates is the
+  per-PR **flow**: `--flow` measures NET test:source lines from
+  `git diff --no-renames --numstat <base>...<head>` (git only; the head need not be checked out)
+  and allows `120 + 2 × max(Δsource, 0)` test lines **per surface** — exit 0 within, 1 over,
+  2 unanswerable (`unknown-head`, `already-merged`, `diff-failed`; fail closed, so a post-merge
+  replay cannot pass). Net lines mean **replacement measures zero**, so a rewrite is never a
+  spending event; an accepted limit is that **+120 test lines per test-only PR accumulates**, and
+  the reported ratio is what makes it visible. An `over` PR needs a line-start
+  `Test budget: <reason>` in its body, judged by `--declaration` (outside fences, blockquotes and
+  the pr-evidence block). The other hard check is the **floor**, on both surfaces: every non-test
+  source module must be **reachable** from a `*.test.ts` through runtime import edges — a comment,
+  a string, `import type … from` and `export … from` are not edges. CI runs the report half;
+  `merge-guard.sh` (g) runs `--flow` from this repository's own copy (never the PR tree's).
+- **`run.sh [--filter '<trusted shell>'] [--stderr] [--require-filter|--allow-filter-failure]
+  [--quiet] -- <command> [args...]`** — wrap EVERY command whose exit status you are about to
+  read through a filter (issue #504). `cmd | tail -2; echo $?` reports **`tail`'s** status, not
+  the command's: two such measurements certified four failing review records as exit 0 (U1), and
+  a tool that had exited 1 was reported as 0 (U4). The helper streams the output unchanged, pipes
+  it through the filter, and returns the **command's** status (from `PIPESTATUS[0]`, because
+  `pipefail` alone returns the rightmost non-zero — not the command's):
+
+  ```bash
+  bash .pi/skills/worktree/run.sh --filter 'tail -2' --stderr -- \
+    bash .pi/skills/worktree/merge-guard.sh --check-record ~/.cache/brl-subagent/review-<n>/REVIEW_<n>.md   # exit 1 = rejected
+  bash .pi/skills/worktree/run.sh --filter 'tail -1' -- node scripts/handoff-verify.mjs  # 1 = drift
+  bash .pi/skills/worktree/run.sh --quiet --require-filter --filter 'grep -q "^record:"' -- \
+    node scripts/review-record.mjs --verify ~/.cache/brl-subagent/review-<n>/REVIEW_<n>.md   # the filter IS the check
+  ```
+
+  `--stderr` merges `2>&1` **before** the filter — diagnostics are usually stderr-only (the
+  malformed review records print 0 bytes on stdout and ~318 on stderr, so a stdout-only filter
+  shows nothing and looks clean). `--require-filter` makes a non-zero filter the exit status (the
+  opt-in for "the filter is the check"); `--allow-filter-failure` keeps the default and suppresses
+  the warning for a presentation-only filter expected to miss; `--quiet` drops the `$ <command>`
+  echo, never a diagnostic. **A non-zero filter is loud by default** — `run: filter exited <n>` on
+  stderr naming both statuses — because the default status is the command's and a vacuous `grep`
+  would otherwise look like a pass. Usage is 64 and not-found 127, both tagged `run:` so a helper
+  failure is never mistaken for a child that legitimately exits 64/127. A producer killed by a
+  broken pipe is reported as the producer's own status (141 under SIGPIPE on a normal shell; a
+  runner with SIGPIPE ignored reports its own non-zero) — never "completed normally". `--selftest`
+  proves the whole table (CI runs it beside the Jev and sprint-metrics selftests).
+
+  **Never put the pipe outside the helper.** `run -- cmd | filter; echo $?` — and
+  `run --filter '<f>' -- cmd | filter` — re-read the FILTER's status and re-open the exact defect
+  the helper exists to close. The filter goes INSIDE `--filter`; the status is the helper's exit
+  code.
 - **`check-repo.sh`** — before ANY worktree creation. If it fails, fix the
   cockpit checkout first (`npm ci` once, only while no worktree is linked; or
   `git pull --rebase`). Never create a worktree on a broken source of truth.
@@ -492,15 +587,48 @@ mechanics, verdict format: `references/review-dispatch.md`.
   it), and `--log --require-provenance` additionally fails a dispatch
   line with no such row — fail-closed (exit 2) when the log is missing or empty. That is
   the check the format cannot make: a hand-typed confidence passes the shape.
+  **`--dispatch --classifier '<raw answers>' --label <name> [--worktree y|n] [--model <id>]
+  [--kind impl|review|probe]` is the ONE command a dispatch needs (#500):** it prints the line,
+  appends the row, and prints the exact `paste:` text, then the `--settle` command that label
+  needs. `--label` is required (exit 2) because a row with no label is invisible to `--settle`
+  and to the gate — the review dispatch's `review-<pr>` row was reconstructed by hand three
+  times (S4, S5, U1) because printing the recheck line looked like recording the dispatch.
   `--selftest` proves every path with fixtures. CI runs `--selftest` and `--ledger`
   beside the test-budget guard.
 - **`merge-guard.sh <pr-number> <review-record-path>`** — the mechanical merge gate
   (lifecycle step 7), wired to the `unreviewed final fix` friction entry (#395
   `77338bf`): CI green, the record names the PR, its last `Verdict:` is
   approve/approve-with-nits, the PR's **current head** is in the record (or a
-  `conductor-verified:` line documents the post-verdict commit), and `jev-check --log`
-  passes. Exit 1 lists every failed reason at once; run it from the cockpit.
+  `conductor-verified:` line documents the post-verdict commit), `jev-check --log`
+  passes, the record's `jev-recheck:` is bound to a `recheck-<pr>` row at no weaker a tier,
+  and the PR body's numbers recompute (`pr-evidence --check --pr <n>`). **(g) has two halves and
+  both run on every PR:** the test-budget FLOW (`check-test-budget.mjs --flow --base dev --head
+  <sha>`, always the cockpit's own copy — a PR cannot ship the rule that judges it) and the body's
+  `<!-- pr-evidence:begin -->` block. A `within` flow passes; an `over` flow needs a line-start
+  `Test budget: <reason>` outside fences, blockquotes and the pr-evidence block (`test-flow-override`
+  when present, `test-flow-undeclared` when absent); an unanswerable flow (`unknown-head`,
+  `already-merged`, `diff-failed`) blocks with that named reason. The block half still says
+  `nothing to recompute` when the body carries neither a block nor a count — a skip of THAT half
+  only, never of (g). Exit 1 lists every failed reason at
+  once; run it from the cockpit. The header echoes `pr #<n>`, the RESOLVED record path and
+  `record sha256: <hash>` — a relative record path resolves against the caller's cwd, and a
+  missing one says `record: <abs path> — not found` instead of a shell error. The block half
+  measures the checkout at the PR head (`git worktree list` finds it — normally the review
+  worktree; `--pr-tree <path>` names it); the flow half needs no checkout at all. A
+  `no checks reported` failure carries the `gh pr view <n> --json mergeable,mergeStateStatus` hint
+  (#465), never a pass.
+  `--check-record <record> [--pr <n>] [--head <sha>]` is the offline half — the same field
+  rules, no `gh`, no network, no provenance log — so a generated record can be checked
+  before dispatch; write the record with `scripts/review-record.mjs` (#487), never by hand.
   `--selftest` covers the record parsing with temp fixtures.
+- **Re-capture before the gate after ANY post-verdict commit.** The order is
+  `git commit` → `node scripts/suite-report.mjs --capture` → `merge-guard.sh`. The sidecar
+  records the head the suite was tested at, and `pr-evidence --check` compares it against the
+  PR's `headRefOid`: a report of another head is refused `provenance-mismatch`, **exit 2, never
+  a drift**. A docs-only commit moves the expected head exactly as a code commit does, so the
+  capture follows the last commit, not the last code change — and what it re-runs is the evidence
+  the gate reads. Skip it and the gate answers with a correct, fail-closed refusal that reads like
+  a broken gate (#520). Capture from the worktree: the git facts come from the cwd's checkout.
 
 ## Notes
 

@@ -6,7 +6,7 @@ import {
 	buildInventorySummary,
 	buildTemplateGuideline,
 	formatTemplateSummaryItem,
-} from "../index";
+} from "../delegate-handler";
 
 // ---------------------------------------------------------------------------
 // Issue #154: pin the LLM-facing delegation guidance against the wake contract.
@@ -21,20 +21,25 @@ import {
 // ---------------------------------------------------------------------------
 
 const repoRoot = join(__dirname, "..", "..");
-const indexSource = readFileSync(join(repoRoot, "src", "index.ts"), "utf8");
+// ADR 0027 (S5): the delegate_task definition — its description, its
+// promptGuidelines and the two registration-time inventory summaries that feed
+// them — moved to `delegate-handler.ts`. This pin follows the guidance, so it
+// reads the module that now ships it: a guideline reverted there is still a
+// build failure.
+const delegateSource = readFileSync(join(repoRoot, "src", "delegate-handler.ts"), "utf8");
 
 describe("delegate_task prompt guidelines vs. the wake contract (issue #154)", () => {
 	it("teaches the wake contract — do not poll (the #147 completion wake)", () => {
-		expect(indexSource).toContain("do not poll");
+		expect(delegateSource).toContain("do not poll");
 	});
 
 	it("names the structured completion message the conductor is woken with", () => {
-		expect(indexSource).toContain("wake the conductor with a structured completion message");
+		expect(delegateSource).toContain("wake the conductor with a structured completion message");
 	});
 
 	it("states the completionNotify knob dependency — polling correct only under \"off\"", () => {
-		expect(indexSource).toContain("completionNotify");
-		expect(indexSource).toContain("polling is only correct");
+		expect(delegateSource).toContain("completionNotify");
+		expect(delegateSource).toContain("polling is only correct");
 	});
 
 	it("points the conductor at the authoritative AGENT.md capability reference", () => {
@@ -43,15 +48,15 @@ describe("delegate_task prompt guidelines vs. the wake contract (issue #154)", (
 		// reverted to a hardcoded path (#158 regression class). Pin the CONTRACT
 		// instead: the guideline must interpolate the computed helper result, and
 		// the retired hardcoded path must be unable to return.
-		expect(indexSource).toContain("AGENT.md");
+		expect(delegateSource).toContain("AGENT.md");
 		// The helper is actually used to resolve the shipped reference.
-		expect(indexSource).toContain('pkgPath("AGENT.md")');
+		expect(delegateSource).toContain('pkgPath("AGENT.md")');
 		// The guideline interpolates the COMPUTED variable. Written as a plain
 		// quoted string so it matches the literal source characters — a template
 		// literal here would interpolate ${agentMdPath} away instead of matching.
-		expect(indexSource).toContain("${agentMdPath}");
+		expect(delegateSource).toContain("${agentMdPath}");
 		// The pre-#158 hardcoded sync-copy destination cannot return.
-		expect(indexSource).not.toContain("extensions/brl-subagent/AGENT.md");
+		expect(delegateSource).not.toContain("extensions/brl-subagent/AGENT.md");
 	});
 
 	it("renders the templateSummary into the built guideline (no literal placeholder, real names)", () => {

@@ -23,6 +23,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
+      # Import convention (issue #476): only a statement-level `import type` may be hoisted and
+      # sorted (every loader erases it); type names fold into the value statement as inline `type`
+      # modifiers AT ITS POSITION; value statements never move and never merge with each other.
+      # Style is enforced without touching module-request order — see the guard's header.
+      - run: node scripts/check-imports.mjs
       # The README's "<N>+ test suite" claim is pinned to reality (docs-pinning class, issue #166).
       # Two invariants, two seams: TRUTH (the claim must never overstate the suite) is a property of
       # the branch, so every PR and push checks it. FRESHNESS (the claim may trail the real count by
@@ -38,9 +43,25 @@ jobs:
       - name: README count — truth + freshness (release seam only)
         if: ${{ (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: node scripts/check-readme-test-count.mjs vitest-report.json --strict
-      # The suite's growth budget (issue #368): wall time <= 60 s and test:source
-      # LOC ratio <= 2.0. Ceilings, not targets — growth needs a reason.
+      # The suite's growth budget (issues #368, #490, test-budget policy v2): wall time <= 60 s
+      # (still a ceiling), the test:source LOC ratio PER SURFACE as a REPORT (src against a 2.0
+      # reference with a 1.95 warning band, scripts against 1.0 — crossing neither fails CI), and the
+      # floors: every non-test source module must be reachable from a *.test.ts through runtime
+      # import edges. The per-PR gate is `--flow`, run by merge-guard (g), not by this report.
       - run: node scripts/check-test-budget.mjs vitest-report.json
+      # The tracked dispatch contract (#513, #514): a durable artifact — a bank, a findings file, a
+      # report, a record — may not be placed in a system temp directory, because the resume it exists
+      # for is exactly the case where the machine went down. One corpus, three directories: `.pi/skills`
+      # and the project-local `.pi/brl-subagent/{presets,templates}` that take precedence over the
+      # shipped copies at dispatch time. Probe scratch ("scratch repos in /tmp") and a description of
+      # the #512 refusal are printed as non-hits, not failed.
+      - run: node scripts/audit-scratch-instructions.mjs
+      # The "never silently untracked" clause (#514): every *.md under .pi/brl-subagent — the presets and
+      # templates a dispatch resolves BEFORE the shipped copies, plus the README that states the set — must
+      # be tracked, and every tracked one must exist on disk. A new contract file is either committed (the
+      # project's contract) or moved to ~/.pi/agent/brl-subagent/ (a personal variant); an untracked file and
+      # a tracked-but-missing file both fail, one line each, because the two fixes are different.
+      - run: node scripts/check-contract-tracking.mjs
       # The Jev ritual's mechanical gate (issue #366): the dispatch-line formatter's selftest, then
       # an audit of the calibration log — every row since the strict-Jev cutoff (2026-10-12) must
       # carry a queried confidence or an explicit gap marker. A bare level is a finding.
@@ -49,3 +70,11 @@ jobs:
       # Permanent guard for the sprint-metrics window parser (issue #336): a
       # time-suffixed bound must not silently drop its day (pre-fix: 22 vs 68).
       - run: python3 .pi/skills/worktree/sprint-metrics.py --selftest
+      # The `run` helper (issue #504): a command's exit status must survive its filter. Two
+      # `cmd | tail` / `cmd | grep` measurements, then `echo $?`, certified four FAILING review
+      # records as exit 0 (U1) and reported 0 for a tool that exited 1 (U4) — the status read
+      # was the filter's. This runs the whole table: command status vs filter status, a vacuous
+      # filter (loud by default, authoritative under --require-filter), a broken filter, SIGPIPE
+      # (141), --stderr routing, literal argv, the 64/127 overlap — plus both incidences as
+      # named cases with the pre-helper control beside the fix.
+      - run: bash .pi/skills/worktree/run.sh --selftest

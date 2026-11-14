@@ -529,6 +529,12 @@ describe("batch guard ordering (issue #361 review)", () => {
 			};
 		});
 		try {
+			// Issue #511 (U2): `resetModules` above gave us a FRESH
+			// `scratch-spawn`, so the global redirect no longer applies to it —
+			// re-apply it, or this fresh graph resolves the developer's real cache
+			// root when the chain step creates its run directory.
+			const { redirectScratchRoot } = await import("./fixtures/scratch-root-isolation");
+			redirectScratchRoot();
 			const { default: initFresh } = await import("../index");
 			const registered = new Map<string, ToolEntry>();
 			initFresh({
@@ -562,6 +568,10 @@ describe("batch guard ordering (issue #361 review)", () => {
 			vi.useRealTimers();
 			vi.doUnmock("../params");
 			vi.resetModules();
+			// The reset above is what `finally` owes the next test; the redirect is
+			// what THIS one owes it (a fresh `scratch-spawn` has no redirect set).
+			const { redirectScratchRoot } = await import("./fixtures/scratch-root-isolation");
+			redirectScratchRoot();
 		}
 	});
 });

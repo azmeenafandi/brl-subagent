@@ -1,0 +1,12 @@
+[
+  {
+    "effect": "dep.spawnBackgroundRun"
+  },
+  {
+    "effect": "result",
+    "payload": {
+      "isError": false,
+      "text": "background"
+    }
+  }
+]

@@ -30,3 +30,19 @@
 | 2026-11-08 | 81 | 8/73 | 82.3% (107/130) | 17.7% (23) | 0 | 0% (0/0) | 0 (0.0%) | 0.46 | 7 | 1 |
 
 > **The 2026-11-08 row's reconciliation does not close cleanly.** `sprint-metrics` reports 81 dispatch calls and 130 settled runs; the extension log shows 118 spawn events in the same window. The three numbers differ by retries and by window-boundary effects (a run can spawn before the window and settle inside it), and the tool's `Retries` cell is still 0 because it counts only explicit `retryRunId` dispatches — the same gap recorded on the 2026-11-01 row. Treat the dispatch count as a floor until the counter is fixed (sweep candidate).
+| composition-root | 32 | 1/31 | 90.6% (29/32) | 9.4% (3) | 0 | 0% (0/0) | 0 (0.0%) | 0.72 | 3 | 0 |
+| generated-artifacts | 69 | 1/68 | 90.7% (68/75) | 9.3% (7) | 0 | 0% (0/0) | 0 (0.0%) | 0.42 | 12 | 0 |
+
+> **This row is tool-reconciled, not hand-reconciled.** `dispatches: 69 (51 direct + 18 codemode) · spawns: 75 · Δ 6`, allowance 7 (seven transport auto-retry starts, zero fan-out units) — every spawn is explained. The `Retries` cell still counts only explicit `retryRunId` dispatches (0), which is why the transport retries appear in the reconcile line and not in the column; the 2026-10-17/24/11-01 rows carry the same gap.
+
+> **The composition-root row was reconciled by hand.** `sprint-metrics` counted **11** dispatches (direct `delegate_task` toolCalls); **21 of the cycle's dispatches ran inside `codemode` scripts** and are invisible to that scan. The extension log shows **31** `Background agent spawned` events in the window plus the one foreground dispatch = **32**, which equals the **32** settled runs. The dispatch count, fg/bg split and polls-per-dispatch were corrected from that source (23 polls / 32 = 0.72); the template and preset columns remain floors for the same reason. Filed as #489 (mechanical fix).
+| scratch-hygiene | 12 | 0/12 | 80.0% (12/15) | 20.0% (3) | 0 | 0% (0/0) | 0 (0.0%) | 0.92 | 0 | 0 |
+| shipped-half | 20 | 3/17 | 79.2% (19/24) | 20.8% (5) | 0 | 0% (0/0) | 0 (0.0%) | 0.6 | 0 | 0 |
+> **The shipped-half row is tool-reconciled.** `dispatches: 20 (direct 20 + codemode 0) · spawns: 24 · Δ 4`, allowance 5 (five transport auto-retry starts, zero fan-out units) — every spawn is explained. The `Retries` cell still counts only explicit `retryRunId` dispatches (0), which is why the transport retries appear in the reconcile line and not in the column; the earlier rows carry the same gap.
+
+| review-debt | 2 | 0/2 | 100.0% (2/2) | 0.0% (0) | 0 | 0% (0/0) | 0 (0.0%) | 1.0 | 0 | 0 |
+
+> **The review-debt row reconciles exactly.** `dispatches: 2 (direct 2 + codemode 0) · spawns: 2 · Δ 0`, allowance 0 — both dispatches were background singles. Its `1.0` polls/dispatch is **two `get_subagent_result` calls, both post-wake reads of the final report** after the completion message — the metric cannot distinguish a completion read from stall polling, so the figure is a proxy, not babysitting evidence.
+| contract-debt | 4 | 0/4 | 80.0% (4/5) | 20.0% (1) | 0 | 0% (0/0) | 0 (0.0%) | 0.75 | 0 | 0 |
+
+> **The contract-debt row reconciles exactly.** `dispatches: 4 (direct 4 + codemode 0) · spawns: 5 · Δ 1`, allowance 1 (one transport auto-retry start, zero fan-out units) — every spawn is explained. The `0.75` polls/dispatch is three `get_subagent_result` post-wake reads, not stall polling; the single failed run is the pre-retry attempt the transport recovery replaced, so the 80.0% success rate is over spawns, not dispatches.

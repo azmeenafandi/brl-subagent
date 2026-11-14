@@ -1,6 +1,6 @@
 # brl-subagent — Audit: Strengths & Weaknesses
 
-> Generated: 2026-08-03 | Version: 2.8.0 (released 2026-11-08). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.8.0 (see the follow-up sections below).
+> Generated: 2026-08-03 | Version: 2.9.0 (released 2026-11-14). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.9.0 (see the follow-up sections below).
 
 ## What's Been Fixed (since v1.3.0)
 
@@ -607,6 +607,15 @@ A follow-on sweep in which **every item traces to something the 2.3.5 release ex
 - **#164 CLOSED — the obsolete update notifier removed.** It duplicated pi's native notice, misdirected users to the GitHub release, and — under staged publishing — could announce a version npm did not yet have. `src/update.ts` and its test deleted; the module count drops **31 → 30**. The C2 focused review proved backwards compatibility **empirically** (legacy session keys ignored, not rejected; the guard did not go soft elsewhere) and mutation-tested the README pinning test four ways.
 - **Corrections**: module count 31 → **30** (update.ts removed). Two spec-scoping gaps were surfaced by the **implementer**, not the conductor — an e2e fixture list referencing the deleted module by *name* (symbol greps cannot see it) and a self-contradictory grep check. Both logged; the name-vs-symbol lesson is the second instance this sprint of *'the query did not cover the evidence'*.
 - **Toolchain**: vitest 4 → 5 (major; CI-verified) and typebox 1.3.25 → 1.3.29. The typebox dev/runtime divergence from pi's bundled **1.3.7** was verified **inert** for our nine-primitive-builder surface (byte-identical schema output across 1.3.7/1.3.25/1.3.29) and is now recorded in the Distribution & Packaging section so it need not be re-investigated.
+
+## v2.9.0 Audit Follow-up (2026-11-14)
+
+- **The composition root was audited by extraction, not by assertion.** `index.ts` fell from 4,720 to 356 lines through six units; the order in which effects fire (session creation, registration, the poller, the deadline, the notifier) is pinned by an ordered-effect-log harness committed before the move and replayed across twelve dispatch paths, and the import convention is a CI guard.
+- **The pointed test audit's most useful result was a negative one.** A "61 no-assert blocks" candidate collapsed to 7 of 2,745 under a brace matcher that handles the real call shapes; five "identical" conductor-guardrail bodies assert five different sentences; the doc-guard quartet has zero cross-file duplicates once literals are preserved. Nine genuinely duplicated lines were deleted and the candidate numbers were withdrawn — an audit's own counts need the same evidence bar as the code under audit.
+- **The scratch-instruction audit had a false negative in its own shape.** It read the word "probe" *inside a filename* as scratch space, so `/tmp/brl-probe-bank.md` — the retired convention — escaped. The classifier now masks system-temp paths before any word test; the tracked corpus is one list of three directories, and a companion check fails CI on an untracked or missing contract file.
+- **A durable-artifact path the audit could not see was found by the probe.** The two review templates still told a reviewer to bank findings at a `/tmp` path; because "scratch" sat on the same line, the classifier read it as probe space. The templates now name `<root>/review-<n>/findings.md`, and the audit's "no line is shaped that way" claim is true again.
+- **The test budget became a flow rule (ADR 0028).** The stock ratio is reported and never fails; each PR's flow is enforced from the cockpit copy; floors are reachability, and the scripts floor moved to 13/13 when the tracking check joined the module set.
+- **Open (found during the v2.9.0 release prep):** the recovery survivor list can report a refused foreign pid as a survivor when a `/proc` group scan is partial (`unknown` ⇒ the "not dead" fail-safe). No signal reaches the pid — the marker gate holds — but the survivor report is wrong; the fix is to treat a live not-ours target as not-ours *before* the group-emptiness check, plus a test for the unknown-scan path.
 
 ## v2.8.0 Audit Follow-up (2026-11-08)
 

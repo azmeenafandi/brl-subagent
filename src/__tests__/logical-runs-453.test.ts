@@ -302,8 +302,11 @@ describe("no raw-entry consumer is left behind (#453 [c 3])", () => {
 	 * `findSpawnRunById` (it wants the spawn record's `originalParams`). This pins
 	 * the two display/aggregate modules to the logical view.
 	 */
-	it("tui.ts and index.ts read the LOGICAL run list, never the raw one", () => {
-		for (const file of ["tui.ts", "index.ts"]) {
+	it("tui.ts, index.ts and mode-runners.ts read the LOGICAL run list, never the raw one", () => {
+		// ADR 0027 (S2): the batch runners moved out of `index.ts` into
+		// `mode-runners.ts`; the raw-read prohibition follows them rather than
+		// shrinking with the composition root.
+		for (const file of ["tui.ts", "index.ts", "mode-runners.ts"]) {
 			const source = readFileSync(join(process.cwd(), "src", file), "utf8");
 			expect(source, `${file} still reads raw run entries`).not.toContain("getRunEntries(");
 		}

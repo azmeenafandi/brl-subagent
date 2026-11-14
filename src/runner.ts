@@ -10,19 +10,13 @@
  * - Temp file management
  */
 
-import { spawn } from "node:child_process";
-import type { ChildProcess } from "node:child_process";
+import type { TranscriptMessage, TranscriptContentBlock, TranscriptToolCallBlock } from "./transcript-tail";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { wrapTask } from "./prompt";
-import type {
-	SubagentResult,
-	SubagentToolOptions,
-	UsageStats,
-	ThinkingLevel,
-} from "./types";
 import {
 	EMPTY_USAGE,
 	SIGKILL_GRACE_MS,
@@ -33,6 +27,10 @@ import {
 	classifyError,
 	SUBAGENT_ABORTED_MESSAGE,
 	SUBAGENT_SIGNAL_KILLED_MESSAGE,
+	type SubagentResult,
+	type SubagentToolOptions,
+	type UsageStats,
+	type ThinkingLevel,
 } from "./types";
 import {
 	escalateKill,
@@ -45,16 +43,10 @@ import {
 } from "./kill-escalation";
 import { findByMarker, pidAlive, pidHasMarker, pidGone, groupHasMembers, killProcessGroup } from "./proc";
 import { getSafeEnv, DEPTH_ENV_KEY, CHILD_MARKER_ENV_KEY, sanitizeErrorMessage } from "./sanitize";
-import { createLogger } from "./logging";
-import type { Logger } from "./logging";
+import { createLogger, type Logger } from "./logging";
 import { buildEngineeringBarSection } from "./engineering-bar";
-import type { Intercom } from "./messaging";
-import { extractMessages, formatPendingMessages } from "./messaging";
-import type {
-	TranscriptMessage,
-	TranscriptContentBlock,
-	TranscriptToolCallBlock,
-} from "./transcript-tail";
+import { SCRATCH_ENV_KEY, prepareRunScratch } from "./scratch-spawn";
+import { extractMessages, formatPendingMessages, type Intercom } from "./messaging";
 
 /**
  * The logger for diagnostics a CALLER did not instrument. `runSubagent`'s `log`
@@ -1084,7 +1076,39 @@ export async function runSubagent(
 	intercom?: Intercom,
 	subagentId?: string,
 	childMarker?: string,
+	/**
+	 * Issue #511 (U2): this run's id — the record id the caller already persisted
+	 * (`run.id`), and the name of its scratch directory (`<root>/runs/<id>`).
+	 *
+	 * Supplied by every DISPATCH call site (single, chain, parallel, graph — and
+	 * the timeout retry re-enters this function with the same id). It is optional
+	 * only so the non-dispatch callers and the unit tests need not own a scratch
+	 * root: absent means "no scratch directory for this spawn", which is a hole
+	 * `scratch-spawn.test.ts` closes by asserting each dispatch site passes one.
+	 */
+	runId?: string,
 ): Promise<SubagentResult> {
+	// Issue #511 (U2): resolve the scratch root, create this run's directory and
+	// admit `BRL_SCRATCH` into the child's environment — HERE, at the one
+	// foreground spawn seam every caller shares, BEFORE any side effect of the
+	// spawn (no temp system-prompt file, no process). A refusal is named and
+	// pre-spawn: the caller's ordinary failure path reports it and no child
+	// starts.
+	const scratch = runId === undefined ? undefined : prepareRunScratch(runId, { log });
+	if (scratch !== undefined && !scratch.ok) {
+		return {
+			messages: [],
+			usage: { ...EMPTY_USAGE },
+			exitCode: 1,
+			stderr: scratch.message,
+			errorMessage: `scratch root unavailable (${scratch.code}): ${scratch.message}`,
+			// An environment refusal is not a provider or tool failure; "crash" is
+			// the closed taxonomy's bucket for "the child never got to run" (the
+			// named code in the message is the actionable half).
+			errorCategory: "crash",
+		};
+	}
+
 	// E10: Inject pending intercom messages into the task prompt
 	if (intercom && subagentId && intercom.hasMessages(subagentId)) {
 		const pending = intercom.receiveAndClear(subagentId);
@@ -1148,6 +1172,11 @@ ${msgBlock}`;
 				// Option B U1: stamp the per-run marker so boot recovery can discover
 				// this child by scanning /proc/*/environ after a conductor crash.
 				if (childMarker) envOverrides[CHILD_MARKER_ENV_KEY] = childMarker;
+				// Issue #511 (U2): the run's scratch directory, as an OVERRIDE (applied
+				// last by `getSafeEnv`) and never as an allowlisted key: a `BRL_SCRATCH`
+				// inherited from the parent process must be replaced, and a grandchild
+				// must resolve its own run rather than inherit this one.
+				if (scratch) envOverrides[SCRATCH_ENV_KEY] = scratch.runDir;
 				const hasEnvOverrides = Object.keys(envOverrides).length > 0;
 				const proc = spawn(invocation.command, invocation.args, {
 					cwd,

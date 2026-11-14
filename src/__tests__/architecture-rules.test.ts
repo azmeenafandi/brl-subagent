@@ -309,21 +309,48 @@ describe("architecture rules (issue #251)", () => {
 		// assertion must come with a recorded reason, like the other allow-lists
 		// in this file.
 		const indexSource = readFileSync(join(SRC, "index.ts"), "utf8");
+		// ADR 0027 (S2): the three mode runners moved to `mode-runners.ts`. The
+		// prohibition follows the code — the moved range carries zero
+		// `as {` and a new one there is exactly as unchecked as it was in the
+		// composition root. Only the documented retry cast below stays, and it
+		// stays pinned to `index.ts` (where the retry path lives).
+		const modeRunnersSource = readFileSync(join(SRC, "mode-runners.ts"), "utf8");
+		// ADR 0027 (S3): same rule, same reason, for the moved background pipeline
+		// (`runBackgroundFanOut`, `startBackgroundAgent`, `spawnBackgroundRun`).
+		// The spawn request shape it takes is a NAMED interface for this reason —
+		// an inline `spawn: { … }` at the parameter list would be exactly the
+		// anonymous object-literal assertion this rule forbids.
+		const pipelineSource = readFileSync(join(SRC, "background-pipeline.ts"), "utf8");
+		// ADR 0027 (S5): the `delegate_task` body — which carries the retry seam —
+		// moved to `delegate-handler.ts`. Both halves of this pin follow it: the
+		// `as {` prohibition (a new unchecked object-literal claim there is exactly
+		// as invisible as it was in the composition root) and the ONE documented
+		// retry cast, which now lives at its new home.
+		const delegateSource = readFileSync(join(SRC, "delegate-handler.ts"), "utf8");
 
-		expect(
-			/\bas\s*\{/.test(indexSource),
-			"src/index.ts must contain zero `as { … }` object-literal assertions — depend on a declared type instead",
-		).toBe(false);
+		for (const [file, source] of [
+			["src/index.ts", indexSource],
+			["src/mode-runners.ts", modeRunnersSource],
+			["src/background-pipeline.ts", pipelineSource],
+			["src/delegate-handler.ts", delegateSource],
+		] as const) {
+			expect(
+				/\bas\s*\{/.test(source),
+				`${file} must contain zero \`as { … }\` object-literal assertions — depend on a declared type instead`,
+			).toBe(false);
+		}
 
 		// The retry path is the ONE remaining named cast. It exists because
 		// resolveRetryParams rebuilds from a run record whose priority/gitMode/
 		// approvalMode are persisted strings, not schema-validated unions.
 		// Removing it needs the production type work (history.ts's return type),
 		// so this commit PINS the current typed cast and forbids regressing it to
-		// an anonymous literal or `any`.
-		const retryAssignments = indexSource
+		// an anonymous literal or `any`. Since S6 (#430) the assignment sits in
+		// the private `resolveRetrySource` seam — the pin follows it there rather
+		// than relaxing to "somewhere in the file".
+		const retryAssignments = delegateSource
 			.split("\n")
-			.filter((line) => /\bparams\s*=\s*resolveRetryParams\(/.test(line));
+			.filter((line) => /\bresolveRetryParams\(/.test(line));
 		expect(retryAssignments).toHaveLength(1);
 		expect(retryAssignments[0]).toContain("as DelegateTaskParams");
 		expect(retryAssignments[0]).not.toMatch(/\bas\s+(?:any|unknown)\b/);
@@ -331,7 +358,7 @@ describe("architecture rules (issue #251)", () => {
 		// One named retry cast is the whole contract: a second `as
 		// DelegateTaskParams` elsewhere re-opens the unchecked-claim class commit
 		// 1 closed.
-		const namedCasts = indexSource.match(/\bas\s+DelegateTaskParams\b/g) ?? [];
+		const namedCasts = delegateSource.match(/\bas\s+DelegateTaskParams\b/g) ?? [];
 		expect(namedCasts).toHaveLength(1);
 	});
 
@@ -342,13 +369,18 @@ describe("architecture rules (issue #251)", () => {
 		// source shape is ratcheted here. The helper must be CALLED by each
 		// handler at its existing position — never invoked from the prologue — so
 		// this pins one call per batch handler rather than a call count alone.
-		const indexSource = readFileSync(join(SRC, "index.ts"), "utf8");
-		const calls = [...indexSource.matchAll(/\bvalidateUnitPrePass\(\{/g)].map((m) => m.index!);
+		// ADR 0027 (S2): the three batch handlers moved to `mode-runners.ts` —
+		// the ratchet follows them, so a runner that stops calling the helper is
+		// still a build failure. The calls must sit inside `mode-runners.ts`
+		// AND in each handler's own region: a call hoisted out of a handler
+		// (e.g. into the prologue) still fails the ordering assertions.
+		const runnersSource = readFileSync(join(SRC, "mode-runners.ts"), "utf8");
+		const calls = [...runnersSource.matchAll(/\bvalidateUnitPrePass\(\{/g)].map((m) => m.index!);
 		expect(calls, "chain, parallel and graph each call validateUnitPrePass").toHaveLength(3);
 
 		const regions = ["runChainMode", "runParallelMode", "runGraphMode"].map((name) => {
-			const start = indexSource.indexOf(`async function ${name}(`);
-			expect(start, `${name} must exist in src/index.ts`).toBeGreaterThanOrEqual(0);
+			const start = runnersSource.indexOf(`async function ${name}(`);
+			expect(start, `${name} must exist in src/mode-runners.ts`).toBeGreaterThanOrEqual(0);
 			return start;
 		});
 		expect(calls[0]).toBeGreaterThan(regions[0]);
@@ -359,11 +391,15 @@ describe("architecture rules (issue #251)", () => {
 
 		// The batch copies' prefix bindings are gone. The background fan-out
 		// keeps its own loop and its `taskPrefix` binding (a different sequence,
-		// design note §2.4/IN8) — outside this commit's scope, so exactly one
-		// such binding may remain.
-		expect(indexSource).not.toContain("const stepPrefix =");
-		expect(indexSource).not.toContain("const nodePrefix =");
-		expect(indexSource.match(/const taskPrefix =/g) ?? []).toHaveLength(1);
+		// design note §2.4/IN8) — S3 moved that loop into `background-pipeline.ts`
+		// (`runBackgroundFanOut`'s per-task pre-pass), so ALL of these pins follow
+		// it: a re-copied `stepPrefix`/`nodePrefix` there is the drift this whole
+		// test exists to catch, and `index.ts` no longer holds a batch loop to
+		// check. The `taskPrefix` count is the live pin — exactly one.
+		const pipelineSource = readFileSync(join(SRC, "background-pipeline.ts"), "utf8");
+		expect(pipelineSource).not.toContain("const stepPrefix =");
+		expect(pipelineSource).not.toContain("const nodePrefix =");
+		expect(pipelineSource.match(/const taskPrefix =/g) ?? []).toHaveLength(1);
 	});
 
 	it("the transcript-path format is single-sourced in transcript-path.ts (#287)", () => {

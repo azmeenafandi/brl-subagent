@@ -205,7 +205,11 @@ describe("near-duplicate prose guard (#375)", () => {
 		// nothing and pass forever — the exact silent pass this guard exists to
 		// kill. Pin the entry points and a conservative floor.
 		expect(literals.length).toBeGreaterThan(40);
-		expect(literals.some((literal) => literal.file === "src/index.ts")).toBe(true);
+		// ADR 0027 (S5): the largest shipped prose surface — the `delegate_task`
+		// description, its promptGuidelines and `buildTemplateGuideline` — moved
+		// from `src/index.ts` to `src/delegate-handler.ts`. The entry-point anchor
+		// follows it; leaving it on `index.ts` would pin a file the prose has left.
+		expect(literals.some((literal) => literal.file === "src/delegate-handler.ts")).toBe(true);
 		expect(literals.some((literal) => literal.file === "src/schema.ts")).toBe(true);
 	});
 

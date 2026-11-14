@@ -14,9 +14,9 @@
  * session starts and all loggers share <cwd>/.pi/subagent-logs/brl-subagent.log.
  */
 
+import type { LogLevel } from "./types";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { LogLevel } from "./types";
 
 // ---------------------------------------------------------------------------
 // Configuration

@@ -83,6 +83,7 @@ import {
 	stopAgent,
 } from "../session-manager";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { __setScratchRoot } from "../scratch-spawn";
 import { DEFAULT_BACKGROUND_DEADLINE_MS } from "../validate";
 
 const fakePi = { appendEntry: vi.fn() };
@@ -203,6 +204,42 @@ describe("issue #423 — the INITIAL persisted record carries the effective budg
 
 		expect(agent.timeoutMs).toBe(DEFAULT_BACKGROUND_DEADLINE_MS);
 		expect(persistedRecord(agent.id).timeoutMs).toBe(DEFAULT_BACKGROUND_DEADLINE_MS);
+	});
+});
+
+describe("issue #474 — the persisted record names the spawn cwd", () => {
+	/** The record as `persistAgent` wrote it — NOT the in-memory agent object. */
+	function persistedRecord(id: string): Record<string, unknown> {
+		return JSON.parse(readFileSync(join(env.storageDir, `${id}.json`), "utf8"));
+	}
+
+	it("stamps the RESOLVED cwd on the durable record", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {})); // stays running
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "cwd stamp",
+		});
+
+		expect(agent.cwd).toBe(fakeCtx.cwd);
+		// The mutation target is the PERSISTED field: the completion wake reads the
+		// record, not this returned object, so a stamp that never reaches disk
+		// leaves every failed wake reporting `unavailable (no cwd)`.
+		expect(persistedRecord(agent.id).cwd).toBe(fakeCtx.cwd);
+	});
+
+	it("an explicit params.cwd wins over the context cwd", async () => {
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const dir = mkdtempSync(join(tmpdir(), "brl-474-cwd-"));
+		try {
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "explicit cwd",
+				cwd: dir,
+			});
+
+			expect(agent.cwd).toBe(dir);
+			expect(persistedRecord(agent.id).cwd).toBe(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -732,5 +769,106 @@ describe("U3 T7 — prune on the remaining settle paths", () => {
 		await tick();
 		expect(getAgent(agent.id)?.status).toBe("completed");
 		expect(existsSync(dir)).toBe(false);
+	});
+});
+
+/**
+ * Issue #511 (U2) — the scratch root at the BACKGROUND spawn seam.
+ *
+ * A background agent is an in-process SDK session, so this surface has no child
+ * environment to carry `BRL_SCRATCH` (the SDK composes the shell env from
+ * `process.env` at command time). The carrier here is the run's directory plus
+ * the `scratchDir` on its durable run entry — and both must exist BEFORE the
+ * prompt is issued, because a child that starts without them banks nowhere.
+ */
+describe("issue #511 (U2) — the scratch seam on the background surface", () => {
+	/** This test's redirected scratch root (set by `createTempEnv`, per test). */
+	const scratchRoot = (): string => env.scratchRoot;
+
+	/** The run directories under this test's redirected scratch root. */
+	const runDirs = (): string[] => {
+		const root = join(scratchRoot(), "runs");
+		return existsSync(root) ? readdirSync(root) : [];
+	};
+
+	it("creates `<root>/runs/<id>` at 0700 BEFORE the prompt, and records it", async () => {
+		let seenAtPrompt: string[] = [];
+		mocks.session.prompt.mockImplementation(() => {
+			seenAtPrompt = runDirs();
+			return new Promise(() => {});
+		});
+		fakePi.appendEntry.mockClear();
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "scratch seam" });
+
+		const dir = join(scratchRoot(), "runs", agent.id);
+		// Read AT the prompt: a directory created after it would fail here.
+		expect(seenAtPrompt).toContain(agent.id);
+		expect(statSync(dir).mode & 0o777).toBe(0o700);
+		const runEntry = fakePi.appendEntry.mock.calls
+			.map((c) => c[1] as { id?: string; status?: string; scratchDir?: string })
+			.find((d) => d?.id === agent.id && d?.status === "running");
+		expect(runEntry?.scratchDir).toBe(dir);
+	});
+
+	it("a refused root is PRE-SPAWN: no session, no agent record, a named error", async () => {
+		// A regular file where the root must be a directory. It lives in the
+		// repository's `.tmp` chain, NOT under `os.tmpdir()`: a `/tmp` root only
+		// produces a warning (a writable ancestor is advised on, never refused),
+		// which would not prove THIS refusal is pre-spawn.
+		const notARoot = join(process.cwd(), ".tmp", `brl-511-not-a-root-${process.pid}`);
+		writeFileSync(notARoot, "");
+		try {
+			__setScratchRoot(notARoot);
+			mocks.createAgentSession.mockClear();
+
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "refused" }),
+			).rejects.toThrow(/scratch root unavailable \(root-not-dir\)/);
+			expect(mocks.createAgentSession).not.toHaveBeenCalled();
+		} finally {
+			rmSync(notARoot, { force: true });
+		}
+	});
+
+	it("a settled run has its `.done` marker (the settle path marks it)", async () => {
+		const d = deferred();
+		mocks.session.prompt.mockReturnValue(d.promise);
+		mocks.session.messages = [
+			{ role: "user", content: "task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "settle marker" });
+		const dir = join(scratchRoot(), "runs", agent.id);
+		expect(existsSync(join(dir, ".done"))).toBe(false);
+
+		d.resolve();
+		await tick();
+
+		expect(getAgent(agent.id)?.status).toBe("completed");
+		expect(existsSync(join(dir, ".done"))).toBe(true);
+	});
+
+	it("a STOPPED (deadline/abort) run is marked too — `.done` is the settle marker, not a success marker", async () => {
+		let resolvePrompt: () => void = () => {};
+		mocks.session.prompt.mockReturnValue(
+			new Promise<void>((r) => {
+				resolvePrompt = r;
+			}),
+		);
+		mocks.session.messages = [
+			{ role: "assistant", content: [], stopReason: "aborted", errorMessage: "Aborted" },
+		];
+		mocks.session.abort.mockImplementation(async () => resolvePrompt());
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "stopped run",
+			timeout: 5,
+		});
+		const dir = join(scratchRoot(), "runs", agent.id);
+		await tick();
+
+		expect(getAgent(agent.id)?.status).toBe("stopped");
+		expect(existsSync(join(dir, ".done"))).toBe(true);
 	});
 });

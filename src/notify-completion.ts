@@ -18,17 +18,17 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type {
-	BackgroundAgent,
-	BackgroundAgentIdentity,
-	SubagentRun,
-	CompletionNotifyMode,
-	AgentStatus,
-} from "./types";
 import { truncateTail } from "./transcript-tail";
 import { formatRunDuration } from "./history";
 import { formatBudgetDuration } from "./tui-format";
-import { classifyTerminalOutcome } from "./types";
+import {
+	classifyTerminalOutcome,
+	type BackgroundAgent,
+	type BackgroundAgentIdentity,
+	type SubagentRun,
+	type CompletionNotifyMode,
+	type AgentStatus,
+} from "./types";
 import { resolveTerminalRunEntry } from "./state";
 
 /** Terminal statuses the completion message can carry. */
@@ -244,6 +244,33 @@ export function buildCompletionMessage(
 	};
 
 	return { customType: "subagent-completion", content, display: true, details };
+}
+
+/**
+ * Issue #474: insert the worktree-state block into a settled-failure wake, as
+ * its own part and BEFORE the closing directive.
+ *
+ * PURE — it takes the already-rendered block and never probes git: the builder's
+ * contract is "no side effects", and the probe is a subprocess. The caller
+ * renders the block (`describeWorktreeState`) and gates on the CLASSIFIED
+ * status.
+ *
+ * The directive is matched at the END (`endsWith`), never as the first
+ * occurrence: an agent's own tail can quote the directive text, and splitting
+ * there would drop everything after the quote. A shape that does not end with
+ * the directive keeps the block by appending it — a missing report is the one
+ * outcome this function must not produce.
+ */
+export function withWorktreeState(
+	message: CompletionMessagePayload,
+	worktreeState: string,
+): CompletionMessagePayload {
+	if (!worktreeState) return message;
+	const suffix = `\n\n${COMPLETION_DIRECTIVE}`;
+	const content = message.content.endsWith(suffix)
+		? `${message.content.slice(0, -suffix.length)}\n\n${worktreeState}${suffix}`
+		: `${message.content}\n\n${worktreeState}`;
+	return { ...message, content };
 }
 
 /**

@@ -87,8 +87,14 @@ describe("validateUnitPrePass", () => {
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 		expect(result.warnings).toHaveLength(2);
-		expect(result.warnings[0]).toMatch(/^Unit a: Task involves git operations/);
-		expect(result.warnings[1]).toMatch(/^Unit c: Task involves git operations/);
+		expect(result.warnings[0]).toContain(
+			`Unit a: gitMode is 'none' — the harness will not create or capture a branch; the task must run its own git commands`,
+		);
+		expect(result.warnings[1]).toContain(
+			`Unit c: gitMode is 'none' — the harness will not create or capture a branch; the task must run its own git commands`,
+		);
+		// The old wording inferred a capability loss that gitMode never implies (#491).
+		expect(result.warnings.join("\n")).not.toContain("subagent cannot create commits");
 	});
 
 	it("validates the describe-provided task text instead of merged.task", () => {

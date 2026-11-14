@@ -45,11 +45,20 @@
  * extra log fields.
  */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ApprovalMode, GitMode, SubagentPreset, SubagentToolOptions, ThinkingLevel, ToolResult } from "./types";
-import { approvalBlocksBackground, isThinkingLevel, THINKING_LEVELS } from "./types";
-import type { SessionState } from "./state";
 import type { Logger } from "./logging";
+import type { SessionState } from "./state";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	approvalBlocksBackground,
+	isThinkingLevel,
+	THINKING_LEVELS,
+	type ApprovalMode,
+	type GitMode,
+	type SubagentPreset,
+	type SubagentToolOptions,
+	type ThinkingLevel,
+	type ToolResult,
+} from "./types";
 import { validateCwd, validateOutputFile } from "./sanitize";
 import { validatePreTask, type ValidateConfig } from "./validate";
 import { modelIsAvailable, parseModelString } from "./model-availability";
@@ -308,7 +317,7 @@ export function runPreTaskValidation(input: {
 
 /**
  * A merged per-unit source, structurally (mergeSubTaskParams lives in
- * index.ts and is passed in by the handler). These are the fields the
+ * unit-params.ts and is passed in by the handler). These are the fields the
  * pre-pass reads; the handler's own type is preserved through the generic
  * `M` so it can build its mode-specific unit records from the result.
  */
