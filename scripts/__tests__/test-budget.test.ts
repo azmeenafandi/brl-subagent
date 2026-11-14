@@ -786,9 +786,11 @@ describe("main — the two streams and the exit codes", () => {
 		expect(floors).toBeDefined();
 		// Re-pointed with the commit that adds a src module (`scratch-root.ts`, issue #511 U1;
 		// `scratch-spawn.ts`, issue #511 U2) — the floor is "every module reachable", so its
-		// total tracks the tree, never a scan that silently stopped matching.
+		// total tracks the tree, never a scan that silently stopped matching. Re-pointed again for the
+		// scripts surface by `check-contract-tracking.mjs` (issue #514): a new module joins the floor only
+		// with the test that reaches it, which is why 12 becomes 13 rather than the floor being relaxed.
 		expect(/\bsrc (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["60", "60"]);
-		expect(/\bscripts (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["12", "12"]);
+		expect(/\bscripts (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["13", "13"]);
 		expect(measureFloors(ROOT).every((floor) => floor.unreachable.length === 0)).toBe(true);
 	});
 });

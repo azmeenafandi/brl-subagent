@@ -49,12 +49,19 @@ jobs:
       # floors: every non-test source module must be reachable from a *.test.ts through runtime
       # import edges. The per-PR gate is `--flow`, run by merge-guard (g), not by this report.
       - run: node scripts/check-test-budget.mjs vitest-report.json
-      # The tracked instruction surface (#513): a durable artifact — a bank, a findings file, a report —
-      # may not be placed in a system temp directory, because the resume it exists for is exactly the
-      # case where the machine went down. Probe scratch ("scratch repos in /tmp") and a description of
-      # the #512 refusal are printed as non-hits, not failed. The gitignored .pi/brl-subagent overrides
-      # are a separate, warn-only scan and are deliberately NOT gated here: they are not in the repo.
+      # The tracked dispatch contract (#513, #514): a durable artifact — a bank, a findings file, a
+      # report, a record — may not be placed in a system temp directory, because the resume it exists
+      # for is exactly the case where the machine went down. One corpus, three directories: `.pi/skills`
+      # and the project-local `.pi/brl-subagent/{presets,templates}` that take precedence over the
+      # shipped copies at dispatch time. Probe scratch ("scratch repos in /tmp") and a description of
+      # the #512 refusal are printed as non-hits, not failed.
       - run: node scripts/audit-scratch-instructions.mjs
+      # The "never silently untracked" clause (#514): every *.md under .pi/brl-subagent — the presets and
+      # templates a dispatch resolves BEFORE the shipped copies, plus the README that states the set — must
+      # be tracked, and every tracked one must exist on disk. A new contract file is either committed (the
+      # project's contract) or moved to ~/.pi/agent/brl-subagent/ (a personal variant); an untracked file and
+      # a tracked-but-missing file both fail, one line each, because the two fixes are different.
+      - run: node scripts/check-contract-tracking.mjs
       # The Jev ritual's mechanical gate (issue #366): the dispatch-line formatter's selftest, then
       # an audit of the calibration log — every row since the strict-Jev cutoff (2026-10-12) must
       # carry a queried confidence or an explicit gap marker. A bare level is a finding.

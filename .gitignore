@@ -6,11 +6,24 @@ REVIEW_*.md
 __pycache__/
 vitest-report.json
 
-# — .pi: the TOOLS are tracked for contributor parity; session state and
-# local config stay local. Any NEW .pi state dir is ignored by default. —
+# — .pi: the TOOLS are tracked for contributor parity; session state stays
+# local. Any NEW .pi state dir is ignored by default. —
 .pi/*
 !.pi/skills/
 !.pi/extensions/
+
+# — .pi/brl-subagent: the project-local presets and templates ARE the dispatch
+# contract (they take precedence over the shipped copies at dispatch time), so
+# they are tracked (#514) — otherwise a clean checkout dispatches a different
+# text than this one. Extension state (`state.json`, …) stays local: the `/*`
+# line re-ignores every child of the directory, and the negations below re-admit
+# only the contract files. A NEW contract file must be tracked: the tracking
+# check (`scripts/check-contract-tracking.mjs`) fails on an untracked one. —
+!.pi/brl-subagent/
+.pi/brl-subagent/*
+!.pi/brl-subagent/*.md
+!.pi/brl-subagent/presets/
+!.pi/brl-subagent/templates/
 
 # NOTE: .development/ is tracked deliberately (#247). It was untracked in
 # b134db4 (2026-07-26) together with the graph-snapshot bloat; #247 restores

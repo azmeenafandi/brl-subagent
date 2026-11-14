@@ -1,5 +1,5 @@
 /**
- * Tests for `scripts/audit-scratch-instructions.mjs` (issue #513) — the instruction migration's check.
+ * Tests for `scripts/audit-scratch-instructions.mjs` (issues #513, #514) — the instruction migration's check.
  *
  * Why an audit and not a grep: a system-temp path in prose is one of three different things, and only one
  * of them is a defect. A bank in `/tmp` is a durable artifact in a filesystem that dies at reboot; a
@@ -7,20 +7,22 @@
  * the #512 predicate doing its job. A grep cannot tell them apart, so the tool classifies, prints the rule
  * it applied, and fails closed on anything it cannot read — every case below pins one of those three.
  *
- * The corpora are real directories with real files (a planted bank, a planted probe mention, the seven
- * override paths the ignored corpus carries), and the mode's exit code is asserted through `main`, because
- * the exit code IS the contract: `--tracked` gates, `--overrides` warns unless `--strict`.
+ * ONE CORPUS, THREE DIRECTORIES (#514). The old split — `.pi/skills` gated, the gitignored
+ * `.pi/brl-subagent` overrides warn-only — is gone: those presets and templates are tracked now, so a hit
+ * there is a fix we own. The cases below are the merged-corpus contract: a hit in ANY of the three
+ * directories exits 1, and a directory that is missing or empty is a usage fault (exit 2) rather than a
+ * silent "clean" over two thirds of the corpus. The corpus is real directories with real files, and the
+ * exit code is asserted through `main`, because the exit code IS the contract.
  *
  * COVERAGE — what these probes do NOT cover, stated rather than implied:
  *  - a path containing whitespace: the mask stops at a space, so the tail of such a path is read as prose.
  *    The failure direction is the safe one (a leftover word is either harmless or a hit) and no corpus
  *    carries one, but it is a bound of the mask rather than a property of it (#520);
- *  - the ignored override corpus as it exists on THIS machine. The seven files live in the cockpit
- *    checkout and are gitignored, so they are not in a worktree; the probe plants the same seven paths
- *    with the same shapes, and the real run is quoted in the PR body rather than asserted here;
  *  - prose that names a temp location with vocabulary outside the classifier's lists (the classifier
  *    fails closed, so the outcome is a hit, but it cannot be enumerated for a corpus that does not exist
  *    yet);
+ *  - a line that carries BOTH vocabularies ("a probe scratch dir in /tmp is refused") reads as probe
+ *    space, the fail-open direction: the fixtures pin the shapes the corpus carries, not that corner;
  *  - non-Linux paths: `%TEMP%` and `os.tmpdir()` are recognised as spellings, not exercised on a host
  *    that resolves them.
  */
@@ -31,12 +33,11 @@ import {
 	CATEGORIES,
 	EXCLUSIONS,
 	EXIT,
-	OVERRIDE_CORPUS,
 	ROOT,
 	TEMP_PATH,
 	TRACKED_CORPUS,
 	auditCorpus,
-	auditOverrides,
+	auditTracked,
 	classify,
 	collectMarkdown,
 	main,
@@ -55,11 +56,20 @@ afterAll(() => {
 	rmSync(WORK, { recursive: true, force: true });
 });
 
-/** A checkout-shaped temp root: the tracked corpus and the two override directories, empty. */
-function checkout(files: Record<string, string> = {}): string {
+/** The three corpus directories, by the role each plays in the two cases below. */
+const [SKILLS, PRESETS, TEMPLATES] = TRACKED_CORPUS;
+
+/** A checkout-shaped temp root: the three corpus directories, each with one clean file. */
+function checkout(files: Record<string, string> = {}, { dirs = TRACKED_CORPUS }: { dirs?: readonly string[] } = {}): string {
 	const root = join(WORK, `root-${(counter += 1)}`);
 	mkdirSync(root, { recursive: true });
-	const defaults = { [`${TRACKED_CORPUS}/SKILL.md`]: "# A skill\n\nNo paths here.\n" };
+	const defaults: Record<string, string> = {};
+	const seeds: Record<string, string> = {
+		[SKILLS]: "SKILL.md",
+		[PRESETS]: "a-preset.md",
+		[TEMPLATES]: "a-template.md",
+	};
+	for (const dir of dirs) defaults[`${dir}/${seeds[dir]}`] = "# Clean\n\nNo paths here.\n";
 	for (const [path, body] of Object.entries({ ...defaults, ...files })) {
 		const target = join(root, path);
 		mkdirSync(join(target, ".."), { recursive: true });
@@ -98,7 +108,7 @@ describe("audit — the classification is three-way, and printed", () => {
 	});
 
 	it("prefers probe-scratch over refusal, so 'never' cannot hide a scratch instruction", () => {
-		// The regression this pins: refusal-first classified every one of the ignored overrides' probe
+		// The regression this pins: refusal-first classified every one of the project-local corpus' probe
 		// lines as a boundary, and the audit then named 3 files instead of 7.
 		expect(classify("", "scratch repos in `/tmp` — never trust a claim you have not checked")).toBe(CATEGORIES.PROBE_SCRATCH);
 	});
@@ -140,39 +150,56 @@ describe("audit — the classification is three-way, and printed", () => {
 	});
 
 	it("reports a line number, path and text for each mention", () => {
-		const root = checkout({ [`${TRACKED_CORPUS}/bank.md`]: "# Bank\n\nok\n\nbank in /tmp/x.md\n" });
-		const hits = scanFile(join(root, TRACKED_CORPUS, "bank.md"));
+		const root = checkout({ [`${SKILLS}/bank.md`]: "# Bank\n\nok\n\nbank in /tmp/x.md\n" });
+		const hits = scanFile(join(root, SKILLS, "bank.md"));
 		expect(hits).toHaveLength(1);
 		expect(hits[0]).toMatchObject({ line: 5, category: CATEGORIES.ARTIFACT, text: "bank in /tmp/x.md" });
 	});
 });
 
-describe("audit — the tracked corpus gates", () => {
-	it("exits 0 on a clean corpus and prints the corpus it read", () => {
-		const root = checkout({ [`${TRACKED_CORPUS}/worktree/SKILL.md`]: "# Worktree\n\nbank at `<root>/bank/<label>.md`\n" });
+describe("audit — the merged corpus gates", () => {
+	it("exits 0 on a clean corpus and prints all three directories it read", () => {
+		const root = checkout({ [`${SKILLS}/worktree/SKILL.md`]: "# Worktree\n\nbank at `<root>/bank/<label>.md`\n" });
 		const result = run(root);
 		expect(result.code).toBe(EXIT.OK);
-		expect(result.out).toContain("corpus: .pi/skills/**/*.md (2 file(s))");
-		expect(result.out).toContain(join(TRACKED_CORPUS, "worktree", "SKILL.md"));
+		expect(result.out).toContain("corpus: .pi/skills/**/*.md, .pi/brl-subagent/presets/**/*.md, .pi/brl-subagent/templates/**/*.md (4 file(s))");
+		expect(result.out).toContain(join(SKILLS, "worktree", "SKILL.md"));
 		expect(result.out).toContain("hits: none");
+		expect(result.out).toContain("audit: 0 hit(s) in 4 tracked file(s) — clean");
 	});
 
-	it("exits 1 on a planted /tmp bank, naming path:line and the category", () => {
-		const root = checkout({ [`${TRACKED_CORPUS}/impl.md`]: "# Impl\n\nAppend your state to `/tmp/brl-x-bank.md`.\n" });
+	it("exits 1 on a hit in EACH directory, naming the file and the category", () => {
+		// The merge is the point of #514: none of the three directories is warn-only any more, so a hit in
+		// any one of them — including the presets the dispatch reads first — gates the run.
+		const root = checkout({
+			[`${SKILLS}/impl.md`]: "# Impl\n\nAppend your state to `/tmp/brl-x-bank.md`.\n",
+			[`${PRESETS}/project-reviewer.md`]: "# Reviewer\n\nThe record goes to `/tmp/REVIEW_<n>.md`.\n",
+			[`${TEMPLATES}/plan-critique.md`]: "# Critique\n\nBank to `/tmp/brl-<label>-bank.md`.\n",
+		});
 		const result = run(root);
 		expect(result.code).toBe(EXIT.HITS);
-		expect(result.out).toContain(`hit: ${TRACKED_CORPUS}/impl.md:3 · artifact`);
-		expect(result.out).toContain("1 hit(s) in 2 tracked file(s)");
+		expect(result.out).toContain(`hit: ${SKILLS}/impl.md:3 · artifact`);
+		expect(result.out).toContain(`hit: ${PRESETS}/project-reviewer.md:3 · artifact`);
+		expect(result.out).toContain(`hit: ${TEMPLATES}/plan-critique.md:3 · artifact`);
+		expect(result.out).toContain("3 hit(s) in 6 tracked file(s)");
+	});
+
+	it("gates a hit in the presets alone — the directory that used to be warn-only", () => {
+		const root = checkout({ [`${PRESETS}/project-proposer.md`]: "# Proposer\n\nSave the proposal to /tmp/proposal.md\n" });
+		const result = run(root);
+		expect(result.code).toBe(EXIT.HITS);
+		expect(result.out).toContain(`hit: ${PRESETS}/project-proposer.md:3 · artifact`);
+		expect(result.out).toContain("1 hit(s) in 4 tracked file(s)");
 	});
 
 	it("prints the probe-space and refusal mentions it did NOT count, so the distinction is not implied", () => {
 		const body = "# Skill\n\n1. probe in a scratch dir under /tmp\n2. `/tmp` is never the root\n3. bank at /tmp/x.md\n";
-		const root = checkout({ [`${TRACKED_CORPUS}/mixed.md`]: body });
+		const root = checkout({ [`${SKILLS}/mixed.md`]: body });
 		const result = run(root);
 		expect(result.code).toBe(EXIT.HITS);
-		expect(result.out).toContain(`ok:  ${TRACKED_CORPUS}/mixed.md:3 · probe-scratch`);
-		expect(result.out).toContain(`ok:  ${TRACKED_CORPUS}/mixed.md:4 · refusal`);
-		expect(result.out).toContain(`hit: ${TRACKED_CORPUS}/mixed.md:5 · artifact`);
+		expect(result.out).toContain(`ok:  ${SKILLS}/mixed.md:3 · probe-scratch`);
+		expect(result.out).toContain(`ok:  ${SKILLS}/mixed.md:4 · refusal`);
+		expect(result.out).toContain(`hit: ${SKILLS}/mixed.md:5 · artifact`);
 		expect(result.out).toContain("1 hit(s)");
 	});
 
@@ -180,11 +207,11 @@ describe("audit — the tracked corpus gates", () => {
 		// The probe's literal reproduction, through the CLI the gate runs: the same two lines the issue filed
 		// as exits 0, now hits — a durable bank instruction is not throwaway space because of its name.
 		const body = "bank: /tmp/brl-probe-bank.md\n\nAppend your working state to /tmp/brl-probe-bank.md as you work.\n";
-		const root = checkout({ [`${TRACKED_CORPUS}/bank.md`]: body });
+		const root = checkout({ [`${TEMPLATES}/bank.md`]: body });
 		const result = run(root);
 		expect(result.code).toBe(EXIT.HITS);
-		expect(result.out).toContain(`hit: ${TRACKED_CORPUS}/bank.md:1 · artifact`);
-		expect(result.out).toContain(`hit: ${TRACKED_CORPUS}/bank.md:3 · artifact`);
+		expect(result.out).toContain(`hit: ${TEMPLATES}/bank.md:1 · artifact`);
+		expect(result.out).toContain(`hit: ${TEMPLATES}/bank.md:3 · artifact`);
 		expect(result.out).toContain("2 hit(s)");
 	});
 
@@ -197,15 +224,19 @@ describe("audit — the tracked corpus gates", () => {
 		expect(result.out).toContain("fails closed");
 	});
 
-	it("finds the repository's own tracked corpus clean — the migration this audit shipped with", () => {
+	it("finds the repository's own corpus clean — the dispatch contract this audit gates", () => {
 		// The one case that is about THIS checkout rather than a planted one: #513 migrated every durable
-		// artifact path in `.pi/skills/**` to the private root, and this is the assertion that keeps it so.
+		// artifact path in `.pi/skills/**`, #514 did the same in the tracked project-local contract, and this
+		// is the assertion that keeps both so.
 		const out: string[] = [];
-		const code = main(["--tracked", "--root", ROOT], { out: (line: string) => void out.push(line), err: () => undefined });
+		const code = main(["--root", ROOT], { out: (line: string) => void out.push(line), err: () => undefined });
 		const hits = out.filter((line) => line.startsWith("hit:"));
 		expect(hits).toEqual([]);
 		expect(code).toBe(EXIT.OK);
 		expect(out.join("\n")).toContain("audit: 0 hit(s)");
+		// The tracked project-local contract is IN the corpus, not beside it (#514).
+		expect(out.join("\n")).toContain(join(PRESETS, "project-reviewer.md"));
+		expect(out.join("\n")).toContain(join(TEMPLATES, "plan-critique.md"));
 		// The probe-space and refusal mentions that legitimately stay in `/tmp` are printed, not dropped.
 		const printed = out.join("\n");
 		expect(printed).toContain("ok:  .pi/skills/worktree/references/engineering-bar.md");
@@ -213,100 +244,67 @@ describe("audit — the tracked corpus gates", () => {
 		expect(printed).toContain("refusal");
 	});
 
-	it("refuses an empty corpus — a scan of nothing is not a pass", () => {
-		const root = join(WORK, `empty-${(counter += 1)}`);
-		mkdirSync(join(root, TRACKED_CORPUS), { recursive: true });
+	it("refuses a missing corpus directory as exit 2, naming the directory", () => {
+		// One absent directory is the worktree-of-a-project-without-presets shape: the other two would scan
+		// clean and the run would report a corpus it never read.
+		const root = checkout({}, { dirs: [SKILLS, TEMPLATES] });
 		const result = run(root);
 		expect(result.code).toBe(EXIT.USAGE);
-		expect(result.err).toContain("the corpus is empty");
+		expect(result.err).toContain("cannot read the corpus");
+		expect(result.err).toContain(PRESETS);
 	});
 
-	it("refuses a missing corpus as exit 2, never as a clean run", () => {
+	it("refuses a directory with no .md files — a scan of nothing is not a pass", () => {
+		const root = checkout({}, { dirs: [SKILLS] });
+		mkdirSync(join(root, PRESETS), { recursive: true });
+		mkdirSync(join(root, TEMPLATES), { recursive: true });
+		const result = run(root);
+		expect(result.code).toBe(EXIT.USAGE);
+		expect(result.err).toContain("no .md files");
+		expect(result.err).toContain(PRESETS);
+		expect(result.err).toContain(TEMPLATES);
+	});
+
+	it("refuses a root that is not a checkout at all", () => {
 		const result = run(join(WORK, "no-such-checkout"));
 		expect(result.code).toBe(EXIT.USAGE);
 		expect(result.err).toContain("cannot read the corpus");
 	});
 });
 
-describe("audit — the ignored overrides are named, warned, and never edited", () => {
-	/** The seven paths the ignored corpus carries today, with the shapes it carries them in. */
-	const SEVEN: Record<string, string> = {
-		[`${OVERRIDE_CORPUS[0]}/adversarial-review.md`]: "Gate A: scratch repos in /tmp, real commands.\n",
-		[`${OVERRIDE_CORPUS[0]}/focused-review.md`]: "the conductor names a scratch path — a `/tmp` path.\n",
-		[`${OVERRIDE_CORPUS[0]}/plan-critique.md`]: "Append your working state to `/tmp/brl-<label>-bank.md`.\n",
-		[`${OVERRIDE_CORPUS[0]}/design-proposal.md`]: "probe for real in a `/tmp` scratch dir or throwaway copy.\n",
-		[`${OVERRIDE_CORPUS[1]}/project-reviewer.md`]: "`/tmp/REVIEW_<n>.md` only when the dispatch says `/tmp`.\n",
-		[`${OVERRIDE_CORPUS[1]}/project-proposer.md`]: "Scratch experiments live in `/tmp`.\n",
-		[`${OVERRIDE_CORPUS[1]}/project-plan-critic.md`]: "scratch experiments in `/tmp`.\n",
-	};
-
-	it("names all seven paths, warns, and exits 0", () => {
-		const root = checkout(SEVEN);
-		const result = run(root, ["--overrides"]);
-		expect(result.code).toBe(EXIT.OK);
-		for (const path of Object.keys(SEVEN)) expect(result.out).toContain(path);
-		expect(result.out).toContain("7 file(s) carry a system-temp location");
-		expect(result.out).toContain("NOT modified");
-		expect(result.out).toContain("editing a local override is not enforcement");
-		expect(result.out).toContain("warn only; pass --strict to gate");
-	});
-
-	it("gates under --strict, naming the same paths", () => {
-		const root = checkout(SEVEN);
-		const result = run(root, ["--overrides", "--strict"]);
-		expect(result.code).toBe(EXIT.HITS);
-		expect(result.out).toContain("--strict: gated");
-		expect(result.out).toContain(OVERRIDE_CORPUS[0]);
-	});
-
-	it("does not modify the files it reports", () => {
-		const root = checkout(SEVEN);
-		const before = Object.entries(SEVEN).map(([path]) => [path, scanFile(join(root, path)).length]);
-		run(root, ["--overrides", "--strict"]);
-		const after = Object.entries(SEVEN).map(([path]) => [path, scanFile(join(root, path)).length]);
-		expect(after).toEqual(before);
-	});
-
-	it("says when an override directory is absent instead of failing or inventing hits", () => {
-		const root = checkout();
-		const report = auditOverrides({ root });
-		expect(report.files).toEqual([]);
-		expect(report.names).toEqual([]);
-		expect(report.notes.map((note) => note.path)).toEqual([...OVERRIDE_CORPUS]);
-		const result = run(root, ["--overrides"]);
-		// An empty corpus is a usage fault: "--overrides" on a checkout with no overrides cannot be a pass.
-		expect(result.code).toBe(EXIT.USAGE);
-	});
-
-	it("counts a tracked corpus and an override corpus in one run", () => {
-		const root = checkout({ ...SEVEN, [`${TRACKED_CORPUS}/bad.md`]: "bank in /tmp/x.md\n" });
-		const result = run(root, ["--tracked", "--overrides"]);
-		expect(result.code).toBe(EXIT.HITS); // the tracked hit gates even though overrides warn
-		expect(result.out).toContain(`hit: ${TRACKED_CORPUS}/bad.md:1 · artifact`);
-		expect(result.out).toContain("7 file(s) carry a system-temp location");
-	});
-});
-
 describe("audit — the CLI", () => {
-	it("defaults to --tracked and parses the documented flags", () => {
-		expect(parseArgs([]).options).toMatchObject({ modes: ["tracked"], strict: false });
-		expect(parseArgs(["--overrides"]).options).toMatchObject({ modes: ["overrides"] });
-		expect(parseArgs(["--tracked", "--overrides", "--strict"]).options).toMatchObject({ modes: ["tracked", "overrides"], strict: true });
+	it("parses the one flag it still has", () => {
+		expect(parseArgs([]).options).toMatchObject({ root: ROOT });
+		expect(parseArgs(["--root", "/tmp/x"]).options).toMatchObject({ root: "/tmp/x" });
+	});
+
+	it("names the removed selectors as a usage error, never as a silent no-op", () => {
+		// #514 retired the two-corpus mode: `--overrides` labelled those files "gitignored local overrides",
+		// which stopped being true the moment they were tracked. An invocation that still passes it must fail
+		// loudly — accepting it and scanning everything anyway would make a stale call look meaningful.
+		const root = checkout();
+		for (const flag of ["--tracked", "--overrides", "--strict"]) {
+			expect(parseArgs([flag]), flag).toMatchObject({ ok: false });
+			expect(run(root, [flag]).code, flag).toBe(EXIT.USAGE);
+			expect(run(root, [flag]).err, flag).toContain("was removed");
+		}
+		expect(parseArgs(["--overrides"])).toMatchObject({ ok: false, message: expect.stringContaining("was removed") });
 	});
 
 	it("refuses a usage fault as exit 2", () => {
 		expect(parseArgs(["--wat"]).ok).toBe(false);
-		expect(parseArgs(["--strict"]).ok).toBe(false);
 		expect(parseArgs(["--root"]).ok).toBe(false);
 		expect(parseArgs(["positional"]).ok).toBe(false);
-		expect(main(["--strict"], { out: () => undefined, err: () => undefined })).toBe(EXIT.USAGE);
+		expect(main(["--wat"], { out: () => undefined, err: () => undefined })).toBe(EXIT.USAGE);
 	});
 
 	it("prints the corpus as paths relative to the root it scanned, not absolute ones", () => {
 		const root = checkout();
-		const report = auditCorpus(TRACKED_CORPUS, { root });
-		expect(report.files).toEqual([join(TRACKED_CORPUS, "SKILL.md")]);
-		expect(collectMarkdown(join(root, TRACKED_CORPUS))).toEqual([join(root, TRACKED_CORPUS, "SKILL.md")]);
-		expect(renderReport({ mode: "tracked", report }).join("\n")).not.toContain(root);
+		const report = auditCorpus(SKILLS, { root });
+		expect(report.files).toEqual([join(SKILLS, "SKILL.md")]);
+		expect(collectMarkdown(join(root, SKILLS))).toEqual([join(root, SKILLS, "SKILL.md")]);
+		const merged = auditTracked({ root });
+		expect(merged.files).toHaveLength(3);
+		expect(renderReport({ report: merged }).join("\n")).not.toContain(root);
 	});
 });
