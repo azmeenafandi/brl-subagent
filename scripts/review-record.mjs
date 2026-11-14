@@ -22,9 +22,14 @@
 //   private     the default destination is a validated 0700 root (`scripts/lib/scratch-root.mjs`),
 //               owned by us, with no group/other write on any ancestor — and, on Linux, refused
 //               `tmpfs` when the filesystem is one, because a record there does not survive a
-//               reboot. An explicit `--out` is still honoured, but its directory must pass the same
-//               predicate — `/tmp` is refused `ancestor-writable`, and the message names the default
-//               — because group/other write on a directory is rename authority over the file in it.
+//               reboot. An explicit `--out` is still honoured: its directory must pass the ownership
+//               and write-authority clauses — `/tmp` is refused `ancestor-writable`, and the message
+//               names the default — because group/other write on a directory is rename authority over
+//               the file in it, but a `tmpfs` destination is NOT refused. On Linux it is WARNED about:
+//               one `review-record: warning:` line on stderr after a successful write, with stdout's
+//               bytes and the exit code unchanged — an explicit destination is the caller's choice,
+//               while the default root is ours to refuse. The ladder is: the default root refuses,
+//               an explicit destination warns.
 //               There is no temp-directory fallback: an invalid root is a refusal, not a relocation.
 //   serialized  EVERY path that reads prior state and then writes the record takes
 //               `<dir>/.REVIEW_<n>.md.lock` before the read (#512): the same-head rerun, the
@@ -207,10 +212,12 @@ function readPrior(file, { root }) {
  *
  * The default is `<root>/review-<pr>/REVIEW_<pr>.md` in the private root, whose chain is created at
  * 0700 if it is missing and validated if it is not. An explicit `--out` keeps its meaning, but its
- * DIRECTORY must pass the same predicate: `/tmp` is `ancestor-writable` (group/other write there is
- * rename authority over the record), a symlinked component is `symlink-component`, a foreign owner is
- * `untrusted-owner` — and every refusal names the private default, because the reviewer's next move is
- * to drop `--out`, not to pick another shared directory.
+ * DIRECTORY must pass the ownership and write-authority clauses: `/tmp` is `ancestor-writable`
+ * (group/other write there is rename authority over the record), a symlinked component is
+ * `symlink-component`, a foreign owner is `untrusted-owner` — and every refusal names the private
+ * default, because the reviewer's next move is to drop `--out`, not to pick another shared directory.
+ * The mount clause is the one that softens: a destination on a `tmpfs` is accepted, and its success
+ * result carries a `warning` the caller prints (#518).
  */
 export function resolveDestination(spec, options = {}) {
 	const { root = defaultRoot(), ...seams } = options;
@@ -220,6 +227,8 @@ export function resolveDestination(spec, options = {}) {
 		if (!rootCheck.ok) return rootCheck;
 		const dirCheck = ensureDir(dirname(fallback), { root: rootCheck.root, ...seams });
 		if (!dirCheck.ok) return dirCheck;
+		// No `warning` here, by construction: `ensureRoot` REFUSES a tmpfs root, so the default branch
+		// cannot reach a destination this module would warn about.
 		return { ok: true, path: fallback, dir: dirCheck.dir };
 	}
 	const path = resolve(spec.out);
@@ -227,7 +236,7 @@ export function resolveDestination(spec, options = {}) {
 	if (!dirCheck.ok) {
 		return { ok: false, code: dirCheck.code, message: `${dirCheck.message} — the private default is ${fallback}; drop --out to use it` };
 	}
-	return { ok: true, path, dir: dirCheck.dir };
+	return { ok: true, path, dir: dirCheck.dir, warning: dirCheck.warning };
 }
 
 function refuse(err, code, message) {
@@ -351,6 +360,9 @@ export function recordVerify(argv, { out = console.log, err = console.error } = 
  * destination → take the lock → read the prior record INSIDE it → decide the head → render, verify,
  * atomically replace → release. The findings are read before the lock on purpose: an unbounded stdin
  * read is no reason to hold a lock, and the lock exists for the read-prior-then-replace window only.
+ *
+ * Any remaining option is a filesystem seam (`statfs`, `platform`, …) passed straight to
+ * `resolveDestination`, so a test can stub the destination's mount type (#518) without a real tmpfs.
  */
 export function writeRecord(
 	argv,
@@ -360,6 +372,7 @@ export function writeRecord(
 		readStdin = () => readFileSync(0, "utf8"),
 		root = defaultRoot(),
 		lock = {},
+		...seams
 	} = {},
 ) {
 	const parsed = parseArgs(argv);
@@ -389,7 +402,7 @@ export function writeRecord(
 		return EXIT.USAGE;
 	}
 
-	const destination = resolveDestination(spec, { root });
+	const destination = resolveDestination(spec, { root, ...seams });
 	if (!destination.ok) return refuse(err, destination.code, destination.message);
 	const file = destination.path;
 	const dir = destination.dir;
@@ -438,6 +451,9 @@ export function writeRecord(
 		if (!written.ok) return refuse(err, written.code, written.message);
 
 		out(record);
+		// After the write, never before it: a warning about a destination that was then refused would
+		// describe a file that does not exist. Once per write, and on stderr — stdout IS the record.
+		if (destination.warning !== undefined) err(`review-record: warning: ${destination.warning}`);
 		const head = spec.head.toLowerCase();
 		err(
 			`review-record: wrote ${file} (PR #${spec.pr}, head ${head.slice(0, 12)}, verdict ${spec.verdict}, ` +
