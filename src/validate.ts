@@ -66,9 +66,11 @@ interface ToolRequirement {
   requiredTools: string[];
   /**
    * ANY-of: when set, ONE available tool satisfies the requirement and
-   * `requiredTools` is ignored — directory exploration is a single
-   * capability (the browse built-ins find/ls/grep and bash are
-   * interchangeable ways to do it), not a conjunction of all of them.
+   * `requiredTools` is ignored — the row asks whether a single CAPABILITY
+   * is present, not whether every one of its interchangeable means is:
+   * directory exploration (find/ls/grep/bash), writing/creating a file
+   * (write/bash) and editing one (write/edit/bash) are each satisfied by
+   * any ONE of their tools, not a conjunction of all of them (issue #537).
    */
   anyOfTools?: string[];
   /**
@@ -111,17 +113,34 @@ interface ToolRequirement {
  * yarn/pnpm/cargo/pip stay warning-class (docs can name them without
  * needing them). Widening the table is deliberate work: add the keyword
  * here AND update this note.
+ *
+ * CAPABILITY BOUNDARY — what a row claims (issue #537). Each row asks
+ * whether the CAPABILITY exists, not whether a preferred tool does: bash
+ * writes, edits and deletes, so it satisfies the write, edit and delete
+ * rows; the dedicated tools stay preferable by the prompt, not by this
+ * scan. Two consequences worth naming. (a) `edit` cannot create a missing
+ * file, so it does NOT satisfy the write/create row, while `write` rewrites
+ * a file wholesale, so it DOES satisfy the edit row. (b) The delete row
+ * requires bash alone — `write` cannot unlink, so requiring it there told a
+ * bash-bearing toolset to add a tool that could not do the job. The scan
+ * sees BUILT-IN tools only (custom tools are invisible to it). File RENAMES
+ * remain a documented false negative: `rename` sits in the edit row, and
+ * neither edit nor write can remove the old path.
  */
 
 const TOOL_REQUIREMENTS: ToolRequirement[] = [
   {
     patterns: [/\b(write|create|generate|build|implement|add|insert|append)\b/i],
-    requiredTools: ['write', 'edit'],
+    requiredTools: [],
+    // `edit` cannot create a missing file — it does not satisfy this arm.
+    anyOfTools: ['write', 'bash'],
     description: 'involves writing/creating files',
   },
   {
     patterns: [/\b(edit|modify|update|change|fix|patch|refactor|rename)\b/i],
-    requiredTools: ['write', 'edit'],
+    requiredTools: [],
+    // `write` rewrites a file wholesale — it satisfies editing.
+    anyOfTools: ['write', 'edit', 'bash'],
     description: 'involves editing files',
   },
   {
@@ -153,7 +172,8 @@ const TOOL_REQUIREMENTS: ToolRequirement[] = [
   },
   {
     patterns: [/\b(delete|remove|clean|prune|uninstall|rm)\b/i],
-    requiredTools: ['write', 'bash'],
+    // bash is the only builtin that deletes; `write` cannot unlink.
+    requiredTools: ['bash'],
     description: 'involves deleting files',
   },
   {
