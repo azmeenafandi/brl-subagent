@@ -27,14 +27,28 @@ describe("validatePreTask", () => {
 
   // ── Tool validation ──────────────────────────────────────────────
 
-  it("warns when write tool is missing for write task", () => {
+  it("no write/creating warning when bash is present (the read-only reviewer shape)", () => {
+    // #537: the reviewer preset is read/grep/find/ls/bash with write+edit
+    // excluded — it writes its findings THROUGH bash, so the capability
+    // exists. Requiring write+edit fired one warning per missing tool on
+    // each matched row.
     const result = validatePreTask({
       task: "Create a new file with the API endpoint",
       toolOptions: { tools: ["read", "bash", "grep"], excludeTools: ["write", "edit"] },
     });
     expect(result.valid).toBe(true);
-    expect(result.warnings.length).toBeGreaterThan(0);
-    expect(result.warnings.some(w => /write|edit/.test(w))).toBe(true);
+    expect(result.warnings.filter(w => /involves writing\/creating|involves editing/.test(w))).toHaveLength(0);
+  });
+
+  it("warns when write tool is missing and bash is absent — ONE line naming both", () => {
+    const result = validatePreTask({
+      task: "Create a new file with the API endpoint",
+      toolOptions: { tools: ["read"] },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.warnings).toEqual([
+      "Task involves writing/creating files but none of 'write', 'bash' is available (tools=read, excludeTools=none)",
+    ]);
   });
 
   it("blocks a run task when bash is absent (capability error, not a warning)", () => {
@@ -62,13 +76,75 @@ describe("validatePreTask", () => {
     expect(result.warnings.some(w => /bash/.test(w))).toBe(true);
   });
 
-  it("warns when edit is missing for refactor task", () => {
+  it("no editing warning when bash is present (bash edits)", () => {
     const result = validatePreTask({
       task: "Refactor the authentication module",
       toolOptions: { tools: ["read", "bash", "grep"], excludeTools: ["write", "edit"] },
     });
     expect(result.valid).toBe(true);
-    expect(result.warnings.some(w => /write|edit/.test(w))).toBe(true);
+    expect(result.warnings.filter(w => /involves editing/.test(w))).toHaveLength(0);
+  });
+
+  it("warns when edit is missing and bash is absent — one line naming write, edit and bash", () => {
+    const result = validatePreTask({
+      task: "Refactor the authentication module",
+      toolOptions: { tools: ["read"] },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.warnings).toEqual([
+      "Task involves editing files but none of 'write', 'edit', 'bash' is available (tools=read, excludeTools=none)",
+    ]);
+  });
+
+  // ── #537: a row claims a CAPABILITY, not a preferred tool ─────────
+
+  it("edit cannot create a missing file — an edit-only create task still warns (naming write/bash)", () => {
+    const result = validatePreTask({
+      task: "Create a new file with the API endpoint",
+      toolOptions: { tools: ["read", "edit"] },
+    });
+    expect(result.warnings).toEqual([
+      "Task involves writing/creating files but none of 'write', 'bash' is available (tools=read,edit, excludeTools=none)",
+    ]);
+  });
+
+  it("edit satisfies the edit row (edit-only refactor does not warn)", () => {
+    const result = validatePreTask({
+      task: "Refactor the authentication module",
+      toolOptions: { tools: ["read", "edit"] },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("write satisfies the edit row (write-only refactor does not warn)", () => {
+    const result = validatePreTask({
+      task: "Refactor the authentication module",
+      toolOptions: { tools: ["read", "write"] },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("delete row: bash alone satisfies it (no warning)", () => {
+    const result = validatePreTask({
+      task: "delete the stale artifacts",
+      toolOptions: { tools: ["read", "bash"] },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("delete row: without bash exactly one warning, naming bash and never write", () => {
+    const result = validatePreTask({
+      task: "delete the stale artifacts",
+      toolOptions: { tools: ["read", "write", "edit"] },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.warnings).toEqual([
+      "Task involves deleting files but 'bash' is not available (tools=read,write,edit, excludeTools=none)",
+    ]);
+    expect(result.warnings.some(w => /involves writing/.test(w))).toBe(false);
   });
 
   it("warns when read is excluded for audit task", () => {
@@ -157,7 +233,7 @@ describe("validatePreTask", () => {
     it("keeps write/edit mismatches warning-class (not promoted)", () => {
       const result = validatePreTask({
         task: "refactor the parser",
-        toolOptions: { tools: ["read", "bash"] },
+        toolOptions: { tools: ["read"] },
       });
       expect(result.valid).toBe(true);
       expect(result.warnings.length).toBeGreaterThan(0);
@@ -300,7 +376,10 @@ describe("validatePreTask", () => {
   it("no outputFile → existing behavior unchanged (valid:true, no errors)", () => {
     const result = validatePreTask({
       task: "Create a new file with the API endpoint",
-      toolOptions: { excludeTools: ["write", "edit"] },
+      // bash is excluded too: with it present the create CAPABILITY exists, so
+      // this fixture would warn-free and the assertion below would lose its
+      // meaning (#537).
+      toolOptions: { excludeTools: ["write", "edit", "bash"] },
     });
     expect(result.valid).toBe(true);
     expect(result.errors).toHaveLength(0);

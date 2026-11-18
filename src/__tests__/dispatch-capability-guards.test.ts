@@ -378,14 +378,38 @@ describe("pre-task validation warnings are surfaced in the result", () => {
 	});
 
 	it("foreground result carries the warnings, labelled", async () => {
-		const result = await execute({ task: "update the docs", tools: ["read", "bash"] });
+		// Read-only, bash-less toolset: the edit CAPABILITY is genuinely absent
+		// (#537 — with bash present, bash edits and the row stays silent).
+		const result = await execute({ task: "update the docs", tools: ["read"] });
 
 		expect(result.isError).toBeFalsy();
 		expect(h.runSubagent).toHaveBeenCalledTimes(1);
 		const text = result.content[0].text;
 		expect(text).toContain("[pre-task validation warnings]");
-		expect(text).toContain("Task involves editing files");
-		expect(text).toContain("'write'");
+		expect(text).toContain(
+			"Task involves editing files but none of 'write', 'edit', 'bash' is available (tools=read, excludeTools=none)",
+		);
+	});
+
+	it("#537: the reviewer shape (bash-backed, write/edit excluded) emits no write/edit/delete warning", async () => {
+		// The real review dispatches (review-534, review-535) run read/grep/find/ls/bash
+		// with write+edit excluded, and their task text names write, create, edit and
+		// delete while bash genuinely performs all three capabilities. The archived
+		// task texts live in a gitignored .pi/subagents/*.json and cannot be replayed
+		// here; this is the documented equivalent probe, and its vocabulary is the
+		// union of those texts' triggering words.
+		const result = await execute({
+			task: "Review the change: write nothing, create nothing, edit nothing, delete nothing; bank the findings and write the record through bash",
+			tools: ["read", "grep", "find", "ls", "bash"],
+			excludeTools: ["write", "edit"],
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(h.runSubagent).toHaveBeenCalledTimes(1);
+		const text = result.content[0].text;
+		expect(text).not.toContain("Task involves writing/creating files");
+		expect(text).not.toContain("Task involves editing files");
+		expect(text).not.toContain("Task involves deleting files");
 	});
 
 	it("foreground parallel result carries per-task warnings, prefixed with the task (issue #220)", async () => {
@@ -407,11 +431,11 @@ describe("pre-task validation warnings are surfaced in the result", () => {
 	it("normalized 'Task involves …' rendering — standalone and unit-prefixed, no doubled 'Task'", async () => {
 		// Standalone: the single-task foreground result renders the warning
 		// lead once (description strings start with the verb, issue #220).
-		const single = await execute({ task: "update the docs", tools: ["read", "bash"] });
+		const single = await execute({ task: "update the docs", tools: ["read"] });
 
 		expect(single.isError).toBeFalsy();
 		expect(single.content[0].text).toContain(
-			"Task involves editing files but 'write' is not available (tools=read,bash, excludeTools=none)",
+			"Task involves editing files but none of 'write', 'edit', 'bash' is available (tools=read, excludeTools=none)",
 		);
 
 		// Prefixed: unit prefix + warning lead reads naturally — never
