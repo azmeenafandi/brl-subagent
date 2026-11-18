@@ -8,7 +8,7 @@
 ## STATE
 
 Verified: f5fe4f9 (2026-11-18)
-Cycle: **preflight-debt CLOSED 2026-11-18** (opened 2026-11-18) — U1 **#537** merged (PR #539, `6be93bd`) and dogfooded; no further pre-flight issue is open and no next cycle is declared. The close row (`preflight-debt`) is in `FRICTION_LOG.md`, the metrics row in `METRICS.md`. Prior cycles closed: contract-debt 2026-11-14, review-debt 2026-11-14, shipped-half, scratch-hygiene.
+Cycle: **timeout-guidance OPEN** (declared 2026-11-18) — U1 = **#426 E** (the portable timeout guidance + the reference-workload table; "safe for everyone"). The spec is in progress (replay → draft → plan critique); no implementation yet. The `preflight-debt` cycle closed 2026-11-18 (U1 #537; close row in `FRICTION_LOG.md`).
 - **dev** @ `f5fe4f9`. The closed cycle's merged unit: #539 (#537: the pre-flight capability rows — write/create `anyOf [write, bash]`, edit `anyOf [write, edit, bash]`, delete `requiredTools [bash]`; review `muse-ember`); the cycle close is the docs commit `f5fe4f9`. No worktrees beyond the cockpit pair; `git worktree list` = `main` + `dev`.
 - **Released:** **v2.9.0 LIVE** (2026-11-14) — tag `v2.9.0` at `485c761`, npm `latest` 2.9.0, published-build parity 82/82. **#539 is merged and dogfooded but NOT in the published tarball**; the post-2.9.0 release is the maintainer's call.
 - **Running install:** **local-path dev checkout** (this repo, `dev @ f5fe4f9`; the code is `6be93bd`) — dogfooded 2026-11-18: the probe dispatch (bash-bearing, `write`/`edit` excluded, five trigger words) returned **zero pre-flight warnings**. Revert: `pi remove <dev path>` → `pi install npm:brl-subagent` → `/reload`.
@@ -20,10 +20,11 @@ Cycle: **preflight-debt CLOSED 2026-11-18** (opened 2026-11-18) — U1 **#537** 
 - **Project flag:** `{"brl-subagent": {"processChecks": true}}` gates the Jev line, the dispatch-shape pre-flight and the engineering bar (fail-open).
 
 ### Since the last handover
+- **The `timeout-guidance` cycle opened 2026-11-18** — U1 = #426 E; the direction and placement are locked (the portable principle in the prompt, the reference table in `AGENT.md`, the "safe for everyone" scope); the spec is in progress.
 - **The `preflight-debt` cycle closed 2026-11-18.** U1 #537 (PR #539) merged at `6be93bd`, reviewed approve-with-nits, dogfooded (zero warnings), and the close ritual ran: **5 dispatches (1 fg / 4 bg), 5/5 settled (100%), Δ 0, 0.8 polls/dispatch, 0 steer/stop**; **Rule 11** — the #533 class recurrence #5 (already P0), the handoff's four stale claims ×1 class resolved in-cycle, the CodeGraph staleness carried; **environment sweep** — five candidates, led by a `handoff-verify` size guard and CodeGraph freshness in `merge-guard`. The full row is in `FRICTION_LOG.md`; spec at `.development/investigations/issue-537-preflight-capability-rows-spec-2026-11-18.md`.
 
 ### Next actions
-1. **No cycle is open.** The `preflight-debt` cycle closed 2026-11-18; the next cycle is not declared (discussion mode). The open board — **#533** (P0 process/tooling), **#450** (hardening, direction open), **#426** (design-open) — and the close's sweep candidates are candidates for the next cycle, not units of a closed one; #450/#426 stay unimplemented until a priority is recorded.
+1. **The `timeout-guidance` cycle is open (U1 = #426 E).** The spec is in progress: replay/tail check → draft → plan critique → implementation. No code is in flight. The open board — **#533** (P0 process/tooling), **#450** (hardening, direction open), **#426** (design-open; E is the unit, B/C/D trigger-parked) — remains as before; #450 stays unimplemented until a priority is recorded.
 2. **Release:** the post-2.9.0 code (#539) is merged and dogfooded but not in the published tarball — cut the next release on the maintainer's go (no version proposed here).
 3. **Follow-ups with no issue yet:** the v2.9.0-prep recovery survivor-report flake (load-only; ownership before group-emptiness in `verifyDeath` + an unknown-scan test); `spawnBackgroundSession` size; the shared `vi.mock("../git")` fixture; the `branch-lock.ts` extraction; the budget ceiling; the merge gate's (g) block half still executing the PR tree's `pr-evidence` (unfiled C1).
 
