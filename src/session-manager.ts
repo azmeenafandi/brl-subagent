@@ -162,12 +162,12 @@ function thrownMessage(thrown: unknown): string {
 
 /**
  * Issue #450 (D5): a log call on an ERROR path must never replace the error it
- * reports. `src/logging.ts:158` calls the console mirror OUTSIDE its file-write
- * catch, so with `setConsoleOutput(true)` and a throwing `console` sink,
- * `log.warn` throws — and in a catch block that throw becomes the caller's
- * error, and skips every later step of the cleanup. This wrapper swallows a
- * sinking logger fault. The global fix is #543; this containment is local to
- * the settle/pre-start paths.
+ * reports — a throwing sink becomes the caller's error and skips every later
+ * step of the cleanup. `src/logging.ts` used to propagate a console-mirror
+ * fault; #543 contains it at the sink (a mirror fault is swallowed like a
+ * file-write fault). The entry build can still throw — `JSON.stringify` on
+ * cyclic `data` sits outside the sink's catches (#545) — so this wrapper stays
+ * as a belt-and-braces sensor, local to the settle/pre-start paths.
  */
 function safeLog(write: () => void): void {
   try {
