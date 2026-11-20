@@ -1,6 +1,6 @@
 # pi 1.6.0 render compatibility — PR plan (HELD)
 
-**Status:** saved 2026-11-20; **do not start until the `timeout-guidance` cycle closes**.
+**Status:** **DONE 2026-11-20** — shipped as PR #541 (merge `10cf885`); C2 approve-with-nits, gate green, devDeps parity at 1.6.0. The hold trigger (the `timeout-guidance` cycle) closed 2026-11-20.
 **Scope:** a small TUI compatibility PR for pi-tui 1.6.0; no behaviour change, no timeout-guidance content.
 **Proposed branch:** `fix/pi-1.6.0-render-compat`
 **Proposed risk class:** C1 (TUI-only; no registered surface, no pre-flight/prompt change; the reviewer may raise it if the devDeps bump changes public types).
