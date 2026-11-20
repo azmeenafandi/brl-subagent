@@ -170,6 +170,65 @@ describe("tool definitions are byte-identical to the pre-move literals (issue #4
 	});
 });
 
+describe("the delegate_task timeout guidance (#426 E)", () => {
+	// The guardrail is located by CONTENT, not by array index: index 5 is the
+	// `Use outputFile` guideline, and an index pin would silently target the
+	// wrong item the moment a guideline is inserted.
+	const guidelines = tools.get("delegate_task")?.promptGuidelines ?? [];
+	const timeoutGuardrail = guidelines.find((g) => g.startsWith("**5. Timeout:**"));
+
+	const timeoutParameter = (
+		tools.get("delegate_task")?.parameters as {
+			properties: { timeout: { description: string } };
+		}
+	).properties.timeout;
+	const fixtureTimeout = (
+		fixture.tools.delegate_task.parameters as {
+			properties: { timeout: { description: string } };
+		}
+	).properties.timeout;
+
+	it("ships exactly one guardrail numbered 5, and it is the timeout one", () => {
+		expect(timeoutGuardrail, "the **5. Timeout:** guardrail must be registered").toBeDefined();
+		expect(guidelines.filter((g) => g.startsWith("**5. Timeout:**"))).toHaveLength(1);
+	});
+
+	it("states the millisecond unit and the background-only default, in minutes", () => {
+		const guardrail = timeoutGuardrail!;
+		// The exact unit line: the parameter is ms, so a seconds band is a unit bug.
+		expect(guardrail).toContain("The `timeout` parameter is milliseconds");
+		expect(guardrail).toContain("default, not an enforced floor");
+		expect(guardrail).toContain("pass `timeout: 7200000`");
+		expect(guardrail).toContain("2 hours (7,200,000 ms)");
+	});
+
+	it("carries no seconds-suffixed number at all — not just the retired bands", () => {
+		const guardrail = timeoutGuardrail!;
+		// Stronger than pinning 30s/60s/120s: ANY `<number>s` suffix is the units
+		// bug, so a new band cannot sneak back in a different shape.
+		expect(guardrail).not.toMatch(/\b\d+\s*s\b/);
+		for (const retired of ["30s", "60s", "120s"]) {
+			expect(guardrail).not.toContain(retired);
+		}
+	});
+
+	it("registers the reconciled parameter description, fixture-pinned", () => {
+		// The schema description is model-facing too, and it is the second place the
+		// runtime contract is stated (background default vs foreground none, the
+		// normalization, the opt-in switch, the snapshot/later-settle rule).
+		expect(timeoutParameter.description).toContain("high/xhigh foreground switch");
+		expect(timeoutParameter.description).toContain("written at expiry");
+		expect(timeoutParameter.description).toContain("amends");
+		expect(timeoutParameter.description).toContain("retryOnTimeout");
+		// The retired blanket claim is gone: background expiry is a cooperative abort.
+		expect(timeoutParameter.description).not.toContain(
+			"If exceeded, the subagent is killed and an error is returned",
+		);
+		// And the fixture carries the same text, so the pin cannot drift.
+		expect(timeoutParameter.description).toBe(fixtureTimeout.description);
+	});
+});
+
 describe("the /brl-subagent command surface (issue #483)", () => {
 	it("keeps its description and its completion contract", () => {
 		const command = commands.get(COMMAND_NAME);

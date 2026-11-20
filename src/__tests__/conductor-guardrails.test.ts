@@ -43,7 +43,13 @@ describe("promptGuidelines — conductor guardrails", () => {
 	});
 
 	it("includes timeout guidance", () => {
-		expect(DELEGATE_HANDLER_SRC).toContain("Set timeout based on task complexity");
+		// #426 E: the timeout guidance is a deadline policy in milliseconds, not a
+		// table of seconds bands. The old seconds-scale line is retired — it mixed
+		// units with the ms parameter and sat 10–20× below the measured p50/p90.
+		expect(DELEGATE_HANDLER_SRC).toContain("A deadline is a cap, not a schedule");
+		expect(DELEGATE_HANDLER_SRC).toContain("The `timeout` parameter is milliseconds");
+		expect(DELEGATE_HANDLER_SRC).toContain("default, not an enforced floor");
+		expect(DELEGATE_HANDLER_SRC).not.toContain("Set timeout based on task complexity");
 	});
 
 	it("references H1 validation in guardrails context", () => {

@@ -78,7 +78,22 @@ delegation-heavy work.
 
 ## Deadlines and retries
 
-- `timeout` (ms) is a **deadline, not a ceiling** — an explicit value is honored as given; 30 minutes is only the default for a background run that passes none (a foreground run is not capped). Background expiry aborts the session (the agent ends `stopped`, the run record is `failed`/`timeout`); foreground expiry kills the process. Because background is now the default under `auto`, remember the 30-minute deadline: pass an explicit `timeout` for anything expected to run longer.
+- `timeout` (ms) is a **deadline, not a ceiling** — an explicit positive value is honored as given; 30 minutes is only the default for a background run that passes none (a foreground run is not capped). Background expiry aborts the session (the agent ends `stopped`, the run record is `failed`/`timeout`); foreground expiry kills the process. Because background is now the default under `auto`, remember the 30-minute deadline: pass an explicit `timeout` for anything expected to run longer. The exceptions to "honored as given": a raw value `≥ 2³¹−1` ms **or a nonpositive value** normalizes to no timeout (a background run then gets the 30m default, a foreground run has none), and the opt-in `processChecks` high/xhigh **foreground** switch may drop an explicit timeout.
+
+  **Reference priors (2026-11-18 snapshot).** The table uses minutes; the `timeout` parameter itself is milliseconds. Reference workload: this repo, 2026-11-04T14:37Z → 2026-11-18T13:45Z; 217 settled background runs; the model cohorts are descriptive (each includes whatever tasks that model ran); the completed-only stats are the cap basis. Your mileage will vary: use your own run history when you have it; the 2h fallback is for an unknown shape, not a guarantee; a slow/local model needs more — pass a larger explicit timeout (a valid positive value is honored unless the opt-in high/xhigh foreground switch drops it; the only removals are that switch and the normalization of raw ≥2³¹−1/nonpositive values: a background run then gets the 30m default, a foreground run has none). The reference cap is not a runtime ceiling.
+
+  | model cohort (descriptive) | n (done/failed) | completed p50 | p90 | p99 | max | reference cap |
+  |---|---|---|---|---|---|---|
+  | deepseek-flash (implementation + probes + 24 failures: 23 transport + 1 abort) | 106 (82/24) | 9.1m | 19.8m | 26.9m | 28.4m | 60m |
+  | muse-spark / muse-ember (review) | 70 (60/10) | 4.8m | 8.2m | 16.0m | 16.3m | 20–30m |
+  | gpt-6.1-terra (critique) | 39 (37/2) | 1.6m | 6.1m | 10.0m | 10.6m | 30m |
+  | qwen3.8-max (critique; n=2) | 2 (2/0) | 29.7m | — | — | 35.1m | 60m (caveat) |
+  | all background | 217 (181/36) | 5.2m | 15.7m | 26.9m | 35.1m | 2h fallback |
+
+  - The cap is a **reference ceiling above the observed tail** for that model cohort's completed work, not a runtime ceiling or a target. A run that hits it is aborted (background) or killed (foreground); pass a larger explicit timeout if you know the task/model needs it (a valid positive value is honored unless the opt-in high/xhigh foreground switch drops it; raw ≥2³¹−1/nonpositive values normalize to no timeout, background then 30m, foreground none).
+  - The 30-minute **background** default applies when no valid timeout remains after normalization; a **foreground** run has no default. It is a default, not an enforced floor.
+  - Quick probes are not a separate validated cohort; the 4-run sample is descriptive only. Use the 30-minute **background** default for a **background** probe unless your own history supports a shorter cap; a **foreground/inline** probe (`background: false`) has no default — pass an explicit `timeout` if it needs a cap. The opt-in high/xhigh foreground switch may drop an explicit timeout.
+  - The qwen row is n=2 — a caveat, not a rule; the 60m cap covers it, and the 2h fallback is for an unknown shape.
 - `retryOnTimeout` applies to **foreground runs only**. A timed-out background run is not auto-retried on the deadline: re-dispatch it with `retryRunId` if that is the right call. The one automatic retry is the **transport-class** one above — a background run that died on a dropped connection is replayed once. The same applies to an interrupted run — recovery is always an explicit `retryRunId` call, never automatic (auto mode is not yet accepted). A run recorded before its prompt was ever issued is settled as **failed**, so the retry menu never lists it as interrupted.
 
 ## Mechanics pointer
