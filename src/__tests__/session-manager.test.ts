@@ -97,7 +97,7 @@ vi.mock("../event-bus", () => ({
 	createEvent: eventBusMock.createEvent,
 }));
 
-import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, backgroundSessionDir } from "../session-manager";
+import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, backgroundSessionDir, markAgentInterrupted } from "../session-manager";
 import { listInflightRuns } from "../run-registry";
 import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
 import { CUSTOM_ENTRY_TYPES, NO_ASSISTANT_OUTPUT_REASON, PROMPT_NEVER_ISSUED_MESSAGE, isSubagentRunShape, type SubagentRun } from "../types";
@@ -3439,6 +3439,22 @@ describe("issue #447 — never-started dispatches", () => {
 		expect(listInflightRuns()).toHaveLength(0);
 		expect((await scanBoot()).neverStarted).toBe(0);
 		expect(interruptedViews()).toEqual([]);
+
+		// Issue #542: the throw settles the RECORD too (memory + disk), releases the
+		// live-session ref, fabricates NO output and emits exactly ONE terminal
+		// event — and the caller still receives the ORIGINAL transcript error, never
+		// the cleanup's. The note is absent by construction: the transcript dir was
+		// never writable, so `completeTranscript` no-ops (Acceptance 3, case (c)).
+		const id = (fakePi.appendEntry.mock.calls[0][1] as Record<string, unknown>).id as string;
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		expect(record._sessionRef).toBeUndefined();
+		expect(record.finalOutput).toBeUndefined();
+		expect(
+			eventBusMock.emit.mock.calls
+				.map(([event]) => (event as { type: string }).type)
+				.filter((type) => type === "subagent:failed"),
+		).toHaveLength(1);
 	});
 
 	it("A3: an acceptance write that throws means the prompt is NEVER issued (M7)", async () => {
@@ -3462,6 +3478,21 @@ describe("issue #447 — never-started dispatches", () => {
 		expect(terminal.acceptedAt).toBeNull();
 		expect(String(terminal.errorMessage)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
 		expect(String(terminal.errorMessage)).toContain("accept-boom");
+		// Issue #542 (H3/C1): the acceptance-write throw settles the RECORD too — in
+		// memory AND on disk (status, completedAt, error), with the acceptance
+		// residue (`acceptedAt: null`) preserved. Without these the skip-the-flip
+		// mutant passed: the run entry alone cannot see the record.
+		const id = (fakePi.appendEntry.mock.calls[0][1] as Record<string, unknown>).id as string;
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		expect(typeof record.completedAt).toBe("number");
+		expect(String(record.error)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+		expect(record._sessionRef).toBeUndefined();
+		const onDisk = JSON.parse(readFileSync(join(env.storageDir, `${id}.json`), "utf8"));
+		expect(onDisk.status).toBe("failed");
+		expect(typeof onDisk.completedAt).toBe("number");
+		expect(String(onDisk.error)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+		expect(terminal.acceptedAt).toBeNull(); // still the acceptance-write residue
 		expect(listInflightRuns()).toHaveLength(0);
 		expect(interruptedViews()).toEqual([]);
 	});
@@ -3802,12 +3833,15 @@ describe("#450 settle handlers attach before the prompt", () => {
 				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync throw tripwire" }),
 			).rejects.toThrow("sync pre-start boom");
 
-			// (1) No settle body reached a transcript write of its own...
+			// (1) The note now comes from the PRE-START FLIP (#542), not from a settle
+			// body — exactly one, carrying the run's terminal status...
 			const [id] = transcriptIds();
 			expect(id).toBeDefined();
-			expect(readFileSync(transcriptGetTranscriptPath(id), "utf-8")).not.toContain("Transcript completed");
-			// (2) ...no terminal event was emitted...
-			expect(emittedTypes()).not.toContain("subagent:failed");
+			expect(readFileSync(transcriptGetTranscriptPath(id), "utf-8")).toContain("Transcript completed: failed");
+			// (2) ...and exactly ONE terminal event, from that same flip. The COMPLETED
+			// event still has exactly one producer — a settle body, which must not run
+			// here — so it stays absent.
+			expect(emittedTypes().filter((type) => type === "subagent:failed")).toHaveLength(1);
 			expect(emittedTypes()).not.toContain("subagent:completed");
 			// (3) ...exactly the three run writes, and the terminal one is `failed`.
 			expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
@@ -3870,5 +3904,241 @@ describe("#450 settle handlers attach before the prompt", () => {
 			.filter((line) => line !== "" && !line.startsWith("//") && !line.startsWith("*") && !line.startsWith("/*"))
 			.filter((line) => /\bawait\b/.test(line));
 		expect(awaitsBetween, "an `await` between the spawn and the identity capture re-opens the D4 hop").toEqual([]);
+	});
+});
+
+// =========================================================================
+// Issue #542: a pre-start failure settles the AGENT RECORD, not only the run
+// entry. ONE shared, per-step-contained three-write helper serves the two
+// branch refusals and every pre-start throw — run entry -> record flip ->
+// transcript, each in its own `try`, with `_sessionRef` released INLINE
+// outside every `try` (the release must run even when the note throws, and
+// nothing may be fabricated for a session that never produced output).
+// =========================================================================
+describe("issue #542 — a pre-start failure settles the agent record", () => {
+	/** ONE note = one transcript LINE: count them, never `.find()`. */
+	const noteCount = (id: string, text: string): number =>
+		readFileSync(transcriptGetTranscriptPath(id), "utf-8")
+			.split("\n")
+			.filter((line) => line.includes(text)).length;
+
+	/** The event types the mocked bus was asked to emit. */
+	const emittedTypes = (): string[] =>
+		eventBusMock.emit.mock.calls.map(([event]) => (event as { type: string }).type);
+
+	/** How many terminal failures were emitted — the flip's own observable. */
+	const failedEvents = (): number => emittedTypes().filter((type) => type === "subagent:failed").length;
+
+	/** The agent id from the SPAWN record (written before every pre-start throw). */
+	const spawnedId = (): string =>
+		(fakePi.appendEntry.mock.calls[0][1] as Record<string, unknown>).id as string;
+
+	/** The persisted agent record — the disk claim, not the in-memory object. */
+	const persisted = (id: string): Record<string, unknown> =>
+		JSON.parse(readFileSync(join(env.storageDir, `${id}.json`), "utf8"));
+
+	beforeEach(() => {
+		resetGitMocks();
+	});
+
+	afterEach(() => {
+		fakePi.appendEntry.mockReset();
+	});
+
+	it("(a) ORDER: the run entry is terminal before the flip, and the flip's OWN fault suppresses nothing", async () => {
+		let runStatusAtRecordFlip: unknown = "<no subagent:failed>";
+		eventBusMock.emit.mockImplementation((event: { type: string; agentId: string }) => {
+			if (event.type !== "subagent:failed") return;
+			// The mocked append stream INCLUDES the entry just written, so this is
+			// the run entry the record flip follows — not the pre-start snapshot.
+			runStatusAtRecordFlip = lastRunEntry().status;
+			throw new Error("emit boom");
+		});
+		mocks.session.prompt.mockImplementation(() => {
+			throw new Error("sync pre-start boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "order" }),
+		).rejects.toThrow("sync pre-start boom");
+
+		// The FLIP runs after the run entry (the swap), and its own throw is
+		// contained by STEP B's `try` — so the record is already terminal, STEP C
+		// still writes its note and STEP 3 still retires the registry.
+		expect(runStatusAtRecordFlip).toBe("failed");
+		const id = spawnedId();
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		expect(typeof record.completedAt).toBe("number");
+		// Site C passes the sanitized reason (not the never-issued stamp) — the
+		// record carries the same message the run entry does.
+		expect(String(record.error)).toContain("sync pre-start boom");
+		expect(record._sessionRef).toBeUndefined();
+		expect(record.finalOutput).toBeUndefined();
+		expect(noteCount(id, "Transcript completed: failed")).toBe(1);
+		expect(failedEvents()).toBe(1);
+		expect(listInflightRuns()).toHaveLength(0);
+	});
+
+	it("(b) a FAILED run-entry append suppresses neither the flip nor the note — ATTEMPTED ≠ COMMITTED", async () => {
+		const committed: string[] = [];
+		let writes = 0;
+		fakePi.appendEntry.mockImplementation((_type: string, entry: Record<string, unknown>) => {
+			writes += 1;
+			// The THIRD write is the terminal one: it is attempted, never committed.
+			if (writes === SETTLED_RUN_WRITES) throw new Error("terminal append boom");
+			committed.push(String(entry.status));
+		});
+		mocks.session.prompt.mockImplementation(() => {
+			throw new Error("sync pre-start boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "entry fault" }),
+		).rejects.toThrow("sync pre-start boom");
+
+		// STEP A's fault suppressed neither STEP B nor STEP C, and the caller keeps
+		// its ORIGINAL error.
+		const id = spawnedId();
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		expect(persisted(id).status).toBe("failed");
+		expect(noteCount(id, "Transcript completed: failed")).toBe(1);
+		expect(record._sessionRef).toBeUndefined();
+		expect(listInflightRuns()).toHaveLength(0);
+		// The DESIGNED residue (contract §ATTEMPTED): the attempt is terminal while
+		// the last COMMITTED entry is still the acceptance record. Pinned so the
+		// contract can never be read as "the run entry is committed when the event
+		// fires".
+		expect((lastRunEntry() as unknown as SubagentRun).status).toBe("failed");
+		expect(committed[committed.length - 1]).toBe("running");
+	});
+
+	it("(c) a REAL transcript-note fault (EISDIR) still releases the ref and keeps the original error", async () => {
+		let plantedPath = "";
+		mocks.session.prompt.mockImplementation(() => {
+			// The transcript file exists (startTranscript ran above); replace it with
+			// a DIRECTORY so STEP C's append fails with a real EISDIR — nothing here
+			// is mocked.
+			plantedPath = transcriptGetTranscriptPath(spawnedId());
+			rmSync(plantedPath, { force: true });
+			mkdirSync(plantedPath);
+			throw new Error("sync preflight failure");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "note fault" }),
+		).rejects.toThrow("sync preflight failure");
+
+		// The fault is real (no mock): the note path IS a directory...
+		expect(statSync(plantedPath).isDirectory()).toBe(true);
+		const id = spawnedId();
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		// ...and the release still ran, because it sits OUTSIDE every `try`. This is
+		// the only pin that catches the release placement (M5′).
+		expect(record._sessionRef).toBeUndefined();
+		expect((lastRunEntry() as unknown as SubagentRun).status).toBe("failed");
+	});
+
+	const refusals: Array<[string, () => void]> = [
+		[
+			"a dirty base tree",
+			() => {
+				mocks.git.hasUncommittedChanges.mockReset();
+				mocks.git.hasUncommittedChanges.mockReturnValue(true);
+			},
+		],
+		[
+			"a throwing createWorkBranch",
+			() => {
+				mocks.git.createWorkBranch.mockImplementation(() => {
+					throw new Error("create-boom");
+				});
+			},
+		],
+	];
+
+	it.each(refusals)("(d) the branch refusal on %s settles the record and releases the live session", async (_label, arrange) => {
+		arrange();
+		mocks.session.prompt.mockReturnValue(new Promise(() => {})); // must never be reached
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "refused branch",
+				gitMode: "branch",
+			}),
+		).rejects.toThrow(/gitMode 'branch'/);
+
+		const id = spawnedId();
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		expect(persisted(id).status).toBe("failed");
+		// Issue #542 (R4): the ref is set BEFORE the branch block, so the refusal
+		// used to leak the live session graph on both sites.
+		expect(record._sessionRef).toBeUndefined();
+		expect(noteCount(id, "Transcript completed: failed")).toBe(1);
+		expect(failedEvents()).toBe(1);
+		expect((lastRunEntry() as unknown as SubagentRun).status).toBe("failed");
+		expect(listInflightRuns()).toHaveLength(0);
+		expect(mocks.session.prompt).not.toHaveBeenCalled();
+	});
+
+	it("(e) fault-free control: exactly once and nothing captured", async () => {
+		mocks.session.prompt.mockImplementation(() => {
+			throw new Error("sync pre-start boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "fault-free" }),
+		).rejects.toThrow("sync pre-start boom");
+
+		const id = spawnedId();
+		// Redundant with (a) ON THE COUNTS by design: (a) counts under a fault, (e)
+		// proves the fault is not what produced the count.
+		expect(noteCount(id, "Transcript completed")).toBe(1);
+		expect(failedEvents()).toBe(1);
+		const record = getAgent(id)!;
+		expect(record.finalOutput).toBeUndefined();
+		expect(record.result).toBeUndefined();
+		expect(record._sessionRef).toBeUndefined();
+	});
+
+	it("(h) a SYNCHRONOUS listener cannot change the retention outcome", async () => {
+		let dirBeforeFlip = false;
+		let runStatusAtEvent: unknown = "<none>";
+		let dirAtEvent: boolean | undefined;
+		let listenerRan = false;
+		eventBusMock.emit.mockImplementation((event: { type: string; agentId: string }) => {
+			if (event.type !== "subagent:failed") return;
+			// Read the listener-visible state AT the emit, then mutate it exactly as
+			// a real synchronous listener would.
+			runStatusAtEvent = lastRunEntry().status;
+			dirAtEvent = existsSync(backgroundSessionDir(event.agentId));
+			markAgentInterrupted(event.agentId, new Date().toISOString());
+			listenerRan = true;
+		});
+		mocks.session.prompt.mockImplementation(() => {
+			const id = spawnedId();
+			// The SDK's per-run dir is stubbed out by the mocked SessionManager, so
+			// create the dir that WOULD be there — the retention decision needs one.
+			mkdirSync(backgroundSessionDir(id), { recursive: true });
+			dirBeforeFlip = existsSync(backgroundSessionDir(id));
+			throw new Error("sync pre-start boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "listener" }),
+		).rejects.toThrow("sync pre-start boom");
+
+		expect(dirBeforeFlip).toBe(true);
+		// The run entry is terminal and the prune has ALREADY happened when the
+		// listener runs — so setting `interruptedAt` cannot retain the dir.
+		expect(runStatusAtEvent).toBe("failed");
+		expect(dirAtEvent).toBe(false);
+		expect(listenerRan).toBe(true);
+		const record = getAgent(spawnedId())!;
+		expect(record.interruptedAt).toBeDefined();
+		expect(record.status).toBe("failed");
 	});
 });

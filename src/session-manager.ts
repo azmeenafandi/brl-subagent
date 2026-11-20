@@ -1969,6 +1969,70 @@ export async function spawnBackgroundSession(
   let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
 
   /**
+   * Issue #465 (b) / #466 (ADR 0026 D4) / #542: the terminal write for a run that
+   * was PROVABLY never issued — the branch refusals below and every pre-start
+   * throw end here. ONE definition.
+   *
+   * **ORDER.** The three writes run **run entry → record flip → transcript**. This
+   * is deliberately NOT #466's record-first order, for two measured reasons:
+   *
+   * 1. **Crash window.** A kill after the run-entry append **commits** and before
+   *    the record flip leaves a **`running` agent with a terminal run entry** — not
+   *    a terminal agent with an unfinalized run. The first residue costs a stale
+   *    row whose run entry already says `failed`, registry retired, session dir
+   *    pruned, and which no retry or interrupted-run surface can pick up
+   *    (§Residual window, **including the earlier window inside this step**). The
+   *    second is F1's: an unfinalized `running` run entry, a leaked registry
+   *    entry, and a retained session dir only a manual sweep removes.
+   * 2. **Reentrancy.** The `subagent:failed` event is emitted by the record flip —
+   *    the **second** write. So the run-entry prune/retention decision
+   *    (`finalizeRunEntry`'s `!agent.interruptedAt` gate) has already been taken
+   *    when a listener runs, and a listener that synchronously sets
+   *    `interruptedAt` cannot change the retention outcome. Under the record-first
+   *    order it can, and it does: measured, the directory survives.
+   *
+   * **ATTEMPTED, NOT COMMITTED.** The event follows the run-entry write being
+   * **attempted**, not its having been committed. `persistRunRecord` retires the
+   * registry **before** it appends (`run-registry.ts:345-352`), so an append that
+   * throws leaves no terminal entry; and **each step is contained separately** —
+   * every caller rethrows the ORIGINAL failure (`failPreStart(…); throw err`), so
+   * no step may replace it or suppress another (`updateAgentStatus` is total only
+   * through its error-reporting path, R1/D3; the transcript note is not total at
+   * all, R2). The consequence on the STEP-A fault is stated plainly: the record
+   * flip and the note still happen, so the residue is **`agent=failed` with the
+   * run entry uncommitted (`running`)** — the designed outcome of a fault, not a
+   * second defect, and pinned separately from the committed case (test (b)).
+   *
+   * **NOTHING IS CAPTURED and the ref is dropped INLINE, outside every `try`.**
+   * `captureAndReleaseSession` is not used here: it would fabricate a
+   * `finalOutput` for a session that never produced one, and it is declared below
+   * call site A — a TDZ reference there. `persistAgent` strips `_sessionRef`
+   * anyway, so the release is memory-only and must nonetheless always run (the
+   * issue's second bullet).
+   */
+  const markSpawnFailedBeforePrompt = (message: string): void => {
+    try {                          // STEP A — run entry (+ retention/prune, registry retire)
+      finalizeRunEntry('failed', message);
+    } catch (err) {
+      safeLog(() => log.warn(`spawnBackgroundSession: pre-start finalize failed for ${id}`,
+        { error: thrownMessage(err) }));
+    }
+    try {                          // STEP B — record flip (completedAt + error, emits subagent:failed)
+      updateAgentStatus(id, 'failed', message);
+    } catch (err) {
+      safeLog(() => log.warn(`spawnBackgroundSession: pre-start record flip failed for ${id}`,
+        { error: thrownMessage(err) }));
+    }
+    try {                          // STEP C — transcript note (no-op+warn when the file is missing)
+      transcript.completeTranscript(id, 'failed');
+    } catch (err) {
+      safeLog(() => log.warn(`spawnBackgroundSession: pre-start transcript note failed for ${id}`,
+        { error: thrownMessage(err) }));
+    }
+    agent._sessionRef = undefined;  // outside every try — cannot throw, must always run
+  };
+
+  /**
    * Issue #447: the pre-start cleanup. Every throw between the durable
    * dispatch records (agent record + run entry + registry entry, written
    * above) and `session.prompt()` funnels here: the transcript start, the
@@ -1990,6 +2054,11 @@ export async function spawnBackgroundSession(
    * the original spawn error: `persistRunRecord` retires the registry entry
    * BEFORE appending the entry, and `clearInflightRun` is idempotent, so the
    * residue is gone either way.
+   *
+   * Issue #542: STEP 2 is the FULL terminal flip — run entry, record flip and
+   * transcript note — via `markSpawnFailedBeforePrompt` (its contract comment
+   * above states the order, the attemptedness rule and the containment rule).
+   * The "pruning is provably safe here" argument above is unchanged by it.
    */
   const failPreStart = (message: string): void => {
     if (deadlineHandle) clearTimeout(deadlineHandle);
@@ -2001,12 +2070,9 @@ export async function spawnBackgroundSession(
       safeLog(() => log.error(`spawnBackgroundSession: work-branch teardown failed for ${id} — the original spawn failure is preserved`,
         { error: thrownMessage(err) }));
     }
-    try {                                      // STEP 2 — finalize (BEHAVIOURALLY PINNED, M16)
-      finalizeRunEntry('failed', message);     // terminal retirement is still ATTEMPTED
-    } catch (err) {
-      safeLog(() => log.warn(`spawnBackgroundSession: pre-start finalize failed for ${id}`,
-        { error: thrownMessage(err) }));
-    }
+    // STEP 2 — the FULL terminal flip (#542): run entry, record flip and
+    // transcript note, each contained in the shared helper (which is total).
+    markSpawnFailedBeforePrompt(message);
     try {                                      // STEP 3 — registry retire (PINNED via the call, M17)
       clearInflightRun(id);
     } catch (err) {
@@ -2019,23 +2085,6 @@ export async function spawnBackgroundSession(
   const neverIssued = (err: unknown): string =>
     `${PROMPT_NEVER_ISSUED_MESSAGE}: ` +
     sanitizeErrorMessage(err instanceof Error ? err.message : String(err), effectiveCwd);
-
-  /**
-   * Issue #465 (b) / #466 (ADR 0026 D4): the terminal write for a branch
-   * dispatch refused before the prompt — record flip -> run entry ->
-   * transcript, the same three writes every refused spawn ends with. ONE
-   * definition for both pre-flight refusals AND the branch-setup-throw path
-   * below, so the sequence and its message cannot drift apart between them;
-   * each step is contained, because a cleanup fault must never mask the
-   * refusal itself.
-   */
-  const markBranchSpawnFailed = (message: string): void => {
-    try {
-      updateAgentStatus(id, 'failed', message);
-      finalizeRunEntry('failed', message);
-      transcript.completeTranscript(id, 'failed');
-    } catch { /* best-effort, same discipline as the setup-throw path */ }
-  };
 
   // Start transcript for this agent. Issue #447 (S2): a throw here used to
   // leave a `running` run entry and a live registry entry that the next boot
@@ -2161,13 +2210,14 @@ export async function spawnBackgroundSession(
       // Mirror the branch-setup-throw path below: the agent record was already
       // persisted as 'running' above, so a refusal that only THROWS leaves a
       // zombie row `get_subagent_result` reports as running forever (measured,
-      // #460 §4.4 — `failPreStart` alone stops at the run entry). Record flip ->
-      // run entry -> transcript (one shared helper), then the throw that reaches
-      // the caller's spawn-failure result. `finalizeRunEntry` already retires the
-      // registry entry (a non-running write clears it); the explicit call is the
-      // belt for a finalize that threw — registry residue is what boot recovery
-      // reads, and this dispatch provably never started.
-      markBranchSpawnFailed(reason);
+      // #460 §4.4 — `failPreStart` alone stops at the run entry). The pre-start
+      // terminal flip is the shared helper — see its contract comment above —
+      // then the throw that reaches the caller's spawn-failure result.
+      // `finalizeRunEntry` already retires the registry entry (a non-running
+      // write clears it); the explicit call is the belt for a finalize that
+      // threw — registry residue is what boot recovery reads, and this dispatch
+      // provably never started.
+      markSpawnFailedBeforePrompt(reason);
       clearInflightRun(id);
       throw new Error(reason);
     }
@@ -2274,8 +2324,9 @@ export async function spawnBackgroundSession(
       const sanitizedError = sanitizeErrorMessage(thrownMessage(err), effectiveCwd);
       // Issue #98: the refused spawn is a failure — flip the record and finalize
       // the run entry so no zombie 'running' entry survives (lockstep, one
-      // shared sequence with both pre-flight refusals).
-      markBranchSpawnFailed(
+      // shared sequence with both pre-flight refusals: see the helper's contract
+      // comment above).
+      markSpawnFailedBeforePrompt(
         `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}`);
       throw new Error(
         `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}. ` +
@@ -2832,9 +2883,10 @@ export async function spawnBackgroundSession(
 
   // ---- REGIME 2: post-start -----------------------------------------------
   // The prompt has been issued, so NOTHING in here may declare "never issued":
-  // `failPreStart` would prune a LIVE session's directory and release its
-  // branch lock while the session may still be writing (strictly worse than the
-  // fault it reports). No `failPreStart`, no deadline clear, no second bound —
+  // `failPreStart` / `markSpawnFailedBeforePrompt` would prune a LIVE session's
+  // directory and release its branch lock while the session may still be
+  // writing (strictly worse than the fault it reports). No `failPreStart`, no
+  // deadline clear, no second bound —
   // the deadline armed above stays the monitor of last resort (ADR 0023
   // decision 1: ONE owner), and the spawn still resolves with a `running`
   // agent (#439 boundary: a post-start routing fault must not reject the spawn).
