@@ -3813,9 +3813,9 @@ describe("#450 settle handlers attach before the prompt", () => {
 			expect(terminalRunEntries()[0].status).toBe("failed");
 			// (4) ZERO marker records — the tripwire, independent of the timer
 			// handle and of every write above.
-			expect(settleEntryRecords()).toEqual([]);
+			expect(settleEntryRecords(), "a settle body was ENTERED on the sync-throw path").toEqual([]);
 			// (5) One — and only one — deadline clear: `failPreStart`'s.
-			expect(clearSpy).toHaveBeenCalledTimes(1);
+			expect(clearSpy, "the sync-throw path must clear the deadline exactly once").toHaveBeenCalledTimes(1);
 			expect(vi.getTimerCount()).toBe(0);
 
 			// (6) POSITIVE CONTROL: "zero" must be a measurement, not a blind
