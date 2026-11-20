@@ -13,10 +13,28 @@
  * the module with `vi.resetModules()` after setting the env vars.
  */
 
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ORIGINAL_LEVEL = process.env.BRL_LOG_LEVEL;
 const ORIGINAL_CONSOLE = process.env.BRL_LOG_CONSOLE;
+
+/** #543: per-test throwaway cwd so the file half of the contract is observable. */
+const tempDirs: string[] = [];
+function tempCwd(): string {
+	const dir = mkdtempSync(join(tmpdir(), "brl-log543-"));
+	tempDirs.push(dir);
+	return dir;
+}
+function readLog(cwd: string): string {
+	try {
+		return readFileSync(join(cwd, ".pi", "subagent-logs", "brl-subagent.log"), "utf-8");
+	} catch {
+		return "";
+	}
+}
 
 function restoreEnv(name: string, value: string | undefined): void {
 	if (value === undefined) {
@@ -42,6 +60,9 @@ describe("logging configuration (issues #235, #265)", () => {
 		logSpy.mockRestore();
 		warnSpy.mockRestore();
 		errorSpy.mockRestore();
+		// Before resetModules: a later run must not resurrect a removed dir.
+		// Before resetModules: a later write must not resurrect a removed dir.
+		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 		restoreEnv("BRL_LOG_LEVEL", ORIGINAL_LEVEL);
 		restoreEnv("BRL_LOG_CONSOLE", ORIGINAL_CONSOLE);
 		vi.resetModules();
@@ -52,16 +73,15 @@ describe("logging configuration (issues #235, #265)", () => {
 	 * Pass "1" for `consoleEnv` to observe emitted entries through the opt-in
 	 * console mirror; pass `undefined` to assert the file-only default.
 	 */
-	async function freshLogger(level: string | undefined, consoleEnv: string | undefined) {
+	async function freshLogger(level: string | undefined, consoleEnv: string | undefined, cwd?: string) {
 		restoreEnv("BRL_LOG_LEVEL", level);
 		restoreEnv("BRL_LOG_CONSOLE", consoleEnv);
 		// Re-import per call: minLevel/consoleOutput are module state, so a second
 		// import in the same test would reuse the already-evaluated module.
 		vi.resetModules();
-		// No cwd passed: file output is skipped, so console output (when enabled) is
-		// what we assert on.
+		// Without a cwd, file output is skipped and console output is what we assert on.
 		const mod = await import("../logging");
-		return { mod, log: mod.createLogger("test") };
+		return { mod, log: mod.createLogger("test", cwd) };
 	}
 
 	it("defaults to info — debug is suppressed, info is emitted", async () => {
@@ -171,5 +191,110 @@ describe("logging configuration (issues #235, #265)", () => {
 		mod.setConsoleOutput(false);
 		log.info("silent again");
 		expect(logSpy).toHaveBeenCalledTimes(1);
+	});
+
+	// --- #543: a mirror fault must not throw out of `log.*` NOR skip the file write (still attempted once per call). ---
+
+	it("swallows a throwing console.warn and still appends the file entry (#543)", async () => {
+		const cwd = tempCwd();
+		warnSpy.mockImplementation(() => {
+			throw new Error("console blew up");
+		});
+		const { log } = await freshLogger(undefined, "1", cwd);
+
+		expect(() => log.warn("warn survived")).not.toThrow();
+		expect(warnSpy).toHaveBeenCalledTimes(1);
+		expect(readLog(cwd)).toContain('"level":"warn"');
+		expect(readLog(cwd)).toContain("warn survived");
+	});
+
+	it("swallows a throwing console.error and still appends the file entry (#543)", async () => {
+		const cwd = tempCwd();
+		errorSpy.mockImplementation(() => {
+			throw new Error("console blew up");
+		});
+		const { log } = await freshLogger(undefined, "1", cwd);
+
+		expect(() => log.error("error survived")).not.toThrow();
+		expect(errorSpy).toHaveBeenCalledTimes(1);
+		expect(readLog(cwd)).toContain('"level":"error"');
+		expect(readLog(cwd)).toContain("error survived");
+	});
+
+	it("swallows a throwing console.log and still appends the file entry (#543)", async () => {
+		const cwd = tempCwd();
+		logSpy.mockImplementation(() => {
+			throw new Error("console blew up");
+		});
+		const { log } = await freshLogger(undefined, "1", cwd);
+
+		expect(() => log.info("info survived")).not.toThrow();
+		expect(logSpy).toHaveBeenCalledTimes(1);
+		expect(readLog(cwd)).toContain('"level":"info"');
+		expect(readLog(cwd)).toContain("info survived");
+	});
+
+	it("contains an absent console method (console.warn === undefined) (#543)", async () => {
+		const cwd = tempCwd();
+		// `realWarn` AFTER mockRestore — before it, console.warn IS the spy.
+		warnSpy.mockRestore();
+		const realWarn = console.warn;
+		// @ts-expect-error — a console with no `warn` at all is the hostile shape
+		console.warn = undefined;
+		const { log } = await freshLogger(undefined, "1", cwd);
+		try {
+			expect(() => log.warn("absent method survived")).not.toThrow();
+		} finally {
+			console.warn = realWarn;
+		}
+		expect(readLog(cwd)).toContain("absent method survived");
+	});
+
+	it("contains a console whose property ACCESS throws — selection inside the guard (#543)", async () => {
+		const cwd = tempCwd();
+		const realConsole = globalThis.console;
+		const { log } = await freshLogger(undefined, "1", cwd);
+		globalThis.console = new Proxy(realConsole, {
+			get(target, prop, receiver) {
+				if (prop === "warn") throw new Error("get trap blew up");
+				return Reflect.get(target, prop, receiver);
+			},
+		});
+		try {
+			expect(() => log.warn("proxy survived")).not.toThrow();
+		} finally {
+			globalThis.console = realConsole;
+		}
+		expect(readLog(cwd)).toContain("proxy survived");
+	});
+
+	it("leaves the disabled mirror unchanged under a throwing console (#543)", async () => {
+		const cwd = tempCwd();
+		warnSpy.mockImplementation(() => {
+			throw new Error("console blew up");
+		});
+		const { log } = await freshLogger(undefined, undefined, cwd);
+
+		expect(() => log.warn("mirror off")).not.toThrow();
+		expect(warnSpy).not.toHaveBeenCalled();
+		expect(readLog(cwd)).toContain("mirror off");
+	});
+
+	it("keeps mirroring after a swallowed fault — same module instance (#543)", async () => {
+		const cwd = tempCwd();
+		warnSpy.mockImplementationOnce(() => {
+			throw new Error("console blew up");
+		});
+		const { log } = await freshLogger(undefined, "1", cwd);
+
+		expect(() => log.warn("faulting call")).not.toThrow();
+		log.warn("healthy after fault");
+
+		// Once per call, every call: a transient fault must not disable the mirror
+		// for the rest of the process (#543 review, G1).
+		expect(warnSpy).toHaveBeenCalledTimes(2);
+		expect(warnSpy).toHaveBeenLastCalledWith("[test] WARN: healthy after fault");
+		expect(readLog(cwd)).toContain("faulting call");
+		expect(readLog(cwd)).toContain("healthy after fault");
 	});
 });

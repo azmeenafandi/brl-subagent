@@ -3753,8 +3753,9 @@ describe("#450 settle handlers attach before the prompt", () => {
 			}
 
 			// (6) The same fault with a THROWING console mirror: `safeLog` keeps
-			// the original error AND lets the retire run. The log LINE is not
-			// asserted — a throwing mirror runs before the file write and loses it.
+			// the original error AND lets the retire run.
+			// (#543) the entry still reaches the file — a mirror fault no longer aborts the write.
+			rmSync(join(env.baseDir, ".pi", "subagent-logs", "brl-subagent.log"), { force: true });
 			fakePi.appendEntry.mockReset();
 			let writes = 0;
 			fakePi.appendEntry.mockImplementation(() => {
@@ -3774,6 +3775,7 @@ describe("#450 settle handlers attach before the prompt", () => {
 					spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "throwing sink" }),
 				).rejects.toBe(originalPrompt);
 				expect(clearSpy6).toHaveBeenCalled();
+				expect(readLog()).toContain("pre-start finalize failed");
 			} finally {
 				clearSpy6.mockRestore();
 				warnSpy.mockRestore();
