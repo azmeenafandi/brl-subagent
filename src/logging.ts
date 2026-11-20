@@ -155,8 +155,16 @@ export function createLogger(prefix: string, cwd?: string): Logger {
 		// Console mirror — opt-in (issue #265). Off by default so a logger call
 		// can never corrupt the pi TUI renderer; BRL_LOG_CONSOLE opts back in.
 		if (consoleOutput) {
-			const consoleMethod = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
-			consoleMethod(`[${prefix}] ${level.toUpperCase()}: ${message}`);
+			try {
+				// Selection is inside the try on purpose — a replaced console can
+				// throw on the property access itself, not only on the call.
+				const consoleMethod = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
+				consoleMethod(`[${prefix}] ${level.toUpperCase()}: ${message}`);
+			} catch {
+				// Issue #543: the mirror fault does not prevent the file-write attempt
+				// when a cwd is configured; persistence remains conditional on the file
+				// sink, and `log.*` returns normally.
+			}
 		}
 
 		// File output — resolved on each call because the cwd may be set after
