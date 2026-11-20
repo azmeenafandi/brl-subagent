@@ -132,6 +132,51 @@ export function __testResetGitBranchLocks(): void {
   gitBranchLockOwners.clear();
 }
 
+/**
+ * Issue #450 (D5): `prompt()`'s rejection value and a synchronous throw are both
+ * `unknown` by contract, and a normaliser that is not TOTAL replaces the failure
+ * it describes: `String(reason)` throws for a hostile `toPrimitive`/Proxy, and
+ * `reason instanceof Error` throws for a Proxy whose `getPrototypeOf` trap
+ * throws (spec E18 — pre-fix the caller received `Error: conversion failed`
+ * instead of its own throw). Every branch below is total.
+ */
+function normalizeThrown(thrown: unknown): Error {
+  try {
+    return thrown instanceof Error ? thrown : new Error(String(thrown));
+  } catch {
+    return new Error('unprintable thrown value');     // never a second throw
+  }
+}
+
+/**
+ * Issue #450 (D5): the message of an arbitrary thrown value, total for EVERY
+ * input — including an Error-shaped Proxy whose `.message` getter throws.
+ */
+function thrownMessage(thrown: unknown): string {
+  try {
+    return normalizeThrown(thrown).message;
+  } catch {
+    return 'unprintable thrown value';                // an Error-shaped Proxy whose .message throws
+  }
+}
+
+/**
+ * Issue #450 (D5): a log call on an ERROR path must never replace the error it
+ * reports. `src/logging.ts:158` calls the console mirror OUTSIDE its file-write
+ * catch, so with `setConsoleOutput(true)` and a throwing `console` sink,
+ * `log.warn` throws — and in a catch block that throw becomes the caller's
+ * error, and skips every later step of the cleanup. This wrapper swallows a
+ * sinking logger fault. The global fix is #543; this containment is local to
+ * the settle/pre-start paths.
+ */
+function safeLog(write: () => void): void {
+  try {
+    write();
+  } catch {
+    // a throwing sink must not mask the original throw nor skip a later step
+  }
+}
+
 // Robust UUID generation with fallback
 function generateUUID(): string {
   try {
@@ -1856,7 +1901,7 @@ export async function spawnBackgroundSession(
         }
       } catch (err) {
         log.warn(`getCurrentBranch failed during cleanup for background agent ${id}`, {
-          error: (err as Error).message,
+          error: thrownMessage(err),
         });
         // Issue #466: KEEP the record — we cannot tell where the tree is, which
         // is exactly the crash-equivalent state the boot's retry is for.
@@ -1890,7 +1935,7 @@ export async function spawnBackgroundSession(
             : diffResult.diff;
         }
       } catch (err) {
-        log.warn(`captureDiff failed for background agent ${id}`, { error: (err as Error).message });
+        log.warn(`captureDiff failed for background agent ${id}`, { error: thrownMessage(err) });
       }
       try {
         const restoreResult = restoreHead(gitCwd, headState);
@@ -1903,12 +1948,12 @@ export async function spawnBackgroundSession(
           clearHeadState(headStateRepoRoot());
         }
       } catch (err) {
-        log.warn(`restoreHead failed for background agent ${id}`, { error: (err as Error).message });
+        log.warn(`restoreHead failed for background agent ${id}`, { error: thrownMessage(err) });
       }
       try {
         deleteBranch(gitCwd, workBranchName);
       } catch (err) {
-        log.warn(`deleteBranch failed for background agent ${id}`, { error: (err as Error).message });
+        log.warn(`deleteBranch failed for background agent ${id}`, { error: thrownMessage(err) });
       }
     } finally {
       releaseGitLock?.();
@@ -1934,6 +1979,13 @@ export async function spawnBackgroundSession(
    * was never issued nothing can be writing to that dir and no retry will be
    * offered for it, so there is no reader to retain it for.
    *
+   * "Never issued" is a CONTRACT, not an observation — issue #450 D2.1: it
+   * holds because the call site invokes (a) the SDK's own `async` `prompt`
+   * through (b) a plain property read, with (c) a side-effect-free argument.
+   * A wrapper/getter that starts the real method and then throws breaks all of
+   * that (spec E24: `live=true` after the synchronous throw); such a call shape
+   * must NOT reach this function. See the REGIME 1 comment at the call site.
+   *
    * The terminal write is best-effort so a throw in the cleanup cannot mask
    * the original spawn error: `persistRunRecord` retires the registry entry
    * BEFORE appending the entry, and `clearInflightRun` is idempotent, so the
@@ -1941,15 +1993,26 @@ export async function spawnBackgroundSession(
    */
   const failPreStart = (message: string): void => {
     if (deadlineHandle) clearTimeout(deadlineHandle);
-    cleanupWorkBranch();
-    try {
-      finalizeRunEntry('failed', message);
+    // EVERY step is contained: a throw here would replace the original spawn failure at
+    // every call site (all do `failPreStart(...); throw err`).
+    try {                                      // STEP 1 — teardown (defence in depth, M18 green)
+      cleanupWorkBranch();
     } catch (err) {
-      log.warn(`spawnBackgroundSession: pre-start finalize failed for ${id}`, {
-        error: (err as Error).message,
-      });
+      safeLog(() => log.error(`spawnBackgroundSession: work-branch teardown failed for ${id} — the original spawn failure is preserved`,
+        { error: thrownMessage(err) }));
     }
-    clearInflightRun(id);
+    try {                                      // STEP 2 — finalize (BEHAVIOURALLY PINNED, M16)
+      finalizeRunEntry('failed', message);     // terminal retirement is still ATTEMPTED
+    } catch (err) {
+      safeLog(() => log.warn(`spawnBackgroundSession: pre-start finalize failed for ${id}`,
+        { error: thrownMessage(err) }));
+    }
+    try {                                      // STEP 3 — registry retire (PINNED via the call, M17)
+      clearInflightRun(id);
+    } catch (err) {
+      safeLog(() => log.warn(`spawnBackgroundSession: pre-start registry retire failed for ${id}`,
+        { error: thrownMessage(err) }));
+    }
   };
 
   /** The pre-start failure stamp: the issue's honest reason plus the cause. */
@@ -2208,7 +2271,7 @@ export async function spawnBackgroundSession(
       releaseGitLock?.();
       releaseGitLock = undefined;
       // Sanitize ONCE and reuse for the terminal write and the thrown error.
-      const sanitizedError = sanitizeErrorMessage((err as Error).message, effectiveCwd);
+      const sanitizedError = sanitizeErrorMessage(thrownMessage(err), effectiveCwd);
       // Issue #98: the refused spawn is a failure — flip the record and finalize
       // the run entry so no zombie 'running' entry survives (lockstep, one
       // shared sequence with both pre-flight refusals).
@@ -2486,20 +2549,24 @@ export async function spawnBackgroundSession(
   // attach and cleanupWorkBranch would never run — catch here so the work
   // branch is not orphaned (it is a real filesystem branch).
   let runPromise: Promise<unknown>;
-  try {
-    runPromise = session.prompt(wrapTask(params.task));
-  } catch (err) {
-    // Issue #98 (review F1): a synchronous prompt() throw never reaches the
-    // settle handlers — finalize the run entry so no zombie 'running' entry
-    // survives (findSpawnRunById would otherwise resolve and retry a run that
-    // never started). #447: the same cleanup also clears the deadline armed
-    // above and retires the registry entry.
-    failPreStart(sanitizeErrorMessage((err as Error).message, effectiveCwd));
-    throw err;
-  }
+  let resolveSettled!: () => void;
+  let rejectSettled!: (reason: unknown) => void;
+  const settled = new Promise<void>((resolve, reject) => {
+    resolveSettled = resolve;
+    rejectSettled = reject;
+  });
 
-  runPromise.then(() => {
-    if (deadlineHandle) clearTimeout(deadlineHandle);
+  const markSettleEntry = (kind: 'success' | 'fault'): void => {
+    try {
+      log.debug(`spawnBackgroundSession: settle body entered for ${id} (${kind})`);
+    } catch {
+      // best effort — the marker must never change the settle path
+    }
+  };
+
+  const onSettled = (): void => {
+    markSettleEntry('success');                         // FIRST statement
+    if (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second
     try {
       // Probe contract (sdk-abort-contract.test.ts): prompt() RESOLVES on abort
       // — the SDK's runWithLifecycle catches the AbortError and converts it into
@@ -2643,14 +2710,20 @@ export async function spawnBackgroundSession(
       // Issue #53: any throw in this handler would escape as an
       // uncaughtException and kill pi. Log and mark the record terminal —
       // never rethrow.
-      log.error(`spawnBackgroundSession: completion handler failed for ${id}`, {
-        error: (err as Error).message,
-      });
+      safeLog(() =>
+        log.error(`spawnBackgroundSession: completion handler failed for ${id}`, {
+          error: thrownMessage(err),
+        }),
+      );
       markTerminalBestEffort('completed');
     }
-  }).catch((err: Error) => {
-    if (deadlineHandle) clearTimeout(deadlineHandle);
+  };
+
+  const onSettleFault = (reason: unknown): void => {
+    markSettleEntry('fault');                           // FIRST statement
+    if (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second
     try {
+      const err = normalizeThrown(reason);              // D5: TOTAL, never throws
       // W4: capture partial work + discard the work branch on failure — a failed
       // background agent may still have produced reviewable changes.
       const gitInfo = cleanupWorkBranch();
@@ -2709,13 +2782,107 @@ export async function spawnBackgroundSession(
       // Issue #53: any throw in this handler would escape as an
       // uncaughtException and kill pi. Log and mark the record terminal —
       // never rethrow.
-      log.error(`spawnBackgroundSession: completion handler failed for ${id}`, {
-        error: (err as Error).message,
-      });
+      safeLog(() =>
+        log.error(`spawnBackgroundSession: completion handler failed for ${id}`, {
+          error: thrownMessage(err),
+        }),
+      );
       markTerminalBestEffort('failed');
     }
-  });
-  
+  };
+
+  // THE ATTACH: both settle handlers are on our own promise before the session
+  // is asked to start. The #450 window snapshot pin covers this statement.
+  settled.then(onSettled).catch(onSettleFault);
+
+  // ---- REGIME 1: pre-start ------------------------------------------------
+  // The one statement in this regime is the prompt CALL. A synchronous throw
+  // from it is proof that the prompt was never issued ONLY under three
+  // preconditions, and all three hold at this site TODAY (issue #450 D2.1):
+  //
+  //   (a) the callee is the SDK's own `async` method — `AgentSession.prompt`
+  //       (node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js:1704,
+  //       typed `prompt(text): Promise<void>` in agent-session.d.ts:573). An
+  //       `async` function cannot throw to its caller: such a throw happened
+  //       BEFORE entry.
+  //   (b) it is reached by a PLAIN property read on the session object — no
+  //       getter, no Proxy. A getter can start the real method and THEN throw,
+  //       so the caller sees a synchronous throw while the session is already
+  //       running (spec E24: `syncThrow=yes`, `live=true`). That shape VOIDS
+  //       the proof and must be handled as a post-start fault.
+  //   (c) the argument is evaluated without side effects (`wrapTask` is one
+  //       `String.replace`, src/prompt.ts:67).
+  //
+  // If a future edit wraps `session.prompt` — a retry wrapper, a decorator, an
+  // injected session double that starts work — then (a)/(b) no longer hold,
+  // this regime's premise is GONE, and `failPreStart`'s directory prune plus
+  // branch release would hit a LIVE session. Re-derive D2.1 before keeping it.
+  try {
+    runPromise = session.prompt(wrapTask(params.task));
+  } catch (err) {
+    // Issue #98 (review F1): a synchronous prompt() throw never reaches the
+    // settle handlers — finalize the run entry so no zombie 'running' entry
+    // survives (findSpawnRunById would otherwise resolve and retry a run that
+    // never started). #447: the same cleanup also clears the deadline armed
+    // above and retires the registry entry.
+    const reason = thrownMessage(err);                          // D5: total
+    failPreStart(sanitizeErrorMessage(reason, effectiveCwd));    // D5: contained, never throws
+    throw err;                                                  // D6: deferred NOT settled
+  }
+
+  // ---- REGIME 2: post-start -----------------------------------------------
+  // The prompt has been issued, so NOTHING in here may declare "never issued":
+  // `failPreStart` would prune a LIVE session's directory and release its
+  // branch lock while the session may still be writing (strictly worse than the
+  // fault it reports). No `failPreStart`, no deadline clear, no second bound —
+  // the deadline armed above stays the monitor of last resort (ADR 0023
+  // decision 1: ONE owner), and the spawn still resolves with a `running`
+  // agent (#439 boundary: a post-start routing fault must not reject the spawn).
+  //
+  // WHY the intrinsic and not `runPromise.then(...)`: `PerformPromiseThen`
+  // performs `SpeciesConstructor(promise)`, which READS `constructor` and then
+  // `constructor[Symbol.species]` — and how it does that depends on the value; a
+  // Proxy's `then` trap or a throwing `then` accessor is reached by the `.then`
+  // METHOD READ, not by the intrinsic. Routing through `Promise.prototype.then`
+  // therefore never touches the value's own `then`, which is what makes the
+  // SUPPORTED value's attach byte-equivalent to `runPromise.then(...)` while a
+  // malformed return is REFUSED here and logged instead of starting work.
+  //
+  // NOT `await`, and NOT `Promise.resolve(...)`: both were measured and both
+  // destroy the contract below — `await` (and `Promise.resolve`) treats a
+  // NON-thenable as a resolution, so `{}` would run the success body and record
+  // a live run as `completed`, and the routing fault would go unlogged. See the
+  // spec's Q2 rows A1 and R3.
+  //
+  // Issue #450 (D2.3/D3/Acceptance 8 — THE CONTRACT; the same words in all three places):
+  //
+  //   SUPPORTED — an ordinary native `Promise<void>` of this realm whose `constructor`
+  //   and `Symbol.species` reads both complete without a throw and resolve to the
+  //   intrinsic `Promise`: the routing attaches and no later rejection can be stranded.
+  //
+  //   UNSUPPORTED — every other value, NO GUARANTEE; measured, it splits three ways:
+  //   · REFUSED, NOTHING STRANDED: a non-thenable or a custom thenable — thrown here,
+  //     logged, the run is left to the deadline.
+  //   · REFUSED, REJECTION UNOWNED: a Proxy over a promise, or a native promise whose
+  //     `constructor` or `Symbol.species` read throws — thrown here, logged, and the
+  //     value's later rejection has no handler, so the host exits 1 (default and strict).
+  //   · ACCEPTED, NOT RELIED ON: a same-realm subclass and a cross-realm promise route
+  //     and deliver (exit 0). `await` would also own the species-throwing case, but it
+  //     registers a non-promise return as a success (spec E50), so it is not the routing.
+  try {
+    void Promise.prototype.then.call(runPromise, resolveSettled, rejectSettled);   // D2.3
+  } catch (err) {
+    // A SENSOR, not a new fault: the run already started, so this only reports
+    // that it is unmonitored. `safeLog` is load-bearing — a throwing console
+    // mirror here would reject the spawn (#439) and destroy the boundary above.
+    safeLog(() =>                                                // a sensor, not a new fault
+      log.error(
+        `spawnBackgroundSession: settle routing failed for ${id} — the run is unmonitored; its deadline remains the only bound`,
+        { error: thrownMessage(err) },
+      ),
+    );
+  }
+
   return agent;
   } finally {
     releaseSpawnQueue();
