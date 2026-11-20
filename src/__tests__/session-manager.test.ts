@@ -104,9 +104,12 @@ import { CUSTOM_ENTRY_TYPES, NO_ASSISTANT_OUTPUT_REASON, PROMPT_NEVER_ISSUED_MES
 import { buildCompletionMessage } from "../notify-completion";
 import { isTransportRetryable } from "../transport-retry";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
-import { setLogCwd } from "../logging";
+import { setLogCwd, setLogLevel, setConsoleOutput } from "../logging";
 import { __setOutputDir } from "../transcript";
 import { persistRunRecord, registerInflightRun } from "../run-registry";
+// Issue #450 (T4 case 5): the registry-retire STEP is observed through the
+// exported binding — `persistRunRecord`'s own retire is module-local.
+import * as runRegistry from "../run-registry";
 import { recoverInflightRuns, defaultRecoveryDeps } from "../recovery";
 import { collectInterruptedRuns, offeredInterruptedRuns } from "../recovery-surface";
 import { readHeadState } from "../headstate";
@@ -777,6 +780,33 @@ function readLog(): string {
 	} catch {
 		return "";
 	}
+}
+
+// Issue #450 (r7/T1): the settle window, normalised. Boundaries are the acceptance
+// write and the FIRST `return agent;` after it; the rule is in the pin below.
+//
+// THE RULE: trim every line; drop it when it is empty or its trimmed text starts
+// with `//`, `/*`, `*` or `*/`; compare the remaining code-line SEQUENCE against
+// EXPECTED_SETTLE_WINDOW. Properties this gives: indentation-free, comment-free
+// (so a comment edit never rewrites the pin), order- and text-sensitive. Its blind
+// spot is narrow and fail-safe: a CODE line whose trimmed text begins with `*`
+// would be dropped (none exists) — the direction of error is extra red, never a
+// silent pass.
+const EXPECTED_SETTLE_WINDOW =
+	"run.acceptedAt = new Date().toISOString();\ntry {\npersistRunRecord(pi, run, \"background\");\n} catch (err) {\nrun.acceptedAt = null;\nfailPreStart(neverIssued(err));\nthrow err;\n}\nlet runPromise: Promise<unknown>;\nlet resolveSettled!: () => void;\nlet rejectSettled!: (reason: unknown) => void;\nconst settled = new Promise<void>((resolve, reject) => {\nresolveSettled = resolve;\nrejectSettled = reject;\n});\nconst markSettleEntry = (kind: 'success' | 'fault'): void => {\ntry {\nlog.debug(`spawnBackgroundSession: settle body entered for ${id} (${kind})`);\n} catch {\n}\n};\nconst onSettled = (): void => {\nmarkSettleEntry('success');                         // FIRST statement\nif (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second\ntry {\nconst projectedMessages = session.messages;\nconst lastAssistant = [...(projectedMessages ?? [])].reverse().find(m => m.role === 'assistant');\nconst terminalStopReason = lastAssistant?.stopReason;\nconst assistantEvidence: AssistantEvidence = Array.isArray(projectedMessages)\n? projectedMessages.some((m) => m.role === 'assistant') ? 'present' : 'absent'\n: 'unknown';\nconst aborted = agent.status === 'stopped' || terminalStopReason === 'aborted';\nif (aborted) {\nif (agent.status !== 'stopped') {\nupdateAgentStatus(id, 'stopped');\ntranscript.completeTranscript(id, 'stopped');\n}\nfinalizeAbortedRun(\ncleanupWorkBranch(),\nterminalStopReason && terminalStopReason !== 'stop'\n? terminalStopReason\n: 'aborted',\n);\nreturn;\n}\nconst providerErrorMessage =\nlastAssistant?.errorMessage ?? session.state?.errorMessage;\nconst outcome = classifyTerminalOutcome(terminalStopReason, providerErrorMessage, {\nassistantEvidence,\n});\nif (outcome.status === 'failed') {\nagent.status = 'failed';\nagent.completedAt = Date.now();\nconst failureReason =\nassistantEvidence === 'absent'\n? providerErrorMessage\n? `${NO_ASSISTANT_OUTPUT_REASON}\\n${providerErrorMessage}`\n: NO_ASSISTANT_OUTPUT_REASON\n: (providerErrorMessage ?? defaultTerminalMessage(terminalStopReason));\nconst sanitizedError = sanitizeErrorMessage(failureReason, effectiveCwd);\nagent.error = sanitizedError;\nconst gitInfo = cleanupWorkBranch();\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 1,\nmessages: agent.result?.messages ?? [],\nstderr: agent.result?.stderr ?? '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: terminalStopReason,\nerrorMessage: sanitizedError,\nerrorCategory: outcome.errorCategory,\n...(gitInfo.gitBranch\n? { gitBranch: gitInfo.gitBranch, gitDiff: gitInfo.gitDiff }\n: {}),\n} as SubagentResult;\ncaptureAndReleaseSession(sanitizedError);\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('failed', sanitizedError, {\nstopReason: terminalStopReason,\nerrorCategory: outcome.errorCategory,\n});\ntranscript.completeTranscript(id, 'failed');\neventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizedError }));\nreturn;\n}\nagent.status = 'completed';\nagent.completedAt = Date.now();\nconst gitInfo = cleanupWorkBranch();\nif (gitInfo.gitBranch) {\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 0,\nmessages: [],\nstderr: '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: terminalStopReason ?? 'stop',\ngitBranch: gitInfo.gitBranch,\ngitDiff: gitInfo.gitDiff,\n} as SubagentResult;\n}\ncaptureAndReleaseSession();\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('done', undefined, { stopReason: terminalStopReason ?? 'stop' });\ntranscript.completeTranscript(id, 'completed');\neventBus.emit(eventBus.createEvent('subagent:completed', id, {}));\n} catch (err) {\nsafeLog(() =>\nlog.error(`spawnBackgroundSession: completion handler failed for ${id}`, {\nerror: thrownMessage(err),\n}),\n);\nmarkTerminalBestEffort('completed');\n}\n};\nconst onSettleFault = (reason: unknown): void => {\nmarkSettleEntry('fault');                           // FIRST statement\nif (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second\ntry {\nconst err = normalizeThrown(reason);              // D5: TOTAL, never throws\nconst gitInfo = cleanupWorkBranch();\nif (agent.status === 'stopped') {\nfinalizeAbortedRun(gitInfo, 'aborted');\ntranscript.completeTranscript(id, 'stopped');\nreturn;\n}\nagent.status = 'failed';\nagent.completedAt = Date.now();\nconst sanitizedError = sanitizeErrorMessage(err.message, effectiveCwd);\nagent.error = sanitizedError;\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 1,\nmessages: agent.result?.messages ?? [],\nstderr: agent.result?.stderr ?? '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: 'error',\nerrorMessage: sanitizedError,\n...(gitInfo.gitBranch\n? { gitBranch: gitInfo.gitBranch, gitDiff: gitInfo.gitDiff }\n: {}),\n} as SubagentResult;\ncaptureAndReleaseSession(sanitizedError);\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('failed', sanitizedError, { stopReason: 'error' });\ntranscript.completeTranscript(id, 'failed');\neventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizedError }));\n} catch (err) {\nsafeLog(() =>\nlog.error(`spawnBackgroundSession: completion handler failed for ${id}`, {\nerror: thrownMessage(err),\n}),\n);\nmarkTerminalBestEffort('failed');\n}\n};\nsettled.then(onSettled).catch(onSettleFault);\ntry {\nrunPromise = session.prompt(wrapTask(params.task));\n} catch (err) {\nconst reason = thrownMessage(err);                          // D5: total\nfailPreStart(sanitizeErrorMessage(reason, effectiveCwd));    // D5: contained, never throws\nthrow err;                                                  // D6: deferred NOT settled\n}\ntry {\nvoid Promise.prototype.then.call(runPromise, resolveSettled, rejectSettled);   // D2.3\n} catch (err) {\nsafeLog(() =>                                                // a sensor, not a new fault\nlog.error(\n`spawnBackgroundSession: settle routing failed for ${id} — the run is unmonitored; its deadline remains the only bound`,\n{ error: thrownMessage(err) },\n),\n);\n}";
+
+function settleWindow(src: string): string[] {
+	const lines = src.split("\n");
+	const start = lines.findIndex((l) => l.trim() === "run.acceptedAt = new Date().toISOString();");
+	if (start < 0) throw new Error("settle window: acceptance write not found");
+	const end = lines.findIndex((l, i) => i > start && l.trim() === "return agent;");
+	if (end < 0) throw new Error("settle window: `return agent;` not found after the acceptance write");
+	const code = lines
+		.slice(start, end)
+		.map((l) => l.trim())
+		.filter((l) => l !== "" && !l.startsWith("//") && !l.startsWith("/*") && !l.startsWith("*") && !l.startsWith("*/"));
+	if (code.length === 0) throw new Error("settle window: empty after normalisation");
+	return code;
 }
 
 /** Agent ids observed in the per-test transcript dir (agent-<id>.jsonl). */
@@ -3452,5 +3482,391 @@ describe("issue #447 — never-started dispatches", () => {
 		const accepted = fakePi.appendEntry.mock.calls[1][1] as SubagentRun;
 		expect(typeof accepted.acceptedAt).toBe("string");
 		expect(Number.isNaN(Date.parse(accepted.acceptedAt as string))).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #450: the settle handlers are attached to the spawn's OWN deferred
+// BEFORE `session.prompt()` is called, so no statement in the window between
+// the acceptance write and the routing can lose the settle. The six tests below
+// pin the window, the async-rejection route, the post-start fault boundary, the
+// non-Error normalisation on both regimes, the "no settle body ran" tripwire,
+// and the caller-visible status the deferral costs.
+// ---------------------------------------------------------------------------
+describe("#450 settle handlers attach before the prompt", () => {
+	const originalPrompt = new Error("original prompt");
+
+	/** Drain every pending microtask job WITHOUT advancing the (fake) clock. */
+	async function flushMicrotasks(turns = 8): Promise<void> {
+		for (let i = 0; i < turns; i++) await Promise.resolve();
+	}
+
+	/** The `settle body entered` records the entry marker wrote so far. */
+	function settleEntryRecords(): string[] {
+		return readLog()
+			.split("\n")
+			.filter((line) => line.includes("settle body entered"));
+	}
+
+	/** The event types the mocked bus was asked to emit. */
+	function emittedTypes(): string[] {
+		return eventBusMock.emit.mock.calls.map(([event]) => (event as { type: string }).type);
+	}
+
+	/**
+	 * A session double whose `prompt` is a PLAIN function returning `value`.
+	 *
+	 * Issue #450 (T3): a `vi.fn()` cannot carry this fixture — vitest's own mock
+	 * instrumentation reads `.then` off a returned promise, so a tampered `then`
+	 * accessor explodes inside the harness rather than in the code under test.
+	 * `messages: []` is required, not cosmetic: `extractFinalOutput` spreads
+	 * `session.messages`, so an undefined projection makes the settle body throw
+	 * at `captureAndReleaseSession` and the assertions would pass for the wrong
+	 * reason.
+	 */
+	function injectSession(value: () => unknown): void {
+		mocks.createAgentSession.mockImplementationOnce(async () => ({
+			session: { ...mocks.session, messages: [], prompt: value },
+		}));
+	}
+
+	it("pins the settle window snapshot: the deferred, attach-before-call and the two regimes are deliberate (#450)", () => {
+		const src = readFileSync(new URL("../session-manager.ts", import.meta.url), "utf8");
+		const actual = settleWindow(src);
+		const expected = EXPECTED_SETTLE_WINDOW.split("\n");
+		let firstDiff = -1;
+		for (let i = 0; i < Math.max(actual.length, expected.length); i++) {
+			if (actual[i] !== expected[i]) {
+				firstDiff = i;
+				break;
+			}
+		}
+		expect(
+			firstDiff,
+			firstDiff < 0
+				? ""
+				: `the settle window changed — attach-before-call and the two regimes are deliberate. ` +
+					`First difference at window line ${firstDiff + 1}: expected ${JSON.stringify(expected[firstDiff])} got ${JSON.stringify(actual[firstDiff])}`,
+		).toBe(-1);
+		expect(actual).toEqual(expected);
+	});
+
+	it("routes an async rejection through the deferred, clears the deadline and writes ONE terminal record (#450 async-rejection pin)", async () => {
+		vi.useFakeTimers();
+		try {
+			mocks.session.messages = [];
+			mocks.session.abort.mockClear();
+			mocks.session.prompt.mockImplementation(() => Promise.reject(new Error("async reject boom")));
+
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "async rejection",
+				timeout: 5000,
+			});
+			// The deadline is armed and still owned by the run at the caller's resume.
+			expect(vi.getTimerCount()).toBe(1);
+
+			await flushMicrotasks();
+
+			// The settle cleared it — no second bound, no leaked timer.
+			expect(vi.getTimerCount()).toBe(0);
+			const after = getAgent(agent.id);
+			expect(after?.status).toBe("failed");
+			expect(after?.result?.stopReason).toBe("error");
+			expect(after?.result?.errorMessage).toBe("async reject boom");
+			// ONE terminal write: spawn + acceptance + terminal.
+			expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+			expect(terminalRunEntries()).toHaveLength(1);
+			const entry = terminalRunEntries()[0];
+			expect(entry.status).toBe("failed");
+			expect(entry.stopReason).toBe("error");
+			expect(entry.errorMessage).toBe("async reject boom");
+			expect(emittedTypes()).toContain("subagent:failed");
+
+			// Nothing is left to abort: advancing twice the budget finds no timer.
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("treats a returned non-thenable as a POST-start fault, never 'never issued' (#450)", async () => {
+		vi.useFakeTimers();
+		try {
+			setLogCwd(env.baseDir);
+			mocks.session.abort.mockClear();
+
+			// (1) A non-thenable return: the intrinsic refuses it, so the routing
+			// fault is logged and the run is left to the deadline. `failPreStart`
+			// must NOT run — the prompt WAS issued, so nothing may be pruned.
+			injectSession(() => ({}));
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "non-thenable return",
+				timeout: 5000,
+			});
+			expect(agent.status).toBe("running");
+			expect(terminalRunEntries()).toHaveLength(0);
+			expect(listInflightRuns().some((e) => e.id === agent.id)).toBe(true);
+			expect(readLog()).toContain("settle routing failed");
+			expect(readLog()).not.toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+
+			// The deadline is the monitor of last resort, and it still classifies.
+			await vi.advanceTimersByTimeAsync(5001);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(terminalRunEntries()).toHaveLength(1);
+			expect(terminalRunEntries()[0].status).toBe("failed");
+			expect(terminalRunEntries()[0].errorCategory).toBe("timeout");
+
+			// (2) A NATIVE deferred whose own `then` accessor throws is still
+			// routed: the intrinsic never reads the accessor, so its rejection is
+			// delivered and no timer advance is needed.
+			let fail!: (err: Error) => void;
+			const tampered = new Promise<void>((_resolve, reject) => {
+				fail = reject;
+			});
+			Object.defineProperty(tampered, "then", {
+				get() {
+					throw new Error("then accessor exploded");
+				},
+			});
+			injectSession(() => tampered);
+			const routed = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "tampered then accessor",
+				timeout: 5000,
+			});
+			fail(new Error("routed rejection"));
+			await flushMicrotasks();
+			expect(getAgent(routed.id)?.status).toBe("failed");
+			expect(getAgent(routed.id)?.result?.errorMessage).toBe("routed rejection");
+			expect(vi.getTimerCount()).toBe(0);
+
+			// (3) A throwing log sink on that same path must not turn the routing
+			// fault into a REJECTED spawn (#439): the run started, so the caller
+			// gets the agent.
+			setConsoleOutput(true);
+			const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {
+				throw new Error("console blew up");
+			});
+			try {
+				injectSession(() => ({}));
+				const live = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+					task: "routing fault with a throwing sink",
+					timeout: 5000,
+				});
+				expect(live.status).toBe("running");
+				// ...and the fault did not reach `failPreStart`: the run is still tracked.
+				expect(listInflightRuns().some((e) => e.id === live.id)).toBe(true);
+			} finally {
+				consoleSpy.mockRestore();
+				setConsoleOutput(false);
+			}
+		} finally {
+			setLogCwd(undefined);
+			vi.useRealTimers();
+		}
+	});
+
+	it("normalises a non-Error value on BOTH regimes and rethrows the original throw (#450)", async () => {
+		setLogCwd(env.baseDir);
+		try {
+			// (1) REGIME 1, `throw null`: the message is the total normaliser's,
+			// the caller still receives the ORIGINAL value.
+			mocks.session.prompt.mockImplementation(() => {
+				throw null;
+			});
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "throw null" }),
+			).rejects.toBeNull();
+			expect(terminalRunEntries()).toHaveLength(1);
+			expect(terminalRunEntries()[0].status).toBe("failed");
+			expect(terminalRunEntries()[0].errorMessage).toBe("null");
+
+			// (2) REGIME 2, `reject(undefined)`: same total normalisation on the
+			// deferred's fault body.
+			fakePi.appendEntry.mockClear();
+			mocks.session.prompt.mockImplementation(() => Promise.reject(undefined));
+			const undefinedRun = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "reject undefined",
+			});
+			await flushMicrotasks();
+			expect(getAgent(undefinedRun.id)?.status).toBe("failed");
+			expect(lastRunEntry().errorMessage).toBe("undefined");
+
+			// (3) A git teardown that throws `null` must not mask the prompt
+			// throw: every `cleanupWorkBranch` catch site is normalised, so the
+			// teardown returns and the terminal write still happens.
+			resetGitMocks();
+			mocks.git.getCurrentBranch.mockImplementation(() => {
+				throw null;
+			});
+			fakePi.appendEntry.mockClear();
+			mocks.session.prompt.mockImplementation(() => {
+				throw originalPrompt;
+			});
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+					task: "git teardown throws null",
+					gitMode: "branch",
+				}),
+			).rejects.toThrow("original prompt");
+			expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+			expect(lastRunEntry().status).toBe("failed");
+			expect(lastRunEntry().errorMessage).toBe("original prompt");
+			expect(readLog()).toContain("getCurrentBranch failed during cleanup");
+			resetGitMocks();
+
+			// (4) An UNPRINTABLE thrown object: `String()` throws, so the message
+			// falls back — and the caller still receives the object itself.
+			const unprintable = {
+				[Symbol.toPrimitive](): string {
+					throw new Error("cannot stringify me");
+				},
+			};
+			mocks.session.prompt.mockImplementation(() => {
+				throw unprintable;
+			});
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "unprintable throw" }),
+			).rejects.toBe(unprintable);
+			expect(lastRunEntry().errorMessage).toBe("unprintable thrown value");
+
+			// (5) STEP 2 is contained: a TERMINAL write that throws still rejects
+			// with the original error, and the registry-retire step is ATTEMPTED.
+			const clearSpy = vi.spyOn(runRegistry, "clearInflightRun");
+			try {
+				let writes = 0;
+				fakePi.appendEntry.mockImplementation(() => {
+					writes += 1;
+					if (writes === SETTLED_RUN_WRITES) throw new Error("append blew up");
+				});
+				mocks.session.prompt.mockImplementation(() => {
+					throw originalPrompt;
+				});
+				await expect(
+					spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "terminal write throws" }),
+				).rejects.toBe(originalPrompt);
+				expect(readLog()).toContain("pre-start finalize failed");
+				expect(clearSpy).toHaveBeenCalled();
+				expect(listInflightRuns()).toHaveLength(0);
+			} finally {
+				clearSpy.mockRestore();
+			}
+
+			// (6) The same fault with a THROWING console mirror: `safeLog` keeps
+			// the original error AND lets the retire run. The log LINE is not
+			// asserted — a throwing mirror runs before the file write and loses it.
+			fakePi.appendEntry.mockReset();
+			let writes = 0;
+			fakePi.appendEntry.mockImplementation(() => {
+				writes += 1;
+				if (writes === SETTLED_RUN_WRITES) throw new Error("append blew up");
+			});
+			setConsoleOutput(true);
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {
+				throw new Error("console blew up");
+			});
+			const clearSpy6 = vi.spyOn(runRegistry, "clearInflightRun");
+			try {
+				mocks.session.prompt.mockImplementation(() => {
+					throw originalPrompt;
+				});
+				await expect(
+					spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "throwing sink" }),
+				).rejects.toBe(originalPrompt);
+				expect(clearSpy6).toHaveBeenCalled();
+			} finally {
+				clearSpy6.mockRestore();
+				warnSpy.mockRestore();
+				setConsoleOutput(false);
+			}
+		} finally {
+			setLogCwd(undefined);
+		}
+	});
+
+	it("classifies a synchronous prompt throw ONCE — no settle body runs (#450 sentinel tripwire)", async () => {
+		setLogCwd(env.baseDir);
+		setLogLevel("debug");
+		vi.useFakeTimers();
+		const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+		try {
+			mocks.session.messages = [];
+			mocks.session.abort.mockClear();
+			mocks.session.prompt.mockImplementation(() => {
+				throw new Error("sync pre-start boom");
+			});
+
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync throw tripwire" }),
+			).rejects.toThrow("sync pre-start boom");
+
+			// (1) No settle body reached a transcript write of its own...
+			const [id] = transcriptIds();
+			expect(id).toBeDefined();
+			expect(readFileSync(transcriptGetTranscriptPath(id), "utf-8")).not.toContain("Transcript completed");
+			// (2) ...no terminal event was emitted...
+			expect(emittedTypes()).not.toContain("subagent:failed");
+			expect(emittedTypes()).not.toContain("subagent:completed");
+			// (3) ...exactly the three run writes, and the terminal one is `failed`.
+			expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+			expect(terminalRunEntries()).toHaveLength(1);
+			expect(terminalRunEntries()[0].status).toBe("failed");
+			// (4) ZERO marker records — the tripwire, independent of the timer
+			// handle and of every write above.
+			expect(settleEntryRecords()).toEqual([]);
+			// (5) One — and only one — deadline clear: `failPreStart`'s.
+			expect(clearSpy).toHaveBeenCalledTimes(1);
+			expect(vi.getTimerCount()).toBe(0);
+
+			// (6) POSITIVE CONTROL: "zero" must be a measurement, not a blind
+			// detector. An immediately-resolving prompt in the SAME test writes
+			// exactly one marker record — so the level and the sink both work.
+			mocks.session.prompt.mockResolvedValue(undefined);
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "positive control" });
+			await flushMicrotasks();
+			const records = settleEntryRecords();
+			expect(records).toHaveLength(1);
+			expect(records[0]).toContain("(success)");
+		} finally {
+			clearSpy.mockRestore();
+			vi.useRealTimers();
+			setLogLevel("info");
+			setLogCwd(undefined);
+		}
+	});
+
+	it("the caller observes `running` at its resume even when the prompt resolves immediately (#450 D4 decision)", async () => {
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		mocks.session.prompt.mockResolvedValue(undefined);
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "immediate completion",
+		});
+		// Shape (b) costs exactly one microtask hop, and the hop is CALLER-VISIBLE:
+		// the settle body has not run yet, so the caller sees a live run.
+		expect(agent.status).toBe("running");
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(getAgent(agent.id)?.status).toBe("completed");
+
+		// The pipeline captures `status: agent.status` at its first statement after
+		// its own spawn await, so an `await` in between would re-open the same hop
+		// by the back door. Pin it at the source: no `await` between the two.
+		const pipeline = readFileSync(new URL("../background-pipeline.ts", import.meta.url), "utf8").split("\n");
+		const spawnAt = pipeline.findIndex((line) => line.includes("const agent = await spawnBackgroundSession("));
+		const captureAt = pipeline.findIndex(
+			(line, index) => index > spawnAt && line.includes("status: agent.status"),
+		);
+		expect(spawnAt).toBeGreaterThan(-1);
+		expect(captureAt).toBeGreaterThan(spawnAt);
+		const awaitsBetween = pipeline
+			.slice(spawnAt + 1, captureAt)
+			.map((line) => line.trim())
+			.filter((line) => line !== "" && !line.startsWith("//") && !line.startsWith("*") && !line.startsWith("/*"))
+			.filter((line) => /\bawait\b/.test(line));
+		expect(awaitsBetween, "an `await` between the spawn and the identity capture re-opens the D4 hop").toEqual([]);
 	});
 });
