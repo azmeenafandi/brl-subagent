@@ -568,6 +568,16 @@ Mutant definitions (the reviewer can re-run them from §E10's script):
 | M9 | revert regime 1 to `(err as Error).message` | T4 |
 | M10 | revert `onSettleFault`'s normalisation to `reason as Error` | T4 |
 
+## Conductor decisions (2026-11-20)
+
+- **Q1 → S1 accepted.** The caller-visible status change is the cycle\x27s one contract change: at the caller\x27s
+  resume `agent.status === "running"` for every prompt shape, and `identity.status` is deterministically
+  `running`. Pinned by T6 (red on the baseline).
+- **Q3 → G1 accepted.** The ratchet is the closed 11-statement allowlist; a legitimate addition to the
+  window must edit the list, and that edit is the decision prompt.
+- **D8 residue → out of scope, filed as #542** (a pre-start failure leaves the agent record `running` while
+  the run entry is `failed`; pre-existing, low). Not a unit in this cycle.
+
 ## What this investigation did **not** verify
 
 - **The full suite was not run in the repository** (the brief: probe in `/tmp`). The /tmp comparison
