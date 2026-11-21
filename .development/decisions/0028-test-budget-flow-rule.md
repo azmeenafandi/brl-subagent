@@ -2,7 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-13
-- **Issues:** #490 (the two-surface budget), U0a of the shipped-half cycle (PR #523)
+- **Issues:** #490 (the two-surface budget), U0a of the shipped-half cycle (PR #523), #558 (the third
+  surface)
 - **Supersedes:** ADR 0027 **D7's test-budget clause only** — "the test-budget check
   (`check-test-budget.mjs`, ratio ≤ 2.0) … [is a] stage gate". The ratio is now reported with a
   warning band and is **not** enforced; the stage gate is the flow rule below. Everything else in D7
@@ -65,6 +66,41 @@ recovered **9 lines**, not hundreds. Cited from U0b (PR #524).
 - **Accepted limits, stated:** two test-only PRs of +120 each stay `within` and accumulate; a
   replacement (N out, N in) measures zero. The cycle-close row records the stock and says why if it
   is above the warning band.
+
+## Amendment (2026-11-21, #558): the worktree scripts are a third surface
+
+**Decision (A) above extends, unchanged in mechanism, to a third surface.** The merge gate's own
+scripts — 7 entry `.sh` + `lib/version-skew.sh`, 2 `.py`, 1 `.mjs`, **6,950 lines at this writing** —
+were outside `classifyPath`, because it only knew `src/` and `scripts/`. Measured at the base of this
+amendment: a branch that adds five lines to `merge-guard.sh` printed `test-flow: no source or test
+change — within` and exited 0. The flow rule could not see the files that decide what merges.
+
+- **`SURFACES` gains `skills`** (`dir: .pi/skills/worktree`, `sourceExtensions: [.sh, .py, .mjs]`),
+  so every surface — including the two that existed — declares its source side as a LIST. One shape,
+  no per-surface special case in the classifier.
+- **No reference ratio (`reference: null`).** `src` 2.0 and `scripts` 1.0 were earned by measurement;
+  nothing measures how many `.ts` lines a shell script deserves. The report line says
+  `reference none (flow-gated)` and a positive ratio on that surface is silent. A fabricated target
+  would be a policy the report invented.
+- **No floor (`floorCorpus: null`).** The floor asks a reachability question through import edges,
+  and a `.sh` has none. `0/11 reachable` is the honest mechanical answer and a false red, so the
+  opt-out is explicit, read **before** the tree (an absent directory is skipped, never read), and the
+  floors still gate exactly the two surfaces that declare one.
+- **The receipt carries the third ratio.** `pr-evidence`'s `budget:` line is
+  `src … · scripts … · skills …`, and the third clause is REQUIRED: a body whose line predates this
+  amendment parses with no `budget` key and fails as `missing-key` (the message carries the shape),
+  which `pr-evidence --apply` rewrites. One fixture keeps the old two-ratio line on purpose.
+- **Accepted limits, unchanged and now stated for the third surface:** a **net** skills-only change is
+  priced (`allowance = 120 + 2 × Δsource`, exit 0 — the rule judges a PR's purchase, it does not
+  demand a test), and a **zero-net** replacement (`5/5`) still measures zero and prints nothing. The
+  report's ratio is what makes accumulation visible on this surface, exactly as on the other two.
+- **Falsifier.** `test-budget.test.ts` pins that five added worktree-script lines yield
+  `0/+5 skills (allowance 130) — within` and that a `5/5` replacement yields an empty row set. If the
+  first ever reports no clause, or the second ever reports one, this amendment's premises are false.
+- **Rollout.** The merge gate (g) runs the **cockpit's** copy of `check-test-budget.mjs`, so the PR
+  that lands this measures two surfaces in its own gate until the cockpit pulls the merge; after that,
+  every new PR's gate measures three. Nothing in the gate's parsing changes: `(g)` reads the
+  `test-flow: …` line's verdict, and a third clause is additive to it.
 
 ## Consequences
 

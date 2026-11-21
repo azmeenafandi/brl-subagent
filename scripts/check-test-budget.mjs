@@ -20,12 +20,19 @@
 //     comment, a string, `import type … from` and `export … from` are not edges: a barrel would
 //     otherwise make every module reachable and the floor would prove nothing.
 //
-// TWO SURFACES since #490. 2.0/1.0 were always meant per surface; the cycle's tooling lives in
-// `scripts/**/*.mjs`, which the old single-surface guard could not see. So each surface is measured
-// and reported on its own (src 58 modules, scripts 18 at the time of writing):
+// THREE SURFACES since #558. 2.0/1.0 were always meant per surface; the cycle's tooling lives in
+// `scripts/**/*.mjs`, which the old single-surface guard could not see (#490), and the merge gate's
+// own scripts live in `.pi/skills/worktree`, which neither surface covered (#558). So each surface is
+// measured and reported on its own:
 //
 //   src      source `src/**/*.ts` minus `__tests__`; tests `src/**/__tests__/**/*.ts`
 //   scripts  source `scripts/**/*.mjs` minus `__tests__`; tests `scripts/__tests__/**/*.ts`
+//   skills   source `.pi/skills/worktree/**/*.{sh,py,mjs}` minus `__tests__`; tests
+//            `.pi/skills/worktree/__tests__/**/*.ts`
+//
+// `skills` measures and reports; it declares no reference and no floor (see its SURFACES entry).
+// Its directory is `.pi/skills/worktree`, never `.pi/skills`: a checkout may hold a gitignored
+// private skill beside it, and a repo-wide surface would then measure a checkout-dependent number.
 //
 // A `__tests__` path segment is the classifier — never the extension — because on the `scripts`
 // surface tests are `.ts` and sources are `.mjs`.
@@ -64,26 +71,35 @@ export const TEST_DIR_NAME = "__tests__";
 
 /**
  * The measured surfaces, widest first (the flow line prints in this order, `src` leading; the report
- * sorts by name). `sourceExtension` / `testExtension` are exact extensions:
- * `scripts/check-imports.d.mts` is `.mts` and belongs to neither surface — a declaration file carries
- * no logic to test.
+ * sorts by name). `sourceExtensions` / `testExtension` are exact extensions — a LIST for the source
+ * side on every surface, so a surface with more than one language is not a special case in the
+ * classifier: `skills` holds shell, Python and Node. `scripts/check-imports.d.mts` is `.mts` and
+ * belongs to no surface — a declaration file carries no logic to test.
  *
  * `reference` is a REFERENCE RATIO, not a ceiling: crossing it is reported and never fails the run.
  * `warnAt` is the band that starts BEFORE the reference where a surface declares one (a surface with
  * `warnAt: null` has no band — its reference crossing is the only signal it makes).
  *
+ * `reference: null` is a surface with NO honest test:source target: the 2.0 and 1.0 were earned by
+ * measurement, and there is no measurement that says how many `.ts` lines a shell script deserves.
+ * The line prints `reference none (flow-gated)` — the per-PR flow rule is that surface's gate — and
+ * `warnAt` is null with it so nothing tries to claim headroom under a target that does not exist.
+ *
  * `floorCorpus` is how much of the surface the floor JUDGES: `"tree"` = every module below it, `"top"`
- * = its top-level entry scripts. `src` has no nested source directories, so the two are one set (58);
- * `scripts` does (`lib/`), and its corpus stays the entry scripts (12) — the set the previous
- * direct-import floor named. A `scripts/lib/**` module is still TRAVERSED (a test reaches it through
- * an entry script, and the edge is what the floor follows); it is not a finding on its own, which is
- * a stated limit of this unit rather than a silent exemption.
+ * = its top-level entry scripts. `src` has no nested source directories, so the two are one set;
+ * `scripts` does (`lib/`), and its corpus stays the entry scripts — the set the previous direct-import
+ * floor named. A `scripts/lib/**` module is still TRAVERSED (a test reaches it through an entry
+ * script, and the edge is what the floor follows); it is not a finding on its own, which is a stated
+ * limit of this unit rather than a silent exemption. `floorCorpus: null` is the explicit opt-OUT: a
+ * `.sh` has no import edges, so reachability cannot answer the floor's question for it, and a floor
+ * that reported `0/11 reachable` would be a false red. The opt-out is read BEFORE the tree
+ * (`measureFloor` / `measureFloors`), so an absent directory is skipped, never read.
  */
 export const SURFACES = Object.freeze([
 	Object.freeze({
 		name: "src",
 		dir: "src",
-		sourceExtension: ".ts",
+		sourceExtensions: Object.freeze([".ts"]),
 		testExtension: ".ts",
 		reference: 2.0,
 		warnAt: 1.95,
@@ -92,11 +108,20 @@ export const SURFACES = Object.freeze([
 	Object.freeze({
 		name: "scripts",
 		dir: "scripts",
-		sourceExtension: ".mjs",
+		sourceExtensions: Object.freeze([".mjs"]),
 		testExtension: ".ts",
 		reference: 1.0,
 		warnAt: null,
 		floorCorpus: "top",
+	}),
+	Object.freeze({
+		name: "skills",
+		dir: ".pi/skills/worktree",
+		sourceExtensions: Object.freeze([".sh", ".py", ".mjs"]),
+		testExtension: ".ts",
+		reference: null,
+		warnAt: null,
+		floorCorpus: null,
 	}),
 ]);
 
@@ -190,13 +215,15 @@ export function measureSurface(surface, root = process.cwd()) {
 		const extension = extname(file);
 		if (file.split(/[\\/]/).includes(TEST_DIR_NAME)) {
 			if (extension === surface.testExtension) testFiles.push(file);
-		} else if (extension === surface.sourceExtension) {
+		} else if (surface.sourceExtensions.includes(extension)) {
 			sourceFiles.push(file);
 		}
 	}
 	const sourceLoc = sourceFiles.reduce((total, file) => total + countLines(file), 0);
 	if (sourceLoc === 0) {
-		throw new Error(`${surface.dir}: no source (${surface.sourceExtension} outside ${TEST_DIR_NAME}) lines found — cannot compute the ratio.`);
+		throw new Error(
+			`${surface.dir}: no source (${formatExtensions(surface.sourceExtensions)} outside ${TEST_DIR_NAME}) lines found — cannot compute the ratio.`,
+		);
 	}
 	const testLoc = testFiles.reduce((total, file) => total + countLines(file), 0);
 	return {
@@ -212,15 +239,28 @@ export function measureSurface(surface, root = process.cwd()) {
 }
 
 /**
+ * A surface's source extensions as one readable token: `.ts` for the common single-extension case,
+ * `.sh|.py|.mjs` when a surface spans languages. Never a JSON array — the message is read by a human.
+ */
+function formatExtensions(extensions) {
+	return extensions.join("|");
+}
+
+/**
  * One line per surface: numerator, denominator, the reference ratio, and the band when the surface
  * declares one. The word is `reference`, not `ceiling`: nothing fails on it (the flow rule is the
  * gate), and a line that said `ceiling` would be the old policy in a string.
+ *
+ * A surface with no reference says so (`reference none (flow-gated)`) rather than printing a number
+ * it does not have: the flow rule is that surface's gate, and a fabricated target would be the
+ * report pretending to be a policy.
  */
 export function formatSurface(surface) {
 	const band = surface.warnAt === null ? "" : `, warn at ${surface.warnAt.toFixed(2)}`;
+	const reference = surface.reference === null ? "none (flow-gated)" : `${surface.reference.toFixed(1)}${band}`;
 	return (
 		`test-budget: ${surface.name} ${surface.ratio.toFixed(2)} ` +
-		`(${surface.testLoc} test / ${surface.sourceLoc} source LOC, reference ${surface.reference.toFixed(1)}${band})`
+		`(${surface.testLoc} test / ${surface.sourceLoc} source LOC, reference ${reference})`
 	);
 }
 
@@ -366,7 +406,8 @@ function resolveEdge(fromFile, specifier, modules) {
 }
 
 /**
- * One surface's floor: `{ name, total, reached, unreachable, testFiles }`. `unreachable` holds the
+ * One surface's floor: `{ name, total, reached, unreachable, testFiles }`, or `null` for a surface
+ * whose `floorCorpus` is null (the explicit opt-out described in `SURFACES`). `unreachable` holds the
  * non-test source modules no `*.test.ts` reaches through import edges (transitive — a helper is only
  * traversed when a test reaches it), sorted, as paths relative to `root` (`src/a.ts`) so the finding
  * names something the reader can open.
@@ -375,6 +416,11 @@ function resolveEdge(fromFile, specifier, modules) {
  * error: `${surface.dir}: cannot read the tree` is thrown only when the directory itself is absent.
  */
 export function measureFloor(surface, root = process.cwd()) {
+	// The opt-out is read BEFORE the tree, and returns null rather than a row: a surface whose
+	// language has no import edges is skipped, never read — an absent directory must not turn into
+	// `cannot read the tree`, and a present one must not turn into `0/11 reachable`. `measureFloors`
+	// drops the null.
+	if (surface.floorCorpus === null) return null;
 	let files;
 	try {
 		files = collectFiles(join(root, surface.dir));
@@ -382,7 +428,7 @@ export function measureFloor(surface, root = process.cwd()) {
 		throw new Error(`${surface.dir}: cannot read the tree (${message(error)}).`);
 	}
 	const modules = new Set(
-		files.filter((file) => [surface.sourceExtension, surface.testExtension].includes(extname(file))),
+		files.filter((file) => [...surface.sourceExtensions, surface.testExtension].includes(extname(file))),
 	);
 	const sources = [...modules]
 		.filter((file) => !isTestPath(file))
@@ -411,9 +457,9 @@ export function measureFloor(surface, root = process.cwd()) {
 	};
 }
 
-/** Every surface's floor, in surface order. */
+/** Every surface's floor, in surface order — an opted-out surface (`floorCorpus: null`) is absent. */
 export function measureFloors(root = process.cwd(), surfaces = SURFACES) {
-	return surfaces.map((surface) => measureFloor(surface, root));
+	return surfaces.map((surface) => measureFloor(surface, root)).filter((floor) => floor !== null);
 }
 
 // ---------------------------------------------------------------------------
@@ -461,8 +507,13 @@ export function findTestBudgetDeclaration(body) {
 // Verdict — report every breach, then one summary. Pure: no IO, no exits.
 // ---------------------------------------------------------------------------
 
-/** Test lines still available before the surface reaches its reference ratio. */
+/**
+ * Test lines still available before the surface reaches its reference ratio. A surface with no
+ * reference has no headroom to claim, and 0 is the honest answer: the band branch that calls this
+ * requires a `warnAt`, which a reference-less surface does not declare.
+ */
 function headroom(surface) {
+	if (surface.reference === null) return 0;
 	return Math.max(0, Math.floor(surface.reference * surface.sourceLoc) - surface.testLoc);
 }
 
@@ -487,7 +538,9 @@ export function evaluate({ reportPath, wallMs, wallCeilingMs = WALL_CEILING_MS, 
 	}
 	for (const surface of surfaces) {
 		const band = surface.warnAt;
-		if (surface.ratio > surface.reference) {
+		// A reference-less surface is silent here on purpose: `ratio > null` is a coercion, not a
+		// judgement, and this surface's gate is the flow rule (its line says `flow-gated`).
+		if (surface.reference !== null && surface.ratio > surface.reference) {
 			// The overage is stated in whole lines: a ratio printed to two decimals can round to the
 			// reference it just passed (56198/28097 = 2.0004 prints as 2.00), and "2.00 is above 2.0"
 			// reads as a bug in the guard. The exact line count cannot round away.

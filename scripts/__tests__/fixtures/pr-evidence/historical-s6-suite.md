@@ -1,5 +1,9 @@
 <!-- S6 / #486: the seam-test count in prose was stale (the measured run was 84).
-     CAUGHT MECHANICALLY as `unattributed-count` (exit 1): the count is in prose, outside the block. -->
+     CAUGHT MECHANICALLY as `unattributed-count` (exit 1): the count is in prose, outside the block.
+
+     Also kept OLD-FORMAT on purpose (#558): its `budget:` line carries the two ratios of its era, so
+     a reader sees the required-refusal case — `missing-key` naming the three-ratio shape, then
+     `--apply` → `--check` clean. Do not modernise this line; it is the fixture. -->
 ## Evidence
 
 <!-- pr-evidence:begin -->

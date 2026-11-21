@@ -138,10 +138,12 @@ export function createEvidenceProbe(root, { report = "", reportDir = "" } = {}) 
 			return { files: found.files, tests: found.tests, path: found.path, label: found.label };
 		},
 		// Every surface the guard measures, by name: the ratio a block states IS that guard's number.
+		// Measured from SURFACES, never a hand-kept list — a surface the guard adds is a ratio the
+		// receipt carries, and a surface it drops is one the receipt refuses to state.
 		budget: () => {
 			const ratios = {};
 			for (const surface of SURFACES) ratios[surface.name] = measureSurface(surface, root).ratio;
-			return { src: ratios.src, scripts: ratios.scripts };
+			return ratios;
 		},
 		prView: (pr) => {
 			const raw = ghOrThrow(root, ["pr", "view", String(pr), "--json", "headRefOid,body"], `gh pr view ${pr}`);

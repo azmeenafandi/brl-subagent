@@ -21,8 +21,12 @@
 //   changed-files: <n>                           ← git diff --name-only <base>...<head> | wc -l
 //   src-diff-lines: <n>                          ← git diff --numstat <base>...<head> -- src | awk …
 //   suite: <N> files / <M> tests                 ← node scripts/suite-report.mjs --capture (files = testResults · tests = Σ assertionResults)
-//   budget: src <r> · scripts <r>                ← node scripts/check-test-budget.mjs --report …
+//   budget: src <r> · scripts <r> · skills <r>       ← node scripts/check-test-budget.mjs --report …
 //   <!-- pr-evidence:end -->
+//
+// Every measured surface gets a clause, so the third one (`skills`, #558) is REQUIRED: a body whose
+// `budget:` line predates it parses with no `budget` key at all and fails as `missing-key` naming the
+// three-ratio shape — the rewrite `--apply` performs, never a silent two-ratio pass.
 //
 // The four count lines MUST carry `← <command>` (#488's rule). `head:` may omit the arrow — the spec's
 // own block shape has no command there, and a sha is not a count. Emit writes the arrow on all five.
@@ -91,7 +95,7 @@ export const SHAPE = Object.freeze({
 	"changed-files": "changed-files: <n>",
 	"src-diff-lines": "src-diff-lines: <n>",
 	suite: "suite: <N> files / <M> tests",
-	budget: "budget: src <r> · scripts <r>",
+	budget: "budget: src <r> · scripts <r> · skills <r>",
 });
 
 // The value half of each key line: everything before the arrow. Anchored, so prose that merely contains
@@ -101,7 +105,7 @@ const FIELDS = Object.freeze({
 	"changed-files": /^changed-files:[ \t]*([\d,]+)\b/,
 	"src-diff-lines": /^src-diff-lines:[ \t]*([\d,]+)\b/,
 	suite: /^suite:[ \t]*([\d,]+)[ \t]+files?[ \t]*\/[ \t]*([\d,]+)[ \t]+tests?\b/i,
-	budget: /^budget:[ \t]*src[ \t]+([\d.]+)[ \t]*·[ \t]*scripts[ \t]+([\d.]+)/i,
+	budget: /^budget:[ \t]*src[ \t]+([\d.]+)[ \t]*·[ \t]*scripts[ \t]+([\d.]+)[ \t]*·[ \t]*skills[ \t]+([\d.]+)/i,
 });
 
 /**
@@ -179,7 +183,7 @@ export function parseBlock(lines, range) {
 				key === "suite"
 					? { files: parseCount(match[1]), tests: parseCount(match[2]) }
 					: key === "budget"
-						? { src: match[1], scripts: match[2] }
+						? { src: match[1], scripts: match[2], skills: match[3] }
 						: key === "head"
 							? match[1].toLowerCase()
 							: parseCount(match[1]);
@@ -201,7 +205,7 @@ export function renderBlock(evidence, { base = "dev", headRef = "HEAD" } = {}) {
 		`changed-files: ${evidence.changedFiles} ${ARROW} git diff --name-only ${scope} | wc -l`,
 		`src-diff-lines: ${evidence.srcDiffLines} ${ARROW} git diff --numstat ${scope} -- src | awk '{s+=$1+$2} END {print s+0}'`,
 		`suite: ${evidence.suite.files} files / ${evidence.suite.tests} tests ${ARROW} node scripts/suite-report.mjs --capture (files = testResults · tests = Σ assertionResults)`,
-		`budget: src ${formatRatio(evidence.budget.src)} · scripts ${formatRatio(evidence.budget.scripts)} ${ARROW} node scripts/check-test-budget.mjs --report vitest-report.json`,
+		`budget: src ${formatRatio(evidence.budget.src)} · scripts ${formatRatio(evidence.budget.scripts)} · skills ${formatRatio(evidence.budget.skills)} ${ARROW} node scripts/check-test-budget.mjs --report vitest-report.json`,
 		BLOCK.end,
 	].join("\n");
 }
@@ -283,9 +287,9 @@ export function unattributedCounts(lines, ranges) {
  * order is the block's own key order, so two runs over one body print the same lines.
  *
  * `actual` is the CLI's probe output: `{ head, changedFiles, srcDiffLines, suite: { files, tests },
- * budget: { src, scripts } }`, where the budget ratios may be numbers (measured) or strings (already
- * formatted). A head is compared prefix-tolerantly, exactly like the handoff's `Verified:` — a short sha
- * names one commit.
+ * budget: { src, scripts, skills } }`, where the budget ratios may be numbers (measured) or strings
+ * (already formatted). A head is compared prefix-tolerantly, exactly like the handoff's `Verified:` — a
+ * short sha names one commit.
  */
 export function compare(block, actual) {
 	const findings = [];
@@ -332,10 +336,19 @@ function driftFor(key, value, actual) {
 					detail: `block ${value.files} files / ${value.tests} tests · repo ${measured.files} files / ${measured.tests} tests`,
 				};
 	}
-	const measured = { src: formatRatio(actual.budget.src), scripts: formatRatio(actual.budget.scripts) };
-	return value.src === measured.src && value.scripts === measured.scripts
+	const measured = {
+		src: formatRatio(actual.budget.src),
+		scripts: formatRatio(actual.budget.scripts),
+		skills: formatRatio(actual.budget.skills),
+	};
+	return value.src === measured.src && value.scripts === measured.scripts && value.skills === measured.skills
 		? null
-		: { code: CODES.staleBudget, detail: `block src ${value.src} · scripts ${value.scripts} · repo src ${measured.src} · scripts ${measured.scripts}` };
+		: {
+				code: CODES.staleBudget,
+				detail:
+					`block src ${value.src} · scripts ${value.scripts} · skills ${value.skills} · ` +
+					`repo src ${measured.src} · scripts ${measured.scripts} · skills ${measured.skills}`,
+			};
 }
 
 /** Two shas name one commit when they are equal or one is a prefix of the other; case-insensitive. */
