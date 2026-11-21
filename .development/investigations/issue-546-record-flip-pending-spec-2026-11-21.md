@@ -1,16 +1,35 @@
-# #546 — a crash between the terminal writes leaves a `running` agent record boot cannot repair — spec **r4**
+# #546 — a crash between the terminal writes leaves a `running` agent record boot cannot repair — spec **r5**
 
 **Issue:** #546 (harden) · priority **low** (a process kill inside a sub-millisecond window; state
 consistency, not a lost run) · **C1** · worktree **y**.
-**Spec r4:** 2026-11-21, against `c575a6c` (`git status --porcelain` → **0**; every probe ran in
-`~/.cache/brl-subagent/scratch/spec-546-r4/` (0700), never the repository, never `/tmp`; no `npm install`).
-r3 was measured `needs-work` (2 **behavioural** majors + 4 minors); this revision implements all six and
-re-measures every fix (§E18–E22, E2, E17). **Status: decision-ready.**
+**Spec r5:** 2026-11-21, against `c575a6c` (the design tree; `git status --porcelain` → **0**; every r5 probe
+ran in `~/.cache/brl-subagent/scratch/spec-546-r5/` (0700), never the repository, never `/tmp`; no
+`npm install`; the r4 rows live in `…/spec-546-r4/`). r4 was measured `needs-work` (2 majors + 2 minors); r5
+answers all four. **Status: decision-ready.**
 
-r4 changes **one source file** relative to r3 — `src/session-manager.ts` (+92/−22: the live/boot split) —
-plus the tests. `run-registry.ts`, `recovery.ts` and `boot-recovery.ts` are **byte-identical to r3**, so the
-re-measured rows for those surfaces (E14–E17, H2e, H4f, M16/M17) are the r3 rows re-run on the r4 tree, not
-new claims.
+**r5 changes NO source code.** The option, the marker lifecycle, the three-function split, the production
+wiring and the mutant table are r4's, verified sound. r5 (a) states one **unrepairable crash residual**
+honestly rather than implying the repair guarantee is total (P6, E23 — owned by **#554**), (b) makes the
+shipped hold tests **impossible to pass without a registry scan** (N1/N2 + a same-scan control, a new N3,
+M21/E24/E25), and (c) fixes two probe/budget details (E17r, §Delta). `run-registry.ts`, `recovery.ts`,
+`session-manager.ts` and `boot-recovery.ts` are **byte-identical to the r4 tree** — every r4 measurement
+whose code path r5 does not touch is that row re-run, not a new claim.
+
+## r4 → r5 changes
+
+| # | r4 gap (measured by `critique-546-r4`) | r5 (stated + measured) | Evidence |
+|---|---|---|---|
+| **1 (major)** | A kill **inside `persistAgent`'s in-place `writeFileSync`** truncates the record and leaves **corrupt JSON**, not a `running` record. The marker survives (fail-closed, correct), but no boot can ever repair a corrupt record — and the r4 spec's acceptance 2/5 promised a repair unconditionally. | **P6 added to §Marker lifecycle**, and the repair guarantee **narrowed to a *readable* `running` record**: a corrupt record is a **failure, not a repair** — `flipFailures` on every boot, marker kept **forever**, operator remedy = replace/remove the corrupt file. Acceptance 2, 5 and 7 say so; §Residuals names it; **#554** (atomic `persistAgent`: temp+rename, plus a corrupt-record policy) owns the root cause and is **explicitly out of this unit's scope** (a writer used by every agent-record path — a wider blast radius than the marker/repair). The atomic writer is **not** built here. | **E23**: seed P1, then `openSync(record,"w")` + `SIGKILL` ⇒ record **455 → 0** bytes (and a short write ⇒ **455 → 227**, both `SyntaxError`); two production boots each `{repaired:0, retired:0, failures:1}`, exit 0, marker retained, record still corrupt, **0** notices. |
+| **2 (major)** | N1/N2 could pass **without a registry scan**: a mutant returning right after the failed import made `vitest -t 'N1:\|N2:'` pass **2/2**. Their no-notice assertion was **vacuous** — `maybeSendRecoveryNotice` is a separate method that `boot()` never called. | **A same-scan positive control in every case**: a plain ACCEPTED entry with a dead owner that the registry-only scan **must** mark interrupted (its bytes change and it carries `interruptedAt`; the ledger line must say `marked: 1`). The **notice surface is invoked** and asserted three ways: it ran (the mocked module makes it degrade to `Recovery notice failed`), it delivered **nothing**, and the exact projection the surface consumes (`offeredInterruptedRuns(collectInterruptedRuns(...))`) is **`[control]`** — the held marker is absent from it. A new **N3** (real module, `boot-recovery-factory` suite) proves the delivered half: a **corrupt** record holds its marker while the control is marked **and noticed**, and the notice names the control alone. | **E24**: r4 file on M21 ⇒ **2 passed**; r5 file on M21 ⇒ **2 failed** (`expected '…' not to be '…'` on the control's bytes), on M18 ⇒ **4 failed / 4**, on r4 tree ⇒ **4 passed**. **E25**: N3 on r4 tree **4 passed** (3 existing + N3); on **M13b** (reader conflates unreadable with absent) **1 failed / 3 passed**; ledger `{0,0,1}`; the notice names the control's id8 and **not** the held id8. |
+| **3 (minor)** | E17's identity+size scope did not detect **truncate-then-regrow** on the same inode: a preload truncated and regrew the log beyond the offset with an old settlement line, and a no-op boot reported `TRIPLE … ok:true`, exit **0**. | The harness uses a **per-boot isolated log** (`BOOT_LOG_DIR` → `setLogCwd`), and the scope is the **whole** of that file with a precondition that it was **empty at snapshot time** (`log-not-empty-at-start` otherwise) — a scope that *cannot accept rewritten earlier bytes*, because no earlier boot writes to it. **Truncate-then-regrow is pinned as a negative control**: the previous boot's log is truncated and regrown (larger, same inode) with a stale settlement line, and the no-op boot still exits **3**. | **E17r**: r4 harness on the regrow state ⇒ `TRIPLE {"actual":{"repaired":0,"retired":1,"failures":0},"ok":true}` **exit 0** (the r4 fail-open, reproduced); isolated-log no-op ⇒ exit **3**; previous log **182 → 505 bytes, same inode** + a no-op boot on its own log ⇒ exit **3**; this boot's log pre-seeded ⇒ `LOG_SCOPE {"ok":false,"reason":"log-not-empty-at-start"}` exit **3**; positive (a settling boot) ⇒ `{0,1,0} ok:true` exit **0**. |
+| **4 (minor)** | The shipped-test delta excluded the **24 probe cases** the execution sketch requires porting; it was presented as if it were the implementation delta. | The test figure is marked **provisional**: the measured r4 shipped figure **plus** the r5 additions, with the 24 probe cases still unported. The **committed-head budget gate** (`check-test-budget.mjs --flow`) is **rerun after porting**, and the final figure replaces the provisional one then. | **§Delta**: source unchanged (+664/−50); hold file **+113/−39** (208 → 282 lines) and factory suite **+54/−0** measured against the r4 tree; shipped tests **+606/−41** provisional; the 411-line/24-case probe artefact still excluded. |
+
+**Kept verbatim from r4** (re-measured where r5's own evidence runs them): the three-function split and its
+two contracts (E18/M19), the shipped hold suite's byte/ID assertions (E19), the probe exits **0/5/2**, the
+half-wired pins (M20, `2 failed / 2` on the r5 file), E14/E17's positives, the C1 attribution (E22) and its
+measured survivors, `EXPECT_COMMITTED`, the wrapped import, the per-process notice limit (E16), the real W-0
+seam (E2), M1–M20 (no renumbering), and the acceptance falsifiers. **One mutant is added — M21**, whose
+killer is the shipped N1/N2.
 
 ## r3 → r4 changes
 
@@ -64,7 +83,7 @@ case was behavioural).
 
 ---
 
-## Recon (Rule 13 — codegraph @ c575a6c) and r4 additions
+## Recon (Rule 13 — codegraph @ c575a6c) and r4/r5 additions
 
 ```
 # recoverInflightRuns (src/recovery.ts)   — callers: 4 (recoverProduction :463, scanBoot, 2 tests)
@@ -74,6 +93,7 @@ case was behavioural).
 # `readAgentRecordFromDisk` (session-manager). `recordFlipPending` at c575a6c → 0; r3/r4 → 20 in `src/*.ts`.
 # r4 adds NO exported symbol either: `settleLiveAgentRecord` and `terminalVerdictAfterWrite` are
 # MODULE-PRIVATE; `flipAgentRecord` keeps its r3 signature and is now the BOOT replay only.
+# r5 adds NO symbol and touches NO source file: the four-file diff is the r4 diff, byte-identical.
 #   grep -rn 'settleLiveAgentRecord' src --include=*.ts  → definition :1325 + STEP B :2239
 #   grep -rn 'flipAgentRecord' src --include=*.ts        → definition :1246 + boot-recovery :167 + tests
 ```
@@ -135,12 +155,18 @@ applier *never* trusts memory.
 | **P3** | the flip's own write failed (`persistAgent` swallows, V8) | entry+marker, record `running` on disk | **deferred**: `flipFailures=1`, entry kept (**E6**) |
 | **P4** | the owner is alive | entry+marker, record `running` | **held**: nothing written, entry kept, no retry offer (**E4d**) |
 | **P5** | **STEP 0 failed** (marker write `false`) | entry **without** marker, pre-#546 order | **not repairable** — the historical W-0/W-1 residue, stated (**E2**) |
+| **P6 (r5)** | **a kill inside `persistAgent`'s in-place write** (`writeFileSync` truncates, then writes — `session-manager.ts:537`) | entry+marker, record **CORRUPT** (0 bytes or a short prefix) | **never repaired**: the marker is **kept**, every boot counts `flipFailures` and **claims no repair** (**E23**) |
 
 **The invariant:** *a `running` agent record a fresh process can observe is either (a) owned by a live
 process, or (b) accompanied by a durable marker naming the terminal status.* No other state is constructible
 — **except** P5, the explicit pre-#546 fallback. **In the live process the row itself is terminal in every
 one of these faults** (`settleLiveAgentRecord` writes memory before it reads the disk), which is the #542
 half of the invariant.
+
+**P6 is not a hole in the invariant — it is the boundary of the guarantee:** the marker is still there
+(fail-closed, `flipFailures` counted every boot); what is missing is the *record* a repair would rewrite. So
+the guarantee is stated over **"a readable `running` record"** and P6's remedy is the operator's (§The
+torn-write residual, #554).
 
 ### The narrowed guarantee — ordering, not mutual exclusion
 
@@ -155,6 +181,31 @@ the same claim and **each may deliver a notice** — duplicate notices are possi
 events (**E16**: both `true`; same-process second call `false`). A shared claim is the remedy and is **out
 of scope**; serializing the flip needs a per-run claim (`O_EXCL` file or atomic-rename lease), also out of
 scope.
+
+### The torn-write residual (P6) — a corrupt record is a failure, not a repair
+
+`persistAgent` writes the agent record **in place**: `writeFileSync(filePath, json, { mode: 0o600 })`
+(`session-manager.ts:537`), i.e. open-**truncate**-write. A kill between the truncate and the completed write
+leaves the record **corrupt** — measured two ways (**E23**): **0** bytes, and a **short prefix** (455 → 227
+bytes, a valid-looking start, invalid JSON). The protocol then does exactly what it promises, and no more:
+
+- the **marker is kept** and **no boot claims a repair** — two consecutive production boots each report
+  `{repaired:0, retired:0, failures:1}` (the `unreadable` verdict, §D12), the marker survives both, and the
+  record is still corrupt afterwards. This is the **correct fail-closed** answer (a boot must not invent a
+  terminal record for a dispatch whose entry says `failed`), but it is **not** a repair: r5 corrects the r4
+  wording to **"repaired on the next boot when the record is readable"**;
+- there is **no automatic recovery path** — every future boot re-reads the same bytes and re-counts the same
+  failure. The **operator remedy** is to replace or remove `<storage>/<id>.json`; the marker then settles on
+  the next boot (a removed record is a *confirmed* `ENOENT` ⇒ `retired`, H2b; a replaced `running` record ⇒
+  `repaired`).
+
+**The root cause is out of scope, deliberately.** An atomic write (`writeFileSync` to `<file>.tmp` +
+`renameSync`, plus a policy for a corrupt record found on read) belongs to **#554** and would touch the
+**one writer every agent-record path uses** — dispatch, status updates, the live pre-start pin, the boot
+applier — with its own crash semantics, its own mode/ownership question (temp file `0o600`, rename across
+the same directory), and its own blast radius on the tests that assert record bytes. Folding a writer rewrite
+into a marker/repair fix would make a **sub-millisecond, low-priority** window the occasion for a
+repository-wide storage change; #554 owns it, and this spec states the residual instead of hiding it.
 
 ### Two contracts, one disk verdict (major A)
 
@@ -208,6 +259,12 @@ to the writes, on the live side.
 > unlink that succeeds or returns `ENOENT` is `true`; any other unlink error is confirmed with a `statSync`
 > and is `false` unless that stat proves `ENOENT`. A `false` is a failed settlement, counted and kept for
 > the next boot, never reported as settled.
+>
+> **A CORRUPT RECORD IS A FAILURE, NOT A REPAIR.** `persistAgent`'s write is **not atomic** (in-place
+> `writeFileSync`, `:537`), so a kill inside it leaves invalid JSON (P6). That state is the `unreadable`
+> verdict: the marker is kept, `flipFailures` is counted, and **no boot ever reports a repair** — the
+> guarantee covers a **readable** `running` record. Recovery from a torn write is an operator action
+> (replace/remove the record) and the atomic writer is **#554**, out of this unit's scope.
 
 ### The code — four touch points (r4)
 
@@ -381,12 +438,16 @@ change**: the reader-API rule only inspects names on static edges, and this edge
 | `run-registry.test.ts:596` | `toMatchObject` | new summary fields are additive (V10) |
 | the agent store | n/a | `readAgentRecordFromDisk` is a new **read** of one record; `agentRecordPath` replaces two inline path builds and adds F24 validation. **r4 adds one writer path**: the live helper's unconditional `updateAgentStatus`; it is the *existing* writer, called in the *existing* order (V7), with no new state |
 
-## Tests — 34 measured cases (24 probe + 6 session-manager + 4 shipped hold)
+## Tests — 35 measured cases (24 probe + 6 session-manager + 4 shipped hold + 1 factory notice control)
 
 The probe file (`zz-546-r3-probe.test.ts`, **411 lines / 24 cases**) is a *measurement artefact*: namespace
 imports so the SAME file runs on base/r2; the shipped tests import directly and live in the suites named
 below. **On the r2 tree: 2 failed / 22 passed** (H2e, H4f); **on r3 and on r4: 24/24**; on base every
 unguarded case fails at an assertion or a missing-symbol `TypeError`, not at import.
+
+**Two rules every hold case now obeys (r5): (i) it plants a companion entry the SAME scan must act on — so a
+scan that never runs fails the case — and (ii) it INVOKES `maybeSendRecoveryNotice`; "no notice" is only a
+claim once the surface has run.** The control's expected outcome is stated per row.
 
 | # | Case | Suite | Pins | Before (r3 unless marked) |
 |---|---|---|---|---|
@@ -413,19 +474,31 @@ unguarded case fails at an assertion or a missing-symbol `TypeError`, not at imp
 | **R4-a** | `critique 546 foreground … > still flips memory on unreadable` — chmod `000` in the pre-start window ⇒ **memory `failed`**, disk unreadable ⇒ **marker KEPT** | `session-manager` | **r4 major A** — the #542 memory pin + the keep-on-unprovable retirement (**M19**) | r3: **failed** (`{running, marker}`); M19: failed; **base: 1 failed** (memory `failed` but registry `[]` — base has the pin, not the marker) |
 | **R4-b** | `… > still flips memory on absent` — record removed ⇒ **memory `failed`**, the memory write re-creates it terminal ⇒ **marker retired** | `session-manager` | major A — absent-after-write ⇒ retire | r3: **failed** (`{running, registry:[]}`); M19: failed (`disk:false`); base: passes (`{failed, disk:true, registry:[]}`) |
 | **R4-c** | `critique failed initial persist then permissions restored before preflight failure` ⇒ `{status:"failed", disk:true, registry:0}` | `session-manager` | major A — the exact r3 regression state | r3: **failed** `{running, disk:false, registry:0}`; M19: failed (same); base: passes |
-| **N1** | **session-manager unavailable**, `acceptedAt:null` ⇒ entry+marker **byte-identical**, record `running`, no `interruptedAt`, no `marked`, no finalizer, no notice, no ledger | `boot-recovery-import-failure-546` | **r4 major B** — the hold, production-wired (**M18**) | r2: `registryFiles:[]`; r3: probe only |
-| **N2** | the same for an **accepted** entry | same | major B (**M18**) | r2: `marked:1` + `interruptedAt`; r3: probe only |
+| **N1** | **session-manager unavailable**, `acceptedAt:null` ⇒ entry+marker **byte-identical**, record `running`, no `interruptedAt`, no finalizer, no notice, no ledger — **and the same scan marks the CONTROL** (a plain accepted, dead-owner entry): its bytes change, `interruptedAt` is set, the ledger line says `marked:1`, and the notice projection is exactly `[CONTROL]` | `boot-recovery-import-failure-546` | **r4 major B** — the hold, production-wired (**M18**); **r5 major 2** — the same-scan control (**M21**) | r2: `registryFiles:[]`; r3: probe only; **r5: M21 2 failed, M18 4 failed** |
+| **N2** | the same for an **accepted** entry | same | major B (**M18**) + major 2 (**M21**) | r2: `marked:1` + `interruptedAt`; r3: probe only; r5: M21 2 failed, M18 4 failed |
 | **D7a/D7b** | a **half-wired** applier (applier-only / reader-only), both acceptance states ⇒ no applier call, no fresh read, no finalizer, no mark, entry+marker byte-identical, **all three flip counters 0** | `boot-recovery-import-failure-546` | **r4 minor 6** — hold ≠ settlement failure (**M20**) | r3: rule existed, unpinned; M20: 2 failed |
+| **N3 (r5)** | a **corrupt** record (0 bytes, the P6 torn write) + a marker ⇒ marker kept, entry byte-identical, no `interruptedAt`, ledger **`{repaired:0, retired:0, failures:1}`**; **and** the control interrupted run is marked and is the **only** run the delivered notice lists (control's id8 present, held id8 absent) | `boot-recovery-factory` (real module) | **r5 major 1** (P6 ship-time pin) + **major 2** (the delivered-notice half; the import-failure file's notice surface is mocked away) | r4: the case does not exist; **M13b: 1 failed / 3**; r4 tree + the r5 file: **4 passed** |
 
 `it.skipIf(process.platform === "win32")` on every `chmod` case; the pins at `session-manager.test.ts:3766`/
 `:3800` stay **green unedited** — STEP D still calls `clearInflightRun`, and `settleLiveAgentRecord` preserves
 the memory outcome. The shipped hold file **must not** statically import `session-manager` (a throwing
 `vi.mock` factory re-throws during collection) — its header states that, and it imports only
-`boot-recovery`/`recovery`/`run-registry`/`runtime`/`logging`.
+`boot-recovery`/`recovery`/**`recovery-surface`**/`run-registry`/`runtime`/`logging` (r5 adds
+`recovery-surface` for the notice projection; it has no `session-manager` edge). **N3 therefore lives in
+`boot-recovery-factory.test.ts`**, whose mock spreads `importOriginal` — the module is REAL there, which is
+exactly what a delivered-notice assertion needs. Under the mocked module the notice surface's own
+`await import("./session-manager")` throws, so a notice can never be delivered in the hold file: that is why
+its no-notice half is asserted on the **projection** plus the `Recovery notice failed` warn (proof the
+surface ran), and the delivered half is N3.
 
-## Delta (ADR 0028) — measured from the scratch tree (`base → r4`), not estimated
+## Delta (ADR 0028) — measured from the scratch tree (`base → r4`), + the r5 test additions; **PROVISIONAL**
 
-`allowance(surface) = 120 + 2 × max(Δsource, 0)`, net lines, `--no-renames`:
+`allowance(surface) = 120 + 2 × max(Δsource, 0)`, net lines, `--no-renames`. **Source is r5-unchanged**
+(measured, not carried over: `git diff --no-index --numstat base/src r4tree/src` on the r5 scratch tree is the
+same four rows). **The test figure is PROVISIONAL**: the 24 probe cases are still an artefact — §Execution
+sketch requires them **ported into `run-registry`/`recovery`**, which grows these rows and is not done here.
+The **committed-head budget gate** (`node scripts/check-test-budget.mjs --flow --base dev --head <final sha>`)
+is **rerun after porting**, and its recorded line replaces the provisional total.
 
 | Surface | + | − | net |
 |---|---|---|---|
@@ -435,10 +508,16 @@ the memory outcome. The shipped hold file **must not** statically import `sessio
 | `src/boot-recovery.ts` | 50 | 3 | +47 |
 | **src total** | **664** | **50** | **+614** → allowance 120 + 2×614 = **1348** |
 | `src/__tests__/session-manager.test.ts` (S1/H1/S3 + R4-a/b/c) | 231 | 2 | +229 |
-| `src/__tests__/boot-recovery-import-failure-546.test.ts` (N1/N2 + D7a/D7b) | 208 | 0 | +208 |
-| **tests total (shipped)** | **439** | **2** | **+437** — within 1348 |
+| `src/__tests__/boot-recovery-import-failure-546.test.ts` (N1/N2 + D7a/D7b; **r5: the control + notice, +113/−39**) | 321 | 39 | +282 (208 → 282 lines) |
+| `src/__tests__/boot-recovery-factory.test.ts` (**r5: N3**) | 54 | 0 | +54 |
+| **tests total (shipped) — PROVISIONAL** | **606** | **41** | **+565** — within 1348 |
 | `src/__tests__/zz-546-r3-probe.test.ts` (24 cases, **artefact**, not shipped) | 411 | 0 | +411 |
-| **tests total incl. the artefact** | **850** | **2** | **+848** |
+| **tests total incl. the not-yet-ported artefact** | **1017** | **41** | **+976** |
+
+**r5 → (r4 → r5) test movement, measured**: the hold file goes **208 → 282** lines (`+113/−39`: the control
+plant + four control/notice assertions, and the header/`plant()` rewrite replacing the r4 no-notice block),
+and the factory suite gains **+54/−0** (N3). tsc on the r5 tree with both files: **0**; the five suites
+(hold + factory + recovery + run-registry + session-manager) **248 passed**.
 
 Stripped of comment-only lines the four-file diff is **664 added = 293 code + 355 comment + 16 blank**
 (doc-heavy by house style; the contract block, the two-contract doc and the guard comments are required).
@@ -448,7 +527,7 @@ the r3 *scratch* tree, which also carried the ad-hoc critique block, the same fi
 unshipped block is replaced by the shipped R4-a/b/c cases.) The allowance moves from 1208 to **1348** because
 the source delta moved; it is still `120 + 2×Δsource`.
 
-## Mutants — 22 rows; M16–M20 were built and run on the **r4** tree
+## Mutants — 23 rows; M16–M20 were built and run on the **r4** tree, M21 on the **r5** tree
 
 | # | Mutant | Killed by (measured) |
 |---|---|---|
@@ -465,7 +544,7 @@ the source delta moved; it is still `120 + 2×Δsource`.
 | **M11** | strict marker read | R2 |
 | **M12** | ignore the marker-write boolean | H1 |
 | **M13** | the **applier** treats present-but-unreadable as absent | H2d |
-| **M13b** | the **reader** conflates unreadable with absent (`exists:false`) | H2a, H2c, H2d (3 failed / 19 passed) |
+| **M13b** | the **reader** conflates unreadable with absent (`exists:false`) | H2a, H2c, H2d (3 failed / 19 passed); **r5 adds N3** (1 failed / 3) |
 | **M14** | ignore the unlink result | H4d |
 | **M15** | memory-first pre-read (no disk read) | H3, H4c, H5, S3 |
 | **M-static** | a static `import { flipAgentRecord }` in boot-recovery | the architecture suite (10/1); `check-imports` does not check this rule |
@@ -474,13 +553,18 @@ the source delta moved; it is still `120 + 2×Δsource`.
 | **M18** | the **no-applier** branch restored as the r2 `else` fall-through | **N1/N2** (`registryFiles:[]` on null; `marked:1` + `interruptedAt` on accepted) — **shipped**: 2 failed / 2, probe exit 5 |
 | **M19 (r4)** | STEP B calls the **boot** helper (`flipAgentRecord`) — i.e. the r3 shape | **R4-a, R4-b, R4-c** (2 failed + 1 failed) — reproduces r3's `{running, …}` / `{running, disk:false, registry:0}` exactly; N1/N2 stay green (the boot contract is untouched) |
 | **M20 (r4)** | the half-wired guard `\|\|` → `&&` (a one-dep scan falls through to the ordinary path) | **D7a/D7b** (2 failed) — the applier-only case reaches the missing reader, the reader-only case reaches the fresh reader |
+| **M21 (r5)** | `if (!wiring) return;` right after the failed `await import("./session-manager")` — "no wiring, so nothing to do": the registry-only scan never runs | **N1/N2** (2 failed / 2) on the r5 file, at the **control's bytes** (`expected '…' not to be '…'`) — the held marker's silence is still perfect, so only the control detects it. **The r4 file passes 2/2 on this mutant** (E24), which is the defect r5 fixes |
 
 M5/M6 are the pair that matters: **M5** is what a reviewer writes by hand, **M6** is the only thing that
-makes M5 detectable. M10/M14/M16/M17 are the settlement-integrity quartet: a settlement that did not land
+makes M5 detectable. **M21 is the same lesson one layer up**: a test that asserts *silence* is killed by a
+mutant that is silent too, so the hold cases each carry a positive control in the same scan. **M13b** is now
+also the killer of N3 (the corrupt-record hold → the notice half), which is what makes N3 a pin rather than a
+demonstration. M10/M14/M16/M17 are the settlement-integrity quartet: a settlement that did not land
 must neither retire nor read as settled. **M19 is the #542 regression itself** — the r3 shape as a mutation,
 so the live-pin tests are provably about the split, not about incidental state. M1–M15/M13b remain as
 measured on the r2/r3 trees (the r2 and r3 critics verified them); r4 re-ran the 24-case probe and the three
-live-pin cases.
+live-pin cases; **r5 built and ran M21** (a one-line copy of the r4 tree) and re-ran the hold file on the r4
+tree, M18, M20 and M21, plus N3 on the r4 tree and M13b.
 
 ## Verification plan (conductor-ready, in order)
 
@@ -495,33 +579,44 @@ live-pin cases.
    → `recovery` → `boot-recovery`, `npx tsc --noEmit` clean at each hop (the tree typechecks without tests).
 4. Suites green; `npx tsc --noEmit` **0**; `node scripts/check-imports.mjs` **60 files, 0 violations**
    (the `./run-registry` import **must be wrapped**); the architecture suite **11/11** (allow-list unchanged);
-   the new hold file **4 passed**.
-5. M1–M20 + M13b one at a time in a scratch copy (never the repo); record the killed case names (§Mutants is
-   the expected table). M16/M17/M19/M20 are the r4-tree builds; M19's kill is the **three** live-pin cases,
-   M20's the **two** half-wired cases.
+   the new hold file **4 passed**, the factory suite **4 passed** (3 + N3).
+5. M1–**M21** + M13b one at a time in a scratch copy (never the repo); record the killed case names (§Mutants
+   is the expected table). M16/M17/M19/M20 are the r4-tree builds; M19's kill is the **three** live-pin
+   cases, M20's the **two** half-wired cases, **M21's the two hold cases** — at the control's bytes.
 6. **Crash probes against the patched tree** (`phase1.cjs` writes the real records then `SIGKILL`s;
    `boot.cjs` runs `createBootRecovery().performBootRecovery()` + `maybeSendRecoveryNotice` in a fresh
    process; `read.cjs` is a third process). `boot.cjs` parses `message` and exits **3** on any of:
    `EXPECT_TRIPLE` mismatch or a **missing** settlement line, `EXPECT_NO_SETTLEMENT` violation,
    `EXPECT_COMPLETEDAT` violation, **`EXPECT_COMMITTED`** mismatch (E2). An `EXPECT_COMMITTED` that parses to
    zero statuses is a **usage error (exit 2)**, and a missing stream is reported as `stream:"missing"`, not
-   as "present with no lines" (E2). Record P0–P5, the two base controls (W-0, W-1), and E5 (`accepted`,
-   explicitly — the null-accepted entry is finalized, not marked).
+   as "present with no lines" (E2). Record P0–**P6**, the two base controls (W-0, W-1), and E5 (`accepted`,
+   explicitly — the null-accepted entry is finalized, not marked). **P6/E23 is its own run**: seed P1, tear the
+   record with `openSync(record,"w")` + `SIGKILL` (both a 0-byte and a short-prefix tear), then **two** boots
+   with `EXPECT_TRIPLE=0,0,1` — both must exit **0**, keep the marker, leave the record corrupt, and emit
+   **no** notice. A boot reporting `repaired:1` over unparsable bytes is a **spec** failure, not a test
+   failure (Rule 20).
 7. **The W-0 seam**: run `base` **without** the scratch hook (stream `["running","failed"]` → exit 3) and
    **with** it (stream `["running"]` → exit 0). The hook is six lines in the *scratch* tree's
    `persistRunRecord`, between the retirement branch and `pi.appendEntry`; it is **not** in the deliverable
    (an env-gated kill switch on the terminal path is a fault-injection/DoS surface and a second, artificial
    crash path — the real W-0 is an external `SIGKILL` at that same syscall boundary).
-8. **Harness scoping**: settle a P2 residue, then run a **no-op second boot** with `EXPECT_TRIPLE=0,1,0` →
-   exit **3**; then the same state with (a) the log **rotated** (new inode) and (b) the log **truncated** →
-   exit **3** in both, with `log-identity-changed` / `log-shrank`; the r3 whole-log parser on the same state
-   → exit **0** (E17).
+8. **Harness scoping (r5: a per-boot isolated log)**: give each boot its **own** log dir (`BOOT_LOG_DIR` →
+   `setLogCwd`) and make the scope the whole file, empty at snapshot time. Settle a P2 residue, then run a
+   **no-op second boot** with `EXPECT_TRIPLE=0,1,0` → exit **3**; then the **negative controls**: (a) truncate
+   and **regrow** the *previous* boot's log on the same inode to a **larger** size with a stale settlement
+   line → the no-op boot still exits **3**; (b) pre-seed *this* boot's log with a stale line →
+   `log-not-empty-at-start`, exit **3**; (c) the r4 offset+identity harness (`boot.cjs`) on (a) → exit **0**
+   with `ok:true`, which is the fail-open this replaces (E17r, and E17 for the r4 rows).
 9. **The two-process probes**: sequential (2nd boot 0/0/0) and the seam barrier (both repairs, 2 events,
    2–5 ms drift) — a **stated limit**, not a claim; plus the two-process claim probe (E16).
 10. **The hold**: `node boot-importfail.cjs <tree>-noimport <state> null|accepted` → `HOLD-OK` exit 0; the
     same probe against the **normal** tree → exit 2 (`FAULT-NOT-REPRODUCED`, so a green run cannot be
     vacuous); against M18 → exit 5. Then `vitest run src/__tests__/boot-recovery-import-failure-546.test.ts`
-    → 4 passed, and the same file on M18 (2 failed) and M20 (2 failed).
+    → **4 passed**, and the same file on **M21** (`if (!wiring) return`) → **2 failed** (N1/N2, at the
+    control's bytes), on **M18** → **4 failed**, on **M20** → **2 failed**. Then the notice pin:
+    `vitest run src/__tests__/boot-recovery-factory.test.ts` → **4 passed** (3 existing + N3), and N3 on
+    **M13b** → **1 failed / 3 passed** (E24/E25). **A hold case whose control is unmarked is a failing
+    case** — that is the point of the control.
 11. **GATES — full suite and the flow**: the four suites green with no new failing name against a
     pre-change run (record both name lists); then commit, and run
     `node scripts/check-test-budget.mjs --flow --base dev --head <final sha>` — record base/head sha, exit
@@ -540,7 +635,10 @@ remedy. *(4) Missing/partial/unreadable:* invalid marker ⇒ dropped (fail-open 
 **confirmed absent (`ENOENT`) ⇒ retire**; **untraversable parent/other stat error ⇒ unreadable** (keep +
 `flipFailures`); failed flip or failed unlink ⇒ keep; marker-write `false` ⇒ pre-#546 order; **no applier, or
 half-wired ⇒ hold with zero counters**; a live fault ⇒ **memory terminal in every one of these**.
-*(5) Evidence:* E1–E22, Δ, 24/24 on r3/r4 (2/24 red on r2), 22 mutants, the shipped hold file 4 passed.
+*(5) Evidence:* **E1–E25**, Δ, 24/24 on r3/r4 (2/24 red on r2), **23 mutants**, the shipped hold file **4
+passed** (and **2 failed** on M21, **4 failed** on M18), the factory suite **4 passed** (3 + N3, N3 killed by
+M13b), and the harness probes: **E23** (two boots over a torn record) and **E17r** (isolated log vs
+truncate-and-regrow).
 
 ## Risks, residuals, out of scope
 
@@ -555,6 +653,7 @@ half-wired ⇒ hold with zero counters**; a live fault ⇒ **memory terminal in 
 | An **uncertain** stat (`000` parent) keeps the marker until a later boot can look | low, stated | fail-closed by design; E14 shows the later boot repairs. A permanently unreadable store leaves the marker for the operator |
 | Two boots that pass the pre-flip check together both rewrite | low, stated limit | `completedAt` drift ≤ the read/write overlap and one duplicate event + notice (E11/E16); serialization = claim file, out of scope |
 | A **held** (or half-wired) marker looks like a silent no-op in the ledger | low, stated | §D7: all three flip counters are **zero by design** — a hold is neither a settlement nor a failed settlement; the debug line names it, and the shipped D7 cases pin the zeros (E20) |
+| **A torn record write leaves a marker that NO boot can settle** (P6) | low, **stated, unrepairable here** | the marker is kept and `flipFailures` counted on every boot — correct fail-closed, but the operator must replace/remove a corrupt `<storage>/<id>.json` (E23; N3 pins the state). The root cause is `persistAgent`'s in-place `writeFileSync`, owned by **#554** (atomic temp+rename + corrupt-record policy), **out of this unit's scope**: it is the writer every agent-record path shares, a wider blast radius than the marker/repair (§The torn-write residual) |
 
 **Residual windows this unit does not close** (stated, not claimed fixed):
 
@@ -565,6 +664,10 @@ half-wired ⇒ hold with zero counters**; a live fault ⇒ **memory terminal in 
 - **The STEP-A throw (the uncommitted-run-entry residual)** — with a marker, a throwing terminal append is
   *attempted, not committed*: STEP B still flips the record and STEP D removes the marker, so the residue is
   **`agent=failed` with the run entry uncommitted** (pinned by `session-manager.test.ts:3766`).
+- **The TORN RECORD WRITE (P6)** — a kill inside `persistAgent`'s in-place `writeFileSync` truncates the record
+  (`session-manager.ts:537`): the marker survives, every boot counts `flipFailures` and **claims no repair**,
+  and the record stays corrupt until an operator replaces or removes it (E23). **Not repairable by design
+  here** — the repair guarantee is over a *readable* record. The atomic writer is **#554**, out of scope.
 - **Same-process repair** — a failed persist is deferred to the next boot; a second `flipAgentRecord` after
   the store is writable does attempt the write again (H5), which is the absence of a memory shortcut, not
   automatic retry logic. **The live helper never retries**: it writes once per pre-start failure.
@@ -576,10 +679,12 @@ half-wired ⇒ hold with zero counters**; a live fault ⇒ **memory terminal in 
 
 1. A marker written before retirement survives the run-entry write, the flip, and a crash at any of them;
    `listInflightRuns()` reports it verbatim (R1, C5/R4).
-2. A crash after the marker and before the flip is **repaired on the next boot**: the record is terminal
-   with `completedAt` and the marker's `error`, the entry is gone, `flipRepaired === 1`, and a third process
-   reports `getAgent(id).status === 'failed'` (C1, S2/P1, **E4a/E4b**). *Falsifier:* any observable
-   disagreeing, or a boot whose log says `repaired: 0`.
+2. A crash after the marker and before the flip is **repaired on the next boot when the record is
+   READABLE**: the record is terminal with `completedAt` and the marker's `error`, the entry is gone,
+   `flipRepaired === 1`, and a third process reports `getAgent(id).status === 'failed'` (C1, S2/P1,
+   **E4a/E4b**). **The guarantee is stated over a readable record, not over the file:** a record torn by a
+   kill inside `persistAgent`'s in-place write is **corrupt** and is *outside* it (**P6**, **E23**,
+   **#554**) — see 5 and 7. *Falsifier:* any observable disagreeing, or a boot whose log says `repaired: 0`.
 3. A marker whose flip already landed retires **without** a rewrite: `completedAt`/`error` byte-identical,
    no second terminal event, `flipRetired === 1` (C2, C6, **E4c**, H3).
 4. A **repair** (a write) happens only for a provably dead owner: live/unverifiable ⇒ no write, no
@@ -587,12 +692,18 @@ half-wired ⇒ hold with zero counters**; a live fault ⇒ **memory terminal in 
    an **already-terminal** record mutates nothing (C6, H4a). *Falsifier:* a boot that marks a marker-bearing
    entry it cannot verify, or a repair over a live owner.
 5. A failed flip write is **not** reported as landed: `'retired'`/`'repaired'`/`false` are distinct, a
-   `false` keeps the marker and counts `flipFailures`, and the next boot repairs (C4, H4c, S3, E6/E7).
-   *Falsifier:* `'repaired'` with the persisted status still `running`.
+   `false` keeps the marker and counts `flipFailures`, and the next boot repairs **a readable record** (C4,
+   H4c, S3, E6/E7). **A CORRUPT record is a failure, not a repair:** every boot (measured: two, E23) counts
+   `flipFailures` and reports `repaired:0`, the marker is kept, and there is **no automatic recovery** — the
+   operator replaces or removes the file. The atomic writer that would close this is **#554, out of scope**
+   (§The torn-write residual). *Falsifier:* `'repaired'` with the persisted status still `running`, or a boot
+   that claims a repair over bytes it could not parse.
 6. A failed **unlink** is not reported as settled: `clearInflightRun === false` ⇒ `flipFailures`, entry
    kept, next boot retires (H4a, H4b, H4d, E12). *Falsifier:* `flipRetired` with the entry still present.
 7. An **unreadable/corrupt** record is not treated as absent: `false`, marker kept, `flipFailures === 1`
-   (H2a, H2c, H2d); a **confirmed absent** record retires (H2b). **An absent record proves `ENOENT`, not
+   (H2a, H2c, H2d); a **confirmed absent** record retires (H2b). **A corrupt record stays corrupt** until
+   the file is replaced or removed — the marker is not a repair mechanism for it (P6, **E23**: two boots,
+   same triple, marker retained; N3 pins it in a shipped case). **An absent record proves `ENOENT`, not
    merely a false `existsSync`:** an untraversable parent is uncertain ⇒ marker kept, `flipFailures === 1`,
    and the later accessible boot repairs (H2e, E14). *Falsifier:* `'retired'` while a readable-again record
    is still `running`, or a `000` directory that reports a settlement.
@@ -605,8 +716,10 @@ half-wired ⇒ hold with zero counters**; a live fault ⇒ **memory terminal in 
    narrows to the boot replay. `clearInflightRun`/`flipAgentRecord` signatures change **widening** vs base
    (void→boolean; boolean→union) with no caller depending on the old shape. Nothing removed.
 9. A marker whose **applier or fresh reader is unavailable** is **held**: no never-started finalizer, no
-   `marked`, no `interruptedAt`, entry and marker byte-identical (N1/N2, E15/E19). *Falsifier:* an import
-   failure removes or marks a marker.
+   `marked`, no `interruptedAt`, entry and marker byte-identical — **while the same scan acts on a companion
+   control entry** (its bytes change, `interruptedAt` is set, the ledger says `marked:1`) and the notice
+   surface, **invoked**, lists that control and not the held marker (N1/N2, E15/E19/E24). *Falsifier:* an
+   import failure removes or marks a marker; or a mutant that never runs the scan passes N1/N2 (**M21**).
 10. A **half-wired** pair (applier without reader, reader without applier) is held the same way, in both
     acceptance states, with **all three flip counters zero** (D7a/D7b, E20). *Falsifier:* a hold increments
     any flip counter, or a half-wired scan reaches the applier/fresh reader (M20).
@@ -619,26 +732,36 @@ half-wired ⇒ hold with zero counters**; a live fault ⇒ **memory terminal in 
     fault, or `{running, disk:false, registry:0}` after the initial-persist fault (M19 reproduces exactly
     that).
 13. The **import-failure hold is shipped**, not probed: `boot-recovery-import-failure-546.test.ts` passes
-    (4/4), fails under **M18** (N1/N2) and under **M20** (D7a/D7b), and the scratch probe exits 0/5/2 for
-    hold/violation/no-fault (E19). *Falsifier:* M18 or M20 passes those tests.
+    (4/4), fails under **M18** (4/4: N1/N2 + D7a/D7b), under **M20** (D7a/D7b) and under **M21** (N1/N2 —
+    the skip-scan mutant), and the scratch probe exits 0/5/2 for hold/violation/no-fault (E19/E24). The
+    **notice** half is shipped too (**N3**, factory suite, real module): a corrupt record holds its marker
+    while the control is noticed (E25), and M13b kills that case. *Falsifier:* M18, M20 or M21 passes those
+    tests, or a hold case's control goes unmarked.
 14. `npx tsc --noEmit` clean; the four suites + the **architecture suite** (11/11) green; `check-imports`
     **60/0**; the new hold suite **4 passed**; no new failing name in the worktree suite; the flow verdict
     recorded from the committed head.
 15. **The W-0 stream is `["running"]`** with the instrumented seam, and `["running","failed"]` without it
     (the probe must fail the `EXPECT_COMMITTED` gate) — E2. **The harness is scoped:** a no-op second boot
-    cannot satisfy an `EXPECT_TRIPLE` from an earlier boot (E17), and an `EXPECT_COMMITTED` that parses to
-    zero statuses is a usage error, not an empty stream (E2).
+    cannot satisfy an `EXPECT_TRIPLE` from an earlier boot — the scope is a **per-boot isolated log**, empty
+    at snapshot time, so it cannot accept **rewritten earlier bytes** (E17r: a truncate-and-regrow of the
+    previous boot's log, same inode, larger, does **not** satisfy the assertion; the r4 offset+identity
+    harness reads it as `ok:true`). An `EXPECT_COMMITTED` that parses to zero statuses is a usage error, not
+    an empty stream (E2).
 
 ## Evidence
 
-Probes ran in `~/.cache/brl-subagent/scratch/spec-546-r4/` (`base` = `c575a6c` src; `r3tree` = the r3 tree;
-`r4tree` = this design, `tsc --noEmit` exit 0). Rows marked **(r4)** were re-run on the r4 tree in this
-revision; the others are r3 measurements whose code path r4 does not touch (`run-registry.ts`,
-`recovery.ts`, `boot-recovery.ts` are byte-identical to r3). Every crash case: real `SIGKILL`, then a fresh
-process running the production boot, then a third process reading only disk. `boot.cjs` parses `message`,
-scopes to bytes and **identity** appended by **this** boot, and exits **3** on an `EXPECT_TRIPLE` mismatch (or
-missing line), `EXPECT_NO_SETTLEMENT`, `EXPECT_COMPLETEDAT`, or `EXPECT_COMMITTED` mismatch; exit **2** on a
-zero-status `EXPECT_COMMITTED`.
+Probes ran in `~/.cache/brl-subagent/scratch/spec-546-r5/` (r5 rows) and `…/spec-546-r4/` (r4 rows)
+(`base` = `c575a6c` src; `r3tree` = the r3 tree; `r4tree` = this design, `tsc --noEmit` exit **0** **with the
+r5 test files in place**). Rows marked **(r4)** were re-run on the r4 tree in that revision; the others are r3
+measurements whose code path r4 does not touch (`run-registry.ts`, `recovery.ts`, `boot-recovery.ts` are
+byte-identical to r3). **r5 rows run on the SAME r4 tree** — the r5 revision changes no source — plus the
+mutant trees `mut-M21-skipscan`, `mut-M18-noimport`, `mut-M20`, `mut-M13b-reader` (each a copy of the r4 tree
+with one edit). Every crash case: real `SIGKILL`, then a fresh process running the production boot, then a
+third process reading only disk. `boot.cjs` parses `message`, scopes to bytes and **identity** appended by
+**this** boot, and exits **3** on an `EXPECT_TRIPLE` mismatch (or missing line),
+`EXPECT_NO_SETTLEMENT`, `EXPECT_COMPLETEDAT`, or `EXPECT_COMMITTED` mismatch; exit **2** on a zero-status
+`EXPECT_COMMITTED`. **r5 adds `boot-iso.cjs`** — the same harness with `BOOT_LOG_DIR`, whose scope is a
+**per-boot isolated log** that must be empty at snapshot time (E17r).
 
 | ID | Claim | Probe | Observed |
 |---|---|---|---|
@@ -657,17 +780,32 @@ zero-status `EXPECT_COMMITTED`.
 | **E14** | `existsSync` conflates an untraversable parent with absence | `dirprobe.cjs before/optFinal agent-dir-000`, `… registry-dir-000`; **(r4)** M16/M17 rebuilt on the r4 tree | before: `retired=1, failures=0`, entry gone, record `running`; after: `failures=1`, marker kept, second boot `repaired=1`, record `failed`. Unlink before **true**, after **false**. **(r4)** M16 → H2e alone (1 failed/23); M17 → H4f alone (1 failed/23) |
 | **E15** | the missing-applier hold | `phase1 p1 null/accepted` + `boot-importfail.cjs`; **(r4)** the same probe with assertions | before: null ⇒ `registryFiles:[]`; accepted ⇒ `marked:1` + `registryInterruptedAt`. after: `HOLD-OK` exit **0** both states, entry+record bytes identical, `record:running`, `interruptedAt:null`, no ledger line |
 | **E16** | the notice claim is module-local | `twoclaim.cjs` × 2 processes, same id | `{"first":true,"secondInProcess":false}` twice — two processes win the same claim (r3 measurement; the claim code is unchanged by r4) |
-| **E17 (r4)** | the harness log scoping — positive, **rotation**, **truncation** | `e17.sh` | positive current-boot line → `TRIPLE {0,1,0}` `ok:true`, **exit 0**; rotation → `LOG_SCOPE {"ok":false,"reason":"log-identity-changed","offset":182}` + exit **3**; truncation → `log-shrank` (offset 1972) + exit **3**; the r3 whole-log parser (`boot-r3.cjs`) on the same state → **exit 0** |
+| **E17 (r4)** | the harness log scoping — positive, **rotation**, **truncation** | `e17.sh` | positive current-boot line → `TRIPLE {0,1,0}` `ok:true`, **exit 0**; rotation → `LOG_SCOPE {"ok":false,"reason":"log-identity-changed","offset":182}` + exit **3**; truncation → `log-shrank` (offset 1972) + exit **3**; the r3 whole-log parser (`boot-r3.cjs`) on the same state → **exit 0**. **r5 measured the gap this leaves: same-inode truncate-and-regrow ⇒ `ok:true`, exit 0** (E17r) |
+| **E17r (r5)** | **minor 3** — the log scope: a per-boot isolated log vs the r4 identity+size check, with truncate-and-regrow as the negative control | `e17b.sh <r4tree>` (`boot.cjs` = the r4 harness; `boot-iso.cjs` = `BOOT_LOG_DIR` per boot, whole-file scope, empty-at-start precondition) | r4 harness: a no-op second boot → exit **3**; the same state with the log truncated+regrown (same inode, larger) with a stale settlement line → `TRIPLE {"actual":{"repaired":0,"retired":1,"failures":0},"ok":true}` **exit 0** (the fail-open). Isolated: no-op ⇒ **3**; the **previous** boot's log rewritten **182 → 505 bytes, same inode**, stale line present ⇒ still **3**; this boot's own log pre-seeded ⇒ `LOG_SCOPE {"ok":false,"reason":"log-not-empty-at-start","offset":105}` ⇒ **3**; a boot that genuinely settles ⇒ `{0,1,0} ok:true` ⇒ **0** |
 | **E18 (r4)** | **major A** — the live writer's memory pin and the disk tri-state | `vitest -t 'critique 546 foreground'` and `-t 'critique failed initial persist'` on `r3tree`, `mut-M19` and `r4tree` | **r3**: `unreadable {"status":"running","registry":[marker]}`, `absent {"status":"running","registry":[]}`, `INITIAL_WRITE {"status":"running","disk":false,"registry":0}` — 2 failed + 1 failed. **M19** (STEP B = the boot helper): identical states — 2 failed + 1 failed. **r4**: `unreadable {"status":"failed","disk":true,"registry":[marker]}`, `absent {"status":"failed","disk":true,"registry":[]}`, `INITIAL_WRITE {"status":"failed","disk":true,"registry":0}` — 2 passed + 1 passed. **base**: memory `failed` in both, `registry:[]` (no marker) ⇒ the unreadable case fails on the marker only, absent/persist pass |
-| **E19 (r4)** | **major B** — the hold, shipped and asserted | `vitest run src/__tests__/boot-recovery-import-failure-546.test.ts` on r4tree / M18 / M20; `boot-importfail.cjs` on `<tree>-noimport` | r4tree **4 passed** (N1, N2, D7a, D7b); **M18 2 failed / 2** (N1: `ENOENT … registry/<id>.json`; N2: bytes differ, `+ "interruptedAt"`); **M20 2 failed / 4** (the two D7 cases). Probe: `HOLD-OK` exit **0** on r4-noimport and r3-noimport in both states; `HOLD-VIOLATED` exit **5** on M18-noimport (null: `appended:1`, never-started finalizer; accepted: `interruptedAt` + `marked` line); exit **2** on a normal tree (`FAULT-NOT-REPRODUCED`) |
+| **E19 (r4)** | **major B** — the hold, shipped and asserted | `vitest run src/__tests__/boot-recovery-import-failure-546.test.ts` on r4tree / M18 / M20; `boot-importfail.cjs` on `<tree>-noimport` | r4tree **4 passed** (N1, N2, D7a, D7b); **M18 2 failed / 2** (N1: `ENOENT … registry/<id>.json`; N2: bytes differ, `+ "interruptedAt"`); **M20 2 failed / 4** (the two D7 cases). **r5 re-ran all three on the r5 file**: r4tree **4 passed**; **M18 4 failed / 4**; **M20 2 failed / 2** (D7 only — N1/N2 pass under M20, as before); **M21 2 failed / 2** (N1/N2, E24). Probe: `HOLD-OK` exit **0** on r4-noimport and r3-noimport in both states; `HOLD-VIOLATED` exit **5** on M18-noimport (null: `appended:1`, never-started finalizer; accepted: `interruptedAt` + `marked` line); exit **2** on a normal tree (`FAULT-NOT-REPRODUCED`) |
 | **E20 (r4)** | **minor 6** — a hold is not a settlement failure; the half-wired shapes | `halfdep.cjs` × 4 (applier-only/reader-only × null/accepted) + the shipped D7 cases + M20 | probe: `{"unchanged":true,"marks":0,"final":0,"reads":0,"applies":0,"flipRepaired":0,"flipRetired":0,"flipFailures":0,"marked":0,"neverStarted":0}` 4/4, exit **0**; shipped 2 passed; **M20** 2 failed (`readFreshAgentRecord is not a function` / the reader was reached) |
 | **E21 (r4)** | a **second** pre-start failure for the same id | `second-failure.cjs` (the live helper's memory step, twice, 25 ms apart) | `before {running, completedAt:null, events:0}` → `first {failed, 1795230570936, error:"first…", events:1}` → `second {failed, 1795230570962, error:"second…", events:2}` — re-stamped, error replaced, second event; the disk verdict is unchanged; **unreachable from the spawn path** (fresh id per spawn, V16) |
 | **E22 (r4)** | **minor 4** — the C1 attribution | `vitest -t 'C1:'` on `mut-M1`, `mut-M2`, `mut-M4`, `mut-M5`, `mut-M9`, `mut-M13b` | `1 passed / 23 skipped` on **every** one — C1 does not kill M1/M2/M4; their measured killers are S1/H1/S3, S1/H1 and S3 |
+| **E23 (r5)** | **major 1 / P6** — a torn record is a failure, never a repair | `e23.sh <r4tree> zero\|partial`: seed `phase1 … p1` (real writers + `SIGKILL`) → `torn.cjs` (`openSync(record,"w")` + `SIGKILL`, the `persistAgent` window) → **two** production boots (`EXPECT_TRIPLE=0,0,1`) → a third process reading disk | seed: record **455** bytes, marker present, `COMMITTED_RUNS=["running","failed"]`. After the tear: **0** bytes (`{"before":455,"after":0,"mode":"zero"}`) and **227** bytes (`{"before":455,"after":227,"mode":"partial"}`) — both `SyntaxError` on parse. Boot 1 **and** boot 2: `TRIPLE {"expected":[0,0,1],"actual":{"repaired":0,"retired":0,"failures":1},"ok":true}`, exit **0**; the marker is **still on disk after both**; the record is **still 0/227 bytes**; `DISK_STATUS "<none>"`, `BOOT_APPENDS 0`, `NOTICES 0`; warn tail `Recovery: could not read the agent record for a record-flip marker — the marker is kept` |
+| **E24 (r5)** | **major 2** — N1/N2 cannot pass without a scan | `vitest run …/boot-recovery-import-failure-546.test.ts` on r4tree with the **r5** file, `mut-M21-skipscan`, `mut-M18-noimport`; and with the **r4** file (208 lines) on `mut-M21-skipscan` | **r4 file on M21: `2 passed`** (`-t 'N1:\|N2:'`) — the defect r5 fixes. **r5 file**: r4tree **4 passed**; **M21 `2 failed / 2 passed`**, each `AssertionError: expected '{\n  "id": "3b0a…' not to be '{\n  "id": "3b0a…'` — the **control's** registry bytes did not change; `marked interrupted runs` with `{marked:1}` present on r4tree and **absent** on M21; **M18 `4 failed / 4`** |
+| **E25 (r5)** | **major 2 (delivered notice) + major 1 shipped** — N3 | `vitest run …/boot-recovery-factory.test.ts` on r4tree (3 existing + N3) and on `mut-M13b-reader` (`readAgentRecordFromDisk`: unreadable ⇒ `exists:false`) | r4tree **4 passed**; **M13b `1 failed / 3 passed`** (N3 alone). N3's observed state: held entry byte-identical, marker verbatim, `interruptedAt:null`, ledger `{repaired:0,retired:0,failures:1}`, control `interruptedAt` set, `recoveryNotices()` **1**, the rendered notice contains the control's id8 and **not** the held id8 |
 | **Δ/T** | the delta + typecheck **(r4)** | `git diff --no-index --numstat --no-renames base/src r4tree/src`; `tsc --noEmit` | +131/−12, +236/−7, +247/−28, +50/−3 ⇒ **+664/−50 net +614** (293 code / 355 comment / 16 blank); tsc **0**; shipped tests **+439/−2** (+411 artefact) |
 
 ## Not verified
 
-- **The worktree suite and the flow verdict** — gate 11, not this investigation.
+- **The worktree suite and the flow verdict** — gate 11, not this investigation. **The committed-head
+  budget gate is rerun AFTER the 24 probe cases are ported** (§Delta), and its line replaces the provisional
+  test figure.
+- **The atomic writer (#554)** — deliberately not built and not probed here: no temp-file, `rename`, fsync or
+  corrupt-record-policy behaviour is claimed. P6 states the residual and names the owner.
+- **A kill inside the REAL `persistAgent` call** — E23 reproduces the *bytes* an interrupted in-place write
+  leaves (`openSync(record,"w")` + `SIGKILL`, and a short write ⇒ 455 → 227) rather than instrumenting the
+  shipped writer: adding a fault hook to production code is exactly the shippable-kill-switch objection §7
+  makes about W-0. Every boot assertion depends only on those bytes, so the reproduction is behaviourally
+  faithful; the *timing distribution* of the real window is not measured (and is irrelevant to a state fix).
+- **N3's notice prose** — asserted on the rendered payload (the control's id8 and task present, the held id8
+  absent), not on the sentence template, which other suites own.
 - **A second pre-start failure through the real spawn path** — unreachable (V16) and measured at the helper
   level only (E21); if ids are ever reused, the stated re-stamp/second-event behaviour is the one to revisit.
 - **Automatic retry scheduling** — H5 proves a retry *attempts* the write; repair is deferred to the next
@@ -675,7 +813,7 @@ zero-status `EXPECT_COMMITTED`.
 - **The production drift window** — the seam probe bounds the overlap, it does not measure production (E11).
 - **Windows** — `chmod` cases skipped; the read-back and error-code paths are platform-neutral.
 
-## Open questions (answered for r4)
+## Open questions (answered for r4/r5)
 
 1. **Which concurrency guarantee is required for simultaneous boot scans, and who owns its serialization?**
    **Ordering, not mutual exclusion.** A later boot is inert (E4c/E10/E11-seq); two boots that pass the
@@ -689,7 +827,17 @@ zero-status `EXPECT_COMMITTED`.
    settlement is counted a failure (H2a/H2c/H2d, H2e, E14). **On the live side the same rule applies to the
    post-write disk** (D18): the memory write re-creates an absent record, so "absent after the write" means
    the write did not land and nothing durable exists (E18).
-3. **Does the live path need a write-idempotence short-circuit?** **No.** A second pre-start failure for one
+3. **Is the atomic `persistAgent` write part of this unit?** **No — #554 owns it.** The torn-write residual
+   (P6, E23) is a **writer** defect: `writeFileSync` truncates then writes, so the crash window is inside the
+   write itself, not in the marker/repair ordering. Fixing it means a temp file + `rename` in the one writer
+   shared by dispatch, status updates, the live pre-start pin and the boot applier — new crash semantics, a
+   new file class (`.tmp` in the agent store, which the corrupt-record policy must ignore or sweep), a
+   mode/ownership decision (temp `0o600`, same-directory rename), and every record-byte assertion in the
+   suites re-checked. That is a wider blast radius than the marker and repair protocols this issue adds, so
+   r5 **narrows the stated guarantee** ("a readable `running` record") instead of widening the diff. The
+   corrupt-record *policy* (what a boot should do with a permanently unparseable record) is #554's sixth
+   question, and E23/N3 are the regression pins it inherits.
+4. **Does the live path need a write-idempotence short-circuit?** **No.** A second pre-start failure for one
    id is unreachable (fresh id per spawn, V16); the behaviour if it happened is stated (E21); a short-circuit
    would be a branch with no production caller, and the mandate's live contract is "always make memory
    terminal".
@@ -704,9 +852,19 @@ delete the two blanket retires) → `recovery` (`RecordFlipOutcome`/`FreshAgentR
 the `unreadable` verdict, the **no-applier and half-wired `continue`**, `ownerProvablyDead`) → `boot-recovery`
 (optional import, guarded applier + fresh reader) → tests (S1/H1/S3 **+ R4-a/b/c with the critique names** in
 `session-manager`; the 24 probe cases ported into `run-registry`/`recovery`, including **H2e/H4f**; the hold
-file with **N1/N2 + D7a/D7b**) → tsc + the four suites + the architecture suite + `check-imports` → 22
-mutants (M16/M17 single-case, M19 the three live-pin cases, M20 the two half-wired cases, M18 through the
-import-fail shape) → the crash probes (P0–P5, W-0 with the **scratch-only** seam hook, W-1, E5) → the
-harness-scoping re-run (positive/rotation/truncation + the `EXPECT_COMMITTED` usage/missing distinction) →
+file with **N1/N2 + D7a/D7b**; **N3** in `boot-recovery-factory`) → tsc + the four suites + the architecture
+suite + `check-imports` → **23** mutants (M16/M17 single-case, M19 the three live-pin cases, M20 the two
+half-wired cases, **M21 the two hold cases**, M18 through the import-fail shape) → the crash probes
+(P0–**P6**, W-0 with the **scratch-only** seam hook, W-1, E5) → the harness-scoping re-run (**per-boot isolated
+log** + the truncate-and-regrow negative control + the `EXPECT_COMMITTED` usage/missing distinction) →
 the two race probes + the two-process claim → the worktree gates. Every step's expected observable is a row
 above; a disagreement with a row is first evidence the **spec** is wrong (Rule 20).
+
+**r5 adds no implementation step — the source order is unchanged.** What changes is the barrier each step
+must clear: (a) the two hold cases are written **with** the same-scan control and the notice invocation from
+the first draft, so `M21` is a red-before-green check on the tests themselves (E24: r4 file 2 passed, r5 file
+2 failed); (b) the **porting** of the 24 probe cases into `run-registry`/`recovery` is what turns §Delta from
+provisional into final, and the committed-head budget gate runs **after** it; (c) the crash-probe stage adds
+**P6/E23** (two boots over a torn record) and the harness-scoping stage replaces the offset+identity scope
+with the **per-boot isolated log** plus negative controls (E17r). No shipped file gains a fault hook, and
+`persistAgent` is **not** touched (#554).
