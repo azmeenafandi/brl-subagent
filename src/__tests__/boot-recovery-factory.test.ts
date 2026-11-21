@@ -151,6 +151,32 @@ describe("the boot-recovery factory's latch is per instance (ADR 0027 D5)", () =
 	});
 });
 
+// =========================================================================
+// Issue #554 — the boot-time temp-residue sweep. A SIGKILL cannot run the
+// atomic writer's cleanup, so `.tmp` siblings are bounded at boot. The age
+// floor keeps a LIVE writer's temp alive.
+// =========================================================================
+describe("issue #554 — the boot sweeps stale agent-record temps", () => {
+	it("removes a 2-hour-old temp, keeps a fresh one (even under another pid), and only logs when it swept", async () => {
+		fs.mkdirSync(env.storageDir, { recursive: true });
+		const oldTemp = path.join(env.storageDir, `${ID}.json.4242.aaaaaaaa.tmp`);
+		const freshTemp = path.join(env.storageDir, `${ID}.json.9999.bbbbbbbb.tmp`);
+		fs.writeFileSync(oldTemp, "partial");
+		fs.writeFileSync(freshTemp, "partial");
+		const twoHoursAgo = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+		fs.utimesSync(oldTemp, twoHoursAgo, twoHoursAgo);
+
+		setLogCwd(env.testCwd);
+		await createBootRecovery(createRuntime(fakePi())).performBootRecovery();
+
+		expect(fs.existsSync(oldTemp)).toBe(false);
+		expect(fs.existsSync(freshTemp)).toBe(true);
+		const log = fs.readFileSync(path.join(env.testCwd, ".pi", "subagent-logs", "brl-subagent.log"), "utf8");
+		expect(log).toContain("swept stale agent-record temps");
+		expect(log).toContain('"count":1');
+	});
+});
+
 describe("abandonProductionRun resolves through the deps it injects (S4)", () => {
 	it("writes the terminal record, flips the agent, retires the registry and prunes the session", async () => {
 		seedInterruptedRun();
@@ -276,7 +302,8 @@ describe("issue #546 r6 — N3: a corrupt record is held; only the control is no
 		const logFile = path.join(env.testCwd, ".pi", "subagent-logs", "brl-subagent.log");
 		const lines = fs.readFileSync(logFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
 		const settle = lines.find((l) => /settled pending record flips/.test(l.message ?? ""));
-		expect(settle?.data).toMatchObject({ repaired: 0, retired: 0, failures: 1 });
+		// Issue #554: the ledger NAMES the corrupt subset (this record is 0 bytes).
+		expect(settle?.data).toMatchObject({ repaired: 0, retired: 0, failures: 1, corrupt: 1 });
 
 		// The delivered notice lists the control alone — a real delivery, not a
 		// projection.

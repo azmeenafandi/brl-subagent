@@ -99,3 +99,47 @@ refuses). It writes and clears the same record with `kind: "foreground"`, so "no
 - **No staleness sweep is specified here.** A record whose repo is gone would otherwise be
   immortal; the follow-up adds a bounded age-based sweep (precedent: `cleanupTempDirs`) and
   states its value — it is housekeeping, not part of the repair contract.
+
+## Amendment (2026-11-21, issue #554): the agent record's durability contract
+
+D1's writer pattern — temp+rename — was applied to ONE store in this ADR; the
+agent record store was not covered. A SIGKILL inside `persistAgent`'s in-place
+`writeFileSync` (truncate, then write) left torn JSON that no boot could repair,
+and the reader collapsed "corrupt" with "unreadable". This amendment states the
+contract for that store. It does not change D1–D6.
+
+- **Process-kill atomicity, and nothing more.** `writeFileAtomicSync`
+  (`src/atomic-write.ts`) writes a same-directory temp
+  (`<file>.<pid>.<random>.tmp`, mode `0o600`), `fsync`s the descriptor
+  **best-effort** (a failure is swallowed), then `rename`s it over the record.
+  A reader therefore sees the old file or the new one, never a torn one.
+  **No power-loss durability is claimed**: the directory is not fsynced, and a
+  filesystem that loses the rename on power loss can lose the write.
+- **Not writer isolation.** Two writers can still interleave and a stale
+  writer's rename can land last. Atomicity is a *reader-facing* invariant, not
+  a last-writer-wins guarantee; the two-boot window (#546) is unchanged.
+- **The permission contract changes, accepted.** With an in-place write a
+  read-only record (`0o400`) blocked persistence with `EACCES`; with
+  temp+rename a writable **directory** replaces it. For a `0o700` store that is
+  the right boundary, and the record's mode is pinned at `0o600` on the
+  destination (the temp's mode survives the rename; the inode changes). The
+  #546 fixtures that relied on a read-only *record* to force a write failure
+  now fault the *directory* instead.
+- **Residue is bounded.** A kill cannot run the cleanup, so `.tmp` siblings
+  accumulate. The boot sweeps `*.tmp` in the agent store older than **one
+  hour** and logs the count only when non-zero; a fresh temp (a live writer's)
+  is never removed.
+- **A corrupt record is counted by name, as a subset.** `readAgentRecordFromDisk`
+  reports `reason: "corrupt"` (the bytes read, `JSON.parse` failed) vs
+  `"unreadable"` (stat/read failed). `flipCorrupt` is an ADDITIONAL count beside
+  `flipFailures` — never a replacement, so #546's H2c
+  (`flipFailures === 1` for corrupt JSON) and every other marker case keep
+  their meaning. The boot ledger line gains `corrupt: n` only when non-zero;
+  with none, its output is byte-identical to before. A corrupt record is still
+  never repaired, rewritten or retired by the boot — the marker lacks
+  task/params, so a rebuild would be a different object wearing the same id.
+  The bytes stay; the count names them.
+- **Not adopted: the other atomic writers.** `run-registry.writeAtomic` and
+  `headstate`'s writer keep their own copies: they leave temps on failure and
+  do not fsync, so adopting this helper would change *their* contracts inside a
+  unit about the agent record (see #554 §1.1).

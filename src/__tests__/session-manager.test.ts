@@ -4300,10 +4300,12 @@ describe("issue #546 r2 — the unverified flip", () => {
 		let recordPath = "";
 		mocks.session.prompt.mockImplementation(() => {
 			// #543: persistAgent swallows the EACCES, so a throw-free flip is not a
-			// landed flip. Freeze the RECORD (not the dir) so the marker write and the
-			// registry stay healthy and only the record write fails.
+			// landed flip. Issue #554: a read-only RECORD no longer blocks the write
+			// (temp+rename needs only a writable directory), so freeze the STORE
+			// directory — the registry lives elsewhere, so its marker stays healthy
+			// and only the record write fails.
 			recordPath = join(env.storageDir, `${(fakePi.appendEntry.mock.calls[0][1] as { id: string }).id}.json`);
-			chmodSync(recordPath, 0o400);
+			chmodSync(env.storageDir, 0o500);
 			throw new Error("sync preflight failure");
 		});
 		let id = "";
@@ -4319,7 +4321,7 @@ describe("issue #546 r2 — the unverified flip", () => {
 			expect(leftover.map((e) => e.id)).toEqual([id]);
 			expect(leftover[0]?.recordFlipPending).toMatchObject({ status: "failed" });
 		} finally {
-			if (recordPath) chmodSync(recordPath, 0o600);
+			chmodSync(env.storageDir, 0o700);
 		}
 		// A later process repairs it. The spawn stamped THIS (live) process as the
 		// owner, and a live owner is held by design — rewrite the owner to a
@@ -4366,8 +4368,14 @@ describe("critique 546 foreground unreadable and absent record", () => {
 			mocks.session.prompt.mockImplementation(() => {
 				const id = (fakePi.appendEntry.mock.calls[0][1] as { id: string }).id;
 				recordPath = join(env.storageDir, `${id}.json`);
-				if (mode === "unreadable") chmodSync(recordPath, 0o000);
-				else rmSync(recordPath);
+				// Issue #554: a chmod-000 RECORD is replaced by the temp+rename (the
+				// directory is writable), so it no longer yields an unreadable store.
+				// A DIRECTORY where the record is expected is unreadable both before
+				// and after the attempted write — the faithful fault.
+				if (mode === "unreadable") {
+					rmSync(recordPath);
+					mkdirSync(recordPath);
+				} else rmSync(recordPath);
 				throw new Error("critique preflight");
 			});
 			try {
@@ -4399,7 +4407,7 @@ describe("critique 546 foreground unreadable and absent record", () => {
 					expect(listInflightRuns()).toEqual([]);
 				}
 			} finally {
-				if (recordPath && existsSync(recordPath)) chmodSync(recordPath, 0o600);
+				if (recordPath && existsSync(recordPath)) rmSync(recordPath, { recursive: true, force: true });
 			}
 		});
 	}
@@ -4471,16 +4479,54 @@ describe("issue #546 — flipAgentRecord's disk-only contract (H2d, H5)", () => 
 	it.skipIf(process.platform === "win32")("H5: a same-process retry attempts the write again once the store is writable", () => {
 		const id = crypto.randomUUID();
 		const file = plant(id, "running");
-		chmodSync(file, 0o400);
+		// Issue #554: the fault is the STORE DIR now — a read-only record would be
+		// replaced by the temp+rename.
+		chmodSync(env.storageDir, 0o500);
 		try {
 			expect(flipAgentRecord(id, "failed", "e")).toBe(false); // persistAgent swallowed EACCES
 			expect(JSON.parse(readFileSync(file, "utf8")).status).toBe("running");
 		} finally {
-			chmodSync(file, 0o600);
+			chmodSync(env.storageDir, 0o700);
 		}
 
 		expect(flipAgentRecord(id, "failed", "e")).toBe("repaired");
 		expect(JSON.parse(readFileSync(file, "utf8")).status).toBe("failed");
 		expect(readAgentRecordFromDisk(id).record?.status).toBe("failed");
+	});
+});
+
+// =========================================================================
+// Issue #554 — the reader NAMES its failure, so the boot ledger can count the
+// corrupt subset. `reason` is diagnostics only: `exists`/`record` (and every
+// decision made from them) are unchanged.
+// =========================================================================
+describe("issue #554 — readAgentRecordFromDisk's named failure reason", () => {
+	it("a valid record has no reason; corrupt JSON is `corrupt`; a directory in its place is `unreadable`", () => {
+		const id = crypto.randomUUID();
+		mkdirSync(env.storageDir, { recursive: true });
+		const file = join(env.storageDir, `${id}.json`);
+		writeFileSync(file, JSON.stringify({ id, status: "running" }), { mode: 0o600 });
+		const valid = readAgentRecordFromDisk(id);
+		expect(valid).toMatchObject({ exists: true });
+		expect(valid.reason).toBeUndefined();
+
+		writeFileSync(file, "{not json", { mode: 0o600 });
+		expect(readAgentRecordFromDisk(id)).toMatchObject({ record: null, exists: true, reason: "corrupt" });
+
+		rmSync(file);
+		mkdirSync(file);
+		expect(readAgentRecordFromDisk(id)).toMatchObject({ record: null, exists: true, reason: "unreadable" });
+		rmSync(file, { recursive: true, force: true });
+	});
+
+	it("a zero-byte record is `corrupt` (the bytes read; the parse failed)", () => {
+		const id = crypto.randomUUID();
+		mkdirSync(env.storageDir, { recursive: true });
+		writeFileSync(join(env.storageDir, `${id}.json`), "", { mode: 0o600 });
+		expect(readAgentRecordFromDisk(id)).toMatchObject({ record: null, exists: true, reason: "corrupt" });
+	});
+
+	it("a confirmed absence has no reason", () => {
+		expect(readAgentRecordFromDisk(crypto.randomUUID())).toEqual({ record: null, exists: false });
 	});
 });

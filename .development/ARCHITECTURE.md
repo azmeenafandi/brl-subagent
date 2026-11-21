@@ -73,6 +73,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | Module | Purpose |
 |---|---|
 | `agent-tools.ts` | The three agent-lifecycle tools (get_subagent_result, steer_subagent, stop_subagent) as definitions, returned to the composition root to register. |
+| `atomic-write.ts` | A same-directory temp+rename writer for the agent record — a reader never sees a torn JSON file. |
 | `background-pipeline.ts` | The background pipeline — the fan-out handler, the shared spawn tail and the single-background spawn — built over one runtime context. |
 | `boot-recovery.ts` | Boot recovery — the interrupted-run scan, the boot head-state reconcile and the recovery notices, built over one runtime context. |
 | `commands.ts` | The /brl-subagent command definition — its argument completions and the handler table — returned to the composition root to register. |
@@ -133,7 +134,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 | `worktree-report.ts` | Formats the read-only worktree state a failed or stopped run may have left behind (issue #474). |
 
-**60 modules** — every one is listed because a new module without a purpose fails CI.
+**61 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

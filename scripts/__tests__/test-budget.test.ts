@@ -904,7 +904,7 @@ describe("main — the two streams and the exit codes", () => {
 		// with the test that reaches it, which is why 12 becomes 13 rather than the floor being relaxed.
 		// Re-pointed once more by `friction-disposition.mjs` (issue #560): a sourced module with its own
 		// test reaches the floor, so 13 becomes 14 for the same reason — never a relaxed floor.
-		expect(/\bsrc (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["60", "60"]);
+		expect(/\bsrc (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["61", "61"]);
 		expect(/\bscripts (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["14", "14"]);
 		expect(measureFloors(ROOT).every((floor) => floor.unreachable.length === 0)).toBe(true);
 	});

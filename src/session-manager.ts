@@ -1,7 +1,7 @@
 // Purpose: Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths.
 import { randomUUID } from 'crypto';
 import { basename, dirname, join, resolve } from 'path';
-import { writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync, type Dirent } from 'fs';
+import { writeFileSync, readFileSync, readdirSync, existsSync, rmSync, statSync, unlinkSync, type Dirent } from 'fs';
 import {
 	EMPTY_USAGE,
 	classifyError,
@@ -46,7 +46,7 @@ import {
 } from './git';
 import { clearHeadState, readHeadState, writeHeadState, HEAD_STATE_VERSION } from './headstate';
 import { effectiveBackgroundBudget } from './validate';
-import { currentProcessOwner, classifyOwner, defaultRecoveryDeps } from './recovery';
+import { currentProcessOwner, classifyOwner, defaultRecoveryDeps, type AgentRecordFailureReason } from './recovery';
 import {
 	persistRunRecord,
 	listInflightRuns,
@@ -57,6 +57,7 @@ import {
 } from './run-registry';
 import { isTransportRetryable } from './transport-retry';
 import { ensureOwnerOnlyDir, repairOwnerOnlyFiles } from './store-permissions';
+import { writeFileAtomicSync } from './atomic-write';
 import { buildEngineeringBarSection } from './engineering-bar';
 import { prepareRunScratch, markSettled } from './scratch-spawn';
 
@@ -470,6 +471,51 @@ function sweepRetainedSessions(currentDir: string): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Issue #554: temp residue from the atomic record writer.
+//
+// A SIGKILL cannot run `writeFileAtomicSync`'s cleanup, so `.tmp` siblings
+// accumulate in the agent store (measured: 8 leftovers in 20 kills). The record
+// scans filter `.json`, so they are invisible to every reader — which is exactly
+// why they need their own bounded sweep instead of aging out silently.
+//
+// The 1-hour age floor is the safety property: a temp belonging to a LIVE
+// writer must survive another process's boot, and a writer that is merely slow
+// can hold one for seconds, not an hour. A fresh temp is NEVER removed.
+// ---------------------------------------------------------------------------
+
+/** Only temps older than this are sweepable — a live writer's temp is younger. */
+export const AGENT_TEMP_MAX_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Remove `*.tmp` residue in the agent store older than one hour. Returns the
+ * number removed. Never throws: the store may be missing or unwritable, and a
+ * boot must not fail on hygiene.
+ */
+export function sweepAgentRecordTemps(): number {
+  let names: string[];
+  try {
+    names = readdirSync(STORAGE_DIR);
+  } catch {
+    return 0; // store absent/unreadable — nothing to bound
+  }
+  const now = Date.now();
+  let swept = 0;
+  for (const name of names) {
+    if (!name.endsWith('.tmp')) continue;
+    const file = join(STORAGE_DIR, name);
+    try {
+      if (now - statSync(file).mtimeMs <= AGENT_TEMP_MAX_AGE_MS) continue;
+      unlinkSync(file);
+      swept += 1;
+    } catch {
+      // vanished between the readdir and the stat/unlink, or the store is not
+      // writable — leave it for the next boot.
+    }
+  }
+  return swept;
+}
+
 /**
  * Retain `dir` for the #401 resume preamble: brand it with the retention marker
  * (its mtime is the recency source) and enforce the caps.
@@ -530,11 +576,16 @@ function persistAgent(agent: BackgroundAgent): void {
   // persisted record field (D4).
   const { _sessionRef, _sessionFile, ...persistable } = agent;
   try {
+    // Issue #554: atomic (temp+rename) so a SIGKILL between the truncate and the
+    // write cannot leave a torn record. `mode` is applied on the temp and
+    // survives the rename (the inode changes; the record is still `0o600`).
     // F6 (issue #29): records contain task, error, result.messages (full
     // conversation) and finalOutput — write owner-only (0o600) so other local
     // users cannot read subagent tasks/output. mode applies on file CREATE;
-    // pre-existing files keep their old mode (not retroactive).
-    writeFileSync(filePath, JSON.stringify(persistable, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    // pre-existing files keep their old mode (not retroactive) — and a
+    // read-only record no longer blocks the write: a writable DIRECTORY does
+    // (issue #554's accepted permission-contract change).
+    writeFileAtomicSync(filePath, JSON.stringify(persistable, null, 2));
   } catch (err) {
     // Log but never throw — persistence must not break execution
     log.error(`Failed to persist agent ${agent.id}`, { error: err instanceof Error ? err.message : String(err) });
@@ -562,6 +613,14 @@ function agentRecordPath(id: string): string | null {
   return join(STORAGE_DIR, `${id}.json`);
 }
 
+/** The tri-state record read plus the #554 named failure kind. */
+export interface AgentRecordRead {
+  record: BackgroundAgent | null;
+  exists: boolean;
+  /** `"corrupt"` when the bytes are not JSON; `"unreadable"` when stat/read failed. */
+  reason?: AgentRecordFailureReason;
+}
+
 /**
  * Issue #546 (major 2): the disk-only, TRI-STATE read of one agent record.
  *
@@ -570,8 +629,14 @@ function agentRecordPath(id: string): string | null {
  * go stale (retire the marker), the second means we know nothing (keep it).
  * `exists` is the stat of the validated path, so a chmod-000 or corrupt file
  * reports `{ record: null, exists: true }`.
+ *
+ * Issue #554: the two failure kinds are NAMED on the result (`reason`) instead
+ * of being collapsed — `"corrupt"` (the file read but JSON.parse rejected it:
+ * repair the file) vs `"unreadable"` (stat/read failed: fix permissions or the
+ * filesystem). The flip's decisions are unchanged; only the boot ledger can now
+ * count the corrupt subset by name.
  */
-export function readAgentRecordFromDisk(id: string): { record: BackgroundAgent | null; exists: boolean } {
+export function readAgentRecordFromDisk(id: string): AgentRecordRead {
   const filePath = agentRecordPath(id);
   if (!filePath) return { record: null, exists: false };
   try {
@@ -586,12 +651,23 @@ export function readAgentRecordFromDisk(id: string): { record: BackgroundAgent |
     log.warn(`Could not stat agent record ${id} — treating it as unreadable`, {
       error: err instanceof Error ? err.message : String(err),
     });
-    return { record: null, exists: true };
+    return { record: null, exists: true, reason: 'unreadable' };
+  }
+  let text: string;
+  try {
+    text = readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    log.warn(`Could not read agent record ${id} — treating it as unreadable`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { record: null, exists: true, reason: 'unreadable' };
   }
   try {
-    return { record: JSON.parse(readFileSync(filePath, 'utf-8')), exists: true };
+    return { record: JSON.parse(text), exists: true };
   } catch {
-    return { record: null, exists: true };
+    // The bytes are there and they are not JSON (a torn write before #554, or a
+    // zero-byte file). Never repaired or retired here — the count names them.
+    return { record: null, exists: true, reason: 'corrupt' };
   }
 }
 

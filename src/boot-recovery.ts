@@ -129,6 +129,19 @@ export function createBootRecovery(rt: RuntimeContext): BootRecovery {
 			});
 		}
 		const wiring = sm;
+		// Issue #554: a SIGKILL cannot run the atomic writer's cleanup, so `.tmp`
+		// siblings accumulate in the agent store. Bound them at boot, beside the
+		// other store-hygiene steps. Only temps older than an hour are removed, so
+		// a live writer's temp always survives; the sweep never throws, and the
+		// line is emitted only when something was actually reclaimed.
+		if (wiring) {
+			try {
+				const sweptTemps = wiring.sweepAgentRecordTemps();
+				if (sweptTemps > 0) log.info("Boot recovery swept stale agent-record temps", { count: sweptTemps });
+			} catch (err) {
+				log.warn("Boot recovery temp sweep failed", { error: (err as Error).message });
+			}
+		}
 		try {
 			// `recoverProduction` owns the /proc platform guard (nothing is marked or
 			// killed without start-token verification) — see src/recovery.ts.
@@ -186,6 +199,9 @@ export function createBootRecovery(rt: RuntimeContext): BootRecovery {
 					repaired: summary.flipRepaired,
 					retired: summary.flipRetired,
 					failures: summary.flipFailures,
+					// Issue #554: the corrupt SUBSET of `failures`, present only when
+					// non-zero — with none, this object is byte-identical to today's.
+					...(summary.flipCorrupt > 0 ? { corrupt: summary.flipCorrupt } : {}),
 				});
 			}
 			if (summary.neverStarted > 0) {
