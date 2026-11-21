@@ -21,13 +21,18 @@ export const END_MARKER = "<!-- END GENERATED: adr-index -->";
 
 const HEADING_RE = /^# (\d{4})\. (.+)$/;
 
-/** Every .development/decisions/NNNN-*.md must carry a `# NNNN. Title` heading plus Status and Date metadata. */
-export function collectDecisions() {
-	const files = readdirSync(DECISIONS_DIR)
+/**
+ * Every `<root>/.development/decisions/NNNN-*.md` must carry a `# NNNN. Title` heading plus Status and Date
+ * metadata. `root` defaults to this script's own checkout, so a caller that names none keeps the behaviour it
+ * had before the root was a parameter (#548: `handoff-verify --root` counts ANOTHER checkout's records).
+ */
+export function collectDecisions(root = ROOT) {
+	const decisionsDir = join(root, ".development", "decisions");
+	const files = readdirSync(decisionsDir)
 		.filter((f) => f.endsWith(".md") && f !== "README.md")
 		.sort();
 	return files.map((file) => {
-		const text = readFileSync(join(DECISIONS_DIR, file), "utf8");
+		const text = readFileSync(join(decisionsDir, file), "utf8");
 		const firstLine = (text.split("\n").find((l) => l.trim().length > 0) ?? "").trim();
 		const heading = HEADING_RE.exec(firstLine);
 		if (!heading) {

@@ -13,17 +13,21 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SRC_DIR = join(ROOT, "src");
 const DOC_PATH = join(ROOT, ".development", "ARCHITECTURE.md");
 
 export const BEGIN_MARKER = "<!-- BEGIN GENERATED: module-map (npm run docs:arch) -->";
 export const END_MARKER = "<!-- END GENERATED: module-map -->";
 
-/** Every top-level src/*.ts must open with exactly one purpose line. */
-export function collectModules() {
-	const files = readdirSync(SRC_DIR).filter((f) => f.endsWith(".ts")).sort();
+/**
+ * Every top-level src/*.ts in `root` must open with exactly one purpose line. `root` defaults to this script's
+ * own checkout, so a caller that names none keeps the behaviour it had before the root was a parameter
+ * (#548: `handoff-verify --root` has to count ANOTHER checkout's modules, not ours).
+ */
+export function collectModules(root = ROOT) {
+	const srcDir = join(root, "src");
+	const files = readdirSync(srcDir).filter((f) => f.endsWith(".ts")).sort();
 	return files.map((file) => {
-		const text = readFileSync(join(SRC_DIR, file), "utf8");
+		const text = readFileSync(join(srcDir, file), "utf8");
 		const firstLine = (text.split("\n").find((l) => l.trim().length > 0) ?? "").trim();
 		const match = /^\/\/ Purpose: (.+)$/.exec(firstLine);
 		if (!match) {
