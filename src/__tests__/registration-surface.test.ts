@@ -22,8 +22,8 @@
  *      schema-single-source guarantee hold across the move.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { extname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 // tui.ts pulls these at import time; index.ts imports tui.ts. Same stubs the
@@ -258,5 +258,42 @@ describe("the /brl-subagent command surface (issue #483)", () => {
 			"history",
 			"historyentries",
 		]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #556 — the retry guidance stops teaching a rule the predicate never had
+// ---------------------------------------------------------------------------
+
+describe("the transport auto-retry guidance (#556)", () => {
+	// Located by CONTENT, never by index: the guideline list is insertable.
+	const guideline = (tools.get("delegate_task")?.promptGuidelines ?? []).find((g) =>
+		g.startsWith("Set retryOnTimeout: true"),
+	);
+
+	it("scopes the retry to a transport death at ANY point before the settle", () => {
+		expect(guideline, "the retryOnTimeout guideline must be registered").toBeDefined();
+		// The predicate scopes the class to the message signature alone, so a drop
+		// after several tool calls qualifies exactly like one before the first.
+		expect(guideline).toContain("at any point before the run settles");
+	});
+
+	it("names the second death and the change-shape rule it hands the conductor", () => {
+		expect(guideline).toContain("A second transport death is NOT retried again");
+		expect(guideline).toContain("change the shape");
+	});
+
+	it("leaves no copy of the false phrase anywhere under src/", () => {
+		// The literal and its copies (the fixture, a comment, a test header) all
+		// taught the same wrong rule; a grep is the only check that covers them.
+		// Spelled in fragments so THIS file does not become a hit in its own scan.
+		const falsePhrase = ["before", "the", "work", "started"].join(" ");
+		const hits: string[] = [];
+		for (const entry of readdirSync(join(repoRoot, "src"), { recursive: true, withFileTypes: true })) {
+			if (!entry.isFile() || extname(entry.name) !== ".ts") continue;
+			const file = join(entry.parentPath, entry.name);
+			if (readFileSync(file, "utf8").includes(falsePhrase)) hits.push(file);
+		}
+		expect(hits).toEqual([]);
 	});
 });
