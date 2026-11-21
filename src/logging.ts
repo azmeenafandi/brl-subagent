@@ -129,6 +129,61 @@ function resolveLogDir(): string | undefined {
 	return logCwd ? path.join(logCwd, ".pi", "subagent-logs") : undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Serialisation (issue #545)
+// ---------------------------------------------------------------------------
+
+/**
+ * #545: `data` is caller-supplied and `JSON.stringify` throws on a cycle and on a
+ * `BigInt`. A cycle collapses to `[Circular]`, a `BigInt` to its decimal literal
+ * (`10n`, and `-0n` to `"0n"`). Ancestors are tracked rather than every value ever
+ * seen, so `{a: x, b: x}` — a shared reference, not a cycle — keeps both copies.
+ * The replacer only sees values JSON reaches: a falsy root `data` (`0n`, `-0n`,
+ * `""`) is dropped by `log()`'s truthiness check before serialisation.
+ */
+function circularSafeReplacer(): (this: unknown, key: string, value: unknown) => unknown {
+	const ancestors: unknown[] = [];
+	return function (this: unknown, _key: string, value: unknown): unknown {
+		if (typeof value === "bigint") return `${value}n`;
+		if (typeof value !== "object" || value === null) return value;
+		while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== this) ancestors.pop();
+		if (ancestors.includes(value)) return "[Circular]";
+		ancestors.push(value);
+		return value;
+	};
+}
+
+/** #545: why a payload failed to serialise — guarded, because the caught value can
+ * be a Proxy whose `.message` access throws too. */
+function faultReason(err: unknown): string {
+	try {
+		const message = (err as { message?: unknown }).message;
+		return typeof message === "string" && message !== "" ? message : "unknown fault";
+	} catch {
+		return "unknown fault";
+	}
+}
+
+/** #545: the entry line, defensively. The replacer covers a cycle and a `BigInt`;
+ * the catch covers what it cannot — a throwing `toJSON`, getter or Proxy trap.
+ * `data` becomes an object marker, `{"[unserializable]": reason}`: an object keeps
+ * every consumer that reads `data.<field>` alive (`missing → undefined`), where a
+ * string would crash one. The line is serialised and reaches the conditional
+ * file-write attempt below; whether a file exists still depends on a configured
+ * cwd and on the sink, which keeps swallowing its own faults. */
+function serializeEntry(entry: Record<string, unknown>): string {
+	try {
+		return JSON.stringify(entry, circularSafeReplacer());
+	} catch (err) {
+		return JSON.stringify({
+			...entry,
+			prefix: typeof entry.prefix === "string" ? entry.prefix : "[unprintable prefix]",
+			message: typeof entry.message === "string" ? entry.message : "[unprintable message]",
+			data: { "[unserializable]": faultReason(err) },
+		});
+	}
+}
+
 /**
  * Create a logger for a specific module.
  * Logs are written to `<cwd>/.pi/subagent-logs/brl-subagent.log` relative to the
@@ -150,7 +205,7 @@ export function createLogger(prefix: string, cwd?: string): Logger {
 			...(data ? { data } : {}),
 		};
 
-		const line = JSON.stringify(entry);
+		const line = serializeEntry(entry);
 
 		// Console mirror — opt-in (issue #265). Off by default so a logger call
 		// can never corrupt the pi TUI renderer; BRL_LOG_CONSOLE opts back in.

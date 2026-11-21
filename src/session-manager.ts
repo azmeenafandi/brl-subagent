@@ -163,11 +163,11 @@ function thrownMessage(thrown: unknown): string {
 /**
  * Issue #450 (D5): a log call on an ERROR path must never replace the error it
  * reports — a throwing sink becomes the caller's error and skips every later
- * step of the cleanup. `src/logging.ts` used to propagate a console-mirror
- * fault; #543 contains it at the sink (a mirror fault is swallowed like a
- * file-write fault). The entry build can still throw — `JSON.stringify` on
- * cyclic `data` sits outside the sink's catches (#545) — so this wrapper stays
- * as a belt-and-braces sensor, local to the settle/pre-start paths.
+ * step of the cleanup. Both sink faults are now contained at the sink itself:
+ * #543 the console mirror (swallowed like a file-write fault), #545 the entry
+ * build (`JSON.stringify` on a cyclic or `BigInt` `data` used to throw). This
+ * wrapper stays as belt-and-braces, local to the settle/pre-start paths, where
+ * a third fault class would otherwise become the caller's error.
  */
 function safeLog(write: () => void): void {
   try {
