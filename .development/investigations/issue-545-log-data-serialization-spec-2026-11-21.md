@@ -1,10 +1,11 @@
-# Implementation spec (**r2**) — #545: a cyclic/BigInt log `data` payload throws out of `log.*`
+# Implementation spec (**r3**) — #545: a cyclic/BigInt log `data` payload throws out of `log.*`
 
-**Base:** `dev @ 22e1f77` · **Priority:** low · **C-level:** C2 · **Supersedes:** r1 (`809e658`)
+**Base:** `dev @ 22e1f77` · **Priority:** low · **C-level:** C2 · **Supersedes:** r2 (`21bd1a8`)
+**r3 is a conductor edit** — the r2 critique returned **no majors** (5 minors), so the loop stopped; the changes are the five fixes plus the message-coercion case the critique showed was unpinned (`## r2 → r3 changes`).
 **Decision:** serialise defensively — a cycle-collapsing + `BigInt`-encoding replacer, plus a whole-stringify `catch`
 that emits a **marker entry whose `data` is an object** (option A). Measured three-file diff: **+55 net source**
-(`logging.ts` +56/−1; `session-manager.ts` doc 5/5, net 0) / **+172 net test**, allowance `120 + 2×55` = **230** →
-**within by 58** (§9).
+(`logging.ts` +56/−1; `session-manager.ts` doc 5/5, net 0) / **+190 net test**, allowance `120 + 2×55` = **230** →
+**within by 40** (§9).
 
 Contract (this sentence is the `serializeEntry` doc comment in §5.1, word for word):
 > The replacer covers a cycle and a `BigInt`; the catch covers what it cannot — a throwing `toJSON`, getter or Proxy trap.
@@ -21,6 +22,16 @@ One row per r1-critique finding (`issue-545-plan-critique-r1-2026-11-21.md`), pl
 | 4 | minor | The helper comment promised the line and its `message` "still reach the file" — no cwd means no write attempt, and the sink still swallows faults | Comment now says the line is **serialised and reaches a conditional file-write attempt**; persistence still depends on a configured cwd and on the sink | §5.1 (`serializeEntry` doc), §10 | Text only; no measurement. Matches `resolveLogDir()`'s conditional (`logging.ts:128–130`) and the sink's `catch {}` (`:236–238`) |
 | 5 | minor | The recorded `--flow` head carried `logging.ts` + its test only (`+49/−1`, `+111`); the doc edit was net 0 in a different commit, so the run did not measure the three-file diff | `--flow` **re-run on a head carrying exactly the three files**; provenance of base/head stated; the merge-time run at the PR head against `dev` remains the gate | §8.6, §9 | Scratch head `54abe5e` (`+56/−1`, `+172/0`, doc `5/5` vs base `7ff0e6f`) → `test-flow: +172/+55 src (allowance 230) — within`, exit **0** |
 | 6 | — (r2 self-found) | A green-claim without a killer: "a JS caller violating the types gets the placeholder" had no test, so M12 survived | Case 7 shipped **as a test**, not just as a code line; case count therefore **17 → 27** (not 26) | §6, §7 M12 | M12 `1F/26P` after the case; base `8F/19P` |
+
+## r2 → r3 changes (conductor edit — loop stopped, r2 had no majors)
+
+| r2 finding | Severity | r3 change | Where | Evidence |
+|---|---|---|---|---|
+| The flow head does not carry exactly three changed files; the scratch base is not the complete `dev` tree | minor | Provenance corrected: the head also adds a scratch `.development/ARCHITECTURE.md`, and the base is a 312-file **copy** of the `dev @ 22e1f77` tree (661 tracked files); the three files' numstat and the allowance arithmetic stand; the final-PR-head run against `dev` is the authority | §9 | `git diff --name-status 7ff0e6f 886710c` → the three files **plus** the scratch artifact |
+| Case 7 pins prefix coercion, not message coercion; dropping the message coercion passed all 27 | minor | **Case 11** added (+18 lines): hostile data + a BigInt `message` → `"message":"[unprintable message]"` and the marker. New **M13** (drop the message coercion) | §6 case 11, §7 M13, §11.7 | fixed + 28 → **28P**; base + 28 → **9F/19P**; M13 → **1F/27P** (case 11 only) — measured in the r2 scratch harness |
+| The consumer probes are results, not re-runnable commands | minor | **§8.8** added: the exact `read_spawn_starts` import snippet and the `jev-check --log` invocation, both against a fixture line | §8.8, §11.3 | commands run against the r2 fixture (marker → `{'background': 1, 'spawns': 1}`; jev-check → exit 1) |
+| The timestamp fallback can merge two **different** marker spawns in the same millisecond | minor | Reworded: a duplicate line is deduped; two distinct markers sharing a timestamp merge to **one** (a degraded-input undercount), not "each entry counts once" | §4.4, §10 | `read_spawn_starts` probe: same timestamp → 1, distinct → 2 |
+| "Encoding is reachable only through a truthy container" is wrong for a direct truthy BigInt | minor | Reworded: only a **falsy** root `data` is dropped (`0n`, `-0n`, `""`); a truthy root `10n` is encoded to `"10n"` | §4.2 | real fixed-logger call: `data: 10n` → `"data":"10n"`; `data: -0n` → no `data` |
 
 ## 1. Context and the measured defect
 
@@ -113,7 +124,7 @@ shifts them by +56 below `:130`):
 ## 3. Options
 
 Each measured against the **same 27-case** `logging.test.ts` (§6), in `~/.cache/brl-subagent/scratch/spec-545/repo`
-(rsync copy of `dev @ 22e1f77`, `node_modules` symlinked). Base **8F/19P**, fixed **27P/0F**.
+(rsync copy of `dev @ 22e1f77`, `node_modules` symlinked). Base **8F/19P**, fixed **27P/0F** on the 27-case set; r3's case 11 is red on base and green on the fix, so the final set is **9F/19P → 28P** (§7).
 
 | # | Option | Mechanism | Blast radius | Cost | Risk if wrong | Verified |
 |---|---|---|---|---|---|---|
@@ -143,16 +154,19 @@ cost).
    `"-3n"`, `-0n` → `"0n"`). **Not** a marker object (`{"$bigint":"10"}` would change the shape of a field a reader
    greps and would nest). **Accepted, documented ambiguity:** a payload that *is* `"10n"` is indistinguishable — the file
    is not a versioned wire format, so this is stated, not solved. Pinned by case 2.
-   **Precision (r2):** the encoding is reachable only through a **truthy container** — `log()` drops a falsy root
-   `data` via `...(data ? { data } : {})` (`:205`) **before** the replacer runs, so `log.info(msg, -0n)` writes no
-   `data` field at all (measured: `-0n`, `0n`, `""` → no `data`; `{v:-0n}` → `"data":{"v":"0n"}`).
+   **Precision (r3):** only a **falsy** root `data` is dropped — `log()` omits it via `...(data ? { data } : {})`
+   (`:205`) **before** the replacer runs, so `log.info(msg, -0n)` and `log.info(msg, 0n)`/`""` write no `data` field
+   (measured). A truthy root is passed through and encoded: `log.info(msg, 10n)` → `"data":"10n"` (measured), and
+   `{v:-0n}` → `"data":{"v":"0n"}`.
 3. **Ancestors, not a seen-set:** track the **current path** (`ancestors` + `this`), so `{left: x, right: x}` serialises
    `x` twice instead of rewriting it. The alternative was measured: `"right":"[Circular]"`. Pinned by case 9 (kills M2).
 4. **Fallback `data` = an object marker, reason included:** `{ "[unserializable]": faultReason(err) }`. **Why an object
    and not a string (r2):**
    - `sprint-metrics.py::read_spawn_starts` (`:598–600`) does `data = d.get("data") or {}` then `data.get("agentId") or
-     f"{path}:{timestamp}"`. With an object, `.get` returns `None` and the entry **counts once** under the timestamp
-     fallback id (measured: `background: 1`; same-timestamp duplicate → `1`; two distinct timestamps → `2`). With r1's
+     f"{path}:{timestamp}"`. With an object, `.get` returns `None` and the entry counts under the timestamp fallback
+     id (measured: `background: 1`; same-timestamp duplicate → `1`; two distinct timestamps → `2`). The fallback id is
+     not unique: two **different** marker entries in the same millisecond merge to one — a degraded-input undercount,
+     stated in §10. With r1's
      string, `.get` does not exist: `AttributeError: 'str' object has no attribute 'get'`, aborting the whole reconcile.
    - The reason value is still a **string**, so a reader that greps `unserializable` finds it, and a reader that only
      reads `data.<field>` degrades to `undefined` instead of throwing.
@@ -267,7 +281,7 @@ catches (#545)”. After this edit that is false; shipping it is a docs-pinning 
 
 **Net source: +56/−1 = +55** (`logging.ts`) **+ 0** (`session-manager.ts`). No other file changes.
 
-## 6. Tests — `logging.test.ts`, 17 → **27** (+172 lines)
+## 6. Tests — `logging.test.ts`, 17 → **28** (+190 lines)
 
 No new imports, no `afterEach` change, no `freshLogger` change: #543 already provides `tempCwd()`/`readLog(cwd)`
 (`:24–37`), the temp-dir cleanup (`:65`) and `freshLogger(level, consoleEnv, cwd?)` returning `{mod, log}` (`:76–85`).
@@ -285,8 +299,9 @@ The new block goes after the last `#543` case (base `:300`, head `:301`).
 | 8 | `keeps the exact entry shape and key order for serialisable data (#545)` | one line; regex pins `"level":"info","prefix":"test","message":…,"data":{…}` order; `JSON.parse` deep-equals all five fields | **green** — ships because the replacer now runs on **every** entry and must not perturb shape/order |
 | 9 | `keeps a shared non-circular reference intact — ancestor tracking, not a seen-set (#545)` | `"left":{"id":1},"right":{"id":1}` | **green** — identical bytes on base; ships because it is the **only** killer of **M2** |
 | 10 | `keeps logging after a swallowed payload fault — same module instance (#545)` | fault call `not.toThrow()`; **byte-exact marker** `"data":{"[unserializable]":"getter blew up"}`; then a healthy call in the **same module instance**: `warnSpy` **2** calls (last = healthy), file has **both** lines | **red** (the first call throws) |
+| 11 | `coerces a non-string message on the fallback path and keeps the line (#545)` **(r3)** | `not.toThrow()`; `"message":"[unprintable message]"` **and** `"data":{"[unserializable]":"getter blew up"}` | **red** (`TypeError: Do not know how to serialize a BigInt` — the message is spread back into the fallback) |
 
-Base source + these 27 tests: **8F/19P** (the 8 reds above; 19 = 17 pre-existing + cases 8, 9).
+Base source + these 28 tests: **9F/19P** (the 9 reds above; 19 = 17 pre-existing + cases 8, 9).
 
 Case 10's payload is a **throwing getter**, deliberately not a cycle: after the fix a cycle never reaches the
 whole-stringify `catch`, so a latch planted there would be invisible (measured in r1: with a cyclic payload **M7
@@ -356,6 +371,23 @@ Proxy, which is a distinct throw site (`[[OwnPropertyKeys]]`) and the only kille
 		expect(readLog(cwd)).toContain('"prefix":"[unprintable prefix]"');
 		expect(readLog(cwd)).toContain('"data":{"[unserializable]":"getter blew up"}');
 	});
+
+	it("coerces a non-string message on the fallback path and keeps the line (#545)", async () => {
+		const cwd = tempCwd();
+		// `message` is typed `string`; a JS caller can still violate it. Without the
+		// coercion the raw value is spread back into the marker entry, so a BigInt
+		// message throws *inside* the fallback and the line is lost.
+		const hostile = {
+			get boom(): string {
+				throw new Error("getter blew up");
+			},
+		};
+		const { log } = await freshLogger(undefined, undefined, cwd);
+
+		expect(() => log.info(10n as unknown as string, hostile)).not.toThrow();
+		expect(readLog(cwd)).toContain('"message":"[unprintable message]"');
+		expect(readLog(cwd)).toContain('"data":{"[unserializable]":"getter blew up"}');
+	});
 ```
 
 Case 1 also pins the reversal #543 left to review: `mirrorCalls=1` where base measures `0`.
@@ -372,14 +404,14 @@ the getter path:
 		log.warn("healthy after fault");
 ```
 
-## 7. Mutants (each executed: `npx vitest run src/__tests__/logging.test.ts`, **27 cases**)
+## 7. Mutants (each executed: `npx vitest run src/__tests__/logging.test.ts`, **28 cases**)
 
 Re-run in full against the r2 source (`mutants-r2.py`, report `mutant-r2.json`); M1–M8 re-run because the marker shape
 and the case set moved, M9–M12 are new for the paths the critique found unpinned.
 
 | # | Mutant | Killed by | Measured |
 |---|---|---|---|
-| M1 | **no fix** (base source) | cases 1–7, 10 | **8F/19P** |
+| M1 | **no fix** (base source) | cases 1–7, 10, 11 | **9F/19P** |
 | M2 | `WeakSet` seen-set instead of ancestor tracking | case 9 **only** | **1F/26P** |
 | M3 | replacer **without** the `BigInt` branch | cases 2, 7 | **2F/25P** |
 | M4 | fallback **drops the message** (`"swallowed"`) | cases 3, 4, 5, 6, 10 | **5F/22P** |
@@ -391,9 +423,10 @@ and the case set moved, M9–M12 are new for the paths the critique found unpinn
 | M9b | marker reason is a **constant** (`"serialisation failed"`) | cases 3, 4, 5, 6, 7, 10 | **6F/21P** |
 | M10 | **unguarded reason read** — `data: { "[unserializable]": (err as Error).message }` | case 6 **only** | **1F/26P** |
 | M11 | (instrument) fallback **enumerates the payload's keys** before building the marker | case 5 **only** | **1F/26P** |
-| M12 | fallback **drops the `prefix` coercion** | case 7 **only** | **1F/26P** |
+| M12 | fallback **drops the `prefix` coercion** | case 7 **only** | **1F/27P** |
+| M13 | fallback **drops the `message` coercion** (`message: entry.message`) | case 11 **only** | **1F/27P** |
 
-Control (fixed source): **0F/27P**. Every mutant is killed, and the three new pins each have exactly one killer:
+Control (fixed source): **0F/28P**. Every mutant is killed, and the three new pins each have exactly one killer:
 M10 ← case 6, M11 ← case 5, M12 ← case 7. M9 and M9b (the marker-text mutants) are killed by 2 and 6 cases respectively,
 which is what r1 lacked: at 24 cases, replacing the getter's marker text still measured **24P**.
 
@@ -402,19 +435,19 @@ branch is not decoration; M2 shows the ancestor stack is not a seen-set with ext
 
 ## 8. Verification plan
 
-1. **Targeted:** `npx vitest run src/__tests__/logging.test.ts` → **27 passed** (measured: control run `0F/27P`).
+1. **Targeted:** `npx vitest run src/__tests__/logging.test.ts` → **28 passed** (measured: control run `0F/28P`).
 2. **Base-vs-fixed capture** (the new tests must be red *on the base source*): revert `src/logging.ts` only, keep the
-   new tests → **8 failed / 19 passed (27)** with exactly §6's red names — measured, including
+   new tests → **9 failed / 19 passed (28)** with exactly §6's red names — measured, including
    `Error: message getter blew up` surfacing on case 6 (the thrown value's `.message` read throws, so the throw escaping
    `log.*` is itself hostile) and `TypeError: Do not know how to serialize a BigInt` on case 7; restore → 27 passed. Three-tree proof (scratch copy, no repo writes), re-measured for r2:
 
    | tree | source | tests | `logging.test.ts` | full suite | failed set |
    |---|---|---|---|---|---|
    | **A** clean base | base | base | 17 passed | **3059 tests, 27 failed** (copy artifacts) | A |
-   | **B** test-patched base | base | new | **8F/19P (27)** | **3069 tests, 35 failed** | A + **8** |
-   | **C** fixed | fix | new | **27 passed** | **3069 tests, 27 failed** | identical to A |
+   | **B** test-patched base | base | new | **9F/19P (28)** | **3070 tests, 36 failed** | A + **9** |
+   | **C** fixed | fix | new | **28 passed** | **3070 tests, 27 failed** | identical to A |
 
-   `comm` on sorted failed `fullName`s: **B−A = 8** (the §6 names), **C−A = 0**, **A−C = 0**, **B−C = 8**, **C−B = 0**.
+   `comm` on sorted failed `fullName`s: **B−A = 9** (the §6 names), **C−A = 0**, **A−C = 0**, **B−C = 9**, **C−B = 0**.
    The 27 copy-artifact failures in A/C are suites that need the real repo root/`.git` (r1 recorded 28 on the same
    tree; the count is environment-dependent — the **delta** is the claim, and it does not move).
 3. **Full suite** in-repo: record the clean-base failing set first, then compare — the *delta* is the claim (this tree's
@@ -422,11 +455,23 @@ branch is not decoration; M2 shows the ancestor stack is not a seen-set with ext
 4. **`npx tsc --noEmit`** → **exit 0** (measured on C, and again after §5.3).
 5. **Repo guards** on C, all measured green: `check-imports.mjs` → `imports: 60 files, 0 violations`; `docs-arch.mjs` →
    `module map is current (60 modules)` (the `logging.ts` purpose line is unchanged); `check-readme-test-count.mjs <report>`
-   → `README says 3000+, suite ran 3069 — OK`; `check-test-budget.mjs <report>` → `wall 20.70s (<= 60.00s)`,
+   → `README says 3000+, suite ran 3070 — OK`; `check-test-budget.mjs <report>` → `wall 20.70s (<= 60.00s)`,
    `floors — src 60/60 reachable · scripts 13/13`, ratio `1.97` **reported** in the 1.95 band (not enforced), `OK.` exit 0.
 6. **Flow gate at the committed head:** `node scripts/check-test-budget.mjs --flow --base dev --head <final sha>` →
    the line in §9, **exit 0**; paste line + `$?` into the PR body. Any amend invalidates the sha — re-run.
 7. `git diff --check` clean; `git diff` touches exactly §5.1–§5.3.
+8. **Consumer probes (re-runnable from a checkout), on a marker fixture line:**
+   ```bash
+   FIX="$HOME/.cache/brl-subagent/scratch/spec-545/spawn-fixture.log"
+   printf '%s\n' '{"timestamp":"2026-11-21T00:00:00.000Z","level":"info","prefix":"background-pipeline","message":"Background agent spawned","data":{"[unserializable]":"getter blew up"}}' > "$FIX"
+   python3 - "$FIX" <<'PY'
+   import importlib.util, sys
+   spec = importlib.util.spec_from_file_location("sm", ".pi/skills/worktree/sprint-metrics.py")
+   sm = importlib.util.module_from_spec(spec); spec.loader.exec_module(sm)
+   print(sm.read_spawn_starts([sys.argv[1]], "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z"))
+   PY   # expect {'background': 1, 'spawns': 1, ...} — no exception
+   node .pi/skills/worktree/jev-check.mjs --log "$FIX"; echo "exit=$?"   # expect exit 1, "no task payload"
+   ```
 
 ## 9. Delta and the flow gate
 
@@ -435,24 +480,26 @@ branch is not decoration; M2 shows the ancestor stack is not a seen-set with ext
 | `src/logging.ts` (helper + call site) | 56 | 1 | **+55** |
 | `src/session-manager.ts` (doc block) | 5 | 5 | **0** |
 | **source net** | | | **+55** → allowance `120 + 2×55` = **230** |
-| `src/__tests__/logging.test.ts` (10 cases) | 172 | 0 | **+172** → **within by 58** |
+| `src/__tests__/logging.test.ts` (11 cases) | 190 | 0 | **+190** → **within by 40** |
 
-Measured with the real script, on a scratch head that carries **exactly** the three-file diff (r2 correction — the r1
-head carried `logging.ts` + its test only):
+Measured with the real script on a scratch head (r3 correction — the head also adds a scratch
+`.development/ARCHITECTURE.md`, excluded from the numstat below; the r1 head carried `logging.ts` + its test only):
 
 ```
-$ git -C ~/.cache/brl-subagent/scratch/spec-545/repo diff --numstat 7ff0e6f 54abe5e
-172	0	src/__tests__/logging.test.ts
+$ git -C ~/.cache/brl-subagent/scratch/spec-545/repo diff --numstat 7ff0e6f 886710c
+190	0	src/__tests__/logging.test.ts
 56	1	src/logging.ts
 5	5	src/session-manager.ts
-$ node scripts/check-test-budget.mjs --flow --base 7ff0e6f --head 54abe5e
-test-flow: +172/+55 src (allowance 230) — within (base 7ff0e6f)
+$ node scripts/check-test-budget.mjs --flow --base 7ff0e6f --head 886710c
+test-flow: +190/+55 src (allowance 230) — within (base 7ff0e6f)
 $ echo $?
 0
 ```
 
-**Provenance, stated honestly:** `--base 7ff0e6f` is the scratch repo's base commit (a copy of the `dev @ 22e1f77`
-tree), not `dev` itself, and `54abe5e` is a scratch commit, not the PR head. This run therefore proves the *allowance
+**Provenance, stated honestly:** `--base 7ff0e6f` is the scratch repo's base commit (a **312-file copy** of the
+`dev @ 22e1f77` tree, which has 661 tracked files), not `dev` itself; `886710c` is a scratch commit, not the PR head;
+and the head adds a scratch `.development/ARCHITECTURE.md` besides the three files. The numstat above is the three
+files only. This run therefore proves the *allowance
 arithmetic against the real diff shape*; it is **an estimate of, not a substitute for,** the merge gate. The
 final-PR-head run (`--flow --base dev --head <pr sha>`) replaces it, and its output goes in the PR body unedited.
 
@@ -463,7 +510,7 @@ fed a real marker entry produced by the fixed logger:
 
 | consumer | reads | on a marker entry | measured |
 |---|---|---|---|
-| `.pi/skills/worktree/sprint-metrics.py::read_spawn_starts` (`:598–600`) | `d.get("data") or {}` → `data.get("agentId") or f"{path}:{timestamp}"` | the entry **counts once** under the timestamp fallback id (degraded, not fatal) | object marker → `{'background': 1, 'spawns': 1}`; same-timestamp duplicate → `1`; two distinct timestamps → `2`. **r1's string marker** → `AttributeError: 'str' object has no attribute 'get'` (the reconcile aborts) |
+| `.pi/skills/worktree/sprint-metrics.py::read_spawn_starts` (`:598–600`) | `d.get("data") or {}` → `data.get("agentId") or f"{path}:{timestamp}"` | the entry counts under the timestamp fallback id (degraded, not fatal); two **different** markers in the same millisecond merge to one — an undercount on degraded input | object marker → `{'background': 1, 'spawns': 1}`; same-timestamp duplicate → `1`; two distinct timestamps → `2`. **r1's string marker** → `AttributeError: 'str' object has no attribute 'get'` (the reconcile aborts) |
 | `.pi/skills/worktree/jev-check.mjs::parseDispatchEvents` (`:466,470`) → `analyzeDispatchLog` (`:714`) | `entry.data?.task`, then `typeof task === "string" ? task : null`; `task === null` is a finding | **fails closed**: exit 1, `spawn event carries no task payload — cannot audit` | marker (either shape) → exit 1; healthy spawn entry → `every task carries a valid Rule 22 line`, exit 0 |
 
 **Why `jev-check`'s fail-closed posture is right, and why the path is unreachable from the tooling's own entries.** A
@@ -490,8 +537,8 @@ survives as an *unauditable* line instead of a *missing* one. Both fail closed; 
   - a **typed** caller can never hit the coercions; an untyped one gets `"[unprintable prefix]"`/`"[unprintable message]"`
     **on the fallback path only** (a healthy call keeps a non-string value as-is — measured `"message":42`), which is
     the alternative to rethrowing inside the fallback;
-  - `-0n` → `"0n"`, but only when reached through a truthy container; a falsy root `data` (`0n`, `-0n`, `""`) is omitted
-    by the pre-existing truthiness check, so it produces no `data` field on base or on the fix;
+  - `-0n` → `"0n"` inside a container; a **falsy** root `data` (`0n`, `-0n`, `""`) is omitted by the pre-existing
+    truthiness check (no `data` field on base or on the fix), while a **truthy** root `10n` is encoded to `"10n"`;
   - a marker entry is a permanent gap in the dispatch audit for that spawn (`jev-check` exit 1) — intended.
 - **Out of scope:** levels, rotation, `MAX_LOG_*`, the entry-shape contract, `safeLog`'s removal, teaching
   `jev-check`/`sprint-metrics` about the marker key, and the **17 other `JSON.stringify` sites in `src/`** — e.g.
@@ -501,17 +548,17 @@ survives as an *unauditable* line instead of a *missing* one. Both fail closed; 
 ## 11. Acceptance criteria
 
 1. Every hostile payload shape returns normally — cycle, `BigInt`, throwing `toJSON`, throwing getter, Proxy `get`,
-   Proxy `ownKeys`, hostile `.message`, non-string `prefix` — cases 1–7 and 10. **Falsifier:** any `not.toThrow()` red.
+   Proxy `ownKeys`, hostile `.message`, non-string `prefix`/`message` — cases 1–7, 10 and 11. **Falsifier:** any `not.toThrow()` red.
 2. The file records a line for each hostile payload: `[Circular]`, `"10n"`, or **`{"[unserializable]":"<reason>"}`** —
    cases 1–7, byte-exact. **Falsifier:** a byte mismatch, a string marker, or a missing line.
 3. A marker entry keeps `sprint-metrics.read_spawn_starts` working (`background: 1`, no exception) and makes
-   `jev-check --log` fail closed (exit 1, `no task payload`) — both re-runnable from §10's commands.
+   `jev-check --log` fail closed (exit 1, `no task payload`) — both re-runnable from §8.8's commands.
    **Falsifier:** an exception in the former, or exit 0 in the latter.
 4. The mirror is attempted **exactly once** for a hostile-but-serialisable payload — case 1. **Falsifier:** 0 (today) or 2.
 5. Serialisable `data` is byte-identical to base and keeps key order — case 8 + the 9/9 probe. **Falsifier:** any diff.
 6. A shared non-circular reference is preserved — case 9; M2 must be red.
 7. The fallback is total for the **typed** API: `prefix`/`message` are `string`, and an untyped violation yields
-   `"[unprintable prefix]"`/`"[unprintable message]"` on the fallback path — case 7; M12 must be red. **Falsifier:** a
+   `"[unprintable prefix]"`/`"[unprintable message]"` on the fallback path — cases 7 and 11; M12 and M13 must be red. **Falsifier:** a
    `TypeError` escaping from the fallback.
 8. No sticky degradation after a fallback-path fault — case 10; M7 must be red.
 9. `message` is never swallowed by the fallback — cases 3–6, 10; M4 must be red.
@@ -521,8 +568,8 @@ survives as an *unauditable* line instead of a *missing* one. Both fail closed; 
 12. `git diff` touches only `src/logging.ts`, `src/__tests__/logging.test.ts`, the `src/session-manager.ts` doc block —
     and changes none of `rotateIfNeeded`, `appendFileSync`, `resolveLogDir`, `LOG_LEVELS`, the filter, the file
     `catch {}`. **Falsifier:** a hunk in any of them.
-13. The flow gate at the committed head exits 0 with `+172/+55 src (allowance 230) — within`.
-14. The full-suite failing set differs from the clean-base capture by exactly the **8** names of §6 and by **0** from the
+13. The flow gate at the committed head exits 0 with `+190/+55 src (allowance 230) — within`.
+14. The full-suite failing set differs from the clean-base capture by exactly the **9** names of §6 and by **0** from the
     fixed tree. **Falsifier:** any only-in-fixed name.
 
 ## 12. Open questions for the conductor
