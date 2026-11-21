@@ -10,6 +10,11 @@ vitest-report.json
 # local. Any NEW .pi state dir is ignored by default. —
 .pi/*
 !.pi/skills/
+# — .pi/skills/notify: a PRIVATE skill (the owner's notification channel).
+#   Never tracked; it carries the channel's protocol and its scripts, and the
+#   repo is public. The `check-repo.sh` leak guard fails if its name or
+#   address appears in a tracked file. Do not move it into the tracked tree. —
+.pi/skills/notify/
 !.pi/extensions/
 
 # — .pi/brl-subagent: the project-local presets and templates ARE the dispatch

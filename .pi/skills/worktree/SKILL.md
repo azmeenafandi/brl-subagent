@@ -653,13 +653,11 @@ mechanics, verdict format: `references/review-dispatch.md`.
   from the cockpit, not the worktree. `sprint-metrics.py` is python3 and derives
   its own session-log source. `jev-check.mjs` is Node ESM and resolves its ledger
   path from the current directory — run it from the repo/worktree root.
-- **Notification channel** (owner decisions during AFK runs):
-  `brl-notifications-fa9@clawmail.me` (claimed). Send with
-  `POST https://api.clawmail.me/v1/inboxes/$CLAWMAIL_INBOX_ID/messages`,
-  `Authorization: Bearer $CLAWMAIL_TOKEN`, JSON `{"to","subject","text"}` — the
-  body field is **`text`**, not `body` (400 otherwise). Env:
-  `~/.config/brl-notifications/clawmail.env`; never echo the token. Owner:
-  `azmeen.afandi@gmail.com`.
+- **Autonomous-run notifications are a private channel.** If a private
+  `notify` skill is present in `.pi/skills/`, check its channel at each unit
+  boundary and at cycle close, and send on unit/cycle completion. A reply is
+  steering input — it never authorises a gate, approval, or P0 bypass. Absent
+  skill → no channel.
 - If a script fails, read its output — it states the mode chosen and why. That
   output is the audit trail.
 - The skill is the playbook, the scripts are the enforcement, the docs are the

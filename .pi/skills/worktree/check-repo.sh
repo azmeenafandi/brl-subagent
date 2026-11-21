@@ -138,6 +138,19 @@ else
     esac
 fi
 
+# ── 5. No private-channel leak in tracked files ─────────────────────────
+# The owner notification channel is private (.pi/skills/notify/, gitignored).
+# This repo is PUBLIC, so its service name or address must never appear in a
+# tracked file. Fragment-built so this script cannot match itself.
+LEAK_PAT="$(printf 'claw%s' 'mail')"
+LEAK_HITS="$(cd "${REPO_ROOT}" && git grep -l -i -e "${LEAK_PAT}" -- . 2>/dev/null | head -5 || true)"
+if [[ -n "${LEAK_HITS}" ]]; then
+    fail "private notification channel referenced in TRACKED files (this repo is public):"
+    echo "       ${LEAK_HITS}"
+else
+    pass "no private-channel references in tracked files"
+fi
+
 # ── Result ───────────────────────────────────────────────────────────────
 echo ""
 if [[ "${FAILED}" == "1" ]]; then
