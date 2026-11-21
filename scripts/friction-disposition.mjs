@@ -530,9 +530,14 @@ function checkContiguity(ledger, problems) {
 	}
 }
 
+/** The log's last data-row index — the window extent's ceiling. Records are data rows: only coverage skips them. */
+function lastDataIndex(log) {
+	return log.rows[log.rows.length - 1].index;
+}
+
 /** A window that ends past the log's last data row claims an index that names nothing. */
 function checkWindowBounds({ log, window, cycle }, problems) {
-	const lastIndex = log.rows[log.rows.length - 1].index;
+	const lastIndex = lastDataIndex(log);
 	if (window.to > lastIndex) {
 		problems.push(
 			problem(
@@ -561,7 +566,7 @@ function checkClosingGate({ log, ledger, window, cycle }, problems) {
 		problems.push(problem("not-closing-cycle", `not the closing cycle (last: ${last.cycle})`, 1));
 		return;
 	}
-	const lastDataRow = log.rows[log.rows.length - 1].index;
+	const lastDataRow = lastDataIndex(log);
 	if (window.to < lastDataRow) {
 		problems.push(
 			problem("unassigned-close", `log has rows ${window.to + 1}..${lastDataRow} unassigned — re-declare at close`, 1),
