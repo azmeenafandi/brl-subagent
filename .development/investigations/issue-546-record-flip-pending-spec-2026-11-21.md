@@ -1,11 +1,12 @@
-# #546 — a crash between the terminal writes leaves a `running` agent record boot cannot repair — spec **r5**
+# #546 — a crash between the terminal writes leaves a `running` agent record boot cannot repair — spec **r6**
 
 **Issue:** #546 (harden) · priority **low** (a process kill inside a sub-millisecond window; state
 consistency, not a lost run) · **C1** · worktree **y**.
-**Spec r5:** 2026-11-21, against `c575a6c` (the design tree; `git status --porcelain` → **0**; every r5 probe
-ran in `~/.cache/brl-subagent/scratch/spec-546-r5/` (0700), never the repository, never `/tmp`; no
-`npm install`; the r4 rows live in `…/spec-546-r4/`). r4 was measured `needs-work` (2 majors + 2 minors); r5
-answers all four. **Status: decision-ready.**
+**Spec r6:** 2026-11-21, against `c575a6c` (the design tree; `git status --porcelain` → **0**; every r6 probe
+ran in `~/.cache/brl-subagent/scratch/spec-546-r5/`'s `r4tree` + `mut-skip-ordinary` with `TMPDIR=…/spec-546-r6`
+(0700), never the repository, never `/tmp`; no `npm install`; the r4 rows live in `…/spec-546-r4/`). r5 was
+measured `needs-work` (**1 test-only major** + 2 minors + 1 optional); r6 answers all four. **Status:
+decision-ready.**
 
 **r5 changes NO source code.** The option, the marker lifecycle, the three-function split, the production
 wiring and the mutant table are r4's, verified sound. r5 (a) states one **unrepairable crash residual**
@@ -14,6 +15,19 @@ shipped hold tests **impossible to pass without a registry scan** (N1/N2 + a sam
 M21/E24/E25), and (c) fixes two probe/budget details (E17r, §Delta). `run-registry.ts`, `recovery.ts`,
 `session-manager.ts` and `boot-recovery.ts` are **byte-identical to the r4 tree** — every r4 measurement
 whose code path r5 does not touch is that row re-run, not a new claim.
+
+## r5 → r6 changes
+
+| # | r5 gap (measured by `critique-546-r5`) | r6 (implemented + measured) | Evidence |
+|---|---|---|---|
+| **1 (major)** | N3's control was seeded with `seedInterruptedRun()` — which calls `markInterrupted` **before** the boot — so the test's `interruptedAt` assertion was satisfied by the seed, not the scan. A mutant that **skips every ordinary candidate** still passed N3 **1/1**. | N3 seeds the control as an ordinary **ACCEPTED, dead-owner candidate without `interruptedAt`**, and asserts **before** the notice check that the control's **bytes changed** and it became interrupted; the held marker stays byte-identical and unmarked. The r6 probe (`zz-r6-n3.test.ts`, the same assertions) is the deliverable test's contract. | **E26**: the r6 test on the r4 tree **1 passed**; on **M22** (skip every ordinary candidate) **1 failed** at the control's bytes; **r5's N3 on M22 passes 1/1** — the defect, reproduced |
+| **m1** | Acceptance 9 said the invoked notice surface lists the control, but under the import-failure mock it delivers **nothing** (the test checks a separately built projection). | acceptance 9 states both expectations: the hold file's `sent=[]` + `Recovery notice failed` + projection `[CONTROL]`; N3's **real** delivery under the ordinary scan. | §Acceptance 9 (rewritten) |
+| **m2** | "Readable" alone was insufficient — repair also needs a dead owner, a running scan and a landed write; `running` was omitted. | acceptance 2 names the full precondition set; the corrupt case stays outside (P6). | §Acceptance 2 (rewritten) |
+| **opt** | The r5 gate stopped naming rotation/truncation explicitly. | Step 8 states why the **per-boot isolated log** supersedes the rotation class (no shared log to rotate), keeps the truncate-and-regrow + preseed negatives, and names rotation as inapplicable rather than dropped. | §Verification step 8 (amended) |
+| **M22** | — | `if (!entry.recordFlipPending) continue;` in the candidate loop — the scan runs but acts on **nothing ordinary**. | **N3 (r6 seed) 1 failed**; the r5 hold file (N1/N2) also fails 2/2 on it — its controls were already sound, only N3's pre-marked control was vacuous |
+
+**r6 changes ONE test (N3's seed + assertions) and the mutant table; no production code, no other test.**
+The r5 source trees are byte-identical to r4 and the r6 probe ran on the **same** tree.
 
 ## r4 → r5 changes
 
@@ -477,7 +491,7 @@ claim once the surface has run.** The control's expected outcome is stated per r
 | **N1** | **session-manager unavailable**, `acceptedAt:null` ⇒ entry+marker **byte-identical**, record `running`, no `interruptedAt`, no finalizer, no notice, no ledger — **and the same scan marks the CONTROL** (a plain accepted, dead-owner entry): its bytes change, `interruptedAt` is set, the ledger line says `marked:1`, and the notice projection is exactly `[CONTROL]` | `boot-recovery-import-failure-546` | **r4 major B** — the hold, production-wired (**M18**); **r5 major 2** — the same-scan control (**M21**) | r2: `registryFiles:[]`; r3: probe only; **r5: M21 2 failed, M18 4 failed** |
 | **N2** | the same for an **accepted** entry | same | major B (**M18**) + major 2 (**M21**) | r2: `marked:1` + `interruptedAt`; r3: probe only; r5: M21 2 failed, M18 4 failed |
 | **D7a/D7b** | a **half-wired** applier (applier-only / reader-only), both acceptance states ⇒ no applier call, no fresh read, no finalizer, no mark, entry+marker byte-identical, **all three flip counters 0** | `boot-recovery-import-failure-546` | **r4 minor 6** — hold ≠ settlement failure (**M20**) | r3: rule existed, unpinned; M20: 2 failed |
-| **N3 (r5)** | a **corrupt** record (0 bytes, the P6 torn write) + a marker ⇒ marker kept, entry byte-identical, no `interruptedAt`, ledger **`{repaired:0, retired:0, failures:1}`**; **and** the control interrupted run is marked and is the **only** run the delivered notice lists (control's id8 present, held id8 absent) | `boot-recovery-factory` (real module) | **r5 major 1** (P6 ship-time pin) + **major 2** (the delivered-notice half; the import-failure file's notice surface is mocked away) | r4: the case does not exist; **M13b: 1 failed / 3**; r4 tree + the r5 file: **4 passed** |
+| **N3 (r6 seed)** | a **corrupt** record (0 bytes, the P6 torn write) + a marker ⇒ marker kept, entry byte-identical, no `interruptedAt`, ledger **`{repaired:0, retired:0, failures:1}`**; **and** the CONTROL is an ordinary **ACCEPTED, dead-owner candidate WITHOUT `interruptedAt`** — the test asserts its persisted **bytes changed** and it became interrupted (proof the scan ran), then that the delivered notice lists the control's id8 and **not** the held id8 | `boot-recovery-factory` (real module) | **r5 major 1** (P6 ship-time pin) + **major 2** (the delivered-notice half) + **r6 major** (the control must prove the scan ran) | r4: the case does not exist; **M13b: 1 failed / 3**; r4 tree + the r6 test: **4 passed**; **M22: N3 fails 1/1** while the r5 seed passes 1/1 (E26) |
 
 `it.skipIf(process.platform === "win32")` on every `chmod` case; the pins at `session-manager.test.ts:3766`/
 `:3800` stay **green unedited** — STEP D still calls `clearInflightRun`, and `settleLiveAgentRecord` preserves
@@ -554,12 +568,12 @@ the source delta moved; it is still `120 + 2×Δsource`.
 | **M19 (r4)** | STEP B calls the **boot** helper (`flipAgentRecord`) — i.e. the r3 shape | **R4-a, R4-b, R4-c** (2 failed + 1 failed) — reproduces r3's `{running, …}` / `{running, disk:false, registry:0}` exactly; N1/N2 stay green (the boot contract is untouched) |
 | **M20 (r4)** | the half-wired guard `\|\|` → `&&` (a one-dep scan falls through to the ordinary path) | **D7a/D7b** (2 failed) — the applier-only case reaches the missing reader, the reader-only case reaches the fresh reader |
 | **M21 (r5)** | `if (!wiring) return;` right after the failed `await import("./session-manager")` — "no wiring, so nothing to do": the registry-only scan never runs | **N1/N2** (2 failed / 2) on the r5 file, at the **control's bytes** (`expected '…' not to be '…'`) — the held marker's silence is still perfect, so only the control detects it. **The r4 file passes 2/2 on this mutant** (E24), which is the defect r5 fixes |
+| **M22 (r6)** | `if (!entry.recordFlipPending) continue;` in the candidate loop — the scan runs but skips **every ordinary candidate** | **N3 (r6 seed) 1 failed** at the control's bytes (the control is never marked, so no notice); **r5's N3 passes 1/1 on the same mutant** (E26) — the seed, not the scan, satisfied it. the r5 hold file (N1/N2) **fails 2/2** on this mutant — its control assertions already catch the skip; only N3's pre-marked control was vacuous |
 
 M5/M6 are the pair that matters: **M5** is what a reviewer writes by hand, **M6** is the only thing that
 makes M5 detectable. **M21 is the same lesson one layer up**: a test that asserts *silence* is killed by a
 mutant that is silent too, so the hold cases each carry a positive control in the same scan. **M13b** is now
-also the killer of N3 (the corrupt-record hold → the notice half), which is what makes N3 a pin rather than a
-demonstration. M10/M14/M16/M17 are the settlement-integrity quartet: a settlement that did not land
+also a killer of N3 (the corrupt-record hold → the notice half). **M22 is the r6 lesson**: a control that is **pre-marked** is pre-satisfied, so N3 asserts the control's **bytes change** — the one observable a skipped scan cannot fake. M10/M14/M16/M17 are the settlement-integrity quartet: a settlement that did not land
 must neither retire nor read as settled. **M19 is the #542 regression itself** — the r3 shape as a mutation,
 so the live-pin tests are provably about the split, not about incidental state. M1–M15/M13b remain as
 measured on the r2/r3 trees (the r2 and r3 critics verified them); r4 re-ran the 24-case probe and the three
@@ -582,7 +596,8 @@ tree, M18, M20 and M21, plus N3 on the r4 tree and M13b.
    the new hold file **4 passed**, the factory suite **4 passed** (3 + N3).
 5. M1–**M21** + M13b one at a time in a scratch copy (never the repo); record the killed case names (§Mutants
    is the expected table). M16/M17/M19/M20 are the r4-tree builds; M19's kill is the **three** live-pin
-   cases, M20's the **two** half-wired cases, **M21's the two hold cases** — at the control's bytes.
+   cases, M20's the **two** half-wired cases, **M21's the two hold cases** — at the control's bytes; **M22's
+   killer is N3 alone** (1 failed / 3), and the unmutated tree passes N3 only with the r6 seed (E26).
 6. **Crash probes against the patched tree** (`phase1.cjs` writes the real records then `SIGKILL`s;
    `boot.cjs` runs `createBootRecovery().performBootRecovery()` + `maybeSendRecoveryNotice` in a fresh
    process; `read.cjs` is a third process). `boot.cjs` parses `message` and exits **3** on any of:
@@ -606,7 +621,10 @@ tree, M18, M20 and M21, plus N3 on the r4 tree and M13b.
    and **regrow** the *previous* boot's log on the same inode to a **larger** size with a stale settlement
    line → the no-op boot still exits **3**; (b) pre-seed *this* boot's log with a stale line →
    `log-not-empty-at-start`, exit **3**; (c) the r4 offset+identity harness (`boot.cjs`) on (a) → exit **0**
-   with `ok:true`, which is the fail-open this replaces (E17r, and E17 for the r4 rows).
+   with `ok:true`, which is the fail-open this replaces (E17r, and E17 for the r4 rows). **Rotation is
+   inapplicable to the isolated scope** — each boot writes its own log dir, so no other boot's lines can
+   appear; the rewrite class that remains is covered by (a)/(b). The r4 offset+identity check stays in
+   `boot.cjs` for the shared-log rows.
 9. **The two-process probes**: sequential (2nd boot 0/0/0) and the seam barrier (both repairs, 2 events,
    2–5 ms drift) — a **stated limit**, not a claim; plus the two-process claim probe (E16).
 10. **The hold**: `node boot-importfail.cjs <tree>-noimport <state> null|accepted` → `HOLD-OK` exit 0; the
@@ -679,8 +697,9 @@ truncate-and-regrow).
 
 1. A marker written before retirement survives the run-entry write, the flip, and a crash at any of them;
    `listInflightRuns()` reports it verbatim (R1, C5/R4).
-2. A crash after the marker and before the flip is **repaired on the next boot when the record is
-   READABLE**: the record is terminal with `completedAt` and the marker's `error`, the entry is gone,
+2. A crash after the marker and before the flip is **repaired on the next boot when the record is a
+   READABLE `running` record**, its owner is **provably dead**, the scan is **available** and the write
+   **lands**: the record is terminal with `completedAt` and the marker's `error`, the entry is gone,
    `flipRepaired === 1`, and a third process reports `getAgent(id).status === 'failed'` (C1, S2/P1,
    **E4a/E4b**). **The guarantee is stated over a readable record, not over the file:** a record torn by a
    kill inside `persistAgent`'s in-place write is **corrupt** and is *outside* it (**P6**, **E23**,
@@ -718,8 +737,12 @@ truncate-and-regrow).
 9. A marker whose **applier or fresh reader is unavailable** is **held**: no never-started finalizer, no
    `marked`, no `interruptedAt`, entry and marker byte-identical — **while the same scan acts on a companion
    control entry** (its bytes change, `interruptedAt` is set, the ledger says `marked:1`) and the notice
-   surface, **invoked**, lists that control and not the held marker (N1/N2, E15/E19/E24). *Falsifier:* an
-   import failure removes or marks a marker; or a mutant that never runs the scan passes N1/N2 (**M21**).
+   surface, **invoked**, lists that control and not the held marker — with the distinct expectations stated:
+   under the import-failure mock the surface delivers **nothing** (`sent:[]` + `Recovery notice failed`) and
+   the projection is `[CONTROL]`; N3 proves the **real** delivery under the ordinary scan, and its control is
+   the same accepted, dead-owner entry whose **bytes must change** (N1/N2, N3, E15/E19/E24/E26).
+   *Falsifier:* an import failure removes or marks a marker; a mutant that never runs the scan passes N1/N2
+   (**M21**); or a pre-marked control passes N3 (**M22**).
 10. A **half-wired** pair (applier without reader, reader without applier) is held the same way, in both
     acceptance states, with **all three flip counters zero** (D7a/D7b, E20). *Falsifier:* a hold increments
     any flip counter, or a half-wired scan reaches the applier/fresh reader (M20).
@@ -790,6 +813,7 @@ third process reading only disk. `boot.cjs` parses `message`, scopes to bytes an
 | **E23 (r5)** | **major 1 / P6** — a torn record is a failure, never a repair | `e23.sh <r4tree> zero\|partial`: seed `phase1 … p1` (real writers + `SIGKILL`) → `torn.cjs` (`openSync(record,"w")` + `SIGKILL`, the `persistAgent` window) → **two** production boots (`EXPECT_TRIPLE=0,0,1`) → a third process reading disk | seed: record **455** bytes, marker present, `COMMITTED_RUNS=["running","failed"]`. After the tear: **0** bytes (`{"before":455,"after":0,"mode":"zero"}`) and **227** bytes (`{"before":455,"after":227,"mode":"partial"}`) — both `SyntaxError` on parse. Boot 1 **and** boot 2: `TRIPLE {"expected":[0,0,1],"actual":{"repaired":0,"retired":0,"failures":1},"ok":true}`, exit **0**; the marker is **still on disk after both**; the record is **still 0/227 bytes**; `DISK_STATUS "<none>"`, `BOOT_APPENDS 0`, `NOTICES 0`; warn tail `Recovery: could not read the agent record for a record-flip marker — the marker is kept` |
 | **E24 (r5)** | **major 2** — N1/N2 cannot pass without a scan | `vitest run …/boot-recovery-import-failure-546.test.ts` on r4tree with the **r5** file, `mut-M21-skipscan`, `mut-M18-noimport`; and with the **r4** file (208 lines) on `mut-M21-skipscan` | **r4 file on M21: `2 passed`** (`-t 'N1:\|N2:'`) — the defect r5 fixes. **r5 file**: r4tree **4 passed**; **M21 `2 failed / 2 passed`**, each `AssertionError: expected '{\n  "id": "3b0a…' not to be '{\n  "id": "3b0a…'` — the **control's** registry bytes did not change; `marked interrupted runs` with `{marked:1}` present on r4tree and **absent** on M21; **M18 `4 failed / 4`** |
 | **E25 (r5)** | **major 2 (delivered notice) + major 1 shipped** — N3 | `vitest run …/boot-recovery-factory.test.ts` on r4tree (3 existing + N3) and on `mut-M13b-reader` (`readAgentRecordFromDisk`: unreadable ⇒ `exists:false`) | r4tree **4 passed**; **M13b `1 failed / 3 passed`** (N3 alone). N3's observed state: held entry byte-identical, marker verbatim, `interruptedAt:null`, ledger `{repaired:0,retired:0,failures:1}`, control `interruptedAt` set, `recoveryNotices()` **1**, the rendered notice contains the control's id8 and **not** the held id8 |
+| **E26 (r6)** | **r6 major** — N3's control must prove the scan ran; M22 | `vitest run …/zz-r6-n3.test.ts` on the **r4 tree** and on **M22** (`mut-skip-ordinary`: `if (!entry.recordFlipPending) continue;`); then `-t 'N3'` with the **r5** seed on M22 | r4 tree **1 passed**; **M22 1 failed** at `expect(controlAfter).not.toBe(controlBefore)` (the control's registry bytes never changed); the **r5 N3 on M22 passes 1 passed / 3 skipped** — the defect, reproduced. The **r5 hold file (N1/N2) fails 2/2 on M22** (`expect(control?.interruptedAt).toBeTruthy()`) — the hold controls were already sound; only N3's seed was pre-satisfied. |
 | **Δ/T** | the delta + typecheck **(r4)** | `git diff --no-index --numstat --no-renames base/src r4tree/src`; `tsc --noEmit` | +131/−12, +236/−7, +247/−28, +50/−3 ⇒ **+664/−50 net +614** (293 code / 355 comment / 16 blank); tsc **0**; shipped tests **+439/−2** (+411 artefact) |
 
 ## Not verified
