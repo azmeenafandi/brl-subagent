@@ -150,6 +150,15 @@ if [[ -n "${LEAK_HITS}" ]]; then
 else
     pass "no private-channel references in tracked files"
 fi
+# Private paths, when present, must stay ignored: they are machine-local, never tracked.
+for PRIV in .pi/skills/notify .pi/extensions/mail-wake.ts; do
+    [[ -e "${REPO_ROOT}/${PRIV}" ]] || continue
+    if (cd "${REPO_ROOT}" && git check-ignore -q "${PRIV}"); then
+        pass "private path ignored: ${PRIV}"
+    else
+        fail "private path is NOT ignored — it would be committed: ${PRIV}"
+    fi
+done
 
 # ── Result ───────────────────────────────────────────────────────────────
 echo ""

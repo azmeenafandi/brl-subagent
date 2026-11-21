@@ -15,6 +15,10 @@ vitest-report.json
 #   repo is public. The `check-repo.sh` leak guard fails if its name or
 #   address appears in a tracked file. Do not move it into the tracked tree. —
 .pi/skills/notify/
+# — .pi/extensions/mail-wake.ts: a PRIVATE extension (the owner-channel poller).
+#   Never tracked; the `check-repo.sh` guard fails if a private path is not
+#   ignored. —
+.pi/extensions/mail-wake.ts
 !.pi/extensions/
 
 # — .pi/brl-subagent: the project-local presets and templates ARE the dispatch
