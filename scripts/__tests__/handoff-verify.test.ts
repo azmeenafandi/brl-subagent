@@ -889,8 +889,8 @@ describe("handoff-verify — the CLI seam", () => {
 	 *
 	 * The STATE is built from the SCRATCH repo's `devClaimSha()`, so the fixture cannot drift from the tree it
 	 * describes: an absent `--root` here would evaluate this checkout against a foreign STATE and print drift.
-	 * `modules`/`adrs` default to what that checkout's own generators report, and stay parameters because a test
-	 * may need the claim to be wrong on purpose.
+	 * `modules`/`adrs` default to what that checkout's own generators report, and stay parameters so a test can
+	 * state counts the checkout does not have.
 	 */
 	function scratchHandoff(
 		repo: ScratchRepo,
@@ -1104,6 +1104,10 @@ describe("handoff-verify — the CLI seam", () => {
 
 		it("names verified-drift when Verified is one non-handoff commit behind dev", () => {
 			const repo = scratchRepo();
+			// The fixture's own invariant, restated because this case leans on it: the handoff commit is the dev
+			// tip and the CLAIM is the code commit, which is why an extra commit on top is drift and not a rebase.
+			expect(repo.git("rev-parse", "dev").stdout.trim()).toBe(repo.handoffSha);
+			expect(createRepoProbe(repo.dir).devClaimSha()).toBe(repo.code);
 			const dir = mkdtempSync(join(tmpdir(), "brl-handoff-root-"));
 			const handoff = join(dir, "HANDOFF.md");
 			writeFileSync(handoff, scratchHandoff(repo, { suite: "2 files / 40 tests", open: "#426, #450" }));
