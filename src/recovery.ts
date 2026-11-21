@@ -85,6 +85,15 @@ export interface BootScanSummary {
 	flipRetired: number;
 	/** Issue #546: flips decided but whose durable write did NOT land (#304 rule). */
 	flipFailures: number;
+	/**
+	 * Issue #554: the CORRUPT subset of `flipFailures` — the record was present
+	 * and its bytes were read, but `JSON.parse` rejected them. An ADDITIONAL
+	 * count, never a replacement: `flipFailures` keeps its meaning (a failed
+	 * settlement) so #546's H2c and every other marker case stay valid. The
+	 * operator's distinction is "repair the file" (corrupt) vs "fix permissions"
+	 * (unreadable, the rest of `flipFailures`).
+	 */
+	flipCorrupt: number;
 }
 
 /** The all-zero summary (a skipped scan / an empty registry). */
@@ -103,6 +112,7 @@ export function emptyBootScanSummary(): BootScanSummary {
 		flipRepaired: 0,
 		flipRetired: 0,
 		flipFailures: 0,
+		flipCorrupt: 0,
 	};
 }
 
@@ -330,7 +340,17 @@ export type RecordFlipOutcome = "repaired" | "retired" | false;
 export interface FreshAgentRecord {
 	record: PersistedAgentLike | null;
 	exists: boolean;
+	/**
+	 * Issue #554: WHY there is no record when `exists` is true — `"corrupt"`
+	 * (the file read, but JSON.parse rejected it) vs `"unreadable"` (stat/read
+	 * failed). Optional so a caller that only knows the tri-state (a test seam)
+	 * stays valid; the boot ledger counts the corrupt subset by name.
+	 */
+	reason?: AgentRecordFailureReason;
 }
+
+/** Issue #554: the two named record-read failures. */
+export type AgentRecordFailureReason = "corrupt" | "unreadable";
 
 export interface RegistryScanOptions {
 	deps: RecoveryDeps;
@@ -468,6 +488,9 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 	let flipRepaired = 0;
 	let flipRetired = 0;
 	let flipFailures = 0;
+	// Issue #554: the corrupt SUBSET of the failures above — counted beside it,
+	// never instead of it.
+	let flipCorrupt = 0;
 	for (const entry of addressable) {
 		const isBackground = entry.kind === "background";
 		// Only a background entry has an agent record to enrich from (and to drop
@@ -508,9 +531,14 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 					// tell whether it is still `running`. The marker is KEPT and the
 					// settlement is counted failed (never silently dropped).
 					flipFailures++;
+					// Issue #554: name the corrupt subset — the record read fine but
+					// its JSON did not parse. The decision and the kept marker are
+					// unchanged; only the ledger gains the finer distinction.
+					if (fresh.reason === "corrupt") flipCorrupt++;
 					options.log?.warn("Recovery: could not read the agent record for a record-flip marker — the marker is kept", {
 						id: entry.id,
 						kind: entry.kind,
+						...(fresh.reason ? { reason: fresh.reason } : {}),
 					});
 					continue;
 				}
@@ -657,6 +685,7 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 	summary.flipRepaired = flipRepaired;
 	summary.flipRetired = flipRetired;
 	summary.flipFailures = flipFailures;
+	summary.flipCorrupt = flipCorrupt;
 	return summary;
 }
 

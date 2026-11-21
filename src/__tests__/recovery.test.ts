@@ -2176,16 +2176,66 @@ describe("issue #546 — the record-flip marker verdict", () => {
 		expect(fs.existsSync(path.join(env.storageDir, `${id}.json`))).toBe(false);
 	});
 
-	it("H2c: a CORRUPT record is unreadable — the marker is kept, not retired", async () => {
+	it("H2c: a CORRUPT record is unreadable — the marker is kept, not retired, and #554 names it by count", async () => {
 		fs.mkdirSync(env.storageDir, { recursive: true });
-		fs.writeFileSync(path.join(env.storageDir, `${id}.json`), "{not json", { mode: 0o600 });
+		const recordPath = path.join(env.storageDir, `${id}.json`);
+		fs.writeFileSync(recordPath, "{not json", { mode: 0o600 });
+		plantEntry({ recordFlipPending: FLIP });
+
+		const s = await bootOnce();
+
+		// Issue #554: `flipCorrupt` is an ADDITIONAL subset count. H2c's original
+		// assertion (`flipFailures === 1`) is the invariant that must not change.
+		expect(s.flipFailures).toBe(1);
+		expect(s.flipCorrupt).toBe(1);
+		expect(s.flipRepaired + s.flipRetired).toBe(0);
+		expect(entryFiles()).toEqual([`${id}.json`]);
+		// The bytes are never repaired, rewritten or deleted by the boot.
+		expect(fs.readFileSync(recordPath, "utf8")).toBe("{not json");
+	});
+
+	it("H2c0: a ZERO-BYTE record is corrupt too (parse failure, not a read failure)", async () => {
+		fs.mkdirSync(env.storageDir, { recursive: true });
+		fs.writeFileSync(path.join(env.storageDir, `${id}.json`), "", { mode: 0o600 });
 		plantEntry({ recordFlipPending: FLIP });
 
 		const s = await bootOnce();
 
 		expect(s.flipFailures).toBe(1);
-		expect(s.flipRetired).toBe(0);
+		expect(s.flipCorrupt).toBe(1);
 		expect(entryFiles()).toEqual([`${id}.json`]);
+	});
+
+	it("H2c-dir: a DIRECTORY where the record is expected is UNREADABLE, not corrupt", async () => {
+		fs.mkdirSync(path.join(env.storageDir, `${id}.json`), { recursive: true });
+		plantEntry({ recordFlipPending: FLIP });
+
+		const s = await bootOnce();
+
+		expect(s.flipFailures).toBe(1);
+		expect(s.flipCorrupt).toBe(0); // the bytes could not be READ — not a parse failure
+		expect(s.flipRepaired + s.flipRetired).toBe(0);
+		expect(entryFiles()).toEqual([`${id}.json`]);
+	});
+
+	it.skipIf(process.platform === "win32")("H2c-prod: the PRODUCTION ledger line carries corrupt: 1, and the bytes survive", async () => {
+		fs.mkdirSync(env.storageDir, { recursive: true });
+		const recordPath = path.join(env.storageDir, `${id}.json`);
+		fs.writeFileSync(recordPath, "{not json", { mode: 0o600 });
+		plantEntry({ recordFlipPending: FLIP });
+
+		const boot = createBootRecovery(createRuntime({ sendMessage: () => {}, appendEntry: () => {} } as never));
+		await boot.performBootRecovery();
+
+		expect(fs.readFileSync(recordPath, "utf8")).toBe("{not json");
+		expect(entryFiles()).toEqual([`${id}.json`]);
+		const log = fs.readFileSync(path.join(env.testCwd, ".pi", "subagent-logs", "brl-subagent.log"), "utf8");
+		const settle = log
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line))
+			.find((line) => /settled pending record flips/.test(line.message ?? ""));
+		expect(settle?.data).toMatchObject({ repaired: 0, retired: 0, failures: 1, corrupt: 1 });
 	});
 
 	it("H3: the pre-flip DISK read beats a stale scanner snapshot — no second write, no second event", async () => {
@@ -2253,16 +2303,17 @@ describe("issue #546 — the record-flip marker verdict", () => {
 	it.skipIf(process.platform === "win32")("H4c: a FAILED flip never retires the entry — the marker outlives a failed write", async () => {
 		plantRecord("running");
 		plantEntry({ recordFlipPending: FLIP });
-		const recordPath = path.join(env.storageDir, `${id}.json`);
-		fs.chmodSync(recordPath, 0o400);
+		// Issue #554: a read-only RECORD no longer blocks the write (temp+rename
+		// only needs a writable directory), so the fault moves to the DIRECTORY.
+		fs.chmodSync(env.storageDir, 0o500);
 		try {
 			const s = await bootOnce();
 			expect(s.flipFailures).toBe(1);
 			expect(s.flipRepaired + s.flipRetired).toBe(0);
 			expect(entryFiles()).toEqual([`${id}.json`]);
-			expect(JSON.parse(fs.readFileSync(recordPath, "utf8")).status).toBe("running");
+			expect(JSON.parse(fs.readFileSync(path.join(env.storageDir, `${id}.json`), "utf8")).status).toBe("running");
 		} finally {
-			fs.chmodSync(recordPath, 0o600);
+			fs.chmodSync(env.storageDir, 0o700);
 		}
 
 		const s2 = await bootOnce();
@@ -2291,6 +2342,14 @@ describe("issue #546 — the record-flip marker verdict", () => {
 		// not returned): the wiring returns `false` when the unlink failed.
 		const log = fs.readFileSync(path.join(env.testCwd, ".pi", "subagent-logs", "brl-subagent.log"), "utf8");
 		expect(log).toContain('"repaired":0,"retired":0,"failures":1');
+		// Issue #554: with NO corrupt record the ledger object is byte-identical to
+		// before — `corrupt` is absent, not `corrupt: 0`.
+		const settle = log
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line))
+			.find((line) => /settled pending record flips/.test(line.message ?? ""));
+		expect(settle?.data).toEqual({ repaired: 0, retired: 0, failures: 1 });
 		expect(entryFiles()).toEqual([`${id}.json`]);
 		expect(disk().status).toBe("failed");
 	});
@@ -2298,17 +2357,18 @@ describe("issue #546 — the record-flip marker verdict", () => {
 	it.skipIf(process.platform === "win32")("H4e: the PRODUCTION wiring never retires an entry whose flip did not land", async () => {
 		plantRecord("running");
 		plantEntry({ recordFlipPending: FLIP });
-		const recordPath = path.join(env.storageDir, `${id}.json`);
-		fs.chmodSync(recordPath, 0o400);
+		// Issue #554: the write fault is directory-level now (a read-only record is
+		// replaced by a temp+rename).
+		fs.chmodSync(env.storageDir, 0o500);
 		try {
 			const boot2 = createBootRecovery(createRuntime({ sendMessage: () => {}, appendEntry: () => {} } as never));
 			await boot2.performBootRecovery();
 		} finally {
-			fs.chmodSync(recordPath, 0o600);
+			fs.chmodSync(env.storageDir, 0o700);
 		}
 
 		expect(entryFiles()).toEqual([`${id}.json`]);
-		expect(JSON.parse(fs.readFileSync(recordPath, "utf8")).status).toBe("running");
+		expect(JSON.parse(fs.readFileSync(path.join(env.storageDir, `${id}.json`), "utf8")).status).toBe("running");
 		expect(listInflightRuns()[0]?.recordFlipPending).toMatchObject({ status: "failed" });
 	});
 
