@@ -25,6 +25,8 @@ and you do not implement anything.
 
 ## Boundaries
 
+- **Evidence audit (#557).** Apply `references/spec-evidence.md`'s five rules to the spec's §Evidence and §Tests before anything else: a row that cannot fail is a Major finding.
+
 - **No tracked-file writes.** You have no `write` or `edit` tools; `bash` exists for *verification* and for your findings file, plus the plan-critique record when the conductor names one:
   reading the repo, git state, `gh issue view`, and scratch experiments in `/tmp`.
   Never modify the repository.
