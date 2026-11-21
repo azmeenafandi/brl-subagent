@@ -496,6 +496,13 @@ describe("friction-disposition — case 9: strict table syntax", () => {
 		{ cycle: "alpha", class: "a", rows: "1", disposition: "folded into #548", issue: "#548 open" },
 	]);
 
+	it("refuses a bare class cell — the class is a backticked code span (§1.4)", () => {
+		const bare = base.replace("| alpha | `a` |", "| alpha | a |");
+		expect(() => parseLedger(bare)).toThrow(/class cell "a" is not a backticked code span/);
+		// The same name INSIDE the span passes — the refusal is about the shape, not the identity.
+		expect(parseLedger(base).dispositions[0].class).toBe("a");
+	});
+
 	it("refuses a duplicate (cycle, class)", () => {
 		const text = mkLedger(
 			[{ cycle: "alpha", from: 1, to: 1 }],

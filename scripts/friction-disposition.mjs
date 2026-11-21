@@ -335,11 +335,17 @@ export function parseLedger(text) {
 	const dispositions = [];
 	for (const row of readTable(lines, dispositionSection.start, dispositionSection.end, DISPOSITION_HEADER, "dispositions")) {
 		const [cycle, classCell, rowsCell, evidence, disposition, issue, fix] = row.cells;
-		// The class is rendered as a backticked code span (§1.4); the NAME is what the regex governs. A bare
-		// name is accepted too — the code span is a rendering choice, not a second identity.
-		const className = /^`([^`]+)`$/.exec(classCell)?.[1] ?? classCell;
+		// The class cell is a backticked code span (§1.4) — one shape, so a class is distinguishable from prose
+		// at a glance. The NAME inside it is what the regex governs; a bare name is refused, not accepted as an
+		// alternative rendering.
+		const className = /^`([^`]+)`$/.exec(classCell)?.[1];
+		if (className === undefined) {
+			throw new InputError(
+				`dispositions line ${row.line}: class cell "${classCell}" is not a backticked code span — write it as \`${classCell}\` (§1.4)`,
+			);
+		}
 		if (!CLASS_RE.test(className)) {
-			throw new InputError(`dispositions line ${row.line}: class "${classCell}" must match ^[a-z0-9][a-z0-9-]*$ (rendered as a backticked code span)`);
+			throw new InputError(`dispositions line ${row.line}: class "${className}" must match ^[a-z0-9][a-z0-9-]*$ (in a backticked code span)`);
 		}
 		let indices = null;
 		if (rowsCell !== "—") {
