@@ -37,7 +37,7 @@ import * as eventBus from "../event-bus";
 import { __resetTerminalClaims } from "../notify-completion";
 import { createRuntime } from "../runtime";
 import { createTerminalNotifier } from "../terminal-notifier";
-import type { BackgroundAgent, SubagentEventType } from "../types";
+import { CUSTOM_ENTRY_TYPES, type BackgroundAgent, type SubagentEventType, type SubagentRun } from "../types";
 
 const TERMINAL_TYPES: readonly SubagentEventType[] = [
 	"subagent:completed",
@@ -52,8 +52,12 @@ interface Harness {
 	sent: () => number;
 }
 
-/** A factory plus the runtime it was built over — one `initExtension` equivalent. */
-function makeFactory(): Harness {
+/**
+ * A factory plus the runtime it was built over — one `initExtension` equivalent.
+ * `entries` is the run-entry store this factory's session sees (issue #556: the
+ * advisory reads the durable records, so a test seeds them here).
+ */
+function makeFactory(entries: Array<Record<string, unknown>> = []): Harness {
 	const sendMessage = vi.fn();
 	const pi = { sendMessage, appendEntry: vi.fn() } as unknown as ExtensionAPI & {
 		sendMessage: ReturnType<typeof vi.fn>;
@@ -64,7 +68,7 @@ function makeFactory(): Harness {
 		getSystemPrompt: () => "SYSTEM",
 		instrumentation: undefined,
 		ui: { notify: vi.fn(), setStatus: vi.fn(), theme: { fg: (_c: string, t: string) => t } },
-		sessionManager: { getEntries: () => [], appendCustomEntry: () => {} },
+		sessionManager: { getEntries: () => entries, appendCustomEntry: () => {} },
 	} as unknown as ExtensionContext;
 	const notifier = createTerminalNotifier(createRuntime(pi), {
 		getSession: () => ctx,
@@ -92,9 +96,42 @@ let idSeq = 0;
 /** Emit a terminal event for a FRESH id — the claim set is once-per-id per process. */
 function emitTerminal(type: SubagentEventType): void {
 	idSeq += 1;
-	const id = `s4-notifier-${idSeq}`;
+	emitFor(`s4-notifier-${idSeq}`, type);
+}
+
+/** Emit a terminal event for a KNOWN id, so a seeded run record can be matched. */
+function emitFor(id: string, type: SubagentEventType = "subagent:failed"): void {
 	h.getAgent.mockImplementation((agentId: string) => (agentId === id ? fakeAgent(id) : null));
 	eventBus.emit({ type, agentId: id, timestamp: Date.now(), data: {} });
+}
+
+/** A settled background record, shaped like the durable entry the alert reads. */
+function settledRun(overrides: Partial<SubagentRun> = {}): SubagentRun {
+	return {
+		id: "bg-556-retry",
+		task: "review the docs",
+		description: "notifier probe",
+		label: "notifier probe",
+		status: "failed",
+		model: "test/model",
+		thinkingLevel: "medium",
+		startedAt: "2026-11-20T00:00:00.000Z",
+		durationMs: 1_000,
+		errorCategory: "exit_error",
+		errorMessage: "Connection error.",
+		originalParams: { background: true, model: "test/model" },
+		...overrides,
+	};
+}
+
+/** The session-manager entry shape a run record is persisted as. */
+function runEntry(run: SubagentRun): Record<string, unknown> {
+	return { type: "custom", customType: CUSTOM_ENTRY_TYPES.run, data: run };
+}
+
+/** The single delivered completion message's content. */
+function delivered(harness: Harness): string {
+	return String(harness.pi.sendMessage.mock.calls[0]?.[0]?.content ?? "");
 }
 
 /** The listener does `void deliverCompletionAlert(event)` — poll until it lands. */
@@ -164,5 +201,71 @@ describe("the terminal notifier's release is per factory instance (ADR 0027 D5)"
 
 		expect(second.sent()).toBe(1);
 		expect(first.sent()).toBe(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #556 — the repeat transport death advisory rides the completion notice
+// ---------------------------------------------------------------------------
+
+describe("the repeat transport death advisory (issue #556)", () => {
+	it("carries the change-shape rule when both this attempt and its source died on transport", async () => {
+		const source = settledRun({ id: "bg-556-source", attempt: 1 });
+		const retry = settledRun({ id: "bg-556-retry", attempt: 2, resumeOf: source.id });
+		const harness = makeFactory([runEntry(source), runEntry(retry)]);
+
+		emitFor(retry.id);
+		await untilLanded(() => harness.sent() > 0);
+
+		expect(harness.sent()).toBe(1);
+		const content = delivered(harness);
+		expect(content).toContain('Two transport deaths on "notifier probe"');
+		expect(content).toContain("attempts 1 and 2");
+		expect(content).toContain("references/autonomous-run.md");
+		// The ordinary notice is still there — the paragraph rides it, never replaces it.
+		expect(content).toContain("— failed");
+	});
+
+	it("keeps this attempt's plain notice when the run record is MISSING (no throw, no paragraph)", async () => {
+		// Mutant killed (M4): an unguarded `run.resumeOf` throws here, the outer
+		// catch swallows it, and the conductor is never woken at all.
+		const harness = makeFactory();
+
+		emitFor("bg-556-unrecorded");
+		await untilLanded(() => harness.sent() > 0);
+
+		expect(harness.sent()).toBe(1);
+		expect(delivered(harness)).not.toContain("Two transport deaths");
+		// The generic notice for what the agent record says — whatever it says.
+		expect(delivered(harness)).toContain('Background agent "notifier probe" (bg-556-unrecorded)');
+	});
+
+	it("keeps the plain notice when the source record the retry resumed is unknown", async () => {
+		const retry = settledRun({ id: "bg-556-orphan", attempt: 2, resumeOf: "bg-556-vanished" });
+		const harness = makeFactory([runEntry(retry)]);
+
+		emitFor(retry.id);
+		await untilLanded(() => harness.sent() > 0);
+
+		expect(harness.sent()).toBe(1);
+		expect(delivered(harness)).not.toContain("Two transport deaths");
+		expect(delivered(harness)).toContain("— failed");
+	});
+
+	it("says nothing about a repeat when the SOURCE died of something else", async () => {
+		const source = settledRun({
+			id: "bg-556-source",
+			attempt: 1,
+			errorCategory: "tool_error",
+			errorMessage: "Pre-flight validation failed",
+		});
+		const retry = settledRun({ id: "bg-556-retry", attempt: 2, resumeOf: source.id });
+		const harness = makeFactory([runEntry(source), runEntry(retry)]);
+
+		emitFor(retry.id);
+		await untilLanded(() => harness.sent() > 0);
+
+		expect(harness.sent()).toBe(1);
+		expect(delivered(harness)).not.toContain("Two transport deaths");
 	});
 });

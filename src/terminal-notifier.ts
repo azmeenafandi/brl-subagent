@@ -51,7 +51,9 @@ import { isAbsolute, join } from "node:path";
 import * as eventBus from "./event-bus";
 import { resolveRetryParams } from "./history";
 import {
+	appendCompletionParagraph,
 	buildCompletionMessage,
+	buildRepeatTransportAdvisory,
 	claimTerminalNotice,
 	resolveDelivery,
 	resolveRunEntry,
@@ -355,6 +357,29 @@ export function createTerminalNotifier(rt: RuntimeContext, deps: TerminalNotifie
 		return true;
 	}
 
+	/**
+	 * Issue #556: the paragraph a SECOND transport death carries, resolved from the
+	 * durable records — the settled run and the record it resumed (`resumeOf`).
+	 *
+	 * EMPTY for every case this cannot prove. The lookup is inside the try, so a
+	 * missing run record, an unknown `resumeOf`, or a throwing registry read costs
+	 * the paragraph and NOTHING else: the ordinary notice is delivered untouched
+	 * (the same fail-open rule `scheduleTransportRetry` follows). A toast is
+	 * deliberately absent — the retry toast already fired when attempt 2 was armed,
+	 * and a second one would report the same lineage twice.
+	 */
+	function repeatTransportAdvisory(run: SubagentRun | undefined): string {
+		if (!run?.resumeOf) return "";
+		try {
+			const ctx = getSession();
+			if (!ctx) return "";
+			const source = resolveRunEntry(state.getLogicalRunEntries(ctx), run.resumeOf);
+			return buildRepeatTransportAdvisory(run, source, run.label);
+		} catch {
+			return "";
+		}
+	}
+
 	async function deliverCompletionAlert(event: SubagentEvent): Promise<void> {
 		const id = event.agentId;
 		if (!claimTerminalNotice(id)) return;
@@ -375,6 +400,16 @@ export function createTerminalNotifier(rt: RuntimeContext, deps: TerminalNotifie
 				if (retried) return;
 			}
 			const message = buildCompletionMessage(agent, run);
+			// Issue #556: the line between "this class of death is retried" and "a
+			// second death is not made to matter" is the change-shape rule, and the
+			// completion notice is where the conductor reads it. Appended as its own
+			// part (before the closing directive), and warned once on the log so the
+			// event is machine-readable too.
+			const advisory = repeatTransportAdvisory(run);
+			if (advisory) {
+				log.warn(advisory, { agentId: id, resumeOf: run?.resumeOf, attempt: run?.attempt });
+			}
+			const advisedMessage = appendCompletionParagraph(message, advisory);
 			// Issue #474: a settle that is not a success reports the worktree it may
 			// have left. The CLASSIFIED status gates it (not `agent.status`), so the
 			// #179 completed→failed downgrade carries the block too, and a genuinely
@@ -384,9 +419,9 @@ export function createTerminalNotifier(rt: RuntimeContext, deps: TerminalNotifie
 			// against this process's cwd).
 			const settledMessage =
 				message.details.status === "completed"
-					? message
+					? advisedMessage
 					: withWorktreeState(
-							message,
+							advisedMessage,
 							describeWorktreeState(agent.cwd ?? run?.originalParams?.cwd),
 						);
 			// Issue #179 (D2): resolve delivery from the CLASSIFIED notification

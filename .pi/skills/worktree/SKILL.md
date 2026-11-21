@@ -213,7 +213,11 @@ never re-type their logic by hand. Full design:
     survive a reboot, and a resume is exactly the case where the machine may
     have gone down. The bank is what a drop leaves behind: the
     transport auto-retry's resume block points the replayed run at it, so a
-    reconnect re-reads instead of redoing. Implementation briefs also restate
+    reconnect re-reads instead of redoing. A second transport death is NOT
+    retried again — that completion notice carries the change-shape rule
+    (`references/autonomous-run.md`), and the settle row records `attempt` and
+    `resumeOf`, so the lineage is in the log rather than inferred from spawn
+    adjacency. Implementation briefs also restate
     **commit-per-step**: commit + push each green step, so the retry's
     `git log` is the progress report (the 2026-10-06 `connection-drop-grind`
     lesson — eight dead runs, ~3 minutes lost).
