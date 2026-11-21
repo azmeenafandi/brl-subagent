@@ -55,14 +55,18 @@ Hunt in this order — the first four are where plans usually break:
 5. **Scope** — creep, missing non-goals, optional-as-required.
 6. **Actor & surface** — per step: who executes, which surface carries the
    instruction, and can that surface ship?
-7. **Constraint contradictions** — read-only actors asked to write; debris left
+7. **Evidence that cannot fail** (the #557 rules, `references/spec-evidence.md`): every evidence row
+   names a command AND its assertion; every test row names its negative control; every mutant names a
+   measured killer; every probe has a pass and a fail state; provisional numbers are labelled and
+   re-measured at the head. A row that would pass with the feature broken is a Major finding.
+8. **Constraint contradictions** — read-only actors asked to write; debris left
    where the plan assumes clean.
-8. **Provenance** — which tree/commit do generated artifacts describe? If unstated,
+9. **Provenance** — which tree/commit do generated artifacts describe? If unstated,
    the artifact is decorative.
-9. **Gate interaction / Goodhart** — can the artifact falsely satisfy a gate, or be
+10. **Gate interaction / Goodhart** — can the artifact falsely satisfy a gate, or be
    hollow-pasted?
-10. **Unnamed invariants** — relied-on behavior the plan never states.
-11. **Alternatives** — only if the plan's shape is wrong; never re-plan.
+11. **Unnamed invariants** — relied-on behavior the plan never states.
+12. **Alternatives** — only if the plan's shape is wrong; never re-plan.
 
 ### 3. Bank as you go
 

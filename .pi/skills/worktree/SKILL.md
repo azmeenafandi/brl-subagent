@@ -27,6 +27,7 @@ never re-type their logic by hand. Full design:
 - [`references/friction-log-ritual.md`](references/friction-log-ritual.md) — the friction log ritual.
 - [`references/sprint-end-ritual.md`](references/sprint-end-ritual.md) — the cycle-end ritual: Rule 11 recurrence escalation + trust metrics + the bounded environment sweep.
 - [`references/autonomous-run.md`](references/autonomous-run.md) — the autonomous-run contract: grant shapes, decision rights, the freeze ritual, delegation, reporting.
+- [`references/spec-evidence.md`](references/spec-evidence.md) — the five rules that make a spec's evidence able to fail (the #557 class), and the falsifier that proves it.
 
 ## Team Agreement (invariants)
 
