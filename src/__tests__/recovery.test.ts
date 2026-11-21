@@ -16,7 +16,7 @@
  *   Both mutations were applied, observed to fail, and reverted.
  */
 
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
 import { spawn, ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
@@ -29,6 +29,7 @@ import {
 	reapPids,
 	runBootScan,
 	recoverProduction,
+	recoverInflightRuns,
 	classifyOwner,
 	defaultRecoveryDeps,
 	currentProcessOwner,
@@ -47,7 +48,7 @@ import {
 	__setProcessGroupKillSupportedForTest,
 	supportsProcessGroupKill,
 } from "../kill-escalation";
-import { registerInflightRun, registryDir, __setRegistryDir } from "../run-registry";
+import { registerInflightRun, registryDir, __setRegistryDir, listInflightRuns, markInterrupted, markRecordFlipPending, clearInflightRun, persistRunRecord } from "../run-registry";
 import { isInterruptedRun, isSubagentRunShape, type ProcessOwner, type SubagentRun } from "../types";
 import { resolveTerminalRunEntry } from "../state";
 import { CHILD_MARKER_ENV_KEY } from "../sanitize";
@@ -58,7 +59,11 @@ import {
 	__setEscalationTimingForTest,
 	__registerActiveChildForTest,
 } from "../runner";
-import { listPersistedAgents, markAgentInterrupted } from "../session-manager";
+import { listPersistedAgents, markAgentInterrupted, getAgent, updateAgentStatus, flipAgentRecord, readAgentRecordFromDisk } from "../session-manager";
+import { on, off } from "../event-bus";
+import { createBootRecovery } from "../boot-recovery";
+import { createRuntime } from "../runtime";
+import { setLogCwd } from "../logging";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 import { fsMockControl, resetFsMock } from "./fixtures/fs-mock";
 
@@ -1969,4 +1974,361 @@ describe("abort/timeout escalation force-kill (issue #303)", () => {
 			expect(elapsed).toBeLessThan(2000);
 		});
 	}, 20000);
+});
+
+// =========================================================================
+// Issue #546 — the record-flip marker, ported from the 24-case probe
+// (C1–C6, S2/P1, H2a–H2c, H3, H4a–H4e, H2e; H2d/H5 live in the session-manager
+// suite and R1–R3/C5/H4f in the run-registry suite).
+//
+// The protocol: a terminal run-entry write is ATTEMPTED, the agent-record flip
+// is not seen through, and the registry entry is the only durable signal a
+// fresh process can read. The scan settles that marker — a write only for a
+// provably dead owner, a retirement without a write when the flip already
+// landed, and a HOLD (marker kept) whenever the store cannot prove either.
+// =========================================================================
+describe("issue #546 — the record-flip marker verdict", () => {
+	const env = createTempEnv("brl-recovery-546");
+	const FLIP = { status: "failed" as const, error: "spawn preflight failure", at: "2026-11-21T00:00:02.000Z" };
+	let id = "";
+
+	beforeEach(() => {
+		env.setUp();
+		setLogCwd(env.testCwd);
+		id = crypto.randomUUID();
+	});
+	afterEach(async () => {
+		await env.tearDown();
+	});
+
+	function plantRecord(status: string, owner: unknown = DEAD_OWNER, error?: string): void {
+		fs.mkdirSync(env.storageDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(env.storageDir, `${id}.json`),
+			JSON.stringify({ id, sessionId: id, type: "general-purpose", description: "d", status, startedAt: 1, task: "t", owner, ...(error ? { error } : {}) }, null, 2),
+			{ mode: 0o600 },
+		);
+	}
+	function plantEntry(extra: Record<string, unknown> = {}): void {
+		fs.mkdirSync(registryDir(), { recursive: true });
+		fs.writeFileSync(
+			path.join(registryDir(), `${id}.json`),
+			JSON.stringify({
+				id, kind: "background", startedAt: "2026-11-21T00:00:00.000Z", cwd: env.testCwd,
+				acceptedAt: "2026-11-21T00:00:01.000Z", owner: DEAD_OWNER, ...extra,
+			}, null, 2),
+			{ mode: 0o600 },
+		);
+	}
+	const disk = (): Record<string, unknown> =>
+		JSON.parse(fs.readFileSync(path.join(env.storageDir, `${id}.json`), "utf8"));
+	const entryFiles = (): string[] => fs.readdirSync(registryDir()).filter((f) => f.endsWith(".json"));
+
+	/** boot-recovery.ts's wiring, minus git/state. */
+	function bootOnce(applier?: (v: { id: string; status: "failed" | "completed"; error?: string }) => "repaired" | "retired" | false) {
+		return recoverProduction({
+			deps: { ...makeDeps(), sleep: async () => {}, graceMs: 0 },
+			readAgentRecord: (rid) => getAgent(rid) as never,
+			mark: (record, interruptedAt) => {
+				const durable = markInterrupted(record.id, interruptedAt);
+				if (record.kind === "agent") markAgentInterrupted(record.id, interruptedAt);
+				return durable;
+			},
+			readFreshAgentRecord: (rid) => readAgentRecordFromDisk(rid),
+			applyRecordFlip:
+				applier ??
+				((v) => {
+					const outcome = flipAgentRecord(v.id, v.status, v.error);
+					if (outcome === false) return false;
+					return clearInflightRun(v.id) ? outcome : false;
+				}),
+		});
+	}
+
+	it("C1: a residue (marker + running record + dead owner) is flipped and retired by the next boot", async () => {
+		plantRecord("running");
+		plantEntry({ recordFlipPending: FLIP });
+
+		const s = await bootOnce();
+
+		expect(disk().status).toBe("failed");
+		expect(disk().error).toBe("spawn preflight failure");
+		expect(getAgent(id)?.error).toBe("spawn preflight failure");
+		expect(entryFiles()).toEqual([]);
+		expect(s.flipRepaired).toBe(1);
+	});
+
+	it("C2: the second boot is inert — no re-stamp, no counter", async () => {
+		plantRecord("running");
+		plantEntry({ recordFlipPending: FLIP });
+		await bootOnce();
+		const stamped = disk().completedAt;
+		expect(typeof stamped).toBe("number");
+
+		const s2 = await bootOnce();
+
+		expect(disk().completedAt).toBe(stamped);
+		expect(s2.flipRepaired).toBe(0);
+		expect(s2.flipFailures).toBe(0);
+	});
+
+	it("C3: a LIVE owner holds the marker — nothing is written", async () => {
+		plantRecord("running", ALIVE_OWNER);
+		plantEntry({ owner: ALIVE_OWNER, recordFlipPending: FLIP });
+
+		const s = await bootOnce();
+
+		expect(disk().status).toBe("running");
+		expect(entryFiles()).toEqual([`${id}.json`]);
+		expect(s.flipRepaired).toBe(0);
+		expect(s.marked).toBe(0);
+	});
+
+	it("C3b: an UNPARSABLE owner is held, never marked as interrupted", async () => {
+		const weird = { pid: "nope", start: "" };
+		plantRecord("running", weird);
+		plantEntry({ owner: weird, recordFlipPending: FLIP });
+
+		const s = await bootOnce();
+
+		expect(disk().status).toBe("running");
+		expect(disk().interruptedAt ?? null).toBe(null);
+		expect(entryFiles()).toEqual([`${id}.json`]);
+		expect(s.marked).toBe(0);
+		expect(s.flipRepaired).toBe(0);
+	});
+
+	it("C4: an applier whose durable write failed keeps the entry and counts a failure", async () => {
+		plantRecord("running");
+		plantEntry({ recordFlipPending: FLIP });
+
+		const s = await bootOnce(() => false);
+
+		expect(entryFiles()).toEqual([`${id}.json`]);
+		expect(disk().status).toBe("running");
+		expect(s.flipFailures).toBe(1);
+	});
+
+	it("C6: a marker whose record ALREADY landed is retired without a re-write", async () => {
+		plantRecord("failed", DEAD_OWNER, "e");
+		const before = disk();
+		plantEntry({ recordFlipPending: FLIP });
+
+		const s = await bootOnce();
+
+		expect(entryFiles()).toEqual([]);
+		expect(disk().completedAt ?? null).toBe(before.completedAt ?? null);
+		expect(s.flipRetired).toBe(1);
+		expect(s.flipRepaired).toBe(0);
+	});
+
+	it("S2/P1: STEP 0 + STEP A of the real writers, then the real boot — repaired, then inert", async () => {
+		plantRecord("running");
+		plantEntry();
+		const pi = { appendEntry: () => {}, sendMessage: () => {} };
+		expect(markRecordFlipPending(id, FLIP)).toBe(true);
+		persistRunRecord(pi as never, {
+			id, status: "failed", task: "t", startedAt: 1, errorMessage: "spawn preflight failure",
+		} as never, undefined, { deferRetire: true });
+		expect(entryFiles()).toEqual([`${id}.json`]);
+
+		const first = await bootOnce();
+		expect(first.flipRepaired).toBe(1);
+		expect(disk().status).toBe("failed");
+		expect(entryFiles()).toEqual([]);
+
+		const stamped = disk().completedAt;
+		const second = await bootOnce();
+		expect(second.flipRepaired + second.flipRetired + second.flipFailures).toBe(0);
+		expect(disk().completedAt).toBe(stamped);
+	});
+
+	it.skipIf(process.platform === "win32")("H2a: a PRESENT-BUT-UNREADABLE record keeps the marker, then a later boot repairs", async () => {
+		plantRecord("running");
+		plantEntry({ recordFlipPending: FLIP });
+		const recordPath = path.join(env.storageDir, `${id}.json`);
+		fs.chmodSync(recordPath, 0o000);
+		try {
+			const s = await bootOnce();
+			expect(s.flipFailures).toBe(1);
+			expect(s.flipRepaired).toBe(0);
+			expect(s.flipRetired).toBe(0);
+			expect(entryFiles()).toEqual([`${id}.json`]);
+		} finally {
+			fs.chmodSync(recordPath, 0o600);
+		}
+
+		// restore and let a LATER boot finish it
+		const s2 = await bootOnce();
+		expect(s2.flipRepaired).toBe(1);
+		expect(disk().status).toBe("failed");
+		expect(entryFiles()).toEqual([]);
+	});
+
+	it("H2b: a CONFIRMED-ABSENT record retires the marker (nothing durable can go stale)", async () => {
+		plantEntry({ recordFlipPending: FLIP });
+
+		const s = await bootOnce();
+
+		expect(s.flipRetired).toBe(1);
+		expect(s.flipFailures).toBe(0);
+		expect(entryFiles()).toEqual([]);
+		expect(fs.existsSync(path.join(env.storageDir, `${id}.json`))).toBe(false);
+	});
+
+	it("H2c: a CORRUPT record is unreadable — the marker is kept, not retired", async () => {
+		fs.mkdirSync(env.storageDir, { recursive: true });
+		fs.writeFileSync(path.join(env.storageDir, `${id}.json`), "{not json", { mode: 0o600 });
+		plantEntry({ recordFlipPending: FLIP });
+
+		const s = await bootOnce();
+
+		expect(s.flipFailures).toBe(1);
+		expect(s.flipRetired).toBe(0);
+		expect(entryFiles()).toEqual([`${id}.json`]);
+	});
+
+	it("H3: the pre-flip DISK read beats a stale scanner snapshot — no second write, no second event", async () => {
+		// A live-looking in-memory record from an earlier operation in THIS process...
+		plantRecord("running");
+		updateAgentStatus(id, "running");
+		// ...while another process has already flipped the store terminal.
+		const settled = { ...JSON.parse(fs.readFileSync(path.join(env.storageDir, `${id}.json`), "utf8")), status: "failed", completedAt: 111, error: "e" };
+		fs.writeFileSync(path.join(env.storageDir, `${id}.json`), JSON.stringify(settled), { mode: 0o600 });
+		expect(getAgent(id)?.status).toBe("running"); // the stale snapshot the scan reads
+		plantEntry({ recordFlipPending: FLIP });
+		let events = 0;
+		const listener = (): void => { events += 1; };
+		on("subagent:failed", listener);
+		try {
+			const s = await bootOnce();
+			expect(s.flipRetired).toBe(1);
+			expect(s.flipRepaired).toBe(0);
+			expect(disk().completedAt).toBe(111);
+			expect(events).toBe(0);
+		} finally {
+			off("subagent:failed", listener);
+		}
+	});
+
+	it.skipIf(process.platform === "win32")("H4a: a FAILED unlink is counted as a failure and the marker is kept; the next boot retires", async () => {
+		plantRecord("failed", DEAD_OWNER, "e");
+		const stamped = disk().completedAt;
+		plantEntry({ recordFlipPending: FLIP });
+		fs.chmodSync(registryDir(), 0o500);
+		try {
+			const s = await bootOnce();
+			expect(s.flipFailures).toBe(1);
+			expect(s.flipRetired).toBe(0);
+			expect(entryFiles()).toEqual([`${id}.json`]);
+		} finally {
+			fs.chmodSync(registryDir(), 0o700);
+		}
+
+		const s2 = await bootOnce();
+		expect(s2.flipRetired).toBe(1);
+		expect(entryFiles()).toEqual([]);
+		expect(disk().completedAt).toBe(stamped);
+	});
+
+	it.skipIf(process.platform === "win32")("H4b: a landed flip with a FAILED unlink reports a failure and keeps the marker", async () => {
+		plantRecord("running");
+		plantEntry({ recordFlipPending: FLIP });
+		fs.chmodSync(registryDir(), 0o500);
+		try {
+			const s = await bootOnce();
+			expect(disk().status).toBe("failed"); // the record flip itself landed
+			expect(s.flipFailures).toBe(1);       // ...but the settlement did not
+			expect(s.flipRepaired).toBe(0);
+			expect(entryFiles()).toEqual([`${id}.json`]);
+		} finally {
+			fs.chmodSync(registryDir(), 0o700);
+		}
+
+		const s2 = await bootOnce();
+		expect(s2.flipRetired).toBe(1);
+		expect(entryFiles()).toEqual([]);
+	});
+
+	it.skipIf(process.platform === "win32")("H4c: a FAILED flip never retires the entry — the marker outlives a failed write", async () => {
+		plantRecord("running");
+		plantEntry({ recordFlipPending: FLIP });
+		const recordPath = path.join(env.storageDir, `${id}.json`);
+		fs.chmodSync(recordPath, 0o400);
+		try {
+			const s = await bootOnce();
+			expect(s.flipFailures).toBe(1);
+			expect(s.flipRepaired + s.flipRetired).toBe(0);
+			expect(entryFiles()).toEqual([`${id}.json`]);
+			expect(JSON.parse(fs.readFileSync(recordPath, "utf8")).status).toBe("running");
+		} finally {
+			fs.chmodSync(recordPath, 0o600);
+		}
+
+		const s2 = await bootOnce();
+		expect(s2.flipRepaired).toBe(1);
+		expect(entryFiles()).toEqual([]);
+	});
+
+	it.skipIf(process.platform === "win32")("H4d: the PRODUCTION wiring counts a failed unlink as a failure", async () => {
+		plantRecord("failed", DEAD_OWNER, "e");
+		plantEntry({ recordFlipPending: FLIP });
+		fs.chmodSync(registryDir(), 0o500);
+		const appended: unknown[] = [];
+		try {
+			const boot = createBootRecovery(
+				createRuntime({
+					sendMessage: (m: unknown) => appended.push(m),
+					appendEntry: (t: unknown, d: unknown) => appended.push({ t, d }),
+				} as never),
+			);
+			await boot.performBootRecovery();
+		} finally {
+			fs.chmodSync(registryDir(), 0o700);
+		}
+
+		// Read the ledger from the log the production path writes (the summary is
+		// not returned): the wiring returns `false` when the unlink failed.
+		const log = fs.readFileSync(path.join(env.testCwd, ".pi", "subagent-logs", "brl-subagent.log"), "utf8");
+		expect(log).toContain('"repaired":0,"retired":0,"failures":1');
+		expect(entryFiles()).toEqual([`${id}.json`]);
+		expect(disk().status).toBe("failed");
+	});
+
+	it.skipIf(process.platform === "win32")("H4e: the PRODUCTION wiring never retires an entry whose flip did not land", async () => {
+		plantRecord("running");
+		plantEntry({ recordFlipPending: FLIP });
+		const recordPath = path.join(env.storageDir, `${id}.json`);
+		fs.chmodSync(recordPath, 0o400);
+		try {
+			const boot2 = createBootRecovery(createRuntime({ sendMessage: () => {}, appendEntry: () => {} } as never));
+			await boot2.performBootRecovery();
+		} finally {
+			fs.chmodSync(recordPath, 0o600);
+		}
+
+		expect(entryFiles()).toEqual([`${id}.json`]);
+		expect(JSON.parse(fs.readFileSync(recordPath, "utf8")).status).toBe("running");
+		expect(listInflightRuns()[0]?.recordFlipPending).toMatchObject({ status: "failed" });
+	});
+
+	it.skipIf(process.platform === "win32")("H2e: an UNTRAVERSABLE agent directory is UNCERTAIN, not absent — kept, then repaired", async () => {
+		plantRecord("running");
+		plantEntry({ recordFlipPending: FLIP });
+		fs.chmodSync(env.storageDir, 0o000); // existsSync(file) === false here; statSync throws EACCES
+		try {
+			const s = await bootOnce();
+			expect(s.flipFailures).toBe(1);
+			expect(s.flipRepaired + s.flipRetired).toBe(0);
+			expect(entryFiles()).toEqual([`${id}.json`]);
+		} finally {
+			fs.chmodSync(env.storageDir, 0o700);
+		}
+
+		expect(JSON.parse(fs.readFileSync(path.join(env.storageDir, `${id}.json`), "utf8")).status).toBe("running");
+		const s2 = await bootOnce();
+		expect(s2.flipRepaired).toBe(1);
+		expect(disk().status).toBe("failed");
+		expect(entryFiles()).toEqual([]);
+	});
 });

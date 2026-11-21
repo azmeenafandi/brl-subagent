@@ -47,7 +47,14 @@ import {
 import { clearHeadState, readHeadState, writeHeadState, HEAD_STATE_VERSION } from './headstate';
 import { effectiveBackgroundBudget } from './validate';
 import { currentProcessOwner, classifyOwner, defaultRecoveryDeps } from './recovery';
-import { persistRunRecord, listInflightRuns, clearInflightRun, type InflightRun } from './run-registry';
+import {
+	persistRunRecord,
+	listInflightRuns,
+	clearInflightRun,
+	markRecordFlipPending,
+	type InflightRun,
+	type RecordFlipStatus,
+} from './run-registry';
 import { isTransportRetryable } from './transport-retry';
 import { ensureOwnerOnlyDir, repairOwnerOnlyFiles } from './store-permissions';
 import { buildEngineeringBarSection } from './engineering-bar';
@@ -510,14 +517,12 @@ function persistAgent(agent: BackgroundAgent): void {
   // F24: agent.id may come from a disk-loaded record (loadAgent JSON.parse's
   // the id field unvalidated). A planted record with a traversal id would
   // make join() escape STORAGE_DIR — validate BEFORE building the write path.
-  try {
-    assertSafeAgentId(agent.id);
-  } catch {
+  const filePath = agentRecordPath(agent.id);
+  if (!filePath) {
     log.error(`Refusing to persist agent with invalid id: ${agent.id}`);
     return;
   }
   ensureStorageDir();
-  const filePath = join(STORAGE_DIR, `${agent.id}.json`);
   // Strip live/non-serializable fields before stringify — `_sessionRef` holds the
   // ENTIRE live pi session graph (1.4MB+ for an empty session, and uninitialized
   // getters like Theme can make JSON.stringify throw). `_sessionFile` (U2) is the
@@ -537,16 +542,65 @@ function persistAgent(agent: BackgroundAgent): void {
 }
 
 /**
- * Load agent record from disk
+ * The agent store's record path for `id`: `<STORAGE_DIR>/<id>.json`.
+ *
+ * F24: ids reach the store from disk and from LLM tool params, and `join` does
+ * not sanitize `../` or absolute segments — validate BEFORE building the write
+ * path. `null` means "no record is addressable for this id" (the writer could
+ * never have created one), which every reader treats as absent.
+ *
+ * Issue #546 (major 2): the ONE path helper. `persistAgent`, `loadAgent`, the
+ * tri-state reader and `flipAgentRecord` all build the path here, so the
+ * absence test and the write target cannot drift apart.
  */
-function loadAgent(id: string): BackgroundAgent | null {
-  const filePath = join(STORAGE_DIR, `${id}.json`);
-  if (!existsSync(filePath)) return null;
+function agentRecordPath(id: string): string | null {
   try {
-    return JSON.parse(readFileSync(filePath, 'utf-8'));
+    assertSafeAgentId(id);
   } catch {
     return null;
   }
+  return join(STORAGE_DIR, `${id}.json`);
+}
+
+/**
+ * Issue #546 (major 2): the disk-only, TRI-STATE read of one agent record.
+ *
+ * `loadAgent` collapses "there is no record" and "there is a record I cannot
+ * parse" into `null`, and the flip must not: the first means nothing durable can
+ * go stale (retire the marker), the second means we know nothing (keep it).
+ * `exists` is the stat of the validated path, so a chmod-000 or corrupt file
+ * reports `{ record: null, exists: true }`.
+ */
+export function readAgentRecordFromDisk(id: string): { record: BackgroundAgent | null; exists: boolean } {
+  const filePath = agentRecordPath(id);
+  if (!filePath) return { record: null, exists: false };
+  try {
+    statSync(filePath);
+  } catch (err) {
+    // ONLY `ENOENT` is a CONFIRMED absence. `existsSync` also answers false when a
+    // parent directory cannot be traversed (EACCES): reporting that as absence
+    // lets the flip retire a marker over a record that is still `running`
+    // (r2 major 1). An uncertain stat is treated like an unreadable record —
+    // `exists: true`, `record: null` — so the marker is kept and counted failed.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { record: null, exists: false };
+    log.warn(`Could not stat agent record ${id} — treating it as unreadable`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { record: null, exists: true };
+  }
+  try {
+    return { record: JSON.parse(readFileSync(filePath, 'utf-8')), exists: true };
+  } catch {
+    return { record: null, exists: true };
+  }
+}
+
+/**
+ * Load agent record from disk. `null` on absent OR unreadable — use
+ * `readAgentRecordFromDisk` wherever the difference matters (issue #546).
+ */
+function loadAgent(id: string): BackgroundAgent | null {
+  return readAgentRecordFromDisk(id).record;
 }
 
 /**
@@ -695,6 +749,12 @@ function isSafeAgentId(id: string): boolean {
     return false;
   }
 }
+
+/**
+ * Issue #546: what a record flip actually did — the value the boot ledger counts
+ * (see `flipAgentRecord`). `false` is the fail-closed "not settled" outcome.
+ */
+export type AgentFlipOutcome = 'repaired' | 'retired' | false;
 
 export function isTerminalAgentStatus(status: AgentStatus): boolean {
   return status === 'completed' || status === 'failed' || status === 'stopped';
@@ -1149,6 +1209,134 @@ export function updateAgentStatus(id: string, status: AgentStatus, error?: strin
   }
 
   return agent;
+}
+
+/**
+ * Issue #546: the agent-record step, in its TWO contracts — ONE shared disk
+ * verdict, two different assumptions BEFORE the write.
+ *
+ * `settleLiveAgentRecord` is the LIVE pre-start writer (#542's pin). It runs in
+ * the process that owns the in-memory map, so the MEMORY record must become
+ * terminal in EVERY fault — an absent record, an unreadable record, a persist
+ * that `persistAgent` swallows. A `running` memory row after a failed pre-start
+ * is a lie this same process is still asked about (`get_subagent_result`,
+ * `get_agent_status`), and it is exactly what #542 fixed: r3 reintroduced it by
+ * making the live writer share the boot's disk-only decision.
+ *
+ * `flipAgentRecord` is the boot REPLAY (`recoverInflightRuns`'s
+ * `applyRecordFlip`). A fresh process has no memory to trust, so it decides from
+ * the DISK alone: absent ⇒ retire; present-but-unreadable ⇒ keep the marker and
+ * count a failure; `running` + a provably dead owner ⇒ flip (the flip itself
+ * loads the record into memory); already terminal ⇒ retire with no write.
+ *
+ * RETIREMENT IS THE SAME RULE ON BOTH SIDES: retire only when the disk is
+ * terminal or PROVABLY absent (`ENOENT`); keep the marker when the disk is
+ * `running` or unreadable. That is `terminalVerdictAfterWrite`.
+ *
+ * TOTAL: neither function throws. The outcome vocabulary:
+ *
+ *   - `'retired'`  — nothing durable is left to repair: no record is stored, or
+ *     (replay only) it was already terminal, so no `completedAt` re-stamp and no
+ *     second `subagent:failed`. The marker may be retired;
+ *   - `'repaired'` — the record was written and the store says terminal;
+ *   - `false`      — the end state is UNCERTAIN: present-but-unreadable/corrupt,
+ *     a write that did not land, or a live id that is in neither the map nor the
+ *     store. The caller keeps the marker (fail-closed).
+ */
+export function flipAgentRecord(id: string, status: RecordFlipStatus, error?: string): AgentFlipOutcome {
+  // PRE-FLIP READ: the DISK, not the in-memory map (major 2 + 3). `getAgent` is
+  // memory-first, and that map is module state that can hold a record another
+  // process already flipped — deciding on it would re-stamp `completedAt` and
+  // re-emit `subagent:failed` for a run that is already settled. Reading the
+  // store first makes a boot that begins after another finished INERT, makes a
+  // same-process retry attempt the write again once the store is writable, and
+  // separates confirmed absence from present-but-unreadable.
+  const before = readAgentRecordFromDisk(id);
+  if (!before.exists) return 'retired';              // confirmed absence (or unsafe id)
+  if (!before.record) {
+    // Present but unreadable/corrupt: we know nothing, so we may not retire the
+    // only marker that can repair it.
+    log.warn(`Could not read the agent record for ${id} — keeping the record-flip marker`, {});
+    return false;
+  }
+  if (isTerminalAgentStatus(before.record.status)) return 'retired';  // replay is inert
+  let touched: BackgroundAgent | null = null;
+  try {
+    touched = updateAgentStatus(id, status, error);
+  } catch (err) {
+    log.warn(`Failed to flip the terminal record for ${id}`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  } finally {
+    // persistAgent strips the ref from the persisted copy anyway, so this is
+    // memory-only — and it must run even when the flip's own try failed.
+    if (touched) touched._sessionRef = undefined;
+  }
+  return terminalVerdictAfterWrite(id);
+}
+
+/**
+ * The DISK verdict after a terminal write, shared by both contracts above:
+ *
+ *   - `'repaired'` — the store says the record is terminal;
+ *   - `'retired'`  — no record is stored (confirmed `ENOENT`, or the id is not
+ *     addressable): nothing durable can go stale, so the marker's only purpose
+ *     is vacuous;
+ *   - `false`      — the store cannot tell: present-but-unreadable/corrupt, or
+ *     the write was swallowed and the record is STILL `running`. `false` is the
+ *     value that keeps the caller's marker for the next boot.
+ *
+ * `persistAgent` swallows write errors (V8), so a throw-free write is not a
+ * landed write: the verdict is read from the STORE, never inferred from a
+ * return value.
+ */
+function terminalVerdictAfterWrite(id: string): AgentFlipOutcome {
+  const after = readAgentRecordFromDisk(id);
+  if (!after.exists) return 'retired';               // vanished/writable: nothing durable left
+  if (!after.record) {
+    log.warn(`Could not re-read the agent record for ${id} after the flip`, {});
+    return false;
+  }
+  return isTerminalAgentStatus(after.record.status) ? 'repaired' : false;
+}
+
+/**
+ * Issue #546 r4 (the #542 pin): the LIVE writer's record step — MEMORY first,
+ * disk verdict second. TOTAL: it never throws.
+ *
+ * The memory write is NOT conditional on the disk. Whatever the store says —
+ * absent, unreadable, still `running` after a swallowed persist — this process's
+ * record must read terminal the moment the pre-start path returns. Only the
+ * RETIREMENT is conditional, and it is conditional on the disk:
+ *
+ *   disk absent        → `'retired'`  (nothing durable to repair: retire the marker)
+ *   disk terminal      → `'repaired'` (retire the marker)
+ *   disk `running`     → `false`      (a persist was swallowed: KEEP the marker)
+ *   disk unreadable    → `false`      (we cannot tell: KEEP the marker)
+ *
+ * `updateAgentStatus` returns `null` only when the id is in neither the map nor
+ * the store — impossible for an id this process just registered, and a `false`
+ * (keep the marker) if it ever happens, because then nothing is pinned.
+ *
+ * `_sessionRef` is NOT released here: the caller's release is a plain statement
+ * outside every `try` (it cannot throw and must always run) and `persistAgent`
+ * strips the ref from the persisted copy anyway.
+ */
+function settleLiveAgentRecord(id: string, status: RecordFlipStatus, error?: string): AgentFlipOutcome {
+  try {
+    if (!updateAgentStatus(id, status, error)) {
+      log.warn(`Could not settle the live agent record for ${id} — it is in neither the map nor the store`, {});
+      return false;
+    }
+  } catch (err) {
+    // Contained: `updateAgentStatus` mutates the map BEFORE it persists and
+    // emits, so the memory record is terminal even when this throws. The disk
+    // verdict below still decides whether the marker may be retired.
+    log.warn(`Failed to flip the terminal record for ${id}`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return terminalVerdictAfterWrite(id);
 }
 
 /**
@@ -1724,7 +1912,18 @@ export async function spawnBackgroundSession(
   const finalizeRunEntry = (
     status: "done" | "failed",
     error?: string,
-    terminal?: { stopReason?: string; errorCategory?: ErrorCategory; prune?: boolean },
+    terminal?: {
+      stopReason?: string;
+      errorCategory?: ErrorCategory;
+      prune?: boolean;
+      /**
+       * Issue #546: do NOT retire the registry entry here — the caller owns the
+       * retirement and performs it only once the record flip is durable. Only the
+       * pre-start terminal path passes this; every other writer keeps
+       * retire-then-append.
+       */
+      deferRetire?: boolean;
+    },
   ): SubagentRun | undefined => {
     // Issue #511 (U2): settling includes the scratch directory's `.done` marker.
     // This is the SINGLE terminal choke point for a background run (git-setup
@@ -1838,7 +2037,7 @@ export async function spawnBackgroundSession(
           ? { ...(run.originalParams ?? {}), errorCategory }
           : run.originalParams,
     };
-    persistRunRecord(pi, entry);
+    persistRunRecord(pi, entry, undefined, { deferRetire: terminal?.deferRetire });
     // Issue #453: set only AFTER the append resolved. A throwing write therefore
     // leaves `entryWritten === false`, so a later settle still classifies the run
     // instead of amending a record that was never written (mutant M3).
@@ -2011,18 +2210,33 @@ export async function spawnBackgroundSession(
    * issue's second bullet).
    */
   const markSpawnFailedBeforePrompt = (message: string): void => {
-    try {                          // STEP A — run entry (+ retention/prune, registry retire)
-      finalizeRunEntry('failed', message);
+    // STEP 0 (#546) — the durable INTENT, written while the registry entry still
+    // exists: retirement is an unlink, so a marker written after it has nowhere to
+    // live. Best-effort and total; `false` means the entry was already gone, in
+    // which case there is nothing for a crash to strand.
+    const marked = markRecordFlipPending(id, { status: 'failed', error: message, at: new Date().toISOString() });
+    if (!marked) {
+      // Issue #546 (major 1): a marker that did not land must NOT defer the
+      // retirement. With no durable intent, STEP A takes the PRE-#546 order
+      // (retire, then append) — a crash in its window is the historical residue
+      // (record `running`, entry gone, no marker: unrepairable by design), which
+      // is strictly better than an entry that looks repairable and is not.
+      // `writeAtomic` is temp-file + rename, so a failed write cannot leave a
+      // half-marked entry: the store holds either the old entry or the full one.
+      safeLog(() => log.warn(`spawnBackgroundSession: record-flip marker not written for ${id} — using the pre-#546 retire-then-append order`, {}));
+    }
+    try {                          // STEP A — run entry (+ retention/prune; retirement DEFERRED only when marked)
+      finalizeRunEntry('failed', message, { deferRetire: marked });
     } catch (err) {
       safeLog(() => log.warn(`spawnBackgroundSession: pre-start finalize failed for ${id}`,
         { error: thrownMessage(err) }));
     }
-    try {                          // STEP B — record flip (completedAt + error, emits subagent:failed)
-      updateAgentStatus(id, 'failed', message);
-    } catch (err) {
-      safeLog(() => log.warn(`spawnBackgroundSession: pre-start record flip failed for ${id}`,
-        { error: thrownMessage(err) }));
-    }
+    // STEP B — record flip (completedAt + error, emits subagent:failed). Issue
+    // #546 r4: the LIVE writer's variant — the MEMORY record becomes terminal in
+    // every fault (#542's pin), and only the RETIREMENT is decided from the disk.
+    // `landed === false` means the store is `running` or unreadable, so the
+    // marker must survive for the next boot.
+    const landed = settleLiveAgentRecord(id, 'failed', message);
     try {                          // STEP C — transcript note (no-op+warn when the file is missing)
       transcript.completeTranscript(id, 'failed');
     } catch (err) {
@@ -2030,6 +2244,15 @@ export async function spawnBackgroundSession(
         { error: thrownMessage(err) }));
     }
     agent._sessionRef = undefined;  // outside every try — cannot throw, must always run
+    // STEP D (#546) — retire LAST, and only when the flip is durable. Retiring a
+    // run whose record is still `running` is the whole defect: the registry entry
+    // is the only thing a fresh process can read, so keeping it turns this crash
+    // into an ordinary interrupted candidate the next boot can finish.
+    if (marked && landed && !clearInflightRun(id)) {
+      // The record is settled but the entry survived (major 4): keep going — the
+      // next boot sees a terminal record and re-attempts only the retirement.
+      safeLog(() => log.warn(`spawnBackgroundSession: record settled but the registry entry survived for ${id} — the next boot retries the retirement`, {}));
+    }
   };
 
   /**
@@ -2070,15 +2293,12 @@ export async function spawnBackgroundSession(
       safeLog(() => log.error(`spawnBackgroundSession: work-branch teardown failed for ${id} — the original spawn failure is preserved`,
         { error: thrownMessage(err) }));
     }
-    // STEP 2 — the FULL terminal flip (#542): run entry, record flip and
+    // STEP 2 — the FULL terminal flip (#542): marker, run entry, record flip and
     // transcript note, each contained in the shared helper (which is total).
+    // #546: the helper also owns the registry retirement (its STEP D), because the
+    // retire is now conditional on the record flip being durable — a blanket
+    // `clearInflightRun` here would delete the marker that repairs this crash.
     markSpawnFailedBeforePrompt(message);
-    try {                                      // STEP 3 — registry retire (PINNED via the call, M17)
-      clearInflightRun(id);
-    } catch (err) {
-      safeLog(() => log.warn(`spawnBackgroundSession: pre-start registry retire failed for ${id}`,
-        { error: thrownMessage(err) }));
-    }
   };
 
   /** The pre-start failure stamp: the issue's honest reason plus the cause. */
@@ -2218,7 +2438,6 @@ export async function spawnBackgroundSession(
       // threw — registry residue is what boot recovery reads, and this dispatch
       // provably never started.
       markSpawnFailedBeforePrompt(reason);
-      clearInflightRun(id);
       throw new Error(reason);
     }
     // Issue #465 (d): release the process-wide spawn queue BEFORE the per-repo

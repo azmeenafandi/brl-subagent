@@ -43,6 +43,7 @@ import { listInflightRuns, markInterrupted, registerInflightRun } from "../run-r
 import { createRuntime } from "../runtime";
 import { RECOVERY_NOTICE_CUSTOM_TYPE, SUBAGENT_ABANDONED_MESSAGE } from "../recovery-surface";
 import { CUSTOM_ENTRY_TYPES } from "../types";
+import { setLogCwd } from "../logging";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 const env = createTempEnv("brl-s4-boot");
@@ -193,5 +194,95 @@ describe("abandonProductionRun resolves through the deps it injects (S4)", () =>
 
 		await boot.abandonProductionRun(ctx, ID);
 		expect(h.updateAgentStatus).toHaveBeenCalledWith(ID, "stopped");
+	});
+});
+
+// =========================================================================
+// Issue #546 (r5 major 1 + major 2, r6 major) — N3: a CORRUPT agent record
+// holds its marker and is never noticed, while the SAME scan marks and notices
+// the control run. This is the P6/E23 residual as a shipped regression pin: a
+// record torn by a kill inside `persistAgent` can never be repaired, so the
+// marker must survive and the ledger must count a FAILED settlement — never a
+// repair, never a retirement.
+//
+// THE CONTROL IS NOT PRE-MARKED (r6): an ordinary ACCEPTED entry with a dead
+// owner and NO `interruptedAt`. The case asserts its persisted BYTES CHANGED and
+// it became interrupted — the one observable a scan that skips ordinary
+// candidates cannot fake (M22). A control seeded with `seedInterruptedRun()`
+// satisfies the `interruptedAt` assertion by construction and passes M22 (E26).
+//
+// This case lives here, not in `boot-recovery-import-failure-546.test.ts`,
+// because that file's `vi.mock` factory throws and makes the module unreal —
+// and a DELIVERED notice (the notice names the control's id8, not the held
+// marker's) needs the real module.
+// =========================================================================
+describe("issue #546 r6 — N3: a corrupt record is held; only the control is noticed", () => {
+	it("keeps the marker, counts failures:1, marks the control, and the notice lists the control alone", async () => {
+		setLogCwd(env.testCwd);
+		const heldId = "aaaaaaaa-1111-4111-8111-111111111111";
+		const controlId = "bbbbbbbb-2222-4222-8222-222222222222";
+		const marker = { status: "failed", error: "spawn preflight failure", at: "2026-01-01T00:05:00.000Z" };
+		const DEAD = { pid: 999999, start: "dead" };
+		const registryDir = path.join(env.baseDir, "run-registry");
+
+		// HELD: marker + a CORRUPT record (0 bytes = a torn in-place write).
+		fs.mkdirSync(registryDir, { recursive: true });
+		fs.mkdirSync(env.storageDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(registryDir, `${heldId}.json`),
+			JSON.stringify({ id: heldId, kind: "background", startedAt: "2026-01-01T00:00:00.000Z", cwd: env.testCwd, acceptedAt: "2026-01-01T00:00:01.000Z", recoveryPosture: "offer", owner: DEAD, recordFlipPending: marker }, null, 2),
+		);
+		fs.writeFileSync(path.join(env.storageDir, `${heldId}.json`), "");
+		const heldEntryBefore = fs.readFileSync(path.join(registryDir, `${heldId}.json`), "utf8");
+
+		// CONTROL: an ordinary ACCEPTED candidate with a dead owner, and NO
+		// `interruptedAt` — the scan MUST mark it, and its bytes must change.
+		registerInflightRun({
+			id: controlId,
+			kind: "background",
+			startedAt: "2026-01-01T00:00:00.000Z",
+			cwd: env.testCwd,
+			recoveryPosture: "offer",
+			acceptedAt: "2026-01-01T00:00:01.000Z",
+			owner: DEAD,
+		});
+		fs.writeFileSync(
+			path.join(env.storageDir, `${controlId}.json`),
+			JSON.stringify({
+				id: controlId, sessionId: controlId, type: "general-purpose", description: "Recoverable",
+				status: "running", startedAt: 1_767_225_600_000, task: "recover me",
+				model: "provider/model", thinkingLevel: "medium",
+			}),
+		);
+		const controlBefore = fs.readFileSync(path.join(registryDir, `${controlId}.json`), "utf8");
+		expect(listInflightRuns().find((e) => e.id === controlId)?.interruptedAt ?? null).toBe(null);
+
+		const boot = createBootRecovery(createRuntime(fakePi()));
+		await boot.performBootRecovery();
+		await boot.maybeSendRecoveryNotice(freshCtx());
+
+		// THE SCAN RAN: the control's bytes changed and it is interrupted.
+		const controlAfter = fs.readFileSync(path.join(registryDir, `${controlId}.json`), "utf8");
+		expect(controlAfter).not.toBe(controlBefore);
+		expect(listInflightRuns().find((e) => e.id === controlId)?.interruptedAt).toBeTruthy();
+
+		// The held marker is byte-identical and still carries the marker.
+		expect(fs.readFileSync(path.join(registryDir, `${heldId}.json`), "utf8")).toBe(heldEntryBefore);
+		const held = listInflightRuns().find((e) => e.id === heldId);
+		expect(held?.recordFlipPending).toMatchObject({ status: "failed" });
+		expect(held?.interruptedAt ?? null).toBe(null);
+
+		// The ledger: a corrupt record is a FAILED settlement, never a repair.
+		const logFile = path.join(env.testCwd, ".pi", "subagent-logs", "brl-subagent.log");
+		const lines = fs.readFileSync(logFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+		const settle = lines.find((l) => /settled pending record flips/.test(l.message ?? ""));
+		expect(settle?.data).toMatchObject({ repaired: 0, retired: 0, failures: 1 });
+
+		// The delivered notice lists the control alone — a real delivery, not a
+		// projection.
+		expect(recoveryNotices()).toHaveLength(1);
+		const rendered = JSON.stringify(recoveryNotices()[0].message);
+		expect(rendered).toContain(controlId.slice(0, 8));
+		expect(rendered).not.toContain(heldId.slice(0, 8));
 	});
 });
