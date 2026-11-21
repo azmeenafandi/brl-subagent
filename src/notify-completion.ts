@@ -30,6 +30,7 @@ import {
 	type AgentStatus,
 } from "./types";
 import { resolveTerminalRunEntry } from "./state";
+import { isTransportFailure } from "./transport-retry";
 
 /** Terminal statuses the completion message can carry. */
 export type CompletionStatus = "completed" | "failed" | "stopped";
@@ -247,6 +248,30 @@ export function buildCompletionMessage(
 }
 
 /**
+ * Insert a paragraph into a completion message as its own part and BEFORE the
+ * closing directive. The ONE insert rule for every paragraph a settle adds
+ * (issue #556 made it shared: the worktree-state block and the repeat-transport
+ * advisory land the same way).
+ *
+ * The directive is matched at the END (`endsWith`), never as the first
+ * occurrence: an agent's own tail can quote the directive text, and splitting
+ * there would drop everything after the quote. A shape that does not end with
+ * the directive keeps the paragraph by appending it — a missing report is the
+ * one outcome this function must not produce.
+ */
+export function appendCompletionParagraph(
+	message: CompletionMessagePayload,
+	paragraph: string,
+): CompletionMessagePayload {
+	if (!paragraph) return message;
+	const suffix = `\n\n${COMPLETION_DIRECTIVE}`;
+	const content = message.content.endsWith(suffix)
+		? `${message.content.slice(0, -suffix.length)}\n\n${paragraph}${suffix}`
+		: `${message.content}\n\n${paragraph}`;
+	return { ...message, content };
+}
+
+/**
  * Issue #474: insert the worktree-state block into a settled-failure wake, as
  * its own part and BEFORE the closing directive.
  *
@@ -254,23 +279,12 @@ export function buildCompletionMessage(
  * contract is "no side effects", and the probe is a subprocess. The caller
  * renders the block (`describeWorktreeState`) and gates on the CLASSIFIED
  * status.
- *
- * The directive is matched at the END (`endsWith`), never as the first
- * occurrence: an agent's own tail can quote the directive text, and splitting
- * there would drop everything after the quote. A shape that does not end with
- * the directive keeps the block by appending it — a missing report is the one
- * outcome this function must not produce.
  */
 export function withWorktreeState(
 	message: CompletionMessagePayload,
 	worktreeState: string,
 ): CompletionMessagePayload {
-	if (!worktreeState) return message;
-	const suffix = `\n\n${COMPLETION_DIRECTIVE}`;
-	const content = message.content.endsWith(suffix)
-		? `${message.content.slice(0, -suffix.length)}\n\n${worktreeState}${suffix}`
-		: `${message.content}\n\n${worktreeState}`;
-	return { ...message, content };
+	return appendCompletionParagraph(message, worktreeState);
 }
 
 /**
@@ -392,6 +406,48 @@ export function buildMonitoringDegradedAdvisory(
 	return (
 		`Background agent${name} started, but its monitoring is degraded (${tailFailures.join("; ")}). ` +
 		`The run is live — do not re-dispatch it; retrieve with get_subagent_result({ agent_id: "${unit.id}" }).`
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Repeat transport death advisory (issue #556)
+//
+// The rule that should change the conductor's behaviour after a SECOND transport
+// death on the same label — "two transport deaths on one label: change the
+// shape" (`references/autonomous-run.md`) — lived only in prose the conductor
+// had to remember. The completion notice is the moment it matters, so the notice
+// carries it — but ONLY when the lineage is PROVEN from the durable records:
+// this attempt is a transport failure, it is at least the second, and the record
+// it resumed (`resumeOf`) is a transport failure too. A builder that inferred a
+// lineage it cannot read would tell a conductor to abandon a run that died for
+// an unrelated reason, which is worse than saying nothing.
+// ---------------------------------------------------------------------------
+
+/**
+ * PURE builder — no pi SDK, no side effects, never throws. Returns `""` for
+ * every unproven case (first attempt, non-transport failure, missing or
+ * non-transport source record), so a caller can append it unconditionally and a
+ * source record it cannot resolve costs nothing.
+ *
+ * `label` is omitted from the prose when absent, exactly as in the monitoring
+ * advisory above.
+ */
+export function buildRepeatTransportAdvisory(
+	run: Pick<
+		SubagentRun,
+		"attempt" | "status" | "errorCategory" | "errorMessage" | "originalParams" | "resumeOf"
+	>,
+	source: Pick<SubagentRun, "status" | "errorCategory" | "errorMessage" | "originalParams"> | undefined,
+	label?: string,
+): string {
+	if (!isTransportFailure(run)) return "";
+	const attempt = run.attempt ?? 1;
+	if (attempt < 2) return "";
+	if (!source || !isTransportFailure(source)) return "";
+	const name = label ? ` on "${label}"` : "";
+	return (
+		`Two transport deaths${name}: attempts 1 and ${attempt} both died on a transport failure and this dispatch is not retried again. ` +
+		"Change the shape — run it in the conductor, override the model, or split the brief — per `references/autonomous-run.md`."
 	);
 }
 

@@ -3049,6 +3049,72 @@ describe("issue #179 — honest terminal status (D1/D2/D3)", () => {
 			setLogCwd(undefined);
 		}
 	});
+
+	/**
+	 * Issue #556: the settle row is the log's account of a terminal run, and
+	 * lineage was the one thing it could not say. Grouping a retry with what it
+	 * resumed meant inferring from spawn adjacency — which reads wrong the moment
+	 * two runs interleave — while the durable record had `attempt`/`resumeOf` all
+	 * along. The two fields are read from the record the row already describes.
+	 */
+	function settleRows(agentId: string): Array<{ message: string; data: Record<string, unknown> }> {
+		return readLog()
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as { message: string; data?: Record<string, unknown> })
+			.filter((entry) => entry.message === "Background run settled" && entry.data?.agentId === agentId)
+			.map((entry) => ({ message: entry.message, data: entry.data ?? {} }));
+	}
+
+	it("#556: an attempt-2 settle row carries attempt: 2 AND the resumeOf it continued", async () => {
+		const { setLogCwd } = await import("../logging");
+		setLogCwd(env.baseDir);
+		try {
+			mocks.session.prompt.mockResolvedValue(undefined);
+			mocks.session.messages = [
+				{ role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error." },
+			];
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "the retry that died the same way",
+				attempt: 2,
+				resumeOf: "bg-556-source",
+			});
+			await new Promise((r) => setTimeout(r, 0));
+
+			const rows = settleRows(agent.id);
+			expect(rows).toHaveLength(1);
+			// Mutant killed (M1): drop either field from the log call and this reddens.
+			expect(rows[0].data.attempt).toBe(2);
+			expect(rows[0].data.resumeOf).toBe("bg-556-source");
+		} finally {
+			setLogCwd(undefined);
+		}
+	});
+
+	it("#556: a FIRST-attempt settle row says attempt 1 and OMITS resumeOf (absent, not null)", async () => {
+		const { setLogCwd } = await import("../logging");
+		setLogCwd(env.baseDir);
+		try {
+			mocks.session.prompt.mockResolvedValue(undefined);
+			mocks.session.messages = [
+				{ role: "assistant", content: [], stopReason: "error", errorMessage: "provider exploded" },
+			];
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "the original dispatch",
+			});
+			await new Promise((r) => setTimeout(r, 0));
+
+			const rows = settleRows(agent.id);
+			expect(rows).toHaveLength(1);
+			expect(rows[0].data.attempt).toBe(1);
+			// "This run resumed nothing" is an ABSENT key — a null would read as a
+			// lookup that failed, which is a different claim.
+			expect(Object.keys(rows[0].data)).not.toContain("resumeOf");
+		} finally {
+			setLogCwd(undefined);
+		}
+	});
 });
 
 // =========================================================================

@@ -2044,6 +2044,13 @@ export async function spawnBackgroundSession(
     entryWritten = true;
     // Issue #179 (D6): the explicit settle line — the log's job is to record the
     // CLASSIFIED OUTCOME, which cwd alone can never convey.
+    // Issue #556: the row carries the LINEAGE too. Without it the only way to
+    // group a retry with what it resumed was spawn adjacency in the log, which
+    // reads wrong across concurrent runs — the durable records had the answer
+    // and the log did not. `attempt` defaults to the documented 1 (a record
+    // written before the field existed IS a first attempt); `resumeOf` is
+    // OMITTED, never null: an absent key is what "this run resumed nothing"
+    // looks like, and a null would read as a lookup that failed.
     log.info("Background run settled", {
       agentId: id,
       status,
@@ -2052,6 +2059,8 @@ export async function spawnBackgroundSession(
       tokensOut: usage.output,
       errorCategory,
       error: error ?? null,
+      attempt: entry.attempt ?? 1,
+      ...(entry.resumeOf !== undefined ? { resumeOf: entry.resumeOf } : {}),
     });
     return entry;
   };

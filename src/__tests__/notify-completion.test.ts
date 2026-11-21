@@ -30,6 +30,7 @@ import {
 	normalizeCompletionStatus,
 	resolveRunEntry,
 	withWorktreeState,
+	buildRepeatTransportAdvisory,
 } from "../notify-completion";
 
 // ---------------------------------------------------------------------------
@@ -717,5 +718,94 @@ describe("withWorktreeState (issue #474)", () => {
 		// A missing report is the one outcome this must never produce.
 		expect(msg.content.endsWith(`${BLOCK}`)).toBe(true);
 		expect(msg.content).toContain("trailing note");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// buildRepeatTransportAdvisory (issue #556)
+// ---------------------------------------------------------------------------
+
+/**
+ * A settled record shaped like the durable run entry the builder reads: the
+ * attempt-2 transport death of a run that resumed `bg-556-source`.
+ */
+function makeSettledRun(overrides: Partial<SubagentRun> = {}): SubagentRun {
+	return {
+		id: "bg-556-retry",
+		task: "review the docs",
+		label: "review-docs",
+		status: "failed",
+		model: "provider/model",
+		thinkingLevel: "medium",
+		startedAt: "2026-11-20T00:00:00.000Z",
+		errorCategory: "exit_error",
+		errorMessage: "Connection error.",
+		attempt: 2,
+		resumeOf: "bg-556-source",
+		originalParams: { background: true },
+		...overrides,
+	};
+}
+
+/** The source record the retry resumed — a transport failure of its own. */
+const TRANSPORT_SOURCE = {
+	status: "failed",
+	errorCategory: "exit_error",
+	errorMessage: "ECONNRESET",
+	originalParams: { background: true },
+} as const;
+
+describe("buildRepeatTransportAdvisory — the repeat transport death advisory (issue #556)", () => {
+	it("stays silent on a FIRST attempt — one death is the retried class, not a repeat", () => {
+		expect(buildRepeatTransportAdvisory(makeSettledRun({ attempt: 1 }), TRANSPORT_SOURCE)).toBe("");
+		// The documented default: a record with no attempt field is attempt 1.
+		expect(buildRepeatTransportAdvisory(makeSettledRun({ attempt: undefined }), TRANSPORT_SOURCE)).toBe("");
+	});
+
+	it("stays silent when the SOURCE died of something else — the lineage is not proven", () => {
+		// Mutant killed (M2): dropping the source-transport requirement makes this
+		// row return a paragraph claiming a repeat the records do not show.
+		expect(
+			buildRepeatTransportAdvisory(makeSettledRun(), {
+				...TRANSPORT_SOURCE,
+				errorCategory: "tool_error",
+				errorMessage: "Pre-flight validation failed",
+			}),
+		).toBe("");
+	});
+
+	it("stays silent when the source record is missing — never claim a lineage you cannot read", () => {
+		expect(buildRepeatTransportAdvisory(makeSettledRun(), undefined)).toBe("");
+	});
+
+	it("stays silent when THIS attempt is not a transport failure", () => {
+		expect(
+			buildRepeatTransportAdvisory(
+				makeSettledRun({ errorCategory: "tool_error", errorMessage: "Pre-flight validation failed" }),
+				TRANSPORT_SOURCE,
+			),
+		).toBe("");
+	});
+
+	it("names the label, both attempts and the change-shape rule when both died on transport", () => {
+		const advisory = buildRepeatTransportAdvisory(makeSettledRun(), TRANSPORT_SOURCE, "review-docs");
+		expect(advisory).toContain('Two transport deaths on "review-docs"');
+		expect(advisory).toContain("attempts 1 and 2");
+		expect(advisory).toContain("not retried again");
+		expect(advisory).toContain("Change the shape");
+		expect(advisory).toContain("references/autonomous-run.md");
+	});
+
+	it("omits the label when there is none — the prose still holds together", () => {
+		const advisory = buildRepeatTransportAdvisory(makeSettledRun(), TRANSPORT_SOURCE);
+		expect(advisory.startsWith("Two transport deaths: attempts 1 and 2")).toBe(true);
+		expect(advisory).toContain("references/autonomous-run.md");
+	});
+
+	it("counts the real attempt — an attempt-3 death does not claim attempt 2 twice", () => {
+		// attempt 3 is reachable (`>= 2`): a manual retry of a failed auto-retry.
+		expect(buildRepeatTransportAdvisory(makeSettledRun({ attempt: 3 }), TRANSPORT_SOURCE)).toContain(
+			"attempts 1 and 3",
+		);
 	});
 });
