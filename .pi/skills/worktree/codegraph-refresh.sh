@@ -20,7 +20,9 @@
 #
 # Env:
 #   CODEGRAPH_BIN  path to the codegraph binary (default: `codegraph` on PATH);
-#                  install pinned: npm i -g @colbymchenry/codegraph@1.6.2
+#                  install pinned: pnpm add -g @colbymchenry/codegraph@1.6.4
+#                  never `codegraph upgrade`: it classifies any /node_modules/
+#                  install as npm and shells out to `npm i -g` (second owner / EACCES)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,7 +46,7 @@ if [[ ! -d "${REPO_ROOT}/src" ]]; then
 fi
 if ! command -v "${CODEGRAPH_BIN}" >/dev/null 2>&1; then
     echo "ERROR: ${CODEGRAPH_BIN} is not on PATH (set CODEGRAPH_BIN to its path)." >&2
-    echo "       install pinned: pnpm add -g @colbymchenry/codegraph@1.6.2" >&2
+    echo "       install pinned: pnpm add -g @colbymchenry/codegraph@1.6.4" >&2
     exit 2
 fi
 if [[ ! -f "${REPO_ROOT}/.codegraph/codegraph.db" ]]; then

@@ -82,8 +82,8 @@ because the routing sentence was read as the full toolset, and a grep pass misse
 test fixtures that `codegraph explore` named in one call.
 
 What stands unchanged: CLI-only, conductor-side, watcher/daemon off, never a hook (#230); the pinned
-version and `DO_NOT_TRACK` posture; no MCP server in the workflow (pi is not a supported `install`
-target, and CI must not depend on one).
+version and `DO_NOT_TRACK` posture; no MCP server in the **gate or CI** (nothing in the workflow
+depends on one). One machine-local MCP exception was added 2026-11-21 — see the addendum below.
 
 What this addendum records:
 
@@ -95,3 +95,20 @@ What this addendum records:
   (downstream; `callers`/`impact` see only upstream), `context` (task map).
 - `recon.sh --explore "<area>"` wraps the first-pass form with the freshness gate and a capped output
   (issue #424); the `## Recon` artifact path is unchanged.
+
+## Addendum (2026-11-21) — the Pi MCP exception
+
+CodeGraph 1.6.3 added **Pi** to `codegraph install`, retiring this ADR's "pi is not a supported
+target" rationale. On 2026-11-21 (CLI 1.6.2 → 1.6.4) the cockpit gained a **project-scoped,
+machine-local** MCP server: `.pi/mcp.json`, matched by `.pi/*` in `.gitignore` so it never ships,
+running `codegraph serve --mcp --no-watch` with `DO_NOT_TRACK=1` and `exposure: "direct"`. 1.6.4
+exposes a single tool, `codegraph_explore`, so the declared-tool cost is one schema; a one-shot pi
+session called it successfully end to end.
+
+It does not move the gate. `serve --mcp` is a **reading** surface: recon artifacts, the merge refresh
+(`codegraph-refresh.sh`) and `codegraph-check.py` stay CLI-side and conductor-run, CI never depends on
+the server, and `--no-watch` keeps the file watcher off (#230). Measured: the MCP client spawns one
+**background server per project** (reparented to init, ~174 MB RSS) that outlives the session — a
+cache, not a watcher; stop it with `codegraph daemon`, and it respawns on the next call. `.pi/mcp.json`
+is a trust-protected resource; this checkout is covered by the saved decision on
+`brl-subagent_workspace` (a bare `.pi` would not need one).

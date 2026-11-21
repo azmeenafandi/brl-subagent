@@ -142,7 +142,11 @@ never re-type their logic by hand. Full design:
       query <terms>`, `codegraph affected <file>`; refresh with
       `codegraph-refresh.sh` at every merge (lifecycle step 7);
       `codegraph-check.py --repo-root <path>` for freshness. CLI-only,
-      conductor-side, watcher off, never a hook (#230).
+      conductor-side, watcher off, never a hook (#230). The model can also read
+      the graph directly: a machine-local MCP server (`.pi/mcp.json`, gitignored)
+      exposes the single `codegraph_explore` tool (`serve --mcp --no-watch`,
+      `DO_NOT_TRACK=1`) — a reading convenience only; anything a spec or test
+      pins still comes from `recon.sh`.
     - **Enforced for refactor PRs** via the review brief's `Structural closure`
       (`review-dispatch.md`): moved/renamed/deleted exports carry `recon.sh` callers +
       impact, reconciled against the PR diff.
@@ -554,11 +558,12 @@ mechanics, verdict format: `references/review-dispatch.md`.
   into `dev` (lifecycle step 7): runs `codegraph sync` (or `--full` for a
   rebuild) in the cockpit, then `codegraph-check.py`. CodeGraph is the sole
   structural index (ADR 0016); refreshed by this explicit step, never by a hook
-  (#230). Needs the pinned CLI (`pnpm add -g @colbymchenry/codegraph@1.6.2` —
+  (#230). Needs the pinned CLI (`pnpm add -g @colbymchenry/codegraph@1.6.4` —
   npm's global prefix needs root here; `CODEGRAPH_BIN` overrides the path);
   run `codegraph telemetry off` once (the script also sets `DO_NOT_TRACK=1`).
   Refuses cleanly when the project has no `.codegraph/` yet (init instructions).
-  **Version policy:** pinned at **1.6.2**. Awareness: `codegraph upgrade
+  **Version policy:** pinned at **1.6.4** (bumped 2026-11-21 from 1.6.2 —
+  full rebuild 3.9 s, 7 095 nodes / 26 041 edges, guard green). Awareness: `codegraph upgrade
   --check`. Deliberate bump: `pnpm add -g
   @colbymchenry/codegraph@<v>` → full `codegraph index` → this refresh green →
   update the version here. Never `codegraph upgrade` while pnpm-managed (one
