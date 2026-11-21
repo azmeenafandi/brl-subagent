@@ -42,3 +42,24 @@ Then Rule 11's ≥2-occurrence count is a `grep` on a key rather than a re-read 
 every row's prose — the class is the same whether it arrived via review, the
 prose guard, or a delegation failure, and past cycles' rows become countable
 after the fact.
+
+## Dispositions
+
+The log is a tripwire, not a record of outcomes. Rule 11's outcome lives in
+`.development/FRICTION_DISPOSITIONS.md` — one cumulative table with a `cycle`
+column, one row per class, and a window (`from..to`) over **data-row indices**.
+
+- **Never insert or edit a logged row.** The ledger maps by row index, so an
+  insertion re-targets every later row; the tool detects the arithmetic drift
+  only where a gate pins it, so this is a human-review obligation.
+- **The tag is a human hint, not the ledger key.** The key is the row index; the
+  smell-key example above still stands, and its key lives in the observation —
+  the index mapping does not depend on it.
+- **At close, every row in the cycle's window is assigned to exactly one class**
+  (or is a `CYCLE … CLOSED` record, which is counted and excluded). An
+  evidence-only class writes `rows: —`, and it never licenses skipping another
+  row's disposition.
+- **The ledger is the receipt; `--check` is the refusal.** A cycle is not closed
+  until `node scripts/friction-disposition.mjs --check --cycle <name>` exits 0,
+  and `--render` refreshes the issue cells so a merged issue updates its own row
+  instead of being remembered. See Rule 11 in `SKILL.md`.
