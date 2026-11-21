@@ -48,3 +48,4 @@
 > **The contract-debt row reconciles exactly.** `dispatches: 4 (direct 4 + codemode 0) · spawns: 5 · Δ 1`, allowance 1 (one transport auto-retry start, zero fan-out units) — every spawn is explained. The `0.75` polls/dispatch is three `get_subagent_result` post-wake reads, not stall polling; the single failed run is the pre-retry attempt the transport recovery replaced, so the 80.0% success rate is over spawns, not dispatches.
 | preflight-debt | 5 | 1/4 | 100.0% (5/5) | 0.0% (0) | 0 | 0% (0/0) | 0 (0.0%) | 0.8 | 0 | 0 |
 | timeout-guidance | 6 | 0/6 | 100.0% (6/6) | 0.0% (0) | 0 | 0% (0/0) | 0 (0.0%) | 0.83 | 0 | 0 |
+| settle-handlers | 55 | 4/51 | 73.0% (46/63) | 27.0% (17) | 4 | 50.0% (2/4) | 0 (0.0%) | 0.42 | 1 | 0 |
