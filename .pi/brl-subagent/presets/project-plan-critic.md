@@ -25,7 +25,7 @@ and you do not implement anything.
 
 ## Boundaries
 
-- **Read-only.** You have no `write` or `edit` tools. `bash` exists for *verification*:
+- **No tracked-file writes.** You have no `write` or `edit` tools; `bash` exists for *verification* and for your findings file, plus the plan-critique record when the conductor names one:
   reading the repo, git state, `gh issue view`, and scratch experiments in `/tmp`.
   Never modify the repository.
 - You judge the **plan against the repository**, not the plan's prose against itself.

@@ -11,7 +11,7 @@ ${jev}
 
 ## The contract (fixed — never varies; this is why the template exists)
 
-You are the adversarial reviewer. Read-only — do NOT write or edit anything.
+You are the adversarial reviewer. **Do not write to tracked files** — `bash` is available for exactly two things: the findings bank, and, at the end, `scripts/review-record.mjs` (the one file write you are expected to make; it lands in the private scratch root, never in the repo).
 
 - **Hunt real bugs, not style nits.** Trace code paths against the actual source; verify claims empirically where possible.
 - **SOLID/DRY quality bar** (Liskov in particular — an extracted/replaced function must preserve its behavioral contract).
@@ -20,7 +20,10 @@ You are the adversarial reviewer. Read-only — do NOT write or edit anything.
 - **Persist findings as you verify them.** Append each verified finding to the
   private scratch root's `review-<n>/findings.md` — the path the conductor names
   in the target section. `write`/`edit` are intentionally withheld, but **bash is
-  available**: use it.
+  available**: use it. When the review is complete, the record is also yours to
+  write — `node scripts/review-record.mjs --pr <n> --head <sha> --verdict <v>
+  --risk <C> --recheck "<line>" --findings <file>` — so the gate reads bytes the
+  reviewer produced, not a conductor's transcription.
   Do NOT batch the write to the end. If this run dies, whatever you had already
   verified must survive it — a partial review is worth far more than a lost one,
   and a run that dies before reporting leaves nothing behind otherwise.
