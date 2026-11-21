@@ -1372,7 +1372,7 @@ async function showRunDetail(ctx: ExtensionContext, run: SubagentRun): Promise<v
 
 		const wrapOutput = (width: number): string[] => {
 			if (width === wrappedWidth) return wrappedLines;
-			wrappedLines = new Text(theme.fg("toolOutput", outputText), 1, 0).render(width);
+			wrappedLines = [...new Text(theme.fg("toolOutput", outputText), 1, 0).render(width)];
 			wrappedWidth = width;
 			return wrappedLines;
 		};
@@ -1948,7 +1948,7 @@ export async function showAgentDetail(
 
 			return {
 				render: (w: number) => {
-					const lines = buildView().render(w);
+					const lines = [...buildView().render(w)];
 					// Full-screen: pad the overlay content to the terminal height so
 					// the drill-in occupies the whole screen (the tui overlay sizes
 					// to its rendered content otherwise).
@@ -2973,9 +2973,9 @@ function withDiffKeybinding(
 				dc.addChild(new Text("", 0, 0));
 				dc.addChild(new Text(theme.fg("dim", "Press any key to return"), 1, 0));
 				dc.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-				return dc.render(width);
+				return [...dc.render(width)];
 			}
-			return container.render(width);
+			return [...container.render(width)];
 		},
 		handleInput(data: string) {
 			if (showFullDiff) {

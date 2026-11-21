@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { existsSync, statSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, statSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { recordTimeoutDelays } from "./fixtures/deadline-census";
 
@@ -97,16 +97,19 @@ vi.mock("../event-bus", () => ({
 	createEvent: eventBusMock.createEvent,
 }));
 
-import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, backgroundSessionDir } from "../session-manager";
+import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, backgroundSessionDir, markAgentInterrupted, flipAgentRecord, readAgentRecordFromDisk } from "../session-manager";
 import { listInflightRuns } from "../run-registry";
 import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
 import { CUSTOM_ENTRY_TYPES, NO_ASSISTANT_OUTPUT_REASON, PROMPT_NEVER_ISSUED_MESSAGE, isSubagentRunShape, type SubagentRun } from "../types";
 import { buildCompletionMessage } from "../notify-completion";
 import { isTransportRetryable } from "../transport-retry";
 import { createTempEnv } from "./fixtures/temp-lifecycle";
-import { setLogCwd } from "../logging";
+import { setLogCwd, setLogLevel, setConsoleOutput } from "../logging";
 import { __setOutputDir } from "../transcript";
 import { persistRunRecord, registerInflightRun } from "../run-registry";
+// Issue #450 (T4 case 5): the registry-retire STEP is observed through the
+// exported binding — `persistRunRecord`'s own retire is module-local.
+import * as runRegistry from "../run-registry";
 import { recoverInflightRuns, defaultRecoveryDeps } from "../recovery";
 import { collectInterruptedRuns, offeredInterruptedRuns } from "../recovery-surface";
 import { readHeadState } from "../headstate";
@@ -777,6 +780,33 @@ function readLog(): string {
 	} catch {
 		return "";
 	}
+}
+
+// Issue #450 (r7/T1): the settle window, normalised. Boundaries are the acceptance
+// write and the FIRST `return agent;` after it; the rule is in the pin below.
+//
+// THE RULE: trim every line; drop it when it is empty or its trimmed text starts
+// with `//`, `/*`, `*` or `*/`; compare the remaining code-line SEQUENCE against
+// EXPECTED_SETTLE_WINDOW. Properties this gives: indentation-free, comment-free
+// (so a comment edit never rewrites the pin), order- and text-sensitive. Its blind
+// spot is narrow and fail-safe: a CODE line whose trimmed text begins with `*`
+// would be dropped (none exists) — the direction of error is extra red, never a
+// silent pass.
+const EXPECTED_SETTLE_WINDOW =
+	"run.acceptedAt = new Date().toISOString();\ntry {\npersistRunRecord(pi, run, \"background\");\n} catch (err) {\nrun.acceptedAt = null;\nfailPreStart(neverIssued(err));\nthrow err;\n}\nlet runPromise: Promise<unknown>;\nlet resolveSettled!: () => void;\nlet rejectSettled!: (reason: unknown) => void;\nconst settled = new Promise<void>((resolve, reject) => {\nresolveSettled = resolve;\nrejectSettled = reject;\n});\nconst markSettleEntry = (kind: 'success' | 'fault'): void => {\ntry {\nlog.debug(`spawnBackgroundSession: settle body entered for ${id} (${kind})`);\n} catch {\n}\n};\nconst onSettled = (): void => {\nmarkSettleEntry('success');                         // FIRST statement\nif (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second\ntry {\nconst projectedMessages = session.messages;\nconst lastAssistant = [...(projectedMessages ?? [])].reverse().find(m => m.role === 'assistant');\nconst terminalStopReason = lastAssistant?.stopReason;\nconst assistantEvidence: AssistantEvidence = Array.isArray(projectedMessages)\n? projectedMessages.some((m) => m.role === 'assistant') ? 'present' : 'absent'\n: 'unknown';\nconst aborted = agent.status === 'stopped' || terminalStopReason === 'aborted';\nif (aborted) {\nif (agent.status !== 'stopped') {\nupdateAgentStatus(id, 'stopped');\ntranscript.completeTranscript(id, 'stopped');\n}\nfinalizeAbortedRun(\ncleanupWorkBranch(),\nterminalStopReason && terminalStopReason !== 'stop'\n? terminalStopReason\n: 'aborted',\n);\nreturn;\n}\nconst providerErrorMessage =\nlastAssistant?.errorMessage ?? session.state?.errorMessage;\nconst outcome = classifyTerminalOutcome(terminalStopReason, providerErrorMessage, {\nassistantEvidence,\n});\nif (outcome.status === 'failed') {\nagent.status = 'failed';\nagent.completedAt = Date.now();\nconst failureReason =\nassistantEvidence === 'absent'\n? providerErrorMessage\n? `${NO_ASSISTANT_OUTPUT_REASON}\\n${providerErrorMessage}`\n: NO_ASSISTANT_OUTPUT_REASON\n: (providerErrorMessage ?? defaultTerminalMessage(terminalStopReason));\nconst sanitizedError = sanitizeErrorMessage(failureReason, effectiveCwd);\nagent.error = sanitizedError;\nconst gitInfo = cleanupWorkBranch();\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 1,\nmessages: agent.result?.messages ?? [],\nstderr: agent.result?.stderr ?? '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: terminalStopReason,\nerrorMessage: sanitizedError,\nerrorCategory: outcome.errorCategory,\n...(gitInfo.gitBranch\n? { gitBranch: gitInfo.gitBranch, gitDiff: gitInfo.gitDiff }\n: {}),\n} as SubagentResult;\ncaptureAndReleaseSession(sanitizedError);\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('failed', sanitizedError, {\nstopReason: terminalStopReason,\nerrorCategory: outcome.errorCategory,\n});\ntranscript.completeTranscript(id, 'failed');\neventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizedError }));\nreturn;\n}\nagent.status = 'completed';\nagent.completedAt = Date.now();\nconst gitInfo = cleanupWorkBranch();\nif (gitInfo.gitBranch) {\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 0,\nmessages: [],\nstderr: '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: terminalStopReason ?? 'stop',\ngitBranch: gitInfo.gitBranch,\ngitDiff: gitInfo.gitDiff,\n} as SubagentResult;\n}\ncaptureAndReleaseSession();\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('done', undefined, { stopReason: terminalStopReason ?? 'stop' });\ntranscript.completeTranscript(id, 'completed');\neventBus.emit(eventBus.createEvent('subagent:completed', id, {}));\n} catch (err) {\nsafeLog(() =>\nlog.error(`spawnBackgroundSession: completion handler failed for ${id}`, {\nerror: thrownMessage(err),\n}),\n);\nmarkTerminalBestEffort('completed');\n}\n};\nconst onSettleFault = (reason: unknown): void => {\nmarkSettleEntry('fault');                           // FIRST statement\nif (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second\ntry {\nconst err = normalizeThrown(reason);              // D5: TOTAL, never throws\nconst gitInfo = cleanupWorkBranch();\nif (agent.status === 'stopped') {\nfinalizeAbortedRun(gitInfo, 'aborted');\ntranscript.completeTranscript(id, 'stopped');\nreturn;\n}\nagent.status = 'failed';\nagent.completedAt = Date.now();\nconst sanitizedError = sanitizeErrorMessage(err.message, effectiveCwd);\nagent.error = sanitizedError;\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 1,\nmessages: agent.result?.messages ?? [],\nstderr: agent.result?.stderr ?? '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: 'error',\nerrorMessage: sanitizedError,\n...(gitInfo.gitBranch\n? { gitBranch: gitInfo.gitBranch, gitDiff: gitInfo.gitDiff }\n: {}),\n} as SubagentResult;\ncaptureAndReleaseSession(sanitizedError);\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('failed', sanitizedError, { stopReason: 'error' });\ntranscript.completeTranscript(id, 'failed');\neventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizedError }));\n} catch (err) {\nsafeLog(() =>\nlog.error(`spawnBackgroundSession: completion handler failed for ${id}`, {\nerror: thrownMessage(err),\n}),\n);\nmarkTerminalBestEffort('failed');\n}\n};\nsettled.then(onSettled).catch(onSettleFault);\ntry {\nrunPromise = session.prompt(wrapTask(params.task));\n} catch (err) {\nconst reason = thrownMessage(err);                          // D5: total\nfailPreStart(sanitizeErrorMessage(reason, effectiveCwd));    // D5: contained, never throws\nthrow err;                                                  // D6: deferred NOT settled\n}\ntry {\nvoid Promise.prototype.then.call(runPromise, resolveSettled, rejectSettled);   // D2.3\n} catch (err) {\nsafeLog(() =>                                                // a sensor, not a new fault\nlog.error(\n`spawnBackgroundSession: settle routing failed for ${id} — the run is unmonitored; its deadline remains the only bound`,\n{ error: thrownMessage(err) },\n),\n);\n}";
+
+function settleWindow(src: string): string[] {
+	const lines = src.split("\n");
+	const start = lines.findIndex((l) => l.trim() === "run.acceptedAt = new Date().toISOString();");
+	if (start < 0) throw new Error("settle window: acceptance write not found");
+	const end = lines.findIndex((l, i) => i > start && l.trim() === "return agent;");
+	if (end < 0) throw new Error("settle window: `return agent;` not found after the acceptance write");
+	const code = lines
+		.slice(start, end)
+		.map((l) => l.trim())
+		.filter((l) => l !== "" && !l.startsWith("//") && !l.startsWith("/*") && !l.startsWith("*") && !l.startsWith("*/"));
+	if (code.length === 0) throw new Error("settle window: empty after normalisation");
+	return code;
 }
 
 /** Agent ids observed in the per-test transcript dir (agent-<id>.jsonl). */
@@ -3409,6 +3439,22 @@ describe("issue #447 — never-started dispatches", () => {
 		expect(listInflightRuns()).toHaveLength(0);
 		expect((await scanBoot()).neverStarted).toBe(0);
 		expect(interruptedViews()).toEqual([]);
+
+		// Issue #542: the throw settles the RECORD too (memory + disk), releases the
+		// live-session ref, fabricates NO output and emits exactly ONE terminal
+		// event — and the caller still receives the ORIGINAL transcript error, never
+		// the cleanup's. The note is absent by construction: the transcript dir was
+		// never writable, so `completeTranscript` no-ops (Acceptance 3, case (c)).
+		const id = (fakePi.appendEntry.mock.calls[0][1] as Record<string, unknown>).id as string;
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		expect(record._sessionRef).toBeUndefined();
+		expect(record.finalOutput).toBeUndefined();
+		expect(
+			eventBusMock.emit.mock.calls
+				.map(([event]) => (event as { type: string }).type)
+				.filter((type) => type === "subagent:failed"),
+		).toHaveLength(1);
 	});
 
 	it("A3: an acceptance write that throws means the prompt is NEVER issued (M7)", async () => {
@@ -3432,6 +3478,21 @@ describe("issue #447 — never-started dispatches", () => {
 		expect(terminal.acceptedAt).toBeNull();
 		expect(String(terminal.errorMessage)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
 		expect(String(terminal.errorMessage)).toContain("accept-boom");
+		// Issue #542 (H3/C1): the acceptance-write throw settles the RECORD too — in
+		// memory AND on disk (status, completedAt, error), with the acceptance
+		// residue (`acceptedAt: null`) preserved. Without these the skip-the-flip
+		// mutant passed: the run entry alone cannot see the record.
+		const id = (fakePi.appendEntry.mock.calls[0][1] as Record<string, unknown>).id as string;
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		expect(typeof record.completedAt).toBe("number");
+		expect(String(record.error)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+		expect(record._sessionRef).toBeUndefined();
+		const onDisk = JSON.parse(readFileSync(join(env.storageDir, `${id}.json`), "utf8"));
+		expect(onDisk.status).toBe("failed");
+		expect(typeof onDisk.completedAt).toBe("number");
+		expect(String(onDisk.error)).toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+		expect(terminal.acceptedAt).toBeNull(); // still the acceptance-write residue
 		expect(listInflightRuns()).toHaveLength(0);
 		expect(interruptedViews()).toEqual([]);
 	});
@@ -3452,5 +3513,908 @@ describe("issue #447 — never-started dispatches", () => {
 		const accepted = fakePi.appendEntry.mock.calls[1][1] as SubagentRun;
 		expect(typeof accepted.acceptedAt).toBe("string");
 		expect(Number.isNaN(Date.parse(accepted.acceptedAt as string))).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #450: the settle handlers are attached to the spawn's OWN deferred
+// BEFORE `session.prompt()` is called, so no statement in the window between
+// the acceptance write and the routing can lose the settle. The six tests below
+// pin the window, the async-rejection route, the post-start fault boundary, the
+// non-Error normalisation on both regimes, the "no settle body ran" tripwire,
+// and the caller-visible status the deferral costs.
+// ---------------------------------------------------------------------------
+describe("#450 settle handlers attach before the prompt", () => {
+	const originalPrompt = new Error("original prompt");
+
+	/** Drain every pending microtask job WITHOUT advancing the (fake) clock. */
+	async function flushMicrotasks(turns = 8): Promise<void> {
+		for (let i = 0; i < turns; i++) await Promise.resolve();
+	}
+
+	/** The `settle body entered` records the entry marker wrote so far. */
+	function settleEntryRecords(): string[] {
+		return readLog()
+			.split("\n")
+			.filter((line) => line.includes("settle body entered"));
+	}
+
+	/** The event types the mocked bus was asked to emit. */
+	function emittedTypes(): string[] {
+		return eventBusMock.emit.mock.calls.map(([event]) => (event as { type: string }).type);
+	}
+
+	/**
+	 * A session double whose `prompt` is a PLAIN function returning `value`.
+	 *
+	 * Issue #450 (T3): a `vi.fn()` cannot carry this fixture — vitest's own mock
+	 * instrumentation reads `.then` off a returned promise, so a tampered `then`
+	 * accessor explodes inside the harness rather than in the code under test.
+	 * `messages: []` is required, not cosmetic: `extractFinalOutput` spreads
+	 * `session.messages`, so an undefined projection makes the settle body throw
+	 * at `captureAndReleaseSession` and the assertions would pass for the wrong
+	 * reason.
+	 */
+	function injectSession(value: () => unknown): void {
+		mocks.createAgentSession.mockImplementationOnce(async () => ({
+			session: { ...mocks.session, messages: [], prompt: value },
+		}));
+	}
+
+	it("pins the settle window snapshot: the deferred, attach-before-call and the two regimes are deliberate (#450)", () => {
+		const src = readFileSync(new URL("../session-manager.ts", import.meta.url), "utf8");
+		const actual = settleWindow(src);
+		const expected = EXPECTED_SETTLE_WINDOW.split("\n");
+		let firstDiff = -1;
+		for (let i = 0; i < Math.max(actual.length, expected.length); i++) {
+			if (actual[i] !== expected[i]) {
+				firstDiff = i;
+				break;
+			}
+		}
+		expect(
+			firstDiff,
+			firstDiff < 0
+				? ""
+				: `the settle window changed — attach-before-call and the two regimes are deliberate. ` +
+					`First difference at window line ${firstDiff + 1}: expected ${JSON.stringify(expected[firstDiff])} got ${JSON.stringify(actual[firstDiff])}`,
+		).toBe(-1);
+		expect(actual).toEqual(expected);
+	});
+
+	it("routes an async rejection through the deferred, clears the deadline and writes ONE terminal record (#450 async-rejection pin)", async () => {
+		vi.useFakeTimers();
+		try {
+			mocks.session.messages = [];
+			mocks.session.abort.mockClear();
+			mocks.session.prompt.mockImplementation(() => Promise.reject(new Error("async reject boom")));
+
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "async rejection",
+				timeout: 5000,
+			});
+			// The deadline is armed and still owned by the run at the caller's resume.
+			expect(vi.getTimerCount()).toBe(1);
+
+			await flushMicrotasks();
+
+			// The settle cleared it — no second bound, no leaked timer.
+			expect(vi.getTimerCount()).toBe(0);
+			const after = getAgent(agent.id);
+			expect(after?.status).toBe("failed");
+			expect(after?.result?.stopReason).toBe("error");
+			expect(after?.result?.errorMessage).toBe("async reject boom");
+			// ONE terminal write: spawn + acceptance + terminal.
+			expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+			expect(terminalRunEntries()).toHaveLength(1);
+			const entry = terminalRunEntries()[0];
+			expect(entry.status).toBe("failed");
+			expect(entry.stopReason).toBe("error");
+			expect(entry.errorMessage).toBe("async reject boom");
+			expect(emittedTypes()).toContain("subagent:failed");
+
+			// Nothing is left to abort: advancing twice the budget finds no timer.
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(mocks.session.abort).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("treats a returned non-thenable as a POST-start fault, never 'never issued' (#450)", async () => {
+		vi.useFakeTimers();
+		try {
+			setLogCwd(env.baseDir);
+			mocks.session.abort.mockClear();
+
+			// (1) A non-thenable return: the intrinsic refuses it, so the routing
+			// fault is logged and the run is left to the deadline. `failPreStart`
+			// must NOT run — the prompt WAS issued, so nothing may be pruned.
+			injectSession(() => ({}));
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "non-thenable return",
+				timeout: 5000,
+			});
+			expect(agent.status).toBe("running");
+			expect(terminalRunEntries()).toHaveLength(0);
+			expect(listInflightRuns().some((e) => e.id === agent.id)).toBe(true);
+			expect(readLog()).toContain("settle routing failed");
+			expect(readLog()).not.toContain(PROMPT_NEVER_ISSUED_MESSAGE);
+
+			// The deadline is the monitor of last resort, and it still classifies.
+			await vi.advanceTimersByTimeAsync(5001);
+			expect(mocks.session.abort).toHaveBeenCalledTimes(1);
+			expect(terminalRunEntries()).toHaveLength(1);
+			expect(terminalRunEntries()[0].status).toBe("failed");
+			expect(terminalRunEntries()[0].errorCategory).toBe("timeout");
+
+			// (2) A NATIVE deferred whose own `then` accessor throws is still
+			// routed: the intrinsic never reads the accessor, so its rejection is
+			// delivered and no timer advance is needed.
+			let fail!: (err: Error) => void;
+			const tampered = new Promise<void>((_resolve, reject) => {
+				fail = reject;
+			});
+			Object.defineProperty(tampered, "then", {
+				get() {
+					throw new Error("then accessor exploded");
+				},
+			});
+			injectSession(() => tampered);
+			const routed = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "tampered then accessor",
+				timeout: 5000,
+			});
+			fail(new Error("routed rejection"));
+			await flushMicrotasks();
+			expect(getAgent(routed.id)?.status).toBe("failed");
+			expect(getAgent(routed.id)?.result?.errorMessage).toBe("routed rejection");
+			expect(vi.getTimerCount()).toBe(0);
+
+			// (3) A throwing log sink on that same path must not turn the routing
+			// fault into a REJECTED spawn (#439): the run started, so the caller
+			// gets the agent.
+			setConsoleOutput(true);
+			const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {
+				throw new Error("console blew up");
+			});
+			try {
+				injectSession(() => ({}));
+				const live = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+					task: "routing fault with a throwing sink",
+					timeout: 5000,
+				});
+				expect(live.status).toBe("running");
+				// ...and the fault did not reach `failPreStart`: the run is still tracked.
+				expect(listInflightRuns().some((e) => e.id === live.id)).toBe(true);
+			} finally {
+				consoleSpy.mockRestore();
+				setConsoleOutput(false);
+			}
+		} finally {
+			setLogCwd(undefined);
+			vi.useRealTimers();
+		}
+	});
+
+	it("normalises a non-Error value on BOTH regimes and rethrows the original throw (#450)", async () => {
+		setLogCwd(env.baseDir);
+		try {
+			// (1) REGIME 1, `throw null`: the message is the total normaliser's,
+			// the caller still receives the ORIGINAL value.
+			mocks.session.prompt.mockImplementation(() => {
+				throw null;
+			});
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "throw null" }),
+			).rejects.toBeNull();
+			expect(terminalRunEntries()).toHaveLength(1);
+			expect(terminalRunEntries()[0].status).toBe("failed");
+			expect(terminalRunEntries()[0].errorMessage).toBe("null");
+
+			// (2) REGIME 2, `reject(undefined)`: same total normalisation on the
+			// deferred's fault body.
+			fakePi.appendEntry.mockClear();
+			mocks.session.prompt.mockImplementation(() => Promise.reject(undefined));
+			const undefinedRun = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "reject undefined",
+			});
+			await flushMicrotasks();
+			expect(getAgent(undefinedRun.id)?.status).toBe("failed");
+			expect(lastRunEntry().errorMessage).toBe("undefined");
+
+			// (3) A git teardown that throws `null` must not mask the prompt
+			// throw: every `cleanupWorkBranch` catch site is normalised, so the
+			// teardown returns and the terminal write still happens.
+			resetGitMocks();
+			mocks.git.getCurrentBranch.mockImplementation(() => {
+				throw null;
+			});
+			fakePi.appendEntry.mockClear();
+			mocks.session.prompt.mockImplementation(() => {
+				throw originalPrompt;
+			});
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+					task: "git teardown throws null",
+					gitMode: "branch",
+				}),
+			).rejects.toThrow("original prompt");
+			expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+			expect(lastRunEntry().status).toBe("failed");
+			expect(lastRunEntry().errorMessage).toBe("original prompt");
+			expect(readLog()).toContain("getCurrentBranch failed during cleanup");
+			resetGitMocks();
+
+			// (4) An UNPRINTABLE thrown object: `String()` throws, so the message
+			// falls back — and the caller still receives the object itself.
+			const unprintable = {
+				[Symbol.toPrimitive](): string {
+					throw new Error("cannot stringify me");
+				},
+			};
+			mocks.session.prompt.mockImplementation(() => {
+				throw unprintable;
+			});
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "unprintable throw" }),
+			).rejects.toBe(unprintable);
+			expect(lastRunEntry().errorMessage).toBe("unprintable thrown value");
+
+			// (5) STEP 2 is contained: a TERMINAL write that throws still rejects
+			// with the original error, and the registry-retire step is ATTEMPTED.
+			const clearSpy = vi.spyOn(runRegistry, "clearInflightRun");
+			try {
+				let writes = 0;
+				fakePi.appendEntry.mockImplementation(() => {
+					writes += 1;
+					if (writes === SETTLED_RUN_WRITES) throw new Error("append blew up");
+				});
+				mocks.session.prompt.mockImplementation(() => {
+					throw originalPrompt;
+				});
+				await expect(
+					spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "terminal write throws" }),
+				).rejects.toBe(originalPrompt);
+				expect(readLog()).toContain("pre-start finalize failed");
+				expect(clearSpy).toHaveBeenCalled();
+				expect(listInflightRuns()).toHaveLength(0);
+			} finally {
+				clearSpy.mockRestore();
+			}
+
+			// (6) The same fault with a THROWING console mirror: `safeLog` keeps
+			// the original error AND lets the retire run.
+			// (#543) the entry still reaches the file — a mirror fault no longer aborts the write.
+			rmSync(join(env.baseDir, ".pi", "subagent-logs", "brl-subagent.log"), { force: true });
+			fakePi.appendEntry.mockReset();
+			let writes = 0;
+			fakePi.appendEntry.mockImplementation(() => {
+				writes += 1;
+				if (writes === SETTLED_RUN_WRITES) throw new Error("append blew up");
+			});
+			setConsoleOutput(true);
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {
+				throw new Error("console blew up");
+			});
+			const clearSpy6 = vi.spyOn(runRegistry, "clearInflightRun");
+			try {
+				mocks.session.prompt.mockImplementation(() => {
+					throw originalPrompt;
+				});
+				await expect(
+					spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "throwing sink" }),
+				).rejects.toBe(originalPrompt);
+				expect(clearSpy6).toHaveBeenCalled();
+				expect(readLog()).toContain("pre-start finalize failed");
+			} finally {
+				clearSpy6.mockRestore();
+				warnSpy.mockRestore();
+				setConsoleOutput(false);
+			}
+		} finally {
+			setLogCwd(undefined);
+		}
+	});
+
+	it("classifies a synchronous prompt throw ONCE — no settle body runs (#450 sentinel tripwire)", async () => {
+		setLogCwd(env.baseDir);
+		setLogLevel("debug");
+		vi.useFakeTimers();
+		const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+		try {
+			mocks.session.messages = [];
+			mocks.session.abort.mockClear();
+			mocks.session.prompt.mockImplementation(() => {
+				throw new Error("sync pre-start boom");
+			});
+
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "sync throw tripwire" }),
+			).rejects.toThrow("sync pre-start boom");
+
+			// (1) The note now comes from the PRE-START FLIP (#542), not from a settle
+			// body — exactly one, carrying the run's terminal status...
+			const [id] = transcriptIds();
+			expect(id).toBeDefined();
+			expect(readFileSync(transcriptGetTranscriptPath(id), "utf-8")).toContain("Transcript completed: failed");
+			// (2) ...and exactly ONE terminal event, from that same flip. The COMPLETED
+			// event still has exactly one producer — a settle body, which must not run
+			// here — so it stays absent.
+			expect(emittedTypes().filter((type) => type === "subagent:failed")).toHaveLength(1);
+			expect(emittedTypes()).not.toContain("subagent:completed");
+			// (3) ...exactly the three run writes, and the terminal one is `failed`.
+			expect(fakePi.appendEntry).toHaveBeenCalledTimes(SETTLED_RUN_WRITES);
+			expect(terminalRunEntries()).toHaveLength(1);
+			expect(terminalRunEntries()[0].status).toBe("failed");
+			// (4) ZERO marker records — the tripwire, independent of the timer
+			// handle and of every write above.
+			expect(settleEntryRecords(), "a settle body was ENTERED on the sync-throw path").toEqual([]);
+			// (5) One — and only one — deadline clear: `failPreStart`'s.
+			expect(clearSpy, "the sync-throw path must clear the deadline exactly once").toHaveBeenCalledTimes(1);
+			expect(vi.getTimerCount()).toBe(0);
+
+			// (6) POSITIVE CONTROL: "zero" must be a measurement, not a blind
+			// detector. An immediately-resolving prompt in the SAME test writes
+			// exactly one marker record — so the level and the sink both work.
+			mocks.session.prompt.mockResolvedValue(undefined);
+			await spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "positive control" });
+			await flushMicrotasks();
+			const records = settleEntryRecords();
+			expect(records).toHaveLength(1);
+			expect(records[0]).toContain("(success)");
+		} finally {
+			clearSpy.mockRestore();
+			vi.useRealTimers();
+			setLogLevel("info");
+			setLogCwd(undefined);
+		}
+	});
+
+	it("the caller observes `running` at its resume even when the prompt resolves immediately (#450 D4 decision)", async () => {
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+		];
+		mocks.session.prompt.mockResolvedValue(undefined);
+
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "immediate completion",
+		});
+		// Shape (b) costs exactly one microtask hop, and the hop is CALLER-VISIBLE:
+		// the settle body has not run yet, so the caller sees a live run.
+		expect(agent.status).toBe("running");
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(getAgent(agent.id)?.status).toBe("completed");
+
+		// The pipeline captures `status: agent.status` at its first statement after
+		// its own spawn await, so an `await` in between would re-open the same hop
+		// by the back door. Pin it at the source: no `await` between the two.
+		const pipeline = readFileSync(new URL("../background-pipeline.ts", import.meta.url), "utf8").split("\n");
+		const spawnAt = pipeline.findIndex((line) => line.includes("const agent = await spawnBackgroundSession("));
+		const captureAt = pipeline.findIndex(
+			(line, index) => index > spawnAt && line.includes("status: agent.status"),
+		);
+		expect(spawnAt).toBeGreaterThan(-1);
+		expect(captureAt).toBeGreaterThan(spawnAt);
+		const awaitsBetween = pipeline
+			.slice(spawnAt + 1, captureAt)
+			.map((line) => line.trim())
+			.filter((line) => line !== "" && !line.startsWith("//") && !line.startsWith("*") && !line.startsWith("/*"))
+			.filter((line) => /\bawait\b/.test(line));
+		expect(awaitsBetween, "an `await` between the spawn and the identity capture re-opens the D4 hop").toEqual([]);
+	});
+});
+
+// =========================================================================
+// Issue #542: a pre-start failure settles the AGENT RECORD, not only the run
+// entry. ONE shared, per-step-contained three-write helper serves the two
+// branch refusals and every pre-start throw — run entry -> record flip ->
+// transcript, each in its own `try`, with `_sessionRef` released INLINE
+// outside every `try` (the release must run even when the note throws, and
+// nothing may be fabricated for a session that never produced output).
+// =========================================================================
+describe("issue #542 — a pre-start failure settles the agent record", () => {
+	/** ONE note = one transcript LINE: count them, never `.find()`. */
+	const noteCount = (id: string, text: string): number =>
+		readFileSync(transcriptGetTranscriptPath(id), "utf-8")
+			.split("\n")
+			.filter((line) => line.includes(text)).length;
+
+	/** The event types the mocked bus was asked to emit. */
+	const emittedTypes = (): string[] =>
+		eventBusMock.emit.mock.calls.map(([event]) => (event as { type: string }).type);
+
+	/** How many terminal failures were emitted — the flip's own observable. */
+	const failedEvents = (): number => emittedTypes().filter((type) => type === "subagent:failed").length;
+
+	/** The agent id from the SPAWN record (written before every pre-start throw). */
+	const spawnedId = (): string =>
+		(fakePi.appendEntry.mock.calls[0][1] as Record<string, unknown>).id as string;
+
+	/** The persisted agent record — the disk claim, not the in-memory object. */
+	const persisted = (id: string): Record<string, unknown> =>
+		JSON.parse(readFileSync(join(env.storageDir, `${id}.json`), "utf8"));
+
+	beforeEach(() => {
+		resetGitMocks();
+	});
+
+	afterEach(() => {
+		fakePi.appendEntry.mockReset();
+	});
+
+	it("(a) ORDER: the run entry is terminal before the flip, and the flip's OWN fault suppresses nothing", async () => {
+		let runStatusAtRecordFlip: unknown = "<no subagent:failed>";
+		eventBusMock.emit.mockImplementation((event: { type: string; agentId: string }) => {
+			if (event.type !== "subagent:failed") return;
+			// The mocked append stream INCLUDES the entry just written, so this is
+			// the run entry the record flip follows — not the pre-start snapshot.
+			runStatusAtRecordFlip = lastRunEntry().status;
+			throw new Error("emit boom");
+		});
+		mocks.session.prompt.mockImplementation(() => {
+			throw new Error("sync pre-start boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "order" }),
+		).rejects.toThrow("sync pre-start boom");
+
+		// The FLIP runs after the run entry (the swap), and its own throw is
+		// contained by STEP B's `try` — so the record is already terminal, STEP C
+		// still writes its note and STEP 3 still retires the registry.
+		expect(runStatusAtRecordFlip).toBe("failed");
+		const id = spawnedId();
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		expect(typeof record.completedAt).toBe("number");
+		// Site C passes the sanitized reason (not the never-issued stamp) — the
+		// record carries the same message the run entry does.
+		expect(String(record.error)).toContain("sync pre-start boom");
+		expect(record._sessionRef).toBeUndefined();
+		expect(record.finalOutput).toBeUndefined();
+		expect(noteCount(id, "Transcript completed: failed")).toBe(1);
+		expect(failedEvents()).toBe(1);
+		expect(listInflightRuns()).toHaveLength(0);
+	});
+
+	it("(b) a FAILED run-entry append suppresses neither the flip nor the note — ATTEMPTED ≠ COMMITTED", async () => {
+		const committed: string[] = [];
+		let writes = 0;
+		fakePi.appendEntry.mockImplementation((_type: string, entry: Record<string, unknown>) => {
+			writes += 1;
+			// The THIRD write is the terminal one: it is attempted, never committed.
+			if (writes === SETTLED_RUN_WRITES) throw new Error("terminal append boom");
+			committed.push(String(entry.status));
+		});
+		mocks.session.prompt.mockImplementation(() => {
+			throw new Error("sync pre-start boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "entry fault" }),
+		).rejects.toThrow("sync pre-start boom");
+
+		// STEP A's fault suppressed neither STEP B nor STEP C, and the caller keeps
+		// its ORIGINAL error.
+		const id = spawnedId();
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		expect(persisted(id).status).toBe("failed");
+		expect(noteCount(id, "Transcript completed: failed")).toBe(1);
+		expect(record._sessionRef).toBeUndefined();
+		expect(listInflightRuns()).toHaveLength(0);
+		// The DESIGNED residue (contract §ATTEMPTED): the attempt is terminal while
+		// the last COMMITTED entry is still the acceptance record. Pinned so the
+		// contract can never be read as "the run entry is committed when the event
+		// fires".
+		expect((lastRunEntry() as unknown as SubagentRun).status).toBe("failed");
+		expect(committed[committed.length - 1]).toBe("running");
+	});
+
+	it("(c) a REAL transcript-note fault (EISDIR) still releases the ref and keeps the original error", async () => {
+		let plantedPath = "";
+		mocks.session.prompt.mockImplementation(() => {
+			// The transcript file exists (startTranscript ran above); replace it with
+			// a DIRECTORY so STEP C's append fails with a real EISDIR — nothing here
+			// is mocked.
+			plantedPath = transcriptGetTranscriptPath(spawnedId());
+			rmSync(plantedPath, { force: true });
+			mkdirSync(plantedPath);
+			throw new Error("sync preflight failure");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "note fault" }),
+		).rejects.toThrow("sync preflight failure");
+
+		// The fault is real (no mock): the note path IS a directory...
+		expect(statSync(plantedPath).isDirectory()).toBe(true);
+		const id = spawnedId();
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		// ...and the release still ran, because it sits OUTSIDE every `try`. This is
+		// the only pin that catches the release placement (M5′).
+		expect(record._sessionRef).toBeUndefined();
+		expect((lastRunEntry() as unknown as SubagentRun).status).toBe("failed");
+	});
+
+	const refusals: Array<[string, () => void]> = [
+		[
+			"a dirty base tree",
+			() => {
+				mocks.git.hasUncommittedChanges.mockReset();
+				mocks.git.hasUncommittedChanges.mockReturnValue(true);
+			},
+		],
+		[
+			"a throwing createWorkBranch",
+			() => {
+				mocks.git.createWorkBranch.mockImplementation(() => {
+					throw new Error("create-boom");
+				});
+			},
+		],
+	];
+
+	it.each(refusals)("(d) the branch refusal on %s settles the record and releases the live session", async (_label, arrange) => {
+		arrange();
+		mocks.session.prompt.mockReturnValue(new Promise(() => {})); // must never be reached
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "refused branch",
+				gitMode: "branch",
+			}),
+		).rejects.toThrow(/gitMode 'branch'/);
+
+		const id = spawnedId();
+		const record = getAgent(id)!;
+		expect(record.status).toBe("failed");
+		expect(persisted(id).status).toBe("failed");
+		// Issue #542 (R4): the ref is set BEFORE the branch block, so the refusal
+		// used to leak the live session graph on both sites.
+		expect(record._sessionRef).toBeUndefined();
+		expect(noteCount(id, "Transcript completed: failed")).toBe(1);
+		expect(failedEvents()).toBe(1);
+		expect((lastRunEntry() as unknown as SubagentRun).status).toBe("failed");
+		expect(listInflightRuns()).toHaveLength(0);
+		expect(mocks.session.prompt).not.toHaveBeenCalled();
+	});
+
+	it("(e) fault-free control: exactly once and nothing captured", async () => {
+		mocks.session.prompt.mockImplementation(() => {
+			throw new Error("sync pre-start boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "fault-free" }),
+		).rejects.toThrow("sync pre-start boom");
+
+		const id = spawnedId();
+		// Redundant with (a) ON THE COUNTS by design: (a) counts under a fault, (e)
+		// proves the fault is not what produced the count.
+		expect(noteCount(id, "Transcript completed")).toBe(1);
+		expect(failedEvents()).toBe(1);
+		const record = getAgent(id)!;
+		expect(record.finalOutput).toBeUndefined();
+		expect(record.result).toBeUndefined();
+		expect(record._sessionRef).toBeUndefined();
+	});
+
+	it("(h) a SYNCHRONOUS listener cannot change the retention outcome", async () => {
+		let dirBeforeFlip = false;
+		let runStatusAtEvent: unknown = "<none>";
+		let dirAtEvent: boolean | undefined;
+		let listenerRan = false;
+		eventBusMock.emit.mockImplementation((event: { type: string; agentId: string }) => {
+			if (event.type !== "subagent:failed") return;
+			// Read the listener-visible state AT the emit, then mutate it exactly as
+			// a real synchronous listener would.
+			runStatusAtEvent = lastRunEntry().status;
+			dirAtEvent = existsSync(backgroundSessionDir(event.agentId));
+			markAgentInterrupted(event.agentId, new Date().toISOString());
+			listenerRan = true;
+		});
+		mocks.session.prompt.mockImplementation(() => {
+			const id = spawnedId();
+			// The SDK's per-run dir is stubbed out by the mocked SessionManager, so
+			// create the dir that WOULD be there — the retention decision needs one.
+			mkdirSync(backgroundSessionDir(id), { recursive: true });
+			dirBeforeFlip = existsSync(backgroundSessionDir(id));
+			throw new Error("sync pre-start boom");
+		});
+
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "listener" }),
+		).rejects.toThrow("sync pre-start boom");
+
+		expect(dirBeforeFlip).toBe(true);
+		// The run entry is terminal and the prune has ALREADY happened when the
+		// listener runs — so setting `interruptedAt` cannot retain the dir.
+		expect(runStatusAtEvent).toBe("failed");
+		expect(dirAtEvent).toBe(false);
+		expect(listenerRan).toBe(true);
+		const record = getAgent(spawnedId())!;
+		expect(record.interruptedAt).toBeDefined();
+		expect(record.status).toBe("failed");
+	});
+});
+
+// =========================================================================
+// Issue #546 r2 — the pre-start marker: the ORDER pin and the write-failure
+// fallback. Both drive the REAL helper (a synchronous prompt() throw funnels
+// into `markSpawnFailedBeforePrompt`), so they cannot pass on an ordering that
+// only exists in the test.
+// =========================================================================
+describe("issue #546 r2 — the pre-start marker", () => {
+	/** The id of the dispatch under test (the spawn record's id). */
+	function spawnedId(): string {
+		return fakePi.appendEntry.mock.calls[0][1].id as string;
+	}
+
+	it("S1: `markRecordFlipPending` is invoked BEFORE the terminal `pi.appendEntry`, and the happy path leaves nothing", async () => {
+		mocks.session.prompt.mockImplementation(() => {
+			throw new Error("sync preflight failure");
+		});
+		const markerSpy = vi.spyOn(runRegistry, "markRecordFlipPending");
+		try {
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "order pin" }),
+			).rejects.toThrow("sync preflight failure");
+
+			expect(markerSpy).toHaveBeenCalledTimes(1);
+			const terminalIndex = fakePi.appendEntry.mock.calls.findIndex(
+				(c: unknown[]) => (c[1] as { status?: string }).status === "failed",
+			);
+			expect(terminalIndex).toBeGreaterThanOrEqual(0);
+			// The ORDER property: the durable INTENT is written before the run entry
+			// whose retirement would erase its only home. An implementation that
+			// writes the marker after STEP A passes every "residue" test that plants
+			// the marker itself — this is the one assertion it cannot pass.
+			expect(markerSpy.mock.invocationCallOrder[0]).toBeLessThan(
+				fakePi.appendEntry.mock.invocationCallOrder[terminalIndex],
+			);
+			// The happy path leaves NOTHING: the marker is cleared by the retirement.
+			const id = spawnedId();
+			expect(getAgent(id)?.status).toBe("failed");
+			expect(listInflightRuns()).toEqual([]);
+		} finally {
+			markerSpy.mockRestore();
+		}
+	});
+
+	it("H1: a marker that did NOT land falls back to the pre-#546 retire-then-append order (deferRetire false)", async () => {
+		const dir = runRegistry.registryDir();
+		const markerSpy = vi.spyOn(runRegistry, "markRecordFlipPending");
+		const persistSpy = vi.spyOn(runRegistry, "persistRunRecord");
+		mocks.session.prompt.mockImplementation(() => {
+			// Freeze the registry INSIDE the pre-start window: the marker write and
+			// the unlink now both fail (a read-only registry dir), which is exactly
+			// the double fault the fallback exists for.
+			chmodSync(dir, 0o500);
+			throw new Error("sync preflight failure");
+		});
+		try {
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "marker write fails" }),
+			).rejects.toThrow("sync preflight failure");
+
+			expect(markerSpy).toHaveBeenCalledTimes(1);
+			expect(markerSpy.mock.results[0]?.value).toBe(false);
+			// THE FALLBACK: with no durable marker, the terminal write must NOT defer
+			// the retirement — it takes the historical retire-then-append order.
+			const terminalCall = persistSpy.mock.calls.find(
+				(c: unknown[]) => (c[1] as { status?: string }).status === "failed",
+			);
+			expect(terminalCall?.[3]).toEqual({ deferRetire: false });
+			// STEP D is skipped (the entry is still here only because the 0500 dir
+			// cannot unlink it — the ORDER is the pin, not the file's survival).
+			expect(persistSpy.mock.calls.filter((c: unknown[]) => (c[1] as { status?: string }).status === "failed")).toHaveLength(1);
+		} finally {
+			chmodSync(dir, 0o700);
+			markerSpy.mockRestore();
+			persistSpy.mockRestore();
+		}
+		// The fallback residue is the PRE-#546 one: an entry with NO marker (the
+		// boot scan cannot repair a terminal record through it) and a failed record.
+		const id = spawnedId();
+		const leftover = listInflightRuns();
+		expect(leftover.map((e) => e.id)).toEqual([id]);
+		expect(leftover[0]?.recordFlipPending ?? null).toBe(null);
+		expect(getAgent(id)?.status).toBe("failed");
+	});
+});
+
+describe("issue #546 r2 — the unverified flip", () => {
+	it("S3: a flip whose write did NOT land is reported false, the marker is KEPT, and the next boot repairs it", async () => {
+		const dir = runRegistry.registryDir();
+		let recordPath = "";
+		mocks.session.prompt.mockImplementation(() => {
+			// #543: persistAgent swallows the EACCES, so a throw-free flip is not a
+			// landed flip. Freeze the RECORD (not the dir) so the marker write and the
+			// registry stay healthy and only the record write fails.
+			recordPath = join(env.storageDir, `${(fakePi.appendEntry.mock.calls[0][1] as { id: string }).id}.json`);
+			chmodSync(recordPath, 0o400);
+			throw new Error("sync preflight failure");
+		});
+		let id = "";
+		try {
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "flip write fails" }),
+			).rejects.toThrow("sync preflight failure");
+			id = (fakePi.appendEntry.mock.calls[0][1] as { id: string }).id;
+			// STEP B could not land...
+			expect(JSON.parse(readFileSync(recordPath, "utf8")).status).toBe("running");
+			// ...so STEP D must NOT retire: the marker is the retry.
+			const leftover = listInflightRuns();
+			expect(leftover.map((e) => e.id)).toEqual([id]);
+			expect(leftover[0]?.recordFlipPending).toMatchObject({ status: "failed" });
+		} finally {
+			if (recordPath) chmodSync(recordPath, 0o600);
+		}
+		// A later process repairs it. The spawn stamped THIS (live) process as the
+		// owner, and a live owner is held by design — rewrite the owner to a
+		// provably dead one, which is what a crashed process leaves behind.
+		const rewritten = { ...JSON.parse(readFileSync(recordPath, "utf8")), owner: { pid: 999999, start: "dead" } };
+		writeFileSync(recordPath, JSON.stringify(rewritten, null, 2), { mode: 0o600 });
+		const summary = await recoverInflightRuns({
+			deps: { ...defaultRecoveryDeps(), sleep: async () => {}, graceMs: 0 },
+			mark: () => { throw new Error("must not mark a marker-bearing entry"); },
+			readAgentRecord: (rid) => getAgent(rid),
+			readFreshAgentRecord: (rid) => readAgentRecordFromDisk(rid),
+			applyRecordFlip: (v) => {
+				const outcome = flipAgentRecord(v.id, v.status, v.error);
+				if (outcome === false) return false;
+				return runRegistry.clearInflightRun(v.id) ? outcome : false;
+			},
+		});
+		expect(summary.flipRepaired).toBe(1);
+		expect(getAgent(id)?.status).toBe("failed");
+		expect(listInflightRuns()).toEqual([]);
+		expect(dir).toBe(runRegistry.registryDir());
+	});
+});
+
+// =========================================================================
+// Issue #546 r4 (major A) — the LIVE writer's MEMORY pin (#542) and the
+// tri-state retirement, driven through the REAL pre-start path.
+//
+// These are the r3 critique's two cases, name-identical on purpose: the
+// reproducible before/after is
+//   vitest -t 'critique 546 foreground'   (r3: 2 failed, r4: 2 passed)
+//   vitest -t 'critique failed initial persist'  (r3: failed, r4: passed)
+// r3 shared `flipAgentRecord` with the boot replay, so its "absent/unreadable
+// ⇒ don't flip" rule left the IN-MEMORY record `running` after a failed
+// pre-start — the #542 regression. r4 splits the two contracts:
+//   `settleLiveAgentRecord` (live): MEMORY always terminal, then retire from
+//     the disk tri-state (absent/terminal ⇒ retire; running/unreadable ⇒ keep);
+//   `flipAgentRecord` (boot): disk-only — a fresh process has no memory to trust.
+// =========================================================================
+describe("critique 546 foreground unreadable and absent record", () => {
+	for (const mode of ["unreadable", "absent"] as const) {
+		it.skipIf(process.platform === "win32")(`still flips memory on ${mode}`, async () => {
+			let recordPath = "";
+			mocks.session.prompt.mockImplementation(() => {
+				const id = (fakePi.appendEntry.mock.calls[0][1] as { id: string }).id;
+				recordPath = join(env.storageDir, `${id}.json`);
+				if (mode === "unreadable") chmodSync(recordPath, 0o000);
+				else rmSync(recordPath);
+				throw new Error("critique preflight");
+			});
+			try {
+				await expect(
+					spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: `critique ${mode}` }),
+				).rejects.toThrow("critique preflight");
+				const id = (fakePi.appendEntry.mock.calls[0][1] as { id: string }).id;
+
+				console.log("CRITIQUE_STATE", mode, JSON.stringify({
+					status: getAgent(id)?.status,
+					disk: existsSync(recordPath),
+					registry: listInflightRuns().map((e) => ({ id: e.id, marker: e.recordFlipPending })),
+				}));
+				// THE #542 PIN, in BOTH faults: this process's record is terminal,
+				// even though the disk tells two different stories below.
+				expect(getAgent(id)?.status).toBe("failed");
+
+				if (mode === "unreadable") {
+					// The store cannot be read, so nothing PROVES the flip landed:
+					// the marker survives for the next boot (fail-closed).
+					const leftover = listInflightRuns();
+					expect(leftover.map((e) => e.id)).toEqual([id]);
+					expect(leftover[0]?.recordFlipPending).toMatchObject({ status: "failed" });
+				} else {
+					// A confirmed-absent record is re-created terminal by the memory
+					// flip (`updateAgentStatus` persists), so nothing durable is left
+					// to repair and the marker is retired.
+					expect(JSON.parse(readFileSync(recordPath, "utf8")).status).toBe("failed");
+					expect(listInflightRuns()).toEqual([]);
+				}
+			} finally {
+				if (recordPath && existsSync(recordPath)) chmodSync(recordPath, 0o600);
+			}
+		});
+	}
+});
+
+it.skipIf(process.platform === "win32")("critique failed initial persist then permissions restored before preflight failure", async () => {
+	mkdirSync(env.storageDir, { recursive: true });
+	chmodSync(env.storageDir, 0o500);
+	mocks.session.prompt.mockImplementation(() => {
+		// The spawn's own record write failed (dir 0500) and the store is writable
+		// again BEFORE the pre-start failure. r3 pre-read the disk, saw nothing, and
+		// returned `retired` without touching memory: `{running, disk:false,
+		// registry:0}`. The #542 pin says the row must be terminal and the disk
+		// terminal (the memory flip re-creates the record).
+		chmodSync(env.storageDir, 0o700);
+		throw new Error("critique preflight");
+	});
+	try {
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "critique initial persist" }),
+		).rejects.toThrow("critique preflight");
+		const id = (fakePi.appendEntry.mock.calls[0][1] as { id: string }).id;
+		const recordPath = join(env.storageDir, `${id}.json`);
+		console.log("INITIAL_WRITE", JSON.stringify({
+			status: getAgent(id)?.status,
+			disk: existsSync(recordPath),
+			registry: listInflightRuns().length,
+		}));
+		expect({
+			status: getAgent(id)?.status,
+			disk: existsSync(recordPath),
+			registry: listInflightRuns().length,
+		}).toEqual({ status: "failed", disk: true, registry: 0 });
+	} finally {
+		chmodSync(env.storageDir, 0o700);
+	}
+});
+
+// =========================================================================
+// Issue #546 — the BOOT applier's own contract, ported from the 24-case probe
+// (H2d, H5). `flipAgentRecord` reads the DISK before deciding, so an
+// unreadable record is `false` (never a write), and a retry after the store
+// becomes writable attempts the write again instead of trusting memory.
+// =========================================================================
+describe("issue #546 — flipAgentRecord's disk-only contract (H2d, H5)", () => {
+	const plant = (id: string, status: string): string => {
+		mkdirSync(env.storageDir, { recursive: true });
+		const file = join(env.storageDir, `${id}.json`);
+		writeFileSync(
+			file,
+			JSON.stringify({ id, sessionId: id, type: "general-purpose", description: "d", status, startedAt: 1, task: "t", owner: { pid: 999999, start: "dead" } }, null, 2),
+			{ mode: 0o600 },
+		);
+		return file;
+	};
+
+	it.skipIf(process.platform === "win32")("H2d: the APPLIER refuses an unreadable record (false, no write)", () => {
+		const id = crypto.randomUUID();
+		const file = plant(id, "running");
+		chmodSync(file, 0o000);
+		try {
+			expect(flipAgentRecord(id, "failed", "e")).toBe(false);
+		} finally {
+			chmodSync(file, 0o600);
+		}
+		expect(listInflightRuns()).toEqual([]); // the applier never touches the registry
+	});
+
+	it.skipIf(process.platform === "win32")("H5: a same-process retry attempts the write again once the store is writable", () => {
+		const id = crypto.randomUUID();
+		const file = plant(id, "running");
+		chmodSync(file, 0o400);
+		try {
+			expect(flipAgentRecord(id, "failed", "e")).toBe(false); // persistAgent swallowed EACCES
+			expect(JSON.parse(readFileSync(file, "utf8")).status).toBe("running");
+		} finally {
+			chmodSync(file, 0o600);
+		}
+
+		expect(flipAgentRecord(id, "failed", "e")).toBe("repaired");
+		expect(JSON.parse(readFileSync(file, "utf8")).status).toBe("failed");
+		expect(readAgentRecordFromDisk(id).record?.status).toBe("failed");
 	});
 });

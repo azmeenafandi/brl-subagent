@@ -13,10 +13,28 @@
  * the module with `vi.resetModules()` after setting the env vars.
  */
 
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ORIGINAL_LEVEL = process.env.BRL_LOG_LEVEL;
 const ORIGINAL_CONSOLE = process.env.BRL_LOG_CONSOLE;
+
+/** #543: per-test throwaway cwd so the file half of the contract is observable. */
+const tempDirs: string[] = [];
+function tempCwd(): string {
+	const dir = mkdtempSync(join(tmpdir(), "brl-log543-"));
+	tempDirs.push(dir);
+	return dir;
+}
+function readLog(cwd: string): string {
+	try {
+		return readFileSync(join(cwd, ".pi", "subagent-logs", "brl-subagent.log"), "utf-8");
+	} catch {
+		return "";
+	}
+}
 
 function restoreEnv(name: string, value: string | undefined): void {
 	if (value === undefined) {
@@ -42,6 +60,9 @@ describe("logging configuration (issues #235, #265)", () => {
 		logSpy.mockRestore();
 		warnSpy.mockRestore();
 		errorSpy.mockRestore();
+		// Before resetModules: a later run must not resurrect a removed dir.
+		// Before resetModules: a later write must not resurrect a removed dir.
+		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 		restoreEnv("BRL_LOG_LEVEL", ORIGINAL_LEVEL);
 		restoreEnv("BRL_LOG_CONSOLE", ORIGINAL_CONSOLE);
 		vi.resetModules();
@@ -52,16 +73,15 @@ describe("logging configuration (issues #235, #265)", () => {
 	 * Pass "1" for `consoleEnv` to observe emitted entries through the opt-in
 	 * console mirror; pass `undefined` to assert the file-only default.
 	 */
-	async function freshLogger(level: string | undefined, consoleEnv: string | undefined) {
+	async function freshLogger(level: string | undefined, consoleEnv: string | undefined, cwd?: string) {
 		restoreEnv("BRL_LOG_LEVEL", level);
 		restoreEnv("BRL_LOG_CONSOLE", consoleEnv);
 		// Re-import per call: minLevel/consoleOutput are module state, so a second
 		// import in the same test would reuse the already-evaluated module.
 		vi.resetModules();
-		// No cwd passed: file output is skipped, so console output (when enabled) is
-		// what we assert on.
+		// Without a cwd, file output is skipped and console output is what we assert on.
 		const mod = await import("../logging");
-		return { mod, log: mod.createLogger("test") };
+		return { mod, log: mod.createLogger("test", cwd) };
 	}
 
 	it("defaults to info — debug is suppressed, info is emitted", async () => {
@@ -171,5 +191,300 @@ describe("logging configuration (issues #235, #265)", () => {
 		mod.setConsoleOutput(false);
 		log.info("silent again");
 		expect(logSpy).toHaveBeenCalledTimes(1);
+	});
+
+	// --- #543: a mirror fault must not throw out of `log.*` NOR skip the file write (still attempted once per call). ---
+
+	it("swallows a throwing console.warn and still appends the file entry (#543)", async () => {
+		const cwd = tempCwd();
+		warnSpy.mockImplementation(() => {
+			throw new Error("console blew up");
+		});
+		const { log } = await freshLogger(undefined, "1", cwd);
+
+		expect(() => log.warn("warn survived")).not.toThrow();
+		expect(warnSpy).toHaveBeenCalledTimes(1);
+		expect(readLog(cwd)).toContain('"level":"warn"');
+		expect(readLog(cwd)).toContain("warn survived");
+	});
+
+	it("swallows a throwing console.error and still appends the file entry (#543)", async () => {
+		const cwd = tempCwd();
+		errorSpy.mockImplementation(() => {
+			throw new Error("console blew up");
+		});
+		const { log } = await freshLogger(undefined, "1", cwd);
+
+		expect(() => log.error("error survived")).not.toThrow();
+		expect(errorSpy).toHaveBeenCalledTimes(1);
+		expect(readLog(cwd)).toContain('"level":"error"');
+		expect(readLog(cwd)).toContain("error survived");
+	});
+
+	it("swallows a throwing console.log and still appends the file entry (#543)", async () => {
+		const cwd = tempCwd();
+		logSpy.mockImplementation(() => {
+			throw new Error("console blew up");
+		});
+		const { log } = await freshLogger(undefined, "1", cwd);
+
+		expect(() => log.info("info survived")).not.toThrow();
+		expect(logSpy).toHaveBeenCalledTimes(1);
+		expect(readLog(cwd)).toContain('"level":"info"');
+		expect(readLog(cwd)).toContain("info survived");
+	});
+
+	it("contains an absent console method (console.warn === undefined) (#543)", async () => {
+		const cwd = tempCwd();
+		// `realWarn` AFTER mockRestore — before it, console.warn IS the spy.
+		warnSpy.mockRestore();
+		const realWarn = console.warn;
+		// @ts-expect-error — a console with no `warn` at all is the hostile shape
+		console.warn = undefined;
+		const { log } = await freshLogger(undefined, "1", cwd);
+		try {
+			expect(() => log.warn("absent method survived")).not.toThrow();
+		} finally {
+			console.warn = realWarn;
+		}
+		expect(readLog(cwd)).toContain("absent method survived");
+	});
+
+	it("contains a console whose property ACCESS throws — selection inside the guard (#543)", async () => {
+		const cwd = tempCwd();
+		const realConsole = globalThis.console;
+		const { log } = await freshLogger(undefined, "1", cwd);
+		globalThis.console = new Proxy(realConsole, {
+			get(target, prop, receiver) {
+				if (prop === "warn") throw new Error("get trap blew up");
+				return Reflect.get(target, prop, receiver);
+			},
+		});
+		try {
+			expect(() => log.warn("proxy survived")).not.toThrow();
+		} finally {
+			globalThis.console = realConsole;
+		}
+		expect(readLog(cwd)).toContain("proxy survived");
+	});
+
+	it("leaves the disabled mirror unchanged under a throwing console (#543)", async () => {
+		const cwd = tempCwd();
+		warnSpy.mockImplementation(() => {
+			throw new Error("console blew up");
+		});
+		const { log } = await freshLogger(undefined, undefined, cwd);
+
+		expect(() => log.warn("mirror off")).not.toThrow();
+		expect(warnSpy).not.toHaveBeenCalled();
+		expect(readLog(cwd)).toContain("mirror off");
+	});
+
+	it("keeps mirroring after a swallowed fault — same module instance (#543)", async () => {
+		const cwd = tempCwd();
+		warnSpy.mockImplementationOnce(() => {
+			throw new Error("console blew up");
+		});
+		const { log } = await freshLogger(undefined, "1", cwd);
+
+		expect(() => log.warn("faulting call")).not.toThrow();
+		log.warn("healthy after fault");
+
+		// Once per call, every call: a transient fault must not disable the mirror
+		// for the rest of the process (#543 review, G1).
+		expect(warnSpy).toHaveBeenCalledTimes(2);
+		expect(warnSpy).toHaveBeenLastCalledWith("[test] WARN: healthy after fault");
+		expect(readLog(cwd)).toContain("faulting call");
+		expect(readLog(cwd)).toContain("healthy after fault");
+	});
+
+	// --- #545: a cyclic/BigInt/hostile `data` payload must not throw out of `log.*` ---
+
+	it("collapses a cyclic `data` payload to `[Circular]` and still logs it (#545)", async () => {
+		const cwd = tempCwd();
+		// The cycle is caller-side and self-referential — the shape the bare
+		// `JSON.stringify` refused, which also suppressed the mirror and the write.
+		const cyclic: Record<string, unknown> = { a: 1 };
+		cyclic.self = cyclic;
+		const { log } = await freshLogger(undefined, "1", cwd);
+
+		expect(() => log.info("cyclic payload", cyclic)).not.toThrow();
+		// The mirror is reached for a payload the replacer had to rewrite.
+		expect(logSpy).toHaveBeenCalledTimes(1);
+		expect(logSpy).toHaveBeenCalledWith("[test] INFO: cyclic payload");
+		expect(readLog(cwd)).toContain('"data":{"a":1,"self":"[Circular]"}');
+		expect(readLog(cwd)).toContain("cyclic payload");
+	});
+
+	it("encodes a `BigInt` in `data` as its decimal literal (#545)", async () => {
+		const cwd = tempCwd();
+		const { log } = await freshLogger(undefined, undefined, cwd);
+
+		expect(() => log.info("bigint payload", { count: 10n, neg: -3n })).not.toThrow();
+		expect(readLog(cwd)).toContain('"data":{"count":"10n","neg":"-3n"}');
+		expect(readLog(cwd)).toContain("bigint payload");
+	});
+
+	it("emits a marker entry when a payload's own `toJSON` throws (#545)", async () => {
+		const cwd = tempCwd();
+		const hostile = {
+			toJSON() {
+				throw new Error("toJSON blew up");
+			},
+		};
+		const { log } = await freshLogger(undefined, undefined, cwd);
+
+		expect(() => log.info("toJSON payload", hostile)).not.toThrow();
+		expect(readLog(cwd)).toContain('"data":{"[unserializable]":"toJSON blew up"}');
+		expect(readLog(cwd)).toContain("toJSON payload");
+	});
+
+	it("emits a marker entry for a `data` Proxy whose `toJSON` get trap throws (#545)", async () => {
+		const cwd = tempCwd();
+		// A `get` trap alone: the `toJSON` lookup is the throw site here, a
+		// distinct path from the `ownKeys` case below.
+		const hostile = new Proxy(
+			{ a: 1 },
+			{
+				get() {
+					throw new Error("get trap blew up");
+				},
+			},
+		);
+		const { log } = await freshLogger(undefined, undefined, cwd);
+
+		expect(() => log.info("get trap payload", hostile)).not.toThrow();
+		expect(readLog(cwd)).toContain('"data":{"[unserializable]":"get trap blew up"}');
+		expect(readLog(cwd)).toContain("get trap payload");
+	});
+
+	it("emits a marker entry for a `data` Proxy whose `ownKeys` trap throws (#545)", async () => {
+		const cwd = tempCwd();
+		// No `get` trap: the `toJSON` lookup succeeds (undefined) and the fault lands on
+		// [[OwnPropertyKeys]] instead — a distinct path from the `get` case above.
+		const hostile = new Proxy(
+			{ a: 1 },
+			{
+				ownKeys() {
+					throw new Error("ownKeys trap blew up");
+				},
+			},
+		);
+		const { log } = await freshLogger(undefined, undefined, cwd);
+
+		expect(() => log.info("ownKeys payload", hostile as Record<string, unknown>)).not.toThrow();
+		expect(readLog(cwd)).toContain('"data":{"[unserializable]":"ownKeys trap blew up"}');
+		expect(readLog(cwd)).toContain("ownKeys payload");
+	});
+
+	it("falls back to `unknown fault` when the fault's own `.message` getter throws (#545)", async () => {
+		const cwd = tempCwd();
+		// The thrown value is not an Error: reading `.message` throws, so an unguarded
+		// reason read would re-throw out of `log.*` from inside the fallback itself.
+		const hostileFault = {
+			get message(): string {
+				throw new Error("message getter blew up");
+			},
+		};
+		const { log } = await freshLogger(undefined, undefined, cwd);
+
+		expect(() =>
+			log.info("hostile fault", {
+				toJSON() {
+					throw hostileFault;
+				},
+			}),
+		).not.toThrow();
+		expect(readLog(cwd)).toContain('"data":{"[unserializable]":"unknown fault"}');
+		expect(readLog(cwd)).toContain("hostile fault");
+	});
+
+	it("coerces a non-string prefix on the fallback path and keeps the line (#545)", async () => {
+		const cwd = tempCwd();
+		// `prefix` is typed `string`; a JS caller can still violate it. Without the
+		// coercion the raw value is spread back into the marker entry, so a BigInt
+		// prefix throws *inside* the fallback and the line is lost.
+		const hostile = {
+			get boom(): string {
+				throw new Error("getter blew up");
+			},
+		};
+		const { mod } = await freshLogger(undefined, undefined, cwd);
+		const log = mod.createLogger(10n as unknown as string, cwd);
+
+		expect(() => log.info("bad prefix", hostile)).not.toThrow();
+		expect(readLog(cwd)).toContain('"prefix":"[unprintable prefix]"');
+		expect(readLog(cwd)).toContain('"data":{"[unserializable]":"getter blew up"}');
+	});
+
+	it("keeps the exact entry shape and key order for serialisable `data` (#545)", async () => {
+		const cwd = tempCwd();
+		const { log } = await freshLogger(undefined, undefined, cwd);
+
+		log.info("shape pinned", { agentId: "a1", task: "t" });
+
+		// The replacer runs on EVERY entry: envelope and key order stay byte-identical.
+		const line = readLog(cwd).trim();
+		expect(line).toMatch(
+			/^\{"timestamp":"[^"]+","level":"info","prefix":"test","message":"shape pinned","data":\{"agentId":"a1","task":"t"\}\}$/,
+		);
+		expect(JSON.parse(line)).toEqual({
+			timestamp: expect.any(String),
+			level: "info",
+			prefix: "test",
+			message: "shape pinned",
+			data: { agentId: "a1", task: "t" },
+		});
+	});
+
+	it("keeps a shared non-circular reference intact — ancestor tracking, not a seen-set (#545)", async () => {
+		const cwd = tempCwd();
+		// One object, two keys: a seen-set rewrites the second copy; tracking only
+		// the current ancestor path keeps both.
+		const shared = { id: 1 };
+		const { log } = await freshLogger(undefined, undefined, cwd);
+
+		log.info("shared reference", { left: shared, right: shared });
+		expect(readLog(cwd)).toContain('"data":{"left":{"id":1},"right":{"id":1}}');
+	});
+
+	it("keeps logging after a swallowed payload fault — same module instance (#545)", async () => {
+		const cwd = tempCwd();
+		// A throwing getter, deliberately not a cycle: a cycle never reaches the
+		// whole-stringify catch, so a latch planted there would be invisible.
+		const hostile = {
+			get boom(): string {
+				throw new Error("getter blew up");
+			},
+		};
+		const { log } = await freshLogger(undefined, "1", cwd);
+
+		expect(() => log.warn("faulting payload", hostile)).not.toThrow();
+		// r2: the getter path keeps its own byte-exact marker — a marker-text regression
+		// on this path must be red here, not only on the `toJSON` case.
+		expect(readLog(cwd)).toContain('"data":{"[unserializable]":"getter blew up"}');
+		log.warn("healthy after fault");
+
+		expect(warnSpy).toHaveBeenCalledTimes(2);
+		expect(warnSpy).toHaveBeenLastCalledWith("[test] WARN: healthy after fault");
+		expect(readLog(cwd)).toContain("faulting payload");
+		expect(readLog(cwd)).toContain("healthy after fault");
+	});
+
+	it("coerces a non-string message on the fallback path and keeps the line (#545)", async () => {
+		const cwd = tempCwd();
+		// `message` is typed `string`; a JS caller can still violate it. Without the
+		// coercion the raw value is spread back into the marker entry, so a BigInt
+		// message throws *inside* the fallback and the line is lost.
+		const hostile = {
+			get boom(): string {
+				throw new Error("getter blew up");
+			},
+		};
+		const { log } = await freshLogger(undefined, undefined, cwd);
+
+		expect(() => log.info(10n as unknown as string, hostile)).not.toThrow();
+		expect(readLog(cwd)).toContain('"message":"[unprintable message]"');
+		expect(readLog(cwd)).toContain('"data":{"[unserializable]":"getter blew up"}');
 	});
 });

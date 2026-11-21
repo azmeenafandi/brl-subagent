@@ -612,6 +612,13 @@ resolve_head_sha() {
         HEAD_ERROR="'gh pr view ${pr} --json headRefOid' failed: ${out//$'\n'/ }"
         return 1
     fi
+    # gh builds may print a polling-hint block on stdout before the value, so take the last
+    # non-empty line and fail closed unless it is a full object id.
+    out="$(printf '%s\n' "${out}" | awk 'NF { last = $0 } END { print last }')"
+    if ! [[ "${out}" =~ ^[0-9a-f]{40}$ ]]; then
+        HEAD_ERROR="'gh pr view ${pr} --json headRefOid' returned no commit sha: ${out}"
+        return 1
+    fi
     HEAD_SHA="${out}"
     return 0
 }

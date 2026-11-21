@@ -1,0 +1,36 @@
+# Plan critique r1 — #545 log-data serialisation spec
+
+**Critic:** `project-plan-critic` (`gpt-6.1-terra`, pinned `thinkingLevel: medium`) · **Audited HEAD:** `809e658` (spec r1), repository unchanged
+**Jev (critique dispatch):** `xhigh (0.44) · C2 · worktree n` · **Verdict: needs-work** (2 major, 3 minor)
+
+## Findings
+
+| Severity | Plan location | Gap | Evidence (command + result) | Suggested fix |
+|---|---|---|---|---|
+| **major** | §§3 falsifier 2, 10, 12.4 | The log **is parsed** outside `src` and `scripts`. A newly emitted marker entry can break a consumer. | `git grep -l -E 'brl-subagent\.log\|subagent-logs' -- src scripts .pi/skills/worktree` found 13 files, including `.pi/skills/worktree/jev-check.mjs` and `sprint-metrics.py`. Feeding a real fixed-logger marker entry for `Background agent spawned` to the latter's `read_spawn_starts` threw `AttributeError: 'str' object has no attribute 'get'`. `jev-check --log` instead failed closed, exit 1. | Reassess the marker against both consumers and decide how to handle the incompatible shape. **Falsifier:** a marker spawn entry crashes a supported consumer or silently passes its gate. |
+| **major** | §§4.4, 6 cases 4 and 7, 11 | The tests do not enforce marker preservation for a getter or the guarded error-reason read. Case 4's `get` trap fires before `ownKeys`, so it does not test the latter either. | In the scratch test tree, replacing only the getter-fault marker with `"lost getter data"` still gave **24P**; removing the `faultReason` guard also gave **24P**. A real `ownKeys`-only proxy separately produced the expected marker. | Assert the getter's exact marker; test a thrown value whose `.message` getter throws and an `ownKeys`-only proxy. **Falsifiers:** either mutant passes, or an `ownKeys` fault escapes or loses its marker. |
+| minor | §§4.5, 5.1, 10 | Fallback totality is overstated for arbitrary JS callers: the spread retains an unchecked `prefix`. The non-string-message residual also applies only on fallback, not every call. Direct `-0n` data is omitted by the existing truthiness check, not encoded. | A real fixed-logger probe with `createLogger(10n, cwd)` and a throwing data getter escaped with `TypeError: Do not know how to serialize a BigInt`. A healthy numeric message remained numeric; direct `-0n` produced no `data` field. | Either constrain the totality claim to the typed `prefix`/message contract or cover the broader inputs. State that `-0n` becomes `"0n"` **when reached by the replacer**; falsy root data remains omitted. |
+| minor | §5.1 helper comment; §§5.3, 10 | The proposed helper comment promises the line and message "still reach the file," although no cwd means no file attempt and the sink still swallows write failures. | `src/logging.ts` resolves `logDir` conditionally and retains the file `catch {}`; the #543 critique explicitly rejected the same unconditional persistence claim. | Describe preservation through serialization and a subsequent **conditional file-write attempt**, not guaranteed persistence. |
+| minor | §§8.6, 9 | The recorded flow run did not use a head carrying the claimed three-file diff. | `git -C ~/.cache/brl-subagent/scratch/spec-545/repo show --stat c55c102` lists only `logging.ts` and its test; the doc edit is in `7713c00`, which also adds a scratch `ARCHITECTURE.md` artifact. The recorded command nevertheless returned `+111/+48`, allowance 216. | Correct the artifact provenance. Retain the required final-PR-head gate; **falsifier:** its actual output differs from the estimate. |
+
+## Verified sound
+
+- Audited HEAD `809e65826ebc5cec9ecd975ba48c9dc4ddc3e5aa`; repository remained unchanged. The issue was read in full.
+- Independent scratch runs reproduced fixed **24P**, M1 **5F/19P**, and M2, M3, M7 each **1F/23P**, with exactly the claimed failing names. Replacing case 7's getter with a cycle made M7 pass **24P**.
+- Real logger probes confirmed root and array cycles, a cycle returned by `toJSON`, and shared sibling references; `10n`, `undefined`/function data and key ordering behaved as expected. Environment-enabled and setter-enabled mirrors each received one cyclic call.
+- The guarded reason produced byte-exact `unknown fault` markers for both a throwing `.message` getter and a thrown primitive. The seven tests use the existing per-case temp cleanup and module resets.
+- `git diff --numstat` on the scratch artifacts confirms `+49/−1` source, `+5/−5` doc and `+111` tests; arithmetic gives allowance 216, within by 105. The `safeLog` doc correction is in scope, with the persistence qualification above.
+
+## Open questions
+
+- None requiring a conductor decision beyond the consumer-compatibility choice above. The codegraph results and the real final-PR-head flow gate were not independently verified; the latter cannot run against the unimplemented head.
+
+## Conductor decisions for r2
+
+1. **Marker shape → an object.** `data` becomes `{ "[unserializable]": "<reason>" }`, not a string. Evidence for the choice (read from both consumers): `sprint-metrics.read_spawn_starts` does `d.get("data") or {}` then `data.get("agentId")` — a string crashes it (`AttributeError`, reproduced by the critic); a dict degrades to `.get(...) → None` and the entry counts with the timestamp fallback id. `jev-check --log` reads `data.task` and **fails closed** on a marker either way — correct posture (a destroyed dispatch payload must never pass the audit), and unreachable from the tooling's own entries, whose `data` is plain strings/numbers. The spec must state the two consumers and this trade-off (§3 falsifier 2, §10, §12.4).
+2. **Tests:** pin case 7's getter marker byte-exactly; add a case for a thrown value whose `.message` getter throws (`unknown fault`, kills an unguarded `faultReason`); add an `ownKeys`-only Proxy case (distinct from case 4's `get` trap). Cases 8/9 are red on base? Measure — the `ownKeys` proxy throws on base, the hostile-message case throws too (so both red).
+3. **Fallback totality:** coerce `prefix` like `message` (`"[unprintable prefix]"`); scope the totality claim to the logger's **typed API** (`prefix`/`message` are `string`); a JS caller violating the types gets the placeholder where the fallback runs. State that the message coercion is a fallback-path behaviour, and that a healthy call with a non-string message serialises it as-is (JSON number, etc.).
+4. **Wording:** `json`-level precision on `-0n` — the replacer encodes it only **when reached through a truthy container**; a direct falsy root `data` (`0n`, `-0n`, `""`) is omitted by the existing truthiness check. The helper comment says the line is serialised and reaches a **conditional file-write attempt**, not that it reaches the file.
+5. **Flow provenance:** restate honestly — the measured `--flow` head carried `logging.ts` + its test only (`+49/−1`, `+111`); the §5.3 doc edit is net 0 and was in a different scratch commit. The final-PR-head run against `dev` is the gate; its output replaces the estimate.
+
+**r2 must carry a "r1 → r2 changes" table** (one row per finding above, with the measured resolution), the corrected marker contract, the new/updated test table (with red-on-base for each), and a re-run of the mutants it touches (M4/M5/M6/M8 plus the new marker shape; the getter-marker and `ownKeys` mutants are new).

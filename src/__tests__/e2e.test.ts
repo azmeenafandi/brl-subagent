@@ -94,7 +94,9 @@ describe("Tier 1: Jiti integration tests", () => {
       const { validatePreTask } = jiti("./validate");
       const result = validatePreTask({
         task: "Create a new file with the API endpoint",
-        toolOptions: { tools: ["read", "bash", "grep"], excludeTools: ["write", "edit"] },
+        // No bash either: bash can create a file, so the create CAPABILITY
+        // would exist and this fixture would stop proving a missing one (#537).
+        toolOptions: { tools: ["read"], excludeTools: ["write", "edit"] },
       });
       expect(result.valid).toBe(true);
       expect(result.warnings.length).toBeGreaterThan(0);

@@ -47,7 +47,14 @@ import {
 import { clearHeadState, readHeadState, writeHeadState, HEAD_STATE_VERSION } from './headstate';
 import { effectiveBackgroundBudget } from './validate';
 import { currentProcessOwner, classifyOwner, defaultRecoveryDeps } from './recovery';
-import { persistRunRecord, listInflightRuns, clearInflightRun, type InflightRun } from './run-registry';
+import {
+	persistRunRecord,
+	listInflightRuns,
+	clearInflightRun,
+	markRecordFlipPending,
+	type InflightRun,
+	type RecordFlipStatus,
+} from './run-registry';
 import { isTransportRetryable } from './transport-retry';
 import { ensureOwnerOnlyDir, repairOwnerOnlyFiles } from './store-permissions';
 import { buildEngineeringBarSection } from './engineering-bar';
@@ -130,6 +137,51 @@ function isStuckTerminalOwner(runId: string): boolean {
 export function __testResetGitBranchLocks(): void {
   gitBranchLocks.clear();
   gitBranchLockOwners.clear();
+}
+
+/**
+ * Issue #450 (D5): `prompt()`'s rejection value and a synchronous throw are both
+ * `unknown` by contract, and a normaliser that is not TOTAL replaces the failure
+ * it describes: `String(reason)` throws for a hostile `toPrimitive`/Proxy, and
+ * `reason instanceof Error` throws for a Proxy whose `getPrototypeOf` trap
+ * throws (spec E18 — pre-fix the caller received `Error: conversion failed`
+ * instead of its own throw). Every branch below is total.
+ */
+function normalizeThrown(thrown: unknown): Error {
+  try {
+    return thrown instanceof Error ? thrown : new Error(String(thrown));
+  } catch {
+    return new Error('unprintable thrown value');     // never a second throw
+  }
+}
+
+/**
+ * Issue #450 (D5): the message of an arbitrary thrown value, total for EVERY
+ * input — including an Error-shaped Proxy whose `.message` getter throws.
+ */
+function thrownMessage(thrown: unknown): string {
+  try {
+    return normalizeThrown(thrown).message;
+  } catch {
+    return 'unprintable thrown value';                // an Error-shaped Proxy whose .message throws
+  }
+}
+
+/**
+ * Issue #450 (D5): a log call on an ERROR path must never replace the error it
+ * reports — a throwing sink becomes the caller's error and skips every later
+ * step of the cleanup. Both sink faults are now contained at the sink itself:
+ * #543 the console mirror (swallowed like a file-write fault), #545 the entry
+ * build (`JSON.stringify` on a cyclic or `BigInt` `data` used to throw). This
+ * wrapper stays as belt-and-braces, local to the settle/pre-start paths, where
+ * a third fault class would otherwise become the caller's error.
+ */
+function safeLog(write: () => void): void {
+  try {
+    write();
+  } catch {
+    // a throwing sink must not mask the original throw nor skip a later step
+  }
 }
 
 // Robust UUID generation with fallback
@@ -465,14 +517,12 @@ function persistAgent(agent: BackgroundAgent): void {
   // F24: agent.id may come from a disk-loaded record (loadAgent JSON.parse's
   // the id field unvalidated). A planted record with a traversal id would
   // make join() escape STORAGE_DIR — validate BEFORE building the write path.
-  try {
-    assertSafeAgentId(agent.id);
-  } catch {
+  const filePath = agentRecordPath(agent.id);
+  if (!filePath) {
     log.error(`Refusing to persist agent with invalid id: ${agent.id}`);
     return;
   }
   ensureStorageDir();
-  const filePath = join(STORAGE_DIR, `${agent.id}.json`);
   // Strip live/non-serializable fields before stringify — `_sessionRef` holds the
   // ENTIRE live pi session graph (1.4MB+ for an empty session, and uninitialized
   // getters like Theme can make JSON.stringify throw). `_sessionFile` (U2) is the
@@ -492,16 +542,65 @@ function persistAgent(agent: BackgroundAgent): void {
 }
 
 /**
- * Load agent record from disk
+ * The agent store's record path for `id`: `<STORAGE_DIR>/<id>.json`.
+ *
+ * F24: ids reach the store from disk and from LLM tool params, and `join` does
+ * not sanitize `../` or absolute segments — validate BEFORE building the write
+ * path. `null` means "no record is addressable for this id" (the writer could
+ * never have created one), which every reader treats as absent.
+ *
+ * Issue #546 (major 2): the ONE path helper. `persistAgent`, `loadAgent`, the
+ * tri-state reader and `flipAgentRecord` all build the path here, so the
+ * absence test and the write target cannot drift apart.
  */
-function loadAgent(id: string): BackgroundAgent | null {
-  const filePath = join(STORAGE_DIR, `${id}.json`);
-  if (!existsSync(filePath)) return null;
+function agentRecordPath(id: string): string | null {
   try {
-    return JSON.parse(readFileSync(filePath, 'utf-8'));
+    assertSafeAgentId(id);
   } catch {
     return null;
   }
+  return join(STORAGE_DIR, `${id}.json`);
+}
+
+/**
+ * Issue #546 (major 2): the disk-only, TRI-STATE read of one agent record.
+ *
+ * `loadAgent` collapses "there is no record" and "there is a record I cannot
+ * parse" into `null`, and the flip must not: the first means nothing durable can
+ * go stale (retire the marker), the second means we know nothing (keep it).
+ * `exists` is the stat of the validated path, so a chmod-000 or corrupt file
+ * reports `{ record: null, exists: true }`.
+ */
+export function readAgentRecordFromDisk(id: string): { record: BackgroundAgent | null; exists: boolean } {
+  const filePath = agentRecordPath(id);
+  if (!filePath) return { record: null, exists: false };
+  try {
+    statSync(filePath);
+  } catch (err) {
+    // ONLY `ENOENT` is a CONFIRMED absence. `existsSync` also answers false when a
+    // parent directory cannot be traversed (EACCES): reporting that as absence
+    // lets the flip retire a marker over a record that is still `running`
+    // (r2 major 1). An uncertain stat is treated like an unreadable record —
+    // `exists: true`, `record: null` — so the marker is kept and counted failed.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { record: null, exists: false };
+    log.warn(`Could not stat agent record ${id} — treating it as unreadable`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { record: null, exists: true };
+  }
+  try {
+    return { record: JSON.parse(readFileSync(filePath, 'utf-8')), exists: true };
+  } catch {
+    return { record: null, exists: true };
+  }
+}
+
+/**
+ * Load agent record from disk. `null` on absent OR unreadable — use
+ * `readAgentRecordFromDisk` wherever the difference matters (issue #546).
+ */
+function loadAgent(id: string): BackgroundAgent | null {
+  return readAgentRecordFromDisk(id).record;
 }
 
 /**
@@ -650,6 +749,12 @@ function isSafeAgentId(id: string): boolean {
     return false;
   }
 }
+
+/**
+ * Issue #546: what a record flip actually did — the value the boot ledger counts
+ * (see `flipAgentRecord`). `false` is the fail-closed "not settled" outcome.
+ */
+export type AgentFlipOutcome = 'repaired' | 'retired' | false;
 
 export function isTerminalAgentStatus(status: AgentStatus): boolean {
   return status === 'completed' || status === 'failed' || status === 'stopped';
@@ -1104,6 +1209,134 @@ export function updateAgentStatus(id: string, status: AgentStatus, error?: strin
   }
 
   return agent;
+}
+
+/**
+ * Issue #546: the agent-record step, in its TWO contracts — ONE shared disk
+ * verdict, two different assumptions BEFORE the write.
+ *
+ * `settleLiveAgentRecord` is the LIVE pre-start writer (#542's pin). It runs in
+ * the process that owns the in-memory map, so the MEMORY record must become
+ * terminal in EVERY fault — an absent record, an unreadable record, a persist
+ * that `persistAgent` swallows. A `running` memory row after a failed pre-start
+ * is a lie this same process is still asked about (`get_subagent_result`,
+ * `get_agent_status`), and it is exactly what #542 fixed: r3 reintroduced it by
+ * making the live writer share the boot's disk-only decision.
+ *
+ * `flipAgentRecord` is the boot REPLAY (`recoverInflightRuns`'s
+ * `applyRecordFlip`). A fresh process has no memory to trust, so it decides from
+ * the DISK alone: absent ⇒ retire; present-but-unreadable ⇒ keep the marker and
+ * count a failure; `running` + a provably dead owner ⇒ flip (the flip itself
+ * loads the record into memory); already terminal ⇒ retire with no write.
+ *
+ * RETIREMENT IS THE SAME RULE ON BOTH SIDES: retire only when the disk is
+ * terminal or PROVABLY absent (`ENOENT`); keep the marker when the disk is
+ * `running` or unreadable. That is `terminalVerdictAfterWrite`.
+ *
+ * TOTAL: neither function throws. The outcome vocabulary:
+ *
+ *   - `'retired'`  — nothing durable is left to repair: no record is stored, or
+ *     (replay only) it was already terminal, so no `completedAt` re-stamp and no
+ *     second `subagent:failed`. The marker may be retired;
+ *   - `'repaired'` — the record was written and the store says terminal;
+ *   - `false`      — the end state is UNCERTAIN: present-but-unreadable/corrupt,
+ *     a write that did not land, or a live id that is in neither the map nor the
+ *     store. The caller keeps the marker (fail-closed).
+ */
+export function flipAgentRecord(id: string, status: RecordFlipStatus, error?: string): AgentFlipOutcome {
+  // PRE-FLIP READ: the DISK, not the in-memory map (major 2 + 3). `getAgent` is
+  // memory-first, and that map is module state that can hold a record another
+  // process already flipped — deciding on it would re-stamp `completedAt` and
+  // re-emit `subagent:failed` for a run that is already settled. Reading the
+  // store first makes a boot that begins after another finished INERT, makes a
+  // same-process retry attempt the write again once the store is writable, and
+  // separates confirmed absence from present-but-unreadable.
+  const before = readAgentRecordFromDisk(id);
+  if (!before.exists) return 'retired';              // confirmed absence (or unsafe id)
+  if (!before.record) {
+    // Present but unreadable/corrupt: we know nothing, so we may not retire the
+    // only marker that can repair it.
+    log.warn(`Could not read the agent record for ${id} — keeping the record-flip marker`, {});
+    return false;
+  }
+  if (isTerminalAgentStatus(before.record.status)) return 'retired';  // replay is inert
+  let touched: BackgroundAgent | null = null;
+  try {
+    touched = updateAgentStatus(id, status, error);
+  } catch (err) {
+    log.warn(`Failed to flip the terminal record for ${id}`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  } finally {
+    // persistAgent strips the ref from the persisted copy anyway, so this is
+    // memory-only — and it must run even when the flip's own try failed.
+    if (touched) touched._sessionRef = undefined;
+  }
+  return terminalVerdictAfterWrite(id);
+}
+
+/**
+ * The DISK verdict after a terminal write, shared by both contracts above:
+ *
+ *   - `'repaired'` — the store says the record is terminal;
+ *   - `'retired'`  — no record is stored (confirmed `ENOENT`, or the id is not
+ *     addressable): nothing durable can go stale, so the marker's only purpose
+ *     is vacuous;
+ *   - `false`      — the store cannot tell: present-but-unreadable/corrupt, or
+ *     the write was swallowed and the record is STILL `running`. `false` is the
+ *     value that keeps the caller's marker for the next boot.
+ *
+ * `persistAgent` swallows write errors (V8), so a throw-free write is not a
+ * landed write: the verdict is read from the STORE, never inferred from a
+ * return value.
+ */
+function terminalVerdictAfterWrite(id: string): AgentFlipOutcome {
+  const after = readAgentRecordFromDisk(id);
+  if (!after.exists) return 'retired';               // vanished/writable: nothing durable left
+  if (!after.record) {
+    log.warn(`Could not re-read the agent record for ${id} after the flip`, {});
+    return false;
+  }
+  return isTerminalAgentStatus(after.record.status) ? 'repaired' : false;
+}
+
+/**
+ * Issue #546 r4 (the #542 pin): the LIVE writer's record step — MEMORY first,
+ * disk verdict second. TOTAL: it never throws.
+ *
+ * The memory write is NOT conditional on the disk. Whatever the store says —
+ * absent, unreadable, still `running` after a swallowed persist — this process's
+ * record must read terminal the moment the pre-start path returns. Only the
+ * RETIREMENT is conditional, and it is conditional on the disk:
+ *
+ *   disk absent        → `'retired'`  (nothing durable to repair: retire the marker)
+ *   disk terminal      → `'repaired'` (retire the marker)
+ *   disk `running`     → `false`      (a persist was swallowed: KEEP the marker)
+ *   disk unreadable    → `false`      (we cannot tell: KEEP the marker)
+ *
+ * `updateAgentStatus` returns `null` only when the id is in neither the map nor
+ * the store — impossible for an id this process just registered, and a `false`
+ * (keep the marker) if it ever happens, because then nothing is pinned.
+ *
+ * `_sessionRef` is NOT released here: the caller's release is a plain statement
+ * outside every `try` (it cannot throw and must always run) and `persistAgent`
+ * strips the ref from the persisted copy anyway.
+ */
+function settleLiveAgentRecord(id: string, status: RecordFlipStatus, error?: string): AgentFlipOutcome {
+  try {
+    if (!updateAgentStatus(id, status, error)) {
+      log.warn(`Could not settle the live agent record for ${id} — it is in neither the map nor the store`, {});
+      return false;
+    }
+  } catch (err) {
+    // Contained: `updateAgentStatus` mutates the map BEFORE it persists and
+    // emits, so the memory record is terminal even when this throws. The disk
+    // verdict below still decides whether the marker may be retired.
+    log.warn(`Failed to flip the terminal record for ${id}`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return terminalVerdictAfterWrite(id);
 }
 
 /**
@@ -1679,7 +1912,18 @@ export async function spawnBackgroundSession(
   const finalizeRunEntry = (
     status: "done" | "failed",
     error?: string,
-    terminal?: { stopReason?: string; errorCategory?: ErrorCategory; prune?: boolean },
+    terminal?: {
+      stopReason?: string;
+      errorCategory?: ErrorCategory;
+      prune?: boolean;
+      /**
+       * Issue #546: do NOT retire the registry entry here — the caller owns the
+       * retirement and performs it only once the record flip is durable. Only the
+       * pre-start terminal path passes this; every other writer keeps
+       * retire-then-append.
+       */
+      deferRetire?: boolean;
+    },
   ): SubagentRun | undefined => {
     // Issue #511 (U2): settling includes the scratch directory's `.done` marker.
     // This is the SINGLE terminal choke point for a background run (git-setup
@@ -1793,7 +2037,7 @@ export async function spawnBackgroundSession(
           ? { ...(run.originalParams ?? {}), errorCategory }
           : run.originalParams,
     };
-    persistRunRecord(pi, entry);
+    persistRunRecord(pi, entry, undefined, { deferRetire: terminal?.deferRetire });
     // Issue #453: set only AFTER the append resolved. A throwing write therefore
     // leaves `entryWritten === false`, so a later settle still classifies the run
     // instead of amending a record that was never written (mutant M3).
@@ -1856,7 +2100,7 @@ export async function spawnBackgroundSession(
         }
       } catch (err) {
         log.warn(`getCurrentBranch failed during cleanup for background agent ${id}`, {
-          error: (err as Error).message,
+          error: thrownMessage(err),
         });
         // Issue #466: KEEP the record — we cannot tell where the tree is, which
         // is exactly the crash-equivalent state the boot's retry is for.
@@ -1890,7 +2134,7 @@ export async function spawnBackgroundSession(
             : diffResult.diff;
         }
       } catch (err) {
-        log.warn(`captureDiff failed for background agent ${id}`, { error: (err as Error).message });
+        log.warn(`captureDiff failed for background agent ${id}`, { error: thrownMessage(err) });
       }
       try {
         const restoreResult = restoreHead(gitCwd, headState);
@@ -1903,12 +2147,12 @@ export async function spawnBackgroundSession(
           clearHeadState(headStateRepoRoot());
         }
       } catch (err) {
-        log.warn(`restoreHead failed for background agent ${id}`, { error: (err as Error).message });
+        log.warn(`restoreHead failed for background agent ${id}`, { error: thrownMessage(err) });
       }
       try {
         deleteBranch(gitCwd, workBranchName);
       } catch (err) {
-        log.warn(`deleteBranch failed for background agent ${id}`, { error: (err as Error).message });
+        log.warn(`deleteBranch failed for background agent ${id}`, { error: thrownMessage(err) });
       }
     } finally {
       releaseGitLock?.();
@@ -1924,6 +2168,94 @@ export async function spawnBackgroundSession(
   let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
 
   /**
+   * Issue #465 (b) / #466 (ADR 0026 D4) / #542: the terminal write for a run that
+   * was PROVABLY never issued — the branch refusals below and every pre-start
+   * throw end here. ONE definition.
+   *
+   * **ORDER.** The three writes run **run entry → record flip → transcript**. This
+   * is deliberately NOT #466's record-first order, for two measured reasons:
+   *
+   * 1. **Crash window.** A kill after the run-entry append **commits** and before
+   *    the record flip leaves a **`running` agent with a terminal run entry** — not
+   *    a terminal agent with an unfinalized run. The first residue costs a stale
+   *    row whose run entry already says `failed`, registry retired, session dir
+   *    pruned, and which no retry or interrupted-run surface can pick up
+   *    (§Residual window, **including the earlier window inside this step**). The
+   *    second is F1's: an unfinalized `running` run entry, a leaked registry
+   *    entry, and a retained session dir only a manual sweep removes.
+   * 2. **Reentrancy.** The `subagent:failed` event is emitted by the record flip —
+   *    the **second** write. So the run-entry prune/retention decision
+   *    (`finalizeRunEntry`'s `!agent.interruptedAt` gate) has already been taken
+   *    when a listener runs, and a listener that synchronously sets
+   *    `interruptedAt` cannot change the retention outcome. Under the record-first
+   *    order it can, and it does: measured, the directory survives.
+   *
+   * **ATTEMPTED, NOT COMMITTED.** The event follows the run-entry write being
+   * **attempted**, not its having been committed. `persistRunRecord` retires the
+   * registry **before** it appends (`run-registry.ts:345-352`), so an append that
+   * throws leaves no terminal entry; and **each step is contained separately** —
+   * every caller rethrows the ORIGINAL failure (`failPreStart(…); throw err`), so
+   * no step may replace it or suppress another (`updateAgentStatus` is total only
+   * through its error-reporting path, R1/D3; the transcript note is not total at
+   * all, R2). The consequence on the STEP-A fault is stated plainly: the record
+   * flip and the note still happen, so the residue is **`agent=failed` with the
+   * run entry uncommitted (`running`)** — the designed outcome of a fault, not a
+   * second defect, and pinned separately from the committed case (test (b)).
+   *
+   * **NOTHING IS CAPTURED and the ref is dropped INLINE, outside every `try`.**
+   * `captureAndReleaseSession` is not used here: it would fabricate a
+   * `finalOutput` for a session that never produced one, and it is declared below
+   * call site A — a TDZ reference there. `persistAgent` strips `_sessionRef`
+   * anyway, so the release is memory-only and must nonetheless always run (the
+   * issue's second bullet).
+   */
+  const markSpawnFailedBeforePrompt = (message: string): void => {
+    // STEP 0 (#546) — the durable INTENT, written while the registry entry still
+    // exists: retirement is an unlink, so a marker written after it has nowhere to
+    // live. Best-effort and total; `false` means the entry was already gone, in
+    // which case there is nothing for a crash to strand.
+    const marked = markRecordFlipPending(id, { status: 'failed', error: message, at: new Date().toISOString() });
+    if (!marked) {
+      // Issue #546 (major 1): a marker that did not land must NOT defer the
+      // retirement. With no durable intent, STEP A takes the PRE-#546 order
+      // (retire, then append) — a crash in its window is the historical residue
+      // (record `running`, entry gone, no marker: unrepairable by design), which
+      // is strictly better than an entry that looks repairable and is not.
+      // `writeAtomic` is temp-file + rename, so a failed write cannot leave a
+      // half-marked entry: the store holds either the old entry or the full one.
+      safeLog(() => log.warn(`spawnBackgroundSession: record-flip marker not written for ${id} — using the pre-#546 retire-then-append order`, {}));
+    }
+    try {                          // STEP A — run entry (+ retention/prune; retirement DEFERRED only when marked)
+      finalizeRunEntry('failed', message, { deferRetire: marked });
+    } catch (err) {
+      safeLog(() => log.warn(`spawnBackgroundSession: pre-start finalize failed for ${id}`,
+        { error: thrownMessage(err) }));
+    }
+    // STEP B — record flip (completedAt + error, emits subagent:failed). Issue
+    // #546 r4: the LIVE writer's variant — the MEMORY record becomes terminal in
+    // every fault (#542's pin), and only the RETIREMENT is decided from the disk.
+    // `landed === false` means the store is `running` or unreadable, so the
+    // marker must survive for the next boot.
+    const landed = settleLiveAgentRecord(id, 'failed', message);
+    try {                          // STEP C — transcript note (no-op+warn when the file is missing)
+      transcript.completeTranscript(id, 'failed');
+    } catch (err) {
+      safeLog(() => log.warn(`spawnBackgroundSession: pre-start transcript note failed for ${id}`,
+        { error: thrownMessage(err) }));
+    }
+    agent._sessionRef = undefined;  // outside every try — cannot throw, must always run
+    // STEP D (#546) — retire LAST, and only when the flip is durable. Retiring a
+    // run whose record is still `running` is the whole defect: the registry entry
+    // is the only thing a fresh process can read, so keeping it turns this crash
+    // into an ordinary interrupted candidate the next boot can finish.
+    if (marked && landed && !clearInflightRun(id)) {
+      // The record is settled but the entry survived (major 4): keep going — the
+      // next boot sees a terminal record and re-attempts only the retirement.
+      safeLog(() => log.warn(`spawnBackgroundSession: record settled but the registry entry survived for ${id} — the next boot retries the retirement`, {}));
+    }
+  };
+
+  /**
    * Issue #447: the pre-start cleanup. Every throw between the durable
    * dispatch records (agent record + run entry + registry entry, written
    * above) and `session.prompt()` funnels here: the transcript start, the
@@ -1934,45 +2266,45 @@ export async function spawnBackgroundSession(
    * was never issued nothing can be writing to that dir and no retry will be
    * offered for it, so there is no reader to retain it for.
    *
+   * "Never issued" is a CONTRACT, not an observation — issue #450 D2.1: it
+   * holds because the call site invokes (a) the SDK's own `async` `prompt`
+   * through (b) a plain property read, with (c) a side-effect-free argument.
+   * A wrapper/getter that starts the real method and then throws breaks all of
+   * that (spec E24: `live=true` after the synchronous throw); such a call shape
+   * must NOT reach this function. See the REGIME 1 comment at the call site.
+   *
    * The terminal write is best-effort so a throw in the cleanup cannot mask
    * the original spawn error: `persistRunRecord` retires the registry entry
    * BEFORE appending the entry, and `clearInflightRun` is idempotent, so the
    * residue is gone either way.
+   *
+   * Issue #542: STEP 2 is the FULL terminal flip — run entry, record flip and
+   * transcript note — via `markSpawnFailedBeforePrompt` (its contract comment
+   * above states the order, the attemptedness rule and the containment rule).
+   * The "pruning is provably safe here" argument above is unchanged by it.
    */
   const failPreStart = (message: string): void => {
     if (deadlineHandle) clearTimeout(deadlineHandle);
-    cleanupWorkBranch();
-    try {
-      finalizeRunEntry('failed', message);
+    // EVERY step is contained: a throw here would replace the original spawn failure at
+    // every call site (all do `failPreStart(...); throw err`).
+    try {                                      // STEP 1 — teardown (defence in depth, M18 green)
+      cleanupWorkBranch();
     } catch (err) {
-      log.warn(`spawnBackgroundSession: pre-start finalize failed for ${id}`, {
-        error: (err as Error).message,
-      });
+      safeLog(() => log.error(`spawnBackgroundSession: work-branch teardown failed for ${id} — the original spawn failure is preserved`,
+        { error: thrownMessage(err) }));
     }
-    clearInflightRun(id);
+    // STEP 2 — the FULL terminal flip (#542): marker, run entry, record flip and
+    // transcript note, each contained in the shared helper (which is total).
+    // #546: the helper also owns the registry retirement (its STEP D), because the
+    // retire is now conditional on the record flip being durable — a blanket
+    // `clearInflightRun` here would delete the marker that repairs this crash.
+    markSpawnFailedBeforePrompt(message);
   };
 
   /** The pre-start failure stamp: the issue's honest reason plus the cause. */
   const neverIssued = (err: unknown): string =>
     `${PROMPT_NEVER_ISSUED_MESSAGE}: ` +
     sanitizeErrorMessage(err instanceof Error ? err.message : String(err), effectiveCwd);
-
-  /**
-   * Issue #465 (b) / #466 (ADR 0026 D4): the terminal write for a branch
-   * dispatch refused before the prompt — record flip -> run entry ->
-   * transcript, the same three writes every refused spawn ends with. ONE
-   * definition for both pre-flight refusals AND the branch-setup-throw path
-   * below, so the sequence and its message cannot drift apart between them;
-   * each step is contained, because a cleanup fault must never mask the
-   * refusal itself.
-   */
-  const markBranchSpawnFailed = (message: string): void => {
-    try {
-      updateAgentStatus(id, 'failed', message);
-      finalizeRunEntry('failed', message);
-      transcript.completeTranscript(id, 'failed');
-    } catch { /* best-effort, same discipline as the setup-throw path */ }
-  };
 
   // Start transcript for this agent. Issue #447 (S2): a throw here used to
   // leave a `running` run entry and a live registry entry that the next boot
@@ -2098,14 +2430,14 @@ export async function spawnBackgroundSession(
       // Mirror the branch-setup-throw path below: the agent record was already
       // persisted as 'running' above, so a refusal that only THROWS leaves a
       // zombie row `get_subagent_result` reports as running forever (measured,
-      // #460 §4.4 — `failPreStart` alone stops at the run entry). Record flip ->
-      // run entry -> transcript (one shared helper), then the throw that reaches
-      // the caller's spawn-failure result. `finalizeRunEntry` already retires the
-      // registry entry (a non-running write clears it); the explicit call is the
-      // belt for a finalize that threw — registry residue is what boot recovery
-      // reads, and this dispatch provably never started.
-      markBranchSpawnFailed(reason);
-      clearInflightRun(id);
+      // #460 §4.4 — `failPreStart` alone stops at the run entry). The pre-start
+      // terminal flip is the shared helper — see its contract comment above —
+      // then the throw that reaches the caller's spawn-failure result.
+      // `finalizeRunEntry` already retires the registry entry (a non-running
+      // write clears it); the explicit call is the belt for a finalize that
+      // threw — registry residue is what boot recovery reads, and this dispatch
+      // provably never started.
+      markSpawnFailedBeforePrompt(reason);
       throw new Error(reason);
     }
     // Issue #465 (d): release the process-wide spawn queue BEFORE the per-repo
@@ -2208,11 +2540,12 @@ export async function spawnBackgroundSession(
       releaseGitLock?.();
       releaseGitLock = undefined;
       // Sanitize ONCE and reuse for the terminal write and the thrown error.
-      const sanitizedError = sanitizeErrorMessage((err as Error).message, effectiveCwd);
+      const sanitizedError = sanitizeErrorMessage(thrownMessage(err), effectiveCwd);
       // Issue #98: the refused spawn is a failure — flip the record and finalize
       // the run entry so no zombie 'running' entry survives (lockstep, one
-      // shared sequence with both pre-flight refusals).
-      markBranchSpawnFailed(
+      // shared sequence with both pre-flight refusals: see the helper's contract
+      // comment above).
+      markSpawnFailedBeforePrompt(
         `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}`);
       throw new Error(
         `gitMode 'branch' requested but work branch setup failed: ${sanitizedError}. ` +
@@ -2486,20 +2819,24 @@ export async function spawnBackgroundSession(
   // attach and cleanupWorkBranch would never run — catch here so the work
   // branch is not orphaned (it is a real filesystem branch).
   let runPromise: Promise<unknown>;
-  try {
-    runPromise = session.prompt(wrapTask(params.task));
-  } catch (err) {
-    // Issue #98 (review F1): a synchronous prompt() throw never reaches the
-    // settle handlers — finalize the run entry so no zombie 'running' entry
-    // survives (findSpawnRunById would otherwise resolve and retry a run that
-    // never started). #447: the same cleanup also clears the deadline armed
-    // above and retires the registry entry.
-    failPreStart(sanitizeErrorMessage((err as Error).message, effectiveCwd));
-    throw err;
-  }
+  let resolveSettled!: () => void;
+  let rejectSettled!: (reason: unknown) => void;
+  const settled = new Promise<void>((resolve, reject) => {
+    resolveSettled = resolve;
+    rejectSettled = reject;
+  });
 
-  runPromise.then(() => {
-    if (deadlineHandle) clearTimeout(deadlineHandle);
+  const markSettleEntry = (kind: 'success' | 'fault'): void => {
+    try {
+      log.debug(`spawnBackgroundSession: settle body entered for ${id} (${kind})`);
+    } catch {
+      // best effort — the marker must never change the settle path
+    }
+  };
+
+  const onSettled = (): void => {
+    markSettleEntry('success');                         // FIRST statement
+    if (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second
     try {
       // Probe contract (sdk-abort-contract.test.ts): prompt() RESOLVES on abort
       // — the SDK's runWithLifecycle catches the AbortError and converts it into
@@ -2643,14 +2980,20 @@ export async function spawnBackgroundSession(
       // Issue #53: any throw in this handler would escape as an
       // uncaughtException and kill pi. Log and mark the record terminal —
       // never rethrow.
-      log.error(`spawnBackgroundSession: completion handler failed for ${id}`, {
-        error: (err as Error).message,
-      });
+      safeLog(() =>
+        log.error(`spawnBackgroundSession: completion handler failed for ${id}`, {
+          error: thrownMessage(err),
+        }),
+      );
       markTerminalBestEffort('completed');
     }
-  }).catch((err: Error) => {
-    if (deadlineHandle) clearTimeout(deadlineHandle);
+  };
+
+  const onSettleFault = (reason: unknown): void => {
+    markSettleEntry('fault');                           // FIRST statement
+    if (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second
     try {
+      const err = normalizeThrown(reason);              // D5: TOTAL, never throws
       // W4: capture partial work + discard the work branch on failure — a failed
       // background agent may still have produced reviewable changes.
       const gitInfo = cleanupWorkBranch();
@@ -2709,13 +3052,108 @@ export async function spawnBackgroundSession(
       // Issue #53: any throw in this handler would escape as an
       // uncaughtException and kill pi. Log and mark the record terminal —
       // never rethrow.
-      log.error(`spawnBackgroundSession: completion handler failed for ${id}`, {
-        error: (err as Error).message,
-      });
+      safeLog(() =>
+        log.error(`spawnBackgroundSession: completion handler failed for ${id}`, {
+          error: thrownMessage(err),
+        }),
+      );
       markTerminalBestEffort('failed');
     }
-  });
-  
+  };
+
+  // THE ATTACH: both settle handlers are on our own promise before the session
+  // is asked to start. The #450 window snapshot pin covers this statement.
+  settled.then(onSettled).catch(onSettleFault);
+
+  // ---- REGIME 1: pre-start ------------------------------------------------
+  // The one statement in this regime is the prompt CALL. A synchronous throw
+  // from it is proof that the prompt was never issued ONLY under three
+  // preconditions, and all three hold at this site TODAY (issue #450 D2.1):
+  //
+  //   (a) the callee is the SDK's own `async` method — `AgentSession.prompt`
+  //       (node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js:1704,
+  //       typed `prompt(text): Promise<void>` in agent-session.d.ts:573). An
+  //       `async` function cannot throw to its caller: such a throw happened
+  //       BEFORE entry.
+  //   (b) it is reached by a PLAIN property read on the session object — no
+  //       getter, no Proxy. A getter can start the real method and THEN throw,
+  //       so the caller sees a synchronous throw while the session is already
+  //       running (spec E24: `syncThrow=yes`, `live=true`). That shape VOIDS
+  //       the proof and must be handled as a post-start fault.
+  //   (c) the argument is evaluated without side effects (`wrapTask` is one
+  //       `String.replace`, src/prompt.ts:67).
+  //
+  // If a future edit wraps `session.prompt` — a retry wrapper, a decorator, an
+  // injected session double that starts work — then (a)/(b) no longer hold,
+  // this regime's premise is GONE, and `failPreStart`'s directory prune plus
+  // branch release would hit a LIVE session. Re-derive D2.1 before keeping it.
+  try {
+    runPromise = session.prompt(wrapTask(params.task));
+  } catch (err) {
+    // Issue #98 (review F1): a synchronous prompt() throw never reaches the
+    // settle handlers — finalize the run entry so no zombie 'running' entry
+    // survives (findSpawnRunById would otherwise resolve and retry a run that
+    // never started). #447: the same cleanup also clears the deadline armed
+    // above and retires the registry entry.
+    const reason = thrownMessage(err);                          // D5: total
+    failPreStart(sanitizeErrorMessage(reason, effectiveCwd));    // D5: contained, never throws
+    throw err;                                                  // D6: deferred NOT settled
+  }
+
+  // ---- REGIME 2: post-start -----------------------------------------------
+  // The prompt has been issued, so NOTHING in here may declare "never issued":
+  // `failPreStart` / `markSpawnFailedBeforePrompt` would prune a LIVE session's
+  // directory and release its branch lock while the session may still be
+  // writing (strictly worse than the fault it reports). No `failPreStart`, no
+  // deadline clear, no second bound —
+  // the deadline armed above stays the monitor of last resort (ADR 0023
+  // decision 1: ONE owner), and the spawn still resolves with a `running`
+  // agent (#439 boundary: a post-start routing fault must not reject the spawn).
+  //
+  // WHY the intrinsic and not `runPromise.then(...)`: `PerformPromiseThen`
+  // performs `SpeciesConstructor(promise)`, which READS `constructor` and then
+  // `constructor[Symbol.species]` — and how it does that depends on the value; a
+  // Proxy's `then` trap or a throwing `then` accessor is reached by the `.then`
+  // METHOD READ, not by the intrinsic. Routing through `Promise.prototype.then`
+  // therefore never touches the value's own `then`, which is what makes the
+  // SUPPORTED value's attach byte-equivalent to `runPromise.then(...)` while a
+  // malformed return is REFUSED here and logged instead of starting work.
+  //
+  // NOT `await`, and NOT `Promise.resolve(...)`: both were measured and both
+  // destroy the contract below — `await` (and `Promise.resolve`) treats a
+  // NON-thenable as a resolution, so `{}` would run the success body and record
+  // a live run as `completed`, and the routing fault would go unlogged. See the
+  // spec's Q2 rows A1 and R3.
+  //
+  // Issue #450 (D2.3/D3/Acceptance 8 — THE CONTRACT; the same words in all three places):
+  //
+  //   SUPPORTED — an ordinary native `Promise<void>` of this realm whose `constructor`
+  //   and `Symbol.species` reads both complete without a throw and resolve to the
+  //   intrinsic `Promise`: the routing attaches and no later rejection can be stranded.
+  //
+  //   UNSUPPORTED — every other value, NO GUARANTEE; measured, it splits three ways:
+  //   · REFUSED, NOTHING STRANDED: a non-thenable or a custom thenable — thrown here,
+  //     logged, the run is left to the deadline.
+  //   · REFUSED, REJECTION UNOWNED: a Proxy over a promise, or a native promise whose
+  //     `constructor` or `Symbol.species` read throws — thrown here, logged, and the
+  //     value's later rejection has no handler, so the host exits 1 (default and strict).
+  //   · ACCEPTED, NOT RELIED ON: a same-realm subclass and a cross-realm promise route
+  //     and deliver (exit 0). `await` would also own the species-throwing case, but it
+  //     registers a non-promise return as a success (spec E50), so it is not the routing.
+  try {
+    void Promise.prototype.then.call(runPromise, resolveSettled, rejectSettled);   // D2.3
+  } catch (err) {
+    // A SENSOR, not a new fault: the run already started, so this only reports
+    // that it is unmonitored. `safeLog` is load-bearing — a throwing console
+    // mirror here would reject the spawn (#439) and destroy the boundary above.
+    safeLog(() =>                                                // a sensor, not a new fault
+      log.error(
+        `spawnBackgroundSession: settle routing failed for ${id} — the run is unmonitored; its deadline remains the only bound`,
+        { error: thrownMessage(err) },
+      ),
+    );
+  }
+
   return agent;
   } finally {
     releaseSpawnQueue();

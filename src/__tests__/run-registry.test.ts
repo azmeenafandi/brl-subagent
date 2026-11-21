@@ -27,6 +27,7 @@ import {
 	clearInflightRun,
 	listInflightRuns,
 	markInterrupted,
+	markRecordFlipPending,
 	persistRunRecord,
 	registryDir,
 	__setRegistryDir,
@@ -785,5 +786,90 @@ describe("acceptance tri-state in the boot scan (issue #447)", () => {
 		expect("acceptedAt" in onDisk).toBe(true);
 		expect(onDisk.acceptedAt).toBeNull();
 		expect(listInflightRuns().find((entry) => entry.id === id)?.acceptedAt).toBeNull();
+	});
+});
+
+// =========================================================================
+// Issue #546 — the record-flip marker, the `deferRetire` order contract and
+// the verified retirement. Ported from the 24-case probe (R1–R3, C5/R4, H4f):
+// these pin the REGISTRY half of the protocol, so the repair the boot scan
+// performs has a durable intent to find.
+// =========================================================================
+describe("issue #546 — the record-flip marker (R1–R3, C5/R4, H4f)", () => {
+	const FLIP = { status: "failed" as const, error: "spawn preflight failure", at: "2026-11-21T00:00:02.000Z" };
+	const plantEntry = (id: string): void => {
+		registerInflightRun({ id, kind: "foreground", owner: DEAD_OWNER, startedAt: ISO });
+	};
+
+	it("R1: the marker round-trips and a second write is idempotent (first write wins)", () => {
+		const id = crypto.randomUUID();
+		plantEntry(id);
+
+		expect(markRecordFlipPending(id, FLIP)).toBe(true);
+		expect(listInflightRuns()[0]?.recordFlipPending).toEqual(FLIP);
+
+		// A second write is a no-op that still reports success: the marker names
+		// the terminal status of THIS dispatch, so a later stamp must not rewrite it.
+		expect(markRecordFlipPending(id, { ...FLIP, at: "2026-11-21T09:09:09.000Z" })).toBe(true);
+		expect(listInflightRuns()[0]?.recordFlipPending).toEqual(FLIP);
+	});
+
+	it("R2: a MISTYPED marker is dropped on read and the entry survives (lenient read)", () => {
+		const id = crypto.randomUUID();
+		plantEntry(id);
+		fs.writeFileSync(
+			entryFile(id),
+			JSON.stringify({ id, kind: "foreground", startedAt: ISO, recordFlipPending: { status: "nope", at: "" } }),
+		);
+
+		const entries = listInflightRuns();
+		expect(entries).toHaveLength(1);
+		expect(entries[0]?.recordFlipPending ?? null).toBe(null);
+		expect(entries[0]?.id).toBe(id);
+	});
+
+	it("R3: markRecordFlipPending is TOTAL — missing entry false, unsafe id false, never throws", () => {
+		expect(markRecordFlipPending(crypto.randomUUID(), FLIP)).toBe(false); // no entry planted
+		expect(markRecordFlipPending("../escape", FLIP)).toBe(false);
+		expect(markRecordFlipPending("not-a-uuid", FLIP)).toBe(false);
+	});
+
+	it("C5/R4: `deferRetire` keeps the entry across a THROWING append; without it the entry is retired first", () => {
+		const id = crypto.randomUUID();
+		plantEntry(id);
+		expect(markRecordFlipPending(id, FLIP)).toBe(true);
+		const pi = { appendEntry: () => { throw new Error("append-boom"); }, sendMessage: () => {} };
+
+		// The W-0 order as an API contract: the deferred terminal write leaves the
+		// entry (and its marker) in place even though the append threw, so a crash
+		// in this window is repairable.
+		expect(() =>
+			persistRunRecord(pi as never, { id, task: "t", status: "failed", startedAt: 1 } as never, undefined, { deferRetire: true }),
+		).toThrow();
+		expect(fs.existsSync(entryFile(id))).toBe(true);
+		expect(listInflightRuns()[0]?.recordFlipPending).toMatchObject({
+			status: "failed",
+			error: "spawn preflight failure",
+		});
+
+		// Every other caller keeps retire-then-append: the entry is gone before the
+		// append that throws.
+		expect(() =>
+			persistRunRecord(pi as never, { id, task: "t", status: "failed", startedAt: 1 } as never),
+		).toThrow();
+		expect(fs.existsSync(entryFile(id))).toBe(false);
+	});
+
+	it.skipIf(process.platform === "win32")("H4f: an UNTRAVERSABLE registry directory cannot prove the entry is gone — the unlink reports false", () => {
+		const id = crypto.randomUUID();
+		plantEntry(id);
+		const dir = registryDir();
+		fs.chmodSync(dir, 0o000); // unlink AND stat both throw EACCES
+		try {
+			expect(clearInflightRun(id)).toBe(false);
+		} finally {
+			fs.chmodSync(dir, 0o700);
+		}
+		expect(fs.existsSync(entryFile(id))).toBe(true);
 	});
 });

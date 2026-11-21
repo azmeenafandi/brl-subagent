@@ -128,8 +128,10 @@ export const delegateTaskParamsSchema = Type.Object({
 				Type.Number({
 					description:
 						"Maximum time in milliseconds the subagent is allowed to run. " +
-						"If exceeded, the subagent is killed and an error is returned. " +
-						"Background runs default to a 30-minute deadline when no timeout is given; an explicit timeout is honored as given (30 minutes is a default, not a ceiling). A raw value ≥ 2^31-1 normalizes to the default.",
+						"A **background** run with no valid timeout (none passed, or normalized away) gets the 30-minute default deadline; a **foreground** run has no default. " +
+						"An explicit **positive** timeout is honored as given, except values that normalize to no timeout (a raw value `≥ 2^31-1` or a nonpositive value; a background run then gets the 30-minute default, a foreground run has none) and the opt-in `processChecks` high/xhigh foreground switch, which may drop an explicit timeout. " +
+						"**Foreground expiry** kills the process (SIGTERM, 5s grace, then SIGKILL); the expired attempt's result is a timeout error, and with `retryOnTimeout: true` the tool may retry automatically and return the later result. " +
+						"**Background expiry** requests a cooperative abort — a prompt that ignores it keeps running; the run's **timeout snapshot** (`failed`/`timeout`) is written at expiry, and a later settle **amends** that record (never re-classifies it).",
 				}),
 			),
 			cwd: Type.Optional(
