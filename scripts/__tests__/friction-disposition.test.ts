@@ -564,11 +564,36 @@ describe("friction-disposition — case 10: the closing gate", () => {
 		expect(closed.problems[0].exit).toBe(EXIT.LEDGER);
 	});
 
-	it("passes close mode when the appended row is a RECORD — records are excluded", () => {
+	it("does not demand a class for a RECORD inside the window — records are excluded from coverage", () => {
+		// The record is the window's own last row: its extent reaches the log's last data row, and coverage
+		// still partitions only the friction rows (review 563 F1 — the extent includes records, coverage never).
 		const record = `${mkLog(["one", "two"])}| 2026-11-21 | process | CYCLE 2026-11-21 "x" CLOSED — done |\n`;
-		const result = runCheck(mkLedger(windows, dispositions), record, "alpha", factSet, { close: true });
+		const result = runCheck(mkLedger([{ cycle: "alpha", from: 1, to: 3 }], dispositions), record, "alpha", factSet, { close: true });
 		expect(result.problems).toEqual([]);
 		expect(result.stats.records).toBe(1);
+		expect(result.stats.frictionRows).toBe(2);
+		expect(result.stats.assignedRows).toBe(2);
+	});
+
+	it("passes close mode when the window ENDS on its own close record (review 563 F1)", () => {
+		// The ledger's own pattern: `to` names the close record, which is a DATA row and not a friction row.
+		// Comparing `to` to the last friction index made this window permanently un-closeable.
+		const recordEnded = `${mkLog(["one"])}| 2026-11-21 | process | CYCLE 2026-11-21 "x" CLOSED — done |\n`;
+		const ledger = mkLedger([{ cycle: "alpha", from: 1, to: 2 }], [
+			{ cycle: "alpha", class: "a", rows: "1", disposition: "folded into #548", issue: "#548 open" },
+		]);
+		const passed = runCheck(ledger, recordEnded, "alpha", factSet, { close: true });
+		expect(passed.problems).toEqual([]);
+		expect(passed.stats.records).toBe(1);
+		expect(passed.stats.frictionRows).toBe(1);
+		expect(passed.stats.assignedRows).toBe(1);
+
+		// One friction row appended past the record: the window no longer reaches the log's last data row,
+		// and the refusal names the index left unassigned.
+		const appended = `${recordEnded}| 2026-11-21 | tooling | fresh friction |\n`;
+		const closed = runCheck(ledger, appended, "alpha", factSet, { close: true });
+		expect(codesOf(closed)).toEqual(["unassigned-close"]);
+		expect(closed.problems[0].message).toBe("log has rows 3..3 unassigned — re-declare at close");
 	});
 
 	it("fails a window widened past the last friction row", () => {

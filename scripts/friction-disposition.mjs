@@ -38,8 +38,10 @@
 // UNAVAILABLE and fails closed; the refusal says so.
 //
 // THE CLOSING GATE binds only in close mode: `--check --cycle <name> --close` requires `<name>` to be the
-// last window AND that window's `to` to equal the log's last friction index. `--check --cycle <name>`
-// without `--close` audits one window while later rows exist — that is how the seed (an earlier cycle) is
+// last window AND that window's `to` to equal the log's last DATA row — records included, because a window
+// ends on its own close record (§1.1); records stay excluded from COVERAGE, never from the extent.
+// `--check --cycle <name>` without `--close` audits one window while later rows exist — that is how the
+// seed (an earlier cycle) is
 // checked against the live log, and `--history` is that same plain check under its older name (it refuses
 // `--close`, so the two modes cannot be confused). Plain check is NOT a lax check: coverage inside the
 // window is still a partition.
@@ -538,8 +540,14 @@ function checkWindowBounds({ log, window, cycle }, problems) {
 
 /**
  * The closing gate — close mode only. A plain check audits an earlier window while later rows exist;
- * close mode binds `--cycle` to the last window and its `to` to the log's last friction index, so a
+ * close mode binds `--cycle` to the last window and that window's `to` to the log's last DATA row, so a
  * fresh friction row cannot be left for "the next cycle" at the close it belongs to.
+ *
+ * The comparison is against the last data row, records included: a window ends on its own close record
+ * (§1.1), so comparing to the last FRICTION row would make the ledger's own window pattern permanently
+ * un-closeable (review 563 F1). Records stay excluded from coverage — never from the window's extent.
+ * The over-run direction (`to` past the log) is already a single failure, `window-past-log` from
+ * `checkWindowBounds`; the gate does not restate it.
  */
 function checkClosingGate({ log, ledger, window, cycle }, problems) {
 	const last = ledger.windows[ledger.windows.length - 1];
@@ -547,19 +555,10 @@ function checkClosingGate({ log, ledger, window, cycle }, problems) {
 		problems.push(problem("not-closing-cycle", `not the closing cycle (last: ${last.cycle})`, 1));
 		return;
 	}
-	let lastFriction = 0;
-	for (const row of log.rows) if (!row.record) lastFriction = row.index;
-	if (window.to < lastFriction) {
+	const lastDataRow = log.rows[log.rows.length - 1].index;
+	if (window.to < lastDataRow) {
 		problems.push(
-			problem("unassigned-close", `log has rows ${window.to + 1}..${lastFriction} unassigned — re-declare at close`, 1),
-		);
-	} else if (window.to > lastFriction) {
-		problems.push(
-			problem(
-				"window-past-friction",
-				`window "${cycle}" ends at ${window.to} but the log's last friction row is ${lastFriction} — a window cannot claim close records or absent rows`,
-				1,
-			),
+			problem("unassigned-close", `log has rows ${window.to + 1}..${lastDataRow} unassigned — re-declare at close`, 1),
 		);
 	}
 }
