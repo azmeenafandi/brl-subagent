@@ -39,6 +39,34 @@ import { ensureOwnerOnlyDir } from "./store-permissions";
 /** Which execution path owns an in-flight run (drives the boot scan's mark). */
 export type InflightRunKind = "foreground" | "unit" | "background";
 
+/**
+ * The terminal status a `recordFlipPending` marker names (issue #546). This is
+ * the AGENT-record vocabulary, not the run record's: a settled `done` run maps to
+ * `completed` on the record. Only `failed` is written today (the pre-start path is
+ * the one writer), and both values are validated on read.
+ */
+export type RecordFlipStatus = "failed" | "completed";
+
+/**
+ * Issue #546: the terminal status the dispatch was about to write onto its
+ * agent record. Written into the registry entry BEFORE that entry is retired,
+ * because retirement is an unlink — after it there is nothing left for a fresh
+ * process to find, and the crash residue is a `running` agent record that no
+ * boot scan can source a candidate for. The record flip ends the marker's
+ * useful life: the entry is retired only once the flip is durable, so a marker
+ * that outlives its entry means the flip did not land.
+ *
+ * Read fail-open: a marker that fails validation is dropped (normalizeEnrichment),
+ * which degrades to the pre-#546 behaviour rather than inventing a flip.
+ */
+export interface RecordFlipPending {
+	status: RecordFlipStatus;
+	/** The error the flip was going to stamp (already sanitised by the caller). */
+	error?: string;
+	/** ISO stamp of the marker write (diagnostics only; ordering is the entry's). */
+	at: string;
+}
+
 /** The durable per-run registry entry (one small JSON file per run id). */
 export interface InflightRun {
 	id: string;
@@ -63,6 +91,12 @@ export interface InflightRun {
 	// run record, so a post-crash retry restores the same 17-field shape a
 	// same-session retry does (including `force`; decision 2026-10-11).
 	originalParams?: SubagentRun["originalParams"];
+	/**
+	 * Issue #546: the terminal flip this process had not yet written when it
+	 * died. Absent on every terminal entry the live path retires normally; present
+	 * only between the terminal run-entry write and the agent-record flip.
+	 */
+	recordFlipPending?: RecordFlipPending;
 	/**
 	 * Issue #447: the acceptance marker, mirrored from the run record.
 	 * `null` = tracked but never accepted (never reached `session.prompt()`),
@@ -90,6 +124,8 @@ export interface InflightRunInput {
 	thinkingLevel?: string;
 	originalParams?: SubagentRun["originalParams"];
 	acceptedAt?: string | null;
+	/** Issue #546: a marker to write, or `null` to clear one (never `undefined`-clobbered). */
+	recordFlipPending?: RecordFlipPending | null;
 	startedAt: string;
 	cwd?: string;
 }
@@ -150,6 +186,20 @@ function isInflightRun(value: unknown): value is InflightRun {
 	return v.kind === "foreground" || v.kind === "unit" || v.kind === "background";
 }
 
+/** True when `value` is a well-formed `recordFlipPending` marker. */
+function normalizeRecordFlipPending(value: unknown): RecordFlipPending | null {
+	if (!value || typeof value !== "object") return null;
+	const v = value as Record<string, unknown>;
+	if (v.status !== "failed" && v.status !== "completed") return null;
+	if (typeof v.at !== "string" || v.at === "") return null;
+	if (v.error !== undefined && typeof v.error !== "string") return null;
+	return {
+		status: v.status,
+		...(typeof v.error === "string" ? { error: v.error } : {}),
+		at: v.at,
+	};
+}
+
 /**
  * Normalize the additive enrichment fields leniently. A wrong-typed field
  * degrades to ABSENT on the parsed entry; the entry itself is never rejected
@@ -176,6 +226,13 @@ function normalizeEnrichment(value: InflightRun, raw: Record<string, unknown>): 
 	} else {
 		delete entry.acceptedAt;
 	}
+	// Issue #546: same lenient rule as the fields above — a mistyped marker is
+	// dropped, never invented. Dropping it degrades to the pre-#546 residue (a
+	// stale `running` record), which is strictly safer than flipping a record on
+	// a marker we cannot trust.
+	const flip = normalizeRecordFlipPending(raw.recordFlipPending);
+	if (flip) entry.recordFlipPending = flip;
+	else delete entry.recordFlipPending;
 	return entry;
 }
 
@@ -223,6 +280,10 @@ function mergeInput(base: InflightRun, input: InflightRunInput): InflightRun {
 	// Issue #447: `null` MUST copy (it is the never-started sentinel); only
 	// `undefined` is skipped, so a refresh without the marker cannot erase it.
 	if (input.acceptedAt !== undefined) next.acceptedAt = input.acceptedAt;
+	// Issue #546: `null` is the explicit CLEAR (mirroring `acceptedAt`); only
+	// `undefined` is skipped, so a refresh cannot erase a live marker.
+	if (input.recordFlipPending === null) delete next.recordFlipPending;
+	else if (input.recordFlipPending !== undefined) next.recordFlipPending = input.recordFlipPending;
 	return next;
 }
 
@@ -257,14 +318,36 @@ export function updateInflightRun(input: InflightRunInput): boolean {
 	return writeAtomic(file, mergeInput(existing, input));
 }
 
-/** Remove an entry (terminal finalize). Missing file is a no-op. */
-export function clearInflightRun(id: string): void {
+/**
+ * Remove an entry (terminal finalize). Missing file is a no-op.
+ *
+ * Issue #546 (major 4): returns whether the DESIRED END STATE holds — `true`
+ * when the file is gone (unlinked now, or never there), `false` when it still
+ * exists after the attempt (`EACCES`/`EPERM`/`EBUSY`, or a racing writer that
+ * re-created it). Existing callers ignore the value; the boot applier does not:
+ * an unverified retirement would report a settled marker while the marker is
+ * still on disk, so `false` is counted as a flip failure and the entry is kept.
+ */
+export function clearInflightRun(id: string): boolean {
 	const file = resolvePath(id);
-	if (!file) return;
+	if (!file) return true; // nothing addressable to remove
 	try {
 		fs.unlinkSync(file);
-	} catch {
-		// Already cleared (or never registered) — the desired end state.
+		return true;
+	} catch (err) {
+		// Only ENOENT proves the desired end state. Any OTHER error (EACCES on the
+		// file or on an untraversable parent, EPERM, EBUSY, EROFS) does not — an
+		// `existsSync` here returns false for both "gone" and "cannot look", which
+		// is how a failed unlink was reported as a settlement (r2 major 1).
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return true;
+		try {
+			fs.statSync(file);
+			return false; // confirmed: the entry is still there
+		} catch (statErr) {
+			// An untraversable parent is UNCERTAIN, not absent: fail closed so the
+			// caller keeps the marker for a boot that can actually look.
+			return (statErr as NodeJS.ErrnoException).code === "ENOENT";
+		}
 	}
 }
 
@@ -308,6 +391,30 @@ export function markInterrupted(id: string, interruptedAt: string): boolean {
 	}
 }
 
+/**
+ * Issue #546: write the terminal-flip marker onto an EXISTING entry — the call
+ * that has to happen before the entry is retired, because retirement is an
+ * unlink and the marker must survive it.
+ *
+ * Idempotent and total, with the same contract as `markInterrupted`: a missing
+ * entry, an id that fails the write guard, or a failed write returns `false` and
+ * never throws (a throwing pre-start cleanup would replace the caller's original
+ * spawn error). `false` is the only truthful signal, so callers must not assume
+ * the marker landed.
+ */
+export function markRecordFlipPending(id: string, flip: RecordFlipPending): boolean {
+	try {
+		const file = resolvePath(id);
+		if (!file) return false;
+		const existing = readEntry(file);
+		if (!existing) return false;
+		if (existing.recordFlipPending) return true;
+		return writeAtomic(file, { ...existing, recordFlipPending: flip });
+	} catch {
+		return false;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The persistence choke point
 // ---------------------------------------------------------------------------
@@ -342,9 +449,26 @@ function toRegistryInput(run: SubagentRun, kind: InflightRunKind): InflightRunIn
  * registry and ignore it. A `running` write without a kind is a refresh with
  * nothing to register — the boot scan's mark is a separate `markInterrupted`.
  */
-export function persistRunRecord(pi: ExtensionAPI, run: SubagentRun, kind?: InflightRunKind): void {
+export interface PersistRunRecordOptions {
+	/**
+	 * Issue #546: leave the registry entry in place and make the CALLER its owner
+	 * (it retires with `clearInflightRun` once the agent-record flip is durable).
+	 * Retirement-before-append is what makes a crash inside this function leave a
+	 * residue no boot scan can source a candidate for; the pre-start terminal path
+	 * is the one caller that must not take it, and it is the only caller that
+	 * passes this flag. Every other writer keeps the historical order.
+	 */
+	deferRetire?: boolean;
+}
+
+export function persistRunRecord(
+	pi: ExtensionAPI,
+	run: SubagentRun,
+	kind?: InflightRunKind,
+	options?: PersistRunRecordOptions,
+): void {
 	if (run.status !== "running") {
-		clearInflightRun(run.id);
+		if (!options?.deferRetire) clearInflightRun(run.id);
 	} else if (kind) {
 		registerInflightRun(toRegistryInput(run, kind));
 	}
