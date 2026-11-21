@@ -137,6 +137,41 @@ describe('issue #554 — writeFileAtomicSync', () => {
 		expect(readFileSync(file, 'utf8')).toBe(SEEDED);
 	});
 
+	it('(c2) a write fault AND a close fault keep the PRIMARY error — the destination stays byte-identical with no temp', () => {
+		const injected = seam({
+			writeFileSync: () => {
+				throw new Error('PRIMARY');
+			},
+			closeSync: () => {
+				throw new Error('SECOND');
+			},
+		});
+
+		let caught: unknown;
+		try {
+			writeFileAtomicSync(file, '{}', { fs: injected });
+		} catch (err) {
+			caught = err;
+		}
+
+		expect((caught as Error).message).toBe('PRIMARY');
+		expect(readFileSync(file, 'utf8')).toBe(SEEDED);
+		expect(temps()).toEqual([]);
+	});
+
+	it('(c3) a close fault that is the ONLY failure does surface', () => {
+		const injected = seam({
+			closeSync: () => {
+				throw new Error('SECOND');
+			},
+		});
+
+		expect(() => writeFileAtomicSync(file, '{}', { fs: injected })).toThrow('SECOND');
+
+		expect(readFileSync(file, 'utf8')).toBe(SEEDED);
+		expect(temps()).toEqual([]);
+	});
+
 	it('(d) success replaces the bytes with a 0o600 record and leaves no temp', () => {
 		const next = JSON.stringify({ id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', status: 'failed', completedAt: 2 }, null, 2);
 

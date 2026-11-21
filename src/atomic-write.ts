@@ -51,7 +51,10 @@ const DEFAULT_MODE = 0o600;
  * applied when the temp is CREATED (the old file's mode is not consulted).
  *
  * On any failure the temp is unlinked best-effort — its own error is swallowed
- * so it can never mask the original — and the original error is rethrown.
+ * so it can never mask the original — and the original error is rethrown. A
+ * failing `closeSync` is swallowed the same way when a write error is already in
+ * flight, and surfaces only when it is the ONLY failure, so a double fault still
+ * reports the primary one.
  */
 export function writeFileAtomicSync(
 	file: string,
@@ -63,6 +66,7 @@ export function writeFileAtomicSync(
 	const tmp = `${file}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
 	try {
 		const fd = fs.openSync(tmp, 'wx', mode);
+		let writeFailed = false;
 		try {
 			fs.writeFileSync(fd, text);
 			// Best-effort: the guarantee is a complete file after a process kill,
@@ -72,8 +76,17 @@ export function writeFileAtomicSync(
 			} catch {
 				// swallowed on purpose — see the module comment
 			}
+		} catch (err) {
+			writeFailed = true;
+			throw err;
 		} finally {
-			fs.closeSync(fd);
+			try {
+				fs.closeSync(fd);
+			} catch (closeErr) {
+				// A double fault must keep the PRIMARY error: a close failure is only
+				// worth reporting when nothing else failed.
+				if (!writeFailed) throw closeErr;
+			}
 		}
 		fs.renameSync(tmp, file);
 	} catch (err) {
