@@ -1,6 +1,6 @@
 # brl-subagent — Development Roadmap
 
-> Updated: 2026-11-14 | Released: **v2.9.0** (2026-11-14) | Integration: `dev` @ the v2.9.0 release prep (tag `v2.9.0` at the release commit); see "Shipped (2026-11-14, v2.9.0)" below. Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
+> Updated: 2026-11-21 | Released: **v2.9.1** (2026-11-21) | Integration: `dev` @ the v2.9.1 release prep (tag `v2.9.1` at the release commit); see "Shipped (2026-11-21, v2.9.1)" below. Development happens in the **cockpit** (`brl-subagent-dev` checkout); `main` is the pristine release checkout. The post-2.1.2 backlog items below shipped in v2.1.3 (2026-08-06), v2.1.4 (2026-08-07), v2.1.5 (2026-08-08), v2.1.6 (2026-08-09), v2.1.7 (2026-08-14), v2.2.0 (2026-08-16), v2.2.1 (2026-08-18), v2.3.0 (2026-08-23), v2.3.1 (2026-08-25), v2.3.2 (2026-08-27), v2.3.3 (2026-09-02), v2.3.4 (2026-09-04), v2.3.5, v2.3.6 (2026-09-12), v2.3.7 (2026-09-20), v2.3.8 (2026-09-22) and v2.3.9 (2026-09-27); the Open list reflects the current backlog.
 
 ## Phase 1 — Foundation (v1.4.0) ✅ COMPLETE
 
@@ -279,6 +279,21 @@ Goal: ship brl-subagent as a first-class pi package so installation and updates 
 **Outcome:** `brl-subagent@2.3.5` published to npm — installable via `pi install npm:brl-subagent`, updated via `pi update --extensions`, released through a token-free staged pipeline. 979 tests across 45 files; board clean.
 
 **Deferred → RESOLVED in v2.3.6:** pin doc version strings to `package.json` (the README ×2 and the AGENT.md header shipped stale in 2.3.5). Now enforced mechanically (#166).
+
+### Shipped (2026-11-21, v2.9.1)
+
+A patch release carrying eight merged PRs from three cycles — the failure-path settle work, the pre-flight and deadline guidance, and the pi 1.6.0 render-contract fix. Every change is additive or internal; nothing a 2.9.0 user relies on changes shape.
+
+| Issue | What shipped | PR |
+|---|---|---|
+| #450 | **Settle handlers before the prompt:** the background handlers attach to a deferred registered **before** `session.prompt()`; the pre-start catch and the post-start routing are two syntactic regimes, so a post-start fault never calls the pre-start path; the attach window is snapshot-pinned and a caller's resume sees `agent.status: running`. | #544 |
+| #542 | **A pre-start failure settles the agent record:** one per-step-contained helper (**run entry → record flip → transcript**) used by all three pre-start throws and both branch refusals; the record flips in memory and on disk, one note, one `subagent:failed`. | #549 |
+| #546 | **The crash window:** a durable `recordFlipPending` marker is written **before** registry retirement (retirement moved last via an opt-in `deferRetire`); the boot applier is disk-only and the scan reports `repaired`/`retired`/`held` with counters, holding when a dependency is missing. | #555 |
+| #545 | **Defensive log serialisation:** an ancestor-tracking replacer (a cycle → `[Circular]`, `BigInt` → `"10n"`, shared non-cyclic refs preserved) plus a guarded whole-stringify fallback marker, so a log line can no longer throw or lose its message. | #551 |
+| #543 | **The console mirror cannot throw out of `log.*`:** its own `try` covers selection **and** call, and a mirror fault is swallowed like a file-write fault. | #547 |
+| #537 | **Pre-flight capability rows:** `bash` satisfies the write/create, edit and delete rows, and the pre-flight's selftest pins both directions. | #539 |
+| #426 E | **The portable deadline guidance:** the schema description states the contract (milliseconds; `7200000` for two hours, a default not a floor), the guidance says minutes, and the reference-priors table is measured from 217 settled runs. | #540 |
+| — | **pi 1.6.0 render contract:** the TUI compatibility fix and the devDependencies parity. | #541 |
 
 ### Shipped (2026-11-14, v2.9.0)
 

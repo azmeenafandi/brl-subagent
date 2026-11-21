@@ -1,6 +1,6 @@
 # brl-subagent — Audit: Strengths & Weaknesses
 
-> Generated: 2026-08-03 | Version: 2.9.0 (released 2026-11-14). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.9.0 (see the follow-up sections below).
+> Generated: 2026-08-03 | Version: 2.9.1 (released 2026-11-21). Content reflects the post-2.1.2 changes shipped in v2.1.3 through v2.9.1 (see the follow-up sections below).
 
 ## What's Been Fixed (since v1.3.0)
 
@@ -607,6 +607,14 @@ A follow-on sweep in which **every item traces to something the 2.3.5 release ex
 - **#164 CLOSED — the obsolete update notifier removed.** It duplicated pi's native notice, misdirected users to the GitHub release, and — under staged publishing — could announce a version npm did not yet have. `src/update.ts` and its test deleted; the module count drops **31 → 30**. The C2 focused review proved backwards compatibility **empirically** (legacy session keys ignored, not rejected; the guard did not go soft elsewhere) and mutation-tested the README pinning test four ways.
 - **Corrections**: module count 31 → **30** (update.ts removed). Two spec-scoping gaps were surfaced by the **implementer**, not the conductor — an e2e fixture list referencing the deleted module by *name* (symbol greps cannot see it) and a self-contradictory grep check. Both logged; the name-vs-symbol lesson is the second instance this sprint of *'the query did not cover the evidence'*.
 - **Toolchain**: vitest 4 → 5 (major; CI-verified) and typebox 1.3.25 → 1.3.29. The typebox dev/runtime divergence from pi's bundled **1.3.7** was verified **inert** for our nine-primitive-builder surface (byte-identical schema output across 1.3.7/1.3.25/1.3.29) and is now recorded in the Distribution & Packaging section so it need not be re-investigated.
+
+## v2.9.1 Audit Follow-up (2026-11-21)
+
+- **Six plan-critique rounds on one spec, and not one was a design reversal.** #546's loop found a test that passed without its scanner, a control that was pre-marked so the scan could be skipped, a probe with no consumer, a log scope that failed open on regrow, and a harness reading a field the logger never writes — the design was settled in round one; the rest was evidence that could not fail. The lesson is mechanical: an evidence row must name the assertion it satisfies, and every test must name the negative control that reddens it (#557).
+- **The settle path's two regimes are now syntactic, not conventional.** #450 attaches the handlers to a deferred registered before the prompt, with a pre-start catch that structurally cannot call the post-start routing; #542 makes a pre-start failure settle the record through one per-step-contained helper; #546 closes the remaining window with a marker written before retirement.
+- **A log call could throw out of the logging path.** #545's ancestor-tracking replacer and guarded fallback marker contain a serialisation failure; #543 gave the console mirror the same shape one call earlier. The message always survives.
+- **The pre-flight had a false negative class.** Write/create was gated only where the task verb was a write, so a bash-writing reviewer still drew the warning; #537's capability rows (bash satisfies write/edit/delete) and its selftest pin both directions.
+- **Open (found at the release prep):** the review-record and plan-critique templates are read-only while the dispatch asks them to write their records; per-dispatch `tools` including `write` is the no-code workaround (#550, widened).
 
 ## v2.9.0 Audit Follow-up (2026-11-14)
 
