@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { existsSync, statSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, statSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { recordTimeoutDelays } from "./fixtures/deadline-census";
 
@@ -97,7 +97,7 @@ vi.mock("../event-bus", () => ({
 	createEvent: eventBusMock.createEvent,
 }));
 
-import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, backgroundSessionDir, markAgentInterrupted } from "../session-manager";
+import { spawnBackgroundSession, getAgent, getTranscriptPath, steerAgent, updateAgentStatus, backgroundSessionDir, markAgentInterrupted, flipAgentRecord, readAgentRecordFromDisk } from "../session-manager";
 import { listInflightRuns } from "../run-registry";
 import { getTranscriptPath as transcriptGetTranscriptPath } from "../transcript";
 import { CUSTOM_ENTRY_TYPES, NO_ASSISTANT_OUTPUT_REASON, PROMPT_NEVER_ISSUED_MESSAGE, isSubagentRunShape, type SubagentRun } from "../types";
@@ -4140,5 +4140,281 @@ describe("issue #542 — a pre-start failure settles the agent record", () => {
 		const record = getAgent(spawnedId())!;
 		expect(record.interruptedAt).toBeDefined();
 		expect(record.status).toBe("failed");
+	});
+});
+
+// =========================================================================
+// Issue #546 r2 — the pre-start marker: the ORDER pin and the write-failure
+// fallback. Both drive the REAL helper (a synchronous prompt() throw funnels
+// into `markSpawnFailedBeforePrompt`), so they cannot pass on an ordering that
+// only exists in the test.
+// =========================================================================
+describe("issue #546 r2 — the pre-start marker", () => {
+	/** The id of the dispatch under test (the spawn record's id). */
+	function spawnedId(): string {
+		return fakePi.appendEntry.mock.calls[0][1].id as string;
+	}
+
+	it("S1: `markRecordFlipPending` is invoked BEFORE the terminal `pi.appendEntry`, and the happy path leaves nothing", async () => {
+		mocks.session.prompt.mockImplementation(() => {
+			throw new Error("sync preflight failure");
+		});
+		const markerSpy = vi.spyOn(runRegistry, "markRecordFlipPending");
+		try {
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "order pin" }),
+			).rejects.toThrow("sync preflight failure");
+
+			expect(markerSpy).toHaveBeenCalledTimes(1);
+			const terminalIndex = fakePi.appendEntry.mock.calls.findIndex(
+				(c: unknown[]) => (c[1] as { status?: string }).status === "failed",
+			);
+			expect(terminalIndex).toBeGreaterThanOrEqual(0);
+			// The ORDER property: the durable INTENT is written before the run entry
+			// whose retirement would erase its only home. An implementation that
+			// writes the marker after STEP A passes every "residue" test that plants
+			// the marker itself — this is the one assertion it cannot pass.
+			expect(markerSpy.mock.invocationCallOrder[0]).toBeLessThan(
+				fakePi.appendEntry.mock.invocationCallOrder[terminalIndex],
+			);
+			// The happy path leaves NOTHING: the marker is cleared by the retirement.
+			const id = spawnedId();
+			expect(getAgent(id)?.status).toBe("failed");
+			expect(listInflightRuns()).toEqual([]);
+		} finally {
+			markerSpy.mockRestore();
+		}
+	});
+
+	it("H1: a marker that did NOT land falls back to the pre-#546 retire-then-append order (deferRetire false)", async () => {
+		const dir = runRegistry.registryDir();
+		const markerSpy = vi.spyOn(runRegistry, "markRecordFlipPending");
+		const persistSpy = vi.spyOn(runRegistry, "persistRunRecord");
+		mocks.session.prompt.mockImplementation(() => {
+			// Freeze the registry INSIDE the pre-start window: the marker write and
+			// the unlink now both fail (a read-only registry dir), which is exactly
+			// the double fault the fallback exists for.
+			chmodSync(dir, 0o500);
+			throw new Error("sync preflight failure");
+		});
+		try {
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "marker write fails" }),
+			).rejects.toThrow("sync preflight failure");
+
+			expect(markerSpy).toHaveBeenCalledTimes(1);
+			expect(markerSpy.mock.results[0]?.value).toBe(false);
+			// THE FALLBACK: with no durable marker, the terminal write must NOT defer
+			// the retirement — it takes the historical retire-then-append order.
+			const terminalCall = persistSpy.mock.calls.find(
+				(c: unknown[]) => (c[1] as { status?: string }).status === "failed",
+			);
+			expect(terminalCall?.[3]).toEqual({ deferRetire: false });
+			// STEP D is skipped (the entry is still here only because the 0500 dir
+			// cannot unlink it — the ORDER is the pin, not the file's survival).
+			expect(persistSpy.mock.calls.filter((c: unknown[]) => (c[1] as { status?: string }).status === "failed")).toHaveLength(1);
+		} finally {
+			chmodSync(dir, 0o700);
+			markerSpy.mockRestore();
+			persistSpy.mockRestore();
+		}
+		// The fallback residue is the PRE-#546 one: an entry with NO marker (the
+		// boot scan cannot repair a terminal record through it) and a failed record.
+		const id = spawnedId();
+		const leftover = listInflightRuns();
+		expect(leftover.map((e) => e.id)).toEqual([id]);
+		expect(leftover[0]?.recordFlipPending ?? null).toBe(null);
+		expect(getAgent(id)?.status).toBe("failed");
+	});
+});
+
+describe("issue #546 r2 — the unverified flip", () => {
+	it("S3: a flip whose write did NOT land is reported false, the marker is KEPT, and the next boot repairs it", async () => {
+		const dir = runRegistry.registryDir();
+		let recordPath = "";
+		mocks.session.prompt.mockImplementation(() => {
+			// #543: persistAgent swallows the EACCES, so a throw-free flip is not a
+			// landed flip. Freeze the RECORD (not the dir) so the marker write and the
+			// registry stay healthy and only the record write fails.
+			recordPath = join(env.storageDir, `${(fakePi.appendEntry.mock.calls[0][1] as { id: string }).id}.json`);
+			chmodSync(recordPath, 0o400);
+			throw new Error("sync preflight failure");
+		});
+		let id = "";
+		try {
+			await expect(
+				spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "flip write fails" }),
+			).rejects.toThrow("sync preflight failure");
+			id = (fakePi.appendEntry.mock.calls[0][1] as { id: string }).id;
+			// STEP B could not land...
+			expect(JSON.parse(readFileSync(recordPath, "utf8")).status).toBe("running");
+			// ...so STEP D must NOT retire: the marker is the retry.
+			const leftover = listInflightRuns();
+			expect(leftover.map((e) => e.id)).toEqual([id]);
+			expect(leftover[0]?.recordFlipPending).toMatchObject({ status: "failed" });
+		} finally {
+			if (recordPath) chmodSync(recordPath, 0o600);
+		}
+		// A later process repairs it. The spawn stamped THIS (live) process as the
+		// owner, and a live owner is held by design — rewrite the owner to a
+		// provably dead one, which is what a crashed process leaves behind.
+		const rewritten = { ...JSON.parse(readFileSync(recordPath, "utf8")), owner: { pid: 999999, start: "dead" } };
+		writeFileSync(recordPath, JSON.stringify(rewritten, null, 2), { mode: 0o600 });
+		const summary = await recoverInflightRuns({
+			deps: { ...defaultRecoveryDeps(), sleep: async () => {}, graceMs: 0 },
+			mark: () => { throw new Error("must not mark a marker-bearing entry"); },
+			readAgentRecord: (rid) => getAgent(rid),
+			readFreshAgentRecord: (rid) => readAgentRecordFromDisk(rid),
+			applyRecordFlip: (v) => {
+				const outcome = flipAgentRecord(v.id, v.status, v.error);
+				if (outcome === false) return false;
+				return runRegistry.clearInflightRun(v.id) ? outcome : false;
+			},
+		});
+		expect(summary.flipRepaired).toBe(1);
+		expect(getAgent(id)?.status).toBe("failed");
+		expect(listInflightRuns()).toEqual([]);
+		expect(dir).toBe(runRegistry.registryDir());
+	});
+});
+
+// =========================================================================
+// Issue #546 r4 (major A) — the LIVE writer's MEMORY pin (#542) and the
+// tri-state retirement, driven through the REAL pre-start path.
+//
+// These are the r3 critique's two cases, name-identical on purpose: the
+// reproducible before/after is
+//   vitest -t 'critique 546 foreground'   (r3: 2 failed, r4: 2 passed)
+//   vitest -t 'critique failed initial persist'  (r3: failed, r4: passed)
+// r3 shared `flipAgentRecord` with the boot replay, so its "absent/unreadable
+// ⇒ don't flip" rule left the IN-MEMORY record `running` after a failed
+// pre-start — the #542 regression. r4 splits the two contracts:
+//   `settleLiveAgentRecord` (live): MEMORY always terminal, then retire from
+//     the disk tri-state (absent/terminal ⇒ retire; running/unreadable ⇒ keep);
+//   `flipAgentRecord` (boot): disk-only — a fresh process has no memory to trust.
+// =========================================================================
+describe("critique 546 foreground unreadable and absent record", () => {
+	for (const mode of ["unreadable", "absent"] as const) {
+		it.skipIf(process.platform === "win32")(`still flips memory on ${mode}`, async () => {
+			let recordPath = "";
+			mocks.session.prompt.mockImplementation(() => {
+				const id = (fakePi.appendEntry.mock.calls[0][1] as { id: string }).id;
+				recordPath = join(env.storageDir, `${id}.json`);
+				if (mode === "unreadable") chmodSync(recordPath, 0o000);
+				else rmSync(recordPath);
+				throw new Error("critique preflight");
+			});
+			try {
+				await expect(
+					spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: `critique ${mode}` }),
+				).rejects.toThrow("critique preflight");
+				const id = (fakePi.appendEntry.mock.calls[0][1] as { id: string }).id;
+
+				console.log("CRITIQUE_STATE", mode, JSON.stringify({
+					status: getAgent(id)?.status,
+					disk: existsSync(recordPath),
+					registry: listInflightRuns().map((e) => ({ id: e.id, marker: e.recordFlipPending })),
+				}));
+				// THE #542 PIN, in BOTH faults: this process's record is terminal,
+				// even though the disk tells two different stories below.
+				expect(getAgent(id)?.status).toBe("failed");
+
+				if (mode === "unreadable") {
+					// The store cannot be read, so nothing PROVES the flip landed:
+					// the marker survives for the next boot (fail-closed).
+					const leftover = listInflightRuns();
+					expect(leftover.map((e) => e.id)).toEqual([id]);
+					expect(leftover[0]?.recordFlipPending).toMatchObject({ status: "failed" });
+				} else {
+					// A confirmed-absent record is re-created terminal by the memory
+					// flip (`updateAgentStatus` persists), so nothing durable is left
+					// to repair and the marker is retired.
+					expect(JSON.parse(readFileSync(recordPath, "utf8")).status).toBe("failed");
+					expect(listInflightRuns()).toEqual([]);
+				}
+			} finally {
+				if (recordPath && existsSync(recordPath)) chmodSync(recordPath, 0o600);
+			}
+		});
+	}
+});
+
+it.skipIf(process.platform === "win32")("critique failed initial persist then permissions restored before preflight failure", async () => {
+	mkdirSync(env.storageDir, { recursive: true });
+	chmodSync(env.storageDir, 0o500);
+	mocks.session.prompt.mockImplementation(() => {
+		// The spawn's own record write failed (dir 0500) and the store is writable
+		// again BEFORE the pre-start failure. r3 pre-read the disk, saw nothing, and
+		// returned `retired` without touching memory: `{running, disk:false,
+		// registry:0}`. The #542 pin says the row must be terminal and the disk
+		// terminal (the memory flip re-creates the record).
+		chmodSync(env.storageDir, 0o700);
+		throw new Error("critique preflight");
+	});
+	try {
+		await expect(
+			spawnBackgroundSession(fakePi as never, fakeCtx as never, { task: "critique initial persist" }),
+		).rejects.toThrow("critique preflight");
+		const id = (fakePi.appendEntry.mock.calls[0][1] as { id: string }).id;
+		const recordPath = join(env.storageDir, `${id}.json`);
+		console.log("INITIAL_WRITE", JSON.stringify({
+			status: getAgent(id)?.status,
+			disk: existsSync(recordPath),
+			registry: listInflightRuns().length,
+		}));
+		expect({
+			status: getAgent(id)?.status,
+			disk: existsSync(recordPath),
+			registry: listInflightRuns().length,
+		}).toEqual({ status: "failed", disk: true, registry: 0 });
+	} finally {
+		chmodSync(env.storageDir, 0o700);
+	}
+});
+
+// =========================================================================
+// Issue #546 — the BOOT applier's own contract, ported from the 24-case probe
+// (H2d, H5). `flipAgentRecord` reads the DISK before deciding, so an
+// unreadable record is `false` (never a write), and a retry after the store
+// becomes writable attempts the write again instead of trusting memory.
+// =========================================================================
+describe("issue #546 — flipAgentRecord's disk-only contract (H2d, H5)", () => {
+	const plant = (id: string, status: string): string => {
+		mkdirSync(env.storageDir, { recursive: true });
+		const file = join(env.storageDir, `${id}.json`);
+		writeFileSync(
+			file,
+			JSON.stringify({ id, sessionId: id, type: "general-purpose", description: "d", status, startedAt: 1, task: "t", owner: { pid: 999999, start: "dead" } }, null, 2),
+			{ mode: 0o600 },
+		);
+		return file;
+	};
+
+	it.skipIf(process.platform === "win32")("H2d: the APPLIER refuses an unreadable record (false, no write)", () => {
+		const id = crypto.randomUUID();
+		const file = plant(id, "running");
+		chmodSync(file, 0o000);
+		try {
+			expect(flipAgentRecord(id, "failed", "e")).toBe(false);
+		} finally {
+			chmodSync(file, 0o600);
+		}
+		expect(listInflightRuns()).toEqual([]); // the applier never touches the registry
+	});
+
+	it.skipIf(process.platform === "win32")("H5: a same-process retry attempts the write again once the store is writable", () => {
+		const id = crypto.randomUUID();
+		const file = plant(id, "running");
+		chmodSync(file, 0o400);
+		try {
+			expect(flipAgentRecord(id, "failed", "e")).toBe(false); // persistAgent swallowed EACCES
+			expect(JSON.parse(readFileSync(file, "utf8")).status).toBe("running");
+		} finally {
+			chmodSync(file, 0o600);
+		}
+
+		expect(flipAgentRecord(id, "failed", "e")).toBe("repaired");
+		expect(JSON.parse(readFileSync(file, "utf8")).status).toBe("failed");
+		expect(readAgentRecordFromDisk(id).record?.status).toBe("failed");
 	});
 });
