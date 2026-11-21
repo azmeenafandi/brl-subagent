@@ -111,6 +111,33 @@ else
     fi
 fi
 
+# ── Advisory. CodeGraph structural check (never fails the pre-flight) ─────
+# CodeGraph is the sole structural index (ADR 0016), and a circular-import
+# group is cheapest to see here. ADVISORY only: TypeScript type-only imports
+# (`import type …`) are erased at runtime, so a group can be benign — the
+# schema.ts ↔ types.ts pair is (one side is `import type`). CodeGraph 1.6.3+
+# ships `cycles` (exit 1 when any group exists).
+CG_BIN="${CODEGRAPH_BIN:-codegraph}"
+if ! command -v "${CG_BIN}" >/dev/null 2>&1 || [[ ! -f "${REPO_ROOT}/.codegraph/codegraph.db" ]]; then
+    echo "  ~ CodeGraph not installed/indexed here — circular-import check skipped"
+else
+    set +e
+    CYCLES_OUT="$(cd "${REPO_ROOT}" && DO_NOT_TRACK=1 "${CG_BIN}" cycles . 2>&1)"
+    CG_RC=$?
+    set -e
+    case "${CG_RC}" in
+        0) pass "no circular imports (codegraph cycles)" ;;
+        1)
+            echo "  ~ circular imports found — ADVISORY: check whether every edge is a VALUE import"
+            echo '       (type-only `import type` edges are erased at runtime and harmless):'
+            echo "${CYCLES_OUT}" | sed 's/^/       /' | head -12
+            ;;
+        *)
+            echo "  ~ codegraph cycles could not run (exit ${CG_RC}) — advisory skipped"
+            ;;
+    esac
+fi
+
 # ── Result ───────────────────────────────────────────────────────────────
 echo ""
 if [[ "${FAILED}" == "1" ]]; then

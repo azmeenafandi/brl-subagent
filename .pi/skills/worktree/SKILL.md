@@ -153,6 +153,11 @@ never re-type their logic by hand. Full design:
     - **Interactive recon — the commands that are not artifacts.**
       `codegraph explore <area>` for a first pass over an unfamiliar area
       (blast radius + verbatim source in one call — cap the output);
+      For a **named** symbol prefer the question form
+      `codegraph explore "who calls <symbol>?"` — 1.6.4 answers with the
+      definition and every use site in ~40 lines instead of an area query's
+      hundreds. When an answer carries `⚠ <file> changed on disk after it was
+      last indexed`, run `codegraph sync` before pinning those line numbers.
       `codegraph node <symbol>` for source + the caller/callee trail in one
       call; `codegraph callees <symbol>` for what a function does downstream
       (`callers`/`impact` only see who calls it); `codegraph context <task>` to
@@ -541,6 +546,9 @@ mechanics, verdict format: `references/review-dispatch.md`.
 - **`check-repo.sh`** — before ANY worktree creation. If it fails, fix the
   cockpit checkout first (`npm ci` once, only while no worktree is linked; or
   `git pull --rebase`). Never create a worktree on a broken source of truth.
+  It also runs an **advisory** `codegraph cycles` (1.6.3+; exit 1 = groups
+  found): type-only `import type` edges are erased at runtime, so a group is
+  not a failure — read the files before treating it as a runtime cycle.
 - **`worktree-prep.sh <path> [--include-dev-docs] [--force-isolated]`** —
   immediately after `git worktree add`: provisions node_modules (symlink when
   lockfiles match, isolated `npm ci` otherwise) and smoke-tests vitest, running
