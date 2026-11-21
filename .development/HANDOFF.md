@@ -60,6 +60,11 @@ Cycle: **`process-receipts` OPEN** (declared 2026-11-21T15:31Z) — 8 units, ord
 ## Operating notes
 - **Gate gotcha — #548 evidence.** If a worktree suite shows exactly 3 `scripts/__tests__/handoff-verify.test.ts` CLI-seam failures, they are **#548** (reproduce on the branch base before blaming the PR). Capture the gate-(g) report from a **clone of the identical tree** (`git write-tree` equal) with `dev` pinned to the branch base (`node scripts/suite-report.mjs --capture` there), `cp -p` the report + sidecar into `~/.cache/brl-subagent/reports/`, and disclose the capture in a PR comment.
 - **Gate gotcha — `Test budget:` declarations.** The line must be a **line-start paragraph outside fences and the pr-evidence block**, and must contain **no digits** (digits outside the block trigger `unattributed-count`). Put the measured numbers in the fenced `--flow` output above it.
+- **Jev on the npm install (not the dev path):** the `typesafe` provider is unwired, but the classifier answers via
+  `models.getModelOfType("classifier","openrouter","typesafe/jev-1.13")` in a codemode call; then
+  `node .pi/skills/worktree/jev-check.mjs --classifier '<raw answers>' --worktree y|n --label <name>` mints the line **and**
+  the provenance row. A dispatch that went out without one needs a retrospective row plus a `retro:<label>` entry in
+  `.pi/jev-dispatch-exceptions.txt` (prefix = agent id, ≥7 chars) or gate (e) fails.
 - **Gate gotcha — review records.** The review templates say "read-only"; tell the reviewer explicitly that `scripts/review-record.mjs` is the **one permitted write**, then check for `REVIEW_<n>.md` before the gate. If it is missing, materialise it from the reviewer's returned findings (`--findings <file>`) and note that the conductor wrote the bytes.
 - **`check-repo.sh`**: an **unpushed** dev reads as "BEHIND origin" (it compares HEAD ≠ upstream with one message for both directions); push before `worktree-prep`.
 - **`pr-evidence --check` must run in the PR worktree** (the PR head must be checked out).
