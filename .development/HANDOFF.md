@@ -47,17 +47,15 @@ Cycle: **`process-receipts` OPEN** (declared 2026-11-21T15:31Z) — 8 units, ord
 1. **Next cycle — the process cycle** (order decided 2026-11-21, on the maintainer's word; **do not start until told**): **1. #560 friction ledger** (first — the tool for this cycle's own close; `--check` takes an optional candidate JSON, the forward interface to #533) → **2. #548 widened** (second — #560's merge reddens worktree PRs until it lands; no non-handoff `dev` commits while #560's worktree is in flight) → **3. #533** friction candidates from `sprint-metrics` (feeds the ledger's completeness check) → **4. #550 widened** (the plan-critic record write; per-dispatch `tools` needs no schema work) → **5. #556** (transport retry classification + bank-first) → **6. #557** (the evidence checklist) → **7. #558** (the worktree-script budgets) → **8. #554** (atomic `persistAgent`).
 
 ## Open items
-- **#548 (widened) — state-comparison scripts misclassify ordinary states.** `handoff-verify`'s CLI-seam fixture assumes HEAD ⊇ the dev claim (red in any worktree once dev advances); the docs-only `Verified:` anchor forces a detached-worktree report for a docs-only tip; a mid-unit `In flight:` commit trips `verified-drift`; and `check-repo.sh` calls an **ahead** tree "BEHIND origin". Fix: counts not equality, docs-only tails transparent, `suite-report --head`. **Do it before the next unit that needs a worktree PR.**
-- **#550 (widened) — a record demanded from a read-only preset.** The plan critic could not write its five critiques this cycle; per-dispatch `tools` including `write` is the no-code workaround, a named record-write allowance the durable fix.
-- **#552** — resume-after-drop: no in-flight line in the wake, no state reader; the `In flight:` line itself landed and worked.
+
+- **#558** — `.pi/skills/worktree/*.{sh,py}` outside both budget surfaces (advisory in five sweeps, now a P0). **Next unit**; it changes `check-test-budget.mjs`, the gate-(g) guard — spec first.
+- **#556** — transport deaths on long background runs: 17/63 failed with 12 auto-retries; widen the retry to any death before a durable write, bank-first.
 - **#554** — torn `persistAgent` write: a corrupt record is not repairable by boot; atomic temp+rename + a corrupt-record policy.
-- **#556** — transport deaths on long background runs: 17/63 failed with 12 auto-retries; widen the retry to any death before a durable write, resume from the bank; at two deaths on one label, change the shape.
-- **#557** — spec evidence that cannot fail: the evidence checklist (command + assertion, negative control, measured killer, pass and fail state).
-- **#558** — `.pi/skills/worktree/*.{sh,py}` outside both budget surfaces (advisory in five sweeps, now a P0).
-- **#533 P0** — friction reconstructed at close, never logged live; derive the candidates at close from the Jev ledger / session log.
+- **#533 — PARKED** — friction reconstructed at close, never logged live. Spec v1 was rejected on source adequacy (stop/retry kinds need parser provenance first); critique in `~/.cache/brl-subagent/scratch/spec-533/`, worktree `brl-subagent-533` @ `c4226fe` kept.
+- **#552** — resume-after-drop: the `In flight:` line landed and worked; the state reader is still absent.
+- **#561 / #562 / #567** — small: a prose file mention read as a size claim; three acceptances with no documented home; two pointer nits in the spec-evidence reference.
 - **PR #536 held** — dependabot typebox 1.3.27 → 1.4.6; the pin crosses the extension↔harness boundary. Re-evaluate only when pi's pin moves.
 - **ADR amendments pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
-- **Sweep candidates (advisory):** `suite-report --head` (folded into #548); `gh issue close` has no `--comment-file`; the Jev line grammar rejects parentheticals; `codegraph-check` not wired into `merge-guard`; `diagnoseFailure` Rule 4's missing bash awareness.
 
 ## Operating notes
 - **Gate gotcha — #548 evidence.** If a worktree suite shows exactly 3 `scripts/__tests__/handoff-verify.test.ts` CLI-seam failures, they are **#548** (reproduce on the branch base before blaming the PR). Capture the gate-(g) report from a **clone of the identical tree** (`git write-tree` equal) with `dev` pinned to the branch base (`node scripts/suite-report.mjs --capture` there), `cp -p` the report + sidecar into `~/.cache/brl-subagent/reports/`, and disclose the capture in a PR comment.
