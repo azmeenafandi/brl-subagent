@@ -98,8 +98,14 @@ never re-type their logic by hand. Full design:
 11. **Recurrence escalation (Rule 11).** At cycle end, count friction classes.
     Any class with ≥2 occurrences AND not resolved → P0 for the next cycle,
     with a fix direction (`fix: mechanical | judgement`, default mechanical —
-    build the check, not the prose). The count is the truth; a "mitigated"
-    label is a hypothesis — recurrence evidence overrides it.
+    build the check, not the prose). At cycle close the count is recorded, not
+    remembered: every class — and every friction row in the cycle's window —
+    gets exactly one disposition in `.development/FRICTION_DISPOSITIONS.md`
+    (`P0 #N` / `fixed <sha>` / `folded into #N` / `accepted → <file>::<section>` /
+    `stale`), rendered by `scripts/friction-disposition.mjs`. The cycle is not
+    closed until `node scripts/friction-disposition.mjs --check --cycle <name>`
+    exits 0. `accepted` names a file and a section; an intention is not a
+    disposition.
 12. **Environment before theory (Rule 12).** When something breaks, check the
     environment FIRST (installed SDK version vs lockfile, extension sync, reload
     currency, the session log / run entries audit trail), THEN theorize about
