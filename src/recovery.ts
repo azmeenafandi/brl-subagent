@@ -32,7 +32,7 @@
  */
 
 import type { Logger } from "./logging";
-import { listInflightRuns, type InflightRun } from "./run-registry";
+import { listInflightRuns, type InflightRun, type RecordFlipStatus } from "./run-registry";
 import { assertSafeAgentId } from "./sanitize";
 import { isProcAvailable, defaultRecoveryDeps } from "./proc";
 import { decideRecovery, classifyOwner, reapPids, type RecoveryDeps, type RecoveryRecord } from "./recovery-engine";
@@ -70,6 +70,21 @@ export interface BootScanSummary {
 	 * write is warned — either way the entry stays out of the interrupted class.
 	 */
 	neverStarted: number;
+	/**
+	 * Issue #546: entries carrying a `recordFlipPending` marker whose agent record
+	 * was still `running` with a provably dead owner — the flip was APPLIED and the
+	 * entry retired, so a `running` record that no boot scan could otherwise see is
+	 * terminal after this boot.
+	 */
+	flipRepaired: number;
+	/**
+	 * Issue #546: markers whose record was ALREADY terminal (or absent) — the flip
+	 * landed and only the retirement was lost. The entry is retired; nothing is
+	 * rewritten and no terminal event is re-emitted.
+	 */
+	flipRetired: number;
+	/** Issue #546: flips decided but whose durable write did NOT land (#304 rule). */
+	flipFailures: number;
 }
 
 /** The all-zero summary (a skipped scan / an empty registry). */
@@ -85,6 +100,9 @@ export function emptyBootScanSummary(): BootScanSummary {
 		skippedNoOwner: 0,
 		skippedUnsafeIds: 0,
 		neverStarted: 0,
+		flipRepaired: 0,
+		flipRetired: 0,
+		flipFailures: 0,
 	};
 }
 
@@ -281,6 +299,39 @@ export function neverStartedRunRecord(
 	};
 }
 
+/** What the boot verdict hands the caller: which record to flip, to what. */
+export interface RecordFlipVerdict {
+	id: string;
+	status: RecordFlipStatus;
+	error?: string;
+}
+
+/**
+ * Issue #546 (major 4): what the applier's unit of work did. `'repaired'` = the
+ * record was rewritten and the store says terminal; `'retired'` = no rewrite was
+ * needed (the record was already terminal or absent) and only the entry was
+ * retired; `false` = NOT settled (unreadable record, a failed record write, or a
+ * failed unlink) — the scan keeps the marker and counts `flipFailures`.
+ *
+ * The applier reports the outcome instead of the scan inferring it from its own
+ * earlier decision: under the two-boot race the second boot's applier sees a
+ * terminal record and retires, and the ledger must say `retired` (not a second
+ * repair) without the scan having to re-read anything.
+ */
+export type RecordFlipOutcome = "repaired" | "retired" | false;
+
+/**
+ * Issue #546 (major 2/3): the disk-only, TRI-STATE read of one agent record,
+ * taken immediately before the flip verdict. `exists: false` is CONFIRMED
+ * ABSENCE (nothing durable can go stale ⇒ the marker may retire); `exists: true`
+ * with `record: null` is PRESENT-BUT-UNREADABLE/CORRUPT (we know nothing ⇒ hold,
+ * keep the marker); a record is the state the decision is made on.
+ */
+export interface FreshAgentRecord {
+	record: PersistedAgentLike | null;
+	exists: boolean;
+}
+
 export interface RegistryScanOptions {
 	deps: RecoveryDeps;
 	/**
@@ -301,6 +352,24 @@ export interface RegistryScanOptions {
 	 * entry so a registry without an agent file is still marked, not skipped.
 	 */
 	readAgentRecord?(id: string): PersistedAgentLike | null;
+	/**
+	 * Issue #546: apply a persisted `recordFlipPending` marker to that run's agent
+	 * record AND retire the registry entry (the two writes belong together: the
+	 * entry is the marker, so it may die only with the flip). Returns the outcome
+	 * the ledger counts; `false` (a failed record write OR a failed unlink) keeps
+	 * the entry, so the marker survives to the next boot. Idempotent by contract:
+	 * an already-terminal record is not rewritten and emits no event.
+	 * Absent ⇒ the marker is left untouched (no write, no retirement).
+	 */
+	applyRecordFlip?(verdict: RecordFlipVerdict): RecordFlipOutcome;
+	/**
+	 * Issue #546 (major 3): a DISK read of the one agent record, taken just before
+	 * the verdict — never the scanner's earlier snapshot, which is memory-first
+	 * (`getAgent`) and may be stale. Wired together with `applyRecordFlip`; when
+	 * either is absent the marker branch holds (fail-closed): a marker is never
+	 * retired on a state we did not just read.
+	 */
+	readFreshAgentRecord?(id: string): FreshAgentRecord;
 	now?: () => Date;
 	log?: Pick<Logger, "debug" | "info" | "warn">;
 }
@@ -318,6 +387,53 @@ export interface RegistryScanOptions {
  * invisible here — consistent with the maintained `no-owner` policy (don't act
  * on what we cannot verify).
  */
+/**
+ * Issue #447 / #546: the one ownership rule both pre-verdict paths share — a
+ * record may be acted on ONLY when its owner is provably dead. A live owner may
+ * still be inside its own pre-start window (the git-branch lock, a slow
+ * transcript start, the microseconds between the marker write and its flip) and
+ * is about to finish the job itself; an owner we cannot verify is never acted on
+ * (`classifyOwner` returns "unverifiable" without /proc).
+ */
+function ownerProvablyDead(owner: RecoveryRecord["owner"], deps: RecoveryDeps): boolean {
+	if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0) return false;
+	return classifyOwner(owner, deps) === "dead";
+}
+
+/**
+ * Issue #546: the verdict for an entry that carries a `recordFlipPending`
+ * marker. Three outcomes plus one hold:
+ *
+ *   - record already terminal, or CONFIRMED ABSENT → the flip landed (or nothing
+ *     durable exists) and only the retirement was lost: retire only
+ *     (`flipRetired`);
+ *   - record still `running` and the owner provably dead → apply the flip and
+ *     retire (`flipRepaired`);
+ *   - record present but UNREADABLE/corrupt → HOLD: we cannot tell whether a
+ *     `running` record is still there, so the marker must survive (major 2);
+ *   - record still `running` but the owner live/unverifiable → HOLD, write
+ *     nothing, and skip ordinary recovery for this entry (`continue`).
+ *
+ * `fresh` is a DISK read taken by the caller immediately before this call
+ * (major 3), not the scanner's snapshot.
+ */
+function recordFlipDecision(
+	entry: InflightRun,
+	fresh: FreshAgentRecord,
+	deps: RecoveryDeps,
+): "repaired" | "retired" | "held" | "unreadable" {
+	// Major 2: absence and unreadability are OPPOSITE verdicts. A confirmed
+	// absence may retire the marker (nothing durable can go stale); a file that
+	// exists but cannot be parsed keeps it (we know nothing, and retiring would
+	// strand a possibly still-`running` record). `unreadable` is its own verdict
+	// so the ledger can count it as a failed settlement instead of a silent hold.
+	if (!fresh.exists) return "retired";
+	if (!fresh.record) return "unreadable";
+	if (fresh.record.status !== "running") return "retired";
+	const owner = fresh.record.owner ?? entry.owner;
+	return ownerProvablyDead(owner, deps) ? "repaired" : "held";
+}
+
 export async function recoverInflightRuns(options: RegistryScanOptions): Promise<BootScanSummary> {
 	// Issue #304 read/write asymmetry, fail-closed: `listInflightRuns` accepts
 	// any string id, but every write (and `markInterrupted`) resolves through
@@ -347,11 +463,120 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 	// is nothing to reap, nothing to interrupt, and nothing to retry. It is
 	// finalized `failed` below instead of being handed to the decision engine.
 	const neverStarted: InflightRun[] = [];
+	// Issue #546: the counters for the marker verdict (a marker is not a
+	// candidate; it is a repair).
+	let flipRepaired = 0;
+	let flipRetired = 0;
+	let flipFailures = 0;
 	for (const entry of addressable) {
 		const isBackground = entry.kind === "background";
 		// Only a background entry has an agent record to enrich from (and to drop
 		// a stale entry by); the read is that ONE file, never the whole store.
 		const agent = isBackground ? (options.readAgentRecord?.(entry.id) ?? null) : null;
+		// Issue #546: a marker means the terminal run-entry write was ATTEMPTED and
+		// the agent-record flip was not seen through. Settle it BEFORE the
+		// terminal-record drop below — that drop's whole job is to swallow a stale
+		// entry, and swallowing a marker would leave exactly the zombie row this
+		// issue is about. A marker is not gated by `recovery` (a repair is not an
+		// offer) and not by `acceptedAt` (the marker already names the terminal
+		// status, which supersedes the never-started class).
+		if (entry.recordFlipPending) {
+			if (!options.applyRecordFlip || !options.readFreshAgentRecord) {
+				// HOLD — and skip ordinary recovery for this entry. A half-wired
+				// applier cannot settle the marker, but falling through is worse than
+				// doing nothing: the never-started finalizer would retire a marker
+				// over a record that is still `running`, and the interrupted mark
+				// would stamp a dispatch whose terminal run entry is already
+				// written (r2 major 2). Entry and marker stay byte-identical for
+				// the next fully wired boot.
+				options.log?.debug("Recovery: held a record-flip marker (applier or fresh-record reader not wired)", {
+					id: entry.id,
+					kind: entry.kind,
+				});
+				continue;
+			}
+			{
+				// Issue #546 (major 3): the pre-flip read is taken HERE, after the
+				// candidate loop and immediately before the verdict — so a boot that
+				// begins after another finished sees the terminal record and retires
+				// without rewriting. Two boots that BOTH read here before either
+				// writes are the stated limit (see the spec's narrowed guarantee).
+				const fresh = options.readFreshAgentRecord(entry.id);
+				const decision = recordFlipDecision(entry, fresh, options.deps);
+				if (decision === "unreadable") {
+					// Major 2: the record exists but cannot be parsed, so we cannot
+					// tell whether it is still `running`. The marker is KEPT and the
+					// settlement is counted failed (never silently dropped).
+					flipFailures++;
+					options.log?.warn("Recovery: could not read the agent record for a record-flip marker — the marker is kept", {
+						id: entry.id,
+						kind: entry.kind,
+					});
+					continue;
+				}
+				if (decision === "held") {
+					// NOT a candidate either: the owner may be about to land this flip
+					// itself, and the "don't act on what we cannot verify" policy applies
+					// (neverStarted's no-owner rule). A marker is never offered as an
+					// interrupted run — that would offer a retry for a run that already
+					// wrote its terminal entry.
+					options.log?.debug("Recovery: held a record-flip marker whose owner is live or unverifiable", {
+						id: entry.id,
+						kind: entry.kind,
+					});
+					continue;
+				}
+				{
+					// The APPLIER's outcome is the ledger, not the decision taken above:
+					// under the two-boot race the second applier can find the record
+					// already terminal and retire — that is a `retired`, not a second
+					// `repaired`.
+					let outcome: RecordFlipOutcome = false;
+					try {
+						outcome = options.applyRecordFlip({
+							id: entry.id,
+							status: entry.recordFlipPending.status,
+							...(entry.recordFlipPending.error !== undefined
+								? { error: entry.recordFlipPending.error }
+								: {}),
+						});
+					} catch (err) {
+						// Best-effort, exactly like the mark and never-started paths: a
+						// failed repair must not abort the scan for the other candidates.
+						options.log?.warn("Recovery: record-flip repair threw", {
+							id: entry.id,
+							error: (err as Error).message,
+						});
+					}
+					if (outcome === false) {
+						flipFailures++;
+						options.log?.warn("Recovery: record-flip settlement did not land — the marker is kept", {
+							id: entry.id,
+							kind: entry.kind,
+							status: entry.recordFlipPending.status,
+							decision,
+						});
+					} else if (outcome === "repaired") {
+						flipRepaired++;
+						options.log?.info("Recovery: repaired a record whose terminal flip was lost", {
+							id: entry.id,
+							kind: entry.kind,
+							status: entry.recordFlipPending.status,
+						});
+					} else {
+						flipRetired++;
+						options.log?.debug("Recovery: retired a record-flip marker whose flip had landed", {
+							id: entry.id,
+							kind: entry.kind,
+						});
+					}
+					// A landed settlement retires the entry (the applier does it) and a
+					// kept marker must not be re-read as an ordinary candidate — either
+					// way this entry's scan is over.
+					continue;
+				}
+			}
+		}
 		if (agent && agent.status !== "running") continue;
 		// Issue #447: ONE tri-state read for both kinds, so the `null` rule cannot
 		// drift between the background and run branches.
@@ -389,12 +614,7 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 		// terminal record the run's real terminal entry could not outrank (the
 		// store keeps the earlier entry, and readers prefer the LAST one). No owner or
 		// an unverifiable one ⇒ no write, exactly as for the mark path.
-		const owner = entry.owner;
-		const ownerDead =
-			!!owner &&
-			Number.isInteger(owner.pid) &&
-			owner.pid > 0 &&
-			classifyOwner(owner, options.deps) === "dead";
+		const ownerDead = ownerProvablyDead(entry.owner, options.deps);
 		if (!ownerDead) {
 			options.log?.debug("Recovery: left a never-started dispatch with a live/unverified owner", {
 				id: entry.id,
@@ -434,6 +654,9 @@ export async function recoverInflightRuns(options: RegistryScanOptions): Promise
 	});
 	summary.skippedUnsafeIds = unsafeIds.length;
 	summary.neverStarted = settledNeverStarted;
+	summary.flipRepaired = flipRepaired;
+	summary.flipRetired = flipRetired;
+	summary.flipFailures = flipFailures;
 	return summary;
 }
 
@@ -449,6 +672,10 @@ export interface ProductionRecoveryOptions {
 	/** Issue #447: persist the terminal record of a never-started dispatch. */
 	finalizeNeverStarted?(run: SubagentRun, reason: string): boolean | void;
 	readAgentRecord?(id: string): PersistedAgentLike | null;
+	/** Issue #546: apply a persisted record-flip marker (flip + retire). */
+	applyRecordFlip?(verdict: RecordFlipVerdict): RecordFlipOutcome;
+	/** Issue #546: the disk read the flip verdict is made on. */
+	readFreshAgentRecord?(id: string): FreshAgentRecord;
 	now?: () => Date;
 	log?: Pick<Logger, "debug" | "info" | "warn">;
 }
@@ -472,6 +699,8 @@ export async function recoverProduction(options: ProductionRecoveryOptions): Pro
 		mark: options.mark,
 		finalizeNeverStarted: options.finalizeNeverStarted,
 		readAgentRecord: options.readAgentRecord,
+		applyRecordFlip: options.applyRecordFlip,
+		readFreshAgentRecord: options.readFreshAgentRecord,
 		now: options.now,
 		log: options.log,
 	});
