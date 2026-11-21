@@ -47,6 +47,7 @@ import {
 	renderBlock,
 	sameHead,
 	scanBlocks,
+	SHAPE,
 	unattributedCounts,
 	upsertBlock,
 } from "../lib/pr-evidence.mjs";
@@ -86,7 +87,7 @@ const ACTUAL = {
 	changedFiles: Number(CONTRACT["changed-files"]),
 	srcDiffLines: Number(CONTRACT["src-diff-lines"]),
 	suite: CONTRACT.suite as { files: number; tests: number },
-	budget: CONTRACT.budget as { src: string; scripts: string },
+	budget: CONTRACT.budget as { src: string; scripts: string; skills: string },
 };
 
 /** The verdict over one fixture, against the contract facts. */
@@ -113,7 +114,9 @@ const CASES: Array<[string, number, string[]]> = [
 	["docs-only", EXIT.OK, []],
 	// The three historical claims (#488): caught, or out of the mechanical set and said so.
 	["historical-s5-338", EXIT.OK, []],
-	["historical-s6-suite", EXIT.DRIFT, [CODES.unattributedCount]],
+	// Kept old-format on purpose (#558): the two-ratio `budget:` line is a `missing-key` refusal
+	// (`budget:` is required in three-ratio form), and the prose count is still caught beside it.
+	["historical-s6-suite", EXIT.DRIFT, [CODES.missingKey, CODES.unattributedCount]],
 	["historical-s6-complexity", EXIT.OK, []],
 ];
 
@@ -150,12 +153,15 @@ describe("pr-evidence — the block", () => {
 	});
 
 	it("is deterministic: two renders of one measurement are byte-identical, and carry no timestamp", async () => {
-		const first = renderBlock({ ...ACTUAL, budget: { src: 1.9904, scripts: 0.6149 } }, { base: "dev" });
-		const second = renderBlock({ ...ACTUAL, budget: { src: 1.9904, scripts: 0.6149 } }, { base: "dev" });
+		const ratios = { src: 1.9904, scripts: 0.6149, skills: 0.0312 };
+		const first = renderBlock({ ...ACTUAL, budget: ratios }, { base: "dev" });
+		const second = renderBlock({ ...ACTUAL, budget: ratios }, { base: "dev" });
 		expect(second).toBe(first);
 		expect(first).not.toMatch(/\d{4}-\d{2}-\d{2}/);
 		// Ratios are the guard's own two-decimal spelling, never a longer float.
-		expect(first).toContain(`budget: src ${formatRatio(1.9904)} · scripts ${formatRatio(0.6149)} `);
+		expect(first).toContain(
+			`budget: src ${formatRatio(1.9904)} · scripts ${formatRatio(0.6149)} · skills ${formatRatio(0.0312)} `,
+		);
 	});
 
 	it("reports a missing key by name rather than silently comparing nothing", async () => {
@@ -163,6 +169,21 @@ describe("pr-evidence — the block", () => {
 		const result = checkBody(body, ACTUAL);
 		expect(result.exit).toBe(EXIT.DRIFT);
 		expect(result.findings.map((finding: { code: string }) => finding.code)).toEqual([CODES.missingKey]);
+	});
+
+	it("refuses an old two-ratio block with missing-key, and --apply rewrites it to a clean check (#558)", async () => {
+		// The third ratio is REQUIRED, not additive. A body written before #558 parses with no `budget`
+		// key at all, so the refusal is the existing `missing-key` — and its message carries the shape
+		// that fixes it. `historical-s6-suite.md` is the fixture that keeps such a line on purpose.
+		const stale = verdict("historical-s6-suite");
+		const missing = stale.findings.find((finding: { code: string }) => finding.code === CODES.missingKey);
+		expect(missing?.detail).toContain(SHAPE.budget);
+
+		// The round trip, on a body whose only fault is the old ratio line: --apply is the fix.
+		const old = text("clean").replace(/ · skills [\d.]+/, "");
+		expect(checkBody(old, ACTUAL).findings.map((finding: { code: string }) => finding.code)).toEqual([CODES.missingKey]);
+		const rewritten = upsertBlock(old, renderBlock(ACTUAL, { base: "dev" }));
+		expect(checkBody(rewritten, ACTUAL)).toEqual({ exit: EXIT.OK, blocks: 1, findings: [] });
 	});
 
 	it("reports a count with no command as missing-command (#488's rule inside the block)", async () => {
@@ -190,9 +211,10 @@ describe("pr-evidence — the three historical claims (#488)", () => {
 	});
 
 	it("S6's `44 seam tests` is caught as an unattributed count", async () => {
-		const [finding] = verdict("historical-s6-suite").findings;
-		expect(finding.code).toBe(CODES.unattributedCount);
-		expect(finding.text).toBe("The two new files add 44 seam tests.");
+		// The fixture also keeps the old two-ratio `budget:` line, so this body carries two findings;
+		// the prose count is the one this case is about.
+		const finding = verdict("historical-s6-suite").findings.find((entry: { code: string }) => entry.code === CODES.unattributedCount);
+		expect(finding?.text).toBe("The two new files add 44 seam tests.");
 	});
 
 	it("S6's `stays at complexity 24` is out of the mechanical set — stated, not guessed at", async () => {
@@ -299,7 +321,7 @@ describe("pr-evidence — nothing read from a body is executed", () => {
 		const canary = join(dir, "pwned");
 		const bodyPath = join(dir, "body.md");
 		try {
-			writeFileSync(bodyPath, text("clean").replace(/^budget: src .*\n/m, `budget: src 1.99 · scripts 0.61 ${ARROW} sh -c ": > ${canary}"\n`));
+			writeFileSync(bodyPath, text("clean").replace(/^budget: src .*\n/m, `budget: src 1.99 · scripts 0.61 · skills 0.03 ${ARROW} sh -c ": > ${canary}"\n`));
 			const code = main(["--check", "--body", bodyPath], { probe: stubProbe(), out: () => {}, err: () => {} });
 			expect(code).toBe(EXIT.OK);
 			expect(existsSync(canary)).toBe(false);
@@ -327,7 +349,7 @@ function stubProbe(overrides: Record<string, unknown> = {}) {
 		changedFiles: () => ACTUAL.changedFiles,
 		srcDiffLines: () => ACTUAL.srcDiffLines,
 		suite: () => ({ files: ACTUAL.suite.files, tests: ACTUAL.suite.tests, path: "/tmp/vitest-report.json" }),
-		budget: () => ({ src: Number(ACTUAL.budget.src), scripts: Number(ACTUAL.budget.scripts) }),
+		budget: () => ({ src: Number(ACTUAL.budget.src), scripts: Number(ACTUAL.budget.scripts), skills: Number(ACTUAL.budget.skills) }),
 		prView: () => ({ head: HEAD, body: text("clean") }),
 		prEdit: () => undefined,
 		...overrides,
@@ -507,14 +529,27 @@ describe("pr-evidence — the git seam (real git, no gh)", () => {
 		expect(probe.srcDiffLines(withSrc, docsOnly)).toBe(0);
 	});
 
-	it("measures both budget surfaces from the tree, through the guard's own rules", async () => {
+	it("measures every budget surface from the tree, through the guard's own rules", async () => {
 		const { dir } = repo("budget");
 		mkdirSync(join(dir, "src"), { recursive: true });
 		mkdirSync(join(dir, "scripts"), { recursive: true });
+		mkdirSync(join(dir, ".pi", "skills", "worktree"), { recursive: true });
 		writeFileSync(join(dir, "src", "a.ts"), "one\ntwo\nthree\nfour\n");
 		writeFileSync(join(dir, "scripts", "g.mjs"), "one\ntwo\n");
+		writeFileSync(join(dir, ".pi", "skills", "worktree", "guard.sh"), "one\ntwo\nthree\nfour\n");
 		const budget = createEvidenceProbe(dir).budget();
-		expect(budget).toEqual({ src: 0, scripts: 0 });
+		expect(budget).toEqual({ src: 0, scripts: 0, skills: 0 });
+	});
+
+	it("refuses to state a ratio for a surface it cannot read — the fixture above must seed it", async () => {
+		// The receipt carries the guard's number, so a tree with no `.pi/skills/worktree` is a
+		// `cannot read the tree` refusal (exit 2 at the CLI), never a fabricated 0.00 clause.
+		const { dir } = repo("budget-absent-skills");
+		mkdirSync(join(dir, "src"), { recursive: true });
+		mkdirSync(join(dir, "scripts"), { recursive: true });
+		writeFileSync(join(dir, "src", "a.ts"), "one\n");
+		writeFileSync(join(dir, "scripts", "g.mjs"), "one\n");
+		expect(() => createEvidenceProbe(dir).budget()).toThrow(/\.pi\/skills\/worktree: cannot read the tree/);
 	});
 
 	it("refuses an unreadable head or base as exit 2 rather than reporting a drift", async () => {

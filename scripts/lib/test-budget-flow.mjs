@@ -71,14 +71,15 @@ function toCount(value) {
  * `"source"` or `"test"` for a path that belongs to `surface`, `null` for anything else — another
  * surface's directory, a declaration file, a `.json` fixture. A `__tests__` segment classifies a
  * file as a test, never the extension: on the `scripts` surface the tests are `.ts` and the sources
- * are `.mjs`, so the extension alone cannot answer.
+ * are `.mjs`, so the extension alone cannot answer. The source side is a LIST on every surface, so
+ * a surface spanning several languages (`skills`) needs no branch of its own here.
  */
 export function classifyPath(path, surface, testDirName) {
 	if (!path.startsWith(`${surface.dir}/`)) return null;
 	const extension = extname(path);
 	const isTest = path.split("/").includes(testDirName);
 	if (isTest) return extension === surface.testExtension ? "test" : null;
-	return extension === surface.sourceExtension ? "source" : null;
+	return surface.sourceExtensions.includes(extension) ? "source" : null;
 }
 
 /**

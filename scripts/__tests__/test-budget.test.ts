@@ -64,10 +64,12 @@ function surface(name: string) {
 }
 
 /** Write `files` under a fresh fixture root. A number writes that many fixture lines; an array
- *  writes its lines verbatim (so a fixture can hold a real import statement). */
+ *  writes its lines verbatim (so a fixture can hold a real import statement). Every root also gets
+ *  the `skills` surface's one stub script: the third surface is measured on EVERY report, so a root
+ *  without `.pi/skills/worktree` would read as a `cannot read the tree` fault (#558). */
 function tree(name: string, files: Record<string, number | string[]>): string {
 	const root = join(TMP, name);
-	for (const [path, content] of Object.entries(files)) {
+	for (const [path, content] of Object.entries({ ".pi/skills/worktree/probe.sh": 5, ...files })) {
 		const full = join(root, path);
 		mkdirSync(dirname(full), { recursive: true });
 		writeFileSync(full, Array.isArray(content) ? `${content.join("\n")}\n` : "// fixture\n".repeat(content));
@@ -188,6 +190,44 @@ describe("measureSurface — a `__tests__` segment classifies, not the extension
 		expect(formatSurface(measureSurface(surface("src"), root))).toBe(
 			"test-budget: src 1.50 (15 test / 10 source LOC, reference 2.0, warn at 1.95)",
 		);
+		// A reference-less surface says so instead of printing a target it does not have: the flow rule
+		// is its gate, and `reference none (flow-gated)` is the line that says which gate that is.
+		expect(formatSurface(measureSurface(surface("skills"), root))).toBe(
+			"test-budget: skills 0.00 (0 test / 5 source LOC, reference none (flow-gated))",
+		);
+	});
+
+	it("classifies the skills surface by LIST membership: `.sh`, `.py` and `.mjs`, never the extension alone", () => {
+		const root = tree("skills-ext", {
+			".pi/skills/worktree/guard.sh": 4,
+			".pi/skills/worktree/metrics.py": 3,
+			".pi/skills/worktree/log.mjs": 3,
+			".pi/skills/worktree/lib/helper.sh": 2,
+			".pi/skills/worktree/notes.md": 9,
+			".pi/skills/worktree/__pycache__/metrics.pyc": 9,
+			".pi/skills/worktree/__tests__/guard.test.ts": 12,
+			".pi/skills/worktree/__tests__/fixtures/body.md": 9,
+		});
+		rmSync(join(root, ".pi/skills/worktree", "probe.sh"));
+		const measured = measureSurface(surface("skills"), root);
+		expect(measured.sourceFiles.map((file: string) => file.slice(root.length + 1))).toEqual([
+			".pi/skills/worktree/guard.sh",
+			".pi/skills/worktree/lib/helper.sh",
+			".pi/skills/worktree/log.mjs",
+			".pi/skills/worktree/metrics.py",
+		]);
+		// A `__tests__` segment makes it a test whatever the extension, and only a test extension counts.
+		expect(measured.testFiles.map((file: string) => file.slice(root.length + 1))).toEqual([
+			".pi/skills/worktree/__tests__/guard.test.ts",
+		]);
+		expect(measured.sourceLoc).toBe(12);
+		expect(measured.testLoc).toBe(12);
+	});
+
+	it("names every source extension in its refusal, never a JSON array", () => {
+		const root = tree("skills-empty", { ".pi/skills/worktree/notes.md": 3 });
+		rmSync(join(root, ".pi/skills/worktree", "probe.sh"));
+		expect(() => measureSurface(surface("skills"), root)).toThrow(/\.sh\|\.py\|\.mjs outside __tests__/);
 	});
 });
 
@@ -268,6 +308,14 @@ describe("evaluate — the ratio reports, the wall and the floors still fail", (
 			"wall time 60.01s exceeds the 60.00s ceiling by 10 ms",
 		);
 		expect(verdict([measured("src", 10, 10)], WALL_CEILING_MS).findings).toEqual([]);
+	});
+
+	it("says nothing about a reference-less surface, even with a positive ratio (#558)", () => {
+		// `ratio > null` is a coercion, not a judgement. The skills surface declares no target, so a
+		// ratio of any size is silent: the flow rule gates it, and this report only prices it.
+		const { findings, warnings } = verdict([measured("skills", 10, 50)]);
+		expect(findings).toEqual([]);
+		expect(warnings).toEqual([]);
 	});
 
 	it("fails a floor finding that names the unreachable modules and their surface", () => {
@@ -475,6 +523,26 @@ describe("measureFloor — reachability, not a mention and not a barrel", () => 
 		expect(measureFloor(surface("scripts"), root).total).toBe(1);
 		expect(FLOOR.testSuffix).toBe(".test.ts");
 	});
+
+	it("opts the skills surface out of the floor — a `.sh` has no import edges to follow", () => {
+		// `floorCorpus: null` is the explicit opt-out: `0/11 reachable` would be a false red, and the
+		// surface's gate is the flow rule (its report line says `reference none (flow-gated)`).
+		expect(measureFloor(surface("skills"), ROOT)).toBeNull();
+		expect(measureFloors(ROOT).map((floor: { name: string }) => floor.name)).toEqual(["src", "scripts"]);
+	});
+
+	it("reads the opt-out BEFORE the tree, so an absent skills directory is skipped, never read", () => {
+		// A late skip — filtering the measured rows instead of the surfaces — reads the directory first
+		// and throws `cannot read the tree` on a root that simply has no worktree skill.
+		const root = tree("floor-no-skills", {
+			"src/module.ts": 10,
+			"src/__tests__/module.test.ts": importerOf("../module", 2),
+			"scripts/guard.mjs": 1,
+			"scripts/__tests__/guard.test.ts": importer(2),
+		});
+		rmSync(join(root, ".pi"), { recursive: true, force: true });
+		expect(measureFloors(root).map((floor: { name: string }) => floor.name)).toEqual(["src", "scripts"]);
+	});
 });
 
 describe("findTestBudgetDeclaration — one line authorises an over-allowance flow", () => {
@@ -524,6 +592,36 @@ describe("computeFlow — net deltas and the per-surface allowance", () => {
 		expect(flow.rows).toEqual([]);
 		expect(flow.verdict).toBe("within");
 		expect(formatFlowLine(flow, "abcdef1234")).toBe("test-flow: no source or test change — within (base abcdef1)");
+	});
+
+	it("sees a skills-only change, and a zero-net one stays silent (#558, the accepted limit)", () => {
+		// The surface #558 was filed for: five added lines in a worktree script used to read as no
+		// change at all, because `classifyPath` knew only `src/` and `scripts/`.
+		const grew = flowOf(["0\t0\tREADME.md", "5\t0\t.pi/skills/worktree/merge-guard.sh"].join("\n"));
+		expect(grew.rows).toEqual([{ name: "skills", source: 5, test: 0, allowance: 130, verdict: "within" }]);
+		expect(formatFlowLine(grew, "892d4fb1234")).toBe(
+			"test-flow: 0/+5 skills (allowance 130) — within (base 892d4fb)",
+		);
+		// The falsifier, pinned: the rule measures NET deltas, so a same-size replacement buys nothing
+		// and prints nothing. If this ever reports a clause, the accepted limit is no longer true.
+		const replaced = flowOf(["5\t5\t.pi/skills/worktree/merge-guard.sh"].join("\n"));
+		expect(replaced.rows).toEqual([]);
+		expect(replaced.verdict).toBe("within");
+	});
+
+	it("counts the worktree's three source languages and its `__tests__` tests, nothing else", () => {
+		const flow = flowOf(
+			[
+				"9\t0\t.pi/skills/worktree/lib/version-skew.sh",
+				"9\t0\t.pi/skills/worktree/codegraph-check.py",
+				"9\t0\t.pi/skills/worktree/jev-check.mjs",
+				"9\t0\t.pi/skills/worktree/SKILL.md",
+				"9\t0\t.pi/skills/worktree/references/spec-evidence.md",
+				"9\t0\t.pi/skills/worktree/__tests__/script-guards.test.ts",
+				"9\t0\t.pi/skills/notify/SKILL.md",
+			].join("\n"),
+		);
+		expect(flow.rows).toEqual([{ name: "skills", source: 27, test: 9, allowance: 174, verdict: "within" }]);
 	});
 
 	it("prices source growth at 2 test lines per added line, and a shrink at nothing", () => {
@@ -625,6 +723,18 @@ describe("main --flow — the rule over a real git range", () => {
 		expect(out[0]).toContain("+50/-50 src (allowance 120) — within");
 	});
 
+	it("measures a skills-only change in the flow — the surface #558 was filed for", () => {
+		const repo = scratch("flow-skills");
+		repo.write({ "src/module.ts": 100, ".pi/skills/worktree/merge-guard.sh": 10 });
+		repo.commit("base");
+		repo.branch("feat");
+		repo.write({ ".pi/skills/worktree/merge-guard.sh": 15 });
+		const head = repo.commit("guard docs");
+		const { code, out } = repo.flow(head);
+		expect(code).toBe(0);
+		expect(out[0]).toMatch(/^test-flow: 0\/\+5 skills \(allowance 130\) — within \(base [0-9a-f]{7}\)$/);
+	});
+
 	it("fails closed with `already-merged` when the merge base IS the head", () => {
 		const repo = scratch("flow-merged");
 		repo.write({ "src/module.ts": 100 });
@@ -684,9 +794,12 @@ describe("main — the two streams and the exit codes", () => {
 		const { code, out, err } = run([path], root);
 		expect(code).toBe(0);
 		expect(err).toEqual([]);
+		// Six lines: the wall, the THREE surfaces in name order (`scripts`, `skills`, `src`), the floors
+		// — which still name exactly the two surfaces that declare one — and the verdict.
 		expect(out).toEqual([
 			`test-budget: wall 1.00s (<= 60.00s, report: ${path})`,
 			"test-budget: scripts 0.90 (9 test / 10 source LOC, reference 1.0)",
+			"test-budget: skills 0.00 (0 test / 5 source LOC, reference none (flow-gated))",
 			"test-budget: src 1.50 (15 test / 10 source LOC, reference 2.0, warn at 1.95)",
 			"test-budget: floors — src 1/1 reachable · scripts 1/1 reachable",
 			"test-budget: OK.",
@@ -794,6 +907,28 @@ describe("main — the two streams and the exit codes", () => {
 		expect(/\bsrc (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["60", "60"]);
 		expect(/\bscripts (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["14", "14"]);
 		expect(measureFloors(ROOT).every((floor) => floor.unreachable.length === 0)).toBe(true);
+	});
+
+	it("measures the skills surface on the real tree — no reference, no floor, the flow is the gate", () => {
+		// The corpus is the issue's own enumeration (7 entry `.sh` + `lib/version-skew.sh`, 2 `.py`,
+		// 1 `.mjs`). A new worktree script joins this number; a test file does not move it.
+		const measured = measureSurface(surface("skills"), ROOT);
+		expect(measured.sourceLoc).toBe(6950);
+		expect(measured.reference).toBeNull();
+		expect(measured.warnAt).toBeNull();
+		// The EXACT line, so a formatted ratio cannot be a constant: `testLoc / 6950`, two decimals.
+		expect(formatSurface(measured)).toBe(
+			`test-budget: skills ${(measured.testLoc / 6950).toFixed(2)} ` +
+				`(${measured.testLoc} test / 6950 source LOC, reference none (flow-gated))`,
+		);
+	});
+
+	it("keeps a positive ratio on a reference-less surface silent and unformatted-away", () => {
+		// E2b's second half: a hand-built surface with `reference: null` and a POSITIVE ratio neither
+		// throws nor warns, and its line carries that ratio — never a hardcoded `0.00`.
+		const hand = { name: "skills", sourceFiles: [], testFiles: [], sourceLoc: 200, testLoc: 10, ratio: 0.05, reference: null, warnAt: null };
+		expect(formatSurface(hand)).toBe("test-budget: skills 0.05 (10 test / 200 source LOC, reference none (flow-gated))");
+		expect(evaluate({ reportPath: "report.json", wallMs: 1_000, surfaces: [hand] })).toEqual({ findings: [], warnings: [] });
 	});
 });
 
