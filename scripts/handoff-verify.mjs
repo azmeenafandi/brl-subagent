@@ -7,9 +7,9 @@
 // decides whether a claim holds — that is the lib's job, which is what lets the tests drive every drift
 // without a repo, a network or a subprocess.
 //
-//   node scripts/handoff-verify.mjs [--file .development/HANDOFF.md] [--report <vitest.json>]
-//                                   [--report-dir <dir>] [--issues <gh-issue-list.json>]
-//                                   [--no-network] [--json]
+//   node scripts/handoff-verify.mjs [--root <path>] [--file .development/HANDOFF.md]
+//                                   [--report <vitest.json>] [--report-dir <dir>]
+//                                   [--issues <gh-issue-list.json>] [--no-network] [--json]
 //
 // Exit 0 every claim holds · 1 drift, one named code per failing claim · 2 usage, a missing/unreadable
 // input, or an environment that cannot answer (no `dev` ref, no vitest report, `gh` unavailable). A drift
@@ -21,26 +21,40 @@
 // legitimate rewrite, which is worse than a human reading three lines. See `SCOPE` below.
 //
 // Fact sources, and the flags that make them injectable:
-//   verified/dev/install  `git` in THIS checkout — never a hard-coded cockpit path; `git rev-parse dev`
+//   root                  this checkout, or the one `--root <path>` names (#548). EVERY repo fact follows it —
+//                         the default subject file, the `git` calls, the module/ADR counters and `gh`'s cwd —
+//                         so the tool can be pointed at another checkout instead of silently reading this one.
+//                         It must be the TOP LEVEL of a git worktree: `git -C <subdir> rev-parse --show-toplevel`
+//                         answers with the parent's tree, and a nested or non-repo root would then report a
+//                         foreign checkout's facts as if they were the requested one's. Both sides are
+//                         canonicalised, so a symlinked alias is the same root and a typo is exit 2.
+//   verified/dev/install  `git` in the selected root — never a hard-coded cockpit path; `git rev-parse dev`
 //                         works from a worktree, which is where a unit runs. The `dev @` CLAIM is not that
 //                         ref: it is the ref with its trailing handoff commits walked back (#497), because
 //                         the convention is that the claim names the last merge and the handoff sits on top.
-//   open set              `gh issue list --state open --limit 1000`, or `--issues <json>` (a gh-format
-//                         array). `--issues` wins over `--no-network`: the check then runs offline.
-//                         `--no-network` without `--issues` skips the check AND prints that it skipped.
+//   open set              `gh issue list --state open --limit 1000` in the selected root, or `--issues <json>`
+//                         (a gh-format array). `--issues` wins over `--no-network`: the check then runs
+//                         offline. `--no-network` without `--issues` skips the check AND prints that it skipped.
 //   suite counts          a vitest JSON report, validated by `scripts/lib/suite-report.mjs` (#513):
-//                         `--report <path>` wins, else the reports under `--report-dir` (default
-//                         `<root>/reports`, the #512 private root) are scanned — and the handoff's own
-//                         `Verified:` sha disambiguates them (#520), because the report that proves the
+//                         `--report <path>` wins, else the reports under `--report-dir` (default: the #512
+//                         private scratch root's `reports/`, NOT the checkout) are scanned — and the handoff's
+//                         own `Verified:` sha disambiguates them (#520), because the report that proves the
 //                         `Suite:` line is the one captured at the tree §STATE describes. Several reports
 //                         for the SAME head are a named duplicate copy, never a tie; no head in the STATE
 //                         and several reports is still a refusal naming both, never "newest". The report's
 //                         path AND its provenance (head · dirty · absent) are printed with the verdict, so a
 //                         count is never shown without the provenance of what produced it (Rule 11, #488).
-//   module/ADR counts     the repo's own generators (`docs-arch`, `docs-decisions`), imported rather than
-//                         re-counted so the guard and the generator cannot disagree.
+//                         DELIBERATE: `--root` moves the REPO FACTS, never the capture directory — the
+//                         default is a property of this machine's scratch root (#512), not of the checkout
+//                         being evaluated, so a run against another repo must not start reading its
+//                         `reports/`. `--report` / `--report-dir` stay relative to the cwd that ran this.
+//   module/ADR counts     the selected root's own generators (`docs-arch`, `docs-decisions`), imported rather
+//                         than re-counted so the guard and the generator cannot disagree.
 //   file sizes            `wc -l` — `countLines` from `scripts/check-test-budget.mjs`, one definition of
 //                         "physical lines" in the repo.
+//
+// The resolved root is printed with the verdict (the `Running install:` line names `this repo (<root>)`), so a
+// run against a foreign checkout is self-identifying instead of looking like this one.
 //
 // Two deliberate choices, both load-bearing:
 //   • Check 1's range ends at `dev`, not at `HEAD`. §STATE describes dev; a worktree's HEAD is a feature
@@ -51,7 +65,7 @@
 //   • A drift means the CLAIM is wrong: fix the claim, never this script. It reads the shapes the handoff
 //     contract promises and nothing else — prose is not parsed, nothing is rewritten, nothing is fixed.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { countLines } from "./check-test-budget.mjs";
@@ -66,7 +80,7 @@ export const ROOT = join(HERE, "..");
 export const DEFAULT_FILE = join(".development", "HANDOFF.md");
 
 export const USAGE =
-	"usage: handoff-verify.mjs [--file <handoff>] [--report <vitest-json-report>] [--report-dir <dir>] [--issues <gh-issue-list.json>] [--no-network] [--json]";
+	"usage: handoff-verify.mjs [--root <path>] [--file <handoff>] [--report <vitest-json-report>] [--report-dir <dir>] [--issues <gh-issue-list.json>] [--no-network] [--json]";
 
 /**
  * The claims this tool refuses to check, printed with every verdict: a scope nobody states is a scope the
@@ -237,8 +251,8 @@ export function createRepoProbe(root, { report = "", reportDir = "", issues = ""
 			const path = resolveModulePath(root, name);
 			return path === null ? null : { path, lines: countLines(path) };
 		},
-		modules: () => collectModules().length,
-		adrs: () => collectDecisions().length,
+		modules: () => collectModules(root).length,
+		adrs: () => collectDecisions(root).length,
 		openIssues: () => readIssues({ root, issues }),
 		report: (expectHead = "") => resolveReport({ report, dir: reportDir, expectHead }),
 	};
@@ -248,7 +262,38 @@ export function createRepoProbe(root, { report = "", reportDir = "", issues = ""
 // CLI
 // ---------------------------------------------------------------------------
 
+/**
+ * The checkout `--root` names, canonicalised — or a named fault (#548).
+ *
+ * The rule is "this directory IS that checkout's top level", and `resolve()` alone cannot decide it: it keeps
+ * symlinks, and `git -C <subdir> rev-parse --show-toplevel` happily answers with the PARENT's tree, which would
+ * evaluate one handoff against another checkout's facts without saying so. So both sides go through `realpath`:
+ * a nested subdirectory, a plain directory that is not a repo, and a non-directory are all exit 2, while a
+ * symlinked alias of the same top level is the same root. The canonical form is what comes back, so the verdict
+ * (`Running install: this repo (<root>)`) names the tree that was actually read.
+ */
+export function resolveRoot(requested) {
+	const fault = (reason) => new InputError(`--root ${requested}: ${reason}`);
+	const target = resolve(requested);
+	let stats;
+	try {
+		stats = statSync(target);
+	} catch (error) {
+		throw fault(`not a directory (${describeError(error)})`);
+	}
+	if (!stats.isDirectory()) throw fault("not a directory");
+	const root = realpathSync(target);
+	const top = git(root, ["rev-parse", "--show-toplevel"]);
+	if (top.error) throw fault(describeError(top.error));
+	const toplevel = top.status === 0 ? top.stdout.trim() : "";
+	if (toplevel === "") throw fault("not a git worktree top-level (resolved root is none — git finds no worktree there)");
+	const canonicalTop = realpathSync(toplevel);
+	if (canonicalTop !== root) throw fault(`not a git worktree top-level (resolved root is ${canonicalTop})`);
+	return root;
+}
+
 const VALUE_FLAGS = new Map([
+	["--root", "root"],
 	["--file", "file"],
 	["--report", "report"],
 	["--report-dir", "reportDir"],
@@ -261,7 +306,9 @@ const BOOLEAN_FLAGS = new Map([
 
 /** `{ ok: true, options }` or `{ ok: false, message }` — never throws, never exits. */
 export function parseArgs(argv) {
-	const options = { file: "", report: "", reportDir: "", issues: "", noNetwork: false, json: false };
+	// `root: ""` is the DEFAULT, not just a map entry: `--root` absent must resolve to the checkout this script
+	// lives in, and `resolve(undefined)` would throw on it. `""` keeps "absent" and "empty" one state.
+	const options = { root: "", file: "", report: "", reportDir: "", issues: "", noNetwork: false, json: false };
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
 		const booleanKey = BOOLEAN_FLAGS.get(argument);
@@ -294,7 +341,17 @@ export function main(argv = process.argv.slice(2), io = {}) {
 		return EXIT.USAGE;
 	}
 	const options = parsed.options;
-	const filePath = options.file === "" ? join(ROOT, DEFAULT_FILE) : resolve(options.file);
+	// The selected root decides WHICH checkout every repo fact is read from (#548); absent means this one, and
+	// an absent root is the literal `""` `parseArgs` defaults to, never `undefined`.
+	let root;
+	try {
+		root = options.root === "" ? ROOT : resolveRoot(options.root);
+	} catch (error) {
+		err(`handoff-verify: ${describeError(error)}`);
+		return EXIT.USAGE;
+	}
+	// `--file` still wins and stays cwd-relative: it names one document, not another checkout.
+	const filePath = options.file === "" ? join(root, DEFAULT_FILE) : resolve(options.file);
 	let text;
 	try {
 		text = readFileSync(filePath, "utf8");
@@ -310,7 +367,7 @@ export function main(argv = process.argv.slice(2), io = {}) {
 	let results;
 	let drifts;
 	try {
-		const probe = io.probe ?? createRepoProbe(ROOT, options);
+		const probe = io.probe ?? createRepoProbe(root, options);
 		({ results, drifts } = evaluate(claims, probe, { noNetwork: options.noNetwork, issuesInjected: options.issues !== "" }));
 	} catch (error) {
 		err(`handoff-verify: ${describeError(error)}`);

@@ -28,10 +28,10 @@
  * that Linux refuses may be accepted where the mount type cannot be read).
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { join, relative } from "node:path";
+import { describe, expect, it } from "vitest";
 import { createRepoProbe, EXIT, main, parseArgs, parseRangeLog, readIssues, resolveModulePath, ROOT } from "../handoff-verify.mjs";
 import { LABELS, readSuiteReport } from "../lib/suite-report.mjs";
 import { collectDecisions } from "../docs-decisions.mjs";
@@ -555,9 +555,13 @@ describe("handoff-verify — the command", () => {
 			parseArgs(["--file", "a.md", "--report", "r.json", "--report-dir", "d", "--issues", "i.json", "--no-network", "--json"]),
 		).toEqual({
 			ok: true,
-			options: { file: "a.md", report: "r.json", reportDir: "d", issues: "i.json", noNetwork: true, json: true },
+			options: { root: "", file: "a.md", report: "r.json", reportDir: "d", issues: "i.json", noNetwork: true, json: true },
 		});
+		// `--root` is INITIALISED, not merely mapped: an absent flag must resolve to this checkout, and a
+		// `resolve(undefined)` on the way would throw before any check ran (#548).
 		expect(parseArgs([]).ok).toBe(true);
+		const parsed = parseArgs(["--root", "/elsewhere"]);
+		expect(parsed.ok && parsed.options.root).toBe("/elsewhere");
 		expect(parseArgs(["--json", "--json"]).ok).toBe(true);
 	});
 });
@@ -668,6 +672,12 @@ describe("handoff-verify — the seams", () => {
 		git("config", "user.email", "test@example.com");
 		git("config", "user.name", "Test");
 		writeFileSync(join(dir, "a.txt"), "a\n");
+		// The counters read the SELECTED root (#548): a repo with no `src/` and no decisions would be "cannot
+		// check", so the fixture carries one of each and the modules/ADRs claims below drift as ordinary values.
+		mkdirSync(join(dir, "src"), { recursive: true });
+		writeFileSync(join(dir, "src", "one.ts"), "// Purpose: the only module of the scratch repo.\nexport {};\n");
+		mkdirSync(join(dir, ".development", "decisions"), { recursive: true });
+		writeFileSync(join(dir, ".development", "decisions", "0001-scratch.md"), "# 0001. A scratch decision\n\n- **Status:** Accepted\n- **Date:** 2026-11-08\n");
 		git("add", ".");
 		git("commit", "-qm", "first");
 		const base = git("rev-parse", "HEAD").stdout.trim();
@@ -811,12 +821,59 @@ describe("handoff-verify — the dev claim ignores the handoff's own commit (#49
 describe("handoff-verify — the CLI seam", () => {
 	const SCRIPT = join(ROOT, "scripts", "handoff-verify.mjs");
 
-	// CI checks out a single ref: `dev` may not exist as a local branch there, and every CLI run resolves it.
-	// Create it once at HEAD when absent (a no-op in the cockpit and in any worktree, where `dev` exists).
-	beforeAll(() => {
-		const has = spawnSync("git", ["-C", ROOT, "rev-parse", "--verify", "--quiet", "dev"], { encoding: "utf8" });
-		if (has.status !== 0) spawnSync("git", ["-C", ROOT, "branch", "dev", "HEAD"], { encoding: "utf8" });
-	});
+	interface ScratchRepo {
+		dir: string;
+		git: (...args: string[]) => { stdout: string | null; status: number | null };
+		/** An EARLIER commit than `code` — a real stale candidate for the capture-resolution case (#520). */
+		seed: string;
+		/** The commit the STATE describes: the last non-handoff commit, so it IS the dev claim. */
+		code: string;
+		handoffSha: string;
+	}
+
+	/**
+	 * A throwaway checkout with four commits, every collector input committed before the handoff-only commit:
+	 * seed (`src/seed.ts`, the earlier stale candidate) → the collectors' inputs (`src/` as the two modules and
+	 * one ADR, so the counters read 2 and 1) → code (`src/code.ts`, the tree the STATE describes) → the handoff.
+	 *
+	 * The ORDER is load-bearing: `devClaimSha()` walks back only handoff-only commits, so the last non-handoff
+	 * commit is the dev claim. That is why the collector commit sits BEFORE the code commit — on top of it, the
+	 * claim would become a commit the STATE does not describe and every run here would drift on its own
+	 * `Verified:` line. `git init -b dev` because the tool resolves `dev` (there is no `main` in a scratch repo).
+	 */
+	function scratchRepo(): ScratchRepo {
+		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-root-"));
+		const git = (...args: string[]) => spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+		const commit = (message: string) => {
+			git("add", "-A");
+			git("commit", "-qm", message);
+			return git("rev-parse", "HEAD").stdout.trim();
+		};
+		git("init", "-q", "-b", "dev");
+		git("config", "user.email", "test@example.com");
+		git("config", "user.name", "Test");
+
+		mkdirSync(join(dir, "src"), { recursive: true });
+		writeFileSync(join(dir, "src", "seed.ts"), "// Purpose: the first scratch module.\nexport const seed = 1;\n");
+		const seed = commit("seed");
+
+		// The decision counter reads `.development/decisions/NNNN-*.md`; the module counter reads every top-level
+		// `src/*.ts`, so both modules carry the purpose header the generator requires.
+		mkdirSync(join(dir, ".development", "decisions"), { recursive: true });
+		writeFileSync(
+			join(dir, ".development", "decisions", "0001-scratch.md"),
+			"# 0001. A scratch decision\n\n- **Status:** Accepted\n- **Date:** 2026-11-08\n",
+		);
+		commit("decisions");
+
+		writeFileSync(join(dir, "src", "code.ts"), "// Purpose: the second scratch module, and the tree the handoff describes.\nexport const code = 1;\n");
+		const code = commit("code");
+
+		// The handoff-only commit: nothing but `.development/HANDOFF.md`, which is what keeps the claim at `code`.
+		writeFileSync(join(dir, ".development", "HANDOFF.md"), `## STATE\nVerified: ${code} (2026-11-08)\n`);
+		const handoffSha = commit("handoff");
+		return { dir, git, seed, code, handoffSha };
+	}
 
 	function runCli(argv: string[], env: Record<string, string> = {}): Run {
 		const result = spawnSync(process.execPath, [SCRIPT, ...argv], { encoding: "utf8", env: { ...process.env, ...env } });
@@ -824,22 +881,35 @@ describe("handoff-verify — the CLI seam", () => {
 	}
 
 	/**
-	 * A handoff that is TRUE of THIS checkout — the live dev tip and the counts the repo's own generators
-	 * report — so the only drift a CLI run can print is the one a test injects. A fixture would drift on its
-	 * own stale values and the assertion could not tell the injected fact from them.
+	 * A handoff that is TRUE of the checkout it names (#548). It used to be `liveHandoff()` — the live dev tip and
+	 * the counts this repo's generators report — which made every CLI test depend on THIS checkout's history: in a
+	 * worktree whose base is older than `dev`, the `Verified:` arm and the `Verified..dev` arm cannot both hold,
+	 * so three tests went red with the branch unchanged. A scratch checkout makes them hermetic instead, and
+	 * `--root` is what lets a real CLI run read it.
+	 *
+	 * The STATE is built from the SCRATCH repo's `devClaimSha()`, so the fixture cannot drift from the tree it
+	 * describes: an absent `--root` here would evaluate this checkout against a foreign STATE and print drift.
+	 * `modules`/`adrs` default to what that checkout's own generators report, and stay parameters because a test
+	 * may need the claim to be wrong on purpose.
 	 */
-	function liveHandoff({ suite, open }: { suite: string; open: string }): string {
+	function scratchHandoff(
+		repo: ScratchRepo,
+		{
+			suite,
+			open,
+			modules = collectModules(repo.dir).length,
+			adrs = collectDecisions(repo.dir).length,
+		}: { suite: string; open: string; modules?: number; adrs?: number },
+	): string {
 		// The dev CLAIM, not the raw ref: the convention is that the claim names the last non-handoff commit
-		// (#497), so a handoff commit sitting on `dev` must not make this fixture drift on its own.
-		const dev = createRepoProbe(ROOT).devClaimSha();
-		const modules = collectModules().length;
-		const adrs = collectDecisions().length;
+		// (#497), so the handoff commit sitting on `dev` must not make this fixture drift on its own.
+		const dev = createRepoProbe(repo.dir).devClaimSha();
 		return [
 			"## STATE",
 			`Verified: ${dev} (2026-11-08)`,
-			"Cycle: fixture cycle.",
+			"Cycle: scratch cycle — a throwaway checkout, not this one.",
 			"",
-			`- **dev** @ \`${dev}\`. The live dev tip.`,
+			`- **dev** @ \`${dev}\`. The scratch dev tip.`,
 			`- **Released:** nothing. Running install: **local-path dev checkout** (this repo, \`dev @ ${dev}\`).`,
 			`- **Board:** Open: ${open}, PR #402 held.`,
 			`- **Suite:** ${suite} green on dev; docs guards current (**${modules} modules**, **${adrs} ADRs**).`,
@@ -860,6 +930,7 @@ describe("handoff-verify — the CLI seam", () => {
 	}
 
 	it("honours --report over --report-dir, and fails with the INJECTED counts", () => {
+		const repo = scratchRepo();
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-cli-"));
 		const injected = join(dir, "injected.json");
 		// 3 files / 7 tests — nothing under the scanned directory looks like this, which is the point.
@@ -870,8 +941,8 @@ describe("handoff-verify — the CLI seam", () => {
 		mkdirSync(scanned);
 		writeFileSync(join(scanned, "planted.json"), JSON.stringify(suiteBody(11, 99)));
 		const handoff = join(dir, "HANDOFF.md");
-		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
-		const result = runCli(["--file", handoff, "--report", injected, "--report-dir", scanned, "--no-network"]);
+		writeFileSync(handoff, scratchHandoff(repo, { suite: "2 files / 40 tests", open: "#426, #450" }));
+		const result = runCli(["--root", repo.dir, "--file", handoff, "--report", injected, "--report-dir", scanned, "--no-network"]);
 		expect(result.code).toBe(EXIT.DRIFT);
 		expect(failures(result)).toHaveLength(1);
 		expect(failures(result)[0]).toContain(CODES.suiteCountDrift);
@@ -885,14 +956,15 @@ describe("handoff-verify — the CLI seam", () => {
 		// not by age and not by the head — so the refusal names `no-provenance-match` rather than the generic
 		// `ambiguous-reports`. The paths and the provenance are both in the message, because a reader picking
 		// one by hand needs to know that neither claims a tree.
+		const repo = scratchRepo();
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-cli-"));
 		const reports = join(dir, "reports");
 		mkdirSync(reports);
 		writeFileSync(join(reports, "a.json"), JSON.stringify(suiteBody(2, 40)));
 		writeFileSync(join(reports, "b.json"), JSON.stringify(suiteBody(2, 40)));
 		const handoff = join(dir, "HANDOFF.md");
-		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
-		const result = runCli(["--file", handoff, "--report-dir", reports, "--no-network"]);
+		writeFileSync(handoff, scratchHandoff(repo, { suite: "2 files / 40 tests", open: "#426, #450" }));
+		const result = runCli(["--root", repo.dir, "--file", handoff, "--report-dir", reports, "--no-network"]);
 		expect(result.code).toBe(EXIT.USAGE);
 		expect(result.err).toContain("no-provenance-match");
 		expect(result.err).toContain(join(reports, "a.json"));
@@ -907,11 +979,14 @@ describe("handoff-verify — the CLI seam", () => {
 	 * disambiguator, and the report it selects is the one whose counts the suite check reads.
 	 */
 	it("resolves several captures by the handoff's Verified head (#520)", () => {
+		const repo = scratchRepo();
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-verified-"));
 		const reports = join(dir, "reports");
 		mkdirSync(reports);
-		const head = createRepoProbe(ROOT).devClaimSha();
-		const other = "0123456789abcdef0123456789abcdef01234567";
+		const head = createRepoProbe(repo.dir).devClaimSha();
+		// A REAL earlier commit of the same checkout, not a made-up sha: the stale report belongs to a tree this
+		// repo actually had, which is what "one report per head, never pruned" looks like one capture later.
+		const other = repo.seed;
 		// The report of ANOTHER tree carries counts that would drift; the report of the verified tree matches.
 		const stale = join(reports, `${other}.json`);
 		writeFileSync(stale, JSON.stringify(suiteBody(11, 99)));
@@ -920,11 +995,15 @@ describe("handoff-verify — the CLI seam", () => {
 		writeFileSync(mine, JSON.stringify(suiteBody(2, 40)));
 		writeFileSync(`${mine}.provenance.json`, JSON.stringify({ head, dirty: false, capturedAt: "2026-11-08T00:00:01.000Z" }));
 		const handoff = join(dir, "HANDOFF.md");
-		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
-		const result = runCli(["--file", handoff, "--report-dir", reports, "--no-network"]);
+		writeFileSync(handoff, scratchHandoff(repo, { suite: "2 files / 40 tests", open: "#426, #450" }));
+		const result = runCli(["--root", repo.dir, "--file", handoff, "--report-dir", reports, "--no-network"]);
 		expect(result.err).not.toContain("ambiguous-reports");
-		expect(result.out).toContain(`head ${head}`);
 		expect(result.code).toBe(EXIT.OK);
+		// Exit 0 alone could be a run that read neither report; the selected head and the matching suite line
+		// are the two halves that prove resolution happened.
+		expect(result.out).toContain(`head ${head}`);
+		expect(result.out).toContain("✓ Suite: 2 files / 40 tests");
+		expect(result.out).not.toContain("11 files / 99 tests");
 	});
 
 	/**
@@ -933,18 +1012,19 @@ describe("handoff-verify — the CLI seam", () => {
 	 * "pass --report" is the wrong instruction for two files that describe one tree.
 	 */
 	it("names a duplicate copy of one head instead of calling it a tie (#520)", () => {
+		const repo = scratchRepo();
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-dupe-"));
 		const reports = join(dir, "reports");
 		mkdirSync(reports);
-		const head = createRepoProbe(ROOT).devClaimSha();
+		const head = createRepoProbe(repo.dir).devClaimSha();
 		for (const name of ["copy.json", `${head}.json`]) {
 			const path = join(reports, name);
 			writeFileSync(path, JSON.stringify(suiteBody(2, 40)));
 			writeFileSync(`${path}.provenance.json`, JSON.stringify({ head, dirty: false, capturedAt: "2026-11-08T00:00:00.000Z" }));
 		}
 		const handoff = join(dir, "HANDOFF.md");
-		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
-		const result = runCli(["--file", handoff, "--report-dir", reports, "--no-network"]);
+		writeFileSync(handoff, scratchHandoff(repo, { suite: "2 files / 40 tests", open: "#426, #450" }));
+		const result = runCli(["--root", repo.dir, "--file", handoff, "--report-dir", reports, "--no-network"]);
 		expect(result.code).toBe(EXIT.USAGE);
 		expect(result.err).toContain("ambiguous-reports");
 		expect(result.err).toContain(`SAME head ${head}`);
@@ -952,6 +1032,7 @@ describe("handoff-verify — the CLI seam", () => {
 	});
 
 	it("honours --issues without ever invoking gh, and fails with the INJECTED board", () => {
+		const repo = scratchRepo();
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-cli-"));
 		// A board that matches no live issue list, so a run that reached `gh` could not print it.
 		const issues = join(dir, "issues.json");
@@ -964,9 +1045,9 @@ describe("handoff-verify — the CLI seam", () => {
 		const report = join(dir, "suite.json");
 		writeFileSync(report, JSON.stringify(suiteBody(2, 40)));
 		const handoff = join(dir, "HANDOFF.md");
-		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
+		writeFileSync(handoff, scratchHandoff(repo, { suite: "2 files / 40 tests", open: "#426, #450" }));
 
-		const result = runCli(["--file", handoff, "--report", report, "--issues", issues], { PATH: `${bin}:${process.env.PATH ?? ""}` });
+		const result = runCli(["--root", repo.dir, "--file", handoff, "--report", report, "--issues", issues], { PATH: `${bin}:${process.env.PATH ?? ""}` });
 		expect(existsSync(marker)).toBe(false);
 		expect(result.code).toBe(EXIT.DRIFT);
 		expect(failures(result)).toHaveLength(1);
@@ -975,25 +1056,137 @@ describe("handoff-verify — the CLI seam", () => {
 	});
 
 	it("exits 2 on a malformed --report or --issues, never 1", () => {
+		const repo = scratchRepo();
 		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-cli-"));
 		const handoff = join(dir, "HANDOFF.md");
-		writeFileSync(handoff, liveHandoff({ suite: "2 files / 40 tests", open: "#426, #450" }));
+		writeFileSync(handoff, scratchHandoff(repo, { suite: "2 files / 40 tests", open: "#426, #450" }));
 		const garbage = join(dir, "garbage.json");
 		writeFileSync(garbage, "{ not json");
 
-		const report = runCli(["--file", handoff, "--report", garbage, "--no-network"]);
+		const report = runCli(["--root", repo.dir, "--file", handoff, "--report", garbage, "--no-network"]);
 		expect(report.code).toBe(EXIT.USAGE);
 		expect(report.err).toContain("not JSON");
 
-		const missing = runCli(["--file", handoff, "--issues", join(dir, "no-such-issues.json")]);
+		const missing = runCli(["--root", repo.dir, "--file", handoff, "--issues", join(dir, "no-such-issues.json")]);
 		expect(missing.code).toBe(EXIT.USAGE);
 		expect(missing.err).toContain("cannot read the issue list");
 
 		const shape = join(dir, "issues.json");
 		writeFileSync(shape, JSON.stringify({ number: 495 }));
-		const notArray = runCli(["--file", handoff, "--issues", shape]);
+		const notArray = runCli(["--root", repo.dir, "--file", handoff, "--issues", shape]);
 		expect(notArray.code).toBe(EXIT.USAGE);
 		expect(notArray.err).toContain("expected an array of issues");
+	});
+
+	/**
+	 * #548 — `--root` selects WHICH checkout every repo fact comes from. Before it, the only way to reach a
+	 * scratch repo was to stub `io.probe`, so nothing here could be exercised through the CLI. Each probe below
+	 * is able to fail: a root that silently resolved to a PARENT (what `git -C <subdir> rev-parse` answers) or
+	 * to this checkout would print an unrelated verdict instead of the named fault.
+	 */
+	describe("--root selects the checkout, never a parent (#548)", () => {
+		it("evaluates a foreign checkout, and the verdict names the resolved root", () => {
+			const repo = scratchRepo();
+			const dir = mkdtempSync(join(tmpdir(), "brl-handoff-root-"));
+			const handoff = join(dir, "HANDOFF.md");
+			writeFileSync(handoff, scratchHandoff(repo, { suite: "2 files / 40 tests", open: "#426, #450" }));
+			const report = join(dir, "suite.json");
+			writeFileSync(report, JSON.stringify(suiteBody(2, 40)));
+
+			const result = runCli(["--root", repo.dir, "--file", handoff, "--report", report, "--no-network"]);
+			expect(result.code).toBe(EXIT.OK);
+			// The counts are the SCRATCH checkout's, not this repo's: 2 modules and 1 ADR.
+			expect(result.out).toContain("✓ 2 modules — docs-arch");
+			expect(result.out).toContain("✓ 1 ADRs — docs-decisions");
+			// Self-identifying: a run against another checkout says which tree it read.
+			expect(result.out).toContain(`Running install: this repo (${realpathSync(repo.dir)})`);
+		});
+
+		it("names verified-drift when Verified is one non-handoff commit behind dev", () => {
+			const repo = scratchRepo();
+			const dir = mkdtempSync(join(tmpdir(), "brl-handoff-root-"));
+			const handoff = join(dir, "HANDOFF.md");
+			writeFileSync(handoff, scratchHandoff(repo, { suite: "2 files / 40 tests", open: "#426, #450" }));
+			const report = join(dir, "suite.json");
+			writeFileSync(report, JSON.stringify(suiteBody(2, 40)));
+			// A non-handoff commit AFTER the tree the STATE describes: `Verified` IS an ancestor of HEAD here, so
+			// only the `Verified..dev` arm can fail — the two arms of check 1 are distinct findings.
+			writeFileSync(join(repo.dir, "notes.md"), "later\n");
+			repo.git("add", "-A");
+			repo.git("commit", "-qm", "later: a foreign commit");
+			const later = repo.git("rev-parse", "HEAD").stdout.trim();
+			expect(later).not.toBe(repo.code);
+
+			const result = runCli(["--root", repo.dir, "--file", handoff, "--report", report, "--no-network"]);
+			expect(result.code).toBe(EXIT.DRIFT);
+			const codes = failures(result).map((line) => /^✗ ([a-z-]+):/.exec(line)?.[1]);
+			expect(codes).toEqual([CODES.verifiedDrift, CODES.devShaDrift, CODES.installShaDrift]);
+			expect(failures(result)[0]).toContain("touching notes.md");
+			expect(result.out).not.toContain(CODES.verifiedNotAncestor);
+		});
+
+		it("refuses a nested root instead of evaluating its parent", () => {
+			const repo = scratchRepo();
+			const result = runCli(["--root", join(repo.dir, "src"), "--no-network"]);
+			expect(result.code).toBe(EXIT.USAGE);
+			expect(result.err).toContain("not a git worktree top-level");
+			// The parent it would have silently used is named, so the fault is diagnosable from the message alone.
+			expect(result.err).toContain(`resolved root is ${realpathSync(repo.dir)}`);
+		});
+
+		it("refuses a directory that is not a git worktree", () => {
+			const dir = mkdtempSync(join(tmpdir(), "brl-handoff-plain-"));
+			const result = runCli(["--root", dir, "--no-network"]);
+			expect(result.code).toBe(EXIT.USAGE);
+			expect(result.err).toContain("not a git worktree top-level");
+			expect(result.err).toContain("resolved root is none");
+		});
+
+		it("refuses a missing path, and a path that is not a directory", () => {
+			const missing = runCli(["--root", join(tmpdir(), "no-such-brl-checkout-548"), "--no-network"]);
+			expect(missing.code).toBe(EXIT.USAGE);
+			expect(missing.err).toContain("not a directory");
+
+			const dir = mkdtempSync(join(tmpdir(), "brl-handoff-file-"));
+			const file = join(dir, "HANDOFF.md");
+			writeFileSync(file, "## STATE\n");
+			const notDir = runCli(["--root", file, "--no-network"]);
+			expect(notDir.code).toBe(EXIT.USAGE);
+			expect(notDir.err).toContain("not a directory");
+		});
+
+		it("accepts a relative root and a symlinked alias as the same checkout", () => {
+			const repo = scratchRepo();
+			const dir = mkdtempSync(join(tmpdir(), "brl-handoff-root-"));
+			const handoff = join(dir, "HANDOFF.md");
+			writeFileSync(handoff, scratchHandoff(repo, { suite: "2 files / 40 tests", open: "#426, #450" }));
+			const report = join(dir, "suite.json");
+			writeFileSync(report, JSON.stringify(suiteBody(2, 40)));
+
+			const argv = (root: string) => ["--root", root, "--file", handoff, "--report", report, "--no-network"];
+			const absolute = runCli(argv(repo.dir));
+			const rel = runCli(argv(relative(process.cwd(), repo.dir)));
+			const link = join(mkdtempSync(join(tmpdir(), "brl-handoff-link-")), "alias");
+			symlinkSync(repo.dir, link);
+			const symlinked = runCli(argv(link));
+			const canonical = realpathSync(repo.dir);
+			for (const result of [absolute, rel, symlinked]) {
+				expect(result.code).toBe(EXIT.OK);
+				// Canonicalised both sides: `resolve()` alone keeps the symlink and would print the alias.
+				expect(result.out).toContain(`this repo (${canonical})`);
+			}
+			expect(rel.out).toBe(absolute.out);
+			expect(symlinked.out).toBe(absolute.out);
+		});
+
+		it("counts the scratch checkout's own modules and ADRs, which is what a root-blind probe could not", () => {
+			const repo = scratchRepo();
+			expect(collectModules(repo.dir)).toHaveLength(2);
+			expect(collectDecisions(repo.dir)).toHaveLength(1);
+			// The live counts differ deliberately: a probe that ignored the root would still report these.
+			expect(collectModules().length).not.toBe(2);
+			expect(collectDecisions().length).not.toBe(1);
+		});
 	});
 
 	it("declares the narrative claims out of scope in its own output", () => {
