@@ -802,10 +802,29 @@ describe("buildRepeatTransportAdvisory — the repeat transport death advisory (
 		expect(advisory).toContain("references/autonomous-run.md");
 	});
 
-	it("counts the real attempt — an attempt-3 death does not claim attempt 2 twice", () => {
+	it("counts the real attempt — an attempt-3 death names the source attempt, never attempt 1", () => {
 		// attempt 3 is reachable (`>= 2`): a manual retry of a failed auto-retry.
+		// Attempt 1 is NOT the lineage here — the resumed record is.
+		expect(
+			buildRepeatTransportAdvisory(makeSettledRun({ attempt: 3 }), {
+				...TRANSPORT_SOURCE,
+				attempt: 2,
+			}),
+		).toContain("attempts 2 and 3");
+	});
+
+	it("names the source's recorded attempt, not this attempt minus one", () => {
+		// A record without `attempt` cannot name its own number; the fallback is
+		// `attempt - 1`, which is the ordinary auto-retry lineage.
 		expect(buildRepeatTransportAdvisory(makeSettledRun({ attempt: 3 }), TRANSPORT_SOURCE)).toContain(
-			"attempts 1 and 3",
+			"attempts 2 and 3",
 		);
+		// A source that carries one wins, even when it is not `attempt - 1`.
+		expect(
+			buildRepeatTransportAdvisory(makeSettledRun({ attempt: 3 }), {
+				...TRANSPORT_SOURCE,
+				attempt: 1,
+			}),
+		).toContain("attempts 1 and 3");
 	});
 });

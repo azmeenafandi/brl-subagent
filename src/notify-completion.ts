@@ -429,6 +429,16 @@ export function buildMonitoringDegradedAdvisory(
  * non-transport source record), so a caller can append it unconditionally and a
  * source record it cannot resolve costs nothing.
  *
+ * The attempt numbers named in the prose are the SOURCE's recorded `attempt`
+ * and this attempt — never a hard-coded "attempt 1". The guard proves exactly
+ * two transport deaths: this attempt, and the record it resumed (`resumeOf`).
+ * Naming the source attempt is what keeps the sentence true when a manual
+ * `retryRunId` mints attempt 3 whose `resumeOf` points at attempt 2 (attempt 1
+ * may have failed for an unrelated reason). `source.attempt` is optional on a
+ * record, so the fallback is `attempt - 1` — the ordinary auto-retry lineage,
+ * which reproduces the same numbers as the source whenever the source carries
+ * one.
+ *
  * `label` is omitted from the prose when absent, exactly as in the monitoring
  * advisory above.
  */
@@ -437,16 +447,19 @@ export function buildRepeatTransportAdvisory(
 		SubagentRun,
 		"attempt" | "status" | "errorCategory" | "errorMessage" | "originalParams" | "resumeOf"
 	>,
-	source: Pick<SubagentRun, "status" | "errorCategory" | "errorMessage" | "originalParams"> | undefined,
+	source:
+		| Pick<SubagentRun, "attempt" | "status" | "errorCategory" | "errorMessage" | "originalParams">
+		| undefined,
 	label?: string,
 ): string {
 	if (!isTransportFailure(run)) return "";
 	const attempt = run.attempt ?? 1;
 	if (attempt < 2) return "";
 	if (!source || !isTransportFailure(source)) return "";
+	const sourceAttempt = source.attempt ?? attempt - 1;
 	const name = label ? ` on "${label}"` : "";
 	return (
-		`Two transport deaths${name}: attempts 1 and ${attempt} both died on a transport failure and this dispatch is not retried again. ` +
+		`Two transport deaths${name}: attempts ${sourceAttempt} and ${attempt} both died on a transport failure and this dispatch is not retried again. ` +
 		"Change the shape — run it in the conductor, override the model, or split the brief — per `references/autonomous-run.md`."
 	);
 }
