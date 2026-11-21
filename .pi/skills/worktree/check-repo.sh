@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-repo.sh — pre-flight: is the cockpit (dev) checkout healthy enough to build a worktree from?
 # Part of the worktree framework (see .development/WORKTREE_FRAMEWORK.md).
-# Usage: ./check-repo.sh [--repo-root <path>]   (defaults to the repo containing this script)
+# Usage: ./check-repo.sh [<repo-root>]   (defaults to the repo containing this script)
 set -euo pipefail
 
 # Resolve the cockpit repo root: the directory containing this script's parent's parent's .git

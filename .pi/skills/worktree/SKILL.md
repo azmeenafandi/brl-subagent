@@ -516,7 +516,9 @@ mechanics, verdict format: `references/review-dispatch.md`.
   `Test budget: <reason>` in its body, judged by `--declaration` (outside fences, blockquotes and
   the pr-evidence block). The other hard check is the **floor**, on both surfaces: every non-test
   source module must be **reachable** from a `*.test.ts` through runtime import edges — a comment,
-  a string, `import type … from` and `export … from` are not edges. CI runs the report half;
+  a string, `import type … from` and `export … from` are not edges. A third surface, **`skills`**
+  (`.pi/skills/worktree/**/*.{sh,py,mjs}`), is **flow-gated only**: no reference ratio and no floor,
+  because no measurement says how many test lines a shell script deserves. CI runs the report half;
   `merge-guard.sh` (g) runs `--flow` from this repository's own copy (never the PR tree's).
 - **`run.sh [--filter '<trusted shell>'] [--stderr] [--require-filter|--allow-filter-failure]
   [--quiet] -- <command> [args...]`** — wrap EVERY command whose exit status you are about to
