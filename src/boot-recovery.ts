@@ -109,21 +109,40 @@ export function createBootRecovery(rt: RuntimeContext): BootRecovery {
 	// pid-only liveness cannot rule out pid reuse, so nothing is killed or
 	// marked unverified.
 	async function performBootRecovery(): Promise<void> {
+		// Issue #546 (major 6): the whole session-manager wiring — the record-flip
+		// applier included — is built at the EXISTING lazy import site and in its own
+		// containment. A failure there leaves `wiring` undefined: the scan still runs
+		// over the run registry, and `applyRecordFlip`/`readFreshAgentRecord` are not
+		// passed at all, so the scan takes its no-applier branch (the pre-#546
+		// behaviour: markers untouched). No half-wired repair is possible.
+		//
+		// The import must stay DYNAMIC: a static named import of a lifecycle mutator
+		// violates the reader-API rule in architecture-rules.test.ts (the allow-list
+		// is `getAgent`/`listAgents`; a dynamic `import()` edge carries no names
+		// there), and it would load session-manager on every extension start.
+		let sm: typeof import("./session-manager") | undefined;
 		try {
-			const { getAgent, markAgentInterrupted } = await import("./session-manager");
+			sm = await import("./session-manager");
+		} catch (err) {
+			log.warn("Boot recovery: session-manager unavailable — running the registry-only scan", {
+				error: (err as Error).message,
+			});
+		}
+		const wiring = sm;
+		try {
 			// `recoverProduction` owns the /proc platform guard (nothing is marked or
 			// killed without start-token verification) — see src/recovery.ts.
 			const summary = await recoverProduction({
 				log,
 				// Read THAT ONE agent record by id — never the whole store.
-				readAgentRecord: (id) => getAgent(id),
+				readAgentRecord: wiring ? (id) => wiring.getAgent(id) : undefined,
 				mark(record, interruptedAt) {
 					// Registry entry = the durable mark for every kind. Issue #304: its
 					// boolean is the durable-write result — do NOT drop it, or the boot
 					// summary would claim a mark that never landed. The scan counts a
 					// `false` as `markFailures` and warns with the id.
 					const durable = markInterrupted(record.id, interruptedAt);
-					if (record.kind === "agent") markAgentInterrupted(record.id, interruptedAt);
+					if (record.kind === "agent") wiring?.markAgentInterrupted(record.id, interruptedAt);
 					return durable;
 				},
 				// Issue #447: a dispatch whose acceptance marker is still `null` never
@@ -133,6 +152,24 @@ export function createBootRecovery(rt: RuntimeContext): BootRecovery {
 				finalizeNeverStarted: (run) => {
 					state.persistRun(pi, run);
 				},
+				...(wiring
+					? {
+							// Issue #546 (major 3): the pre-flip read is DISK-ONLY — `getAgent`
+							// is memory-first and a stale map would re-stamp a settled record.
+							readFreshAgentRecord: (id: string) => wiring.readAgentRecordFromDisk(id),
+							// Issue #546: the terminal write whose process died before the
+							// agent record was flipped. The two writes belong together — the
+							// registry entry IS the marker, so it may be retired only once
+							// the flip is durable. The outcome is passed through, and a
+							// settlement that did not land (record write OR unlink, major 4)
+							// keeps the entry for the next boot.
+							applyRecordFlip: (verdict) => {
+								const outcome = wiring.flipAgentRecord(verdict.id, verdict.status, verdict.error);
+								if (outcome === false) return false;
+								return clearInflightRun(verdict.id) ? outcome : false;
+							},
+						}
+					: {}),
 			});
 			// Report the scan whenever it did anything durable OR attempted a mark
 			// that failed — a failure-only boot must not be silent (issue #304).
@@ -141,6 +178,16 @@ export function createBootRecovery(rt: RuntimeContext): BootRecovery {
 			}
 			// Issue #447: never-started dispatches are finalized, not marked — a
 			// separate line so the two outcomes cannot be read as one another.
+			// Issue #546: record flips a dead process left pending. A separate line
+			// from both the interrupted marks and the never-started finalizes — this
+			// outcome rewrites the AGENT RECORD, which neither of those does.
+			if (summary.flipRepaired > 0 || summary.flipRetired > 0 || summary.flipFailures > 0) {
+				log.warn("Boot recovery settled pending record flips", {
+					repaired: summary.flipRepaired,
+					retired: summary.flipRetired,
+					failures: summary.flipFailures,
+				});
+			}
 			if (summary.neverStarted > 0) {
 				log.info("Boot recovery finalized never-started dispatches", {
 					count: summary.neverStarted,
