@@ -917,7 +917,9 @@ describe("main — the two streams and the exit codes", () => {
 		// Re-pointed by the PR #575 review fixes (issue #574): the causal-window filter for terminal
 		// runs, the named output-path error, microsecond ownership and their self-test cases.
 		// Re-pointed by #581: `check-repo.sh` §6 counts brl-subagent installs (+32 source lines).
-		const SKILLS_SOURCE_LOC = 7615;
+		// Re-pointed by #583: merge-guard's (d) is a LINE with the head and evidence (+202 source lines —
+		// the two readers, the marker's evidence rule, and the U2-1…U2-9 matrix in `--selftest`).
+		const SKILLS_SOURCE_LOC = 7817;
 		const measured = measureSurface(surface("skills"), ROOT);
 		expect(measured.sourceLoc).toBe(SKILLS_SOURCE_LOC);
 		expect(measured.reference).toBeNull();

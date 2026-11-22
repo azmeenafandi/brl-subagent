@@ -23,9 +23,18 @@
 // Usage: node scripts/check-readme-test-count.mjs <vitest-json-report> [--strict | --bump]
 //   CI: npx vitest run --reporter=default --reporter=json --outputFile=vitest-report.json
 //   exit 1 = the claim is wrong (overstated, stale, or missing); exit 2 = usage / unreadable report.
+//
+// THE REPORT GOES THROUGH THE ONE VALIDATOR (#583). Before this, the guard read
+// `JSON.parse(...).numTotalTests` and nothing else, so `{"numTotalTests":3100,"testResults":[]}` — a
+// count with no run behind it — exited 0 in every mode, `--bump` included. The count now comes from
+// `readSuiteReport`'s derivation (`tests`), the presence of `numTotalTests` is required through the
+// snapshot's `hasTotal` (the guard's old contract; the validator alone tolerates absence), and ANY
+// validation refusal is usage: exit 2, `<report path>: <validator message>`, in every mode. A bump from
+// a hollow report would move a public claim on no evidence, which is the same defect one release later.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readSuiteReport } from "./lib/suite-report.mjs";
 
 /** How far the claimed floor may trail the real count before the claim is considered stale. */
 export const DRIFT_LIMIT = 100;
@@ -87,13 +96,18 @@ export function main(argv = process.argv.slice(2), { root = process.cwd(), log =
 
 	let actual;
 	try {
-		actual = JSON.parse(readFileSync(resolve(root, reportPath), "utf8")).numTotalTests;
+		const report = readSuiteReport(resolve(root, reportPath));
+		// The validator tolerates a missing `numTotalTests`; this guard does not (its old contract), because
+		// it compares the claim against a run's TOTAL and a count nobody stated is not that number.
+		if (!report.hasTotal) {
+			error(`${reportPath}: no numTotalTests — is this vitest's json reporter output?`);
+			return 2;
+		}
+		actual = report.tests;
 	} catch (failure) {
-		error(`${reportPath}: could not read the report — ${failure instanceof Error ? failure.message : String(failure)}`);
-		return 2;
-	}
-	if (typeof actual !== "number") {
-		error(`${reportPath}: no numTotalTests — is this vitest's json reporter output?`);
+		// Every refusal is usage — unreadable, not JSON, empty results, hollow, unknown status, a count that
+		// contradicts the results. The validator's message already names the code and the file.
+		error(`${reportPath}: ${failure instanceof Error ? failure.message : String(failure)}`);
 		return 2;
 	}
 

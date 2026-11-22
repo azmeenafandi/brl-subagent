@@ -16,9 +16,14 @@
 #   (b) the review record mentions `#<pr>`
 #   (c) the record's LAST `Verdict:` line says `approve` or `approve-with-nits`
 #       (`changes-requested` may not merge; an unrecognised verdict may not either)
-#   (d) the PR's CURRENT head sha appears in the record, OR the record carries a
-#       `conductor-verified:` line — the documented disposition for a post-verdict commit
-#       (a short sha of >= 7 hex chars counts; it must be a PREFIX of the head)
+#   (d) the PR's CURRENT head is STATED by the record — one of three unfenced line shapes:
+#       a line-start `Reviewed head: <sha>`; the documented title form (`# … @ <sha>` on line 1);
+#       OR a `conductor-verified: <sha> — <what was verified and how>` line, the post-verdict
+#       disposition for a commit that landed after the verdict. A >=7-hex prefix of the head
+#       counts; a mention anywhere else (prose, a fence, a quoted command, another field) does not
+#       (#583: a prose sentence naming the marker used to clear any unreviewed head).
+#       The marker also needs EVIDENCE after the sha — two words, one with three letters — because
+#       a bare sha certifies nothing; it is a format check, not proof a command ran.
 #   (f) the review record carries a `jev-recheck:` line (the classifier's answer on the DISPATCH
 #       text, run at review time) and a `Risk class:` line; the recheck line must have its own
 #       provenance row under the label `recheck-<pr>`, and the declared tier may not be weaker than
@@ -182,21 +187,76 @@ record_verdict() {
     printf '%s' "${first,,}"
 }
 
-# (d) Is the current head (or a >=7-char prefix of it) written in the record?
-record_mentions_sha() {
-    local record="$1" head="$2" token
+# (d) The reviewed head the record STATES, printed on success (empty + exit 1 when it does not).
+#
+# Two of the three accepted shapes (#583): an unfenced, line-start `Reviewed head:` whose FIRST
+# hex token (>=7) is a PREFIX of the head — the same "a short sha counts" rule the gate always had,
+# now scoped to the one line that claims it — or the documented title form, the record's FIRST line
+# carrying `@ <sha>=7` (`references/review-dispatch.md`), which is unfenced by construction.
+# The label keeps its COLON: `record_line_field` prefix-matches, so `Reviewed headlong:` would
+# otherwise qualify as the field.
+record_reviewed_head() {
+    local record="$1" head="$2" value
     [[ -n "${head}" ]] || return 1
-    grep -qiF -- "${head}" "${record}" && return 0
-    while IFS= read -r token; do
-        [[ ${#token} -ge 7 ]] || continue
-        [[ "${head,,}" == "${token,,}"* ]] && return 0
-    done < <(grep -oE '[0-9A-Fa-f]{7,40}' "${record}" || true)
-    return 1
+    value="$(record_line_field "${record}" "Reviewed head:")"
+    [[ -n "${value}" ]] || return 1
+    [[ "${value}" =~ [0-9A-Fa-f]{7,40} ]] || return 1
+    [[ "${head,,}" == "${BASH_REMATCH[0],,}"* ]] || return 1
+    printf '%s' "${BASH_REMATCH[0]}"
 }
 
-# (d, alternative disposition) The documented post-verdict-commit marker.
+# (d) The documented TITLE form: the record's first line carrying `@ <sha>=7`, same prefix rule.
+record_title_head() {
+    local record="$1" head="$2" first=""
+    [[ -n "${head}" ]] || return 1
+    IFS= read -r first < "${record}" || true
+    [[ -n "${first}" ]] || return 1
+    [[ "${first}" =~ @[[:space:]]+([0-9A-Fa-f]{7,40}) ]] || return 1
+    [[ "${head,,}" == "${BASH_REMATCH[1],,}"* ]] || return 1
+    printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# (d, alternative disposition) The documented post-verdict-commit marker — a LINE, not a word, and it
+# has to carry evidence. Three requirements, identical to the offline reader's
+# `conductorVerifiedProblem` (scripts/lib/record-fields.mjs) — a record that passes one surface and
+# fails the other is the parity defect #583 exists to close:
+#   1. an unfenced, line-start `conductor-verified:` field (the same reader as (f)) — not a grep of
+#      the whole record, which is how "the token `conductor-verified:` means nothing here" cleared an
+#      unreviewed head (F01);
+#   2. a >=7-char hex token that PREFIXES the head — a marker for another commit is not a marker for
+#      this one;
+#   3. evidence after that token and its separator: at least TWO whitespace-separated tokens, at least
+#      one with a run of three ASCII letters. `abc`, `ab`, `!!!`, `a!! x` and a bare sha all fail;
+#      `tsc: clean`, `suite 3296/0 failed` and `suite 90/1798, mutation-proven guard` pass.
+# That is a FORMAT check: it cannot prove the named command ran, only that the line says what it did.
+# Prints the matched sha on success.
 record_has_conductor_verified() {
-    grep -qiE 'conductor-verified:' "$1"
+    local record="$1" head="$2" value rest sha token
+    [[ -n "${head}" ]] || return 1
+    value="$(record_line_field "${record}" "conductor-verified:")"
+    [[ -n "${value}" ]] || return 1
+    [[ "${value}" =~ [0-9A-Fa-f]{7,40} ]] || return 1
+    sha="${BASH_REMATCH[0]}"
+    [[ "${head,,}" == "${sha,,}"* ]] || return 1
+    rest="${value#*"${sha}"}"
+    # Strip the separator (`—`, `-`, `:`, whitespace) one character at a time, so a multibyte dash is
+    # one character here exactly as it is in the JS reader.
+    while :; do
+        case "${rest:0:1}" in
+            " "|$'\t'|"—"|"–"|"-"|":") rest="${rest:1}" ;;
+            *) break ;;
+        esac
+    done
+    local -a tokens=()
+    read -r -a tokens <<< "${rest}" || true
+    [[ ${#tokens[@]} -ge 2 ]] || return 1
+    for token in "${tokens[@]}"; do
+        if [[ "${token}" =~ [A-Za-z]{3} ]]; then
+            printf '%s' "${sha}"
+            return 0
+        fi
+    done
+    return 1
 }
 
 # (f) A line-start `<label>:` value outside fences — the last one wins, markdown stripped.
@@ -565,15 +625,19 @@ check_record() {
         fail_line "(c) the record's last line-start disposition names more than one verdict (an echoed template?) — state one disposition"
     fi
 
-    # (d) Reviewed head (or the documented post-verdict disposition).
+    # (d) Reviewed head (or the documented post-verdict disposition). Order: the field, the title
+    # form, then the marker — each names the sha it matched, so the pass line says WHICH shape held.
+    local matched=""
     if [[ -z "${head}" ]]; then
         fail_line "(d) could not read the PR head${HEAD_ERROR:+ — ${HEAD_ERROR}} — cannot tell whether the review covers it"
-    elif record_mentions_sha "${record}" "${head}"; then
-        pass_line "(d) reviewed head: ${head:0:12} appears in the record"
-    elif record_has_conductor_verified "${record}"; then
-        pass_line "(d) head ${head:0:12} is post-verdict — the record carries a 'conductor-verified:' line"
+    elif matched="$(record_reviewed_head "${record}" "${head}")"; then
+        pass_line "(d) reviewed head: ${matched} — the record's line-start 'Reviewed head:' names this head"
+    elif matched="$(record_title_head "${record}" "${head}")"; then
+        pass_line "(d) reviewed head: ${matched} — the record's title carries '@ <sha>' for this head"
+    elif matched="$(record_has_conductor_verified "${record}" "${head}")"; then
+        pass_line "(d) head ${head:0:12} is post-verdict — a conductor-verified line for ${matched}"
     else
-        fail_line "(d) the PR head ${head:0:12} is not in the record and there is no 'conductor-verified:' line — the reviewed commit and the merge commit differ"
+        fail_line "(d) the PR head ${head:0:12} is not stated by the record — expected an unfenced line-start 'Reviewed head: ${head:0:12}…', the title form '# … @ ${head:0:12}…', or 'conductor-verified: ${head:0:12}… — <what was verified and how>' with evidence; a mention elsewhere, or a marker with another sha or no evidence, certifies nothing. The reviewed commit and the merge commit differ"
     fi
 }
 
@@ -759,6 +823,29 @@ expect_that() {
     fi
 }
 
+# One row of the (d) matrix: the number of reasons a real `check_record` call ADDS, plus a substring its
+# (d) line must carry. The call runs in a command substitution — a subshell — so its FAIL_REASONS never
+# leak into the next row; `before` is inherited and the counter is printed after the call (#583: the
+# matrix asserts count + text, never FAIL_COUNT, which does not exist in this revision).
+expect_d() {
+    local label="$1" record="$2" want_head="$3" want="$4" want_text="$5"
+    local before=${#FAIL_REASONS[@]} out added
+    out="$(check_record 412 "${record}" "${want_head}" 2>&1; printf '\nreasons=%s' "$((${#FAIL_REASONS[@]} - before))")"
+    added="${out##*reasons=}"
+    if [[ "${want}" == "pass" && "${added}" -ne 0 ]] || [[ "${want}" == "fail" && "${added}" -eq 0 ]]; then
+        printf '  ✗ (d) %s (expected %s, got %s reason(s): %s)\n' "${label}" "${want}" "${added}" "${out//$'\n'/ }"
+        SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+        return
+    fi
+    if [[ "${out}" != *"${want_text}"* ]]; then
+        printf '  ✗ (d) %s (expected the (d) line to carry %s, got: %s)\n' "${label}" "${want_text}" "${out//$'\n'/ }"
+        SELFTEST_FAIL=$((SELFTEST_FAIL + 1))
+        return
+    fi
+    printf '  ✓ (d) %s\n' "${label}"
+    SELFTEST_PASS=$((SELFTEST_PASS + 1))
+}
+
 run_selftest() {
     local dir
     dir="$(mktemp -d)"
@@ -817,7 +904,98 @@ Reviewed head: ${other}
 **Verdict: approve-with-nits**
 
 Fixes applied after the verdict (two-line guard + two regression tests):
-conductor-verified: tsc clean, suite 90/1798, mutation-proven guard.
+conductor-verified: ${head:0:7} — tsc clean, suite 3296, mutation-proven guard.
+EOF
+
+    # (d)'s negative fixtures (#583, spec v2 §2.4 / v3 §2.4a-b). Each one states the head in exactly ONE
+    # wrong way, with an old `Reviewed head:` standing in for "the verdict covers an earlier commit", so
+    # the marker is the only thing that could clear it.
+    cat >"${dir}/marker-no-sha.md" <<EOF
+# Review — PR #412
+
+Reviewed head: ${other}
+
+**Verdict: approve**
+
+conductor-verified: — tsc clean, suite 90/1798.
+EOF
+
+    cat >"${dir}/marker-other-sha.md" <<EOF
+# Review — PR #412
+
+Reviewed head: ${other}
+
+**Verdict: approve**
+
+conductor-verified: ${other:0:7} — tsc clean.
+EOF
+
+    cat >"${dir}/marker-fenced.md" <<EOF
+# Review — PR #412
+
+Reviewed head: ${other}
+
+**Verdict: approve**
+
+The marker's shape is:
+
+~~~md
+conductor-verified: ${head:0:7} — tsc clean, suite 90/1798
+~~~
+EOF
+
+    cat >"${dir}/marker-prose.md" <<EOF
+# Review — PR #412
+
+Reviewed head: ${other}
+
+**Verdict: approve**
+
+A reminder: the token \`conductor-verified:\` means nothing here.
+EOF
+
+    cat >"${dir}/marker-no-evidence.md" <<EOF
+# Review — PR #412
+
+Reviewed head: ${other}
+
+**Verdict: approve**
+
+conductor-verified: ${head:0:7} — !!!
+EOF
+
+    cat >"${dir}/head-prose.md" <<EOF
+# Review — PR #412
+
+**Verdict: approve**
+
+The review covered ${head} on the worktree branch.
+EOF
+
+    cat >"${dir}/reviewed-head-short.md" <<EOF
+# Review — PR #412
+
+Reviewed head: ${head:0:7}
+
+**Verdict: approve**
+EOF
+
+    cat >"${dir}/reviewed-head-fenced.md" <<EOF
+# Review — PR #412
+
+**Verdict: approve**
+
+~~~md
+Reviewed head: ${head:0:7}
+~~~
+EOF
+
+    cat >"${dir}/reviewed-headlong.md" <<EOF
+# Review — PR #412
+
+Reviewed headlong: ${head}
+
+**Verdict: approve**
 EOF
 
     cat >"${dir}/wrong-pr.md" <<EOF
@@ -876,19 +1054,43 @@ EOF
     expect_verdict "(c) a prose mention after the disposition is inert" "${dir}/prose-mention.md" "approve"
     expect_verdict "(c) a fenced example after the disposition is inert" "${dir}/fenced-example.md" "approve"
 
-    expect_ok "(d) full head sha appears in the record" record_mentions_sha "${dir}/approve.md" "${head}"
-    expect_ok "(d) a 7-char prefix counts as the head" record_mentions_sha "${dir}/approve-nits.md" "${head}"
-    expect_fail "(d) a record with no sha does not cover the head" record_mentions_sha "${dir}/no-head.md" "${head}"
-    expect_fail "(d) an unrelated sha does not cover the head" record_mentions_sha "${dir}/conductor-verified.md" "${head}"
-    expect_ok "(d) 'conductor-verified:' is the post-verdict disposition" record_has_conductor_verified "${dir}/conductor-verified.md"
-    expect_fail "(d) a plain record has no 'conductor-verified:' line" record_has_conductor_verified "${dir}/approve.md"
+    # (d) the FIELD: an unfenced, line-start `Reviewed head:` whose first hex token prefixes the head.
+    expect_that "(d) the field's full sha is the reviewed head" test "$(record_reviewed_head "${dir}/approve.md" "${head}")" = "${head}"
+    expect_that "(d) a 7-char prefix in the field counts as the head" test "$(record_reviewed_head "${dir}/reviewed-head-short.md" "${head}")" = "${head:0:7}"
+    expect_that "(d) a record with no sha does not state the head" test -z "$(record_reviewed_head "${dir}/no-head.md" "${head}")"
+    expect_that "(d) another record's Reviewed head is not this head" test -z "$(record_reviewed_head "${dir}/conductor-verified.md" "${head}")"
+    expect_that "(d) a fenced Reviewed head is inert" test -z "$(record_reviewed_head "${dir}/reviewed-head-fenced.md" "${head}")"
+    expect_that "(d) the label keeps its colon (Reviewed headlong: is not the field)" test -z "$(record_reviewed_head "${dir}/reviewed-headlong.md" "${head}")"
+    # (d) the TITLE form: the record's first line carrying `@ <sha>=7`.
+    expect_that "(d) the title's @ sha is the reviewed head" test "$(record_title_head "${dir}/approve-nits.md" "${head}")" = "${head:0:7}"
+    expect_that "(d) a title with no @ sha states nothing" test -z "$(record_title_head "${dir}/approve.md" "${head}")"
+    # (d) the MARKER: a line with the head and evidence.
+    expect_that "(d) 'conductor-verified:' with the head and evidence is the post-verdict disposition" test "$(record_has_conductor_verified "${dir}/conductor-verified.md" "${head}")" = "${head:0:7}"
+    expect_that "(d) a plain record has no 'conductor-verified:' line" test -z "$(record_has_conductor_verified "${dir}/approve.md" "${head}")"
 
-    # The full gate decision for the disposition case: (d) must clear via the marker.
+    # The COMBINED (d) decision through the real `check_record` — the matrix a prose mention used to
+    # clear (F01). Each row asserts the number of reasons the call ADDS and the (d) line's text, so a
+    # row cannot pass by failing some other check: every fixture below names #412 and states a mergeable
+    # verdict, so (d) is the only reason any of them can earn.
+    expect_d "U2-1 a marker for this head, with evidence, clears (d)" "${dir}/conductor-verified.md" "${head}" pass "(d) head ${head:0:12} is post-verdict — a conductor-verified line for ${head:0:7}"
+    expect_d "U2-2 a marker with no sha fails (d)" "${dir}/marker-no-sha.md" "${head}" fail "(d) the PR head ${head:0:12} is not stated"
+    expect_d "U2-3 a marker for another commit fails (d)" "${dir}/marker-other-sha.md" "${head}" fail "(d) the PR head ${head:0:12} is not stated"
+    expect_d "U2-4 a fenced marker fails (d)" "${dir}/marker-fenced.md" "${head}" fail "(d) the PR head ${head:0:12} is not stated"
+    expect_d "U2-5 a prose mention of the marker fails (d)" "${dir}/marker-prose.md" "${head}" fail "(d) the PR head ${head:0:12} is not stated"
+    expect_d "U2-6 a marker with no evidence fails (d)" "${dir}/marker-no-evidence.md" "${head}" fail "(d) the PR head ${head:0:12} is not stated"
+    expect_d "U2-7 the head in prose only fails (d)" "${dir}/head-prose.md" "${head}" fail "(d) the PR head ${head:0:12} is not stated"
+    expect_d "U2-8 'Reviewed head:' alone clears (d)" "${dir}/approve.md" "${head}" pass "(d) reviewed head: ${head} — the record's line-start 'Reviewed head:' names this head"
+    expect_d "U2-9 a fenced 'Reviewed head:' fails (d)" "${dir}/reviewed-head-fenced.md" "${head}" fail "(d) the PR head ${head:0:12} is not stated"
+    expect_d "the title form clears (d)" "${dir}/approve-nits.md" "${head}" pass "(d) reviewed head: ${head:0:7} — the record's title carries '@ <sha>' for this head"
+    expect_d "a record that states no head at all fails (d)" "${dir}/no-head.md" "${head}" fail "(d) the PR head ${head:0:12} is not stated"
+
+    # The full gate decision for the disposition case: (d) must clear via the marker ALONE — the
+    # record's own `Reviewed head:` names another commit, which is the post-verdict shape.
     local gate_ok=true
-    record_mentions_sha "${dir}/conductor-verified.md" "${head}" && gate_ok=false
-    record_has_conductor_verified "${dir}/conductor-verified.md" || gate_ok=false
+    [[ -z "$(record_reviewed_head "${dir}/conductor-verified.md" "${head}")" ]] || gate_ok=false
+    [[ -n "$(record_has_conductor_verified "${dir}/conductor-verified.md" "${head}")" ]] || gate_ok=false
     if [[ "${gate_ok}" == "true" ]]; then
-        printf '  ✓ (d) post-verdict commit clears through the conductor-verified: marker\n'
+        printf '  ✓ (d) post-verdict commit clears through the conductor-verified: marker and not the field\n'
         SELFTEST_PASS=$((SELFTEST_PASS + 1))
     else
         printf '  ✗ (d) post-verdict commit does not clear through the conductor-verified: marker\n'

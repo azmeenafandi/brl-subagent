@@ -27,6 +27,7 @@
  *    that resolves them.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -306,5 +307,47 @@ describe("audit — the CLI", () => {
 		const merged = auditTracked({ root });
 		expect(merged.files).toHaveLength(3);
 		expect(renderReport({ report: merged }).join("\n")).not.toContain(root);
+	});
+});
+
+/**
+ * #583 (F02) — the exit code a CI step reads is the contract, and an in-process test that derives the
+ * expected code from the SAME constant as the implementation cannot protect it: `HITS: 1 → 0` and
+ * `USAGE: 2 → 0` each left this file 22/22 green while the CLI exited 0. These cases spawn the real
+ * script and assert LITERAL codes — no `EXIT` import — plus the marker the code is about, so a script
+ * that exits 1 for the wrong reason fails too.
+ *
+ * The seam is `--root <scratch>` with the ABSOLUTE script path and `cwd = <scratch>`: a relative path
+ * would resolve under the fixture and die before the guard ever ran.
+ */
+describe("audit — the exit code a CI step reads (#583)", () => {
+	const SCRIPT = join(ROOT, "scripts", "audit-scratch-instructions.mjs");
+
+	/** A real process with a clean env: `NODE_OPTIONS` stripped, nothing else injected. The cwd is the
+	 * fixture (v2 §3.1), except where the fixture is the MISSING thing — then a real directory stands in. */
+	function runCli(root: string, cwd = root): { code: number; out: string; err: string } {
+		const env = { ...process.env };
+		delete env.NODE_OPTIONS;
+		const result = spawnSync(process.execPath, [SCRIPT, "--root", root], { cwd, encoding: "utf8", env });
+		return { code: result.status ?? -1, out: result.stdout ?? "", err: result.stderr ?? "" };
+	}
+
+	it("U3-1 exits 1 on one planted hit, and says 'hit:'", () => {
+		const root = checkout({ [`${PRESETS}/project-proposer.md`]: "# Proposer\n\nSave the proposal to /tmp/proposal.md\n" });
+		const result = runCli(root);
+		expect(result.code).toBe(1);
+		expect(result.out).toContain(`hit: ${PRESETS}/project-proposer.md:3 · artifact`);
+	});
+
+	it("U3-2 exits 2 on a missing root, naming the usage fault", () => {
+		const result = runCli(join(WORK, "no-such-checkout-583"), WORK);
+		expect(result.code).toBe(2);
+		expect(result.err).toContain("cannot read the corpus");
+	});
+
+	it("exits 0 on a clean corpus — the control, so neither case above passes by failing always", () => {
+		const result = runCli(checkout());
+		expect(result.code).toBe(0);
+		expect(result.out).toContain("audit: 0 hit(s)");
 	});
 });

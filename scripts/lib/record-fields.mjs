@@ -130,23 +130,87 @@ export function namedPrs(text) {
 }
 
 /**
- * Does the record carry the head? The full sha (any case) as a substring, or any 7–40 hex token that
- * is a PREFIX of the head — the gate accepts a short sha, so this must too.
+ * The FIRST `>=7`-char hex run in a value — the token a head field or a marker names. `[0-9a-f]{7,40}`
+ * with `i`, one definition shared by the reviewed-head rule and the marker rule.
  */
-export function mentionsHead(text, head) {
-	if (!head) return false;
-	const needle = head.toLowerCase();
-	const haystack = String(text).toLowerCase();
-	if (haystack.includes(needle)) return true;
-	for (const token of haystack.match(SHA_TOKEN_RE) ?? []) {
-		if (needle.startsWith(token)) return true;
-	}
-	return false;
+function firstSha(value) {
+	const [token] = String(value).match(SHA_TOKEN_RE) ?? [];
+	return token === undefined ? "" : token;
 }
 
-/** The documented post-verdict-commit marker — the gate greps the whole record, fences included. */
-export function hasConductorVerified(text) {
-	return /conductor-verified:/i.test(String(text));
+/** Is `sha` a >=7-char prefix of `head`? Both sides lowercased: a record may write either case. */
+function prefixes(sha, head) {
+	return String(head).toLowerCase().startsWith(String(sha).toLowerCase());
+}
+
+/** `—`, `-`, `:` and spaces separate the marker's sha from its evidence. */
+const SEPARATOR_RE = /^[ \t\u2014\u2013:-]+/;
+
+/** Three ASCII LETTERS, not three characters containing one (spec v4 §C). */
+const EVIDENCE_LETTER_RE = /[A-Za-z]{3}/;
+
+/**
+ * The marker's evidence: after the sha and its separator, at least TWO `[ \t]`-separated tokens, at
+ * least one of which carries a three-letter run. `abc` (one token), `ab`, `!!!` and `a!! x` (no
+ * three-letter run) all fail; `tsc: clean`, `suite 3296/0 failed` and `suite 90/1798, mutation-proven
+ * guard` pass.
+ *
+ * A FORMAT CHECK, not proof: this cannot show the named command ran, only that the line says what it
+ * did. Stated here so nobody reads it as more than it is.
+ */
+function hasEvidence(value) {
+	const tokens = String(value).replace(SEPARATOR_RE, "").split(/[ \t]+/).filter((token) => token !== "");
+	return tokens.length >= 2 && tokens.some((token) => EVIDENCE_LETTER_RE.test(token));
+}
+
+/**
+ * The reviewed head the record STATES, with the source it came from — `""` when it states none.
+ *
+ * Two of the three accepted shapes (#583, spec v2 §2.1 + v3 §2.2a):
+ *   1. an unfenced, line-start `Reviewed head:` field whose FIRST >=7-char hex token prefixes `head`;
+ *   2. the documented title form — the record's FIRST line carrying `@ <hex>=7` (unfenced by
+ *      construction).
+ * A head mentioned anywhere else is neither: prose, a fence, a quoted command or a `Superseded head:`
+ * line names a commit without saying the verdict covers it, which is exactly the F01 defect — a prose
+ * sentence mentioning the marker cleared an unreviewed head.
+ */
+export function reviewedHead(text, head) {
+	const value = lineField(text, FIELD.head);
+	const fieldSha = firstSha(value);
+	if (fieldSha !== "" && (head === "" || prefixes(fieldSha, head))) return { source: "field", sha: fieldSha };
+	const title = String(text).split("\n")[0];
+	const titleMatch = /@[ \t]+([0-9a-f]{7,40})/i.exec(title);
+	if (titleMatch !== null && (head === "" || prefixes(titleMatch[1], head))) {
+		return { source: "title", sha: titleMatch[1] };
+	}
+	return "";
+}
+
+/**
+ * Why a `conductor-verified:` marker does not clear check (d), or `""` when it does — the third
+ * accepted shape, and the offline half of the rule the shell gate implements:
+ *
+ *   1. it is an unfenced, line-start field (the module's own reader, never a regex over the text);
+ *   2. its value carries a >=7-char hex token that PREFIXES the PR head — a marker for another commit
+ *      is not a marker for this one;
+ *   3. after that token and its separator there is evidence (`hasEvidence`).
+ *
+ * With `head === ""` (the shape-only `--check`) requirement 2 cannot be judged, so only the sha's
+ * presence is required. Reasons name WHICH requirement failed, so `head-mismatch` and `missing-head`
+ * stay distinguishable to the reader.
+ */
+export function conductorVerifiedProblem(text, head) {
+	const value = lineField(text, FIELD.conductorVerified);
+	if (value === "") return "no-marker";
+	const sha = firstSha(value);
+	if (sha === "") return "no-sha";
+	if (head !== "" && !prefixes(sha, head)) return "wrong-sha";
+	return hasEvidence(value.slice(value.indexOf(sha) + sha.length)) ? "" : "no-evidence";
+}
+
+/** Does the record carry a marker that clears the PR head? The predicate `checkRecord` applies. */
+export function hasConductorVerified(text, head = "") {
+	return conductorVerifiedProblem(text, head) === "";
 }
 
 /** C1 > C2 > C3, `0` for anything else — the gate's `risk_rank`. */
@@ -234,12 +298,25 @@ function shortHead(head) {
 	return head.slice(0, 12);
 }
 
+/** How a marker's failure reads in a refusal — one phrase per requirement, so the fix is obvious. */
+const MARKER_REASONS = Object.freeze({
+	"no-marker": "the record has no unfenced line-start \"conductor-verified:\" line",
+	"no-sha": "the \"conductor-verified:\" line carries no >=7-char sha",
+	"wrong-sha": "the \"conductor-verified:\" line names another commit",
+	"no-evidence": "the \"conductor-verified:\" line carries no evidence after the sha",
+});
+
 /**
  * The gate's field rules as named problems, empty when the record satisfies all of them:
  *   (b) it names the PR        (c) one recognised disposition   (d) the reviewed head, or the
  *   `conductor-verified:` marker        (f) recheck shape, declared tier, tier not weaker.
  * `pr` / `head` are optional — omit them for the offline shape check. (f)'s provenance row is NOT
  * here: it needs the local log, so the full `merge-guard.sh` run stays the authority on it.
+ *
+ * (d) is the #583 rule, identical to the shell gate's: a HEAD is a field, a MARKER is a line with the
+ * head AND evidence, and a mention anywhere else (prose, a fence, a quoted command) is neither. Before
+ * this, a single prose sentence — `the token \`conductor-verified:\` means nothing here` — cleared any
+ * unreviewed head, which is what F01 measured.
  */
 export function checkRecord(text, { pr = "", head = "" } = {}) {
 	const facts = parseRecord(text);
@@ -278,18 +355,22 @@ export function checkRecord(text, { pr = "", head = "" } = {}) {
 		);
 	}
 
-	if (head !== "") {
-		if (!mentionsHead(text, head) && !hasConductorVerified(text)) {
-			problems.push(
-				problem(
-					"head-mismatch",
-					`the PR head ${shortHead(head)} is not in the record and there is no "conductor-verified:" line — the reviewed commit and the merge commit differ`,
-				),
-			);
-		}
-	} else if (facts.head === "" && !hasConductorVerified(text)) {
+	// (d) A head is a FIELD, a marker is a LINE with the head AND evidence. Both are read through the
+	// module's fence-aware readers, never a whole-text search: that is the F01 defect in one sentence.
+	const reviewed = reviewedHead(text, head);
+	const markerProblem = conductorVerifiedProblem(text, head);
+	if (reviewed === "" && markerProblem !== "") {
+		const why = MARKER_REASONS[markerProblem];
 		problems.push(
-			problem("missing-head", `the record carries no "${FIELD.head} <sha>" line and no "conductor-verified:" line`),
+			head === ""
+				? problem(
+						"missing-head",
+						`the record carries no "${FIELD.head} <sha>" line, no title-form "@ <sha>", and no usable "conductor-verified:" line — ${why}`,
+					)
+				: problem(
+						"head-mismatch",
+						`the PR head ${shortHead(head)} is not covered — expected an unfenced line-start "${FIELD.head} ${shortHead(head)}…", the title form "# … @ ${shortHead(head)}…", or "conductor-verified: ${shortHead(head)}… — <what was verified and how>" with evidence; ${why} — the reviewed commit and the merge commit differ`,
+					),
 		);
 	}
 

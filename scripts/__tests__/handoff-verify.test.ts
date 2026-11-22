@@ -53,11 +53,36 @@ const DEV = "4c1d9ab2f1e0c3d4e5f60718293a4b5c6d7e8f90";
 const HEAD = "8e7f6a5c4b3a2918171615141312111009080706";
 const MISSING_PATH = "/no/such/brl-checkout";
 
-/** The fixture line counts the stubbed probe reports; anything else is a missing file. */
+/**
+ * The fixture line counts the stubbed probe reports; anything else is a missing file. `gamma.mjs` is a
+ * BARE name that resolves under `scripts/` — the #583 case: before the size regex saw `.mjs`, a row
+ * naming a script was invisible to the parser and the resolver dropped it, so nothing checked it.
+ */
 const SIZES: Record<string, { path: string; lines: number }> = {
 	"alpha.ts": { path: "/repo/src/alpha.ts", lines: 10 },
 	"beta.ts": { path: "/repo/src/beta.ts", lines: 3 },
+	"gamma.mjs": { path: "/repo/scripts/gamma.mjs", lines: 7 },
 };
+
+/**
+ * The suite report the stub returns: the SHAPE `readSuiteReport` returns, because `checkSuite` reads the
+ * derived counts (`passed`/`failed`/`skipped`/`failedSuites`/`success`) and not just the totals (#583).
+ */
+function snapshot(overrides: Record<string, unknown> = {}) {
+	return {
+		path: REPORT,
+		files: 2,
+		tests: 12,
+		passed: 12,
+		failed: 0,
+		skipped: 0,
+		failedSuites: 0,
+		firstFailure: "",
+		success: true,
+		hasTotal: true,
+		...overrides,
+	};
+}
 
 /**
  * The repo side of every check, stubbed: no git, no `gh`, no network, no real report. `correct.md`'s
@@ -78,7 +103,7 @@ function stub(overrides: Record<string, unknown> = {}) {
 		modules: () => 58,
 		adrs: () => 27,
 		openIssues: () => [426, 450],
-		report: () => ({ path: REPORT, files: 2, tests: 12 }),
+		report: () => snapshot(),
 		...overrides,
 	};
 	return { ...probe, devClaimSha: overrides.devClaimSha ?? probe.devSha };
@@ -126,12 +151,13 @@ describe("handoff-verify — the parser", () => {
 		expect(claims.install?.sha).toBe("4c1d9ab");
 		expect(claims.install?.path).toEqual({ kind: "repo" });
 		expect(claims.open).toEqual([426, 450]);
-		expect(claims.suite).toEqual({ files: 2, tests: 12 });
+		expect(claims.suite).toEqual({ files: 2, tests: 12, passed: 12, failed: 0, skipped: 0 });
 		expect(claims.modules).toEqual([58]);
 		expect(claims.adrs).toEqual([27]);
 		expect(claims.sizes).toEqual([
 			{ name: "alpha.ts", lines: 10 },
 			{ name: "beta.ts", lines: 3 },
+			{ name: "gamma.mjs", lines: 7 },
 		]);
 	});
 
@@ -158,12 +184,13 @@ describe("handoff-verify — the parser", () => {
 		const claims = claimsOf("correct");
 		const names = claims.sizes.map((size: { name: string }) => size.name);
 		// `alpha.ts` **20 → 10**, `beta.ts` (9), `alpha.ts` 2,249 vs/versus 2,248 and `alpha.ts`
-		// 5+/2− live in `### Since the last handover`, and only the current size (`10`, `3`) is a claim.
+		// 5+/2− live in `### Since the last handover`, and only the current size (`10`, `3`, `7`) is a claim.
 		expect(claims.sizes).toEqual([
 			{ name: "alpha.ts", lines: 10 },
 			{ name: "beta.ts", lines: 3 },
+			{ name: "gamma.mjs", lines: 7 },
 		]);
-		expect(names).toHaveLength(2);
+		expect(names).toHaveLength(3);
 	});
 
 	it("keeps a bare number, a comma and a closing backtick as claims", () => {
@@ -285,8 +312,9 @@ describe("handoff-verify — the verdict, check by check", () => {
 		const { results, drifts } = verdicts("correct");
 		expect(drifts).toEqual([]);
 		expect(results.every((result: { ok: boolean }) => result.ok)).toBe(true);
-		// verified, dev, install, open, suite, modules, adrs, then the two size claims.
-		expect(results).toHaveLength(9);
+		// verified, dev, install, open, suite, modules, adrs, then the THREE size claims (#583 added the
+		// `.mjs` row — a claim the parser could not see, so nothing checked it).
+		expect(results).toHaveLength(10);
 	});
 
 	it("names verified-not-ancestor for a commit HEAD does not contain", () => {
@@ -401,7 +429,8 @@ describe("handoff-verify — the verdict, check by check", () => {
 	it("names file-missing when the claimed file is not in the tree", () => {
 		const probe = stub({ lineCount: () => null });
 		const { drifts } = verdicts("correct", probe);
-		expect(drifts.map((drift) => drift.code)).toEqual([CODES.fileMissing, CODES.fileMissing]);
+		// Three size claims in `correct.md` (#583 added the `.mjs` row), so three named misses.
+		expect(drifts.map((drift) => drift.code)).toEqual([CODES.fileMissing, CODES.fileMissing, CODES.fileMissing]);
 	});
 
 	it("names modules-drift and adrs-drift against the repo's own counters", () => {
@@ -445,6 +474,221 @@ describe("handoff-verify — the verdict, check by check", () => {
 	});
 });
 
+/**
+ * #583 — a RED report cannot certify a green snapshot, and the red predicate has three terms because
+ * vitest has three shapes of red. Each fixture makes exactly ONE term true, so deleting that term in
+ * `scripts/lib/handoff-claims.mjs` kills its own case and only its own (spec v4 §B):
+ *
+ *   red-assertions  failed: 1, failedSuites: 0, success: true    → `failed > 0` alone
+ *   red-suitesonly  failed: 0, failedSuites: 1, success: TRUE    → `failedSuites > 0` alone
+ *                   (synthetic: vitest cannot produce it, and the predicate must not depend on
+ *                    vitest's `success` agreeing with its own suite count)
+ *   red-load        failed: 0, failedSuites: 0, success: false   → `success === false` alone
+ *                   (what a load error looks like: a failed FILE and no failed assertion)
+ */
+describe("handoff-verify — a red report certifies nothing (#583)", () => {
+	const dir = mkdtempSync(join(tmpdir(), "brl-red-report-"));
+
+	/** A synthetic report on disk, read back through the one validator, so the snapshot is a real one. */
+	function snapshotOf(name: string, body: unknown) {
+		const path = join(dir, name);
+		writeFileSync(path, JSON.stringify(body));
+		return readSuiteReport(path);
+	}
+
+	const green = {
+		numTotalTests: 12,
+		numPassedTests: 12,
+		numFailedTests: 0,
+		success: true,
+		testResults: [
+			{ name: "/repo/a.test.ts", status: "passed", assertionResults: Array.from({ length: 6 }, () => ({ status: "passed" })) },
+			{ name: "/repo/b.test.ts", status: "passed", assertionResults: Array.from({ length: 6 }, () => ({ status: "passed" })) },
+		],
+	};
+
+	it("clears a green report — the control that makes the three red cases meaningful", () => {
+		const report = snapshotOf("green.json", green);
+		expect(evaluate(claimsOf("correct"), stub({ report: () => report })).drifts).toEqual([]);
+	});
+
+	it("red-assertions: one failed assertion is suite-red, whatever the totals say", () => {
+		const report = snapshotOf("red-assertions.json", {
+			numTotalTests: 2,
+			numPassedTests: 1,
+			numFailedTests: 1,
+			numFailedTestSuites: 0,
+			success: true,
+			testResults: [{ name: join(ROOT, "scripts", "__tests__", "red-assertions.test.ts"), status: "failed", assertionResults: [{ status: "passed" }, { status: "failed" }] }],
+		});
+		const { drifts, results } = evaluate(claimsOf("correct"), stub({ report: () => report }));
+		expect(drifts.map((drift) => drift.code)).toEqual([CODES.suiteRed]);
+		expect(CODES.suiteRed).toBe("suite-red");
+		expect(drifts[0].actual).toBe("1 failed test(s) in 0 file(s)");
+		const line = results.find((result: { ok: boolean }) => !result.ok).line;
+		expect(line).toContain("1 failed test(s)");
+		expect(line).toContain("scripts/__tests__/red-assertions.test.ts");
+		expect(line).toContain("capture a green run");
+	});
+
+	it("red-suitesonly: a failed FILE with success:true is suite-red — the failedSuites term alone", () => {
+		const report = snapshotOf("red-suitesonly.json", {
+			numTotalTests: 2,
+			numPassedTests: 2,
+			numFailedTests: 0,
+			numFailedTestSuites: 1,
+			// Synthetic on purpose: vitest writes success:false here, and the predicate must not depend
+			// on vitest agreeing with itself — `failed` is 0 and `success` is true, so ONLY the suite
+			// count can make this red.
+			success: true,
+			testResults: [{ name: "/repo/b.test.ts", status: "passed", assertionResults: [{ status: "passed" }, { status: "passed" }] }],
+		});
+		expect(report).toMatchObject({ failed: 0, failedSuites: 1, success: true });
+		const { drifts } = evaluate(claimsOf("correct"), stub({ report: () => report }));
+		expect(drifts.map((drift) => drift.code)).toEqual([CODES.suiteRed]);
+		expect(drifts[0].actual).toBe("0 failed test(s) in 1 file(s)");
+	});
+
+	it("red-load: a load error is suite-red with zero failed assertions — the success term alone", () => {
+		const report = snapshotOf("red-load.json", {
+			numTotalTests: 1,
+			numPassedTests: 1,
+			numFailedTests: 0,
+			numFailedTestSuites: 0,
+			success: false,
+			testResults: [{ name: "/repo/broken.test.ts", status: "failed", assertionResults: [{ status: "passed" }] }],
+		});
+		expect(report).toMatchObject({ failed: 0, failedSuites: 0, success: false });
+		const { drifts, results } = evaluate(claimsOf("correct"), stub({ report: () => report }));
+		expect(drifts.map((drift) => drift.code)).toEqual([CODES.suiteRed]);
+		expect(results.find((result: { ok: boolean }) => !result.ok).line).toContain(`the vitest report at ${report.path}`);
+	});
+
+	it("names the count and the first failing file in the CLI's own output", () => {
+		const report = snapshotOf("red-cli.json", {
+			numTotalTests: 2,
+			numPassedTests: 1,
+			numFailedTests: 1,
+			success: false,
+			testResults: [{ name: join(ROOT, "scripts", "__tests__", "cli-red.test.ts"), status: "failed", assertionResults: [{ status: "passed" }, { status: "failed" }] }],
+		});
+		const result = run(["--file", join(FIXTURES, "correct.md"), "--no-network"], stub({ report: () => report }));
+		expect(result.code).toBe(EXIT.DRIFT);
+		expect(result.out).toContain("✗ suite-red: ");
+		expect(result.out).toContain("is RED — 1 failed test(s) in 0 file(s)");
+		expect(result.out).toContain("first: scripts/__tests__/cli-red.test.ts");
+		expect(result.out).toContain("capture a green run");
+	});
+});
+
+/**
+ * #583 — the breakdown suffix `(N passed, M failed, K skipped)` is a claim, compared field by field.
+ * Each number moves on its own, so a comparison that reads only the total cannot pass them.
+ */
+describe("handoff-verify — the stated breakdown is compared (#583)", () => {
+	const mutated = (suffix: string) => parseClaims(text("correct").replace("(12 passed, 0 failed, 0 skipped)", suffix));
+
+	it("drifts when passed disagrees", () => {
+		const { drifts } = evaluate(mutated("(99 passed, 0 failed, 0 skipped)"), stub());
+		expect(drifts.map((drift) => drift.code)).toEqual([CODES.suiteCountDrift]);
+		expect(drifts[0].claim).toBe("Suite: 2 files / 12 tests");
+		// The breakdown the report actually derived is in the drift's `expected`, so a reader sees both sides.
+		expect(drifts[0].expected).toBe("2 files / 12 tests (12 passed, 0 failed, 0 skipped)");
+	});
+
+	it("names the field that disagrees, for each of the three numbers", () => {
+		const cases: [string, string][] = [
+			["(99 passed, 0 failed, 0 skipped)", "passed 99"],
+			["(12 passed, 1 failed, 0 skipped)", "failed 1"],
+			["(12 passed, 0 failed, 1 skipped)", "skipped 1"],
+		];
+		for (const [suffix, field] of cases) {
+			const { results } = evaluate(mutated(suffix), stub());
+			const failure = results.find((result: { ok: boolean }) => !result.ok);
+			expect(failure.line, suffix).toContain(CODES.suiteCountDrift);
+			expect(failure.line, suffix).toContain(field);
+		}
+	});
+
+	it("reads a line with no suffix as totals only — archived handoffs keep verifying", () => {
+		const totalsOnly = parseClaims(text("correct").replace("(12 passed, 0 failed, 0 skipped)", ""));
+		expect(totalsOnly.suite).toEqual({ files: 2, tests: 12 });
+		expect(evaluate(totalsOnly, stub()).drifts).toEqual([]);
+	});
+
+	it("does not read the retired prose form as a breakdown claim", () => {
+		const prose = parseClaims(text("correct").replace("(12 passed, 0 failed, 0 skipped)", "(12 passed + 0 skipped, **0 failed** — the counts read from the report)"));
+		expect(prose.suite).toEqual({ files: 2, tests: 12 });
+	});
+});
+
+/**
+ * #583 — the size claim sees the files it names. `SIZE_RE` now accepts `.mjs` (and `.sh`, `.py`), and a
+ * bare name resolves under `scripts/` after `src/`. Both halves are load-bearing: the regex without the
+ * resolver parses a claim it cannot check, and the resolver without the regex checks nothing.
+ */
+describe("handoff-verify — the size claim sees scripts (#583)", () => {
+	it("drifts on a `.mjs` row one line off, naming the file", () => {
+		const claims = parseClaims(text("correct").replace("`gamma.mjs` is **7**", "`gamma.mjs` is **8**"));
+		expect(claims.sizes).toContainEqual({ name: "gamma.mjs", lines: 8 });
+		const { drifts } = evaluate(claims, stub());
+		expect(drifts.map((drift) => drift.code)).toEqual([CODES.fileSizeDrift]);
+		expect(drifts[0].claim).toBe("gamma.mjs 8");
+		expect(drifts[0].expected).toBe("7 lines");
+	});
+
+	it("resolves a bare name under scripts/, and src/ still wins when both exist", () => {
+		expect(resolveModulePath(ROOT, "friction-disposition.mjs")).toBe(join(ROOT, "scripts", "friction-disposition.mjs"));
+		const dir = mkdtempSync(join(tmpdir(), "brl-resolve-"));
+		mkdirSync(join(dir, "src"));
+		mkdirSync(join(dir, "scripts"));
+		writeFileSync(join(dir, "scripts", "only.mjs"), "x\n");
+		expect(resolveModulePath(dir, "only.mjs")).toBe(join(dir, "scripts", "only.mjs"));
+		writeFileSync(join(dir, "src", "both.ts"), "x\n");
+		writeFileSync(join(dir, "scripts", "both.ts"), "x\n");
+		expect(resolveModulePath(dir, "both.ts")).toBe(join(dir, "src", "both.ts"));
+		expect(resolveModulePath(dir, "absent.py")).toBeNull();
+	});
+
+	it("parses `.sh` and `.py` rows too — the alternation is not `.mjs`-only", () => {
+		const claims = parseClaims(
+			["## STATE", "Verified: 4c1d9ab", "- **dev** @ `4c1d9ab`.", "`run.sh` 120; `tool.py` is **2,006**; `a.ts` 3"].join("\n"),
+		);
+		expect(claims.sizes).toEqual([
+			{ name: "run.sh", lines: 120 },
+			{ name: "tool.py", lines: 2006 },
+			{ name: "a.ts", lines: 3 },
+		]);
+	});
+});
+
+/**
+ * #583 / spec v4 §A — the handoff's `Suite:` line carries FOUR claim families on one line (totals +
+ * breakdown, the module count, the ADR count and 14 file sizes). A migration test that only looked at
+ * the suite fields would pass while the line lost the other three, so all four are asserted here.
+ */
+describe("handoff-verify — the migrated handoff line loses no claim (#583)", () => {
+	const live = parseClaims(readFileSync(join(ROOT, ".development", "HANDOFF.md"), "utf8"));
+
+	it("reads the suite line's totals AND its breakdown", () => {
+		expect(live.suite?.files).toBe(147);
+		expect(live.suite?.tests).toBe(3296);
+		expect(live.suite?.passed).toBe(3295);
+		expect(live.suite?.failed).toBe(0);
+		expect(live.suite?.skipped).toBe(1);
+	});
+
+	it("keeps the module, ADR and size claims on the same line", () => {
+		expect(live.modules).toEqual([61]);
+		expect(live.adrs).toEqual([28]);
+		// 15, not the 14 the audit measured at 3ae8c55: the `.mjs` claim was invisible to the old SIZE_RE,
+		// and making it visible is the point of the unit (spec v2 §1.3).
+		expect(live.sizes).toHaveLength(15);
+		expect(live.sizes).toContainEqual({ name: "tui.ts", lines: 3240 });
+		expect(live.sizes).toContainEqual({ name: "friction-disposition.mjs", lines: 1692 });
+	});
+});
+
 describe("handoff-verify — the command", () => {
 	const drifting: [string, string][] = [
 		["dev-sha-drift", CODES.devShaDrift],
@@ -458,7 +702,7 @@ describe("handoff-verify — the command", () => {
 	it("exits 0 and prints one ✓ per claim on the correct fixture", () => {
 		const result = run(["--file", join(FIXTURES, "correct.md")]);
 		expect(result.code).toBe(EXIT.OK);
-		expect(result.out.split("\n").filter((line) => line.startsWith("✓"))).toHaveLength(9);
+		expect(result.out.split("\n").filter((line) => line.startsWith("✓"))).toHaveLength(10);
 		expect(result.out.split("\n").filter((line) => line.startsWith("✗"))).toHaveLength(0);
 		expect(result.out.split("\n").at(-1)).toBe("handoff-verify: 0 drift(s)");
 	});
@@ -625,7 +869,7 @@ describe("handoff-verify — the seams", () => {
 		const probe = stub({
 			report: (expectHead: string) => {
 				seen.push(expectHead);
-				return { path: REPORT, files: 2, tests: 12 };
+				return snapshot();
 			},
 		});
 		const result = run(["--file", join(FIXTURES, "correct.md"), "--no-network"], probe);
@@ -633,12 +877,14 @@ describe("handoff-verify — the seams", () => {
 		expect(seen).toEqual(["4c1d9ab"]);
 	});
 
-	it("carries the report's provenance in the suite line", () => {
-		const dirty = run(["--file", join(FIXTURES, "correct.md"), "--no-network"], stub({ report: () => ({ path: REPORT, files: 2, tests: 12, label: LABELS.DIRTY }) }));
+	it("carries the report's provenance and the derived counts in the suite line", () => {
+		const dirty = run(["--file", join(FIXTURES, "correct.md"), "--no-network"], stub({ report: () => snapshot({ label: LABELS.DIRTY }) }));
 		expect(dirty.out).toContain(LABELS.DIRTY);
 		const clean = run(["--file", join(FIXTURES, "correct.md"), "--no-network"]);
 		// The stub without a label prints no parenthesised claim rather than "undefined".
 		expect(clean.out).not.toContain("undefined");
+		// #583: the pass line states the breakdown the report DERIVED, so a green total cannot hide a red run.
+		expect(clean.out).toContain(`✓ Suite: 2 files / 12 tests — the vitest report at ${REPORT}; 12 passed, 0 failed, 0 skipped`);
 	});
 
 	it("reads an injected issue list, numbers or objects", () => {
