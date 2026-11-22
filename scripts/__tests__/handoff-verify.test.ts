@@ -671,21 +671,31 @@ describe("handoff-verify — the migrated handoff line loses no claim (#583)", (
 	const live = parseClaims(readFileSync(join(ROOT, ".development", "HANDOFF.md"), "utf8"));
 
 	it("reads the suite line's totals AND its breakdown", () => {
-		expect(live.suite?.files).toBe(147);
-		expect(live.suite?.tests).toBe(3296);
-		expect(live.suite?.passed).toBe(3295);
-		expect(live.suite?.failed).toBe(0);
-		expect(live.suite?.skipped).toBe(1);
+		// The INVARIANT, not the literals: this test reads the live handoff, so pinning its numbers
+		// would redden the suite on every legitimate suite change — the same brittleness as the
+		// real-tree LOC pin (#585's audit finding F07). What must hold: all six fields parsed, and
+		// the breakdown accounting for the total exactly.
+		for (const field of ["files", "tests", "passed", "failed", "skipped"] as const) {
+			expect(typeof live.suite?.[field], `suite.${field} parsed from the live line`).toBe("number");
+		}
+		expect(live.suite!.files).toBeGreaterThan(0);
+		expect(live.suite!.tests).toBeGreaterThan(0);
+		expect(live.suite!.passed! + live.suite!.failed! + live.suite!.skipped!).toBe(live.suite!.tests);
+		expect(live.suite!.failed).toBe(0);
 	});
 
 	it("keeps the module, ADR and size claims on the same line", () => {
-		expect(live.modules).toEqual([61]);
-		expect(live.adrs).toEqual([28]);
+		expect(live.modules.length).toBeGreaterThan(0);
+		expect(live.adrs.length).toBeGreaterThan(0);
+		expect(live.modules.every((n) => Number.isInteger(n) && n > 0)).toBe(true);
 		// 15, not the 14 the audit measured at 3ae8c55: the `.mjs` claim was invisible to the old SIZE_RE,
 		// and making it visible is the point of the unit (spec v2 §1.3).
-		expect(live.sizes).toHaveLength(15);
-		expect(live.sizes).toContainEqual({ name: "tui.ts", lines: 3240 });
-		expect(live.sizes).toContainEqual({ name: "friction-disposition.mjs", lines: 1692 });
+		// Same rule: the CLAIM FAMILIES, not their current values. The `.mjs` entry is the one the
+		// unit made visible, so it is the falsifier for SIZE_RE's extension set.
+		expect(live.sizes.length).toBeGreaterThanOrEqual(10);
+		expect(live.sizes.some((entry) => entry.name.endsWith(".mjs"))).toBe(true);
+		expect(live.sizes.some((entry) => entry.name.endsWith(".ts"))).toBe(true);
+		expect(live.sizes.every((entry) => entry.lines > 0)).toBe(true);
 	});
 });
 
