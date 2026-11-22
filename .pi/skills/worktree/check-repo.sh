@@ -160,6 +160,38 @@ for PRIV in .pi/skills/notify .pi/extensions/mail-wake.ts; do
     fi
 done
 
+# ── 6. Exactly one brl-subagent install (issue #581) ─────────────────────
+# `pi list` prints a dev install as a RELATIVE source (../../public_projects/…);
+# passing that string back to `pi remove` matches nothing and the package stays
+# loaded. The next install then puts TWO copies in one session, silently — which
+# is how the v2.9.0 and v2.9.1 releases each re-learned it. The ritual's remove
+# step cannot see that, so this pre-flight counts instead. Absent settings
+# (a scratch env, CI) means no install to check, not a failure.
+PI_SETTINGS="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/settings.json"
+if [[ -f "${PI_SETTINGS}" ]]; then
+    BR_SOURCES="$(node -e '
+        const fs = require("node:fs");
+        const settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        const list = Array.isArray(settings.packages) ? settings.packages : [];
+        for (const entry of list) {
+            if (typeof entry === "string" && entry.includes("brl-subagent")) console.log(entry);
+        }
+    ' "${PI_SETTINGS}" 2>/dev/null || true)"
+    BR_COUNT="$(printf '%s' "${BR_SOURCES}" | grep -c . || true)"
+    if [[ "${BR_COUNT}" -gt 1 ]]; then
+        fail "${BR_COUNT} brl-subagent packages are installed at once — one session would load both:"
+        printf '%s
+' "${BR_SOURCES}" | sed 's/^/         /'
+        echo "       remove with the ABSOLUTE path (a relative source prints from 'pi list' but removes nothing):"
+        echo "         pi remove /abs/path/to/brl-subagent-dev      # dev checkout"
+        echo "         pi remove npm:brl-subagent                    # published copy"
+    elif [[ "${BR_COUNT}" -eq 1 ]]; then
+        pass "one brl-subagent install: $(printf '%s' "${BR_SOURCES}" | head -1)"
+    else
+        pass "no brl-subagent package installed (running from an extension path)"
+    fi
+fi
+
 # ── Result ───────────────────────────────────────────────────────────────
 echo ""
 if [[ "${FAILED}" == "1" ]]; then

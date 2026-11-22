@@ -183,9 +183,17 @@ function env(): NodeJS.ProcessEnv {
 	};
 }
 
-/** The ONE spawn site: the git fixture and all ten rows go through it, so no row is a special case. */
-function sh(argv: string[], cwd: string) {
-	const result = spawnSync(argv[0], argv.slice(1), { cwd, env: env(), encoding: "utf8", timeout: 60_000 });
+/**
+ * The ONE spawn site: the git fixture, all ten rows, and the environment guard go through it, so no
+ * case is a special case. `extraEnv` exists for #581 — a refusal that depends only on the agent dir.
+ */
+function sh(argv: string[], cwd: string, extraEnv: NodeJS.ProcessEnv = {}) {
+	const result = spawnSync(argv[0], argv.slice(1), {
+		cwd,
+		env: { ...env(), ...extraEnv },
+		encoding: "utf8",
+		timeout: 60_000,
+	});
 	if (result.error) throw new Error(`${argv.join(" ")}: ${result.error.message}`);
 	return { status: result.status ?? -1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
@@ -274,6 +282,29 @@ describe("every worktree entry script refuses its known-bad input", () => {
 });
 
 describe("the guard table holds itself together", () => {
+	it("#581 — two brl-subagent installs fail the pre-flight, naming both and the absolute removal", () => {
+		// OUTSIDE the scratch repo: a file written there would move `git status` and trip the
+		// isolation control in afterAll, which is exactly the failure this file exists to catch.
+		const agent = mkdtempSync(join(tmpdir(), "brl-agent-two-"));
+		const settings = join(agent, "settings.json");
+		writeFileSync(settings, JSON.stringify({ packages: ["npm:brl-subagent@2.9.1", "../../x/brl-subagent-dev"] }));
+		const script = join(SCRATCH, COPY_REL, "check-repo.sh");
+		const two = sh(["bash", script, join(SCRATCH, "empty")], SCRATCH, { PI_CODING_AGENT_DIR: agent });
+		const twoOutput = `${two.stdout}${two.stderr}`;
+		expect(two.status).toBe(1);
+		expect(twoOutput).toContain("2 brl-subagent packages are installed at once");
+		expect(twoOutput).toContain("npm:brl-subagent@2.9.1");
+		expect(twoOutput).toContain("../../x/brl-subagent-dev");
+		expect(twoOutput).toContain("pi remove /abs/path/to/brl-subagent-dev");
+
+		// The control: ONE install is a pass line. Without it, the row above would pass on a guard
+		// that simply always fails — the failure mode this check exists to prevent.
+		writeFileSync(settings, JSON.stringify({ packages: ["../../x/brl-subagent-dev"] }));
+		const one = sh(["bash", script, join(SCRATCH, "empty")], SCRATCH, { PI_CODING_AGENT_DIR: agent });
+		expect(`${one.stdout}${one.stderr}`).toContain("one brl-subagent install");
+		rmSync(agent, { recursive: true, force: true });
+	});
+
 	it("has a row for every top-level entry script on disk", () => {
 		const files = entryScripts();
 		// Vacuity control: the listing is not empty, and the helper sees a script with no row.
