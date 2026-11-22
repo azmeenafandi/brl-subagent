@@ -314,7 +314,9 @@ Risk class: C1
 ```
 
 Merge check (f) requires a provenance row for that exact line under `recheck-<pr>`, and refuses
-when the declared `Risk class` is **weaker** than the recheck (C1 strongest). A record carrying
+when the declared `Risk class` is **weaker** than the recheck (C1 strongest). The comparison is
+byte-for-byte, so **paste the printed line VERBATIM** — a reformatted confidence (`(0.40)` for a
+printed `(0.4)`) is a different line and is refused. A record carrying
 only the dispatch-time line cannot show the tier was right — the 2026-11-04 miss was dispatched
 `C2`, classified `C1`, and would have merged under the old gate.
 

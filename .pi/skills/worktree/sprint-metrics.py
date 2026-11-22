@@ -57,12 +57,52 @@ Dispatch counting rules (issue #489):
   - template/preset/mode counters stay direct-only: they are not reliably parseable out
     of a JS script, so those columns remain floors.
 
+Refused, unresolved and failed-after-spawn direct dispatches (issue #591 §2). A `delegate_task`
+CALL is not proof that a child started, and `isError: true` is not proof that it did not: a
+foreground dispatch whose child dies after spawning ("Subagent failed: Subagent timed out …")
+carries `isError: true` too, and that IS a spawn. So a direct call is classified THREE ways, by
+a second pass over the whole file set (`load_call_results`, keyed by call id, file order
+irrelevant — a result usually lands AFTER the call it answers, and a result that precedes its
+call is the same lookup):
+
+  isError: true + the harness's pre-flight dialect → REFUSED — excluded from dispatches, the
+                    fg/bg split and the retry rate, and counted so the exclusion is auditable
+  isError: true + anything else                   → COUNTED as a dispatch and as a spawn, and
+                    reported as `failed after spawn` (a run started and then failed)
+  isError: false                                  → a dispatch
+  no result                                       → a dispatch, counted `unresolved` (a log
+                    truncated mid-run is not a refusal, and silently dropping the call would
+                    under-count dispatches)
+
+THE DIALECT IS THE ONLY HEURISTIC IN THIS FILE (`PREFLIGHT_REFUSAL_PHRASES`, next to the code,
+maintained by hand). It exists because the log carries no "spawned" flag — only the result's
+booleans and its text — and the two directions have different costs: a phrase that FAILS to
+match leaves the call counted, so a miscount surfaces as a negative Δ, which fails loud; a
+phrase that wrongly matches HIDES a real spawn, under-counting in the one direction the Δ
+cannot see. The list is drawn from the measured corpus, and each entry cites the shape behind
+it; the fixture that pins the other direction is the `failed after spawn` self-test case.
+
+Over-counting refused calls produced the measured 15-against-14 window this issue was filed on
+(#591 §0 row 2) — and over-excluding would have hidden 7 real runs: the default 18-file corpus
+holds 44 `delegate_task` results with `isError: true`, 37 in the pre-flight dialect and 7
+"Subagent failed: Subagent timed out" (measured 2026-11-22). Codemode-routed dispatches keep
+their floor semantics: the script's text is all the log carries, and one script error does not
+prove its calls did not run.
+
+LIMIT, stated rather than implied: `isError: false` is NOT proof that a child spawned. The
+runtime ignores returned error metadata on some refusal paths (`src/types.ts`), so a returned
+pre-flight error can be recorded false and still count as a dispatch. The exclusion keys on the
+only signals the log carries, and the reconcile's Δ against the extension spawn log remains the
+check — this pass narrows the gap, it does not close it.
+
 Reconcile (issue #489): `dispatches: N (direct A + codemode B) · spawns: M · Δ D`, where
 M is the extension log's run-start count in the SAME window and D = M - N. Spawns may
 legitimately exceed calls by the window's transport auto-retry starts plus its fan-out
 units beyond the first; both are counted, so the allowance is derived, not guessed.
 A negative Δ (a counted dispatch produced no spawn) or a Δ above that allowance is a
-LOUD failure: a named `RECONCILE FAILED:` line, no row appended, exit 3.
+LOUD failure: a named `RECONCILE FAILED:` line, no row appended, exit 3. The line also names
+`refused: N` / `failed after spawn: N` / `unresolved: N` / `duplicate: N` when (and only when)
+they are non-zero, so a window with no such call prints exactly what it always printed.
 
 The output table is designed to be appended to .development/METRICS.md (one row per
 sprint — the only manual step, sharing the friction-log review cadence).
@@ -93,6 +133,44 @@ SPAWN_LOG_ROTATED = 5  # src/logging.ts keeps brl-subagent.log.1 .. .5
 BG_SPAWN_MESSAGE = "Background agent spawned"
 FG_SPAWN_MESSAGE = "Starting subagent process"
 RETRY_SPAWN_MESSAGE = "Background run settled — transport auto-retry scheduled"
+
+# The harness's PRE-SPAWN refusal dialect (issue #591 §2), matched case-insensitively against the
+# tool result's own text. MAINTAINED BY HAND — the only heuristic in this file, and it is used
+# only to LABEL: a result it does not match stays COUNTED as a dispatch (`failed after spawn`),
+# because hiding a real spawn is the error the reconcile cannot see. Each entry cites the shape
+# behind it with the count measured in the default 18-file corpus (44 `delegate_task` results with
+# `isError: true`, 2026-11-22), so a stale entry is visible rather than silent:
+#   "missing jev dispatch line"      10 — the dispatch-line gate, before any spawn
+#   "tool delegate_task not found"    9 — the tool was absent, so nothing spawned
+#   "validation failed for tool"      4 — argument validation, before the handler
+#   "invalid outputfile"              3 — the outputFile containment check
+#   "invalid cwd"                     3 — the cwd containment check
+#   "cannot delegate"                 2 — the capability pre-flight ('bash' not available)
+#   "is not iterable"                 2 — a malformed argument list
+#   "circuit breaker is open"         1 — the breaker refuses before dispatch
+#   "provide exactly one of"          1 — mode validation
+#   "graph validation failed"         1 — graph validation
+#   "resolution failed"               1 — template/param resolution
+#   "does not exist"                  — the bare path refusal (the same dialect as invalid cwd)
+#   "invalid task" / "is not json"    — argument decoding (`Invalid task: … is not JSON`)
+# NOT here on purpose, and measured: "Subagent failed: Subagent timed out …" (7 results) is a run
+# that STARTED and then died — it is a dispatch and a spawn, and the self-test pins that case.
+PREFLIGHT_REFUSAL_PHRASES = (
+    "missing jev dispatch line",
+    "tool delegate_task not found",
+    "validation failed for tool",
+    "invalid outputfile",
+    "invalid cwd",
+    "cannot delegate",
+    "is not iterable",
+    "circuit breaker is open",
+    "provide exactly one of",
+    "graph validation failed",
+    "resolution failed",
+    "does not exist",
+    "invalid task",
+    "is not json",
+)
 
 # Friction candidates (issue #574). A stop call OWNS the abort it caused inside
 # this interval (inclusive both ends); the causal margin is loaded on both sides
@@ -228,10 +306,32 @@ def _write_jsonl(path, entries):
             f.write(json.dumps(entry) + "\n")
 
 
-def _tool_call(name, args, call_id):
-    return {"timestamp": SELFTEST_TS, "message": {"content": [
+def _tool_call(name, args, call_id, ts=SELFTEST_TS):
+    return {"timestamp": ts, "message": {"content": [
         {"type": "toolCall", "id": call_id, "name": name, "arguments": args},
     ]}}
+
+
+def _result_row(ts, call_id, is_error, text="", tool="delegate_task"):
+    """A toolResult in the production envelope: `role` + `toolCallId` + `isError` + text.
+
+    The TEXT matters for an error result (#591): the classifiers read it to tell a pre-flight
+    refusal from a run that started and then failed, so a fixture with an empty text would
+    pin a shape production never produces.
+    """
+    return {"type": "message", "timestamp": ts, "message": {
+        "role": "toolResult", "toolCallId": call_id, "toolName": tool,
+        "content": [{"type": "text", "text": text}], "isError": is_error}}
+
+
+# The two measured result dialects (#591 §2). REFUSAL_TEXT is a real pre-flight rejection
+# (the dispatch-line gate, 10 occurrences in the corpus); DIED_TEXT is a real failure AFTER
+# the spawn (7 occurrences) and must stay COUNTED.
+REFUSAL_TEXT = ("missing Jev dispatch line: missing Jev dispatch line "
+                "(jev: <level> (<0.xx>) · C<1|2|3> · worktree <y|n>)")
+DIED_TEXT = "Subagent failed: Subagent timed out after 600000ms"
+OTHER_REFUSAL_TEXT = ('Invalid outputFile: Output file path "/x/SPEC.md" escapes the project '
+                      'root. Must be within the project directory.')
 
 
 def _spawn(agent_id):
@@ -291,17 +391,27 @@ RECONCILE_SELFTEST_CASES = [
 ]
 
 
-def run_reconcile_case(case):
-    """Run one reconcile fixture in a temp dir; return (ok, line, reason, problems)."""
-    _name, session_entries, spawn_entries, exp_direct, exp_codemode, exp_spawns, exp_ok = case
+def metrics_for(session_entries, spawn_entries, window=SELFTEST_WINDOW):
+    """(metrics, reconcile ok, reason, dispatch line) for one fixture pair in a temp dir.
+
+    One runner for both selftest families: the dispatch classification reads
+    `load_call_results`, exactly as the CLI does, so a case cannot pass on a fixture the
+    production two-pass read would classify differently.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         session_path = os.path.join(tmp, "session.jsonl")
         spawn_path = os.path.join(tmp, "spawn.log")
         _write_jsonl(session_path, session_entries)
         _write_jsonl(spawn_path, spawn_entries)
-        m = compute(load_events([session_path], *SELFTEST_WINDOW))
-        ok, reason = reconcile(m, [spawn_path], *SELFTEST_WINDOW)
-        line = fmt_dispatches(m)
+        m = compute(load_events([session_path], *window), load_call_results([session_path]))
+        ok, reason = reconcile(m, [spawn_path], *window)
+        return m, ok, reason, fmt_dispatches(m)
+
+
+def run_reconcile_case(case):
+    """Run one reconcile fixture in a temp dir; return (ok, line, reason, problems)."""
+    _name, session_entries, spawn_entries, exp_direct, exp_codemode, exp_spawns, exp_ok = case
+    m, ok, reason, line = metrics_for(session_entries, spawn_entries)
     problems = []
     if m["direct"] != exp_direct:
         problems.append(f"direct {m['direct']} != {exp_direct}")
@@ -316,18 +426,111 @@ def run_reconcile_case(case):
     return (not problems), line, reason, problems
 
 
-def run_selftest() -> int:
-    """Exercise the window boundaries, the reconcile, and the candidates; 1 on failure.
+# Dispatch-result self-test (issue #591 §2). The window fixture is the reconcile one, and the
+# two instants are chosen for the boundary that matters: DISPATCH_TS is inside the window,
+# LATE_TS is AFTER its end, so a map rebuilt from the window-filtered rows cannot see that
+# result while the whole-file map does. Every case pins the counts AND the printed line — the
+# line is the receipt a close gate reads, so a byte of it is part of the contract.
+DISPATCH_TS = "2026-11-08T06:00:00.000Z"
+RESULT_TS = "2026-11-08T06:00:01.000Z"
+LATE_TS = "2026-11-09T06:00:00.000Z"
+DIRECT_ARGS = {"task": "x", "background": True}
 
-    The legacy 21 cases keep their names, order and pass line; the candidate
-    checks (corpus + boundary fixtures) follow, so one command proves the
-    extractor and the derivation it feeds (#574).
+DISPATCH_SELFTEST_CASES = [
+    # The defect: a refused call counted as a dispatch (15 against 14 spawns, #591 §0 row 2).
+    {"name": "a refused dispatch is not a dispatch (isError: true, pre-flight dialect)",
+     "session": [_tool_call("delegate_task", DIRECT_ARGS, "call-1", DISPATCH_TS),
+                 _result_row(RESULT_TS, "call-1", True, REFUSAL_TEXT)],
+     "spawn": [],
+     "expect": {"direct": 0, "refused": 1, "failed_after_spawn": 0,
+                "unresolved": 0, "duplicate_results": 0},
+     "line": "dispatches:      0 (direct 0 + codemode 0) · refused: 1 (harness-rejected) · spawns: 0 · Δ 0"},
+    # A second pre-flight shape, so the dialect is pinned by more than one phrase.
+    {"name": "a refused dispatch in another pre-flight shape is refused too",
+     "session": [_tool_call("delegate_task", DIRECT_ARGS, "call-1", DISPATCH_TS),
+                 _result_row(RESULT_TS, "call-1", True, OTHER_REFUSAL_TEXT)],
+     "spawn": [],
+     "expect": {"direct": 0, "refused": 1, "failed_after_spawn": 0,
+                "unresolved": 0, "duplicate_results": 0},
+     "line": "dispatches:      0 (direct 0 + codemode 0) · refused: 1 (harness-rejected) · spawns: 0 · Δ 0"},
+    # THE OTHER DIRECTION, and the correction that produced this case: `isError: true` is not
+    # a refusal. A run that started and then died is a dispatch AND a spawn — excluding it
+    # would hide a spawn, the one direction the Δ cannot see.
+    {"name": "a failure AFTER the spawn stays counted as a dispatch",
+     "session": [_tool_call("delegate_task", DIRECT_ARGS, "call-1", DISPATCH_TS),
+                 _result_row(RESULT_TS, "call-1", True, DIED_TEXT)],
+     "spawn": [_spawn("agent-1")],
+     "expect": {"direct": 1, "refused": 0, "failed_after_spawn": 1,
+                "unresolved": 0, "duplicate_results": 0},
+     "line": "dispatches:      1 (direct 1 + codemode 0) · failed after spawn: 1 (counted as a dispatch) · spawns: 1 · Δ 0"},
+    # A log truncated mid-run: the call happened, so dropping it would under-count.
+    {"name": "a call with no result still dispatches, and says unresolved",
+     "session": [_tool_call("delegate_task", DIRECT_ARGS, "call-1", DISPATCH_TS)],
+     "spawn": [_spawn("agent-1")],
+     "expect": {"direct": 1, "refused": 0, "failed_after_spawn": 0,
+                "unresolved": 1, "duplicate_results": 0},
+     "line": "dispatches:      1 (direct 1 + codemode 0) · unresolved: 1 (no result in the session log) · spawns: 1 · Δ 0"},
+    # PARITY: an ordinary call/result pair prints the pre-#591 line, byte for byte.
+    {"name": "an ordinary call/result pair prints the unchanged line",
+     "session": [_tool_call("delegate_task", DIRECT_ARGS, "call-1", DISPATCH_TS),
+                 _result_row(RESULT_TS, "call-1", False)],
+     "spawn": [_spawn("agent-1")],
+     "expect": {"direct": 1, "refused": 0, "failed_after_spawn": 0,
+                "unresolved": 0, "duplicate_results": 0},
+     "line": "dispatches:      1 (direct 1 + codemode 0) · spawns: 1 · Δ 0"},
+    # A result lands AFTER `--until` (the normal case, not the exception): a window-filtered
+    # map would call this one unresolved and count it as a dispatch.
+    {"name": "a result after --until is still the call's result",
+     "session": [_tool_call("delegate_task", DIRECT_ARGS, "call-1", DISPATCH_TS),
+                 _result_row(LATE_TS, "call-1", True, REFUSAL_TEXT)],
+     "spawn": [],
+     "expect": {"direct": 0, "refused": 1, "failed_after_spawn": 0,
+                "unresolved": 0, "duplicate_results": 0},
+     "line": "dispatches:      0 (direct 0 + codemode 0) · refused: 1 (harness-rejected) · spawns: 0 · Δ 0"},
+    # A reordered log (a compacted or replayed session): the result is written FIRST.
+    {"name": "a result written before its call classifies the same",
+     "session": [_result_row(RESULT_TS, "call-1", True, REFUSAL_TEXT),
+                 _tool_call("delegate_task", DIRECT_ARGS, "call-1", DISPATCH_TS)],
+     "spawn": [],
+     "expect": {"direct": 0, "refused": 1, "failed_after_spawn": 0,
+                "unresolved": 0, "duplicate_results": 0},
+     "line": "dispatches:      0 (direct 0 + codemode 0) · refused: 1 (harness-rejected) · spawns: 0 · Δ 0"},
+    # A producer bug worth seeing: two results for one call, last one wins, counted once.
+    {"name": "a duplicate result is counted once and the last one wins",
+     "session": [_tool_call("delegate_task", DIRECT_ARGS, "call-1", DISPATCH_TS),
+                 _result_row(RESULT_TS, "call-1", False),
+                 _result_row(LATE_TS, "call-1", True, REFUSAL_TEXT)],
+     "spawn": [],
+     "expect": {"direct": 0, "refused": 1, "failed_after_spawn": 0,
+                "unresolved": 0, "duplicate_results": 1},
+     "line": "dispatches:      0 (direct 0 + codemode 0) · refused: 1 (harness-rejected) · duplicate: 1 · spawns: 0 · Δ 0"},
+]
+
+
+def run_dispatch_case(case):
+    """Run one dispatch-classification fixture; return (ok, line, problems)."""
+    m, ok, reason, line = metrics_for(case["session"], case["spawn"])
+    problems = [f"{key} {m[key]} != {want}" for key, want in case["expect"].items() if m[key] != want]
+    if not ok:
+        problems.append(f"reconcile failed: {reason}")
+    if "line" in case and line != case["line"]:
+        problems.append(f"line {line!r} != {case['line']!r}")
+    return (not problems), line, problems
+
+
+def run_selftest() -> int:
+    """Exercise the window boundaries, the reconcile, the dispatch results, the candidates.
+
+    The legacy 21 cases keep their names, order and pass line; the dispatch-result cases
+    (#591) and the candidate checks (corpus + boundary fixtures) follow, so one command
+    proves the extractor and the derivations it feeds (#574).
     """
     candidate_checks = run_candidate_selftest()
     legacy_total = len(SELFTEST_CASES) + len(RECONCILE_SELFTEST_CASES)
-    total = legacy_total + len(candidate_checks)
+    total = legacy_total + len(DISPATCH_SELFTEST_CASES) + len(candidate_checks)
     print(f"sprint-metrics --selftest: {len(SELFTEST_CASES)} boundary cases "
           f"+ {len(RECONCILE_SELFTEST_CASES)} reconcile cases "
+          f"+ {len(DISPATCH_SELFTEST_CASES)} dispatch-result cases "
           f"+ {len(candidate_checks)} candidate cases ({legacy_total} legacy)")
     failures = 0
     for name, ts, since, until, expected in SELFTEST_CASES:
@@ -342,6 +545,13 @@ def run_selftest() -> int:
         mark = "✓" if ok else "✗"
         detail = f"{line} — {reason}" + (f" [{', '.join(problems)}]" if problems else "")
         print(f"  {mark} {case[0]}: {detail}")
+        if not ok:
+            failures += 1
+    for case in DISPATCH_SELFTEST_CASES:
+        ok, line, problems = run_dispatch_case(case)
+        mark = "✓" if ok else "✗"
+        detail = line + (f" [{'; '.join(problems)}]" if problems else "")
+        print(f"  {mark} {case['name']}: {detail}")
         if not ok:
             failures += 1
     for name, ok, detail in candidate_checks:
@@ -471,6 +681,63 @@ def load_events(log_paths, since, until):
                 yield ("stop", {**args, **provenance}, ts)
 
 
+def _result_text(message):
+    """The text blocks of a toolResult message, joined — the only place a refusal names itself."""
+    blocks = message.get("content")
+    if not isinstance(blocks, list):
+        return ""
+    return " ".join(block.get("text") or "" for block in blocks if isinstance(block, dict))
+
+
+def is_preflight_refusal(text) -> bool:
+    """True when a refused result's own words are the harness's PRE-SPAWN dialect.
+
+    A match LABELS an exclusion; what decides that no child existed is `isError: true` PLUS
+    this dialect. The safe direction is a miss: the call then stays counted, and a wrong
+    count surfaces as a negative Δ (loud) instead of a hidden spawn (silent).
+    """
+    body = str(text or "").lower()
+    return any(phrase in body for phrase in PREFLIGHT_REFUSAL_PHRASES)
+
+
+def load_call_results(log_paths):
+    """`{flags: call id -> {is_error, text}, duplicates: N}` over the WHOLE file set (#591 §2).
+
+    Deliberately NOT window-filtered: a toolResult usually lands AFTER the call it answers,
+    so a window-filtered map classifies every call near `--until` as `unresolved`. One pass,
+    one key: the classification reads this map, so the order of the two rows in the file
+    decides nothing (a reordered log answers the same lookup).
+
+    The TEXT is kept beside the flag because `isError: true` alone cannot tell a pre-flight
+    refusal from a run that started and then failed (#591: 37 vs 7 in the measured corpus).
+
+    Duplicates: a second result for one call IN ONE FILE is a producer bug, counted so it can
+    be seen (`duplicate: N`), with the last occurrence winning. The same session file copied
+    into two session directories is NOT a duplicate — its call ids are identical — so the
+    seen-set is keyed by path as well: a copy must not inflate the count (measured on the
+    default glob: 18 files, 1,871 delegate results, 632 ids present in more than one copy,
+    0 with conflicting statuses).
+    """
+    flags = {}
+    seen = set()
+    duplicates = 0
+    for path in log_paths:
+        for row, _file, _line, _digest in iter_rows([path]):
+            message = row.get("message") or {}
+            if message.get("role") != "toolResult":
+                continue
+            call_id = message.get("toolCallId")
+            if not call_id:
+                continue
+            key = (path, call_id)
+            if key in seen:
+                duplicates += 1
+            seen.add(key)
+            flags[call_id] = {"is_error": bool(message.get("isError")),
+                              "text": _result_text(message)}
+    return {"flags": flags, "duplicates": duplicates}
+
+
 def load_spawn_rows(spawn_paths, since, until):
     """Yield the spawn log's rows in range, each carrying its `(file, line, digest)`.
 
@@ -484,8 +751,19 @@ def load_spawn_rows(spawn_paths, since, until):
         yield {**row, "_file": file_name, "_line": line_no, "_digest": digest}
 
 
-def compute(events):
-    """Reduce events to the metrics dict."""
+def compute(events, call_results=None):
+    """Reduce events to the metrics dict.
+
+    `call_results` is `load_call_results`'s whole-file map (issue #591 §2). A direct dispatch
+    is classified by its RESULT, three ways: a pre-flight refusal leaves the dispatch count,
+    the fg/bg split and the retry rate and is reported as `refused`; a failure AFTER a spawn
+    stays counted and is reported as `failed after spawn`; no result at all still counts and
+    is reported as `unresolved` (a truncated log is not a refusal).
+    """
+    flags = (call_results or {}).get("flags") or {}
+    refused = 0             # pre-flight rejections: no child existed (#591)
+    failed_after_spawn = 0  # a run started and then failed — a dispatch and a spawn (#591)
+    unresolved = 0          # calls with no result in the session log at all (#591)
     runs = {}            # id -> latest status (finalized entry wins)
     run_meta = {}        # id -> first-seen metadata (label, model, thinkingLevel)
     dispatch_ids = []    # (call_id, label) in order — DIRECT dispatches only
@@ -531,7 +809,20 @@ def compute(events):
                     if payload.get("background") is None:
                         codemode_assumed_bg += 1
                 continue
-            dispatch_ids.append((payload.get("_call_id"), payload.get("label")))
+            # A direct call is classified by its RESULT, not by its existence (#591): a
+            # pre-flight refusal spawned nothing and leaves the count; a failure AFTER the
+            # spawn stays counted (it IS a spawn); a call with no result is unresolved, not
+            # absent — the caller did dispatch, the log just cannot say how it ended.
+            call_id = payload.get("_call_id")
+            result = flags.get(call_id)
+            if result is None:
+                unresolved += 1
+            elif result["is_error"]:
+                if is_preflight_refusal(result["text"]):
+                    refused += 1
+                    continue
+                failed_after_spawn += 1
+            dispatch_ids.append((call_id, payload.get("label")))
             if payload.get("background"):
                 bg_count += 1
             else:
@@ -619,6 +910,10 @@ def compute(events):
         "total_dispatches": total_dispatches,
         "direct": len(dispatch_ids),
         "codemode": codemode_count,
+        "refused": refused,
+        "failed_after_spawn": failed_after_spawn,
+        "unresolved": unresolved,
+        "duplicate_results": (call_results or {}).get("duplicates") or 0,
         "codemode_assumed_background": codemode_assumed_bg,
         "fanout_extra": fanout_extra,
         "foreground": fg_count,
@@ -1272,6 +1567,24 @@ def run_candidate_selftest():
         return [("candidate corpus", False, f"{type(exc).__name__}: {exc}")]
 
 
+def _fmt_call_audit(m):
+    """The non-zero-only clauses: what the dispatch count EXCLUDED, and why.
+
+    A window with no refused, unresolved or duplicate call prints nothing here, so its line
+    stays byte-identical to the pre-#591 output (the ordinary-pair parity the selftest pins).
+    """
+    parts = []
+    if m.get("refused"):
+        parts.append(f"refused: {m['refused']} (harness-rejected)")
+    if m.get("failed_after_spawn"):
+        parts.append(f"failed after spawn: {m['failed_after_spawn']} (counted as a dispatch)")
+    if m.get("unresolved"):
+        parts.append(f"unresolved: {m['unresolved']} (no result in the session log)")
+    if m.get("duplicate_results"):
+        parts.append(f"duplicate: {m['duplicate_results']}")
+    return "".join(f" · {part}" for part in parts)
+
+
 def fmt_dispatches(m):
     """The reconcile line: `dispatches: N (direct A + codemode B) · spawns: M · Δ D`.
 
@@ -1280,6 +1593,7 @@ def fmt_dispatches(m):
     """
     line = (f"dispatches:      {m['total_dispatches']} "
             f"(direct {m['direct']} + codemode {m['codemode']})")
+    line += _fmt_call_audit(m)
     if m.get("spawns") is None:
         return f"{line} · spawns: n/a · Δ n/a (reconcile unavailable)"
     return f"{line} · spawns: {m['spawns']} · Δ {m['delta']}"
@@ -1323,8 +1637,12 @@ def main():
         print("No session logs found.", file=sys.stderr)
         sys.exit(1)
 
+    # Two passes over the same sources (#591 §2): the result map sees the WHOLE file set, so a
+    # result that lands after `--until` still classifies the call it answers; the event stream
+    # stays window-filtered, because a dispatch outside the window is not this window's.
+    call_results = load_call_results(log_paths)
     events = load_events(log_paths, args.since, args.until)
-    m = compute(events)
+    m = compute(events, call_results)
     sprint = args.sprint or args.since
 
     spawn_paths = args.spawn_log or default_spawn_logs()
