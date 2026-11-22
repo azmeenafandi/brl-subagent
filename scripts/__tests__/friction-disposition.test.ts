@@ -1010,6 +1010,174 @@ describe("friction-disposition — case 17: the candidates seam", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Case 18 — the six friction kinds (#574): the producer's five kinds and a retry's two vias.
+// ---------------------------------------------------------------------------
+
+const FIXTURE_FILE = join(ROOT, ".pi", "skills", "worktree", "__tests__", "fixtures", "friction-candidates", "expected-candidates.json");
+
+interface Candidate {
+	eventId: string;
+	kind: string;
+	via?: string;
+	class: string | null;
+	dismissed: string | null;
+	[key: string]: unknown;
+}
+
+interface CandidatePayload {
+	version: number;
+	cycle: string;
+	claimedLive: boolean;
+	candidates: Candidate[];
+}
+
+/** The refusal a call raised, or a thrown assertion — so a test can read `.code` without a cast in the body. */
+function refusalOf(call: () => unknown): { code?: string; message: string } {
+	try {
+		call();
+	} catch (error) {
+		const typed = error as { code?: string; message: string };
+		return { code: typed.code, message: typed.message };
+	}
+	throw new Error("expected a refusal, got a parse");
+}
+
+function candidateFile(payload: CandidatePayload): string {
+	return JSON.stringify(payload);
+}
+
+function candidate(kind: string, overrides: Partial<Candidate> = {}): Candidate {
+	return { eventId: `run-1:${kind}:1`, kind, runId: "run-1", ts: "2026-11-21T04:00:00Z", count: 1, class: null, dismissed: null, ...overrides };
+}
+
+describe("friction-disposition — case 18: the producer's kinds and vias", () => {
+	let dir: string;
+	let ledger: string;
+	let log: string;
+	let states: string;
+
+	beforeAll(() => {
+		dir = mkdtempSync(join(tmpdir(), "fd-kinds-"));
+		ledger = join(dir, "ledger.md");
+		log = join(dir, "log.md");
+		writeFileSync(
+			ledger,
+			mkLedger(
+				[{ cycle: "fixture-574", from: 1, to: 1 }],
+				[{ cycle: "fixture-574", class: "a", rows: "1", disposition: "folded into #548", issue: "#548 open" }],
+			),
+		);
+		writeFileSync(log, mkLog(["one"]));
+		states = statesFile(dir, { 548: "OPEN" });
+	});
+
+	afterAll(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	/** The shipped expectation, every candidate disposed into the ledger's one class. */
+	function disposedFixture(name: string, mutate: (payload: CandidatePayload) => void = () => {}): string {
+		const payload = JSON.parse(readFileSync(FIXTURE_FILE, "utf8")) as CandidatePayload;
+		for (const entry of payload.candidates) entry.class = "a";
+		mutate(payload);
+		const path = join(dir, `${name}.json`);
+		writeFileSync(path, JSON.stringify(payload));
+		return path;
+	}
+
+	const argv = (candidates: string) => ["--check", "--cycle", "fixture-574", "--ledger", ledger, "--log", log, "--states", states, "--candidates", candidates];
+
+	it("accepts every kind the producer emits, and both retry vias", () => {
+		const kinds = [
+			candidate("failed"),
+			candidate("deadline"),
+			candidate("stop"),
+			candidate("steer"),
+			candidate("retry", { via: "transport" }),
+			candidate("retry", { eventId: "run-1:retry:2", via: "explicit" }),
+		];
+		const parsed = parseCandidates(candidateFile({ version: 1, cycle: "fixture-574", claimedLive: true, candidates: kinds }), "fixture-574");
+		expect(parsed.candidates.map((entry: Candidate) => `${entry.kind}${entry.via ? `/${entry.via}` : ""}`)).toEqual([
+			"failed",
+			"deadline",
+			"stop",
+			"steer",
+			"retry/transport",
+			"retry/explicit",
+		]);
+	});
+
+	it("refuses an unknown via value with candidate-via-kind", () => {
+		const refused = refusalOf(() =>
+			parseCandidates(candidateFile({ version: 1, cycle: "fixture-574", claimedLive: true, candidates: [candidate("retry", { via: "bogus" })] }), "fixture-574"),
+		);
+		expect(refused.code).toBe("candidate-via-kind");
+		expect(refused.message).toContain('via "bogus"');
+	});
+
+	it("refuses via on a non-retry kind with candidate-via-kind", () => {
+		for (const kind of ["failed", "deadline", "stop", "steer"]) {
+			const refused = refusalOf(() =>
+				parseCandidates(candidateFile({ version: 1, cycle: "fixture-574", claimedLive: true, candidates: [candidate(kind, { via: "transport" })] }), "fixture-574"),
+			);
+			expect(refused.code).toBe("candidate-via-kind");
+			expect(refused.message).toContain("only meaningful on a retry");
+		}
+	});
+
+	it("still parses an old file with no via anywhere (the pre-#574 shape)", () => {
+		const parsed = parseCandidates(
+			candidateFile({ version: 1, cycle: "fixture-574", claimedLive: true, candidates: [candidate("failed"), candidate("stop")] }),
+			"fixture-574",
+		);
+		expect(parsed.candidates).toHaveLength(2);
+		expect(parsed.candidates.every((entry: Candidate) => !("via" in entry))).toBe(true);
+	});
+
+	it("the shipped fixture carries all five kinds and both retry vias", () => {
+		const payload = JSON.parse(readFileSync(FIXTURE_FILE, "utf8")) as CandidatePayload;
+		expect([...new Set(payload.candidates.map((entry) => entry.kind))].sort()).toEqual(["deadline", "failed", "retry", "steer", "stop"]);
+		expect([...new Set(payload.candidates.filter((entry) => entry.kind === "retry").map((entry) => entry.via))].sort()).toEqual([
+			"explicit",
+			"transport",
+		]);
+	});
+
+	it("round trip: all 7 disposed → exit 0", () => {
+		const result = runCli(argv(disposedFixture("all-disposed")));
+		expect(result.code).toBe(EXIT.OK);
+		expect(result.out).toContain("candidates: 7 (cited 7, dismissed 0)");
+	});
+
+	it("round trip: one candidate left unset → exit 1 naming that eventId", () => {
+		const target = "acce0602-5d86-4251-a1ee-82c89664acfe:deadline:1";
+		const result = runCli(
+			argv(
+				disposedFixture("one-unset", (payload) => {
+					const entry = payload.candidates.find((each) => each.eventId === target);
+					if (entry) entry.class = null;
+				}),
+			),
+		);
+		expect(result.code).toBe(EXIT.LEDGER);
+		expect(result.err).toContain("neither a class nor a dismissal");
+		expect(result.err).toContain(target);
+	});
+
+	it("round trip: a duplicated candidate → exit 2", () => {
+		const result = runCli(
+			argv(
+				disposedFixture("duplicate", (payload) => {
+					payload.candidates.push({ ...payload.candidates[0] });
+				}),
+			),
+		);
+		expect(result.code).toBe(EXIT.CANNOT_CHECK);
+		expect(result.err).toContain("duplicate eventId");
+	});
+});
+
+// ---------------------------------------------------------------------------
 // §9 boundaries — a stub `gh` on PATH, one variant per discriminator. No network.
 // ---------------------------------------------------------------------------
 

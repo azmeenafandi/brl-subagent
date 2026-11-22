@@ -912,14 +912,17 @@ describe("main — the two streams and the exit codes", () => {
 	it("measures the skills surface on the real tree — no reference, no floor, the flow is the gate", () => {
 		// The corpus is the issue's own enumeration (7 entry `.sh` + `lib/version-skew.sh`, 2 `.py`,
 		// 1 `.mjs`). A new worktree script joins this number; a test file does not move it.
+		// Re-pointed by the friction-candidates reader (issue #574): `sprint-metrics.py` grew by the
+		// derivation and its self-test, and the surface is measured, so the pin follows the file.
+		const SKILLS_SOURCE_LOC = 7522;
 		const measured = measureSurface(surface("skills"), ROOT);
-		expect(measured.sourceLoc).toBe(6950);
+		expect(measured.sourceLoc).toBe(SKILLS_SOURCE_LOC);
 		expect(measured.reference).toBeNull();
 		expect(measured.warnAt).toBeNull();
-		// The EXACT line, so a formatted ratio cannot be a constant: `testLoc / 6950`, two decimals.
+		// The EXACT line, so a formatted ratio cannot be a constant: `testLoc / 7522`, two decimals.
 		expect(formatSurface(measured)).toBe(
-			`test-budget: skills ${(measured.testLoc / 6950).toFixed(2)} ` +
-				`(${measured.testLoc} test / 6950 source LOC, reference none (flow-gated))`,
+			`test-budget: skills ${(measured.testLoc / SKILLS_SOURCE_LOC).toFixed(2)} ` +
+				`(${measured.testLoc} test / ${SKILLS_SOURCE_LOC} source LOC, reference none (flow-gated))`,
 		);
 	});
 

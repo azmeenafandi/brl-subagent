@@ -14,7 +14,8 @@ Usage:
   python3 sprint-metrics.py [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--log <path>]
                             [--spawn-log <path>] [--out .development/METRICS.md]
                             [--sprint "2026-08-16"]
-  python3 sprint-metrics.py --selftest   # window-boundary + reconcile guard (CI-wired)
+  python3 sprint-metrics.py --candidates <path> [--sprint <cycle>] [--since ..] [--until ..]
+  python3 sprint-metrics.py --selftest   # window-boundary + reconcile + candidates guard (CI-wired)
 
 Defaults: --since = today-1 day (covers the current sprint's work), --log = every session
 log for this project, --spawn-log = <cwd>/.pi/subagent-logs/brl-subagent.log
@@ -30,6 +31,18 @@ Data sources (all automatic, no human entries):
   - brl-subagent-run custom entries     → success/failed/stopped rates, retry success,
                                           zero-work rate (done + empty fullOutput)
   - get_subagent_result toolCall events → polling frequency (babysitting proxy)
+
+Friction candidates (issue #574; `--candidates <path>`): the six kinds — `failed`,
+`deadline`, `retry` (via transport or explicit), `stop`, `steer` — derived from the
+two logs and written as the consumer-v1 payload `scripts/friction-disposition.mjs`
+reads. Every candidate cites the PHYSICAL source line (`session-log:<file>:<line>`)
+and that line's sha256 prefix, so the close can re-read its evidence. Candidates
+mode REFUSES (exit 2, no file written) when a session or spawn source is missing or
+unreadable: a derived figure with no evidence behind it is worse than none. The
+legacy metrics path still fails open on a missing log.
+
+Exit codes: 0 ok · 1 no session logs (metrics) · 2 selftest failure, or a missing
+candidates source · 3 reconcile failed.
 
 Dispatch counting rules (issue #489):
   - A codemode toolCall counts one dispatch per CALL-SHAPED occurrence of
@@ -51,14 +64,13 @@ units beyond the first; both are counted, so the allowance is derived, not guess
 A negative Δ (a counted dispatch produced no spawn) or a Δ above that allowance is a
 LOUD failure: a named `RECONCILE FAILED:` line, no row appended, exit 3.
 
-Exit codes: 0 ok · 1 no session logs · 2 selftest failure · 3 reconcile failed.
-
 The output table is designed to be appended to .development/METRICS.md (one row per
 sprint — the only manual step, sharing the friction-log review cadence).
 """
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
@@ -81,6 +93,16 @@ SPAWN_LOG_ROTATED = 5  # src/logging.ts keeps brl-subagent.log.1 .. .5
 BG_SPAWN_MESSAGE = "Background agent spawned"
 FG_SPAWN_MESSAGE = "Starting subagent process"
 RETRY_SPAWN_MESSAGE = "Background run settled — transport auto-retry scheduled"
+
+# Friction candidates (issue #574). A stop call OWNS the abort it caused inside
+# this interval (inclusive both ends); the causal margin is loaded on both sides
+# of a requested window so a join just outside it cannot change an inside
+# classification (§2.1 R2/R6).
+DEDUPE_MS = 2000
+CAUSAL_MARGIN_MS = 2 * DEDUPE_MS
+SESSION_SOURCE = "session-log"
+SPAWN_SOURCE = "spawn-log"
+CANDIDATE_VERSION = 1
 
 # A codemode script is the only record of a codemode-issued dispatch, so the scan
 # is textual — deliberately narrow: an identifier boundary (so `mydelegate_task(`
@@ -115,6 +137,30 @@ def _parse_ts(value):
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
+def _window_start(bound):
+    """The inclusive lower instant of a window bound (None when unparseable).
+
+    A date-only bound starts at 00:00:00 of its day; a time-suffixed bound IS the
+    instant.
+    """
+    moment = _parse_ts(bound)
+    if moment is None:
+        return None
+    if len(str(bound).strip()) <= 10:
+        return moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    return moment
+
+
+def _window_end(bound):
+    """The inclusive upper instant of a window bound (None when unparseable)."""
+    moment = _parse_ts(bound)
+    if moment is None:
+        return None
+    if len(str(bound).strip()) <= 10:
+        return moment.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return moment
+
+
 def in_range(ts: str, since: str, until: str) -> bool:
     """True if ts falls in [since, until] — TRUE timestamp comparison.
 
@@ -128,15 +174,11 @@ def in_range(ts: str, since: str, until: str) -> bool:
     to true timestamps (2026-10-14).
     """
     t = _parse_ts(ts)
-    s = _parse_ts(since)
-    u = _parse_ts(until)
-    if t is None or s is None or u is None:
+    start = _window_start(since)
+    end = _window_end(until)
+    if t is None or start is None or end is None:
         return False
-    if len(str(since).strip()) <= 10:
-        s = s.replace(hour=0, minute=0, second=0, microsecond=0)
-    if len(str(until).strip()) <= 10:
-        u = u.replace(hour=23, minute=59, second=59, microsecond=999999)
-    return s <= t <= u
+    return start <= t <= end
 
 
 # Boundary self-test (issue #336, Rule 11 mechanical guard).
@@ -275,10 +317,18 @@ def run_reconcile_case(case):
 
 
 def run_selftest() -> int:
-    """Exercise the window parser's boundaries and the reconcile; 1 on failure."""
-    total = len(SELFTEST_CASES) + len(RECONCILE_SELFTEST_CASES)
+    """Exercise the window boundaries, the reconcile, and the candidates; 1 on failure.
+
+    The legacy 21 cases keep their names, order and pass line; the candidate
+    checks (corpus + boundary fixtures) follow, so one command proves the
+    extractor and the derivation it feeds (#574).
+    """
+    candidate_checks = run_candidate_selftest()
+    legacy_total = len(SELFTEST_CASES) + len(RECONCILE_SELFTEST_CASES)
+    total = legacy_total + len(candidate_checks)
     print(f"sprint-metrics --selftest: {len(SELFTEST_CASES)} boundary cases "
-          f"+ {len(RECONCILE_SELFTEST_CASES)} reconcile cases")
+          f"+ {len(RECONCILE_SELFTEST_CASES)} reconcile cases "
+          f"+ {len(candidate_checks)} candidate cases ({legacy_total} legacy)")
     failures = 0
     for name, ts, since, until, expected in SELFTEST_CASES:
         got = in_range(ts, since, until)
@@ -292,6 +342,11 @@ def run_selftest() -> int:
         mark = "✓" if ok else "✗"
         detail = f"{line} — {reason}" + (f" [{', '.join(problems)}]" if problems else "")
         print(f"  {mark} {case[0]}: {detail}")
+        if not ok:
+            failures += 1
+    for name, ok, detail in candidate_checks:
+        mark = "✓" if ok else "✗"
+        print(f"  {mark} {name}: {detail}")
         if not ok:
             failures += 1
     status = "PASS" if failures == 0 else "FAIL"
@@ -336,53 +391,97 @@ def codemode_dispatches(code: str):
     return flags
 
 
-def load_events(log_paths, since, until):
-    """Yield (kind, payload, ts) for every relevant event in range."""
-    for path in log_paths:
+def _line_digest(raw: bytes) -> str:
+    """The first 16 hex of a log line's sha256 — the line's bytes, newline excluded.
+
+    The contract is bytes, not text: the line as stored, UTF-8, WITHOUT its
+    trailing newline. A citation (file, line, digest) then survives a re-read and
+    a rewritten log cannot silently re-point it (#574 §2.2).
+    """
+    return hashlib.sha256(raw.rstrip(b"\r\n")).hexdigest()[:16]
+
+
+def iter_rows(paths):
+    """Yield `(row, file, line, digest)` for every parseable JSON line in `paths`.
+
+    One reader for BOTH log families (issue #574 §2.2): both are one JSON object
+    per line, so the provenance the candidates need — the physical file basename
+    (a rotation suffix is part of the name), the 1-based line, and the line's
+    digest — is retained here and nowhere else. A missing or unreadable file is
+    SKIPPED: the legacy metrics path fails open. Candidates mode checks
+    readability first and refuses with exit 2 (§2.6).
+    """
+    for path in paths:
         try:
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    ts = iso_ts(d.get("timestamp"))
-                    if not in_range(ts, since, until):
-                        continue
-
-                    # Run entries (custom type) — the settlement record
-                    if d.get("type") == "custom" and d.get("customType") == "brl-subagent-run":
-                        yield ("run", d.get("data") or {}, ts)
-                        continue
-
-                    # Tool calls (delegate_task, codemode, get_subagent_result, steer, stop)
-                    msg = d.get("message") or {}
-                    for c in msg.get("content") or []:
-                        if not isinstance(c, dict) or c.get("type") != "toolCall":
-                            continue
-                        name = c.get("name")
-                        args = c.get("arguments") or {}
-                        if name == "delegate_task":
-                            yield ("dispatch", {**args, "_call_id": c.get("id"), "_route": "direct"}, ts)
-                        elif name == "codemode":
-                            # Issue #489: a dispatch issued from inside a codemode
-                            # script is a codemode toolCall, so the direct scan could
-                            # never see it.
-                            for background in codemode_dispatches(args.get("code") or ""):
-                                yield ("dispatch", {"_call_id": c.get("id"),
-                                                    "_route": "codemode",
-                                                    "background": background}, ts)
-                        elif name == "get_subagent_result":
-                            yield ("poll", args, ts)
-                        elif name == "steer_subagent":
-                            yield ("steer", args, ts)
-                        elif name == "stop_subagent":
-                            yield ("stop", args, ts)
-        except FileNotFoundError:
+            handle = open(path, "rb")
+        except OSError:
             continue
+        with handle:
+            for line_no, raw in enumerate(handle, 1):
+                body = raw.rstrip(b"\r\n")
+                if not body.strip():
+                    continue
+                try:
+                    row = json.loads(body.decode("utf-8", errors="replace"))
+                except json.JSONDecodeError:
+                    continue
+                yield row, os.path.basename(path), line_no, _line_digest(raw)
+
+
+def load_events(log_paths, since, until):
+    """Yield (kind, payload, ts) for every relevant event in range.
+
+    Each payload carries its provenance — `_file`, `_line`, `_digest` — so a
+    derived candidate can cite the physical line it came from without a second
+    read (#574 §2.2, §3 T1b).
+    """
+    for d, file_name, line_no, digest in iter_rows(log_paths):
+        ts = iso_ts(d.get("timestamp"))
+        if not in_range(ts, since, until):
+            continue
+        provenance = {"_file": file_name, "_line": line_no, "_digest": digest}
+
+        # Run entries (custom type) — the settlement record
+        if d.get("type") == "custom" and d.get("customType") == "brl-subagent-run":
+            yield ("run", {**(d.get("data") or {}), **provenance}, ts)
+            continue
+
+        # Tool calls (delegate_task, codemode, get_subagent_result, steer, stop)
+        msg = d.get("message") or {}
+        for c in msg.get("content") or []:
+            if not isinstance(c, dict) or c.get("type") != "toolCall":
+                continue
+            name = c.get("name")
+            args = c.get("arguments") or {}
+            if name == "delegate_task":
+                yield ("dispatch", {**args, "_call_id": c.get("id"), "_route": "direct", **provenance}, ts)
+            elif name == "codemode":
+                # Issue #489: a dispatch issued from inside a codemode
+                # script is a codemode toolCall, so the direct scan could
+                # never see it.
+                for background in codemode_dispatches(args.get("code") or ""):
+                    yield ("dispatch", {"_call_id": c.get("id"),
+                                        "_route": "codemode",
+                                        "background": background, **provenance}, ts)
+            elif name == "get_subagent_result":
+                yield ("poll", {**args, **provenance}, ts)
+            elif name == "steer_subagent":
+                yield ("steer", {**args, **provenance}, ts)
+            elif name == "stop_subagent":
+                yield ("stop", {**args, **provenance}, ts)
+
+
+def load_spawn_rows(spawn_paths, since, until):
+    """Yield the spawn log's rows in range, each carrying its `(file, line, digest)`.
+
+    The spawn log's shape is not the session log's — `message` + `data`, no
+    toolCall blocks — so it keeps a reader of its own; the provenance contract is
+    the session reader's, and both come from `iter_rows`.
+    """
+    for row, file_name, line_no, digest in iter_rows(spawn_paths):
+        if not in_range(iso_ts(row.get("timestamp")), since, until):
+            continue
+        yield {**row, "_file": file_name, "_line": line_no, "_digest": digest}
 
 
 def compute(events):
@@ -569,41 +668,23 @@ def read_spawn_starts(spawn_paths, since, until):
     runner). Transport auto-retry starts ALSO arrive as `Background agent spawned`
     events, so they are counted separately as the surplus the reconcile allows.
     """
-    found = False
-    files = 0
+    present = [path for path in spawn_paths if os.path.exists(path)]
     bg_ids = set()
     fg = 0
     retry_starts = 0
-    for path in spawn_paths:
-        if not os.path.exists(path):
+    for row, file_name, line_no, _digest in iter_rows(present):
+        if not in_range(iso_ts(row.get("timestamp")), since, until):
             continue
-        found = True
-        files += 1
-        try:
-            handle = open(path, encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        with handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not in_range(iso_ts(d.get("timestamp")), since, until):
-                    continue
-                message = d.get("message")
-                data = d.get("data") or {}
-                if message == BG_SPAWN_MESSAGE:
-                    bg_ids.add(data.get("agentId") or f"{path}:{d.get('timestamp')}")
-                elif message == FG_SPAWN_MESSAGE:
-                    fg += 1
-                elif message == RETRY_SPAWN_MESSAGE:
-                    retry_starts += 1
-    return {"found": found, "files": files, "background": len(bg_ids), "foreground": fg,
-            "spawns": len(bg_ids) + fg, "retry_starts": retry_starts}
+        message = row.get("message")
+        data = row.get("data") or {}
+        if message == BG_SPAWN_MESSAGE:
+            bg_ids.add(data.get("agentId") or f"{file_name}:{line_no}")
+        elif message == FG_SPAWN_MESSAGE:
+            fg += 1
+        elif message == RETRY_SPAWN_MESSAGE:
+            retry_starts += 1
+    return {"found": bool(present), "files": len(present), "background": len(bg_ids),
+            "foreground": fg, "spawns": len(bg_ids) + fg, "retry_starts": retry_starts}
 
 
 def reconcile(m, spawn_paths, since, until):
@@ -645,6 +726,491 @@ def reconcile(m, spawn_paths, since, until):
     return True, f"Δ {m['delta']} within allowance {m['allowance']}"
 
 
+# ---------------------------------------------------------------------------
+# Friction candidates (issue #574) — the six kinds, derived from the two logs.
+#
+# The reader retains (file, line, digest) per row; this section turns rows into
+# candidates under §2.1's rules and renders the consumer-v1 payload (§2.2).
+# ---------------------------------------------------------------------------
+
+
+class SourceError(Exception):
+    """A candidates-mode source is missing or unreadable — exit 2, no file written."""
+
+
+def _ms(value):
+    """Epoch milliseconds for an ISO instant (None when unparseable)."""
+    moment = _parse_ts(value)
+    return None if moment is None else int(round(moment.timestamp() * 1000))
+
+
+def _source(label, file_name, line_no):
+    """`<prefix>:<file>:<line>` — the PHYSICAL file, so a rotation cannot alias a line."""
+    return f"{label}:{file_name}:{line_no}"
+
+
+def require_readable(paths, label):
+    """Prove every path in `paths` can be opened; raise SourceError naming the one that cannot.
+
+    Candidates mode refuses (exit 2) on a missing or unreadable source: a derived
+    figure with no evidence behind it is worse than no figure (§2.6). The legacy
+    metrics path does not call this — it keeps failing open.
+    """
+    if not paths:
+        raise SourceError(f"{label}: no source to read")
+    for path in paths:
+        try:
+            with open(path, "rb"):
+                pass
+        except OSError as exc:
+            raise SourceError(f"{label}: {path} is missing or unreadable ({exc.strerror or exc})") from exc
+    return list(paths)
+
+
+def _causal_window(since, until):
+    """The requested window widened by CAUSAL_MARGIN_MS on both sides (§2.1 R6).
+
+    A stop owns an abort up to DEDUPE_MS before it, and a retry call precedes its
+    spawn; both joins must see rows just outside the requested window or an event
+    at the edge is misclassified. Widening is the LOAD bound only — emission is
+    still decided per candidate, by its own timestamp.
+    """
+    start = _window_start(since)
+    end = _window_end(until)
+    if start is None or end is None:
+        return since, until
+    margin = timedelta(milliseconds=CAUSAL_MARGIN_MS)
+    return (start - margin).isoformat(), (end + margin).isoformat()
+
+
+def _collect_friction(events, spawn_rows):
+    """Split loaded rows into the sources each friction kind derives from.
+
+    Rows are NOT windowed here: the load already carries the causal margin, and
+    `derive_candidates` decides emission per candidate. Joins are by id only —
+    `agent_id`, a run id, `sourceId` — never by label (§2.1 R4).
+    """
+    runs, stops, steers, retry_calls, spawns, transport = [], [], [], [], [], []
+    for order, (kind, payload, ts) in enumerate(events):
+        base = {"ts": iso_ts(ts), "ts_ms": _ms(ts), "order": order,
+                "file": payload["_file"], "line": payload["_line"],
+                "digest": payload["_digest"], "label": SESSION_SOURCE}
+        if kind == "run":
+            run_id = payload.get("id")
+            if not run_id:
+                continue
+            # Any status counts as a spawn for R3 — a `running` entry is the
+            # earliest proof that a retry call was actually dispatched.
+            if payload.get("resumeOf"):
+                spawns.append({**base, "target": payload["resumeOf"]})
+            if payload.get("status") != "failed":
+                continue
+            # The run store's status union has no `stopped`: every stop outcome is
+            # `failed` + an errorCategory, so these two tests cover the run kinds.
+            runs.append({**base, "runId": run_id,
+                         "kind": "deadline" if payload.get("errorCategory") == "timeout" else "failed",
+                         "synthetic": payload.get("synthetic") is True})
+        elif kind in ("stop", "steer"):
+            run_id = payload.get("agent_id")
+            if not run_id:
+                continue
+            (stops if kind == "stop" else steers).append({**base, "runId": run_id, "kind": kind})
+        elif kind == "dispatch" and payload.get("_route") == "direct" and payload.get("retryRunId"):
+            retry_calls.append({**base, "runId": payload["retryRunId"],
+                                "retryRunId": payload["retryRunId"],
+                                "kind": "retry", "via": "explicit"})
+    # Spawn rows sort after every session event: one shared (ts, source order) key.
+    for order, row in enumerate(spawn_rows, start=len(events)):
+        data = row.get("data") or {}
+        ts = iso_ts(row.get("timestamp"))
+        base = {"ts": ts, "ts_ms": _ms(ts), "order": order,
+                "file": row["_file"], "line": row["_line"],
+                "digest": row["_digest"], "label": SPAWN_SOURCE}
+        if row.get("message") == RETRY_SPAWN_MESSAGE and data.get("sourceId"):
+            # A transport retry names the DEAD run in `sourceId`; `agentId` on the
+            # same row is the new run, so reading it would mis-attribute (T5).
+            transport.append({**base, "runId": data["sourceId"],
+                              "kind": "retry", "via": "transport"})
+        if data.get("resumeOf"):
+            spawns.append({**base, "target": data["resumeOf"]})
+    return {"runs": runs, "stops": stops, "steers": steers,
+            "retry_calls": retry_calls, "spawns": spawns, "transport": transport}
+
+
+def _order_of(entry):
+    """A row's position in the log: `(ts, source order)` — the one tiebreak every join uses.
+
+    Rows are enumerated across both files (spawn rows after session events), so a
+    duplicate timestamp still has a stable, evidence-based order.
+    """
+    return (entry["ts_ms"] or 0, entry["order"])
+
+
+def _emission_key(entry):
+    """Where a candidate lands in the payload: `(ts, kind, runId, source order)` (§2.1 R5/R6).
+
+    Distinct from `_order_of` on purpose — ordinal assignment is per `(runId, kind)` in
+    source order, while emission is by kind first, so the two orders cannot be folded
+    into one key without changing what the payload says.
+    """
+    return (entry["ts_ms"] or 0, entry["kind"], entry["runId"], entry["order"])
+
+
+def _owning_stop(run, stops):
+    """The NEAREST PRECEDING stop that owns this abort (§2.1 R2), or None.
+
+    The interval is inclusive at both ends: a stop 2000 ms before the abort owns
+    it, 2001 ms does not, and a stop AFTER the abort owns nothing. Nearest — not
+    first — preceding, so a second stop on the same run is the owner.
+    """
+    best = None
+    for stop in stops:
+        if stop["runId"] != run["runId"]:
+            continue
+        delta = (run["ts_ms"] or 0) - (stop["ts_ms"] or 0)
+        if delta < 0 or delta > DEDUPE_MS:
+            continue
+        if best is None or _order_of(stop) > _order_of(best):
+            best = stop
+    return best
+
+
+def _paired_retries(retry_calls, spawns):
+    """The explicit retries that actually spawned a run — one per retried run (§2.1 R3).
+
+    A retry needs a spawn of ANY status (a `running` entry is enough); the call
+    that owns it is the LAST one strictly before the EARLIEST spawn, so a second
+    call collapses onto the first, and a later spawn never re-attributes an
+    earlier call. No spawn at all is a refused dispatch, not a candidate.
+    """
+    earliest = {}
+    for spawn in spawns:
+        prev = earliest.get(spawn["target"])
+        if prev is None or _order_of(spawn) < _order_of(prev):
+            earliest[spawn["target"]] = spawn
+    paired = {}
+    for call in retry_calls:
+        spawn = earliest.get(call["retryRunId"])
+        if spawn is None:
+            continue
+        if call["ts_ms"] >= spawn["ts_ms"]:
+            continue
+        prev = paired.get(call["retryRunId"])
+        if prev is None or _order_of(call) > _order_of(prev):
+            paired[call["retryRunId"]] = call
+    return list(paired.values())
+
+
+def _render_candidate(entry, ordinal):
+    """One payload entry — keys in the producer's order, so the render is byte-stable."""
+    candidate = {
+        "eventId": f"{entry['runId']}:{entry['kind']}:{ordinal}",
+        "kind": entry["kind"],
+        "runId": entry["runId"],
+        "ts": entry["ts"],
+        "class": None,
+        "count": 1,
+        "source": _source(entry["label"], entry["file"], entry["line"]),
+        "digest": entry["digest"],
+        "dismissed": None,
+    }
+    if entry.get("via"):
+        candidate["via"] = entry["via"]
+    if entry.get("synthetic"):
+        candidate["synthetic"] = True
+    return candidate
+
+
+def derive_candidates(sources, since, until):
+    """The ordered candidate list — §2.1 R1 (dedupe), R2 (ownership), R5 (identity/order).
+
+    Emission is per candidate: its own timestamp must lie in [since, until], so a
+    margin row can inform a classification without appearing in the payload.
+    """
+    def in_window(ts):
+        return in_range(ts, since, until)
+
+    terminal = {}
+    for run in sources["runs"]:
+        key = (run["runId"], run["kind"])
+        prev = terminal.get(key)
+        if prev is None or _order_of(run) >= _order_of(prev):
+            terminal[key] = run
+
+    owned = {(run["runId"], run["kind"]) for run in terminal.values()
+             if run["kind"] == "failed" and _owning_stop(run, sources["stops"])}
+
+    emitted = [run for key, run in terminal.items() if key not in owned]
+    emitted += [call for call in sources["stops"] if in_window(call["ts"])]
+    emitted += [call for call in sources["steers"] if in_window(call["ts"])]
+    emitted += [row for row in sources["transport"] if in_window(row["ts"])]
+    emitted += [call for call in _paired_retries(sources["retry_calls"], sources["spawns"])
+                if in_window(call["ts"])]
+
+    # R5: the ordinal is per (runId, kind) in (ts, source order); the payload is
+    # ordered by (ts, kind, runId) — the last tiebreak is the source order, so two
+    # runs over the same input are byte-identical.
+    grouped = defaultdict(list)
+    for entry in emitted:
+        grouped[(entry["runId"], entry["kind"])].append(entry)
+    rendered = []
+    for group in grouped.values():
+        group.sort(key=_order_of)
+        for ordinal, entry in enumerate(group, 1):
+            key = _emission_key(entry)
+            rendered.append((key, _render_candidate(entry, ordinal)))
+    rendered.sort(key=lambda pair: pair[0])
+    return [candidate for _key, candidate in rendered]
+
+
+def build_candidates_payload(session_paths, spawn_paths, since, until, cycle):
+    """The consumer-v1 payload (§2.2) for one window: derived, never hand-written."""
+    load_since, load_until = _causal_window(since, until)
+    events = list(load_events(session_paths, load_since, load_until))
+    spawn_rows = list(load_spawn_rows(spawn_paths, load_since, load_until))
+    sources = _collect_friction(events, spawn_rows)
+    return {
+        "version": CANDIDATE_VERSION,
+        "cycle": cycle,
+        "claimedLive": False,
+        "candidates": derive_candidates(sources, since, until),
+    }
+
+
+def render_candidates(payload):
+    """The payload as the file it becomes — 2-space JSON plus one trailing newline."""
+    return json.dumps(payload, indent=2) + "\n"
+
+
+def write_candidates(path, payload):
+    """Write the payload atomically: a sibling temp file, then one `os.replace`.
+
+    A reader (the close gate) never sees a half-written file, and a failed run
+    leaves the previous file — or no file — rather than a truncated one.
+    """
+    out = Path(path)
+    handle, temp_path = tempfile.mkstemp(dir=str(out.parent or Path(".")), prefix=f".{out.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(render_candidates(payload))
+        os.replace(temp_path, out)
+    except BaseException:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
+    return out
+
+
+def run_candidates(args) -> int:
+    """`--candidates <path>` — exit 2 (and write nothing) when a source cannot be read."""
+    cycle = args.sprint or args.since
+    session_paths = args.log or sorted(glob.glob(SESSION_GLOB))
+    spawn_paths = args.spawn_log or default_spawn_logs()
+    try:
+        # A default spawn family is six paths of which only the live file must
+        # exist; an explicitly named source must be readable, every one of them.
+        require_readable(session_paths, SESSION_SOURCE)
+        require_readable(spawn_paths if args.spawn_log else spawn_paths[:1], SPAWN_SOURCE)
+    except SourceError as exc:
+        print(f"sprint-metrics --candidates: {exc}", file=sys.stderr)
+        return 2
+    payload = build_candidates_payload(session_paths, spawn_paths, args.since, args.until, cycle)
+    written = write_candidates(args.candidates, payload)
+    print(f"candidates: {len(payload['candidates'])} → {written}")
+    return 0
+
+
+# Candidates self-test (issue #574). The corpus is resolved from THIS FILE, so
+# the CI-wired `--selftest` runs from any cwd; the unit fixtures are temp dirs,
+# so a boundary case never depends on the real logs.
+CORPUS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "__tests__", "fixtures", "friction-candidates")
+CORPUS_WINDOW = ("2026-11-21", "2026-11-22")
+CORPUS_CYCLE = "fixture-574"
+
+
+def _line_body(path, line_no):
+    """The on-disk bytes of one line, its newline excluded."""
+    with open(path, "rb") as handle:
+        for index, raw in enumerate(handle, 1):
+            if index == line_no:
+                return raw.rstrip(b"\r\n")
+    return b""
+
+
+def _ts_at(offset_ms):
+    """An ISO instant `offset_ms` after the fixture base (millisecond precision)."""
+    moment = _parse_ts(SELFTEST_TS) + timedelta(milliseconds=offset_ms)
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _run_row(ts, run_id="run-1", status="failed", category=None, resume_of=None, synthetic=False):
+    """A session-log run entry, rebuilt from an allowlist — no free text."""
+    data = {"id": run_id, "model": "fixture", "startedAt": ts, "status": status}
+    if category:
+        data["errorCategory"] = category
+    if resume_of:
+        data["resumeOf"] = resume_of
+    if synthetic:
+        data["synthetic"] = True
+    return {"type": "custom", "customType": "brl-subagent-run", "timestamp": ts, "data": data}
+
+
+def _call_row(ts, name, arguments, call_id="call-1"):
+    """A toolCall row in the production envelope, so the real decoder reads it."""
+    return {"timestamp": ts, "message": {"role": "assistant", "content": [
+        {"type": "toolCall", "id": call_id, "name": name, "arguments": arguments}]}}
+
+
+def _spawn_row(ts, message, **data):
+    """A spawn-log row (the extension's `message` + `data` shape)."""
+    return {"timestamp": ts, "level": "info", "prefix": "brl-subagent",
+            "message": message, "data": data}
+
+
+def _candidate_fixture(session_entries, spawn_entries):
+    """Derive the payload for one in-memory fixture pair (a temp dir, cleaned up)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        session_path = os.path.join(tmp, "session.jsonl")
+        spawn_path = os.path.join(tmp, "spawn.log")
+        _write_jsonl(session_path, session_entries)
+        _write_jsonl(spawn_path, spawn_entries)
+        return build_candidates_payload([session_path], [spawn_path], *SELFTEST_WINDOW, cycle="unit")
+
+
+def _kinds(payload):
+    return [candidate["kind"] for candidate in payload["candidates"]]
+
+
+def _first_mismatch(got, want):
+    """Name the first differing candidate — a mismatch must print its eventId."""
+    got_list = got.get("candidates") or []
+    want_list = want.get("candidates") or []
+    for index in range(max(len(got_list), len(want_list))):
+        left = got_list[index] if index < len(got_list) else None
+        right = want_list[index] if index < len(want_list) else None
+        if left != right:
+            return (f"candidates[{index}]: got {json.dumps(left, sort_keys=True)} "
+                    f"want {json.dumps(right, sort_keys=True)}")
+    header = {key: value for key, value in got.items() if key != "candidates"}
+    return f"header differs: {json.dumps(header, sort_keys=True)}"
+
+
+def _candidate_checks():
+    """The corpus assertions and the R2/R3 boundary fixtures (§3 T1–T4d, T8)."""
+    checks = []
+    session_path = os.path.join(CORPUS_DIR, "session.jsonl")
+    spawn_path = os.path.join(CORPUS_DIR, "spawn.log")
+    expected_path = os.path.join(CORPUS_DIR, "expected-candidates.json")
+
+    events = list(load_events([session_path], *CORPUS_WINDOW))
+    counts = Counter(kind for kind, _payload, _ts in events)
+    want_counts = Counter({"run": 17, "dispatch": 2, "steer": 1, "stop": 1})
+    checks.append(("corpus: the production decoder reads every row",
+                   counts == want_counts, str(dict(sorted(counts.items())))))
+
+    bad = [f"{kind}@line {payload['_line']}" for kind, payload, _ts in events
+           if payload.get("_file") != "session.jsonl"
+           or hashlib.sha256(_line_body(session_path, payload["_line"])).hexdigest()[:16] != payload["_digest"]]
+    checks.append(("corpus: every event carries (file, line) and a digest over the line's bytes",
+                   not bad, ", ".join(bad) or f"{len(events)} events"))
+
+    payload = build_candidates_payload([session_path], [spawn_path], *CORPUS_WINDOW, cycle=CORPUS_CYCLE)
+    with open(expected_path, encoding="utf-8") as handle:
+        expected_text = handle.read()
+    expected = json.loads(expected_text)
+    checks.append(("corpus: the payload matches expected-candidates.json (full schema, ordered)",
+                   payload == expected,
+                   f"{len(payload['candidates'])} candidates" if payload == expected
+                   else _first_mismatch(payload, expected)))
+    checks.append(("corpus: the rendering is byte-identical to the expectation file",
+                   render_candidates(payload) == expected_text,
+                   f"{len(render_candidates(payload))} bytes"))
+
+    for delta in (-1, 0, 2000, 2001):
+        unit = _candidate_fixture(
+            [_call_row(_ts_at(0), "stop_subagent", {"agent_id": "run-1"}),
+             _run_row(_ts_at(delta), category="aborted")], [])
+        owned = delta in (0, 2000)
+        # Ownership, not ordering: the corpus assertion above pins the order.
+        want = ["stop"] if owned else ["failed", "stop"]
+        checks.append((f"R2 boundary: a stop {delta} ms before the abort "
+                       f"{'owns' if owned else 'does not own'} it",
+                       sorted(_kinds(unit)) == want, str(_kinds(unit))))
+
+    unit = _candidate_fixture(
+        [_call_row(_ts_at(0), "stop_subagent", {"agent_id": "run-1"}, call_id="call-1"),
+         _call_row(_ts_at(1000), "stop_subagent", {"agent_id": "run-1"}, call_id="call-2"),
+         _run_row(_ts_at(2400), category="aborted")], [])
+    checks.append(("R2 multi-stop: only the nearest preceding stop owns the abort",
+                   _kinds(unit) == ["stop", "stop"], str(_kinds(unit))))
+
+    unit = _candidate_fixture(
+        [_call_row(_ts_at(0), "delegate_task", {"retryRunId": "run-1", "background": True}, call_id="call-a"),
+         _call_row(_ts_at(1000), "delegate_task", {"retryRunId": "run-1", "background": True}, call_id="call-b"),
+         _run_row(_ts_at(2000), run_id="run-2", status="running", resume_of="run-1"),
+         _run_row(_ts_at(5000), run_id="run-3", status="running", resume_of="run-1")], [])
+    got = unit["candidates"]
+    checks.append(("R3: two calls collapse to the last one before the earliest spawn",
+                   _kinds(unit) == ["retry"] and bool(got) and got[0]["via"] == "explicit"
+                   and got[0]["source"] == "session-log:session.jsonl:2",
+                   f"{_kinds(unit)} {got[0]['source'] if got else 'none'}"))
+
+    unit = _candidate_fixture(
+        [_call_row(_ts_at(0), "delegate_task", {"retryRunId": "run-1"}),
+         _run_row(_ts_at(400), run_id="run-2", status="running", resume_of="run-1")], [])
+    checks.append(("R3: a running-only spawn still pairs the retry call",
+                   _kinds(unit) == ["retry"], str(_kinds(unit))))
+
+    unit = _candidate_fixture([_call_row(_ts_at(0), "delegate_task", {"retryRunId": "run-1"})], [])
+    checks.append(("R3: a refused retry call (no spawn at all) is not a candidate",
+                   _kinds(unit) == [], str(_kinds(unit))))
+
+    unit = _candidate_fixture(
+        [_call_row(_ts_at(0), "steer_subagent", {"agent_id": "run-1"}, call_id="call-1"),
+         _call_row(_ts_at(1000), "steer_subagent", {"agent_id": "run-1"}, call_id="call-2")], [])
+    ids = [candidate["eventId"] for candidate in unit["candidates"]]
+    checks.append(("R1: stop/steer are per call — two steers get ordinals 1 and 2",
+                   ids == ["run-1:steer:1", "run-1:steer:2"], str(ids)))
+
+    unit = _candidate_fixture([], [_spawn_row(_ts_at(0), RETRY_SPAWN_MESSAGE,
+                                            agentId="decoy", sourceId="run-1", attempt=2)])
+    got = unit["candidates"]
+    checks.append(("R4: a transport retry joins by sourceId, not agentId",
+                   len(got) == 1 and got[0]["runId"] == "run-1"
+                   and got[0]["via"] == "transport"
+                   and got[0]["source"] == "spawn-log:spawn.log:1",
+                   json.dumps(got, sort_keys=True) if got else "none"))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = os.path.join(tmp, "nope.jsonl")
+        empty_session = os.path.join(tmp, "session.jsonl")
+        empty_spawn = os.path.join(tmp, "spawn.log")
+        Path(empty_session).write_text("", encoding="utf-8")
+        Path(empty_spawn).write_text("", encoding="utf-8")
+        for label in (SESSION_SOURCE, SPAWN_SOURCE):
+            try:
+                require_readable([missing], label)
+                detail = "no SourceError raised"
+            except SourceError as exc:
+                detail = str(exc)
+            checks.append((f"refusal: a missing {label} source is named (exit 2, no file)",
+                           missing in detail, detail))
+        empty = build_candidates_payload([empty_session], [empty_spawn], *SELFTEST_WINDOW, cycle="unit")
+        checks.append(("refusal: empty-but-present sources yield [] and no error",
+                       empty["candidates"] == [] and empty["version"] == CANDIDATE_VERSION,
+                       str(empty["candidates"])))
+    return checks
+
+
+def run_candidate_selftest():
+    """The candidate checks; a broken fixture fails its case instead of crashing the run."""
+    try:
+        return _candidate_checks()
+    except Exception as exc:  # noqa: BLE001 — a named failure, never a stack trace
+        return [("candidate corpus", False, f"{type(exc).__name__}: {exc}")]
+
+
 def fmt_dispatches(m):
     """The reconcile line: `dispatches: N (direct A + codemode B) · spawns: M · Δ D`.
 
@@ -677,13 +1243,19 @@ def main():
                     help="explicit extension spawn-log path (repeatable; default: "
                          "<cwd>/.pi/subagent-logs/brl-subagent.log + rotated)")
     ap.add_argument("--sprint", default=None, help='cycle label for the METRICS.md row (historically "sprint"; default: since)')
+    ap.add_argument("--candidates", default=None,
+                    help="derive the friction candidates JSON into this path (exit 2, no file, "
+                         "when a session or spawn source is missing or unreadable)")
     ap.add_argument("--out", default=None, help="append the row to this file (e.g. .development/METRICS.md)")
     ap.add_argument("--selftest", action="store_true",
-                    help="run the window-boundary + reconcile self-test and exit (no logs needed)")
+                    help="run the window-boundary + reconcile + candidates self-test and exit (no logs needed)")
     args = ap.parse_args()
 
     if args.selftest:
         sys.exit(run_selftest())
+
+    if args.candidates:
+        sys.exit(run_candidates(args))
 
     log_paths = args.log or sorted(glob.glob(SESSION_GLOB))
     if not log_paths:
