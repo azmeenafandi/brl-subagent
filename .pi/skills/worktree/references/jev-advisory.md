@@ -83,12 +83,16 @@ disagreement with the plan means re-read the plan, not obey the model.
 ## The line — format it with the helper, never by hand
 
 The classifier's **raw response** is the input to `.pi/skills/worktree/jev-check.mjs --classifier`,
-which derives and prints the exact dispatch line (and refuses a level without a confidence):
+which derives and prints the exact dispatch line (and refuses a level without a confidence). Pass the
+**whole codemode response object** — `api`, `model`, a numeric `timestamp` and a non-zero `usage` are
+the envelope the writer checks, so a bare `{"answers":…}` payload is refused as broken input (exit 2,
+no row). That check is a **tripwire against a forgotten call, not authentication**: a typed payload
+satisfying the four rules passes, and the provenance row carries no marker saying which it was (#589):
 
 ```bash
 $ node .pi/skills/worktree/jev-check.mjs --classifier \
-    '{"answers":{"level":{"choice":"medium","confidence":0.84},"risk":{"choice":"C2"},"worktree":{"probability":0.9}}}'
-jev: medium (0.84) · C2 · worktree y          # paste this into the spec and the dispatch
+    '{"api":"typesafe-system-one","model":"~typesafe/jev-latest","timestamp":1795341994293,"usage":{"input":820,"output":117,"totalTokens":937},"answers":{"level":{"choice":"medium","confidence":0.74},"risk":{"choice":"C2"},"worktree":{"probability":0.72}}}'
+jev: medium (0.74) · C2 · worktree y          # paste this into the spec and the dispatch
 ```
 
 ### The `worktree` field is a process fact — state it (issue #456)

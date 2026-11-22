@@ -917,6 +917,57 @@ function reportLine(raw, label, legacy = false) {
 }
 
 /**
+ * The envelope a codemode classifier response carries: a non-blank `api`, a non-blank `model`, a
+ * finite numeric `timestamp` and a non-zero `usage` (`totalTokens`, or the `input`/`output` pair).
+ *
+ * This is a TRIPWIRE against a forgotten call, NOT authentication (#589): a hand-built payload
+ * satisfying these four rules is accepted, so a row that passed here says "the writer was handed a
+ * response-shaped object" — never "a classifier produced this line". No coercion anywhere: every
+ * rule is typeof-strict, because `"42"` and `"2026-11-22"` are exactly how a hand-typed summary
+ * arrives. A row carries no marker for which of the two it was: an old checkout can keep writing
+ * unvalidated rows after this merge, so a reader cannot date-classify a row.
+ */
+function assertResponseEnvelope(payload, source = "--classifier") {
+	const refuse = (why) => {
+		throw new StructuralError(
+			`${source}: not a response-shaped payload — ${why}. Pass the WHOLE codemode response object; ` +
+				"a four-field {level, conf, risk, worktree} summary is not this input.",
+		);
+	};
+	const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
+	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) refuse("the payload is not an object");
+	// Collect EVERY broken rule, not the first: the bare four-field summary fails three at once and a
+	// refusal that names only `api` sends the caller back twice for the same mistake.
+	const missing = [];
+	if (typeof payload.api !== "string" || payload.api.trim() === "") missing.push("missing api");
+	if (typeof payload.model !== "string" || payload.model.trim() === "") missing.push("missing model");
+	if (!isFiniteNumber(payload.timestamp)) missing.push("missing a numeric timestamp");
+	const usage = payload.usage;
+	const usageIsObject = usage !== null && typeof usage === "object" && !Array.isArray(usage);
+	if (!usageIsObject) missing.push("missing usage");
+	// Either branch stands alone: a total, OR both components as numbers summing above zero. The
+	// second branch needs BOTH components numeric — `{"input":"900","output":84}` is refused, not
+	// coerced. A malformed field the winning branch does not read is ignored (a tripwire, not a parser).
+	const hasTotal = usageIsObject && isFiniteNumber(usage.totalTokens) && usage.totalTokens > 0;
+	const hasPair =
+		usageIsObject &&
+		isFiniteNumber(usage.input) &&
+		usage.input >= 0 &&
+		isFiniteNumber(usage.output) &&
+		usage.output >= 0 &&
+		usage.input + usage.output > 0;
+	if (usageIsObject && !hasTotal && !hasPair) {
+		const untouched = usage.totalTokens === undefined && usage.input === undefined && usage.output === undefined;
+		missing.push(
+			untouched
+				? "missing usage.totalTokens"
+				: "usage is not non-zero — totalTokens must be a number > 0, or input and output must be numbers >= 0 summing above 0",
+		);
+	}
+	if (missing.length > 0) refuse(missing.join(", "));
+}
+
+/**
  * Derive the dispatch line from the classifier's RAW response. This is the only
  * mode whose input is a classifier output rather than a hand-chosen summary:
  * the shape check is the point, not decoration.
@@ -925,7 +976,7 @@ function classifierPayloadToLine(raw, worktreeOverride) {
 	if (raw.trim() === "") {
 		throw new StructuralError(
 			"--classifier needs the raw answers JSON: " +
-				`'{"answers":{"level":{"choice":"medium","confidence":0.84},"risk":{"choice":"C2"},"worktree":{"probability":0.9}}}'`,
+				`'{"api":"typesafe-system-one","model":"~typesafe/jev-latest","timestamp":1795341505611,"usage":{"totalTokens":984},"answers":{"level":{"choice":"medium","confidence":0.84},"risk":{"choice":"C2"},"worktree":{"probability":0.9}}}'`,
 		);
 	}
 	let payload;
@@ -934,6 +985,9 @@ function classifierPayloadToLine(raw, worktreeOverride) {
 	} catch (error) {
 		throw new StructuralError(`--classifier: the argument is not JSON (${describe(error)})`);
 	}
+	// Envelope FIRST: a payload that is not a classifier response is broken input (exit 2), not a
+	// finding about the answers (exit 1) — the two classes exist so a caller can tell them apart.
+	assertResponseEnvelope(payload);
 	const answers = payload && typeof payload === "object" ? payload.answers : undefined;
 	if (answers === null || typeof answers !== "object" || Array.isArray(answers)) {
 		throw new SkippedFormError(
@@ -1051,7 +1105,7 @@ function parseDispatchArgs(args) {
 	if (raw.trim() === "") {
 		throw new StructuralError(
 			"--dispatch needs the classifier's raw answers: --dispatch --classifier " +
-				`'{"answers":{"level":{"choice":"medium","confidence":0.84},"risk":{"choice":"C2"},"worktree":{"probability":0.9}}}' --label <name>`,
+				`'{"api":"typesafe-system-one","model":"~typesafe/jev-latest","timestamp":1795341505611,"usage":{"totalTokens":984},"answers":{"level":{"choice":"medium","confidence":0.84},"risk":{"choice":"C2"},"worktree":{"probability":0.9}}}' --label <name>`,
 		);
 	}
 	if (parsed.legacy) {
@@ -1097,6 +1151,9 @@ function reportDispatch(args, provenancePath = DEFAULT_PROVENANCE_LOG) {
 function awareArmLevelModel(raw) {
 	try {
 		const payload = JSON.parse(raw);
+		// The same envelope rule as the blind arm, but INSIDE the try: a malformed second arm is a
+		// measurement that never ran, so it is ignored (diagnostic, no column) — never a blocked dispatch.
+		assertResponseEnvelope(payload, "--classifier-model-aware");
 		const answers = payload === null || typeof payload !== "object" ? undefined : payload.answers;
 		if (answers === null || typeof answers !== "object" || Array.isArray(answers)) {
 			throw new Error('expected the raw classifier response with an "answers" key');
@@ -1105,8 +1162,10 @@ function awareArmLevelModel(raw) {
 		const conf = normalizeConfidence(answers.level?.confidence);
 		return { level, conf };
 	} catch (error) {
+		// The envelope refusal is a full sentence; the diagnostic appends its own.
+		const why = describe(error).replace(/\.$/, "");
 		console.error(
-			`jev-check: aware arm ignored — ${describe(error)}. Arm 2 is a measurement; the blind line stands ` +
+			`jev-check: aware arm ignored — ${why}. Arm 2 is a measurement; the blind line stands ` +
 				"and the dispatch is unaffected.",
 		);
 		return null;
@@ -1554,6 +1613,15 @@ function assertStructural(run, messagePattern, label) {
 	return error;
 }
 
+/** Assert a finding is the exit-1 class (a SkippedFormError) — the answers are the problem, not the input. */
+function assertSkippedForm(run, messagePattern, label) {
+	const error = assertRejects(run, messagePattern, label);
+	if (!(error instanceof SkippedFormError)) {
+		throw new Error(`${label}: expected a SkippedFormError (exit 1), got ${error.constructor.name}`);
+	}
+	return error;
+}
+
 /** Run a mode, capture its stdout/stderr, and restore the console — a case can then assert messages. */
 function captureConsole(run) {
 	const out = [];
@@ -1573,6 +1641,23 @@ function captureConsole(run) {
 const PROVENANCE_HEADER = "# jev-lines provenance — cutoff 2026-11-01T00:00:00.000Z";
 const OUTCOMES_HEADER = "# jev-outcomes — cutoff 2026-11-01T00:00:00.000Z";
 const FIXTURE_LINE = "jev: medium (0.84) · C2 · worktree y";
+
+/**
+ * A classifier response the tool accepts (#589): the envelope is the prerequisite, `answers` is the
+ * observation under test. `envelope(undefined)` is the faithful "I passed the summary, not the
+ * response" shape — valid envelope, no answers — so a missing-answers case still tests its own path.
+ * `overrides` last, so a case can break exactly one envelope field (`envelope(answers, {model: ""})`).
+ */
+function envelope(answers, overrides = {}) {
+	return {
+		api: "typesafe-system-one",
+		model: "~typesafe/jev-latest",
+		timestamp: 1795341505611,
+		usage: { totalTokens: 984 },
+		answers,
+		...overrides,
+	};
+}
 
 /** One provenance row; `extra` columns are appended verbatim as keyed columns. */
 function provenanceRow(label, line, ...extra) {
@@ -2019,13 +2104,13 @@ const SELFTEST_CASES = [
 		name: "--classifier: derives the line from the raw answers object",
 		run() {
 			const line = classifierPayloadToLine(
-				JSON.stringify({
-					answers: {
+				JSON.stringify(
+					envelope({
 						level: { choice: "medium", confidence: 0.63 },
 						risk: { choice: "C1" },
 						worktree: { probability: 0.85 },
-					},
-				}),
+					}),
+				),
 			);
 			assertEqual(line, "jev: medium (0.63) \u00b7 C1 \u00b7 worktree y", "derived line");
 		},
@@ -2033,13 +2118,13 @@ const SELFTEST_CASES = [
 	{
 		name: "--classifier --worktree: a stated process fact wins over the probability (#456)",
 		run() {
-			const raw = JSON.stringify({
-				answers: {
+			const raw = JSON.stringify(
+				envelope({
 					level: { choice: "medium", confidence: 0.64 },
 					risk: { choice: "C2" },
 					worktree: { probability: 0.14 },
-				},
-			});
+				}),
+			);
 			// The classifier says n (p=0.14); Rule 5 says a src change runs in a worktree.
 			assertEqual(
 				classifierPayloadToLine(raw, true),
@@ -2066,13 +2151,13 @@ const SELFTEST_CASES = [
 			const dir = mkdtempSync(join(tmpdir(), "jev-stated-"));
 			try {
 				const path = join(dir, "prov.log");
-				const raw = JSON.stringify({
-					answers: {
+				const raw = JSON.stringify(
+					envelope({
 						level: { choice: "high", confidence: 0.71 },
 						risk: { choice: "C1" },
 						worktree: { probability: 0.22 },
-					},
-				});
+					}),
+				);
 				const line = classifierPayloadToLine(raw, true);
 				appendProvenanceEntry(path, line, "impl-456", new Date("2026-11-07T13:00:00.000Z"), { stated: "worktree" });
 				const text = readFileSync(path, "utf8");
@@ -2117,29 +2202,144 @@ const SELFTEST_CASES = [
 	{
 		name: "--classifier: a summary object (not the raw answers) is the skipped form",
 		run() {
-			let message = "";
-			try {
-				classifierPayloadToLine('{"level":"medium","conf":0.63,"risk":"C1","worktree":true}');
-			} catch (error) {
-				message = error.message;
-			}
-			if (!/raw classifier response/.test(message)) {
-				throw new Error(`expected a raw-response rejection, got ${JSON.stringify(message)}`);
-			}
+			// The faithful shape: a valid response envelope with NO answers — what a caller who typed the
+			// four-field summary instead of pasting the response actually hands over. Envelope-first must
+			// not swallow this into exit 2; it stays the finding class (exit 1) it names.
+			assertSkippedForm(
+				() => classifierPayloadToLine(JSON.stringify(envelope(undefined))),
+				/raw classifier response/,
+				"summary payload",
+			);
+			// Control: the SAME answers-less object with no envelope is broken input (exit 2), so the two
+			// classes are separated by the envelope, not by the caller's intent.
+			assertStructural(
+				() => classifierPayloadToLine(JSON.stringify({ answers: undefined })),
+				/not a response-shaped payload/,
+				"no envelope",
+			);
 		},
 	},
 	{
 		name: "--classifier: a missing worktree probability is rejected",
 		run() {
-			let message = "";
-			try {
-				classifierPayloadToLine('{"answers":{"level":{"choice":"medium","confidence":0.63},"risk":{"choice":"C1"}}}');
-			} catch (error) {
-				message = error.message;
+			assertSkippedForm(
+				() =>
+					classifierPayloadToLine(
+						JSON.stringify(envelope({ level: { choice: "medium", confidence: 0.63 }, risk: { choice: "C1" } })),
+					),
+				/answers\.worktree\.probability/,
+				"missing probability",
+			);
+		},
+	},
+
+	// --- #589: the response envelope ----------------------------------------
+	{
+		name: "#589 envelope: a payload without api/model/timestamp/usage is broken input (exit 2, nothing written)",
+		run() {
+			const answers = { level: { choice: "medium", confidence: 0.81 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } };
+			const cases = [
+				["bare answers payload", { answers }, /not a response-shaped payload/],
+				["bare answers names usage", { answers }, /usage/],
+				["blank api", envelope(answers, { api: "  " }), /missing api/],
+				["blank model", envelope(answers, { model: "" }), /missing model/],
+				["string timestamp", envelope(answers, { timestamp: "2026-11-22" }), /numeric timestamp/],
+				["null usage", envelope(answers, { usage: null }), /missing usage/],
+				["array usage", envelope(answers, { usage: [] }), /missing usage/],
+				["zero usage", envelope(answers, { usage: { totalTokens: 0 } }), /usage is not non-zero/],
+				["one component only", envelope(answers, { usage: { input: 900 } }), /usage is not non-zero/],
+			];
+			for (const [label, payload, pattern] of cases) {
+				assertStructural(() => classifierPayloadToLine(JSON.stringify(payload)), pattern, label);
 			}
-			if (!/answers\.worktree\.probability/.test(message)) {
-				throw new Error(`expected a probability rejection, got ${JSON.stringify(message)}`);
+			// Exit 2 is the class; "nothing appended" is the other half: a refused payload writes no row.
+			withTempPair(
+				() => {},
+				({ provenance }) => {
+					assertStructural(
+						() => reportClassifier(JSON.stringify({ answers }), "impl-589", provenance),
+						/missing api/,
+						"bare payload through the CLI path",
+					);
+					assertEqual(readIfExists(provenance), null, "a refused payload writes no row");
+				},
+			);
+		},
+	},
+	{
+		name: "#589 envelope: usage is typeof-strict — no coercion, no sign slip",
+		run() {
+			const answers = { level: { choice: "medium", confidence: 0.81 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } };
+			const usages = [
+				["string totalTokens", { totalTokens: "42" }],
+				["negative totalTokens", { totalTokens: -1 }],
+				["negative component", { input: -5, output: 6 }],
+				["string input", { input: "900", output: 84 }],
+				["zero pair", { input: 0, output: 0 }],
+				["null totalTokens", { totalTokens: null }],
+			];
+			for (const [label, usage] of usages) {
+				assertStructural(
+					() => classifierPayloadToLine(JSON.stringify(envelope(answers, { usage }))),
+					/usage is not non-zero/,
+					label,
+				);
 			}
+		},
+	},
+	{
+		name: "#589 envelope: the input/output alternative is accepted, and the envelope precedes the answers",
+		run() {
+			const answers = { level: { choice: "medium", confidence: 0.72 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } };
+			// No totalTokens: `input + output` is the other shape a real response carries.
+			assertEqual(
+				classifierPayloadToLine(JSON.stringify(envelope(answers, { usage: { input: 900, output: 84 } }))),
+				"jev: medium (0.72) \u00b7 C2 \u00b7 worktree y",
+				"pair branch accepted",
+			);
+			// Envelope first: the SAME broken answers are the finding class (exit 1) under a valid
+			// envelope and the input class (exit 2) with none. Order decides, never the answers.
+			const broken = { level: { choice: "medium", confidence: 0.72 }, risk: { choice: "C2" } };
+			assertSkippedForm(
+				() => classifierPayloadToLine(JSON.stringify(envelope(broken))),
+				/answers\.worktree\.probability/,
+				"enveloped, broken answers",
+			);
+			assertStructural(
+				() => classifierPayloadToLine(JSON.stringify({ answers: broken })),
+				/not a response-shaped payload/,
+				"bare, broken answers",
+			);
+		},
+	},
+	{
+		name: "#589 envelope: a bare aware payload is ignored — no level-model column, the blind row stands",
+		run() {
+			const raw = JSON.stringify(
+				envelope({ level: { choice: "medium", confidence: 0.72 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } }),
+			);
+			const bareAware = JSON.stringify({
+				answers: { level: { choice: "minimal", confidence: 0.61 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } },
+			});
+			withTempPair(
+				() => {},
+				({ provenance }) => {
+					const result = captureConsole(() =>
+						reportClassifier(raw, "impl-589", provenance, undefined, {
+							model: "deepseek/deepseek-flash",
+							awareRaw: bareAware,
+						}),
+					);
+					assertEqual(result.code, 0, "exit code stays 0 — a measurement never blocks");
+					assertEqual(result.out, "jev: medium (0.72) \u00b7 C2 \u00b7 worktree y", "the blind line stands");
+					if (!/aware arm ignored — .*not a response-shaped payload/.test(result.err)) {
+						throw new Error(`expected the aware refusal diagnostic, got ${JSON.stringify(result.err)}`);
+					}
+					const entry = parseProvenanceLog(readFileSync(provenance, "utf8")).entries[0];
+					assertEqual(entry.levelModel, null, "no level-model column");
+					assertEqual(entry.model, "deepseek/deepseek-flash", "the model is still recorded");
+				},
+			);
 		},
 	},
 	{
@@ -2175,7 +2375,7 @@ const SELFTEST_CASES = [
 			assertEqual(read(), "", "a legacy line must not mint a row");
 			// Control: the CLASSIFIER path DOES write one, so the assertion above discriminates.
 			reportClassifier(
-				JSON.stringify({ answers: { level: { choice: "high", confidence: 0.62 }, risk: { choice: "C2" }, worktree: { probability: 0.2 } } }),
+				JSON.stringify(envelope({ level: { choice: "high", confidence: 0.62 }, risk: { choice: "C2" }, worktree: { probability: 0.2 } })),
 				"legit",
 				path,
 			);
@@ -2555,9 +2755,9 @@ const SELFTEST_CASES = [
 			withTempPair(
 				() => {},
 				({ provenance }) => {
-					const raw = JSON.stringify({
-						answers: { level: { choice: "medium", confidence: 0.72 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } },
-					});
+					const raw = JSON.stringify(
+						envelope({ level: { choice: "medium", confidence: 0.72 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } }),
+					);
 					const result = captureConsole(() =>
 						reportClassifier(raw, "impl-468", provenance, undefined, { model: "deepseek/deepseek-flash" }),
 					);
@@ -2574,7 +2774,7 @@ const SELFTEST_CASES = [
 	{
 		name: "--model: a malformed id is refused, and --line refuses it outright",
 		run() {
-			const raw = JSON.stringify({ answers: { level: { choice: "low", confidence: 0.5 }, risk: { choice: "C3" }, worktree: { probability: 0.2 } } });
+			const raw = JSON.stringify(envelope({ level: { choice: "low", confidence: 0.5 }, risk: { choice: "C3" }, worktree: { probability: 0.2 } }));
 			assertStructural(
 				() => parseLineArgs([raw, "--model", "claude"]),
 				/needs a model id shaped/,
@@ -2587,7 +2787,7 @@ const SELFTEST_CASES = [
 	{
 		name: "--classifier-model-aware without --model exits 2",
 		run() {
-			const raw = JSON.stringify({ answers: { level: { choice: "medium", confidence: 0.72 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } } });
+			const raw = JSON.stringify(envelope({ level: { choice: "medium", confidence: 0.72 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } }));
 			withTempPair(
 				() => {},
 				({ provenance }) => {
@@ -2605,8 +2805,8 @@ const SELFTEST_CASES = [
 	{
 		name: "--classifier-model-aware: records level-model, prints ONE line (the blind arm's)",
 		run() {
-			const raw = JSON.stringify({ answers: { level: { choice: "medium", confidence: 0.72 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } } });
-			const aware = JSON.stringify({ answers: { level: { choice: "minimal", confidence: 0.61 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } } });
+			const raw = JSON.stringify(envelope({ level: { choice: "medium", confidence: 0.72 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } }));
+			const aware = JSON.stringify(envelope({ level: { choice: "minimal", confidence: 0.61 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } }));
 			withTempPair(
 				() => {},
 				({ provenance }) => {
@@ -2635,8 +2835,8 @@ const SELFTEST_CASES = [
 	{
 		name: "blind isolation: the printed line is byte-identical with and without model/aware data",
 		run() {
-			const raw = JSON.stringify({ answers: { level: { choice: "high", confidence: 0.53 }, risk: { choice: "C1" }, worktree: { probability: 0.7 } } });
-			const aware = JSON.stringify({ answers: { level: { choice: "xhigh", confidence: 0.44 }, risk: { choice: "C1" }, worktree: { probability: 0.7 } } });
+			const raw = JSON.stringify(envelope({ level: { choice: "high", confidence: 0.53 }, risk: { choice: "C1" }, worktree: { probability: 0.7 } }));
+			const aware = JSON.stringify(envelope({ level: { choice: "xhigh", confidence: 0.44 }, risk: { choice: "C1" }, worktree: { probability: 0.7 } }));
 			const plain = captureConsole(() => reportClassifier(raw)).out;
 			const withModel = captureConsole(() => reportClassifier(raw, undefined, undefined, undefined, { model: "deepseek/deepseek-flash" })).out;
 			const withAware = captureConsole(() =>
@@ -2650,7 +2850,7 @@ const SELFTEST_CASES = [
 	{
 		name: "arm 2 failure falls back to blind-only (a measurement never blocks a dispatch)",
 		run() {
-			const raw = JSON.stringify({ answers: { level: { choice: "medium", confidence: 0.72 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } } });
+			const raw = JSON.stringify(envelope({ level: { choice: "medium", confidence: 0.72 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } }));
 			withTempPair(
 				() => {},
 				({ provenance }) => {
@@ -2672,7 +2872,7 @@ const SELFTEST_CASES = [
 	{
 		name: "--dispatch: prints the line and the paste text, appends the row, and the row is BYTE-IDENTICAL to --classifier's",
 		run() {
-			const raw = JSON.stringify({ answers: { level: { choice: "high", confidence: 0.62 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } } });
+			const raw = JSON.stringify(envelope({ level: { choice: "high", confidence: 0.62 }, risk: { choice: "C2" }, worktree: { probability: 0.9 } }));
 			withTempPair(
 				() => {},
 				({ provenance }) => {
@@ -2715,7 +2915,7 @@ const SELFTEST_CASES = [
 	{
 		name: "--dispatch without --label exits 2 (a row with no label is invisible to --settle and the gate)",
 		run() {
-			const raw = JSON.stringify({ answers: { level: { choice: "low", "confidence": 0.5 }, risk: { choice: "C3" }, worktree: { probability: 0.2 } } });
+			const raw = JSON.stringify(envelope({ level: { choice: "low", "confidence": 0.5 }, risk: { choice: "C3" }, worktree: { probability: 0.2 } }));
 			withTempPair(
 				() => {},
 				({ provenance }) => {
@@ -2733,7 +2933,7 @@ const SELFTEST_CASES = [
 	{
 		name: "--dispatch then --settle on that label succeeds FIRST TRY (the #500 acceptance case)",
 		run() {
-			const raw = JSON.stringify({ answers: { level: { choice: "high", confidence: 0.62 }, risk: { choice: "C2" }, worktree: { probability: 0.8 } } });
+			const raw = JSON.stringify(envelope({ level: { choice: "high", confidence: 0.62 }, risk: { choice: "C2" }, worktree: { probability: 0.8 } }));
 			withTempPair(
 				() => {},
 				({ provenance, outcomes }) => {

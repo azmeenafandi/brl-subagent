@@ -939,7 +939,9 @@ describe("main — the two streams and the exit codes", () => {
 		// Re-pointed by #581: `check-repo.sh` §6 counts brl-subagent installs (+32 source lines).
 		// Re-pointed by #583: merge-guard's (d) is a LINE with the head and evidence (+202 source lines —
 		// the two readers, the marker's evidence rule, and the U2-1…U2-9 matrix in `--selftest`).
-		const SKILLS_SOURCE_LOC = 7817;
+		// Re-pointed by #589: `assertResponseEnvelope` at both arms, its selftest cases and the doc
+		// clauses (+200 source lines).
+		const SKILLS_SOURCE_LOC = 8017;
 		const measured = measureSurface(surface("skills"), ROOT);
 		expect(measured.sourceLoc).toBe(SKILLS_SOURCE_LOC);
 		expect(measured.reference).toBeNull();
