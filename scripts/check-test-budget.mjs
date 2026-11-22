@@ -552,7 +552,10 @@ export function evaluate({ reportPath, wallMs, wallCeilingMs = WALL_CEILING_MS, 
 					`by ${lines(surface.testLoc - Math.floor(surface.reference * surface.sourceLoc))} — reported, not enforced ` +
 					"(the per-PR flow rule gates the delta; --flow).",
 			);
-		} else if (band !== null && surface.ratio >= band) {
+		} else if (band !== null && surface.reference !== null && surface.ratio >= band) {
+			// A reference-less surface is silent in BOTH branches: it declares no target to cross and no
+			// band to sit inside (`warnAt` is null with it), so its gate is the flow rule. Without the
+			// `reference !== null` guard this branch read `null.toFixed(1)` and threw.
 			warnings.push(
 				`surface "${surface.name}" test:source LOC ratio ${surface.ratio.toFixed(2)} ` +
 					`(${surface.testLoc} test / ${surface.sourceLoc} source) is inside the ${band.toFixed(2)} warning band — ` +

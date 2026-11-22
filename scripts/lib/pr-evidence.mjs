@@ -28,6 +28,10 @@
 // `budget:` line predates it parses with no `budget` key at all and fails as `missing-key` naming the
 // three-ratio shape — the rewrite `--apply` performs, never a silent two-ratio pass.
 //
+// The clause NAMES are a parameter (`surfaces`, default `DEFAULT_SURFACES`), not a hand-kept list: the
+// renderer, the parser and the drift comparison all follow the caller's surface list, so a surface the
+// guard adds is a clause the receipt carries and a surface it drops is one the receipt refuses to state.
+//
 // The four count lines MUST carry `← <command>` (#488's rule). `head:` may omit the arrow — the spec's
 // own block shape has no command there, and a sha is not a count. Emit writes the arrow on all five.
 //
@@ -62,6 +66,13 @@ export const ARROW = "←";
 
 /** The block's keys, in the order they are written and checked. */
 export const KEYS = Object.freeze(["head", "changed-files", "src-diff-lines", "suite", "budget"]);
+
+/**
+ * The `budget:` clause names this module emits and parses when the caller names none — today's three
+ * measured surfaces. The CLI passes the guard's own `SURFACES.map((surface) => surface.name)` instead,
+ * so the measuring probe stays the single source of truth and this module keeps no import edge to it.
+ */
+export const DEFAULT_SURFACES = Object.freeze(["src", "scripts", "skills"]);
 
 /** The keys that carry a COUNT — every one of them must name its command (#488). */
 export const COUNT_KEYS = Object.freeze(["changed-files", "src-diff-lines", "suite", "budget"]);
@@ -105,8 +116,22 @@ const FIELDS = Object.freeze({
 	"changed-files": /^changed-files:[ \t]*([\d,]+)\b/,
 	"src-diff-lines": /^src-diff-lines:[ \t]*([\d,]+)\b/,
 	suite: /^suite:[ \t]*([\d,]+)[ \t]+files?[ \t]*\/[ \t]*([\d,]+)[ \t]+tests?\b/i,
-	budget: /^budget:[ \t]*src[ \t]+([\d.]+)[ \t]*·[ \t]*scripts[ \t]+([\d.]+)[ \t]*·[ \t]*skills[ \t]+([\d.]+)/i,
 });
+
+/** A surface name matched literally, whatever characters it holds. */
+function escapeSurface(name) {
+	return String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The `budget:` field for `surfaces`: one `<name> <ratio>` clause per surface, in order, `·`-joined and
+ * ANCHORED at the end of the claim. The anchor is the contract — a block carrying a trailing clause the
+ * caller did not name (` · unknown 1.00`) no longer matches on a prefix and reads as a `missing-key`.
+ */
+function budgetField(surfaces) {
+	const clause = (name) => `${escapeSurface(name)}[ \\t]+([\\d.]+)`;
+	return new RegExp(`^budget:[ \\t]*${surfaces.map(clause).join("[ \\t]*·[ \\t]*")}[ \\t]*$`, "i");
+}
 
 /**
  * A count outside the block: a number, up to two intervening words, then one of the units a gate counts.
@@ -166,7 +191,8 @@ export function scanBlocks(lines) {
  * Last line wins for a repeated key — the record-fields convention, so a rewrite that adds a line
  * instead of replacing one still has one authoritative value per key.
  */
-export function parseBlock(lines, range) {
+export function parseBlock(lines, range, { surfaces = DEFAULT_SURFACES } = {}) {
+	const fields = { ...FIELDS, budget: budgetField(surfaces) };
 	const values = {};
 	const commands = {};
 	const lineOf = {};
@@ -177,13 +203,13 @@ export function parseBlock(lines, range) {
 		const claim = arrowAt === -1 ? text : text.slice(0, arrowAt);
 		const command = arrowAt === -1 ? "" : text.slice(arrowAt + ARROW.length).trim();
 		for (const key of KEYS) {
-			const match = FIELDS[key].exec(claim);
+			const match = fields[key].exec(claim);
 			if (match === null) continue;
 			values[key] =
 				key === "suite"
 					? { files: parseCount(match[1]), tests: parseCount(match[2]) }
 					: key === "budget"
-						? { src: match[1], scripts: match[2], skills: match[3] }
+						? Object.fromEntries(surfaces.map((name, index) => [name, match[index + 1]]))
 						: key === "head"
 							? match[1].toLowerCase()
 							: parseCount(match[1]);
@@ -196,7 +222,7 @@ export function parseBlock(lines, range) {
 }
 
 /** The block text for measured `evidence`, one line per key plus the delimiters. */
-export function renderBlock(evidence, { base = "dev", headRef = "HEAD" } = {}) {
+export function renderBlock(evidence, { base = "dev", headRef = "HEAD", surfaces = DEFAULT_SURFACES } = {}) {
 	const head = String(evidence.head);
 	const scope = `${base}...${head}`;
 	return [
@@ -205,7 +231,7 @@ export function renderBlock(evidence, { base = "dev", headRef = "HEAD" } = {}) {
 		`changed-files: ${evidence.changedFiles} ${ARROW} git diff --name-only ${scope} | wc -l`,
 		`src-diff-lines: ${evidence.srcDiffLines} ${ARROW} git diff --numstat ${scope} -- src | awk '{s+=$1+$2} END {print s+0}'`,
 		`suite: ${evidence.suite.files} files / ${evidence.suite.tests} tests ${ARROW} node scripts/suite-report.mjs --capture (files = testResults · tests = Σ assertionResults)`,
-		`budget: src ${formatRatio(evidence.budget.src)} · scripts ${formatRatio(evidence.budget.scripts)} · skills ${formatRatio(evidence.budget.skills)} ${ARROW} node scripts/check-test-budget.mjs --report vitest-report.json`,
+		`budget: ${budgetLine(evidence.budget, surfaces)} ${ARROW} node scripts/check-test-budget.mjs --report vitest-report.json`,
 		BLOCK.end,
 	].join("\n");
 }
@@ -291,7 +317,7 @@ export function unattributedCounts(lines, ranges) {
  * (already formatted). A head is compared prefix-tolerantly, exactly like the handoff's `Verified:` — a
  * short sha names one commit.
  */
-export function compare(block, actual) {
+export function compare(block, actual, { surfaces = DEFAULT_SURFACES } = {}) {
 	const findings = [];
 	for (const key of KEYS) {
 		const value = block.values[key];
@@ -309,13 +335,13 @@ export function compare(block, actual) {
 				detail: `"${key}:" states a count with no ${ARROW} <command> — every count names the command that produced it (#488)`,
 			});
 		}
-		const drift = driftFor(key, value, actual);
+		const drift = driftFor(key, value, actual, surfaces);
 		if (drift !== null) findings.push({ code: drift.code, line: block.lineOf[key], detail: drift.detail });
 	}
 	return findings;
 }
 
-function driftFor(key, value, actual) {
+function driftFor(key, value, actual, surfaces) {
 	if (key === "head") {
 		return sameHead(value, actual.head) ? null : { code: CODES.staleHead, detail: `block ${value} · repo ${actual.head}` };
 	}
@@ -336,19 +362,18 @@ function driftFor(key, value, actual) {
 					detail: `block ${value.files} files / ${value.tests} tests · repo ${measured.files} files / ${measured.tests} tests`,
 				};
 	}
-	const measured = {
-		src: formatRatio(actual.budget.src),
-		scripts: formatRatio(actual.budget.scripts),
-		skills: formatRatio(actual.budget.skills),
-	};
-	return value.src === measured.src && value.scripts === measured.scripts && value.skills === measured.skills
+	const measured = Object.fromEntries(surfaces.map((name) => [name, formatRatio(actual.budget[name])]));
+	return surfaces.every((name) => value[name] === measured[name])
 		? null
 		: {
 				code: CODES.staleBudget,
-				detail:
-					`block src ${value.src} · scripts ${value.scripts} · skills ${value.skills} · ` +
-					`repo src ${measured.src} · scripts ${measured.scripts} · skills ${measured.skills}`,
+				detail: `block ${budgetLine(value, surfaces)} · repo ${budgetLine(measured, surfaces)}`,
 			};
+}
+
+/** The `budget:` clauses for `ratios`, in surface order — one spelling for emit and for the drift detail. */
+function budgetLine(ratios, surfaces) {
+	return surfaces.map((name) => `${name} ${formatRatio(ratios[name])}`).join(" · ");
 }
 
 /** Two shas name one commit when they are equal or one is a prefix of the other; case-insensitive. */
@@ -369,7 +394,7 @@ export function sameHead(left, right) {
  *                         the duplicate is the finding (and `--apply` collapses it)
  *   exactly 1 block     → every key compared, then the ban list over the text outside it
  */
-export function checkBody(body, actual) {
+export function checkBody(body, actual, { surfaces = DEFAULT_SURFACES } = {}) {
 	const lines = String(body).split("\n");
 	const { ranges, unclosed } = scanBlocks(lines);
 	if (unclosed !== -1) {
@@ -414,7 +439,7 @@ export function checkBody(body, actual) {
 			],
 		};
 	}
-	const findings = [...compare(parseBlock(lines, ranges[0]), actual), ...outside];
+	const findings = [...compare(parseBlock(lines, ranges[0], { surfaces }), actual, { surfaces }), ...outside];
 	return { exit: findings.length === 0 ? EXIT.OK : EXIT.DRIFT, blocks: 1, findings };
 }
 

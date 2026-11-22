@@ -164,6 +164,40 @@ describe("pr-evidence — the block", () => {
 		);
 	});
 
+	it("the block names every surface it is given", async () => {
+		// The clause names are a parameter (#569), so a surface the guard measures cannot be dropped on
+		// the receipt: render and parse both map the caller's list, in order.
+		const FOUR = ["src", "scripts", "skills", "docs"];
+		const evidence = { ...ACTUAL, budget: { src: "1.99", scripts: "0.61", skills: "0.03", docs: "0.44" } };
+		const block = renderBlock(evidence, { base: "dev", surfaces: FOUR });
+		const budgetLine = block.split("\n").find((line) => line.startsWith("budget: ")) ?? "";
+		expect(budgetLine.slice(0, budgetLine.indexOf(ARROW)).trim()).toBe(
+			"budget: src 1.99 · scripts 0.61 · skills 0.03 · docs 0.44",
+		);
+
+		const actual = { ...ACTUAL, budget: { src: 1.99, scripts: 0.61, skills: 0.03, docs: 0.44 } };
+		expect(checkBody(block, actual, { surfaces: FOUR })).toEqual({ exit: EXIT.OK, blocks: 1, findings: [] });
+
+		// The silent drop this closes: the same block against the default three-name list loses the
+		// fourth clause on parse and is refused as a missing key.
+		expect(renderBlock(evidence, { base: "dev" })).not.toContain("docs 0.44");
+		const dropped = checkBody(block, actual);
+		expect(dropped.findings.map((finding: { code: string }) => finding.code)).toEqual([CODES.missingKey]);
+	});
+
+	it("an unknown trailing clause is a missing key", async () => {
+		// The `budget:` regex is anchored at the END of the claim (#569): a clause the caller did not
+		// name is not a prefix match, so the block reads as having no `budget:` line at all.
+		const body = text("clean").replace(
+			/^budget: .*$/m,
+			`budget: src 1.99 · scripts 0.61 · skills 0.03 · unknown 1.00 ${ARROW} node scripts/check-test-budget.mjs --report vitest-report.json`,
+		);
+		const result = checkBody(body, ACTUAL);
+		expect(result.exit).toBe(EXIT.DRIFT);
+		expect(result.findings.map((finding: { code: string }) => finding.code)).toEqual([CODES.missingKey]);
+		expect(result.findings[0].detail).toContain("\"budget:\"");
+	});
+
 	it("reports a missing key by name rather than silently comparing nothing", async () => {
 		const body = text("clean").replace(/^suite:.*\n/m, "");
 		const result = checkBody(body, ACTUAL);
