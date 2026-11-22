@@ -916,7 +916,8 @@ describe("main — the two streams and the exit codes", () => {
 		// derivation and its self-test, and the surface is measured, so the pin follows the file.
 		// Re-pointed by the PR #575 review fixes (issue #574): the causal-window filter for terminal
 		// runs, the named output-path error, microsecond ownership and their self-test cases.
-		const SKILLS_SOURCE_LOC = 7583;
+		// Re-pointed by #581: `check-repo.sh` §6 counts brl-subagent installs (+32 source lines).
+		const SKILLS_SOURCE_LOC = 7615;
 		const measured = measureSurface(surface("skills"), ROOT);
 		expect(measured.sourceLoc).toBe(SKILLS_SOURCE_LOC);
 		expect(measured.reference).toBeNull();
