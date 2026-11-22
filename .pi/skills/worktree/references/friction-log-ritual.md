@@ -74,9 +74,18 @@ column, one row per class, and a window (`from..to`) over **data-row indices**.
 3. for each candidate: `class: <ledger class>` or `dismissed: "<why not friction>"` (non-blank; the seam does not enforce a length)
 4. node scripts/friction-disposition.mjs --check --cycle <cycle> \
      --candidates .development/friction-candidates/<cycle>.json \
-     --source-root ~/.pi/agent/sessions --source-root .pi/subagent-logs
+     --source-root "$SESSIONS" --source-root .pi/subagent-logs
 5. commit the candidates file with the ledger
 ```
+
+- **`$SESSIONS` is the project's own store, not its parent.** `~/.pi/agent/sessions`
+  holds one directory per project, named by the project path with `/` → `-` and wrapped
+  in `--` (so `/home/you/work/app` is `--home-you-work-app--`):
+  `SESSIONS=$(ls -d ~/.pi/agent/sessions/*<project-fragment>*)`. Passing the parent
+  finds no `*.jsonl` at that level, refuses every session candidate as
+  `unresolvable-source`, and the refusal blames the evidence when the root was simply
+  one level too high — the one-line symptom is a close whose citations all report
+  "the evidence is retired" while the files sit intact one directory down (#578).
 
 - **`mkdir -p` first.** The generator writes to an explicit path and refuses a
   directory that does not exist — it will not create one for you.

@@ -1379,6 +1379,24 @@ describe("friction-disposition — #533: a citation's evidence must resolve", ()
 		expect(result.err).toContain("family session.jsonl, session.jsonl.1..session.jsonl.5");
 	});
 
+	it("#578 — a parent sessions root is named as the wrong root, not blamed on the evidence", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		// The real shape of `~/.pi/agent/sessions`: one project store per directory, no `.jsonl` at this level.
+		const root = join(dir, "sessions");
+		mkdirSync(join(root, "--home-x-proj--"), { recursive: true });
+		writeFileSync(join(root, "--home-x-proj--", "session.jsonl"), '{"a":1}\n');
+		const result = runCli(citationArgv(base, candidatesFile(dir, "t578", [cited({ digest: "0123456789abcdef" })]), [root]));
+		expect(result.code).toBe(EXIT.LEDGER);
+		expect(result.err).toContain("unresolvable-source");
+		expect(result.err).toContain("holds per-project session stores, not session files");
+		// A root that does hold sessions must not carry the hint — the message stays about the evidence.
+		const flat = sourceRoot(dir, "flat-root", [["other.log", '{"a":1}\n']]);
+		const flatResult = runCli(citationArgv(base, candidatesFile(dir, "t578-flat", [cited({ digest: "0123456789abcdef" })]), [flat]));
+		expect(flatResult.err).toContain("unresolvable-source");
+		expect(flatResult.err).not.toContain("per-project session stores");
+	});
+
 	it("#533 T3c — a broken symlink is not a file here, so it is unresolvable-source", () => {
 		const dir = citationDir();
 		const base = citationBase(dir);

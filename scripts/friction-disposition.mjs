@@ -843,9 +843,10 @@ function citationProblem(entry, eventId, record) {
 		return problem("missing-digest", `${where} no digest — a cited candidate must carry the 16-hex digest of its cited line`, exit);
 	}
 	if (status === "unresolvable-source") {
+		const hint = typeof record?.hint === "string" && record.hint !== "" ? ` — ${record.hint}` : "";
 		return problem(
 			"unresolvable-source",
-			`${where} ${familyLabel(entry?.source)} exists under no --source-root — the evidence is retired; dismiss the candidate or cite a line that still exists`,
+			`${where} ${familyLabel(entry?.source)} exists under no --source-root — the evidence is retired; dismiss the candidate or cite a line that still exists${hint}`,
 			exit,
 		);
 	}
@@ -1233,12 +1234,36 @@ export function resolveCandidates(candidates, roots) {
 			listings.push({ root, names: null, error: describeError(error) });
 		}
 	}
+	const parentHint = sessionStoreParentHint(listings);
 	for (const entry of list) {
 		const { eventId, hasClass, hasDismissal } = candidateShape(entry);
 		if (!hasClass || hasDismissal) continue;
-		resolutions[eventId] = resolveOne(entry, listings);
+		const resolution = resolveOne(entry, listings);
+		// Only an absence can be a wrong root. A match, a stale hash or an unreadable search already
+		// says what it means: the root found the family, so no parent hint applies (#578).
+		if (resolution.status === "unresolvable-source" && parentHint !== null) resolution.hint = parentHint;
+		resolutions[eventId] = resolution;
 	}
 	return resolutions;
+}
+
+/**
+ * #578: the session store is project-scoped, so `~/.pi/agent/sessions` holds one `--<escaped-path>--`
+ * directory per project and no `.jsonl` of its own. Searching that parent finds nothing, and the refusal
+ * then blames the evidence ("the evidence is retired") when the root is simply one level too high. Name
+ * it, but only when the shape is unmistakable: no session file at this level, and project-store names.
+ */
+export function sessionStoreParentHint(listings) {
+	for (const listing of listings) {
+		if (listing.error !== null || !(listing.names instanceof Set)) continue;
+		const names = [...listing.names];
+		const holdsSessions = names.some((name) => name.endsWith(".jsonl"));
+		const holdsProjectStores = names.some((name) => name.startsWith("--") && name.endsWith("--"));
+		if (!holdsSessions && holdsProjectStores) {
+			return `${listing.root} holds per-project session stores, not session files — pass the project's own directory under it (--<project-path-with-slashes-as-dashes>--), not its parent (see the close protocol)`;
+		}
+	}
+	return null;
 }
 
 /** One cited candidate's status. The order of the branches IS §1.3's precedence, fail-closed first. */
