@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "cycle": "process-receipts",
+  "claimedLive": false,
+  "candidates": [
+    {
+      "eventId": "0ca3bb61-884e-4b2d-94ae-cf74a7052391:failed:1",
+      "kind": "failed",
+      "runId": "0ca3bb61-884e-4b2d-94ae-cf74a7052391",
+      "ts": "2026-11-21T15:59:29.742Z",
+      "class": "transport-deaths",
+      "count": 1,
+      "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:11524",
+      "digest": "b9b5770d7cef2aa5",
+      "dismissed": null
+    },
+    {
+      "eventId": "0ca3bb61-884e-4b2d-94ae-cf74a7052391:retry:1",
+      "kind": "retry",
+      "runId": "0ca3bb61-884e-4b2d-94ae-cf74a7052391",
+      "ts": "2026-11-21T15:59:29.866Z",
+      "class": "transport-deaths",
+      "count": 1,
+      "source": "spawn-log:brl-subagent.log:332",
+      "digest": "4d21a6de77ac5b5d",
+      "dismissed": null,
+      "via": "transport"
+    },
+    {
+      "eventId": "14f143df-5a08-4a54-822f-3526048c3bee:failed:1",
+      "kind": "failed",
+      "runId": "14f143df-5a08-4a54-822f-3526048c3bee",
+      "ts": "2026-11-21T18:52:39.292Z",
+      "class": "transport-deaths",
+      "count": 1,
+      "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:12365",
+      "digest": "5f3eaf51c67c2036",
+      "dismissed": null
+    },
+    {
+      "eventId": "14f143df-5a08-4a54-822f-3526048c3bee:retry:1",
+      "kind": "retry",
+      "runId": "14f143df-5a08-4a54-822f-3526048c3bee",
+      "ts": "2026-11-21T18:52:39.338Z",
+      "class": "transport-deaths",
+      "count": 1,
+      "source": "spawn-log:brl-subagent.log:443",
+      "digest": "dcf9252a7ad907e7",
+      "dismissed": null,
+      "via": "transport"
+    },
+    {
+      "eventId": "acce0602-5d86-4251-a1ee-82c89664acfe:deadline:1",
+      "kind": "deadline",
+      "runId": "acce0602-5d86-4251-a1ee-82c89664acfe",
+      "ts": "2026-11-22T02:43:06.797Z",
+      "class": null,
+      "count": 1,
+      "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:12565",
+      "digest": "f1b9e2e8c33f8934",
+      "dismissed": "deliberate probe dispatched for issue 574 to manufacture the missing kinds"
+    },
+    {
+      "eventId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2:steer:1",
+      "kind": "steer",
+      "runId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2",
+      "ts": "2026-11-22T02:43:21.040Z",
+      "class": null,
+      "count": 1,
+      "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:12573",
+      "digest": "15f3de0c775db107",
+      "dismissed": "deliberate probe dispatched for issue 574 to manufacture the missing kinds"
+    },
+    {
+      "eventId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2:stop:1",
+      "kind": "stop",
+      "runId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2",
+      "ts": "2026-11-22T02:43:26.436Z",
+      "class": null,
+      "count": 1,
+      "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:12577",
+      "digest": "40ad99fa37e9b485",
+      "dismissed": "deliberate probe dispatched for issue 574 to manufacture the missing kinds"
+    },
+    {
+      "eventId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2:retry:1",
+      "kind": "retry",
+      "runId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2",
+      "ts": "2026-11-22T02:50:16.084Z",
+      "class": null,
+      "count": 1,
+      "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:12669",
+      "digest": "7bde23a3d0ae1d8b",
+      "dismissed": "deliberate probe dispatched for issue 574 to manufacture the missing kinds",
+      "via": "explicit"
+    },
+    {
+      "eventId": "ddfabc63-6235-4d35-8b43-a8891adac202:failed:1",
+      "kind": "failed",
+      "runId": "ddfabc63-6235-4d35-8b43-a8891adac202",
+      "ts": "2026-11-22T03:40:32.203Z",
+      "class": "transport-deaths",
+      "count": 1,
+      "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:12890",
+      "digest": "40575ebb78b42ae1",
+      "dismissed": null
+    },
+    {
+      "eventId": "ddfabc63-6235-4d35-8b43-a8891adac202:retry:1",
+      "kind": "retry",
+      "runId": "ddfabc63-6235-4d35-8b43-a8891adac202",
+      "ts": "2026-11-22T03:40:32.263Z",
+      "class": "transport-deaths",
+      "count": 1,
+      "source": "spawn-log:brl-subagent.log:521",
+      "digest": "4312f10aabad54cc",
+      "dismissed": null,
+      "via": "transport"
+    }
+  ]
+}
