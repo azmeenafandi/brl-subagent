@@ -925,7 +925,9 @@ describe("main — the two streams and the exit codes", () => {
 		// Re-pointed once more by `friction-disposition.mjs` (issue #560): a sourced module with its own
 		// test reaches the floor, so 13 becomes 14 for the same reason — never a relaxed floor.
 		expect(/\bsrc (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["61", "61"]);
-		expect(/\bscripts (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["14", "14"]);
+		// Re-pointed by #591: `scripts/require-executed.mjs` is a new source module, and the floor is
+		// "every module reachable" — its test imports it, so 14 becomes 15 rather than the floor relaxing.
+		expect(/\bscripts (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["15", "15"]);
 		expect(measureFloors(ROOT).every((floor) => floor.unreachable.length === 0)).toBe(true);
 	});
 
@@ -941,7 +943,10 @@ describe("main — the two streams and the exit codes", () => {
 		// the two readers, the marker's evidence rule, and the U2-1…U2-9 matrix in `--selftest`).
 		// Re-pointed by #589: `assertResponseEnvelope` at both arms, its selftest cases and the doc
 		// clauses (+200 source lines).
-		const SKILLS_SOURCE_LOC = 8017;
+		// Re-pointed by #591: `sprint-metrics.py` grew by the whole-file result read, the pre-flight
+		// refusal dialect, the refused / failed-after-spawn / unresolved / duplicate clauses and
+		// eight self-test cases; both units' additions are disjoint files, so the pin is their sum.
+		const SKILLS_SOURCE_LOC = 8335;
 		const measured = measureSurface(surface("skills"), ROOT);
 		expect(measured.sourceLoc).toBe(SKILLS_SOURCE_LOC);
 		expect(measured.reference).toBeNull();

@@ -321,7 +321,7 @@ recheck_decision() {
         return
     fi
     if ! provenance_has_recheck "${line}" "${pr}"; then
-        printf 'no provenance row "%s" for the recheck — print it with: jev-check --classifier '"'"'<raw answers>'"'"' --label recheck-%s' "${line}" "${pr}"
+        printf 'no provenance row "%s" for the recheck — paste the printed line VERBATIM (a reformatted confidence is a different line); print it with: jev-check --classifier '"'"'<raw answers>'"'"' --label recheck-%s' "${line}" "${pr}"
         return
     fi
     local stripped="${line% · worktree *}"

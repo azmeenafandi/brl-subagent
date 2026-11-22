@@ -21,6 +21,15 @@ failed open on truncate-and-regrow, and `EXPECT_COMMITTED` accepted an empty str
    prose outside the `pr-evidence` block are a `pr-evidence` finding; a count at the wrong head is a
    provenance finding.
 
+## A filtered row: the executed count, not the exit status
+
+A row whose command filters the suite (`vitest run <file> -t "<title>"`) cannot be judged by its exit
+status: vitest exits **0** when the title matches nothing, with a JSON report saying `passed 0 /
+failed 0 / pending 44 / success true` (measured, vitest 5.1.0 — issue #591). Such a row runs through
+`node scripts/require-executed.mjs -- <vitest args…>` and quotes that tool's summary line
+(`require-executed: 1 executed / 1 passed — …`), so the receipt carries the executed count the claim
+depends on. A row pasted from a bare `npx vitest -t` run is a finding, not evidence.
+
 ## The falsifier
 
 The class is closed not by the prose but by its use: a critic finding that an evidence row cannot fail,
