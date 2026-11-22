@@ -556,6 +556,17 @@ function corpusKey(roots: Roots, path: string): string {
 	throw new Error(`${path} is under neither root — mutation mode must name a file this suite reads`);
 }
 
+/**
+ * The corpus keys where `copy` and `checkout` differ — the UNION of both key sets, so a key present on
+ * one side only (a file deleted from the copy, or added to it) is a difference with `undefined` on the
+ * other side. Iterating the copy's keys alone reports a deletion as nothing, which is the fail-open a
+ * stale tree missing an unread file would ride in on.
+ */
+function differingKeys(copy: Map<string, string>, checkout: Map<string, string>): string[] {
+	const keys = new Set([...copy.keys(), ...checkout.keys()]);
+	return [...keys].filter((key) => copy.get(key) !== checkout.get(key)).sort();
+}
+
 describe("runs every selftest CI ships", () => {
 	it("binds its roots: this checkout's skills tree, or a copy whose only difference is the mutation", () => {
 		// Both roots must exist before anything is read from them: a typo'd override is a red row,
@@ -582,8 +593,27 @@ describe("runs every selftest CI ships", () => {
 		const mutated = (ROOTS.mutated ?? []).map((path) => corpusKey(ROOTS, path)).sort();
 		const copy = corpusOf(ROOTS);
 		const checkout = corpusOf({ skillsDir: SKILL_DIR, repoRoot: REPO_ROOT });
-		const differing = [...copy.keys()].filter((key) => copy.get(key) !== checkout.get(key)).sort();
-		expect(differing).toEqual(mutated);
+		// The UNION of both key sets, not the copy's alone: a key present on one side only is a
+		// difference with `undefined` on the other, so a file DELETED from the copy is as red as a
+		// modified one — the fail-open this row exists to close.
+		expect(differingKeys(copy, checkout)).toEqual(mutated);
+	});
+
+	it("counts a deletion as a difference, not only a changed byte — the seam compares the union of keys", () => {
+		// The seam's own unit, in the default run: mutation mode is measured by hand, so the union it
+		// relies on needs a row that fails here if someone narrows it back to one side's keys.
+		const checkout = new Map([
+			["skills/a.sh", "sha-a"],
+			["skills/b.sh", "sha-b"],
+		]);
+		expect(differingKeys(new Map(checkout), checkout)).toEqual([]);
+		// A changed byte is a difference, in either direction.
+		expect(differingKeys(new Map(checkout).set("skills/a.sh", "sha-changed"), checkout)).toEqual(["skills/a.sh"]);
+		// A file the copy no longer has: the copy's own keys say nothing, so this is the case the
+		// old one-sided filter reported as `[]` (green) against an undeclared deletion.
+		expect(differingKeys(new Map([["skills/b.sh", "sha-b"]]), checkout)).toEqual(["skills/a.sh"]);
+		// A file only the copy has — the same union, the other side.
+		expect(differingKeys(new Map([...checkout, ["skills/c.sh", "sha-c"]]), checkout)).toEqual(["skills/c.sh"]);
 	});
 
 	it("pins exactly one step per script, and no step that is disabled or tolerant of failure", () => {
@@ -694,9 +724,22 @@ function gitOk(cwd: string, ...args: string[]): string {
  * A disposable cockpit: bare origin, one clean `dev`, and whatever the row asked for. The skill is
  * COPIED to the fixture's own `.pi/skills/worktree`, so even a row that lost its `--repo-root` would
  * derive the fixture — never this checkout — as its repo root.
+ *
+ * The temp root is created AND removed in this one place: a setup command that throws fails the row
+ * before any `finally` can see the fixture, so the directory is swept here or it is litter forever.
  */
 function cleanupRepo(options: CleanupOptions = {}): CleanupFixture {
 	const root = mkdtempSync(join(tmpdir(), "brl-cleanup-"));
+	try {
+		return buildCockpit(root, options);
+	} catch (error) {
+		rmSync(root, { recursive: true, force: true });
+		throw error;
+	}
+}
+
+/** Fill `root` with the cockpit `options` asks for — every path under the root `cleanupRepo` made. */
+function buildCockpit(root: string, options: CleanupOptions): CleanupFixture {
 	const origin = join(root, "origin.git");
 	const cockpit = join(root, "cockpit");
 	const script = join(root, COPY_REL, "worktree-cleanup.sh");
@@ -772,13 +815,15 @@ function withCleanupRepo(options: CleanupOptions, row: (fixture: CleanupFixture)
 	}
 }
 
-// The protected branches the teardown regex names, as the rows that pin it: one per branch.
-const PROTECTED_ROWS = ["dev", "main"];
+// Every branch the teardown regex protects — `^(main|master|dev)$` — one row each, so a branch
+// dropped from the regex is a red row rather than a silent narrowing of what the suite pins.
+const PROTECTED_ROWS = ["dev", "main", "master"];
 
 describe("worktree-cleanup's teardown rules", () => {
-	// Both protected branches, one row each: `dev` is the case the issue's teardown meets in practice,
-	// and `main` is the one that proves the guard is not an accident of "git refuses to delete the
-	// branch the cockpit is on" (the cockpit only ever sits on one of them).
+	// Every protected branch — `main`, `master`, `dev` — one row each: `dev` is the case the issue's
+	// teardown meets in practice, and `main`/`master` are the ones that prove the guard is not an
+	// accident of "git refuses to delete the branch the cockpit is on" (the cockpit only ever sits
+	// on one of them).
 	for (const protectedBranch of PROTECTED_ROWS) {
 		it(`protects the long-lived branches: ${protectedBranch} survives a \`--branch ${protectedBranch}\` teardown`, () => {
 			// The worktree is on the PROTECTED branch and its file is MODIFIED, so the plain removal
