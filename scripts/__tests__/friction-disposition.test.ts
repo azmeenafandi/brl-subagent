@@ -31,7 +31,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -1379,6 +1379,20 @@ describe("friction-disposition — #533: a citation's evidence must resolve", ()
 		expect(result.err).toContain("family session.jsonl, session.jsonl.1..session.jsonl.5");
 	});
 
+	it("#533 T3c — a broken symlink is not a file here, so it is unresolvable-source", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = join(dir, "root");
+		mkdirSync(root, { recursive: true });
+		// A dangling symlink resolves to no regular file — same class as a directory: not a candidate
+		// for the family, so the search finds nothing rather than reporting an unreadable search.
+		symlinkSync(join(root, "gone"), join(root, "session.jsonl"));
+		const result = runCli(citationArgv(base, candidatesFile(dir, "t3c", [cited({ digest: "0123456789abcdef" })]), [root]));
+		expect(result.code).toBe(EXIT.LEDGER);
+		expect(result.err).toContain("unresolvable-source");
+		expect(result.err).not.toContain("source-unreadable");
+	});
+
 	it("#533 T3b — a citation past the last line is missing-line, never a clamp", () => {
 		const dir = citationDir();
 		const base = citationBase(dir);
@@ -1401,6 +1415,16 @@ describe("friction-disposition — #533: a citation's evidence must resolve", ()
 		const result = runCli(citationArgv(base, candidatesFile(dir, "t4", [entry]), [root]));
 		expect(result.code).toBe(EXIT.LEDGER);
 		expect(result.err).toContain("missing-digest");
+	});
+
+	it("#533 T4c — an empty digest is PRESENT and malformed, not missing", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}\n']]);
+		const result = runCli(citationArgv(base, candidatesFile(dir, "t4c", [cited({ digest: "" })]), [root]));
+		expect(result.code).toBe(EXIT.CANNOT_CHECK);
+		expect(result.err).toContain("invalid-digest");
+		expect(result.err).not.toContain("missing-digest");
 	});
 
 	it("#533 T4b — CRLF and invalid-UTF-8 lines hash as bytes, matching the generator", () => {
@@ -1516,6 +1540,30 @@ describe("friction-disposition — #533: a citation's evidence must resolve", ()
 		expect(missing.err).toContain("source-unreadable");
 	});
 
+	// chmod 000 is the instrument only where it is effective; as root it is a lie, so skip there
+	// (the ENOTDIR guard in T8 covers the privileged case).
+	it.skipIf(typeof process.getuid === "function" && process.getuid() === 0)("#533 T8b — a match does not hide an unreadable later family file", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}\n']]);
+		const second = join(root, "session.jsonl.1");
+		writeFileSync(second, '{"a":2}\n');
+		// chmod 000 is the instrument only where it is effective; as root it is a lie, so skip there
+		// (the ENOTDIR guard in T8 covers the privileged case).
+		chmodSync(second, 0o000);
+		const digest = digestAt(join(root, "session.jsonl"), 1);
+		try {
+			const result = runCli(citationArgv(base, candidatesFile(dir, "t8b", [cited({ digest })]), [root]));
+			// The match is in `session.jsonl` (sorted first), so an early return would pass. Every
+			// collected family file must be read before the verdict.
+			expect(result.code).toBe(EXIT.CANNOT_CHECK);
+			expect(result.err).toContain("source-unreadable");
+			expect(result.err).toContain(second);
+		} finally {
+			chmodSync(second, 0o644);
+		}
+	});
+
 	it("#533 T9 — without --source-root the output is byte-identical to the pre-#533 tool", () => {
 		const dir = citationDir();
 		const base = citationBase(dir);
@@ -1544,6 +1592,23 @@ describe("friction-disposition — #533: a citation's evidence must resolve", ()
 			"✗ candidate run-1:failed:1: neither a class nor a dismissal — an event without a disposition is the gap this seam exists to refuse\n",
 		);
 		expect(refused.code).toBe(EXIT.LEDGER);
+	});
+
+	it("#533 T9b — without --source-root, problems keep FILE order", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		// Reversed against eventId order: a sort here would swap the two stderr lines and break the
+		// byte-identical compatibility contract with the pre-#533 tool (§1.5).
+		const file = candidatesFile(dir, "t9b", [
+			cited({ eventId: "b-x:failed:1", class: "nope" }),
+			cited({ eventId: "a-x:failed:1", class: "nope2" }),
+		]);
+		const result = runCli(citationArgv(base, file));
+		expect(result.code).toBe(EXIT.LEDGER);
+		const lines = result.err.trim().split("\n");
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toContain("candidate b-x:failed:1");
+		expect(lines[1]).toContain("candidate a-x:failed:1");
 	});
 
 	it("#533 T10 — the counts are one per outcome, and they print on failure too", () => {

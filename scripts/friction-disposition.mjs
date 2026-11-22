@@ -916,10 +916,12 @@ function checkCandidateSeam({ ledger, candidates, resolutions }, problems, stats
 			dismissed += 1;
 		}
 	}
-	// Problems sorted by eventId (bytewise), so a refusal list is a function of the file's content and
-	// never of the order its lines happen to sit in. `sort` is stable: two problems on one event keep
-	// the order their rules fired in.
-	for (const item of found.sort((a, b) => compareClasses(a.eventId, b.eventId))) problems.push(item.entry);
+	// Problems are sorted by eventId (bytewise) only once a resolution pass ran: then a refusal list is
+	// a function of the file's content and never of the order its lines happen to sit in. Without
+	// `--source-root` the RESOLVED problems stay in file order, so stderr remains byte-identical to the
+	// pre-#533 tool. `sort` is stable: two problems on one event keep the order their rules fired in.
+	const ordered = resolutions ? found.sort((a, b) => compareClasses(a.eventId, b.eventId)) : found;
+	for (const item of ordered) problems.push(item.entry);
 	stats.candidates = { total: list.length, cited, dismissed, claimedLive: candidates.claimedLive === true };
 	if (resolutions) Object.assign(stats.candidates, counts);
 }
@@ -1247,7 +1249,9 @@ function resolveOne(entry, listings) {
 	const source = entry?.source;
 	const parsed = parseSource(source);
 	if (!parsed) return { status: "invalid-source", tried: [] };
-	if (entry.digest === undefined || entry.digest === null || entry.digest === "") {
+	// Only an absent key is missing. `""` is a PRESENT, malformed digest and goes through the grammar
+	// below to `invalid-digest` — a candidate that names an empty digest has malformed evidence.
+	if (entry.digest === undefined || entry.digest === null) {
 		return { status: "missing-digest", tried: [] };
 	}
 	if (typeof entry.digest !== "string" || !DIGEST_RE.test(entry.digest)) return { status: "invalid-digest", tried: [] };
@@ -1263,6 +1267,10 @@ function resolveOne(entry, listings) {
 		try {
 			stat = statSync(path);
 		} catch (error) {
+			// ENOENT means there is no file here to read — a broken symlink resolves to no regular file,
+			// exactly like a directory, so it is not a candidate for the family (§1.2 step 2). Every other
+			// stat error (EACCES, ELOOP, ENOTDIR…) is an incomplete search and fails closed.
+			if (error?.code === "ENOENT") continue;
 			return { status: "source-unreadable", tried: [path] };
 		}
 		// A symlink is followed (statSync) only when it resolves to a regular file; a directory is not a file.
@@ -1270,21 +1278,29 @@ function resolveOne(entry, listings) {
 	}
 	if (files.length === 0) return { status: "unresolvable-source", tried: [] };
 
+	// Every collected file is READ before the verdict, even after a match: a close must not pass on a
+	// partial search, so an unreadable later family file turns a would-be pass into `source-unreadable`.
+	// Reading more than the match needs is the correct trade (§1.3/G2).
 	const tried = [];
+	const unreadable = [];
 	let sawLine = false;
+	let matched = false;
 	for (const path of files) {
 		let body;
 		try {
 			body = readFileSync(path);
 		} catch (error) {
-			return { status: "source-unreadable", tried: [path] };
+			unreadable.push(path);
+			continue;
 		}
 		tried.push(path);
 		const line = lineAt(body, parsed.line);
 		if (line === null) continue;
 		sawLine = true;
-		if (lineDigest(line) === entry.digest) return { status: RESOLVED, tried };
+		if (lineDigest(line) === entry.digest) matched = true;
 	}
+	if (unreadable.length > 0) return { status: "source-unreadable", tried: unreadable.sort(compareClasses) };
+	if (matched) return { status: RESOLVED, tried };
 	return { status: sawLine ? "stale-source" : "missing-line", tried };
 }
 
