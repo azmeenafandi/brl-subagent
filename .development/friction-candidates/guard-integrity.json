@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "cycle": "guard-integrity",
+  "claimedLive": false,
+  "candidates": [
+    {
+      "eventId": "4f7f859f-8dde-4fc2-83a6-7bbc6f90c7d1:failed:1",
+      "kind": "failed",
+      "runId": "4f7f859f-8dde-4fc2-83a6-7bbc6f90c7d1",
+      "ts": "2026-11-22T09:06:57.598Z",
+      "class": "transport-deaths",
+      "count": 1,
+      "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:14147",
+      "digest": "d0fe22f6a9547091",
+      "dismissed": null
+    },
+    {
+      "eventId": "4f7f859f-8dde-4fc2-83a6-7bbc6f90c7d1:retry:1",
+      "kind": "retry",
+      "runId": "4f7f859f-8dde-4fc2-83a6-7bbc6f90c7d1",
+      "ts": "2026-11-22T09:06:57.650Z",
+      "class": "transport-deaths",
+      "count": 1,
+      "source": "spawn-log:brl-subagent.log:668",
+      "digest": "3c6f239297bac836",
+      "dismissed": null,
+      "via": "transport"
+    }
+  ]
+}
