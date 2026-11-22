@@ -42,8 +42,10 @@ import {
 	evaluate,
 	isHandoffOwnCommit,
 	isHandoffOwnPath,
+	maskFences,
 	parseClaims,
 	sameRevision,
+	scanHeadings,
 	stateSection,
 } from "../lib/handoff-claims.mjs";
 
@@ -326,6 +328,101 @@ describe("handoff-verify — the parser", () => {
 		expect(stateSection("# Handoff\n\ntext only\n")).toBeNull();
 	});
 
+	/**
+	 * The structural scan (#579). The recurrence: a slice-replace re-appended a whole `## STATE … ## Open
+	 * items` block and the checker read the first `## STATE` only — 0 drift, 22-claim green. These rows pin
+	 * the ONE scanner that now answers both questions (which headings exist, where the STATE body ends), so
+	 * the section read and the headings counted cannot disagree.
+	 */
+	it("a duplicated STATE block is a state-drift", () => {
+		// Exactly two results, in document order, one per distinct heading — not one generic bullet and not
+		// one per occurrence. The claims stay the FIRST block's: the duplicate is a structure fault.
+		const correct = text("correct");
+		const stateBlock = correct.slice(correct.indexOf("## STATE"), correct.indexOf("## Open items"));
+		const openBlock = correct.slice(correct.indexOf("## Open items"), correct.indexOf("## Pointers"));
+		const doubled = `${stateBlock}${openBlock}\n${stateBlock}${openBlock}`;
+		const claims = parseClaims(doubled);
+		expect(claims.structure.duplicates.map((duplicate: { text: string }) => duplicate.text)).toEqual(["STATE", "Open items"]);
+		expect(claims.verified).toEqual({ sha: "4c1d9ab" });
+		const { results, drifts } = evaluate(claims, stub());
+		expect(drifts.map((drift) => drift.code)).toEqual([CODES.stateDrift, CODES.stateDrift]);
+		expect(drifts.map((drift) => drift.claim)).toEqual(["STATE 2", "Open items 2"]);
+		expect(results.filter((result: { ok: boolean }) => !result.ok)).toHaveLength(2);
+		// The CLI is where the old head printed `0 drift(s)` for this document: exit 1, and the first `✗`
+		// line names the claim.
+		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-duplicate-"));
+		const file = join(dir, "HANDOFF.md");
+		writeFileSync(file, doubled);
+		const result = run(["--file", file]);
+		expect(result.code).toBe(EXIT.DRIFT);
+		expect(result.out.split("\n").filter((line) => line.startsWith("✗"))[0]).toContain("✗ state-drift: STATE 2");
+	});
+
+	it("a duplicated other heading names its lines", () => {
+		// `## Pointers` is not a mandatory heading, but any H2 stated twice is the same fault; the detail
+		// names both lines so the reader does not have to grep for the second copy.
+		const document = text("correct").replace("## Pointers", "## Notes\n\none\n\n## Notes\n\ntwo\n\n## Pointers");
+		const notesLines = document
+			.split("\n")
+			.flatMap((line, index) => (line === "## Notes" ? [index + 1] : []));
+		expect(notesLines).toHaveLength(2);
+		const { results, drifts } = evaluate(parseClaims(document), stub());
+		expect(drifts.map((drift) => drift.claim)).toEqual(["Notes 2"]);
+		expect(drifts[0].actual).toBe(`2 at lines ${notesLines.join(", ")}`);
+		const failure = results.find((result: { ok: boolean }) => !result.ok);
+		expect(failure.line).toContain(`at lines ${notesLines.join(", ")}`);
+	});
+
+	it("a fenced heading is not a heading", () => {
+		// r1's finding: the old `stateSection` ignored fences, so a fenced `## STATE` could BE the section
+		// read while a fence-aware duplicate scan certified "one STATE". The scan now reports the boundary
+		// it counted, and the claim is the real block's — both assertions are load-bearing.
+		const document = ["```", "## STATE", "Verified: deadbee", "```", "## STATE", "Verified: 4c1d9ab", "", "## Open items", "- nothing"].join("\n");
+		expect(scanHeadings(document)).toEqual({
+			headings: [
+				{ text: "STATE", line: 5 },
+				{ text: "Open items", line: 8 },
+			],
+			duplicates: [],
+		});
+		expect(parseClaims(document).verified).toEqual({ sha: "4c1d9ab" });
+	});
+
+	it("a fenced line inside STATE is not a claim", () => {
+		// r2's regression: a fence-aware boundary WITHOUT masking reads the fenced `Verified: deadbee` —
+		// the old truncation that hid the fence was wrong but safe. Masking keeps the intent.
+		const document = ["## STATE", "```", "## Notes", "Verified: deadbee", "```", "Verified: 4c1d9ab", "`alpha.ts` 4", "", "## Open items", "- nothing"].join("\n");
+		const claims = parseClaims(document);
+		expect(claims.verified).toEqual({ sha: "4c1d9ab" });
+		// A claim AFTER the fence still parses: masking blanks the fenced lines, it does not truncate.
+		expect(claims.sizes).toEqual([{ name: "alpha.ts", lines: 4 }]);
+		// The fenced `## Notes` is not a heading, so it neither ends the section nor duplicates.
+		expect(claims.structure.headings.map((heading: { text: string }) => heading.text)).toEqual(["STATE", "Open items"]);
+		expect(claims.structure.duplicates).toEqual([]);
+		expect(maskFences("a\n```\nb\n```\nc")).toBe("a\n\n\n\nc");
+	});
+
+	it("tabs and tildes are headings and fences too", () => {
+		// `##\tSTATE` was accepted by `stateSection` but not by `/^## /` (r1 Major 6): one grammar, tabs
+		// included, so a tab heading is neither missed nor a duplicate that never was.
+		const tabs = ["## STATE", "Verified: 4c1d9ab", "##\tNotes", "one", "##\tNotes", "two", "## Open items", "- nothing"].join("\n");
+		expect(scanHeadings(tabs).duplicates).toEqual([{ text: "Notes", lines: [3, 5] }]);
+
+		// A tilde fence is a fence: the `## STATE` inside it is not a heading.
+		const tildes = ["~~~", "## STATE", "~~~", "## STATE", "Verified: 4c1d9ab", "## Open items", "- nothing"].join("\n");
+		expect(scanHeadings(tildes).headings.map((heading: { text: string }) => heading.text)).toEqual(["STATE", "Open items"]);
+
+		// A four-backtick opener is NOT closed by a three-backtick line, so the heading between them is content.
+		const nested = ["````", "```", "## Hidden", "````", "## STATE", "Verified: 4c1d9ab", "## Open items", "- nothing"].join("\n");
+		expect(scanHeadings(nested).headings.map((heading: { text: string }) => heading.text)).toEqual(["STATE", "Open items"]);
+
+		// An INFO string never closes (r3's major): ```js is closed by a bare ```, not by another ```js — so
+		// a code example cannot swallow the real headings, and masking cannot blank the real claim.
+		const info = ["```js", "## Hidden", "```js", "## Still hidden", "```", "## STATE", "Verified: 4c1d9ab", "## Open items", "- nothing"].join("\n");
+		expect(scanHeadings(info).headings.map((heading: { text: string }) => heading.text)).toEqual(["STATE", "Open items"]);
+		expect(parseClaims(info).verified).toEqual({ sha: "4c1d9ab" });
+	});
+
 	it("parses the install line's three shapes", () => {
 		expect(claimsOf("correct").install?.path).toEqual({ kind: "repo" });
 		expect(claimsOf("install-missing").install?.path).toEqual({ kind: "path", value: MISSING_PATH });
@@ -363,9 +460,46 @@ describe("handoff-verify — the verdict, check by check", () => {
 		const { results, drifts } = verdicts("correct");
 		expect(drifts).toEqual([]);
 		expect(results.every((result: { ok: boolean }) => result.ok)).toBe(true);
-		// verified, dev, install, open, suite, modules, adrs, then the THREE size claims (#583 added the
-		// `.mjs` row — a claim the parser could not see, so nothing checked it).
+		// structure emits NOTHING on a clean document, then verified, dev, install, open, suite, modules,
+		// adrs, then the THREE size claims (#583 added the `.mjs` row).
 		expect(results).toHaveLength(10);
+	});
+
+	it("the live handoff is structurally clean", () => {
+		// The recurrence's whole point: the real handoff states one `## STATE` and one `## Open items`.
+		// The probe answers with the document's OWN claims, so this row can fail only on the structure the
+		// document states — a stale copy in the live handoff would be a red suite, which is the alarm.
+		const live = parseClaims(readFileSync(join(ROOT, ".development", "HANDOFF.md"), "utf8"));
+		expect(live.structure.duplicates).toEqual([]);
+		expect(live.structure.headings.map((heading: { text: string }) => heading.text)).toEqual(["STATE", "Open items", "Operating notes", "Pointers"]);
+		const probe = stub({
+			headSha: () => live.verified?.sha,
+			// The document's own claims, not a stub's shas: this row measures STRUCTURE, and the fact-equal
+			// probe is what makes every other check answer instead of failing for an unrelated reason.
+			isAncestor: () => true,
+			devSha: () => live.dev.at(-1),
+			devClaimSha: () => live.dev.at(-1),
+			lineCount: (name: string) => {
+				const size = live.sizes.find((entry: { name: string }) => entry.name === name);
+				return size === undefined ? null : { path: name, lines: size.lines };
+			},
+			modules: () => live.modules.at(-1),
+			adrs: () => live.adrs.at(-1),
+			openIssues: () => live.open,
+			report: () =>
+				snapshot({
+					files: live.suite?.files,
+					tests: live.suite?.tests,
+					passed: live.suite?.passed ?? live.suite?.tests,
+					skipped: live.suite?.skipped ?? 0,
+				}),
+		});
+		const { results, drifts } = evaluate(live, probe, { noNetwork: true });
+		expect(drifts).toEqual([]);
+		expect(results.filter((result: { line: string }) => result.line.includes(CODES.stateDrift))).toEqual([]);
+		// The spec's measured live count (§3): 22 results, NOT the fixture's 10 — the ten-result pin is
+		// `correct.md`'s and conflating the two was r2's C6 finding.
+		expect(results).toHaveLength(22);
 	});
 
 	it("names verified-not-ancestor for a commit HEAD does not contain", () => {
@@ -766,6 +900,32 @@ describe("handoff-verify — the command", () => {
 		expect(result.out.split("\n").filter((line) => line.startsWith("✓"))).toHaveLength(10);
 		expect(result.out.split("\n").filter((line) => line.startsWith("✗"))).toHaveLength(0);
 		expect(result.out.split("\n").at(-1)).toBe("handoff-verify: 0 drift(s)");
+	});
+
+	it("the correct fixture still prints ten results", () => {
+		// The compatibility pin (#579): the structural check emits NO pass line, so a clean document prints
+		// byte-for-byte what it printed before the check existed — ten results, ten ✓.
+		const { results, drifts } = evaluate(claimsOf("correct"), stub());
+		expect(drifts).toEqual([]);
+		expect(results).toHaveLength(10);
+		expect(results.every((result: { ok: boolean; skipped: boolean }) => result.ok && !result.skipped)).toBe(true);
+		const result = run(["--file", join(FIXTURES, "correct.md")]);
+		expect(result.code).toBe(EXIT.OK);
+		expect(result.out.split("\n").filter((line) => line.startsWith("✓"))).toHaveLength(10);
+		expect(result.out).not.toContain(CODES.stateDrift);
+	});
+
+	it("a missing STATE is still a usage error", () => {
+		// Zero STATE exits in `main()` BEFORE `evaluate`, which is louder than a drift and already pinned:
+		// even a document with duplicated other headings is refused as a usage fault, never as state-drift.
+		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-no-state-"));
+		const file = join(dir, "HANDOFF.md");
+		writeFileSync(file, ["# Handoff", "", "## Open items", "- nothing", "", "## Notes", "one", "", "## Notes", "two", ""].join("\n"));
+		const result = run(["--file", file]);
+		expect(result.code).toBe(EXIT.USAGE);
+		expect(result.err).toContain('has no "## STATE" section');
+		expect(result.out).not.toContain(CODES.stateDrift);
+		expect(result.err).not.toContain(CODES.stateDrift);
 	});
 
 	it("emits `{ok, drifts}` under --json", () => {
@@ -1220,6 +1380,11 @@ describe("handoff-verify — the CLI seam", () => {
 			`- **Released:** nothing. Running install: **local-path dev checkout** (this repo, \`dev @ ${dev}\`).`,
 			`- **Board:** Open: ${open}, PR #402 held.`,
 			`- **Suite:** ${suite} green on dev; docs guards current (**${modules} modules**, **${adrs} ADRs**).`,
+			// The contract's other mandatory H2 (#579): the structural check reads the DOCUMENT, so a handoff
+			// with no `## Open items` is `Open items 0` — a clean fixture has to be a clean document.
+			"",
+			"## Open items",
+			`- ${open}.`,
 		].join("\n");
 	}
 
@@ -1360,6 +1525,56 @@ describe("handoff-verify — the CLI seam", () => {
 		expect(failures(result)).toHaveLength(1);
 		expect(failures(result)[0]).toContain(CODES.openSetDrift);
 		expect(failures(result)[0]).toContain("#777, #778");
+	});
+
+	/**
+	 * #579 (C9) — the SUBJECT. r3's finding: comparing `parseClaims(dup)` with `parseClaims(read(target))`
+	 * never exercises CLI subject RESOLUTION, so a CLI reading structure from one document and claims from
+	 * another passed. This drives the real seam against the repo's own `scratchRepo()`: the DEFAULT document
+	 * under `--root`, and `--file` naming another one, with conflicting documents on purpose.
+	 *
+	 * DEVIATION FROM THE SPEC'S LITERAL COMMAND, stated: `--report` is injected. Without a report the suite
+	 * check is a named "cannot check" (exit 2) for a scratch checkout's counts — r2 measured exactly that —
+	 * so a matching report is what makes both rows answerable; every other fact still follows `--root`.
+	 */
+	it("the scanner follows the resolved subject", () => {
+		const repo = scratchRepo();
+		const dir = mkdtempSync(join(tmpdir(), "brl-handoff-subject-"));
+		const report = join(dir, "suite.json");
+		writeFileSync(report, JSON.stringify(suiteBody(2, 40)));
+		const handoff = join(repo.dir, ".development", "HANDOFF.md");
+		const clean = scratchHandoff(repo, { suite: "2 files / 40 tests", open: "#426, #450" });
+		const duplicate = `${clean}\n\n## STATE\nVerified: ${createRepoProbe(repo.dir).devClaimSha()} (2026-11-08)\n`;
+		// The two documents the CLI must tell apart: a clean one and the stale-copy one.
+		const cleanFile = join(dir, "clean.md");
+		const duplicateFile = join(dir, "duplicate.md");
+		writeFileSync(cleanFile, clean);
+		writeFileSync(duplicateFile, duplicate);
+
+		// The resolved subject is the checkout's own handoff: clean → 0.
+		writeFileSync(handoff, clean);
+		const cleanRun = runCli(["--root", repo.dir, "--report", report, "--no-network"]);
+		expect(cleanRun.code).toBe(EXIT.OK);
+		expect(cleanRun.out).not.toContain(CODES.stateDrift);
+
+		// The stale copy appended to that same default document → exit 1, and the drift is the FIRST line.
+		writeFileSync(handoff, duplicate);
+		const drifted = runCli(["--root", repo.dir, "--report", report, "--no-network"]);
+		expect(drifted.code).toBe(EXIT.DRIFT);
+		expect(failures(drifted)[0]).toContain("✗ state-drift: STATE 2");
+		// The structured half (r3): exit 1 alone would also pass a run that drifted for another reason, so
+		// the JSON must name exactly this code and no other — the duplicated block is the ONLY fault here.
+		const json = runCli(["--root", repo.dir, "--report", report, "--no-network", "--json"]);
+		expect(json.code).toBe(EXIT.DRIFT);
+		expect(JSON.parse(json.out).drifts.map((drift: { code: string }) => drift.code)).toEqual([CODES.stateDrift]);
+
+		// `--file` names ANOTHER subject: the clean copy stays green while the duplicated one reddens, so the
+		// scan follows the document the CLI resolved and never a module-level cached one.
+		const viaFileClean = runCli(["--root", repo.dir, "--file", cleanFile, "--report", report, "--no-network"]);
+		expect(viaFileClean.code).toBe(EXIT.OK);
+		const viaFileDuplicate = runCli(["--root", repo.dir, "--file", duplicateFile, "--report", report, "--no-network"]);
+		expect(viaFileDuplicate.code).toBe(EXIT.DRIFT);
+		expect(failures(viaFileDuplicate)[0]).toContain("✗ state-drift: STATE 2");
 	});
 
 	it("exits 2 on a malformed --report or --issues, never 1", () => {
