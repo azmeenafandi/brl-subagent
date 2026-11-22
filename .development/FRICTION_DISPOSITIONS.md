@@ -20,6 +20,7 @@ this file while a render is running.
 | settle-handlers | 197 | 198 | 2026-11-20T13:25Z | 2026-11-21T04:57Z | reviewed inference: row 197 (tag `tooling`) is the only friction row logged live; row 198 is the close record (excluded); earlier cycles are pre-ledger legacy; the reconstructed classes come from issue/PR evidence and are not claimed to be live rows |
 | process-receipts | 199 | 208 | 2026-11-21T15:31Z | 2026-11-22T05:15Z | candidates: 10 machine-made (6 cited to `transport-deaths`, 4 dismissed as deliberate #574 probes, all resolved); rows 199-203 are pre-cycle release lessons inside the contiguous window; row 208 is this cycle's close record (excluded) |
 | guard-integrity | 209 | 217 | 2026-11-22T08:20Z | 2026-11-22T09:24Z | candidates: 2 (one run's transport death + its auto-retry, both cited to `transport-deaths` and resolved); rows 209-216 are this cycle's live rows; the METRICS row's window is 08:24:20Z (row 217 explains the trim) |
+| proof-integrity | 218 | 225 | 2026-11-22T09:57Z | 2026-11-22T11:10Z | rows 218-224 are this cycle's friction rows (218 = the previous cycle's post-close finding, recorded here because it sits after the close record); 225 is the close record (excluded) |
 
 ## Dispositions
 
@@ -46,10 +47,17 @@ this file while a render is running.
 | process-receipts | `tarball-smoke-install-target` | 201 | 1 occurrence: `pi install <tgz>` wrote the user registry; the working probe is `-ne -e` with clean settings | folded into #580 | #580 open | mechanical |
 | process-receipts | `transport-deaths` | — | 3 failed runs + 3 transport retries in this cycle's candidates, all cited and all resolved | fixed d3da4f7 | — | mechanical |
 | guard-integrity | `claim-scope-confusion` | 215 | 1 occurrence: a whole-document regex probe vs `parseClaims`'s §STATE scope found a phantom claim in `Since` prose | accepted → .pi/skills/worktree/SKILL.md::Notes | — | judgement |
-| guard-integrity | `gate-line-format` | 212 | 1 occurrence: the record wrote `(0.40)`, the classifier printed `(0.4)`; the gate refused it correctly | folded into #591 | #591 open | judgement |
+| guard-integrity | `gate-line-format` | 212 | 1 occurrence: the record wrote `(0.40)`, the classifier printed `(0.4)`; the gate refused it correctly | fixed 57e7a6e | — | judgement |
 | guard-integrity | `gh-porcelain-lag` | 210 | 1 occurrence: `gh run list` printed nothing for ~10 min while the API listed two runs; read as a dead Actions | accepted → .pi/skills/worktree/SKILL.md::Notes | — | judgement |
 | guard-integrity | `handoff-residual-self-inflicted` | 211 | 1 occurrence: #561's accepted residual claimed a 3-line file from its own documentation example | folded into #590 | #590 open | judgement |
-| guard-integrity | `jev-line-fabrication` | 209 | 5 fabricated payloads (.pi/jev-lines.log 374/376/378/383/389), none carrying a `usage` block; Rule 11: ≥2 | P0 #589 | #589 open | mechanical |
+| guard-integrity | `jev-line-fabrication` | 209 | 5 fabricated payloads (.pi/jev-lines.log 374/376/378/383/389), none carrying a `usage` block; Rule 11: ≥2 | fixed 9480ed0 | — | mechanical |
 | guard-integrity | `spec-rounds` | 214 | 1 occurrence: 4+3+1 critique rounds for ~40-line units; rounds 2-4 found real defects in the previous drafts | accepted → .pi/skills/worktree/references/spec-evidence.md::The five rules | — | judgement |
-| guard-integrity | `sprint-metrics-refused-dispatch` | 216 | 1 occurrence: a harness-refused dispatch counted as a dispatch, Δ −1, row unappendable | folded into #591 | #591 open | mechanical |
-| guard-integrity | `vacuous-test-filter` | 213 | 1 occurrence: `vitest -t` on an absent title exits 0 with all skipped | folded into #591 | #591 open | judgement |
+| guard-integrity | `sprint-metrics-refused-dispatch` | 216 | 1 occurrence: a harness-refused dispatch counted as a dispatch, Δ −1, row unappendable | fixed 57e7a6e | — | mechanical |
+| guard-integrity | `vacuous-test-filter` | 213 | 1 occurrence: `vitest -t` on an absent title exits 0 with all skipped | fixed 57e7a6e | — | judgement |
+| proof-integrity | `flag-scope-mismatch` | 223 | 1 occurrence: `--skip-extension-sync` governs only the extension sync; `fetch`/`pull --rebase` runs unconditionally, so the cockpit `dev` advances with the flag on (measured 23c6f8c → 21ca743) | folded into #570 | #570 open | judgement |
+| proof-integrity | `live-log-midrun` | 224 | 1 occurrence: a live-log evidence row moved 134/392 → 143/401 between two runs because the conductor dispatched from the cockpit while the implementer measured | accepted → .pi/skills/worktree/references/spec-evidence.md::The five rules | — | judgement |
+| proof-integrity | `recheck-transcription-drift` | 219 | 4 occurrences (#592 0.89/0.87, #593 0.52/0.53, #595 0.53/0.54, #594 0.28/0.27); Rule 11: ≥2 | P0 #596 | #596 open | mechanical |
+| proof-integrity | `seam-deletion-asymmetry` | 222 | 1 occurrence: the fixture seam compared only the copy's keys, so `rm SKILL.md` with `mutated:[]` passed 23 tests (caught by the C1 review, not by design review) | fixed 6e7d813 | — | mechanical |
+| proof-integrity | `spec-arithmetic` | 221 | 3 rounds on one unit (#572 v1 unreachable, v2 arithmetically impossible by construction, v3 one field short); Rule 11: ≥2 | P0 #598 | #598 open | mechanical |
+| proof-integrity | `spec-isolation-claim` | 218 | 1 occurrence: the #589 spec prescribed `JEV_PROVENANCE=<tmp>` for isolation, but only `merge-guard.sh` reads that variable (7 refs) and `jev-check.mjs` reads none — the critique wrote to the live log instead | accepted → .pi/skills/worktree/references/spec-evidence.md::Applying it (worked example, 2026-11-21) | — | mechanical |
+| proof-integrity | `unreachable-mutant` | 220 | 2 occurrences (#589 A8 after fixture migration, #591 M1 behind two early returns); Rule 11: ≥2 | P0 #597 | #597 open | mechanical |

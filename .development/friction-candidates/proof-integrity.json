@@ -1,0 +1,63 @@
+{
+ "version": 1,
+ "cycle": "proof-integrity",
+ "claimedLive": false,
+ "candidates": [
+  {
+   "eventId": "0e8f787f-decc-435b-86a4-d2c33ce752fd:steer:1",
+   "kind": "steer",
+   "runId": "0e8f787f-decc-435b-86a4-d2c33ce752fd",
+   "ts": "2026-11-22T10:30:37.938Z",
+   "class": null,
+   "count": 1,
+   "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:14706",
+   "digest": "c684be73bea1b7ef",
+   "dismissed": "a conductor STEER mid-run: the isError/reporter correction to impl-591 and the two spec additions to impl-570 \u2014 deliberate, and the intended mechanism for a live design fix"
+  },
+  {
+   "eventId": "933ee873-b41c-4489-84f8-b6b6588a06f1:steer:1",
+   "kind": "steer",
+   "runId": "933ee873-b41c-4489-84f8-b6b6588a06f1",
+   "ts": "2026-11-22T10:31:03.747Z",
+   "class": null,
+   "count": 1,
+   "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:14718",
+   "digest": "95aaafc4f6fcb23f",
+   "dismissed": "a conductor STEER mid-run: the isError/reporter correction to impl-591 and the two spec additions to impl-570 \u2014 deliberate, and the intended mechanism for a live design fix"
+  },
+  {
+   "eventId": "0e8f787f-decc-435b-86a4-d2c33ce752fd:steer:2",
+   "kind": "steer",
+   "runId": "0e8f787f-decc-435b-86a4-d2c33ce752fd",
+   "ts": "2026-11-22T10:36:25.956Z",
+   "class": null,
+   "count": 1,
+   "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:14777",
+   "digest": "6a3b25c7d5e2e9d0",
+   "dismissed": "a conductor STEER mid-run: the isError/reporter correction to impl-591 and the two spec additions to impl-570 \u2014 deliberate, and the intended mechanism for a live design fix"
+  },
+  {
+   "eventId": "510c831d-5a79-4d7a-9f15-6e45c49db2ce:failed:1",
+   "kind": "failed",
+   "runId": "510c831d-5a79-4d7a-9f15-6e45c49db2ce",
+   "ts": "2026-11-22T10:57:32.785Z",
+   "class": null,
+   "count": 1,
+   "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:14886",
+   "digest": "dff5e9340ee9d1d9",
+   "dismissed": "the #570 review's first dispatch died on a transport error and was re-dispatched; counted as the window's 1 death and 1 retried, already in the METRICS row"
+  },
+  {
+   "eventId": "510c831d-5a79-4d7a-9f15-6e45c49db2ce:retry:1",
+   "kind": "retry",
+   "runId": "510c831d-5a79-4d7a-9f15-6e45c49db2ce",
+   "ts": "2026-11-22T10:57:32.931Z",
+   "class": "recheck-transcription-drift",
+   "count": 1,
+   "source": "spawn-log:brl-subagent.log:773",
+   "digest": "4f42aef89edd1ace",
+   "dismissed": null,
+   "via": "transport"
+  }
+ ]
+}
