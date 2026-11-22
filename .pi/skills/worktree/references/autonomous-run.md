@@ -100,6 +100,11 @@ SKILL's conditional line); otherwise the session only.
 - **Autonomy changes who decides within scope, not the standards** — the merge
   gate, the evidence bar, the review and the cycle ritual are unchanged.
 
+**Waiting is a tool.** Poll with the API's own `status` field, at a stated interval, and stop on
+the first terminal value — not `sleep`-and-hope over porcelain. `gh event listen` would be better
+and is **403 on this account** (the preview is waitlisted), so polling is the sanctioned pattern
+here rather than a shortcut: say which one you are using and why.
+
 ## 8. Crash and resume
 
 `§STATE` (Verified / dev / Suite / In flight) is the recovery point. On a fresh

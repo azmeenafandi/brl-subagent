@@ -683,6 +683,15 @@ mechanics, verdict format: `references/review-dispatch.md`.
   skill → no channel.
 - If a script fails, read its output — it states the mode chosen and why. That
   output is the audit trail.
+- **`gh` 2.105+ prints an agent hint on stderr** (`#15077`, suggesting
+  `gh event listen`). `stdout` stays data, so never parse a merged stream:
+  `2>/dev/null` when reading the result, `2>&1 >/dev/null` when reading the
+  hint. `tail -1` on `2>&1` is how a PR URL became an accessibility notice.
+- **`gh api` is the fact source; the porcelain lags.** `gh run list` printed
+  nothing for a branch while `gh api .../actions/runs?branch=…` returned two
+  rows — for about ten minutes (2026-11-22). An empty `gh pr checks` / `gh run
+  list` is not evidence of absence; confirm with the API before concluding a
+  workflow never dispatched.
 - The skill is the playbook, the scripts are the enforcement, the docs are the
   written team agreement. Process rules 9-12 and the trust protocol are in this
   skill; the metrics store is `.development/METRICS.md`; the friction log is
