@@ -209,6 +209,57 @@ describe("handoff-verify — the parser", () => {
 		]);
 	});
 
+	/** A `## STATE` document — the only surface `parseClaims` scans, so no probe runs over a whole file. */
+	function state(body: string) {
+		return parseClaims(["## STATE", "Verified: 4c1d9ab", body].join("\n"));
+	}
+
+	it("a prose number after a path is not a size claim", () => {
+		// D1: `2 call sites` is prose, not a line count. The old regex claimed it for `src/tui.ts`.
+		expect(state("- the `src/tui.ts` 2 call sites changed").sizes).toEqual([]);
+	});
+
+	it("a comma is not a number", () => {
+		// D2: the issue's 0-line claim. `[\d,]+` accepted a bare comma and `parseCount(",")` is 0.
+		expect(state("- `src/tui.ts`, changed").sizes).toEqual([]);
+		expect(state("- `src/tui.ts`,").sizes).toEqual([]);
+	});
+
+	it("a grouped number followed by prose is not a claim", () => {
+		// D3: a terminator without an indivisible token backtracks to `3`.
+		expect(state("- `a.ts` 3,240 tests were added").sizes).toEqual([]);
+	});
+
+	it("a terminated number still claims", () => {
+		// The other half: the strict grammar must not swallow a present claim — every terminator, and
+		// the comma/list and bold shapes among them.
+		const claims = state(
+			[
+				"- `a.ts` 356; `b.ts` is 3,240",
+				"- `c.ts` 12, `d.ts` 3",
+				"- `e.ts` 3,240 lines",
+				"- `f.ts` is **3,240**",
+			].join("\n"),
+		);
+		expect(claims.sizes).toEqual([
+			{ name: "a.ts", lines: 356 },
+			{ name: "b.ts", lines: 3240 },
+			{ name: "c.ts", lines: 12 },
+			{ name: "d.ts", lines: 3 },
+			{ name: "e.ts", lines: 3240 },
+			{ name: "f.ts", lines: 3240 },
+		]);
+	});
+
+	it("ungrouped integers are claims", () => {
+		// `\d{1,3}(?:,\d{3})*` would read `3240` as `324` and drop the claim; grouping is optional.
+		expect(state("- `a.ts` 3240\n- `b.ts` 1000;\n- `c.ts` is 999.").sizes).toEqual([
+			{ name: "a.ts", lines: 3240 },
+			{ name: "b.ts", lines: 1000 },
+			{ name: "c.ts", lines: 999 },
+		]);
+	});
+
 	it("still drifts on a present claim stated with `is`", () => {
 		const present = parseClaims(text("correct").replace("`alpha.ts` is **10**", "`alpha.ts` is 2,249"));
 		expect(present.sizes).toContainEqual({ name: "alpha.ts", lines: 2249 });

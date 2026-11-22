@@ -152,9 +152,19 @@ const ADRS_RE = /(?<![\d/])\b(\d+)[ \t]+ADRs\b/g;
 // (a parenthesis breaks the immediate-number rule), or a comparison (`2,249 vs 2,248`, #505). The
 // lookahead is what keeps history out of a current-size check. `.ts|.mjs|.sh|.py` because the claim names
 // `scripts/` files too — a `.mjs` row the old alternation could not see is a row nothing checked (#583).
+// A size claim must CLAIM (#561). Three load-bearing pieces, each measured:
+//   - digit-led: `(\d+(?:,\d{3})*)` — a bare comma is not a number (`parseCount(",")` was 0), and an
+//     ungrouped integer (`3240`) is still a claim, so grouping is optional but never partial;
+//   - indivisible: `(?!\d)(?!,\d)` — no digit and no `,`+digit may follow the token. Without it a
+//     terminator lets the token backtrack and `3,240 tests` becomes the claim `3`;
+//   - terminated: the number ends the line/section, or is followed by `;` `,` `)` `.` or `lines` — a
+//     letter right after it disqualifies it (`2 call sites`, `3,240 tests`).
+// Accepted residual (spec §4 R1): a comma or `lines` after a number still claims, so
+// `` `a.ts` 3 lines changed `` is read as a size claim — indistinguishable from the legitimate forms.
 const SIZE_RE = new RegExp(
-	"`((?:[\\w.-]+/)*[\\w.-]+\\.(?:ts|mjs|sh|py))`(?:[ \\t]+is)?[ \\t]*\\*{0,2}([\\d,]+)\\*{0,2}" +
-		"(?![\\d,]*[ \\t]*(?:→|->|\\+|/|versus\\b|vs\\b))",
+	"`((?:[\\w.-]+/)*[\\w.-]+\\.(?:ts|mjs|sh|py))`(?:[ \\t]+is)?[ \\t]*\\*{0,2}(\\d+(?:,\\d{3})*)(?!\\d)(?!,\\d)\\*{0,2}" +
+		"(?![\\d,]*[ \\t]*(?:→|->|\\+|/|versus\\b|vs\\b))" +
+		"(?=[ \\t]*(?:\\r?\\n|$|[;,).]|lines\\b))",
 	"g",
 );
 
