@@ -7,13 +7,22 @@
 // nested run directory was reported as "no report". Both gates (the handoff's suite claim and the PR
 // body's `suite:` key) inherited both faults from the one module that defined them.
 //
-// THE COUNT IS DERIVED, NEVER QUOTED. `tests = Σ testResults[i].assertionResults.length`. Every
-// top-level count vitest writes is a claim about the run, and a claim can be planted; the assertion
-// results ARE the run. Measured ground truth on this repo (2842 tests): a green report has
-// `numPassedTests === Σ`, a red run has `numPassedTests < Σ` — which is why the rule is
-// "`numTotalTests` must equal Σ, and `numPassedTests` may not EXCEED it", not "numPassedTests must
-// equal Σ". Equality on `numPassedTests` would refuse a legitimate red run, and the handoff is
-// written right after a red run more often than anyone would like.
+// THE COUNT IS DERIVED, NEVER QUOTED (#583). `passed`, `failed` and `skipped` come from
+// `assertionResults[].status` and `tests = passed + failed + skipped`. Every top-level count vitest
+// writes is a claim about the run, and a claim can be planted; the assertion results ARE the run. So
+// each stated count is compared EXACTLY with the derivation — `numTotalTests === tests`,
+// `numPassedTests === passed`, `numFailedTests === failed`, `numPendingTests === skipped`.
+//
+// Why exact and not "numPassedTests may not exceed Σ": the old relaxations existed so a legitimate
+// red run was not refused, and exactness keeps that — a red run has `failed > 0` on BOTH sides and
+// matches. What the relaxations cost was the whole point: a report could say `numFailedTests: 0`
+// against a failed assertion and still validate, and the handoff's "0 failed" was checked against
+// nothing. All 133 saved reports in this repo satisfy the exact rules, red ones included.
+//
+// A STATUS NOBODY CLASSIFIED IS NOT A SKIP. Only `passed | failed | skipped | pending | todo` are
+// expected (`skipped|pending|todo` are all `skipped`); anything else — including a missing status —
+// is `unknown-status` and refuses. Bucketing the unknown into `skipped` would let a malformed run
+// read as a non-red one.
 //
 // REFUSALS ARE NAMED, and every one is a `ReportError` (an `InputError` with a `code`), so both CLIs
 // answer with their existing "cannot check" exit (2) and never with a drift (1): a hollow report is not
@@ -22,7 +31,8 @@
 //   unreadable · not-json          the file is not readable / not JSON
 //   empty-results                  `testResults` missing, not an array, or empty
 //   hollow-report                  Σ assertion results is 0 — a pass count with nothing behind it
-//   count-mismatch                 `numTotalTests` ≠ Σ, or `numPassedTests` > Σ
+//   unknown-status                 an assertion's `status` is outside passed|failed|skipped|pending|todo
+//   count-mismatch                 a stated top-level count ≠ the count derived from the results
 //   provenance-unreadable          a sidecar exists and cannot be read as `{head, dirty, capturedAt}`
 //   provenance-mismatch            a caller expected a head and the sidecar names another
 //   ambiguous-reports              several candidates, and nothing disambiguates them
@@ -66,7 +76,7 @@
 // — it is refused as "no report", never guessed at.
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { InputError, sameRevision } from "./handoff-claims.mjs";
 import { defaultRoot, validateRoot } from "./scratch-root.mjs";
 
@@ -76,6 +86,7 @@ export const CODES = Object.freeze({
 	NOT_JSON: "not-json",
 	EMPTY_RESULTS: "empty-results",
 	HOLLOW_REPORT: "hollow-report",
+	UNKNOWN_STATUS: "unknown-status",
 	COUNT_MISMATCH: "count-mismatch",
 	PROVENANCE_UNREADABLE: "provenance-unreadable",
 	PROVENANCE_MISMATCH: "provenance-mismatch",
@@ -188,9 +199,75 @@ export function provenanceRecord(record) {
 // ---------------------------------------------------------------------------
 
 /**
- * Throws the first refusal a report earns. Order matters for the message a human reads: an empty
- * result set explains a zero count, so it is named first; the count rules then speak about a report
- * that at least has results in it.
+ * The statuses a vitest JSON report may carry. `skipped | pending | todo` all count as `skipped`; any
+ * other value — `undefined` included — is `unknown-status`, because a run nobody can classify must not
+ * read as a non-red one.
+ */
+export const ALLOWED_STATUSES = Object.freeze(["passed", "failed", "skipped", "pending", "todo"]);
+
+/** The count a status contributes to: the only three buckets a claim can be compared against. */
+export const SKIPPED_STATUSES = Object.freeze(["skipped", "pending", "todo"]);
+
+/**
+ * How a result file is named in a message: repo-relative when that is possible (the reader's cwd is the
+ * repo when a gate runs), else exactly as vitest wrote it. Never empty — a refusal that cannot say WHERE
+ * is one a reader has to guess about.
+ */
+function resultName(file, index) {
+	const name = typeof file?.name === "string" && file.name !== "" ? file.name : `testResults[${index}]`;
+	if (!name.startsWith("/")) return name;
+	const short = relative(process.cwd(), name);
+	return short === "" || short.startsWith("..") ? name : short;
+}
+
+/**
+ * The derivation: `{ tests, passed, failed, skipped, firstFailure }`, straight off the assertion results.
+ *
+ * `firstFailure` is the first result file (document order) whose own `status` is `failed` OR that carries
+ * a failed assertion — vitest sets the file status on a load error, which produces no assertion at all.
+ * Derived from THIS pass over `results`, never a second read of the file: the snapshot is the evidence.
+ */
+function derive(results, path) {
+	let passed = 0;
+	let failed = 0;
+	let skipped = 0;
+	let firstFailure = "";
+	for (const [index, file] of results.entries()) {
+		const assertions = Array.isArray(file?.assertionResults) ? file.assertionResults : [];
+		let fileFailed = file?.status === "failed";
+		for (const assertion of assertions) {
+			const status = assertion?.status;
+			if (!ALLOWED_STATUSES.includes(status)) {
+				throw new ReportError(
+					CODES.UNKNOWN_STATUS,
+					`${path}: ${resultName(file, index)} carries an assertion with status ${JSON.stringify(status ?? null)} — expected ${ALLOWED_STATUSES.join(", ")}; a missing status is not a skip, and a run nobody can classify is not evidence`,
+				);
+			}
+			if (status === "passed") passed += 1;
+			else if (status === "failed") {
+				failed += 1;
+				fileFailed = true;
+			} else skipped += 1;
+		}
+		if (fileFailed && firstFailure === "") firstFailure = resultName(file, index);
+	}
+	return { tests: passed + failed + skipped, passed, failed, skipped, firstFailure };
+}
+
+/** One stated top-level count against the derivation — named field, both values, exact equality. */
+function crossCheck(report, field, derived, path) {
+	const stated = report[field];
+	if (typeof stated !== "number" || stated === derived) return;
+	throw new ReportError(
+		CODES.COUNT_MISMATCH,
+		`${path}: ${field} ${stated} ≠ ${derived} derived from assertionResults — the report contradicts itself`,
+	);
+}
+
+/**
+ * Throws the first refusal a report earns, and returns the derivation when it earns none. Order matters
+ * for the message a human reads: an empty result set explains a zero count, so it is named first; the
+ * status and count rules then speak about a report that at least has results in it.
  */
 function validate(results, report, path) {
 	if (!Array.isArray(report?.testResults) || report.testResults.length === 0) {
@@ -199,8 +276,8 @@ function validate(results, report, path) {
 			`${path}: no testResults — is this vitest's json reporter output? A report with no results proves nothing`,
 		);
 	}
-	const tests = results.reduce((total, file) => total + (Array.isArray(file?.assertionResults) ? file.assertionResults.length : 0), 0);
-	if (tests === 0) {
+	const derived = derive(results, path);
+	if (derived.tests === 0) {
 		throw new ReportError(
 			CODES.HOLLOW_REPORT,
 			`${path}: ${results.length} result file(s) and 0 assertion results — ${
@@ -208,27 +285,35 @@ function validate(results, report, path) {
 			} is not evidence of a suite`,
 		);
 	}
-	if (typeof report.numTotalTests === "number" && report.numTotalTests !== tests) {
-		throw new ReportError(
-			CODES.COUNT_MISMATCH,
-			`${path}: numTotalTests ${report.numTotalTests} ≠ ${tests} assertion results — the report contradicts itself`,
-		);
-	}
-	if (typeof report.numPassedTests === "number" && report.numPassedTests > tests) {
-		throw new ReportError(
-			CODES.COUNT_MISMATCH,
-			`${path}: numPassedTests ${report.numPassedTests} > ${tests} assertion results — a pass count larger than the run it describes`,
-		);
-	}
-	return tests;
+	crossCheck(report, "numTotalTests", derived.tests, path);
+	crossCheck(report, "numPassedTests", derived.passed, path);
+	crossCheck(report, "numFailedTests", derived.failed, path);
+	crossCheck(report, "numPendingTests", derived.skipped, path);
+	return derived;
 }
 
 /**
- * A validated report: `{ path, files, tests, provenance, label }`.
+ * A validated report snapshot — every field a claim can be checked against, derived once:
  *
- * `files` is the number of test files vitest reported, `tests` is DERIVED (never `numPassedTests`), and
- * `label` is the provenance phrase a verdict line prints. With `expectHead`, a sidecar naming another
- * commit is refused `provenance-mismatch`; absent provenance is accepted and labelled.
+ *   path          the report's own path, as given
+ *   files         `testResults.length` (the number of test FILES vitest reported)
+ *   tests         DERIVED: `passed + failed + skipped` (never `numPassedTests`)
+ *   passed        assertion results whose status is `passed`
+ *   failed        assertion results whose status is `failed`
+ *   skipped       assertion results whose status is `skipped`, `pending` or `todo`
+ *   failedSuites  `numFailedTestSuites` when stated, else 0 — a load error fails a FILE, not an assertion
+ *   firstFailure  repo-relative path of the first failed file (own status or a failed assertion), "" when none
+ *   success       `report.success !== false` — vitest's own verdict on the run; `false` is RED
+ *   hasTotal      `typeof numTotalTests === "number"` — the README guard's presence check, never raw JSON
+ *   provenance    the sidecar record or `null`
+ *   label         the provenance phrase a verdict line prints
+ *
+ * `failed > 0` is not the only red: a failed test FILE (a load error) yields `success: false`,
+ * `numFailedTests: 0` and zero failed assertions, so `failedSuites` and `success` travel too — a
+ * consumer that sees only `tests` cannot tell a red run from a green one with the same total.
+ *
+ * With `expectHead`, a sidecar naming another commit is refused `provenance-mismatch`; absent
+ * provenance is accepted and labelled.
  */
 export function readSuiteReport(path, { expectHead = "" } = {}) {
 	let text;
@@ -244,7 +329,7 @@ export function readSuiteReport(path, { expectHead = "" } = {}) {
 		throw new ReportError(CODES.NOT_JSON, `${path}: not JSON (${describe(error)})`);
 	}
 	const results = report?.testResults;
-	const tests = validate(results, report, path);
+	const derived = validate(results, report, path);
 	const { provenance } = readProvenance(path);
 	if (expectHead !== "" && provenance !== null && !sameRevision(provenance.head, expectHead)) {
 		throw new ReportError(
@@ -252,7 +337,20 @@ export function readSuiteReport(path, { expectHead = "" } = {}) {
 			`${path}: captured at ${provenance.head}, and the expected head is ${expectHead} — a report of another tree is not evidence about this one`,
 		);
 	}
-	return { path, files: results.length, tests, provenance, label: describeProvenance(provenance) };
+	return {
+		path,
+		files: results.length,
+		tests: derived.tests,
+		passed: derived.passed,
+		failed: derived.failed,
+		skipped: derived.skipped,
+		failedSuites: typeof report.numFailedTestSuites === "number" ? report.numFailedTestSuites : 0,
+		firstFailure: derived.firstFailure,
+		success: report.success !== false,
+		hasTotal: typeof report.numTotalTests === "number",
+		provenance,
+		label: describeProvenance(provenance),
+	};
 }
 
 // ---------------------------------------------------------------------------

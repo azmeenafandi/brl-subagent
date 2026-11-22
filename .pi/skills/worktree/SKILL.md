@@ -518,7 +518,7 @@ mechanics, verdict format: `references/review-dispatch.md`.
 - **`check-test-budget.mjs <report> | --flow [--base <ref>] --head <sha> | --declaration`** — the
   test-size policy (v2). The stock ratio is **reported, not enforced**: `src` against a 2.0
   reference with a 1.95 warning band, `scripts` against 1.0 — crossing a reference prints a
-  warning and exits 0 (the wall ceiling, 60 s global, is still a finding). What gates is the
+  warning and exits 0 (the wall ceiling, 90 s global, is still a finding). What gates is the
   per-PR **flow**: `--flow` measures NET test:source lines from
   `git diff --no-renames --numstat <base>...<head>` (git only; the head need not be checked out)
   and allows `120 + 2 × max(Δsource, 0)` test lines **per surface** — exit 0 within, 1 over,

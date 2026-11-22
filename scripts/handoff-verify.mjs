@@ -51,7 +51,8 @@
 //   module/ADR counts     the selected root's own generators (`docs-arch`, `docs-decisions`), imported rather
 //                         than re-counted so the guard and the generator cannot disagree.
 //   file sizes            `wc -l` — `countLines` from `scripts/check-test-budget.mjs`, one definition of
-//                         "physical lines" in the repo.
+//                         "physical lines" in the repo. A claimed name resolves `src/`, then `scripts/`,
+//                         then the root, so a bare `friction-disposition.mjs` is a checkable claim (#583).
 //
 // The resolved root is printed with the verdict (the `Running install:` line names `this repo (<root>)`), so a
 // run against a foreign checkout is self-identifying instead of looking like this one.
@@ -101,9 +102,14 @@ function describeError(error) {
 // Facts — the repo side. Everything IO-shaped lives behind `createRepoProbe`.
 // ---------------------------------------------------------------------------
 
-/** `src/<name>` first (every counted file is a module), then the repo root. `null` when neither exists. */
+/**
+ * `src/<name>` first (every counted module lives there), then `scripts/<name>` (the process tooling a
+ * `Suite:`/size row also names), then the repo root. The order is documented and load-bearing: a name
+ * present in both `src/` and `scripts/` resolves to `src/`, which is where the module claims point.
+ * `null` when none exists.
+ */
 export function resolveModulePath(root, name) {
-	for (const candidate of [join(root, "src", name), join(root, name)]) {
+	for (const candidate of [join(root, "src", name), join(root, "scripts", name), join(root, name)]) {
 		if (existsSync(candidate)) return candidate;
 	}
 	return null;

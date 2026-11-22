@@ -238,12 +238,94 @@ describe("review-record — the emitted block", () => {
 		expect(readFileSync(out, "utf8")).toBe(GOLDEN);
 	});
 
-	it("carries a conductor-verified line when one is given", () => {
+	it("carries a conductor-verified line when one is given, and it clears only with the head and evidence", () => {
 		const out = scratch("conductor.md");
-		expect(write(argvFor({}, out, ["--conductor-verified", "suite green on the final commit"])).code).toBe(EXIT.WRITTEN);
+		const marker = `${NEXT.slice(0, 7)} — suite green on the final commit`;
+		expect(write(argvFor({}, out, ["--conductor-verified", marker])).code).toBe(EXIT.WRITTEN);
 		const record = readFileSync(out, "utf8");
-		expect(record).toContain("conductor-verified: suite green on the final commit\n");
+		expect(record).toContain(`conductor-verified: ${marker}\n`);
+		// #583: the marker is the post-verdict disposition, so it clears the POST-verdict head — not any head.
 		expect(codes(record, { pr: "412", head: NEXT })).toEqual([]);
+		expect(codes(record, { pr: "412", head: HEAD })).toEqual([]);
+		// A marker with no sha names nothing, so it clears nothing: the record's own head (HEAD) does not
+		// cover NEXT, and the marker cannot stand in for it.
+		const bare = scratch("conductor-bare.md");
+		expect(write(argvFor({}, bare, ["--conductor-verified", "suite green on the final commit"])).code).toBe(EXIT.WRITTEN);
+		expect(codes(readFileSync(bare, "utf8"), { pr: "412", head: NEXT })).toEqual(["head-mismatch"]);
+	});
+});
+
+/**
+ * #583 / spec v2 §2.4 + v3 §2.4a — check (d) is a LINE, not a word, on BOTH head-aware surfaces. This is
+ * the offline one: `node scripts/review-record.mjs --check --pr <n> --head <sha> <record>`, which is what
+ * `merge-guard.sh --check-record` delegates to. The shell half of the same matrix lives in
+ * `merge-guard.sh --selftest` (rows U2-1…U2-9); a row that passes one surface and fails the other is the
+ * parity defect this unit exists to remove.
+ *
+ * Every fixture states an EARLIER `Reviewed head:` (the F01 shape: the verdict covers an old commit and a
+ * later one landed), so the marker is the only path to (d) — which is exactly the case a prose mention
+ * used to clear.
+ */
+describe("review-record — (d) is a line, not a word (#583)", () => {
+	const STALE = "1111111111111111111111111111111111111111";
+
+	let counter = 0;
+	function check(text: string, head = HEAD): { code: number; out: string; err: string } {
+		const path = scratch(`check-${(counter += 1)}.md`);
+		writeFileSync(path, text);
+		const out: string[] = [];
+		const err: string[] = [];
+		const code = recordCheck([path, "--pr", "412", "--head", head], { out: (line: string) => void out.push(line), err: (line: string) => void err.push(line) });
+		return { code, out: out.join("\n"), err: err.join("\n") };
+	}
+
+	/** A record whose `Reviewed head:` names an earlier commit; `lines` is what is being pinned. */
+	function record(lines: string[]): string {
+		return ["# Review — PR #412", "", ...lines, "Verdict: approve", "Risk class: C1", `jev-recheck: ${RECHECK}`].join("\n");
+	}
+
+	const matrix: [string, string, number][] = [
+		["U2-1 a marker for this head, with evidence, clears (d)", record([`Reviewed head: ${STALE}`, `conductor-verified: ${HEAD.slice(0, 7)} — tsc clean, suite 3296`]), EXIT.WRITTEN],
+		["U2-2 a marker with no sha fails (d)", record([`Reviewed head: ${STALE}`, "conductor-verified: — tsc clean"]), EXIT.REFUSED],
+		["U2-3 a marker for another commit fails (d)", record([`Reviewed head: ${STALE}`, `conductor-verified: ${NEXT.slice(0, 7)} — tsc clean`]), EXIT.REFUSED],
+		["U2-4 a fenced marker fails (d)", record([`Reviewed head: ${STALE}`, "```", `conductor-verified: ${HEAD.slice(0, 7)} — tsc clean`, "```"]), EXIT.REFUSED],
+		["U2-5 a prose mention of the marker fails (d)", record([`Reviewed head: ${STALE}`, "the token `conductor-verified:` means nothing here"]), EXIT.REFUSED],
+		["U2-6 a marker with no evidence fails (d)", record([`Reviewed head: ${STALE}`, `conductor-verified: ${HEAD.slice(0, 7)} — !!!`]), EXIT.REFUSED],
+		["U2-7 the head in prose only fails (d)", record([`The review covered ${HEAD} on the worktree branch.`]), EXIT.REFUSED],
+		["U2-8 'Reviewed head:' alone clears (d)", record([`Reviewed head: ${HEAD.slice(0, 7)}`]), EXIT.WRITTEN],
+		["U2-9 a fenced 'Reviewed head:' fails (d)", record(["```", `Reviewed head: ${HEAD.slice(0, 7)}`, "```"]), EXIT.REFUSED],
+		["the label keeps its colon — 'Reviewed headlong:' is not the field", record([`Reviewed headlong: ${HEAD}`]), EXIT.REFUSED],
+		["the title form clears (d)", ["# Review of PR #412 @ " + HEAD.slice(0, 7), "", "Verdict: approve", "Risk class: C1", `jev-recheck: ${RECHECK}`].join("\n"), EXIT.WRITTEN],
+	];
+
+	for (const [label, text, expected] of matrix) {
+		it(label, () => {
+			expect(check(text).code).toBe(expected);
+		});
+	}
+
+	it("names head-mismatch with the three acceptable shapes, so the message teaches the format", () => {
+		const result = check(record(["the token `conductor-verified:` means nothing here"]));
+		expect(result.code).toBe(EXIT.REFUSED);
+		expect(result.err).toContain("head-mismatch");
+		expect(result.err).toContain("Reviewed head: ");
+		expect(result.err).toContain("the title form");
+		expect(result.err).toContain("conductor-verified: ");
+	});
+
+	/** spec v4 §C — the evidence grammar: two tokens, one with three LETTERS. A format check, not proof. */
+	it("refuses the evidence shapes that carry no information", () => {
+		for (const evidence of ["abc", "ab", "!!!", "a!! x", ""]) {
+			const marker = `conductor-verified: ${HEAD.slice(0, 7)} — ${evidence}`.replace(/ — $/, "");
+			expect(check(record([`Reviewed head: ${STALE}`, marker])).code, evidence || "bare sha").toBe(EXIT.REFUSED);
+		}
+	});
+
+	it("accepts the documented evidence shapes", () => {
+		for (const evidence of ["tsc: clean", "suite 3296/0 failed", "suite 90/1798, mutation-proven guard"]) {
+			const result = check(record([`Reviewed head: ${STALE}`, `conductor-verified: ${HEAD.slice(0, 7)} — ${evidence}`]));
+			expect(result.code, evidence).toBe(EXIT.WRITTEN);
+		}
 	});
 });
 

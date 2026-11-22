@@ -26,8 +26,9 @@
  * case-insensitive filesystem (the on-disk walk and git's index agree there by construction); and a
  * tracked file whose CONTENT drifted, which is not this check's subject.
  */
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { CONTRACT_DIR, EXIT, ROOT, checkContractTracking, main, trackedContractFiles } from "../check-contract-tracking.mjs";
@@ -197,5 +198,70 @@ describe("contract tracking — this repository", () => {
 		expect(result.code).toBe(EXIT.OK);
 		expect(result.out).toMatch(/^contract-tracking: \d+ tracked file\(s\), clean$/);
 		expect(result.out).not.toContain("untracked");
+	});
+});
+
+/**
+ * #583 (F03) — the untracked-file exit is the contract a CI step reads, and the in-process cases above
+ * derive it from the same `EXIT` constant the implementation uses: `DRIFT: 1 → 0` left this file 10/10
+ * green while the CLI exited 0 on a real untracked file.
+ *
+ * THE SEAM. `ROOT` is `<script dir>/..` and the script parses no argv, so neither `cwd` nor a flag can
+ * point it at a fixture. The test therefore copies BOTH scripts into `<scratch>/scripts/` and runs the
+ * copy — `ROOT` is then the scratch checkout, and its `.pi/brl-subagent/presets/…` fixture is what the
+ * guard inspects. A copy is legitimate because the subject is the CLI's contract, and the copy cannot be
+ * stale: its sha256 is asserted equal to the source's, so a mutated (or out-of-date) shipped file is
+ * either what runs or a failing assertion.
+ */
+describe("contract tracking — the exit code a CI step reads (#583)", () => {
+	const SCRIPTS = ["check-contract-tracking.mjs", "audit-scratch-instructions.mjs"];
+
+	function sha256(path: string): string {
+		return createHash("sha256").update(readFileSync(path)).digest("hex");
+	}
+
+	/** Copy both scripts into `<root>/scripts/`, asserting each copy is byte-identical to its source. */
+	function installScripts(root: string): void {
+		mkdirSync(join(root, "scripts"), { recursive: true });
+		for (const name of SCRIPTS) {
+			const source = join(ROOT, "scripts", name);
+			const copy = join(root, "scripts", name);
+			copyFileSync(source, copy);
+			expect(sha256(copy), name).toBe(sha256(source));
+		}
+	}
+
+	/** The CLI in a real process: `ROOT` is the copy's own checkout, and the env carries no NODE_OPTIONS. */
+	function runCli(root: string): { code: number; out: string; err: string } {
+		installScripts(root);
+		const env = { ...process.env };
+		delete env.NODE_OPTIONS;
+		const result = spawnSync(process.execPath, [join(root, "scripts", "check-contract-tracking.mjs")], {
+			cwd: root,
+			encoding: "utf8",
+			env,
+		});
+		return { code: result.status ?? -1, out: result.stdout ?? "", err: result.stderr ?? "" };
+	}
+
+	it("U3-3 exits 1 on one untracked contract file, and says 'untracked contract file:'", () => {
+		const untracked = join(CONTRACT_DIR, "presets", "three.md");
+		const root = repo("cli-untracked", { ...CLEAN, [untracked]: "# Three\n" });
+		const result = runCli(root);
+		expect(result.code).toBe(1);
+		expect(result.out).toContain(`untracked contract file: ${untracked}`);
+	});
+
+	it("U3-4 exits 2 with no contract directory, naming the usage fault", () => {
+		const root = repo("cli-no-dir", {}, []);
+		const result = runCli(root);
+		expect(result.code).toBe(2);
+		expect(result.err).toContain("cannot read the contract directory");
+	});
+
+	it("exits 0 on a clean contract directory — the control for both cases above", () => {
+		const result = runCli(repo("cli-clean"));
+		expect(result.code).toBe(0);
+		expect(result.out).toContain("clean");
 	});
 });

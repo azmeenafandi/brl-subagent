@@ -22,8 +22,10 @@
 //   3 install       the `Running install:` path exists; a `dev @ <sha>` on that line equals the same claim.
 //   4 open-set      the `Open:` issue set equals `gh issue list --state open` (a `PR #402` mention is not
 //                   an issue). `--no-network` skips it — a SKIP is printed, never counted as a pass.
-//   5 suite-count   `Suite: N files / M tests` equals the counts in a vitest JSON report. Passed tests,
-//                   because the claim says "green".
+//   5 suite-count   `Suite: N files / M tests` equals the counts in a vitest JSON report, and the
+//                   optional `(N passed, M failed, K skipped)` suffix equals the derived breakdown. A RED
+//                   report certifies nothing, whatever the totals say: `failed > 0`, `failedSuites > 0`
+//                   (a load error fails a file, not an assertion) or `success === false` is `suite-red`.
 //   6 modules/adrs  `<n> modules` / `<n> ADRs` equal the repo's own counters (`docs-arch`,
 //                   `docs-decisions`).
 //   7 file-size     every `` `name.ts` <n> `` claim in STATE equals `wc -l` of that file.
@@ -44,7 +46,7 @@
 //   dev-claim-missing · dev-sha-drift
 //   install-claim-missing · install-missing · install-sha-drift
 //   open-claim-missing · open-set-drift
-//   suite-claim-missing · suite-count-drift
+//   suite-claim-missing · suite-count-drift · suite-red
 //   modules-missing · modules-drift · adrs-missing · adrs-drift
 //   file-missing · file-size-drift
 
@@ -65,6 +67,7 @@ export const CODES = Object.freeze({
 	openSetDrift: "open-set-drift",
 	suiteClaimMissing: "suite-claim-missing",
 	suiteCountDrift: "suite-count-drift",
+	suiteRed: "suite-red",
 	modulesMissing: "modules-missing",
 	modulesDrift: "modules-drift",
 	adrsMissing: "adrs-missing",
@@ -134,6 +137,12 @@ const INSTALL_SHA_RE = new RegExp(`dev[ \\t]*@[ \\t]*\`?(${SHA})`);
 // the record-fields convention.
 const OPEN_RE = /(?<!`)\bOpen:[ \t]*(.+)$/gm;
 const SUITE_RE = new RegExp(`\\bSuite:[ \\t]*\\**\\s*(\\d+)[ \\t]+files?[ \\t]*/[ \\t]*\\**\\s*([\\d,]+)`);
+// The canonical breakdown suffix — `(N passed, M failed, K skipped)`, immediately after the totals, ASCII
+// parentheses, comma+space, in that order (spec v4 §A). `\*{0,2}` tolerates the bold-close `**` of a
+// `**3296**` line, the same tolerance SUITE_RE already gives the bold-open, and nothing else: the retired
+// prose form `(3295 passed + 1 skipped, **0 failed** — …)` is NOT a claim after this change, so a handoff
+// still carrying it is verified by totals only (archived handoffs, `--root <other checkout>`).
+const SUITE_BREAKDOWN_RE = /^[ \t]*\*{0,2}[ \t]*\((\d[\d,]*) passed,[ \t]*(\d[\d,]*) failed,[ \t]*(\d[\d,]*) skipped\)/;
 // Every occurrence is a claim, so a historical mention must not be one: `18/48 modules import the same
 // specifier twice` states a ratio, not a module count, and the `/` before the number is what says so — the
 // same exclusions the size regex makes by lookahead.
@@ -141,9 +150,10 @@ const MODULES_RE = /(?<![\d/])\b(\d+)[ \t]+modules\b/g;
 const ADRS_RE = /(?<![\d/])\b(\d+)[ \t]+ADRs\b/g;
 // `` `name.ts` (is) **N** ``, but never a historical shape: `**2,006 → 353**`, `5+/2−`, `(1,429)`
 // (a parenthesis breaks the immediate-number rule), or a comparison (`2,249 vs 2,248`, #505). The
-// lookahead is what keeps history out of a current-size check.
+// lookahead is what keeps history out of a current-size check. `.ts|.mjs|.sh|.py` because the claim names
+// `scripts/` files too — a `.mjs` row the old alternation could not see is a row nothing checked (#583).
 const SIZE_RE = new RegExp(
-	"`((?:[\\w.-]+/)*[\\w.-]+\\.ts)`(?:[ \\t]+is)?[ \\t]*\\*{0,2}([\\d,]+)\\*{0,2}" +
+	"`((?:[\\w.-]+/)*[\\w.-]+\\.(?:ts|mjs|sh|py))`(?:[ \\t]+is)?[ \\t]*\\*{0,2}([\\d,]+)\\*{0,2}" +
 		"(?![\\d,]*[ \\t]*(?:→|->|\\+|/|versus\\b|vs\\b))",
 	"g",
 );
@@ -211,6 +221,23 @@ export function parseOpen(section) {
 }
 
 /**
+ * The `Suite:` claim: the totals always, the breakdown only when the canonical suffix is present. A line
+ * with no suffix is a totals-only claim — the shape every archived handoff has — so history keeps
+ * verifying; a line with the retired prose form reads the same way, because it is not a claim.
+ */
+function parseSuite(section, match) {
+	const totals = { files: Number(match[1]), tests: parseCount(match[2]) };
+	const breakdown = SUITE_BREAKDOWN_RE.exec(section.slice(match.index + match[0].length));
+	if (breakdown === null) return totals;
+	return {
+		...totals,
+		passed: parseCount(breakdown[1]),
+		failed: parseCount(breakdown[2]),
+		skipped: parseCount(breakdown[3]),
+	};
+}
+
+/**
  * Every mechanical claim §STATE makes, in one pass. An absent claim is `null` — or `[]` for the
  * repeatable ones (`dev`, `modules`, `adrs`, `sizes`), which is a drift too: a mechanical claim that
  * vanished is a claim the next session cannot check. Not an error — the caller decides.
@@ -221,7 +248,7 @@ export function parseClaims(text) {
 		return { state: null, verified: null, dev: [], install: null, open: null, suite: null, modules: [], adrs: [], sizes: [] };
 	}
 	const verified = VERIFIED_RE.exec(section);
-	const suite = SUITE_RE.exec(section);
+	const suiteMatch = SUITE_RE.exec(section);
 	const sizes = [];
 	for (const match of section.matchAll(SIZE_RE)) sizes.push({ name: match[1], lines: parseCount(match[2]) });
 	return {
@@ -230,7 +257,7 @@ export function parseClaims(text) {
 		dev: allMatches(DEV_RE, section),
 		install: parseInstall(section),
 		open: parseOpen(section),
-		suite: suite === null ? null : { files: Number(suite[1]), tests: parseCount(suite[2]) },
+		suite: suiteMatch === null ? null : parseSuite(section, suiteMatch),
 		modules: allMatches(MODULES_RE, section).map(Number),
 		adrs: allMatches(ADRS_RE, section).map(Number),
 		sizes,
@@ -243,9 +270,11 @@ export function parseClaims(text) {
 // The probe is the seam the caller fills in:
 //   headSha() devSha() devClaimSha() · isAncestor(sha) · commitsAfter(sha) -> [{sha, paths}] · exists(path)
 //   lineCount(name) -> {path, lines} | null · modules() · adrs() · openIssues() -> number[]
-//   report(expectHead) -> {path, files, tests, label} | null · root
+//   report(expectHead) -> the validated snapshot from scripts/lib/suite-report.mjs | null · root
 // `expectHead` is the `Verified:` sha of the handoff being checked — the report that proves a suite claim
-// is the one captured at the tree the claim describes, so it is passed in rather than guessed at.
+// is the one captured at the tree the claim describes, so it is passed in rather than guessed at. The
+// snapshot is `{path, files, tests, passed, failed, skipped, failedSuites, firstFailure, success, …}`,
+// derived once from the assertion results: check 5 compares it and never re-derives anything.
 // Every fact is a function so an unanswerable check fails at its own check, with its own message.
 // ---------------------------------------------------------------------------
 
@@ -427,6 +456,16 @@ function checkOpenSet(claims, probe, { noNetwork, injected }) {
 	);
 }
 
+/**
+ * Check 5. The probe returns the validated snapshot from `scripts/lib/suite-report.mjs`, so every count it
+ * needs (`passed`, `failed`, `skipped`, `failedSuites`, `firstFailure`, `success`) is already derived from
+ * the assertion results — this function compares, it never re-reads or re-derives.
+ *
+ * The red predicate is the reason: a report whose results contain a failure, whose FILE failed (a load
+ * error writes `success: false`, `numFailedTests: 0` and no failed assertion), or whose own `success` is
+ * false cannot certify a green snapshot at ANY total. Only then are the numbers compared, and only then
+ * does the claim's optional breakdown get checked — a green report with a wrong breakdown is drift too.
+ */
 function checkSuite(claims, probe) {
 	if (claims.suite === null) {
 		return drift(
@@ -447,10 +486,42 @@ function checkSuite(claims, probe) {
 	// The provenance travels with the count (#513): a pass line that names only a path lets a report of
 	// another tree, or of a dirty one, read as if it were this tree's.
 	const provenance = typeof report.label === "string" && report.label !== "" ? ` (${report.label})` : "";
+	const breakdown = `${report.passed} passed, ${report.failed} failed, ${report.skipped} skipped`;
 	const expected = `${report.files} file${report.files === 1 ? "" : "s"} / ${report.tests} test${report.tests === 1 ? "" : "s"}`;
 	const claim = `Suite: ${claims.suite.files} files / ${claims.suite.tests} tests`;
+	// A red run is never evidence of a green snapshot, whatever the totals say. The predicate is THREE
+	// terms because vitest has three shapes of red: failed assertions, a failed FILE, and its own verdict
+	// (a load error produces no failed assertion at all).
+	if (report.failed > 0 || report.failedSuites > 0 || report.success === false) {
+		const first = report.firstFailure === "" ? "(none recorded)" : report.firstFailure;
+		return drift(
+			CODES.suiteRed,
+			claim,
+			"a green vitest report",
+			`${report.failed} failed test(s) in ${report.failedSuites} file(s)`,
+			`the vitest report at ${report.path}${provenance} is RED — ${report.failed} failed test(s) in ${report.failedSuites} file(s), first: ${first}; capture a green run`,
+		);
+	}
 	if (report.files === claims.suite.files && report.tests === claims.suite.tests) {
-		return pass(claim, `${claim} — the vitest report at ${report.path}${provenance}`);
+		// The canonical suffix is compared field by field, so a breakdown naming another run is drift even
+		// when the totals happen to agree (#583). No suffix → totals only, and no breakdown claim.
+		const stated = [
+			["passed", claims.suite.passed, report.passed],
+			["failed", claims.suite.failed, report.failed],
+			["skipped", claims.suite.skipped, report.skipped],
+		].filter(([, claimed]) => typeof claimed === "number");
+		const disagreed = stated.find(([, claimed, actual]) => claimed !== actual);
+		if (disagreed !== undefined) {
+			const [field, claimed, actual] = disagreed;
+			return drift(
+				CODES.suiteCountDrift,
+				claim,
+				`${expected} (${breakdown})`,
+				`${claims.suite.passed} passed, ${claims.suite.failed} failed, ${claims.suite.skipped} skipped`,
+				`the STATE's breakdown claims ${field} ${claimed} but the vitest report at ${report.path}${provenance} has ${field} ${actual} — the breakdown names a different run`,
+			);
+		}
+		return pass(claim, `${claim} — the vitest report at ${report.path}${provenance}; ${breakdown}`);
 	}
 	return drift(
 		CODES.suiteCountDrift,
@@ -517,7 +588,7 @@ function checkSizes(claims, probe) {
 				`${size.name} ${size.lines}`,
 				"an existing file",
 				`${size.name} not found`,
-				`the STATE gives ${size.name} as ${size.lines} lines but there is no such file under src/ or the repo root`,
+				`the STATE gives ${size.name} as ${size.lines} lines but there is no such file under src/, scripts/ or the repo root`,
 			);
 		}
 		const claim = `${size.name} ${size.lines}`;

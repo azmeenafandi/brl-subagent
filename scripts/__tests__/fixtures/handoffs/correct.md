@@ -11,8 +11,8 @@ Cycle: fixture cycle.
 - **Released:** nothing. Running install: **local-path dev checkout** (this repo, `dev @ 4c1d9ab`), revert
   with `pi remove <dev path>` → `pi install npm:brl-subagent` → `/reload`.
 - **Board:** Open: **#426**, **#450**, PR #402 held.
-- **Suite:** 2 files / **12** green on dev; docs guards current (**58 modules**, **27 ADRs**).
-  `alpha.ts` is **10**; `beta.ts` 3.
+- **Suite:** 2 files / **12** (12 passed, 0 failed, 0 skipped) green on dev; docs guards current
+  (**58 modules**, **27 ADRs**). `alpha.ts` is **10**; `beta.ts` 3; `gamma.mjs` is **7**.
 
 ### Since the last handover
 - Nothing. History shapes stay out of the check: `alpha.ts` **20 → 10**, `beta.ts` (9),

@@ -117,11 +117,49 @@ function messageOf(run: () => unknown): string {
 }
 
 describe("suite-report — the count is derived, never quoted", () => {
-	it("counts assertionResults, so a low numPassedTests cannot shrink the suite", () => {
+	it("derives passed/failed/skipped from the assertion statuses, not from the stated counts", () => {
 		const { reports } = rootWith();
-		// 12 assertions, a stated pass count of 7: a red run, and the derivation wins on the total.
-		const path = writeReport(reports, "red.json", { numPassedTests: 7, testResults: [{ assertionResults: assertions(12) }] });
-		expect(readSuiteReport(path)).toMatchObject({ path, files: 1, tests: 12 });
+		// 7 passed + 5 failed assertions, and every stated count agrees — a legitimate red run whose
+		// derivation (not `numPassedTests`) is what the snapshot carries.
+		const path = writeReport(reports, "red.json", {
+			numTotalTests: 12,
+			numPassedTests: 7,
+			numFailedTests: 5,
+			numFailedTestSuites: 1,
+			success: false,
+			testResults: [{ name: join(REPO, "scripts", "__tests__", "red.test.ts"), status: "failed", assertionResults: [...assertions(7), ...assertions(5, "failed")] }],
+		});
+		expect(readSuiteReport(path)).toMatchObject({
+			path,
+			files: 1,
+			tests: 12,
+			passed: 7,
+			failed: 5,
+			skipped: 0,
+			failedSuites: 1,
+			success: false,
+			hasTotal: true,
+		});
+		// Repo-relative when it can be made so (cwd is the repo here), never the absolute path vitest wrote.
+		expect(readSuiteReport(path).firstFailure).toBe("scripts/__tests__/red.test.ts");
+	});
+
+	it("counts skipped, pending and todo as skipped — and says so in the snapshot", () => {
+		const { reports } = rootWith();
+		const path = writeReport(reports, "skip.json", {
+			numTotalTests: 4,
+			numPassedTests: 1,
+			numPendingTests: 3,
+			success: true,
+			testResults: [
+				{
+					name: "/repo/a.test.ts",
+					status: "passed",
+					assertionResults: [{ status: "passed" }, { status: "skipped" }, { status: "pending" }, { status: "todo" }],
+				},
+			],
+		});
+		expect(readSuiteReport(path)).toMatchObject({ tests: 4, passed: 1, failed: 0, skipped: 3, success: true, firstFailure: "" });
 	});
 
 	it("accepts a legitimate red run — 2840 passed, 2842 total", () => {
@@ -132,7 +170,26 @@ describe("suite-report — the count is derived, never quoted", () => {
 			numFailedTests: 2,
 			testResults: [{ assertionResults: assertions(2840) }, { assertionResults: assertions(2, "failed") }],
 		});
-		expect(readSuiteReport(path)).toMatchObject({ files: 2, tests: 2842 });
+		expect(readSuiteReport(path)).toMatchObject({ files: 2, tests: 2842, passed: 2840, failed: 2, skipped: 0 });
+	});
+
+	it("refuses an assertion whose status nobody classified — a missing status is not a skip", () => {
+		const { reports } = rootWith();
+		const unknown = writeReport(reports, "weird.json", {
+			numTotalTests: 2,
+			numPassedTests: 2,
+			testResults: [{ name: "/repo/a.test.ts", assertionResults: [{ status: "passed" }, { status: "weird" }] }],
+		});
+		expect(codeOf(() => readSuiteReport(unknown))).toBe(CODES.UNKNOWN_STATUS);
+		// The message names the file AND the value, so the fix is a lookup rather than a hunt.
+		expect(messageOf(() => readSuiteReport(unknown))).toContain("a.test.ts");
+		expect(messageOf(() => readSuiteReport(unknown))).toContain('"weird"');
+		const missing = writeReport(reports, "missing-status.json", {
+			testResults: [{ name: "/repo/b.test.ts", assertionResults: [{ fullName: "no status" }] }],
+		});
+		expect(codeOf(() => readSuiteReport(missing))).toBe(CODES.UNKNOWN_STATUS);
+		expect(messageOf(() => readSuiteReport(missing))).toContain("null");
+		expect(CODES.UNKNOWN_STATUS).toBe("unknown-status");
 	});
 
 	it("refuses a hollow report — a pass count with nothing behind it", () => {
@@ -143,11 +200,36 @@ describe("suite-report — the count is derived, never quoted", () => {
 		expect(messageOf(() => readSuiteReport(path))).toContain("9999");
 	});
 
-	it("refuses a pass count larger than the run it describes", () => {
+	it("refuses a pass count that disagrees with the results, in either direction", () => {
 		const { reports } = rootWith();
-		const path = writeReport(reports, "liar.json", { numPassedTests: 9999, testResults: [{ assertionResults: assertions(2) }] });
-		expect(codeOf(() => readSuiteReport(path))).toBe(CODES.COUNT_MISMATCH);
-		expect(messageOf(() => readSuiteReport(path))).toContain("9999 > 2");
+		const liar = writeReport(reports, "liar.json", { numPassedTests: 9999, testResults: [{ assertionResults: assertions(2) }] });
+		expect(codeOf(() => readSuiteReport(liar))).toBe(CODES.COUNT_MISMATCH);
+		expect(messageOf(() => readSuiteReport(liar))).toContain("numPassedTests 9999");
+		expect(messageOf(() => readSuiteReport(liar))).toContain("≠ 2");
+		// A pass count BELOW the passed results is the same refusal: exactness is not a one-way rule.
+		const under = writeReport(reports, "under.json", { numPassedTests: 1, testResults: [{ assertionResults: assertions(2) }] });
+		expect(codeOf(() => readSuiteReport(under))).toBe(CODES.COUNT_MISMATCH);
+	});
+
+	it("cross-checks the failed and skipped counts too, not only the total", () => {
+		const { reports } = rootWith();
+		// The shape that certified a red run green: `numFailedTests: 0` against a failed assertion.
+		const hiddenFailure = writeReport(reports, "hidden.json", {
+			numTotalTests: 2,
+			numPassedTests: 1,
+			numFailedTests: 0,
+			testResults: [{ assertionResults: [...assertions(1), ...assertions(1, "failed")] }],
+		});
+		expect(codeOf(() => readSuiteReport(hiddenFailure))).toBe(CODES.COUNT_MISMATCH);
+		expect(messageOf(() => readSuiteReport(hiddenFailure))).toContain("numFailedTests 0");
+		const hiddenSkip = writeReport(reports, "hidden-skip.json", {
+			numTotalTests: 2,
+			numPassedTests: 1,
+			numPendingTests: 0,
+			testResults: [{ assertionResults: [...assertions(1), ...assertions(1, "pending")] }],
+		});
+		expect(codeOf(() => readSuiteReport(hiddenSkip))).toBe(CODES.COUNT_MISMATCH);
+		expect(messageOf(() => readSuiteReport(hiddenSkip))).toContain("numPendingTests 0");
 	});
 
 	it("refuses a report that contradicts itself on numTotalTests", () => {
@@ -155,6 +237,28 @@ describe("suite-report — the count is derived, never quoted", () => {
 		const path = writeReport(reports, "torn.json", { numTotalTests: 40, numPassedTests: 3, testResults: [{ assertionResults: assertions(3) }] });
 		expect(codeOf(() => readSuiteReport(path))).toBe(CODES.COUNT_MISMATCH);
 		expect(messageOf(() => readSuiteReport(path))).toContain("numTotalTests 40");
+	});
+
+	it("carries `hasTotal` and `success` so a consumer never re-reads the raw JSON", () => {
+		const { reports } = rootWith();
+		const withoutTotal = writeReport(reports, "no-total.json", { testResults: [{ assertionResults: assertions(3) }] });
+		// The validator tolerates an absent total (an archived report may omit it); the consumer decides.
+		expect(readSuiteReport(withoutTotal)).toMatchObject({ tests: 3, hasTotal: false, success: true });
+		const failedLoad = writeReport(reports, "load.json", {
+			numTotalTests: 1,
+			numPassedTests: 1,
+			numFailedTestSuites: 1,
+			success: false,
+			// A load error: the FILE failed, and no assertion did — `failed` alone would call this green.
+			testResults: [{ name: "/repo/broken.test.ts", status: "failed", assertionResults: [{ status: "passed" }] }],
+		});
+		expect(readSuiteReport(failedLoad)).toMatchObject({
+			failed: 0,
+			failedSuites: 1,
+			success: false,
+			// Not under this checkout's cwd, so the absolute name is kept rather than mangled.
+			firstFailure: "/repo/broken.test.ts",
+		});
 	});
 
 	it("names an empty result set, in all three shapes", () => {
