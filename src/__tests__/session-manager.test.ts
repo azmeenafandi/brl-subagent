@@ -735,6 +735,235 @@ describe("spawnBackgroundSession .then abort discrimination (probe contract)", (
 	});
 });
 
+/**
+ * Issue #574 (§2.4, T10/T10b): the record STATES THE KIND at the status flip
+ * that produces it. Two of the frictions are both `status:"stopped"` (a user
+ * stop and a deadline), so a stamp written after the flip — or by a shared
+ * helper that cannot tell them apart — cannot deliver them.
+ *
+ * Every case reads the PERSISTED BYTES, at the window the flip owns:
+ * `updateAgentStatus` emits `subagent:stopped` immediately after `persistAgent`,
+ * so the observer below sees exactly what the flip wrote, before any settle
+ * adds to it.
+ */
+describe("the settle states its kind at the flip (#574)", () => {
+	const LEGACY_UUID = "57400000-0000-4000-8000-000000005740";
+
+	/** The persisted record's bytes — what the boot scan and the waker read. */
+	function persisted(id: string): Record<string, unknown> {
+		return JSON.parse(readFileSync(join(env.storageDir, `${id}.json`), "utf8"));
+	}
+
+	/**
+	 * Snapshot the record the instant a flip's persist lands, and return a reader
+	 * for it (undefined if no `stopped` flip happened). The harness's `beforeEach`
+	 * resets the bus, so no test cleans up after itself.
+	 */
+	function captureAtFlip(): () => Record<string, unknown> | undefined {
+		let seen: Record<string, unknown> | undefined;
+		eventBusMock.emit.mockImplementation((event: { type: string; agentId: string }) => {
+			if (event.type === "subagent:stopped") seen = persisted(event.agentId);
+		});
+		return () => seen;
+	}
+
+	/** A prompt that settles only when the test says so (a cooperative abort). */
+	function heldPrompt(): { settle: () => void } {
+		let settle!: () => void;
+		mocks.session.prompt.mockReturnValue(
+			new Promise<void>((resolve) => {
+				settle = resolve;
+			}),
+		);
+		return { settle };
+	}
+
+	it("a user stop's own persist carries aborted/aborted, before the abort settles", async () => {
+		const { spawnBackgroundSession, stopAgent } = await import("../session-manager");
+		// A never-settling prompt: the settle provably has NOT run when we read.
+		mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+		const readAtFlip = captureAtFlip();
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "stop states its kind",
+		});
+		agent._sessionRef = { abort: vi.fn().mockResolvedValue(undefined) } as never;
+
+		await stopAgent(agent.id);
+
+		const atFlip = readAtFlip();
+		expect(atFlip).toBeDefined();
+		expect(atFlip?.status).toBe("stopped");
+		expect(atFlip?.errorCategory).toBe("aborted");
+		expect(atFlip?.stopReason).toBe("aborted");
+		// Nothing terminal was recorded yet — the flip precedes the settle.
+		expect(terminalRunEntries()).toHaveLength(0);
+	});
+
+	it("a deadline's own persist carries timeout/aborted, before the snapshot lands", async () => {
+		vi.useFakeTimers();
+		const readAtFlip = captureAtFlip();
+		try {
+			mocks.session.prompt.mockReturnValue(new Promise(() => {}));
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline states its kind",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+
+			const atFlip = readAtFlip();
+			expect(atFlip?.status).toBe("stopped");
+			expect(atFlip?.errorCategory).toBe("timeout");
+			expect(atFlip?.stopReason).toBe("aborted");
+			// The classification SNAPSHOT is written after the flip, not before it.
+			const terminal = terminalRunEntries();
+			expect(terminal).toHaveLength(1);
+			expect(terminal[0].errorCategory).toBe("timeout");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("the resolved-abort branch stamps aborted/aborted before its own flip", async () => {
+		const { spawnBackgroundSession } = await import("../session-manager");
+		mocks.session.prompt.mockResolvedValue(undefined);
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [], stopReason: "aborted", errorMessage: "Aborted" },
+		];
+		const readAtFlip = captureAtFlip();
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "resolved abort states its kind",
+		});
+		// Let the .then run: nothing pre-flipped this record, so the branch itself
+		// must state the kind before its `updateAgentStatus`.
+		await new Promise((r) => setTimeout(r, 0));
+
+		const atFlip = readAtFlip();
+		expect(atFlip).toBeDefined();
+		expect(atFlip?.status).toBe("stopped");
+		expect(atFlip?.errorCategory).toBe("aborted");
+		expect(atFlip?.stopReason).toBe("aborted");
+		expect(persisted(agent.id).errorCategory).toBe("aborted");
+	});
+
+	it("a record flipped 'stopped' by a non-classifying path gets its kind filled at the abort settle", async () => {
+		// The real caller of this shape is boot-recovery (`updateAgentStatus(id,
+		// 'stopped')` on a dead owner's record): the flip states no category, so the
+		// shared abort helper is the ONLY place left that can name the friction —
+		// and it must fill the gap without re-classifying a deadline.
+		const { spawnBackgroundSession } = await import("../session-manager");
+		const prompt = heldPrompt();
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "fill the kind at the abort settle",
+		});
+		updateAgentStatus(agent.id, "stopped");
+		expect(persisted(agent.id).errorCategory).toBeUndefined();
+
+		mocks.session.messages = [
+			{ role: "user", content: "probe task" },
+			{ role: "assistant", content: [], stopReason: "aborted", errorMessage: "Aborted" },
+		];
+		prompt.settle();
+		await new Promise((r) => setTimeout(r, 0));
+
+		const after = persisted(agent.id);
+		expect(after.status).toBe("stopped");
+		expect(after.errorCategory).toBe("aborted");
+		expect(after.stopReason).toBe("aborted");
+	});
+
+	it("the abort settle's gitInfo persist does not lose the kind", async () => {
+		resetGitMocks();
+		const { spawnBackgroundSession, stopAgent } = await import("../session-manager");
+		let settlePrompt: () => void = () => {};
+		mocks.session.prompt.mockReturnValue(new Promise<void>((r) => { settlePrompt = r; }));
+		const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+			task: "abort keeps a work branch",
+			gitMode: "branch",
+		});
+		agent._sessionRef = {
+			abort: vi.fn().mockImplementation(async () => { settlePrompt(); }),
+		} as never;
+
+		await stopAgent(agent.id);
+		await new Promise((r) => setTimeout(r, 0));
+
+		// The gitInfo block re-persists the agent record AFTER the flip — the
+		// record it writes must still carry the kind the flip stated.
+		const after = persisted(agent.id);
+		expect((after.result as { gitBranch?: string } | undefined)?.gitBranch).toBeDefined();
+		expect(after.status).toBe("stopped");
+		expect(after.errorCategory).toBe("aborted");
+		expect(after.stopReason).toBe("aborted");
+	});
+
+	it("a late settle keeps the deadline's timeout — nothing re-classifies it (T10b)", async () => {
+		vi.useFakeTimers();
+		try {
+			const prompt = heldPrompt();
+			const agent = await spawnBackgroundSession(fakePi as never, fakeCtx as never, {
+				task: "deadline then late settle",
+				timeout: 5000,
+			});
+
+			await vi.advanceTimersByTimeAsync(5001);
+			expect(persisted(agent.id).errorCategory).toBe("timeout");
+
+			// `length` is deliberately NOT `aborted`: a settle that re-classified
+			// from its own reason would be visible here.
+			mocks.session.messages = [
+				{ role: "user", content: "probe task" },
+				{ role: "assistant", content: [{ type: "text", text: "late" }], stopReason: "length" },
+			];
+			prompt.settle();
+			await vi.advanceTimersByTimeAsync(0);
+
+			const after = persisted(agent.id);
+			expect(after.status).toBe("stopped");
+			expect(after.errorCategory).toBe("timeout");
+			expect(after.stopReason).toBe("aborted");
+			// ...and the amendment keeps the snapshot's classification too.
+			expect(terminalRunEntries().at(-1)?.errorCategory).toBe("timeout");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("an old record with neither field still parses, and its first flip stamps it", async () => {
+		const { stopAgent } = await import("../session-manager");
+		mkdirSync(env.storageDir, { recursive: true });
+		writeFileSync(
+			join(env.storageDir, `${LEGACY_UUID}.json`),
+			JSON.stringify({
+				id: LEGACY_UUID,
+				sessionId: "legacy-session",
+				type: "background",
+				description: "pre-#574 record",
+				status: "running",
+				startedAt: Date.now(),
+				task: "legacy",
+			}),
+			"utf8",
+		);
+
+		// Additive fields: absent reads as "no kind known", never as a guess.
+		const legacy = readAgentRecordFromDisk(LEGACY_UUID);
+		expect(legacy.record?.status).toBe("running");
+		expect(legacy.record?.errorCategory).toBeUndefined();
+		expect(legacy.record?.stopReason).toBeUndefined();
+
+		// A DISK-ONLY record: `getAgent` loads it, and the flip must persist the
+		// stamp the stop just stated (not a re-read of the pre-stamp file).
+		await stopAgent(LEGACY_UUID);
+
+		const after = persisted(LEGACY_UUID);
+		expect(after.status).toBe("stopped");
+		expect(after.errorCategory).toBe("aborted");
+		expect(after.stopReason).toBe("aborted");
+	});
+});
+
 function resetGitMocks() {
 	mocks.git.getCurrentBranch.mockReset();
 	mocks.git.getHeadState.mockReset();
@@ -793,7 +1022,7 @@ function readLog(): string {
 // would be dropped (none exists) — the direction of error is extra red, never a
 // silent pass.
 const EXPECTED_SETTLE_WINDOW =
-	"run.acceptedAt = new Date().toISOString();\ntry {\npersistRunRecord(pi, run, \"background\");\n} catch (err) {\nrun.acceptedAt = null;\nfailPreStart(neverIssued(err));\nthrow err;\n}\nlet runPromise: Promise<unknown>;\nlet resolveSettled!: () => void;\nlet rejectSettled!: (reason: unknown) => void;\nconst settled = new Promise<void>((resolve, reject) => {\nresolveSettled = resolve;\nrejectSettled = reject;\n});\nconst markSettleEntry = (kind: 'success' | 'fault'): void => {\ntry {\nlog.debug(`spawnBackgroundSession: settle body entered for ${id} (${kind})`);\n} catch {\n}\n};\nconst onSettled = (): void => {\nmarkSettleEntry('success');                         // FIRST statement\nif (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second\ntry {\nconst projectedMessages = session.messages;\nconst lastAssistant = [...(projectedMessages ?? [])].reverse().find(m => m.role === 'assistant');\nconst terminalStopReason = lastAssistant?.stopReason;\nconst assistantEvidence: AssistantEvidence = Array.isArray(projectedMessages)\n? projectedMessages.some((m) => m.role === 'assistant') ? 'present' : 'absent'\n: 'unknown';\nconst aborted = agent.status === 'stopped' || terminalStopReason === 'aborted';\nif (aborted) {\nif (agent.status !== 'stopped') {\nupdateAgentStatus(id, 'stopped');\ntranscript.completeTranscript(id, 'stopped');\n}\nfinalizeAbortedRun(\ncleanupWorkBranch(),\nterminalStopReason && terminalStopReason !== 'stop'\n? terminalStopReason\n: 'aborted',\n);\nreturn;\n}\nconst providerErrorMessage =\nlastAssistant?.errorMessage ?? session.state?.errorMessage;\nconst outcome = classifyTerminalOutcome(terminalStopReason, providerErrorMessage, {\nassistantEvidence,\n});\nif (outcome.status === 'failed') {\nagent.status = 'failed';\nagent.completedAt = Date.now();\nconst failureReason =\nassistantEvidence === 'absent'\n? providerErrorMessage\n? `${NO_ASSISTANT_OUTPUT_REASON}\\n${providerErrorMessage}`\n: NO_ASSISTANT_OUTPUT_REASON\n: (providerErrorMessage ?? defaultTerminalMessage(terminalStopReason));\nconst sanitizedError = sanitizeErrorMessage(failureReason, effectiveCwd);\nagent.error = sanitizedError;\nconst gitInfo = cleanupWorkBranch();\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 1,\nmessages: agent.result?.messages ?? [],\nstderr: agent.result?.stderr ?? '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: terminalStopReason,\nerrorMessage: sanitizedError,\nerrorCategory: outcome.errorCategory,\n...(gitInfo.gitBranch\n? { gitBranch: gitInfo.gitBranch, gitDiff: gitInfo.gitDiff }\n: {}),\n} as SubagentResult;\ncaptureAndReleaseSession(sanitizedError);\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('failed', sanitizedError, {\nstopReason: terminalStopReason,\nerrorCategory: outcome.errorCategory,\n});\ntranscript.completeTranscript(id, 'failed');\neventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizedError }));\nreturn;\n}\nagent.status = 'completed';\nagent.completedAt = Date.now();\nconst gitInfo = cleanupWorkBranch();\nif (gitInfo.gitBranch) {\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 0,\nmessages: [],\nstderr: '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: terminalStopReason ?? 'stop',\ngitBranch: gitInfo.gitBranch,\ngitDiff: gitInfo.gitDiff,\n} as SubagentResult;\n}\ncaptureAndReleaseSession();\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('done', undefined, { stopReason: terminalStopReason ?? 'stop' });\ntranscript.completeTranscript(id, 'completed');\neventBus.emit(eventBus.createEvent('subagent:completed', id, {}));\n} catch (err) {\nsafeLog(() =>\nlog.error(`spawnBackgroundSession: completion handler failed for ${id}`, {\nerror: thrownMessage(err),\n}),\n);\nmarkTerminalBestEffort('completed');\n}\n};\nconst onSettleFault = (reason: unknown): void => {\nmarkSettleEntry('fault');                           // FIRST statement\nif (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second\ntry {\nconst err = normalizeThrown(reason);              // D5: TOTAL, never throws\nconst gitInfo = cleanupWorkBranch();\nif (agent.status === 'stopped') {\nfinalizeAbortedRun(gitInfo, 'aborted');\ntranscript.completeTranscript(id, 'stopped');\nreturn;\n}\nagent.status = 'failed';\nagent.completedAt = Date.now();\nconst sanitizedError = sanitizeErrorMessage(err.message, effectiveCwd);\nagent.error = sanitizedError;\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 1,\nmessages: agent.result?.messages ?? [],\nstderr: agent.result?.stderr ?? '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: 'error',\nerrorMessage: sanitizedError,\n...(gitInfo.gitBranch\n? { gitBranch: gitInfo.gitBranch, gitDiff: gitInfo.gitDiff }\n: {}),\n} as SubagentResult;\ncaptureAndReleaseSession(sanitizedError);\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('failed', sanitizedError, { stopReason: 'error' });\ntranscript.completeTranscript(id, 'failed');\neventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizedError }));\n} catch (err) {\nsafeLog(() =>\nlog.error(`spawnBackgroundSession: completion handler failed for ${id}`, {\nerror: thrownMessage(err),\n}),\n);\nmarkTerminalBestEffort('failed');\n}\n};\nsettled.then(onSettled).catch(onSettleFault);\ntry {\nrunPromise = session.prompt(wrapTask(params.task));\n} catch (err) {\nconst reason = thrownMessage(err);                          // D5: total\nfailPreStart(sanitizeErrorMessage(reason, effectiveCwd));    // D5: contained, never throws\nthrow err;                                                  // D6: deferred NOT settled\n}\ntry {\nvoid Promise.prototype.then.call(runPromise, resolveSettled, rejectSettled);   // D2.3\n} catch (err) {\nsafeLog(() =>                                                // a sensor, not a new fault\nlog.error(\n`spawnBackgroundSession: settle routing failed for ${id} — the run is unmonitored; its deadline remains the only bound`,\n{ error: thrownMessage(err) },\n),\n);\n}";
+	"run.acceptedAt = new Date().toISOString();\ntry {\npersistRunRecord(pi, run, \"background\");\n} catch (err) {\nrun.acceptedAt = null;\nfailPreStart(neverIssued(err));\nthrow err;\n}\nlet runPromise: Promise<unknown>;\nlet resolveSettled!: () => void;\nlet rejectSettled!: (reason: unknown) => void;\nconst settled = new Promise<void>((resolve, reject) => {\nresolveSettled = resolve;\nrejectSettled = reject;\n});\nconst markSettleEntry = (kind: 'success' | 'fault'): void => {\ntry {\nlog.debug(`spawnBackgroundSession: settle body entered for ${id} (${kind})`);\n} catch {\n}\n};\nconst onSettled = (): void => {\nmarkSettleEntry('success');                         // FIRST statement\nif (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second\ntry {\nconst projectedMessages = session.messages;\nconst lastAssistant = [...(projectedMessages ?? [])].reverse().find(m => m.role === 'assistant');\nconst terminalStopReason = lastAssistant?.stopReason;\nconst assistantEvidence: AssistantEvidence = Array.isArray(projectedMessages)\n? projectedMessages.some((m) => m.role === 'assistant') ? 'present' : 'absent'\n: 'unknown';\nconst aborted = agent.status === 'stopped' || terminalStopReason === 'aborted';\nif (aborted) {\nif (agent.status !== 'stopped') {\nstampAgentKind(agent, 'aborted', 'aborted');\nupdateAgentStatus(id, 'stopped');\ntranscript.completeTranscript(id, 'stopped');\n}\nfinalizeAbortedRun(\ncleanupWorkBranch(),\nterminalStopReason && terminalStopReason !== 'stop'\n? terminalStopReason\n: 'aborted',\n);\nreturn;\n}\nconst providerErrorMessage =\nlastAssistant?.errorMessage ?? session.state?.errorMessage;\nconst outcome = classifyTerminalOutcome(terminalStopReason, providerErrorMessage, {\nassistantEvidence,\n});\nif (outcome.status === 'failed') {\nagent.status = 'failed';\nagent.completedAt = Date.now();\nconst failureReason =\nassistantEvidence === 'absent'\n? providerErrorMessage\n? `${NO_ASSISTANT_OUTPUT_REASON}\\n${providerErrorMessage}`\n: NO_ASSISTANT_OUTPUT_REASON\n: (providerErrorMessage ?? defaultTerminalMessage(terminalStopReason));\nconst sanitizedError = sanitizeErrorMessage(failureReason, effectiveCwd);\nagent.error = sanitizedError;\nconst gitInfo = cleanupWorkBranch();\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 1,\nmessages: agent.result?.messages ?? [],\nstderr: agent.result?.stderr ?? '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: terminalStopReason,\nerrorMessage: sanitizedError,\nerrorCategory: outcome.errorCategory,\n...(gitInfo.gitBranch\n? { gitBranch: gitInfo.gitBranch, gitDiff: gitInfo.gitDiff }\n: {}),\n} as SubagentResult;\ncaptureAndReleaseSession(sanitizedError);\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('failed', sanitizedError, {\nstopReason: terminalStopReason,\nerrorCategory: outcome.errorCategory,\n});\ntranscript.completeTranscript(id, 'failed');\neventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizedError }));\nreturn;\n}\nagent.status = 'completed';\nagent.completedAt = Date.now();\nconst gitInfo = cleanupWorkBranch();\nif (gitInfo.gitBranch) {\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 0,\nmessages: [],\nstderr: '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: terminalStopReason ?? 'stop',\ngitBranch: gitInfo.gitBranch,\ngitDiff: gitInfo.gitDiff,\n} as SubagentResult;\n}\ncaptureAndReleaseSession();\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('done', undefined, { stopReason: terminalStopReason ?? 'stop' });\ntranscript.completeTranscript(id, 'completed');\neventBus.emit(eventBus.createEvent('subagent:completed', id, {}));\n} catch (err) {\nsafeLog(() =>\nlog.error(`spawnBackgroundSession: completion handler failed for ${id}`, {\nerror: thrownMessage(err),\n}),\n);\nmarkTerminalBestEffort('completed');\n}\n};\nconst onSettleFault = (reason: unknown): void => {\nmarkSettleEntry('fault');                           // FIRST statement\nif (deadlineHandle) clearTimeout(deadlineHandle);   // deadline clear, second\ntry {\nconst err = normalizeThrown(reason);              // D5: TOTAL, never throws\nconst gitInfo = cleanupWorkBranch();\nif (agent.status === 'stopped') {\nfinalizeAbortedRun(gitInfo, 'aborted');\ntranscript.completeTranscript(id, 'stopped');\nreturn;\n}\nagent.status = 'failed';\nagent.completedAt = Date.now();\nconst sanitizedError = sanitizeErrorMessage(err.message, effectiveCwd);\nagent.error = sanitizedError;\nagent.result = {\n...(agent.result ?? {}),\nexitCode: 1,\nmessages: agent.result?.messages ?? [],\nstderr: agent.result?.stderr ?? '',\nusage: agent.result?.usage ?? EMPTY_USAGE,\nstopReason: 'error',\nerrorMessage: sanitizedError,\n...(gitInfo.gitBranch\n? { gitBranch: gitInfo.gitBranch, gitDiff: gitInfo.gitDiff }\n: {}),\n} as SubagentResult;\ncaptureAndReleaseSession(sanitizedError);\nrecordSessionUsage();\nagents.set(id, agent);\npersistAgent(agent);\nfinalizeRunEntry('failed', sanitizedError, { stopReason: 'error' });\ntranscript.completeTranscript(id, 'failed');\neventBus.emit(eventBus.createEvent('subagent:failed', id, { error: sanitizedError }));\n} catch (err) {\nsafeLog(() =>\nlog.error(`spawnBackgroundSession: completion handler failed for ${id}`, {\nerror: thrownMessage(err),\n}),\n);\nmarkTerminalBestEffort('failed');\n}\n};\nsettled.then(onSettled).catch(onSettleFault);\ntry {\nrunPromise = session.prompt(wrapTask(params.task));\n} catch (err) {\nconst reason = thrownMessage(err);                          // D5: total\nfailPreStart(sanitizeErrorMessage(reason, effectiveCwd));    // D5: contained, never throws\nthrow err;                                                  // D6: deferred NOT settled\n}\ntry {\nvoid Promise.prototype.then.call(runPromise, resolveSettled, rejectSettled);   // D2.3\n} catch (err) {\nsafeLog(() =>                                                // a sensor, not a new fault\nlog.error(\n`spawnBackgroundSession: settle routing failed for ${id} — the run is unmonitored; its deadline remains the only bound`,\n{ error: thrownMessage(err) },\n),\n);\n}";
 
 function settleWindow(src: string): string[] {
 	const lines = src.split("\n");

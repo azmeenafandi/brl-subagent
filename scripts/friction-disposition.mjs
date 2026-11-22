@@ -62,7 +62,10 @@
 //   • Priority (`P0 #N`) is a human judgement; the check validates the anchor (literal `Rule 11` plus an
 //     occurrence count) and the issue's state, never the truth of the priority.
 //   • The candidates file (#533's seam) is provisional: this unit refuses to lose an event's identity or
-//     a dismissal, nothing more.
+//     a dismissal, nothing more. Its KIND set is the producer's five (#574: `failed`, `deadline`, `retry`,
+//     `stop`, `steer`) and `via` is a retry's provenance — `transport` or `explicit`, refused anywhere
+//     else (`candidate-via-kind`), because a stop carrying a retry's route is a producer bug, not a shape
+//     this tool should guess at.
 //
 //   node scripts/friction-disposition.mjs --check --cycle <name> [--close] [--ledger <p>] [--log <p>]
 //                                         [--states <file>] [--candidates <file>]
@@ -121,9 +124,11 @@ const STALE_REASON_RE = /\d{4}-\d{2}-\d{2}|#\d+|\b[0-9a-f]{7,40}\b/;
  * error type, so #495's module can change without silently changing this one's contract.
  */
 export class InputError extends Error {
-	constructor(message) {
+	constructor(message, code = null) {
 		super(message);
 		this.name = "InputError";
+		/** A stable refusal code (`candidate-via-kind`), so a caller can branch without parsing prose. */
+		this.code = code;
 	}
 }
 
@@ -968,6 +973,10 @@ export function parseStates(text, ids = []) {
 	return states;
 }
 
+/** The producer's five kinds (#574) and a retry's two provenances — one source for both the guard and its message. */
+export const CANDIDATE_KINDS = ["failed", "deadline", "retry", "stop", "steer"];
+export const CANDIDATE_VIAS = ["transport", "explicit"];
+
 /**
  * `parseCandidates(text)` → the parsed file, or exit 2. Shape only: a candidate's CONTENT judgement
  * (class or dismissal, claimedLive) lives in `check`, where it is a ledger defect (exit 1), not an
@@ -991,8 +1000,18 @@ export function parseCandidates(text, cycle) {
 		if (typeof entry.eventId !== "string" || entry.eventId === "") throw new InputError(`${where}: eventId must be a non-empty string`);
 		if (seen.has(entry.eventId)) throw new InputError(`candidates[${at}]: duplicate eventId "${entry.eventId}" — identity is the event, not the class`);
 		seen.add(entry.eventId);
-		if (!["failed", "retry", "stop", "steer"].includes(entry.kind)) {
-			throw new InputError(`${where}: kind "${entry.kind}" must be failed, retry, stop or steer`);
+		if (!CANDIDATE_KINDS.includes(entry.kind)) {
+			throw new InputError(`${where}: kind "${entry.kind}" must be one of ${CANDIDATE_KINDS.join(", ")}`);
+		}
+		if (entry.via !== undefined) {
+			// `via` is a retry's provenance and nothing else's: it says WHICH mechanism re-spawned the
+			// run, so on a failed run or a stop it has no meaning to validate — it is a producer bug.
+			if (entry.kind !== "retry") {
+				throw new InputError(`${where}: via "${entry.via}" is only meaningful on a retry (kind "${entry.kind}")`, "candidate-via-kind");
+			}
+			if (!CANDIDATE_VIAS.includes(entry.via)) {
+				throw new InputError(`${where}: via "${entry.via}" must be ${CANDIDATE_VIAS.join(" or ")}`, "candidate-via-kind");
+			}
 		}
 		if (typeof entry.ts !== "string" || Number.isNaN(Date.parse(entry.ts))) throw new InputError(`${where}: ts "${entry.ts}" is not a real ISO instant`);
 		if (!Number.isInteger(entry.count) || entry.count <= 0) throw new InputError(`${where}: count must be a positive integer`);

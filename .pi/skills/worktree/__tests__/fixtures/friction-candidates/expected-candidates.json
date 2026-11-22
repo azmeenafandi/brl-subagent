@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "cycle": "fixture-574",
+  "claimedLive": false,
+  "candidates": [
+    {
+      "eventId": "14f143df-5a08-4a54-822f-3526048c3bee:failed:1",
+      "kind": "failed",
+      "runId": "14f143df-5a08-4a54-822f-3526048c3bee",
+      "ts": "2026-11-21T18:52:39.292Z",
+      "class": null,
+      "count": 1,
+      "source": "session-log:session.jsonl:3",
+      "digest": "bc32b8fd92785ef8",
+      "dismissed": null
+    },
+    {
+      "eventId": "14f143df-5a08-4a54-822f-3526048c3bee:retry:1",
+      "kind": "retry",
+      "runId": "14f143df-5a08-4a54-822f-3526048c3bee",
+      "ts": "2026-11-21T18:52:39.338Z",
+      "class": null,
+      "count": 1,
+      "source": "spawn-log:spawn.log:4",
+      "digest": "6382390180f95a85",
+      "dismissed": null,
+      "via": "transport"
+    },
+    {
+      "eventId": "acce0602-5d86-4251-a1ee-82c89664acfe:deadline:1",
+      "kind": "deadline",
+      "runId": "acce0602-5d86-4251-a1ee-82c89664acfe",
+      "ts": "2026-11-22T02:43:06.797Z",
+      "class": null,
+      "count": 1,
+      "source": "session-log:session.jsonl:10",
+      "digest": "d32ddd405a97a2c5",
+      "dismissed": null
+    },
+    {
+      "eventId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2:steer:1",
+      "kind": "steer",
+      "runId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2",
+      "ts": "2026-11-22T02:43:21.040Z",
+      "class": null,
+      "count": 1,
+      "source": "session-log:session.jsonl:13",
+      "digest": "52cf048feb3c0401",
+      "dismissed": null
+    },
+    {
+      "eventId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2:stop:1",
+      "kind": "stop",
+      "runId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2",
+      "ts": "2026-11-22T02:43:26.436Z",
+      "class": null,
+      "count": 1,
+      "source": "session-log:session.jsonl:14",
+      "digest": "65c8b476b2fb8b94",
+      "dismissed": null
+    },
+    {
+      "eventId": "00000000-0000-4000-8000-000000000574:failed:1",
+      "kind": "failed",
+      "runId": "00000000-0000-4000-8000-000000000574",
+      "ts": "2026-11-22T02:44:00.000Z",
+      "class": null,
+      "count": 1,
+      "source": "session-log:session.jsonl:16",
+      "digest": "748afd25c258ee64",
+      "dismissed": null,
+      "synthetic": true
+    },
+    {
+      "eventId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2:retry:1",
+      "kind": "retry",
+      "runId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2",
+      "ts": "2026-11-22T02:50:16.084Z",
+      "class": null,
+      "count": 1,
+      "source": "session-log:session.jsonl:18",
+      "digest": "549d3194940879dd",
+      "dismissed": null,
+      "via": "explicit"
+    }
+  ]
+}

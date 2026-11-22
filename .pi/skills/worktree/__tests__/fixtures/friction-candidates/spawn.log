@@ -1,0 +1,12 @@
+{"data": {"agentId": "14f143df-5a08-4a54-822f-3526048c3bee", "model": "deepseek/deepseek-flash"}, "level": "info", "message": "Background agent spawned", "timestamp": "2026-11-21T18:44:43.286Z"}
+{"data": {"agentId": "14f143df-5a08-4a54-822f-3526048c3bee", "errorCategory": "exit_error", "status": "failed", "stopReason": "error"}, "level": "info", "message": "Background run settled", "timestamp": "2026-11-21T18:52:39.293Z"}
+{"data": {"agentId": "5eb52f1a-4342-4a4b-b4cd-5a03b850d06c", "model": "deepseek/deepseek-flash"}, "level": "info", "message": "Background agent spawned", "timestamp": "2026-11-21T18:52:39.338Z"}
+{"data": {"attempt": 2, "sourceId": "14f143df-5a08-4a54-822f-3526048c3bee"}, "level": "info", "message": "Background run settled \u2014 transport auto-retry scheduled", "timestamp": "2026-11-21T18:52:39.338Z"}
+{"data": {"agentId": "5eb52f1a-4342-4a4b-b4cd-5a03b850d06c", "status": "done", "stopReason": "stop"}, "level": "info", "message": "Background run settled", "timestamp": "2026-11-21T18:58:56.125Z"}
+{"data": {"agentId": "acce0602-5d86-4251-a1ee-82c89664acfe", "model": "deepseek/deepseek-flash"}, "level": "info", "message": "Background agent spawned", "timestamp": "2026-11-22T02:43:04.251Z"}
+{"data": {"agentId": "acce0602-5d86-4251-a1ee-82c89664acfe", "attempt": 1, "errorCategory": "timeout", "status": "failed", "stopReason": "aborted"}, "level": "info", "message": "Background run settled", "timestamp": "2026-11-22T02:43:06.752Z"}
+{"data": {"agentId": "acce0602-5d86-4251-a1ee-82c89664acfe", "errorCategory": "timeout", "status": "failed"}, "level": "info", "message": "Background run amended after a late settle", "timestamp": "2026-11-22T02:43:06.797Z"}
+{"data": {"agentId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2", "model": "deepseek/deepseek-flash"}, "level": "info", "message": "Background agent spawned", "timestamp": "2026-11-22T02:43:07.978Z"}
+{"data": {"agentId": "17c35cf1-d7a7-4ab6-ac97-cc01dc7a59b2", "attempt": 1, "errorCategory": "aborted", "status": "failed", "stopReason": "aborted"}, "level": "info", "message": "Background run settled", "timestamp": "2026-11-22T02:43:26.491Z"}
+{"data": {"agentId": "5cb04ab8-0fc1-468e-903f-96d44ecba187", "model": "deepseek/deepseek-flash"}, "level": "info", "message": "Background agent spawned", "timestamp": "2026-11-22T02:50:16.144Z"}
+{"data": {"agentId": "5cb04ab8-0fc1-468e-903f-96d44ecba187", "attempt": 2, "status": "done", "stopReason": "stop"}, "level": "info", "message": "Background run settled", "timestamp": "2026-11-22T02:50:16.763Z"}

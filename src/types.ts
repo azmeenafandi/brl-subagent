@@ -852,6 +852,17 @@ export interface BackgroundAgent {
 	// Issue #114: per-unit priority for the drill-in header (`p:critical` etc.).
 	priority?: string;
 	error?: string;
+	/**
+	 * Issue #574: the KIND of this record's terminal state, stamped by the status
+	 * flip that produced it — a deadline and a user stop are BOTH
+	 * `status:"stopped"`, so the status alone cannot name the friction. Additive:
+	 * absent on records written before the field existed, and never invented by
+	 * the settlement or the boot scan (a record that stopped for an unknown
+	 * reason reads as "no kind known", not as `aborted`).
+	 */
+	errorCategory?: ErrorCategory;
+	/** The terminal stopReason of that same flip (mirrors `SubagentRun.stopReason`). */
+	stopReason?: string;
 	result?: SubagentResult;
 	finalOutput?: string;
 	/**
