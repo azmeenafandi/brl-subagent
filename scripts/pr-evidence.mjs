@@ -59,6 +59,12 @@ export const ROOT = join(HERE, "..");
 /** The base a unit's PR is measured against; overridable with `--base`. */
 export const DEFAULT_BASE = "dev";
 
+/**
+ * The budget clause names, straight from the guard that measures them — so a surface added to
+ * `SURFACES` becomes a clause of every emitted block, and the library keeps no import edge back here.
+ */
+const BUDGET_SURFACES = SURFACES.map((surface) => surface.name);
+
 export const USAGE =
 	"usage: pr-evidence.mjs --emit [--base <ref>] [--head <sha>] | " +
 	"--check (--body <file> | --pr <n>) [--base <ref>] | --apply --pr <n> | " +
@@ -255,7 +261,7 @@ function runEmit(options, probe, out, err) {
 	const headRef = options.head === "" ? "HEAD" : options.head;
 	const head = probe.resolveHead(headRef);
 	const { evidence, reportPath, reportLabel } = measure(probe, base, head);
-	const block = renderBlock(evidence, { base, headRef });
+	const block = renderBlock(evidence, { base, headRef, surfaces: BUDGET_SURFACES });
 	if (options.json) out(JSON.stringify({ ok: true, base, block, evidence }, null, 2));
 	else out(block);
 	if (reportPath !== "") err(`pr-evidence: suite/budget read from ${reportPath} (${reportLabel})`);
@@ -291,7 +297,7 @@ function runCheck(options, probe, out, err) {
 	const base = options.base === "" ? DEFAULT_BASE : options.base;
 	const subject = readSubject(options, probe);
 	const { evidence, reportPath, reportLabel } = measure(probe, base, subject.head);
-	const verdict = checkBody(subject.body, evidence);
+	const verdict = checkBody(subject.body, evidence, { surfaces: BUDGET_SURFACES });
 	if (reportPath !== "") err(`pr-evidence: suite/budget read from ${reportPath} (${reportLabel})`);
 	if (options.json) {
 		out(JSON.stringify({ ok: verdict.exit === EXIT.OK, exit: verdict.exit, blocks: verdict.blocks, findings: verdict.findings }, null, 2));
@@ -310,7 +316,7 @@ function runApply(options, probe, out, err) {
 	const base = options.base === "" ? DEFAULT_BASE : options.base;
 	const subject = readSubject(options, probe);
 	const { evidence, reportPath, reportLabel } = measure(probe, base, subject.head);
-	const block = renderBlock(evidence, { base, headRef: "HEAD" });
+	const block = renderBlock(evidence, { base, headRef: "HEAD", surfaces: BUDGET_SURFACES });
 	probe.prEdit(options.pr, upsertBlock(subject.body, block));
 	if (reportPath !== "") err(`pr-evidence: suite/budget read from ${reportPath} (${reportLabel})`);
 	if (options.json) out(JSON.stringify({ ok: true, pr: Number(options.pr), head: subject.head, block }, null, 2));

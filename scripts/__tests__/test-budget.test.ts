@@ -318,6 +318,26 @@ describe("evaluate — the ratio reports, the wall and the floors still fail", (
 		expect(warnings).toEqual([]);
 	});
 
+	it("a band without a reference does not throw", () => {
+		// A band with no reference is a contradiction the report must survive rather than crash on
+		// (#569): the band branch read `surface.reference.toFixed(1)`, which threw on null.
+		const hand = { name: "skills", sourceFiles: [], testFiles: [], sourceLoc: 100, testLoc: 90, ratio: 0.9, reference: null, warnAt: 0.5 };
+		expect(() => evaluate({ reportPath: "report.json", wallMs: 1_000, surfaces: [hand] })).not.toThrow();
+	});
+
+	it("a reference-less band stays silent and a referenced one warns", () => {
+		// The pair is the pass/fail verdict: no reference means no target to sit under, so the band has
+		// nothing to price and the flow rule is the gate; the same ratio with a reference DOES warn.
+		const silent = { name: "skills", sourceFiles: [], testFiles: [], sourceLoc: 100, testLoc: 90, ratio: 0.9, reference: null, warnAt: 0.5 };
+		expect(evaluate({ reportPath: "report.json", wallMs: 1_000, surfaces: [silent] })).toEqual({ findings: [], warnings: [] });
+
+		const { findings, warnings } = evaluate({ reportPath: "report.json", wallMs: 1_000, surfaces: [{ ...silent, reference: 2.0 }] });
+		expect(findings).toEqual([]);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("inside the 0.50 warning band");
+		expect(warnings[0]).toContain("110 test lines of headroom under the 2.0 reference");
+	});
+
 	it("fails a floor finding that names the unreachable modules and their surface", () => {
 		const { findings, warnings } = evaluate({
 			reportPath: "report.json",
