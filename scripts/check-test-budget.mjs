@@ -13,7 +13,9 @@
 //     lines, per surface, measured from `git diff --no-renames --numstat <base>...<head>`. The merge
 //     gate runs it from the trusted cockpit copy (see `.pi/skills/worktree/merge-guard.sh`), and an
 //     over-allowance PR needs an explicit `Test budget:` line in its body.
-//   * THE WALL CEILING STAYS (60 s, global): it is one suite on one runner, so it is still a ceiling.
+//   * THE WALL CEILING STAYS (90 s, global): it is one suite on one runner, so it is still a ceiling.
+//     Raised 60 → 90 (#585): five runs on identical machinery spanned 38.5–62.5 s, so a 60 s line
+//     failed PRs for runner noise. 90 s is outside that spread and still a limit, not a target.
 //   * THE FLOORS GATE, on both surfaces: every non-test source module must be REACHABLE from a
 //     `*.test.ts` through import edges. A ratio cannot see an untested module — adding source lowers
 //     it — and a direct-import floor cannot see a module reached only through another module. A
@@ -63,8 +65,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { scanBlocks } from "./lib/pr-evidence.mjs";
 import { FLOW, FLOW_CODES, FLOW_EXIT, computeFlow, formatFlowLine } from "./lib/test-budget-flow.mjs";
 
-/** Local suite wall-time ceiling (ms). Current local wall: ~18 s. Global to every surface. */
-export const WALL_CEILING_MS = 60_000;
+/** Local suite wall-time ceiling (ms). Current local wall: ~20 s; CI ~40–62 s (#585). Global to every surface. */
+export const WALL_CEILING_MS = 90_000;
 
 /** The path segment that classifies a file as a test. Shared by every surface. */
 export const TEST_DIR_NAME = "__tests__";

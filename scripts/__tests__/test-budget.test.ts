@@ -303,9 +303,9 @@ describe("evaluate — the ratio reports, the wall and the floors still fail", (
 		expect(verdict([measured("scripts", 100, 101)]).warnings).toHaveLength(1);
 	});
 
-	it("fails the wall ceiling above 60 s and passes it at exactly 60 s", () => {
+	it("fails the wall ceiling above 90 s and passes it at exactly 90 s", () => {
 		expect(verdict([measured("src", 10, 10)], WALL_CEILING_MS + 10).findings[0]).toContain(
-			"wall time 60.01s exceeds the 60.00s ceiling by 10 ms",
+			"wall time 90.01s exceeds the 90.00s ceiling by 10 ms",
 		);
 		expect(verdict([measured("src", 10, 10)], WALL_CEILING_MS).findings).toEqual([]);
 	});
@@ -797,7 +797,7 @@ describe("main — the two streams and the exit codes", () => {
 		// Six lines: the wall, the THREE surfaces in name order (`scripts`, `skills`, `src`), the floors
 		// — which still name exactly the two surfaces that declare one — and the verdict.
 		expect(out).toEqual([
-			`test-budget: wall 1.00s (<= 60.00s, report: ${path})`,
+			`test-budget: wall 1.00s (<= 90.00s, report: ${path})`,
 			"test-budget: scripts 0.90 (9 test / 10 source LOC, reference 1.0)",
 			"test-budget: skills 0.00 (0 test / 5 source LOC, reference none (flow-gated))",
 			"test-budget: src 1.50 (15 test / 10 source LOC, reference 2.0, warn at 1.95)",
@@ -845,7 +845,7 @@ describe("main — the two streams and the exit codes", () => {
 		const path = report("wall", WALL_CEILING_MS + 10);
 		const { code, err } = run([path], root);
 		expect(code).toBe(1);
-		expect(err.join("\n")).toContain(`wall time 60.01s exceeds the 60.00s ceiling by 10 ms (report: ${path}`);
+		expect(err.join("\n")).toContain(`wall time 90.01s exceeds the 90.00s ceiling by 10 ms (report: ${path}`);
 	});
 
 	it("fails the floor when a source module is unreachable, naming every module", () => {
