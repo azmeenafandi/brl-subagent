@@ -11,8 +11,11 @@
 // and never writes — `scripts/handoff-verify.mjs` supplies the repo facts behind one probe object, and
 // `scripts/__tests__/handoff-verify.test.ts` supplies a stub.
 //
-// Seven checks, all inside `## STATE` (so prose in `### Since the last handover` / `## Open items` is
-// never parsed as a claim):
+// Seven CLAIM checks, all inside `## STATE` (so prose in `### Since the last handover` / `## Open items`
+// is never parsed as a claim) — plus one STRUCTURAL check that reads the whole document and runs first:
+//   structure       exactly one `## STATE` and one `## Open items`, and no H2 repeated. §STATE is the
+//                   crash-resume point, so a document holding two copies of it has no single answer;
+//                   a slice-replace that re-appended a whole block is the recurrence (#579).
 //   1 verified      `Verified:` is an ancestor of HEAD, and every commit after it touches only the handoff
 //                   and its archives — the extension's own rule (`.pi/extensions/handoff/lib.ts`), so the
 //                   staleness banner and this check agree by construction.
@@ -42,6 +45,7 @@
 // which is a worse trade than a human reading three lines. The spec's non-goals say the same.
 //
 // The drift codes, one per failure mode (the fixtures pin them):
+//   state-drift
 //   verified-missing · verified-not-ancestor · verified-drift
 //   dev-claim-missing · dev-sha-drift
 //   install-claim-missing · install-missing · install-sha-drift
@@ -74,6 +78,7 @@ export const CODES = Object.freeze({
 	adrsDrift: "adrs-drift",
 	fileMissing: "file-missing",
 	fileSizeDrift: "file-size-drift",
+	stateDrift: "state-drift",
 });
 
 const SHA = "[0-9a-f]{7,40}";
@@ -105,26 +110,133 @@ export function isHandoffOwnCommit(commit) {
 }
 
 // ---------------------------------------------------------------------------
-// Parsing — the STATE's fixed shapes, and nothing else.
+// Structure — the document's H2 headings, read outside fenced code blocks.
+//
+// The recurrence (#579): a slice-replace re-appended a whole `## STATE … ## Open items` block, and the
+// checker read the first `## STATE` only, so the stale copy was invisible — 0 drift, and the only
+// detector was `grep -c '^## STATE'`. ONE scanner answers both questions: which headings exist (a
+// duplicate is named) and where the STATE body ends (the claims are read from the section the scan
+// reported). Two parsers could disagree — the old one ignored fences, so a fenced `## STATE` could be
+// the section read while a fence-aware scan certified "one STATE".
+//
+// The fence grammar is a STATED CommonMark subset, not "fenced code" in general:
+//   opener  ^ {0,3}(`{3,}|~{3,})(info)$     indented at most 3; a backtick info string may not contain `
+//   closer  ^ {0,3}(same char){n} [ \t]*$   n >= the opener's length, and WHITESPACE ONLY after the run
+// A closer cannot carry an info string, so a ```js line inside a block is CONTENT; an opener left open
+// masks to EOF. ACCEPTED RESIDUALS (spec §5): an unclosed fence masks to EOF (R4 — the safer direction,
+// no claim is invented), and a heading inside an HTML comment counts as a second heading (R2 — comments
+// are not parsed).
 // ---------------------------------------------------------------------------
 
+/** `^##[ \t]+` — the grammar `stateSection` always accepted, tabs included; `### ` is not an H2. */
+const HEADING_RE = /^##[ \t]+(\S.*)$/;
+/** An opener: at most three spaces, then a run of three or more backticks or tildes, then the info string. */
+const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+/** A closer: the same character, at least the opener's length, then WHITESPACE ONLY. */
+const FENCE_CLOSE_RE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
+
+/** A line without its `\r`, so a CRLF document fences and headings like an LF one. */
+function withoutCr(line) {
+	return line.endsWith("\r") ? line.slice(0, -1) : line;
+}
+
+/** The fence a line OPENS, or `null`. A backtick info string may not contain a backtick (CommonMark). */
+function openedFence(line) {
+	const match = FENCE_OPEN_RE.exec(line);
+	if (match === null) return null;
+	if (match[1][0] === "`" && match[2].includes("`")) return null;
+	return { char: match[1][0], length: match[1].length };
+}
+
+/** Whether a line CLOSES `fence` — same character, at least as long, nothing but whitespace after. */
+function closesFence(line, fence) {
+	const match = FENCE_CLOSE_RE.exec(line);
+	if (match === null) return false;
+	return match[1][0] === fence.char && match[1].length >= fence.length;
+}
+
 /**
- * The `## STATE` section's body: from the `## STATE` heading to the next `## ` heading. `null` when the
- * file has no such section, which is a usage fault, not a drift (there is nothing to check).
+ * Every line, with the one fence rule already applied: `fenced` is true for the opener, the content and
+ * the closer. Both public helpers walk THIS, so the scanner and the masker cannot drift apart (DRY).
  */
-export function stateSection(text) {
-	const lines = String(text).split("\n");
-	const start = lines.findIndex((line) => /^##[ \t]+STATE[ \t]*$/.test(line));
-	if (start === -1) return null;
-	let end = lines.length;
-	for (let index = start + 1; index < lines.length; index += 1) {
-		if (/^##[ \t]/.test(lines[index])) {
-			end = index;
-			break;
+function* fenceLines(text) {
+	let fence = null;
+	for (const [index, raw] of String(text).split("\n").entries()) {
+		const line = withoutCr(raw);
+		if (fence !== null) {
+			if (closesFence(line, fence)) fence = null;
+			yield { index, raw, line, fenced: true };
+		} else {
+			const opened = openedFence(line);
+			if (opened !== null) fence = opened;
+			yield { index, raw, line, fenced: opened !== null };
 		}
 	}
-	return lines.slice(start + 1, end).join("\n");
 }
+
+/** The headings grouped by text, keyed in document order of the first occurrence (Map insertion order). */
+function headingsByText(headings) {
+	const byText = new Map();
+	for (const heading of headings) {
+		const lines = byText.get(heading.text);
+		if (lines === undefined) byText.set(heading.text, [heading.line]);
+		else lines.push(heading.line);
+	}
+	return byText;
+}
+
+/**
+ * Every H2 heading in document order, outside fenced code blocks, plus the texts that repeat. `line` is
+ * ONE-BASED (a reader's line number, which is what a drift detail names); trailing whitespace is not part
+ * of the text, so `## STATE  ` and `## STATE` are the same heading.
+ */
+export function scanHeadings(text) {
+	const headings = [];
+	for (const { index, line, fenced } of fenceLines(text)) {
+		if (fenced) continue;
+		const match = HEADING_RE.exec(line);
+		if (match !== null) headings.push({ text: match[1].trimEnd(), line: index + 1 });
+	}
+	const duplicates = [...headingsByText(headings)]
+		.filter(([, lines]) => lines.length > 1)
+		.map(([text, lines]) => ({ text, lines }));
+	return { headings, duplicates };
+}
+
+/**
+ * The same fence rule applied to a BODY: every fenced line becomes an empty line, offsets preserved — so
+ * a claim regex run over the result keeps the line positions of the original (and a fenced example can
+ * never supply the mechanical claim). An unclosed fence masks to EOF.
+ */
+export function maskFences(text) {
+	return [...fenceLines(text)]
+		.map(({ raw, fenced }) => (fenced ? "" : raw))
+		.join("\n");
+}
+
+/** The section body given the headings already scanned — `parseClaims` scans once and passes them in. */
+function sectionBody(text, headings) {
+	const lines = String(text).split("\n");
+	const start = headings.find((heading) => heading.text === "STATE");
+	if (start === undefined) return null;
+	const next = headings.find((heading) => heading.line > start.line);
+	const end = next === undefined ? lines.length : next.line - 1;
+	return lines.slice(start.line, end).join("\n");
+}
+
+/**
+ * The `## STATE` section's body: from the first `## STATE` heading to the line before the NEXT heading the
+ * scan reports (or EOF). `null` when the file has no such section, which is a usage fault, not a drift
+ * (there is nothing to check). The boundary is the SCANNER's, so the section read and the headings counted
+ * cannot disagree — and a fenced `## STATE` is a heading to neither.
+ */
+export function stateSection(text) {
+	return sectionBody(text, scanHeadings(text).headings);
+}
+
+// ---------------------------------------------------------------------------
+// Parsing — the STATE's fixed shapes, and nothing else.
+// ---------------------------------------------------------------------------
 
 const VERIFIED_RE = new RegExp(`^Verified:[ \\t]*(${SHA})\\b`, "m");
 // `dev @ <sha>` at line start, after an optional bullet — the shape of the STATE's dev line. The install
@@ -253,24 +365,33 @@ function parseSuite(section, match) {
  * vanished is a claim the next session cannot check. Not an error — the caller decides.
  */
 export function parseClaims(text) {
-	const section = stateSection(text);
+	// The structure is the whole DOCUMENT's, so it is read even when there is no STATE to check (the
+	// caller still needs the headings to name a `STATE 0` / a duplicate).
+	const structure = scanHeadings(text);
+	const section = sectionBody(text, structure.headings);
 	if (section === null) {
-		return { state: null, verified: null, dev: [], install: null, open: null, suite: null, modules: [], adrs: [], sizes: [] };
+		return { state: null, verified: null, dev: [], install: null, open: null, suite: null, modules: [], adrs: [], sizes: [], structure };
 	}
-	const verified = VERIFIED_RE.exec(section);
-	const suiteMatch = SUITE_RE.exec(section);
+	// Every claim is read OUTSIDE fenced blocks: a fence inside §STATE is an example, not a claim. Without
+	// this the fence-aware boundary above would expose a fenced `Verified:` as the claim (a truncation that
+	// was wrong but hid it is not made safe by removing the truncation).
+	const masked = maskFences(section);
+	const verified = VERIFIED_RE.exec(masked);
+	const suiteMatch = SUITE_RE.exec(masked);
 	const sizes = [];
-	for (const match of section.matchAll(SIZE_RE)) sizes.push({ name: match[1], lines: parseCount(match[2]) });
+	for (const match of masked.matchAll(SIZE_RE)) sizes.push({ name: match[1], lines: parseCount(match[2]) });
 	return {
+		// The section BODY as written; `state === null` is the caller's "no §STATE" usage fault.
 		state: section,
 		verified: verified === null ? null : { sha: verified[1] },
-		dev: allMatches(DEV_RE, section),
-		install: parseInstall(section),
-		open: parseOpen(section),
-		suite: suiteMatch === null ? null : parseSuite(section, suiteMatch),
-		modules: allMatches(MODULES_RE, section).map(Number),
-		adrs: allMatches(ADRS_RE, section).map(Number),
+		dev: allMatches(DEV_RE, masked),
+		install: parseInstall(masked),
+		open: parseOpen(masked),
+		suite: suiteMatch === null ? null : parseSuite(masked, suiteMatch),
+		modules: allMatches(MODULES_RE, masked).map(Number),
+		adrs: allMatches(ADRS_RE, masked).map(Number),
 		sizes,
+		structure,
 	};
 }
 
@@ -301,6 +422,50 @@ function skip(claim, reason) {
 }
 
 const list = (numbers) => numbers.map((number) => `#${number}`).join(", ");
+
+/** The two H2 headings the handoff contract promises exactly once. */
+const MANDATORY_HEADINGS = ["STATE", "Open items"];
+
+/**
+ * Check 0, the structural one — and it reads the DOCUMENT, not §STATE. A second `## STATE` is the
+ * slice-replace recurrence: the checker reads the first block, so a stale copy is invisible unless the
+ * heading count is what fails. One result per DISTINCT violating heading, in document order of its first
+ * occurrence (a heading that is absent altogether sorts last, and the mandatory order breaks that tie):
+ *   `STATE`/`Open items` must appear exactly once (`STATE 2`, `Open items 0`);
+ *   any other H2 text must not repeat (`Notes 2`).
+ * The detail names the line numbers, because "a duplicate" without them is a grep the reader re-runs.
+ * Uniqueness is NOT freshness (spec §5 R1): one STATE that is the stale copy passes — freshness is
+ * `Verified:` plus the claim checks below.
+ */
+function checkStructure(claims) {
+	const byText = headingsByText(claims.structure.headings);
+	const violations = [];
+	for (const text of MANDATORY_HEADINGS) {
+		const lines = byText.get(text) ?? [];
+		if (lines.length !== 1) violations.push({ text, lines });
+	}
+	for (const [text, lines] of byText) {
+		if (!MANDATORY_HEADINGS.includes(text) && lines.length > 1) violations.push({ text, lines });
+	}
+	// `sort` is stable, so the absent-heading entries (Infinity) keep the mandatory order.
+	violations.sort((left, right) => (left.lines[0] ?? Infinity) - (right.lines[0] ?? Infinity));
+	return violations.map(({ text, lines }) => {
+		const count = lines.length;
+		const claim = `${text} ${count}`;
+		const at = count === 0 ? "none" : `${count} at line${count === 1 ? "" : "s"} ${lines.join(", ")}`;
+		// The message LEADS with the claim (`✗ state-drift: STATE 2 — …`), so the one-line output names the
+		// finding without the reader parsing the prose after it.
+		return drift(
+			CODES.stateDrift,
+			claim,
+			`exactly one \`## ${text}\` heading`,
+			at,
+			count === 0
+				? `${claim} — the document has no \`## ${text}\` heading: the handoff contract promises exactly one`
+				: `${claim} — \`## ${text}\` appears ${count} times, at lines ${lines.join(", ")}: one copy is the section, the rest are stale blocks`,
+		);
+	});
+}
 
 function short(sha) {
 	return String(sha).slice(0, 7);
@@ -614,15 +779,22 @@ function checkSizes(claims, probe) {
 }
 
 /**
- * Every check, in a fixed order (verified, dev, install, open, suite, modules, adrs, then each file-size
- * claim in the order STATE states them) — the order is what makes two runs print the same bytes.
+ * Every check, in a fixed order — structure first (the document), then verified, dev, install, open, suite,
+ * modules, adrs, and each file-size claim in the order STATE states them. The order is what makes two runs
+ * print the same bytes, and structure is first because a document whose §STATE is duplicated has no single
+ * subject for the checks after it to disagree with.
  */
 export function evaluate(claims, probe, options = {}) {
 	const context = { noNetwork: options.noNetwork === true, injected: options.issuesInjected === true };
+	// Structure is read from the claims alone (`devTip` needs the probe), so it is computed before any fact
+	// is fetched — and it is the first result, never a pass line: a clean document prints exactly what it
+	// printed before this check existed (the `correct.md` 10-result pin).
+	const structure = checkStructure(claims);
 	// One resolution for both dev checks: resolving twice would let a `dev @` line and the install line be
 	// compared against tips that moved between them (#497).
 	const dev = devTip(probe);
 	const results = [
+		...structure,
 		checkVerified(claims, probe),
 		...checkDev(claims, dev),
 		checkInstall(claims, probe, dev),
