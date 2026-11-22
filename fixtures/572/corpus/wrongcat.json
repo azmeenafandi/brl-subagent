@@ -1,0 +1,13 @@
+{
+  "id": "wrongcat",
+  "description": "L4",
+  "status": "failed",
+  "startedAt": 1795327200000,
+  "completedAt": 1795327201000,
+  "result": {
+    "exitCode": 1,
+    "stderr": "",
+    "errorCategory": "tool_error",
+    "errorMessage": "Connection error."
+  }
+}

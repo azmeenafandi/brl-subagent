@@ -1,0 +1,13 @@
+{
+  "id": "plain",
+  "description": "L3",
+  "status": "failed",
+  "startedAt": 1795323600000,
+  "completedAt": 1795323601000,
+  "result": {
+    "exitCode": 1,
+    "stderr": "",
+    "errorCategory": "exit_error",
+    "errorMessage": "boom"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "id": "params",
+  "description": "L6",
+  "status": "failed",
+  "startedAt": 1795334400000,
+  "completedAt": 1795334401000,
+  "originalParams": {
+    "errorCategory": "exit_error"
+  },
+  "result": {
+    "exitCode": 1,
+    "stderr": "",
+    "errorMessage": "fetch failed"
+  }
+}

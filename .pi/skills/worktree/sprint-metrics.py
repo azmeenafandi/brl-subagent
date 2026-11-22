@@ -15,6 +15,7 @@ Usage:
                             [--spawn-log <path>] [--out .development/METRICS.md]
                             [--sprint "2026-08-16"]
   python3 sprint-metrics.py --candidates <path> [--sprint <cycle>] [--since ..] [--until ..]
+  python3 sprint-metrics.py --transport [--records <dir>] [--signatures <path>] [--limit N]
   python3 sprint-metrics.py --selftest   # window-boundary + reconcile + candidates guard (CI-wired)
 
 Defaults: --since = today-1 day (covers the current sprint's work), --log = every session
@@ -31,6 +32,8 @@ Data sources (all automatic, no human entries):
   - brl-subagent-run custom entries     → success/failed/stopped rates, retry success,
                                           zero-work rate (done + empty fullOutput)
   - get_subagent_result toolCall events → polling frequency (babysitting proxy)
+  - <cwd>/.pi/subagents/<id>.json     → transport deaths per label (issue #572), only when
+                                         the run store exists (see below)
 
 Friction candidates (issue #574; `--candidates <path>`): the six kinds — `failed`,
 `deadline`, `retry` (via transport or explicit), `stop`, `steer` — derived from the
@@ -41,8 +44,31 @@ mode REFUSES (exit 2, no file written) when a session or spawn source is missing
 unreadable: a derived figure with no evidence behind it is worse than none. The
 legacy metrics path still fails open on a missing log.
 
-Exit codes: 0 ok · 1 no session logs (metrics) · 2 selftest failure, or a missing
-candidates source · 3 reconcile failed.
+Transport deaths (issue #572) — the figure the close must not have to ask for. A settled
+run's death CLASS is not in the session log: `status`, `result.errorCategory`,
+`result.errorMessage`, `attempt` and `resumeOf` are in the run store's per-run snapshots,
+so this is the file's SECOND source, read only when that directory exists. The predicate
+is the stored-record mirror of `isTransportFailure`, and its signature list is READ FROM
+`src/transport-retry.ts` at runtime — a source that no longer parses REFUSES (exit 2)
+rather than classifying nothing.
+
+The asymmetry between the two paths is deliberate and is the whole design:
+
+  DEFAULT   when `<cwd>/.pi/subagents` exists and is readable, the report gains ONE line
+            (`transport: N death(s) in M record(s) in window · …`). Absent or unreadable →
+            the line is OMITTED and every other byte of the report is unchanged: CI and a
+            plain clone have no run store, and a missing directory there is normal.
+  --transport  adds the per-label block (labels at >= 2 deaths, then the singleton count)
+            and REFUSES a missing or empty directory: a metric over no records is not zero
+            deaths. It also refuses `--out` — the 11-column METRICS.md schema is a
+            migration this unit does not own, so the mode may never write a table row.
+
+Every figure is scoped by `--since/--until` on the record's `startedAt` (then
+`completedAt`); a record with neither is counted as `window unknown`, never dropped, and
+one unparsable record is counted as `unreadable`, never skipped.
+
+Exit codes: 0 ok · 1 no session logs (metrics) · 2 selftest failure, a missing
+candidates source, or a refused transport reading · 3 reconcile failed.
 
 Dispatch counting rules (issue #489):
   - A codemode toolCall counts one dispatch per CALL-SHAPED occurrence of
@@ -523,15 +549,19 @@ def run_selftest() -> int:
 
     The legacy 21 cases keep their names, order and pass line; the dispatch-result cases
     (#591) and the candidate checks (corpus + boundary fixtures) follow, so one command
-    proves the extractor and the derivations it feeds (#574).
+    proves the extractor and the derivations it feeds (#574); the transport-death checks
+    (#572) close the table on the corpus that pins the default report's line.
     """
     candidate_checks = run_candidate_selftest()
+    transport_checks = run_transport_selftest()
     legacy_total = len(SELFTEST_CASES) + len(RECONCILE_SELFTEST_CASES)
-    total = legacy_total + len(DISPATCH_SELFTEST_CASES) + len(candidate_checks)
+    total = (legacy_total + len(DISPATCH_SELFTEST_CASES) + len(candidate_checks)
+             + len(transport_checks))
     print(f"sprint-metrics --selftest: {len(SELFTEST_CASES)} boundary cases "
           f"+ {len(RECONCILE_SELFTEST_CASES)} reconcile cases "
           f"+ {len(DISPATCH_SELFTEST_CASES)} dispatch-result cases "
-          f"+ {len(candidate_checks)} candidate cases ({legacy_total} legacy)")
+          f"+ {len(candidate_checks)} candidate cases "
+          f"+ {len(transport_checks)} transport-death cases ({legacy_total} legacy)")
     failures = 0
     for name, ts, since, until, expected in SELFTEST_CASES:
         got = in_range(ts, since, until)
@@ -555,6 +585,11 @@ def run_selftest() -> int:
         if not ok:
             failures += 1
     for name, ok, detail in candidate_checks:
+        mark = "✓" if ok else "✗"
+        print(f"  {mark} {name}: {detail}")
+        if not ok:
+            failures += 1
+    for name, ok, detail in transport_checks:
         mark = "✓" if ok else "✗"
         print(f"  {mark} {name}: {detail}")
         if not ok:
@@ -1567,6 +1602,415 @@ def run_candidate_selftest():
         return [("candidate corpus", False, f"{type(exc).__name__}: {exc}")]
 
 
+# ---------------------------------------------------------------------------
+# Transport deaths (issue #572) — the per-label count the close reads.
+#
+# The run store is the only source for a settled run's death CLASS, and it is a
+# different shape from both logs: one JSON snapshot per run id. The predicate
+# below is the stored-record mirror of `isTransportFailure`; the signature list
+# is not copied, it is READ FROM THE TS SOURCE at runtime.
+# ---------------------------------------------------------------------------
+
+
+class TransportError(Exception):
+    """A transport reading cannot be computed — exit 2, no figure printed."""
+
+
+RECORDS_REL = os.path.join(".pi", "subagents")
+# Resolved from THIS FILE, never from the caller's cwd: the tool runs from the cockpit,
+# from a worktree and from a temp dir, and only one of those has `src/` under it.
+_HERE = os.path.dirname(os.path.abspath(__file__))            # <repo>/.pi/skills/worktree
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))  # <repo>
+SIGNATURES_REL = os.path.join("src", "transport-retry.ts")
+SIGNATURE_MIN = 5        # the measured list holds nine; fewer is a parse that did not happen
+TRANSPORT_LIMIT = 10     # `--limit` default for the per-label block
+TRANSPORT_LABEL_MIN = 2  # a label is LISTED at >= 2 deaths; a singleton is only counted
+UNLABELLED = "(unlabelled)"
+
+# `TRANSPORT_SIGNATURES = [ … ]`: the block ends at the first `]`, which is the array's own
+# close — no signature string contains a bracket, so the lazy match cannot over-run.
+_SIGNATURE_BLOCK = re.compile(r"TRANSPORT_SIGNATURES\s*=\s*\[(.*?)\]", re.DOTALL)
+# A `//` comment INSIDE the block is stripped before extraction, so a commented-out or
+# obsolete pattern cannot become a signature. A quoted string containing `//` would be
+# truncated by this — none does, and a truncated one still yields >= SIGNATURE_MIN.
+_BLOCK_COMMENT_LINE = re.compile(r"//[^\n]*")
+_QUOTED = re.compile(r'''["']([^"'\\\n]*)["']''')
+
+
+def load_signatures(path=None):
+    """The transport signature list, parsed from the TS source at runtime.
+
+    Read from the SOURCE rather than pinned as literals here: a Python copy of the list
+    cannot see a TypeScript-only change, so it would keep classifying against a predicate
+    that no longer exists. `//` comments inside the block are stripped first, then every
+    quoted string is taken. Fewer than `SIGNATURE_MIN` strings means the block did not
+    parse — a drifted source must REFUSE (exit 2) rather than classify nothing, and a
+    missing or unreadable file is the same refusal with the path named.
+    """
+    source = path or os.path.join(REPO_ROOT, SIGNATURES_REL)
+    try:
+        with open(source, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as exc:
+        raise TransportError(f"signatures {source} is missing or unreadable "
+                             f"({exc.strerror or exc})") from exc
+    match = _SIGNATURE_BLOCK.search(text)
+    if match is None:
+        raise TransportError(f"signatures: no TRANSPORT_SIGNATURES block in {source}")
+    signatures = [found.lower() for found in _QUOTED.findall(_BLOCK_COMMENT_LINE.sub("", match.group(1)))]
+    if len(signatures) < SIGNATURE_MIN:
+        raise TransportError(f"signatures: {len(signatures)} string(s) in {source} "
+                             f"(the block needs at least {SIGNATURE_MIN} — it did not parse)")
+    return signatures
+
+
+def _non_empty_str(value):
+    """A non-empty, non-blank string, else None — the spec's `??`-with-blank-is-fallback rule."""
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _record_moment(record):
+    """The record's inclusion instant, or None when it carries no usable timestamp.
+
+    `startedAt` first, `completedAt` second: a run that STARTED before the window and
+    settled inside it is still this window's evidence, and a record with neither is
+    counted (`window unknown`) rather than dropped. Stored values are epoch MILLIseconds;
+    an ISO string is accepted so a hand-built fixture may use either.
+    """
+    for key in ("startedAt", "completedAt"):
+        value = record.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return _EPOCH + timedelta(milliseconds=value)
+        if isinstance(value, str) and value.strip():
+            moment = _parse_ts(value)
+            if moment is not None:
+                return moment
+    return None
+
+
+def is_transport_death(record, signatures):
+    """The four §2 rules, in precedence order — the stored-record mirror of `isTransportFailure`.
+
+    The TS predicate reads the RUN (`errorCategory ?? originalParams?.errorCategory`,
+    `errorMessage ?? ""`); a stored record carries the current value under `result.*` and
+    the legacy one under `originalParams.*` / top-level `errorMessage`, so each field falls
+    back exactly where the `??` does, and BLANK counts as absent (the spec's rule, and the
+    one a `""`-stamped record needs).
+
+    `result.stderr` is deliberately NOT read. The predicate never sees stderr — it sees the
+    settled run's `errorMessage` — so reading it here would classify runs the retry
+    machinery does not consider transport deaths. Measured on the 1,565-record store
+    (2026-11-22): 0 records change class when stderr is read, which is exactly why the
+    corpus has to carry that shape synthetically (`stderr.json`).
+    """
+    if record.get("status") != "failed":
+        return False
+    result = record.get("result")
+    result = result if isinstance(result, dict) else {}
+    category = _non_empty_str(result.get("errorCategory"))
+    if category is None:
+        original = record.get("originalParams")
+        category = _non_empty_str(original.get("errorCategory")) if isinstance(original, dict) else None
+    if category != "exit_error":
+        return False
+    message = (_non_empty_str(result.get("errorMessage"))
+               or _non_empty_str(record.get("errorMessage")) or "")
+    lower = message.lower()
+    return any(signature in lower for signature in signatures)
+
+
+def load_records(records_dir):
+    """Every `*.json` run record as `([(record, id)], unreadable)`.
+
+    Sorted by filename so a count never depends on directory order. One unparsable or
+    non-object file is COUNTED, never skipped: a reading that quietly drops the rows it
+    cannot read understates in exactly the dangerous direction (§6). The id is the
+    record's own `id`, else the file stem — a retry names its parent by id and the store
+    spells both.
+    """
+    records, unreadable = [], 0
+    for path in sorted(glob.glob(os.path.join(records_dir, "*.json"))):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                record = json.load(handle)
+        except (OSError, ValueError):
+            unreadable += 1
+            continue
+        if not isinstance(record, dict):
+            unreadable += 1
+            continue
+        record_id = _non_empty_str(record.get("id")) or os.path.splitext(os.path.basename(path))[0]
+        records.append((record, record_id))
+    return records, unreadable
+
+
+def records_readable(records_dir):
+    """True when the DEFAULT report may try a transport reading for `records_dir`.
+
+    The default path fails OPEN: a missing or unreadable directory is normal in CI and in
+    a clone, so the line is omitted and the rest of the report is untouched. Whether the
+    directory actually HOLDS a record is decided once, after the read, by
+    `transport_metrics` — so the directory is listed exactly once.
+    """
+    return os.path.isdir(records_dir) and os.access(records_dir, os.R_OK | os.X_OK)
+
+
+def transport_metrics(records_dir, signatures, since, until, required=False):
+    """The counters of §2's table over one run-record directory, or None when there is nothing
+    to read and the caller did not require a reading.
+
+    `required` is the `--transport` half of the asymmetry: the mode REFUSES an absent or
+    empty directory, naming it, because a metric over no records is not zero deaths. The
+    default path gets None instead, so it prints no line at all — an absent directory, an
+    unreadable one and an EMPTY one are one answer there (§D1, §4 A2).
+
+    The parent lookup is done over EVERY readable record indexed by id BEFORE the window
+    filter — a retry's parent may predate the window, and filtering first would report
+    every such retry as `resume unknown`.
+    """
+    if required and not os.path.isdir(records_dir):
+        raise TransportError(f"records: {records_dir} is not a directory")
+    records, unreadable = load_records(records_dir)
+    if not records and not unreadable:
+        if required:
+            raise TransportError(f"records: {records_dir} holds no *.json run record")
+        return None
+    by_id = {}
+    for record, record_id in records:
+        by_id.setdefault(record_id, record)
+    dead_ids = {record_id for record_id, record in by_id.items()
+                if is_transport_death(record, signatures)}
+    start, end = _window_start(since), _window_end(until)
+    in_window = window_unknown = deaths = retried = died_again = resume_unknown = 0
+    labels = Counter()
+    for record, _record_id in records:
+        moment = _record_moment(record)
+        if moment is None:
+            window_unknown += 1
+            continue
+        # An unparseable bound excludes everything, exactly as `in_range` does — never a
+        # silent default-to-include.
+        if start is None or end is None or not start <= moment <= end:
+            continue
+        in_window += 1
+        dead = is_transport_death(record, signatures)
+        if dead:
+            deaths += 1
+            labels[_non_empty_str(record.get("description")) or UNLABELLED] += 1
+        attempt = record.get("attempt")
+        if isinstance(attempt, (int, float)) and not isinstance(attempt, bool) and attempt >= 2:
+            parent = record.get("resumeOf")
+            if isinstance(parent, str) and parent in dead_ids:
+                retried += 1
+                if dead:
+                    died_again += 1
+            else:
+                # Absent lineage, or a parent that is not a death: the retry happened and we
+                # cannot say it followed a transport death — counted, never silently zero.
+                resume_unknown += 1
+    return {"deaths": deaths, "in_window": in_window, "retried": retried,
+            "died_again": died_again, "window_unknown": window_unknown,
+            "unreadable": unreadable, "resume_unknown": resume_unknown, "labels": labels}
+
+
+def fmt_transport(t):
+    """The one line the close reads: fixed field order, every figure always printed.
+
+    Zero deaths prints zeroes rather than nothing — a window with no deaths and a reader
+    that never ran must not look alike, and a caller only sees this line when the records
+    directory was actually read.
+    """
+    return (f"transport: {t['deaths']} death(s) in {t['in_window']} record(s) in window"
+            f" · retried: {t['retried']} · died again: {t['died_again']}"
+            f" · window unknown: {t['window_unknown']} · unreadable: {t['unreadable']}"
+            f" · resume unknown: {t['resume_unknown']}")
+
+
+def fmt_transport_labels(t, limit=TRANSPORT_LIMIT):
+    """The `--transport` block: labels at >= 2 deaths (count, then name), then the singletons.
+
+    A label with ONE death is never listed — a cycle's tail is mostly singletons, and a
+    table of them buries the recurrence the block exists to show — so its count is printed
+    instead, and the two lines together account for every death in the window.
+    """
+    listed = sorted(((-count, label) for label, count in t["labels"].items()
+                     if count >= TRANSPORT_LABEL_MIN))[:limit]
+    body = " · ".join(f"{label} {-count}" for count, label in listed) or "(none)"
+    singles = sum(1 for count in t["labels"].values() if count == TRANSPORT_LABEL_MIN - 1)
+    return [f"transport by label (>= {TRANSPORT_LABEL_MIN} deaths): {body}",
+            f"labels with exactly 1 death: {singles} (not listed)"]
+
+
+def render_transport(t, limit=TRANSPORT_LIMIT, labels=True):
+    """The transport lines as printed: the reading, then the per-label block when asked."""
+    lines = [fmt_transport(t)]
+    if labels:
+        lines.extend(fmt_transport_labels(t, limit))
+    return lines
+
+
+def transport_reading(args):
+    """The transport reading for this invocation, or None when the default path has no store.
+
+    ONE entry point for both modes, so the D1 asymmetry lives in one place: `--transport`
+    requires a non-empty directory, the default path omits the line (None) when the
+    directory is missing, unreadable or empty.
+    """
+    records_dir = args.records or os.path.join(os.getcwd(), RECORDS_REL)
+    if not args.transport and not records_readable(records_dir):
+        return None
+    return transport_metrics(records_dir, load_signatures(args.signatures),
+                             args.since, args.until, required=args.transport)
+
+
+TRANSPORT_CORPUS = os.path.join(REPO_ROOT, "fixtures", "572", "corpus")
+TRANSPORT_CORPUS_WINDOW = ("2026-11-22T00:00:00Z", "2026-11-22T12:00:00Z")
+# The corpus's whole arithmetic (§3). Eleven committed records, and the three lines are
+# the spec's own expected output — every number below is derived by the code above, so a
+# mutant moves one of them and this tuple is what says so.
+TRANSPORT_CORPUS_LINES = (
+    "transport: 5 death(s) in 8 record(s) in window · retried: 1 · died again: 1"
+    " · window unknown: 1 · unreadable: 1 · resume unknown: 0",
+    "transport by label (>= 2 deaths): L1 3",
+    "labels with exactly 1 death: 2 (not listed)",
+)
+
+
+def _records_variant(tmp, keep=None, without=()):
+    """A temp records directory: the corpus, optionally filtered by name, minus some top-level fields.
+
+    `without` strips one field from every copied record — the one-record mutation a self-test
+    needs to prove a counter actually reads that field (§4 A6/A7). The scratch copy is what
+    gets mutated; the committed corpus is only ever read.
+    """
+    target = os.path.join(tmp, "records")
+    os.makedirs(target, exist_ok=True)
+    for path in sorted(glob.glob(os.path.join(TRANSPORT_CORPUS, "*.json"))):
+        name = os.path.basename(path)
+        if keep is not None and name not in keep:
+            continue
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        if without:
+            try:
+                record = json.loads(text)
+            except ValueError:
+                # The unreadable fixture stays unreadable: the variant mutates the records it
+                # CAN read, and copying a broken one verbatim is what keeps that case honest.
+                record = None
+            if isinstance(record, dict):
+                for field in without:
+                    record.pop(field, None)
+                text = json.dumps(record, indent=2) + "\n"
+        with open(os.path.join(target, name), "w", encoding="utf-8") as handle:
+            handle.write(text)
+    return target
+
+
+def _transport_checks():
+    """The corpus assertions and the per-counter fixtures (§4 A1, A6, A7, D2's refusals)."""
+    checks = []
+    signatures = load_signatures()
+    checks.append(("signatures: read from src/transport-retry.ts, not pinned here",
+                   len(signatures) >= SIGNATURE_MIN and "connection error" in signatures,
+                   f"{len(signatures)} signatures"))
+
+    lines = render_transport(transport_metrics(TRANSPORT_CORPUS, signatures,
+                                               *TRANSPORT_CORPUS_WINDOW))
+    checks.append(("corpus: the eleven committed records print the spec's three lines",
+                   tuple(lines) == TRANSPORT_CORPUS_LINES,
+                   " | ".join(lines)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        alone = transport_metrics(_records_variant(tmp, keep={"nostart.json"}),
+                                  signatures, *TRANSPORT_CORPUS_WINDOW)
+        checks.append(("corpus: an undated record is window unknown, never dropped",
+                       alone["window_unknown"] == 1 and alone["in_window"] == 0
+                       and alone["deaths"] == 0, fmt_transport(alone)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        broken = transport_metrics(_records_variant(tmp, keep={"bad.json"}),
+                                   signatures, *TRANSPORT_CORPUS_WINDOW)
+        checks.append(("corpus: an unparsable record is counted, never skipped",
+                       broken["unreadable"] == 1 and broken["in_window"] == 0,
+                       fmt_transport(broken)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        orphan = transport_metrics(_records_variant(tmp, without=("resumeOf",)),
+                                   signatures, *TRANSPORT_CORPUS_WINDOW)
+        checks.append(("A6: a retry with no resumeOf is resume unknown, not a retry",
+                       (orphan["deaths"], orphan["retried"], orphan["died_again"],
+                        orphan["resume_unknown"]) == (5, 0, 0, 1), fmt_transport(orphan)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        keep = {os.path.basename(path) for path in glob.glob(os.path.join(TRANSPORT_CORPUS, "*.json"))}
+        parentless = transport_metrics(_records_variant(tmp, keep=keep - {"a.json"}),
+                                       signatures, *TRANSPORT_CORPUS_WINDOW)
+        checks.append(("A7: a retry whose parent is gone loses both the death and the retry",
+                       (parentless["deaths"], parentless["retried"], parentless["died_again"],
+                        parentless["resume_unknown"]) == (4, 0, 0, 1), fmt_transport(parentless)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        empty = _records_variant(tmp, keep=set())
+        refusals = []
+        for label, attempt in (("empty", lambda: transport_metrics(empty, signatures,
+                                                                  *TRANSPORT_CORPUS_WINDOW,
+                                                                  required=True)),
+                               ("missing", lambda: transport_metrics(os.path.join(tmp, "absent"),
+                                                                     signatures,
+                                                                     *TRANSPORT_CORPUS_WINDOW,
+                                                                     required=True))):
+            try:
+                attempt()
+                refusals.append(f"{label}: no refusal")
+            except TransportError as exc:
+                refusals.append(f"{label}: {exc}")
+        checks.append(("A2: the mode refuses an empty and an absent directory, and the default "
+                       "report omits the line for an empty one",
+                       all("records:" in detail and "no refusal" not in detail
+                           for detail in refusals)
+                       and transport_metrics(empty, signatures,
+                                             *TRANSPORT_CORPUS_WINDOW) is None,
+                       " ; ".join(refusals) + " ; default path: no reading"))
+
+    stub_dir = tempfile.mkdtemp()
+    commented = os.path.join(stub_dir, "commented.ts")
+    with open(commented, "w", encoding="utf-8") as handle:
+        handle.write('const TRANSPORT_SIGNATURES = [\n'
+                     '\t"connection error",\n\t"econnreset",\n\t"fetch failed",\n'
+                     '\t"network error",\n\t"etimedout",\n'
+                     '\t// "obsolete pattern",\n] as const;\n')
+    parsed = load_signatures(commented)
+    short = os.path.join(stub_dir, "short.ts")
+    with open(short, "w", encoding="utf-8") as handle:
+        handle.write('const TRANSPORT_SIGNATURES = ["a", "b", "c", "d"] as const;\n')
+    missing_source = os.path.join(stub_dir, "absent.ts")
+    problems = []
+    if parsed != ["connection error", "econnreset", "fetch failed", "network error", "etimedout"]:
+        problems.append(f"the comment was not stripped: {parsed}")
+    for label, path in (("short", short), ("absent", missing_source)):
+        try:
+            load_signatures(path)
+            problems.append(f"{label}: no refusal")
+        except TransportError as exc:
+            if path not in str(exc):
+                problems.append(f"{label}: the path is not named ({exc})")
+    checks.append(("D2: a commented-out pattern is not a signature; a short block and a "
+                   "missing source each refuse naming the path",
+                   not problems, " ; ".join(problems) or f"{len(parsed)} parsed, 2 refusals"))
+    return checks
+
+
+def run_transport_selftest():
+    """The transport checks; a broken corpus fails its case instead of crashing the run."""
+    try:
+        return _transport_checks()
+    except Exception as exc:  # noqa: BLE001 — a named failure, never a stack trace
+        return [("transport corpus", False, f"{type(exc).__name__}: {exc}")]
+
+
 def _fmt_call_audit(m):
     """The non-zero-only clauses: what the dispatch count EXCLUDED, and why.
 
@@ -1622,9 +2066,30 @@ def main():
                     help="derive the friction candidates JSON into this path (exit 2, no file, "
                          "when a session or spawn source is missing or unreadable)")
     ap.add_argument("--out", default=None, help="append the row to this file (e.g. .development/METRICS.md)")
+    ap.add_argument("--records", default=None,
+                    help="run-record directory for the transport reading (default: "
+                         f"<cwd>/{RECORDS_REL}; the default report omits the line when it is absent)")
+    ap.add_argument("--transport", action="store_true",
+                    help="print the transport deaths per label (refuses --out, and a missing or "
+                         "empty --records directory)")
+    ap.add_argument("--signatures", default=None,
+                    help=f"source of TRANSPORT_SIGNATURES (default: <repo>/{SIGNATURES_REL})")
+    ap.add_argument("--limit", type=int, default=TRANSPORT_LIMIT,
+                    help="labels listed in the --transport block (default: %(default)s)")
     ap.add_argument("--selftest", action="store_true",
                     help="run the window-boundary + reconcile + candidates self-test and exit (no logs needed)")
     args = ap.parse_args()
+
+    # The two refused combinations of §D1, checked BEFORE any mode runs: a mode that cannot
+    # honour its own invariant must never be reached by a longer argument list.
+    if args.transport and args.out:
+        print("--transport may not write a table row (--out refused): the transport reading is "
+              "not a METRICS.md column without a schema migration (issue #572 §5)", file=sys.stderr)
+        sys.exit(2)
+    if args.transport and (args.selftest or args.candidates):
+        print("--transport is a mode of its own (--selftest and --candidates refused together "
+              "with it): one invocation, one reading", file=sys.stderr)
+        sys.exit(2)
 
     if args.selftest:
         sys.exit(run_selftest())
@@ -1651,11 +2116,23 @@ def main():
     if m["spawn_files"] > 1:
         spawn_label = f"{spawn_label} (+{m['spawn_files'] - 1} rotated)"
 
+    # The transport reading is the SECOND source and is read LAST: everything above is the
+    # session log, and a checkout with no run store must print exactly what it always printed
+    # (the line is omitted, not zeroed — §D1's deliberate asymmetry).
+    try:
+        transport = transport_reading(args)
+    except TransportError as exc:
+        print(f"transport: {exc}", file=sys.stderr)
+        sys.exit(2)
+
     print(f"Cycle metrics [{args.since} .. {args.until}] — source: {len(log_paths)} session log(s)")
     print(f"  {fmt_dispatches(m)}")
     print(f"  fg/bg:           {m['foreground']} fg / {m['background']} bg"
           + (f" ({m['codemode_assumed_background']} codemode assumed bg)"
              if m["codemode_assumed_background"] else ""))
+    if transport is not None:
+        for line in render_transport(transport, args.limit, labels=args.transport):
+            print(line)
     if m["spawn_log_found"]:
         print(f"  spawn source:    {spawn_label} (found) — {m['spawns']} starts "
               f"({m['spawn_foreground']} fg / {m['spawn_background']} bg), "
