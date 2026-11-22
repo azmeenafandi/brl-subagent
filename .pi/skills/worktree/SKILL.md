@@ -363,9 +363,14 @@ never re-type their logic by hand. Full design:
     carries the exact form and the command that prints it), for foreground and background
     alike. `jev: unavailable` is an accepted form; the stated escape is
     `noJev: "<reason>"`, which proceeds and surfaces the reason as a warning. Print every
-    line from the classifier's **raw response**: `--classifier '<raw answers>' --label <name>`
-    (a hand-built `--line '<json>' --label` is refused without `--legacy-line`, which acknowledges a
-    conductor-assigned line), so the provenance log records that a CLASSIFIER produced it — `--log --require-provenance` (run by `merge-guard.sh`) fails a
+    line from the classifier's **raw response**, and pass the **whole codemode response object**:
+    `--classifier '<response>' --label <name>` (a hand-built `--line '<json>' --label` is refused
+    without `--legacy-line`, which acknowledges a conductor-assigned line), so the provenance log
+    records that a CLASSIFIER produced it. The writer refuses a payload without `api`, `model`, a
+    numeric `timestamp` and a non-zero `usage` (`totalTokens`, or the `input`/`output` pair), so the
+    four-field `{level, conf, risk, worktree}` summary is broken input (exit 2) — a **tripwire against
+    a forgotten call, not authentication**: a typed payload satisfying the four rules passes, and no
+    row records which of the two it was. `--log --require-provenance` (run by `merge-guard.sh`) fails a
     line nobody printed, because the format check alone passes an invented confidence
     (2026-10-31: `medium (0.70)` dispatched, the classifier had said `high (0.32)`).
     **Record the model and what happened** (#468): `--model <provider>/<id>` adds a `model:` column,
@@ -622,7 +627,10 @@ mechanics, verdict format: `references/review-dispatch.md`.
   (`.pi/jev-lines.log`); `--line` never appends (refused without `--legacy-line`, no-write with
   it), and `--log --require-provenance` additionally fails a dispatch
   line with no such row — fail-closed (exit 2) when the log is missing or empty. That is
-  the check the format cannot make: a hand-typed confidence passes the shape.
+  the check the format cannot make: a hand-typed confidence passes the shape. The writer is the
+  other half: `--classifier` refuses (exit 2, no row) a payload with no `api`/`model`/numeric
+  `timestamp`/non-zero `usage`, so the four-field summary cannot mint a row — a tripwire against a
+  forgotten call, not authentication (a typed payload satisfying the rules passes; #589).
   **`--dispatch --classifier '<raw answers>' --label <name> [--worktree y|n] [--model <id>]
   [--kind impl|review|probe]` is the ONE command a dispatch needs (#500):** it prints the line,
   appends the row, and prints the exact `paste:` text, then the `--settle` command that label
