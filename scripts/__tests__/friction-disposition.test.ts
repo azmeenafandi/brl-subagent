@@ -30,7 +30,8 @@
  * POSIX, not universal).
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -45,6 +46,7 @@ import {
 	parseCandidates,
 	parseLedger,
 	parseLog,
+	parseSource,
 	parseStates,
 	renderCycle,
 	createRepoFacts,
@@ -1174,6 +1176,486 @@ describe("friction-disposition — case 18: the producer's kinds and vias", () =
 		);
 		expect(result.code).toBe(EXIT.CANNOT_CHECK);
 		expect(result.err).toContain("duplicate eventId");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #533 — a citation's evidence must resolve. T1–T11 (spec §3), one mutant each.
+//
+// The guarantee pinned here is deliberately narrow: a cited candidate names a source line whose bytes
+// must still hash to the recorded digest, somewhere in the named rotation family. It is drift
+// protection, not forgery protection — a hand-edited candidates file can cite an unrelated real line
+// and carry that line's true digest, and that is stated in the tool's header, not hidden here.
+//
+// Every digest below is computed INDEPENDENTLY of the module under test: `digestAt` re-derives the
+// byte contract locally, and `generatorDigest` calls the generator's own `_line_digest` in Python. A
+// test that hashed with the implementation would pass the mutant that hashes the wrong bytes.
+// ---------------------------------------------------------------------------
+
+const GENERATOR = join(ROOT, ".pi", "skills", "worktree", "sprint-metrics.py");
+const CITATION_DIRS: string[] = [];
+
+/** A fresh temp dir per case — every root in this section is hermetic. */
+function citationDir(): string {
+	const path = mkdtempSync(join(tmpdir(), "fd-citation-"));
+	CITATION_DIRS.push(path);
+	return path;
+}
+
+/** Python's `bytes.rstrip(b"\r\n")`, re-derived here so the test does not borrow the tool's own. */
+function rstripNewlines(bytes: Buffer): Buffer {
+	let end = bytes.length;
+	while (end > 0 && (bytes[end - 1] === 0x0d || bytes[end - 1] === 0x0a)) end -= 1;
+	return bytes.subarray(0, end);
+}
+
+/** Split a file's bytes on LF, exactly as Python's binary line iteration does. */
+function splitLines(bytes: Buffer): Buffer[] {
+	const lines: Buffer[] = [];
+	let start = 0;
+	for (let at = 0; at < bytes.length; at++) {
+		if (bytes[at] !== 0x0a) continue;
+		lines.push(bytes.subarray(start, at));
+		start = at + 1;
+	}
+	lines.push(bytes.subarray(start));
+	return lines;
+}
+
+/** Line `lineNo` (1-based) of `file`, hashed as raw bytes with trailing CR/LF stripped. */
+function digestAt(file: string, lineNo: number): string {
+	return createHash("sha256").update(rstripNewlines(splitLines(readFileSync(file))[lineNo - 1])).digest("hex").slice(0, 16);
+}
+
+/**
+ * The GENERATOR's digest, computed by the generator: `sprint-metrics.py`'s own `_line_digest`, imported
+ * and called in Python. This is what proves the two sides of the citation agree — a JS re-derivation can
+ * only prove the JS agrees with itself.
+ */
+function generatorDigest(file: string, lineNo: number): string {
+	const code = [
+		"import importlib.util",
+		`spec = importlib.util.spec_from_file_location("sprint_metrics", ${JSON.stringify(GENERATOR)})`,
+		"module = importlib.util.module_from_spec(spec)",
+		"spec.loader.exec_module(module)",
+		`raw = open(${JSON.stringify(file)}, "rb").read().split(b"\\n")[${lineNo - 1}]`,
+		"print(module._line_digest(raw))",
+	].join("\n");
+	const result = spawnSync("python3", ["-c", code], { encoding: "utf8" });
+	expect(result.status, `python3 could not run the generator's _line_digest: ${result.stderr}`).toBe(0);
+	return String(result.stdout ?? "").trim();
+}
+
+interface CitationBase {
+	ledger: string;
+	log: string;
+	states: string;
+}
+
+/** The one valid cycle every case checks: window 1..1, one class, one folded issue. */
+function citationBase(dir: string): CitationBase {
+	const ledger = join(dir, "ledger.md");
+	const log = join(dir, "log.md");
+	const states = join(dir, "states.json");
+	writeFileSync(ledger, header());
+	writeFileSync(log, mkLog(["one"]));
+	writeFileSync(states, JSON.stringify({ version: 1, states: { 548: "OPEN" } }));
+	return { ledger, log, states };
+}
+
+/** A candidate in the generator's exact shape (§2.2 of #574) — `source`, `digest`, `dismissed`. */
+function cited(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		eventId: "run-1:failed:1",
+		kind: "failed",
+		runId: "run-1",
+		ts: "2026-11-21T04:00:00Z",
+		class: "a",
+		count: 1,
+		source: "session-log:session.jsonl:1",
+		digest: "0123456789abcdef",
+		dismissed: null,
+		...overrides,
+	};
+}
+
+function candidatesFile(dir: string, name: string, list: Array<Record<string, unknown>>): string {
+	const path = join(dir, `${name}.json`);
+	writeFileSync(path, JSON.stringify({ version: 1, cycle: "alpha", claimedLive: true, candidates: list }));
+	return path;
+}
+
+/** One source root, populated from `files` in the given order (creation order matters to T11). */
+function sourceRoot(dir: string, name: string, files: Array<[string, string | Buffer]>): string {
+	const root = join(dir, name);
+	mkdirSync(root, { recursive: true });
+	for (const [file, body] of files) writeFileSync(join(root, file), body);
+	return root;
+}
+
+function citationArgv(base: CitationBase, candidates: string, roots: string[] = []): string[] {
+	return [
+		"--check",
+		"--cycle",
+		"alpha",
+		"--ledger",
+		base.ledger,
+		"--log",
+		base.log,
+		"--states",
+		base.states,
+		"--candidates",
+		candidates,
+		...roots.flatMap((root) => ["--source-root", root]),
+	];
+}
+
+describe("friction-disposition — #533: a citation's evidence must resolve", () => {
+	afterAll(() => {
+		for (const path of CITATION_DIRS) rmSync(path, { recursive: true, force: true });
+	});
+
+	it("#533 T1 — a cited line that still hashes to its digest resolves", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}\n']]);
+		// The digest comes from the GENERATOR, so a match here is a cross-language agreement, not a
+		// restatement of this module's own arithmetic.
+		const digest = generatorDigest(join(root, "session.jsonl"), 1);
+		const file = candidatesFile(dir, "t1", [cited({ digest })]);
+		const result = runCli(citationArgv(base, file, [root]));
+		expect(result.err).toBe("");
+		expect(result.code).toBe(EXIT.OK);
+		expect(result.out).toContain("resolutions: 1 resolved");
+	});
+
+	it("#533 T2 — one changed byte in the cited line is stale, and names the path", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}\n{"b":2}\n']]);
+		const path = join(root, "session.jsonl");
+		const digest = digestAt(path, 2);
+		writeFileSync(path, '{"a":1}\n{"b":3}\n');
+		const file = candidatesFile(dir, "t2", [cited({ source: "session-log:session.jsonl:2", digest })]);
+		const result = runCli(citationArgv(base, file, [root]));
+		expect(result.code).toBe(EXIT.LEDGER);
+		expect(result.err).toContain("stale-source");
+		expect(result.err).toContain(path);
+	});
+
+	it("#533 T2b — the rotation family is searched, from a live name and from a suffixed one", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}\n']]);
+		const live = join(root, "session.jsonl");
+		const digest = digestAt(live, 1);
+		// A real rotation: the cited bytes move to `.1` and the live file is rewritten. The citation was
+		// made while the file was live, so it names `session.jsonl` — the family is what saves it.
+		writeFileSync(join(root, "session.jsonl.1"), '{"a":1}\n');
+		writeFileSync(live, '{"a":9}\n');
+		const liveResult = runCli(citationArgv(base, candidatesFile(dir, "t2b-live", [cited({ digest })]), [root]));
+		expect(liveResult.err).toBe("");
+		expect(liveResult.code).toBe(EXIT.OK);
+
+		// And a citation created FROM a rotated file: `session.jsonl.3` must search `session.jsonl`,
+		// `session.jsonl.1..5` — not `.3`, `.3.1`, `.3.2`… which is the family that does not exist.
+		writeFileSync(join(root, "session.jsonl.3"), '{"a":4}\n');
+		const suffixed = digestAt(join(root, "session.jsonl.3"), 1);
+		const suffixedResult = runCli(
+			citationArgv(base, candidatesFile(dir, "t2b-suffixed", [cited({ source: "session-log:session.jsonl.3:1", digest: suffixed })]), [root]),
+		);
+		expect(suffixedResult.err).toBe("");
+		expect(suffixedResult.code).toBe(EXIT.OK);
+	});
+
+	it("#533 T3 — no file of the family is unresolvable, and names the family", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [["other.log", '{"a":1}\n']]);
+		const file = candidatesFile(dir, "t3", [cited({ digest: digestAt(join(root, "other.log"), 1) })]);
+		const result = runCli(citationArgv(base, file, [root]));
+		expect(result.code).toBe(EXIT.LEDGER);
+		expect(result.err).toContain("unresolvable-source");
+		expect(result.err).toContain("family session.jsonl, session.jsonl.1..session.jsonl.5");
+	});
+
+	it("#533 T3c — a broken symlink is not a file here, so it is unresolvable-source", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = join(dir, "root");
+		mkdirSync(root, { recursive: true });
+		// A dangling symlink resolves to no regular file — same class as a directory: not a candidate
+		// for the family, so the search finds nothing rather than reporting an unreadable search.
+		symlinkSync(join(root, "gone"), join(root, "session.jsonl"));
+		const result = runCli(citationArgv(base, candidatesFile(dir, "t3c", [cited({ digest: "0123456789abcdef" })]), [root]));
+		expect(result.code).toBe(EXIT.LEDGER);
+		expect(result.err).toContain("unresolvable-source");
+		expect(result.err).not.toContain("source-unreadable");
+	});
+
+	it("#533 T3b — a citation past the last line is missing-line, never a clamp", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		// Deliberately one line with NO trailing newline: a trailing one makes an empty second line,
+		// which exists, so the case would be drift rather than a short file.
+		const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}']]);
+		const digest = digestAt(join(root, "session.jsonl"), 1);
+		const file = candidatesFile(dir, "t3b", [cited({ source: "session-log:session.jsonl:2", digest })]);
+		const result = runCli(citationArgv(base, file, [root]));
+		expect(result.code).toBe(EXIT.LEDGER);
+		expect(result.err).toContain("missing-line");
+	});
+
+	it("#533 T4 — a cited candidate with no digest has no evidence", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}\n']]);
+		const entry = cited({ digest: undefined });
+		delete entry.digest;
+		const result = runCli(citationArgv(base, candidatesFile(dir, "t4", [entry]), [root]));
+		expect(result.code).toBe(EXIT.LEDGER);
+		expect(result.err).toContain("missing-digest");
+	});
+
+	it("#533 T4c — an empty digest is PRESENT and malformed, not missing", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}\n']]);
+		const result = runCli(citationArgv(base, candidatesFile(dir, "t4c", [cited({ digest: "" })]), [root]));
+		expect(result.code).toBe(EXIT.CANNOT_CHECK);
+		expect(result.err).toContain("invalid-digest");
+		expect(result.err).not.toContain("missing-digest");
+	});
+
+	it("#533 T4b — CRLF and invalid-UTF-8 lines hash as bytes, matching the generator", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [
+			["session.jsonl", Buffer.concat([Buffer.from('{"a":1}'), Buffer.from("\r\n"), Buffer.from([0xff, 0xfe, 0x41]), Buffer.from("\n")])],
+		]);
+		const path = join(root, "session.jsonl");
+		// Line 1 ends CRLF; line 2 is not valid UTF-8. Both are hashed on the generator's side.
+		const crlf = generatorDigest(path, 1);
+		const binary = generatorDigest(path, 2);
+		const crlfResult = runCli(citationArgv(base, candidatesFile(dir, "t4b-crlf", [cited({ digest: crlf })]), [root]));
+		expect(crlfResult.err).toBe("");
+		expect(crlfResult.code).toBe(EXIT.OK);
+		const binaryResult = runCli(
+			citationArgv(base, candidatesFile(dir, "t4b-binary", [cited({ source: "session-log:session.jsonl:2", digest: binary })]), [root]),
+		);
+		expect(binaryResult.err).toBe("");
+		expect(binaryResult.code).toBe(EXIT.OK);
+	});
+
+	const MALFORMED: Array<[string, Record<string, unknown>, string]> = [
+		["a non-numeric line", { source: "session-log:session.jsonl:abc" }, "invalid-source"],
+		["an exponent line", { source: "session-log:session.jsonl:1e3" }, "invalid-source"],
+		["line 0", { source: "session-log:session.jsonl:0" }, "invalid-source"],
+		["a negative line", { source: "session-log:session.jsonl:-1" }, "invalid-source"],
+		["a leading-zero line", { source: "session-log:session.jsonl:007" }, "invalid-source"],
+		["an unsafe-integer line", { source: "session-log:session.jsonl:9007199254740992" }, "invalid-source"],
+		["a path in the basename", { source: "session-log:dir/session.jsonl:1" }, "invalid-source"],
+		["a missing prefix", { source: "session.jsonl:1" }, "invalid-source"],
+		["an uppercase digest", { digest: "ABCDEF0123456789" }, "invalid-digest"],
+		["a short digest", { digest: "0123" }, "invalid-digest"],
+	];
+
+	for (const [label, overrides, code] of MALFORMED) {
+		it(`#533 T5 — malformed input is exit 2: ${label}`, () => {
+			const dir = citationDir();
+			const base = citationBase(dir);
+			const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}\n']]);
+			const result = runCli(
+				citationArgv(base, candidatesFile(dir, "t5", [cited({ digest: digestAt(join(root, "session.jsonl"), 1), ...overrides })]), [root]),
+			);
+			expect(result.code).toBe(EXIT.CANNOT_CHECK);
+			expect(result.err).toContain(code);
+		});
+	}
+
+	it("#533 T5 — the grammar is strict in one place (parseSource), so the refusal cannot guess", () => {
+		expect(parseSource("session-log:session.jsonl:1")).toEqual({ prefix: "session-log", basename: "session.jsonl", line: 1 });
+		expect(parseSource("spawn-log:spawn.log.3:12")).toEqual({ prefix: "spawn-log", basename: "spawn.log.3", line: 12 });
+		for (const bad of [
+			"session-log:session.jsonl:1e3",
+			"session-log:session.jsonl:abc",
+			"session-log:session.jsonl:0",
+			"session-log:session.jsonl:-1",
+			"session-log:session.jsonl:007",
+			"session-log:session.jsonl:9007199254740992",
+			"session-log:dir/session.jsonl:1",
+			"session.jsonl:1",
+			"session-log:session.jsonl",
+			"settle outcome",
+		]) {
+			expect(parseSource(bad), bad).toBeNull();
+		}
+		expect(parseSource(null)).toBeNull();
+		expect(parseSource(undefined)).toBeNull();
+	});
+
+	it("#533 T6 — a dismissal is exempt from resolution, even with a stale citation", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}\n']]);
+		const entry = cited({ eventId: "run-9:stop:1", class: null, dismissed: "not friction", source: "session-log:gone.jsonl:1", digest: "ffffffffffffffff" });
+		const result = runCli(citationArgv(base, candidatesFile(dir, "t6", [entry]), [root]));
+		expect(result.err).toBe("");
+		expect(result.code).toBe(EXIT.OK);
+		expect(result.out).toContain("candidates: 1 (cited 0, dismissed 1)");
+	});
+
+	it("#533 T7 — a second root is searched: the same basename in both, stale first", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		// The stale root sorts first, so stopping at the first file found would refuse a resolvable citation.
+		const stale = sourceRoot(dir, "a-stale", [["session.jsonl", '{"a":1}\n']]);
+		const good = sourceRoot(dir, "b-good", [["session.jsonl", '{"a":2}\n']]);
+		expect(stale < good).toBe(true);
+		const digest = digestAt(join(good, "session.jsonl"), 1);
+		const result = runCli(citationArgv(base, candidatesFile(dir, "t7", [cited({ digest })]), [stale, good]));
+		expect(result.err).toBe("");
+		expect(result.code).toBe(EXIT.OK);
+	});
+
+	it("#533 T8 — an unlistable root fails closed, even when another root matches", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const good = sourceRoot(dir, "good", [["session.jsonl", '{"a":2}\n']]);
+		// An unreadable PATH COMPONENT, deterministic at any uid: `blocker` is a regular file, so the
+		// root below it cannot be listed (ENOTDIR). A chmod-000 directory is not this test's instrument —
+		// as uid 0 it stays readable, so the assertion would be a lie on a privileged CI.
+		writeFileSync(join(dir, "blocker"), "not a directory\n");
+		const blocked = join(dir, "blocker", "sub");
+		const digest = digestAt(join(good, "session.jsonl"), 1);
+		const file = candidatesFile(dir, "t8", [cited({ digest })]);
+		const result = runCli(citationArgv(base, file, [blocked, good]));
+		expect(result.code).toBe(EXIT.CANNOT_CHECK);
+		expect(result.err).toContain("source-unreadable");
+		expect(result.err).toContain(blocked);
+
+		// A root that is not there at all is the same class: an incomplete search is never a pass.
+		const missing = runCli(citationArgv(base, file, [join(dir, "no-such-root"), good]));
+		expect(missing.code).toBe(EXIT.CANNOT_CHECK);
+		expect(missing.err).toContain("source-unreadable");
+	});
+
+	// chmod 000 is the instrument only where it is effective; as root it is a lie, so skip there
+	// (the ENOTDIR guard in T8 covers the privileged case).
+	it.skipIf(typeof process.getuid === "function" && process.getuid() === 0)("#533 T8b — a match does not hide an unreadable later family file", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}\n']]);
+		const second = join(root, "session.jsonl.1");
+		writeFileSync(second, '{"a":2}\n');
+		// chmod 000 is the instrument only where it is effective; as root it is a lie, so skip there
+		// (the ENOTDIR guard in T8 covers the privileged case).
+		chmodSync(second, 0o000);
+		const digest = digestAt(join(root, "session.jsonl"), 1);
+		try {
+			const result = runCli(citationArgv(base, candidatesFile(dir, "t8b", [cited({ digest })]), [root]));
+			// The match is in `session.jsonl` (sorted first), so an early return would pass. Every
+			// collected family file must be read before the verdict.
+			expect(result.code).toBe(EXIT.CANNOT_CHECK);
+			expect(result.err).toContain("source-unreadable");
+			expect(result.err).toContain(second);
+		} finally {
+			chmodSync(second, 0o644);
+		}
+	});
+
+	it("#533 T9 — without --source-root the output is byte-identical to the pre-#533 tool", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const file = candidatesFile(dir, "t9", [cited({ digest: "0123456789abcdef" }), cited({ eventId: "run-2:stop:1", kind: "stop", class: null, dismissed: "not friction" })]);
+		const result = runCli(citationArgv(base, file));
+		// Captured from the tool as it stood at a0fb97a (the pre-#533 head) on exactly this fixture.
+		const baseline = [
+			"✓ alpha: window 1..1",
+			"records: 0",
+			"legacy: 0",
+			"coverage: 1/1 friction rows assigned, 1 classes",
+			"facts: 1 id(s) (OPEN 1, CLOSED 0, MISSING 0)",
+			"candidates: 2 (cited 1, dismissed 1)",
+			"",
+		].join("\n");
+		expect(result.out).toBe(baseline);
+		expect(result.err).toBe("");
+		expect(result.code).toBe(EXIT.OK);
+
+		// And the refusal path, also captured at a0fb97a: no resolution means no resolution counts, and
+		// the problem prose is unchanged byte for byte.
+		const neither = cited({ class: null, dismissed: null });
+		const refused = runCli(citationArgv(base, candidatesFile(dir, "t9-neither", [neither])));
+		expect(refused.out).toBe("");
+		expect(refused.err).toBe(
+			"✗ candidate run-1:failed:1: neither a class nor a dismissal — an event without a disposition is the gap this seam exists to refuse\n",
+		);
+		expect(refused.code).toBe(EXIT.LEDGER);
+	});
+
+	it("#533 T9b — without --source-root, problems keep FILE order", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		// Reversed against eventId order: a sort here would swap the two stderr lines and break the
+		// byte-identical compatibility contract with the pre-#533 tool (§1.5).
+		const file = candidatesFile(dir, "t9b", [
+			cited({ eventId: "b-x:failed:1", class: "nope" }),
+			cited({ eventId: "a-x:failed:1", class: "nope2" }),
+		]);
+		const result = runCli(citationArgv(base, file));
+		expect(result.code).toBe(EXIT.LEDGER);
+		const lines = result.err.trim().split("\n");
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toContain("candidate b-x:failed:1");
+		expect(lines[1]).toContain("candidate a-x:failed:1");
+	});
+
+	it("#533 T10 — the counts are one per outcome, and they print on failure too", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		const root = sourceRoot(dir, "root", [["session.jsonl", '{"a":1}\n']]);
+		const ok = digestAt(join(root, "session.jsonl"), 1);
+		const list = [
+			cited({ eventId: "run-1:failed:1", digest: ok }),
+			cited({ eventId: "run-2:failed:1", digest: "ffffffffffffffff" }),
+			cited({ eventId: "run-3:stop:1", kind: "stop", class: null, dismissed: "not friction" }),
+		];
+		const result = runCli(citationArgv(base, candidatesFile(dir, "t10", list), [root]));
+		expect(result.code).toBe(EXIT.LEDGER);
+		expect(result.out).toContain("candidates: 3 (cited 2, dismissed 1)");
+		expect(result.out).toContain("resolutions: 1 resolved, 1 stale-source, 0 unresolvable, 0 missing-line, 0 missing-digest, 0 invalid, 0 source-unreadable");
+	});
+
+	it("#533 T11 — the tried list and the problem order are lexicographic, not discovery order", () => {
+		const dir = citationDir();
+		const base = citationBase(dir);
+		// Opposite creation order in the two roots, so a discovery-order walk differs between runs.
+		const first = sourceRoot(dir, "root-a", [
+			["session.jsonl", '{"a":1}\n'],
+			["session.jsonl.1", '{"a":2}\n'],
+		]);
+		const second = sourceRoot(dir, "root-b", [
+			["session.jsonl.1", '{"a":2}\n'],
+			["session.jsonl", '{"a":1}\n'],
+		]);
+		const list = [
+			cited({ eventId: "b-second:failed:1", digest: "ffffffffffffffff" }),
+			cited({ eventId: "a-first:failed:1", digest: "ffffffffffffffff" }),
+		];
+		const file = candidatesFile(dir, "t11", list);
+		const forward = runCli(citationArgv(base, file, [first, second]));
+		const reverse = runCli(citationArgv(base, file, [second, first]));
+		expect(forward.err).toBe(reverse.err);
+		expect(forward.out).toBe(reverse.out);
+		expect(forward.code).toBe(EXIT.LEDGER);
+		const tried = [join(first, "session.jsonl"), join(first, "session.jsonl.1"), join(second, "session.jsonl"), join(second, "session.jsonl.1")].sort(compareClasses);
+		expect(forward.err).toContain(`tried ${tried.join(", ")}`);
+		// Problems sorted by eventId: `a-first` before `b-second`, whatever order the file lists them in.
+		const lines = forward.err.trim().split("\n");
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toContain("candidate a-first:failed:1");
+		expect(lines[1]).toContain("candidate b-second:failed:1");
 	});
 });
 

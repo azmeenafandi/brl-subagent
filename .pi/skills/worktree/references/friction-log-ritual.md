@@ -63,3 +63,36 @@ column, one row per class, and a window (`from..to`) over **data-row indices**.
   until `node scripts/friction-disposition.mjs --check --cycle <name>` exits 0,
   and `--render` refreshes the issue cells so a merged issue updates its own row
   instead of being remembered. See Rule 11 in `SKILL.md`.
+
+### The close protocol — generate, dispose, cite, resolve, commit
+
+```
+1. mkdir -p .development/friction-candidates
+2. python3 .pi/skills/worktree/sprint-metrics.py \
+     --since <cycle-open instant> --until <cycle-close instant> --sprint <cycle> \
+     --candidates .development/friction-candidates/<cycle>.json
+3. for each candidate: `class: <ledger class>` or `dismissed: "<why not friction>"` (non-blank; the seam does not enforce a length)
+4. node scripts/friction-disposition.mjs --check --cycle <cycle> \
+     --candidates .development/friction-candidates/<cycle>.json \
+     --source-root ~/.pi/agent/sessions --source-root .pi/subagent-logs
+5. commit the candidates file with the ledger
+```
+
+- **`mkdir -p` first.** The generator writes to an explicit path and refuses a
+  directory that does not exist — it will not create one for you.
+- **`--until` is explicit, never the default.** The generator's default window ends
+  *today*, which would let events after the close into a closed window. Both
+  instants are the cycle's own: `--since` the open, `--until` the close.
+- **A dismissal only has to be non-blank.** Write the reason — "not friction" is
+  enough — but understand what that is: the seam checks that the field is
+  non-empty, not that the sentence is convincing. The quality of a dismissal is a
+  human-review obligation, declared, not a machine one.
+- **`--source-root` is what makes the citations mean something.** Each root is
+  searched for the cited file's rotation family (the live file and `.1`–`.5`), and
+  the cited line's bytes must still hash to the digest the generator recorded. An
+  evidence line that has rotated out of the family, or whose file is gone, is a
+  refused close: dismiss the candidate or cite a line that still exists. Without
+  `--source-root` nothing resolves at all (the flag is opt-in, and the tool's output
+  is then unchanged from before #533) — the ritual always passes it.
+- **The candidates file is committed with the ledger.** It is the record of what the
+  seam checked; an uncommitted one cannot be re-checked by a later reader.

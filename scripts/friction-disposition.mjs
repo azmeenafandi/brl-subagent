@@ -61,14 +61,26 @@
 //     FIRST `::`, which keeps a heading containing `::` intact.
 //   • Priority (`P0 #N`) is a human judgement; the check validates the anchor (literal `Rule 11` plus an
 //     occurrence count) and the issue's state, never the truth of the priority.
-//   • The candidates file (#533's seam) is provisional: this unit refuses to lose an event's identity or
-//     a dismissal, nothing more. Its KIND set is the producer's five (#574: `failed`, `deadline`, `retry`,
-//     `stop`, `steer`) and `via` is a retry's provenance — `transport` or `explicit`, refused anywhere
-//     else (`candidate-via-kind`), because a stop carrying a retry's route is a producer bug, not a shape
-//     this tool should guess at.
+//   • The candidates file (#533's seam) is provisional. Its KIND set is the producer's five (#574:
+//     `failed`, `deadline`, `retry`, `stop`, `steer`) and `via` is a retry's provenance — `transport` or
+//     `explicit`, refused anywhere else (`candidate-via-kind`), because a stop carrying a retry's route is
+//     a producer bug, not a shape this tool should guess at.
+//   • A citation's evidence resolving (#533) proves the CITED BYTES still exist; it does not prove the
+//     candidate was machine-generated or that the line says what the candidate claims. A hand-edited
+//     candidates file can cite an unrelated real line and carry that line's true digest — drift
+//     protection, not forgery protection. Re-generating the payload at close and diffing it is a
+//     follow-up, not claimed here.
+//
+// CITATIONS RESOLVE, AND `check` STAYS PURE (#533). `--source-root <dir>` (repeatable) turns resolution
+// on: the CLI lists the roots, finds each cited candidate's rotation family, hashes the cited line's raw
+// bytes and hands `check` a `{eventId: {status, tried[]}}` map. Without the flag there is no resolution
+// and the output is byte-identical to the pre-#533 tool — the ritual always passes it. The precedence is
+// fail-closed: an incomplete search (a root or file that cannot be listed or read) is exit 2 even when a
+// match was found; then malformed input (2); then no evidence (1); then match (0); then absent, short and
+// drift (1 each). A dismissal is exempt from all of it.
 //
 //   node scripts/friction-disposition.mjs --check --cycle <name> [--close] [--ledger <p>] [--log <p>]
-//                                         [--states <file>] [--candidates <file>]
+//                                         [--states <file>] [--candidates <file>] [--source-root <dir>]...
 //   node scripts/friction-disposition.mjs --render --cycle <name> [--ledger <p>] [--states <file>]
 //   node scripts/friction-disposition.mjs --history --cycle <name> [--ledger <p>] [--log <p>] [--states <file>]
 import { spawnSync } from "node:child_process";
@@ -80,6 +92,7 @@ import {
 	lstatSync,
 	openSync,
 	readFileSync,
+	readdirSync,
 	renameSync,
 	statSync,
 	writeFileSync,
@@ -95,7 +108,7 @@ export const DEFAULT_LEDGER = join(ROOT, ".development", "FRICTION_DISPOSITIONS.
 export const DEFAULT_LOG = join(ROOT, ".development", "FRICTION_LOG.md");
 
 export const USAGE =
-	"usage: friction-disposition.mjs --check --cycle <name> [--close] [--ledger <p>] [--log <p>] [--states <file>] [--candidates <file>]\n" +
+	"usage: friction-disposition.mjs --check --cycle <name> [--close] [--ledger <p>] [--log <p>] [--states <file>] [--candidates <file>] [--source-root <dir>]...\n" +
 	"       friction-disposition.mjs --render --cycle <name> [--ledger <p>] [--states <file>]\n" +
 	"       friction-disposition.mjs --history --cycle <name> [--ledger <p>] [--log <p>] [--states <file>]";
 
@@ -803,57 +816,125 @@ function factCounts(ids, facts) {
 }
 
 /**
- * #533's provisional seam: refuse to lose an event's identity or a dismissal, nothing more. Two
- * candidates may share a class — identity is the `eventId` — and an empty live cycle must say so.
+ * One cited candidate's problem, or `null` when the citation resolved. The MESSAGE lives here; the
+ * DECISION (status, tried[]) was made by the CLI's resolver, so `check` stays pure.
  */
-function checkCandidateSeam({ ledger, candidates }, problems, stats) {
+function citationProblem(entry, eventId, record) {
+	const status = record?.status;
+	if (status === RESOLVED) return null;
+	// A status a caller invented is not a status this table knows: it fails closed under the
+	// unreadable name rather than inventing a sixth outcome.
+	const label = CITATION[status] ? status : "source-unreadable";
+	const exit = CITATION[status]?.exit ?? 2;
+	const tried = Array.isArray(record?.tried) ? [...record.tried].sort(compareClasses) : [];
+	const where = `candidate ${eventId}: ${label} —`;
+	const line = parseSource(entry?.source)?.line;
+	if (status === "invalid-source") {
+		return problem(
+			"invalid-source",
+			`${where} source ${JSON.stringify(entry?.source)} is not "<session-log|spawn-log>:<basename>:<line>" — basename [A-Za-z0-9._-]+ (no path separator), line a positive safe integer`,
+			exit,
+		);
+	}
+	if (status === "invalid-digest") {
+		return problem("invalid-digest", `${where} digest ${JSON.stringify(entry?.digest)} is not 16 lowercase hex characters`, exit);
+	}
+	if (status === "missing-digest") {
+		return problem("missing-digest", `${where} no digest — a cited candidate must carry the 16-hex digest of its cited line`, exit);
+	}
+	if (status === "unresolvable-source") {
+		return problem(
+			"unresolvable-source",
+			`${where} ${familyLabel(entry?.source)} exists under no --source-root — the evidence is retired; dismiss the candidate or cite a line that still exists`,
+			exit,
+		);
+	}
+	if (status === "missing-line") {
+		return problem("missing-line", `${where} source line ${line} is past the last line of every tried file (${tried.join(", ")})`, exit);
+	}
+	if (status === "stale-source") {
+		return problem("stale-source", `${where} source line ${line} of every tried file hashes to something else — tried ${tried.join(", ")}`, exit);
+	}
+	// `source-unreadable`, and any status this table does not know: both fail closed. An incomplete or
+	// unreadable search must never read as a match, and it must never read as absence either.
+	return problem(
+		"source-unreadable",
+		`${where} ${tried.join(", ") || "no path recorded"} could not be listed or read; an incomplete search fails closed`,
+		exit,
+	);
+}
+
+/**
+ * #533's seam: refuse to lose an event's identity or a dismissal, and — when `resolutions` is given —
+ * refuse a cited candidate whose evidence no longer resolves. Two candidates may share a class —
+ * identity is the `eventId` — and an empty live cycle must say so.
+ */
+function checkCandidateSeam({ ledger, candidates, resolutions }, problems, stats) {
 	const list = Array.isArray(candidates.candidates) ? candidates.candidates : [];
 	const ledgerClasses = new Set(ledger.dispositions.map((entry) => entry.class));
 	let cited = 0;
 	let dismissed = 0;
+	const counts = {};
+	for (const key of RESOLUTION_KEYS) counts[key] = 0;
+	const found = [];
 	if (candidates.claimedLive === true && list.length === 0) {
-		problems.push(
-			problem(
+		found.push({
+			eventId: "",
+			entry: problem(
 				"claimed-live-empty",
 				"candidates: claimedLive is true but the file carries no candidates — a live cycle that logged nothing says claimedLive: false",
 				1,
 			),
-		);
+		});
 	}
 	for (const entry of list) {
-		const eventId = typeof entry?.eventId === "string" ? entry.eventId : JSON.stringify(entry?.eventId);
-		const hasClass = entry?.class !== null && entry?.class !== undefined;
-		const hasDismissal = typeof entry?.dismissed === "string" && entry.dismissed.trim() !== "";
+		const { eventId, hasClass, hasDismissal } = candidateShape(entry);
 		if (hasClass && hasDismissal) {
-			problems.push(problem("candidate-both", `candidate ${eventId}: name a class or a dismissal, not both`, 1));
+			found.push({ eventId, entry: problem("candidate-both", `candidate ${eventId}: name a class or a dismissal, not both`, 1) });
 		} else if (!hasClass && !hasDismissal) {
-			problems.push(
-				problem(
+			found.push({
+				eventId,
+				entry: problem(
 					"candidate-neither",
 					`candidate ${eventId}: neither a class nor a dismissal — an event without a disposition is the gap this seam exists to refuse`,
 					1,
 				),
-			);
+			});
 		} else if (hasClass) {
 			if (!ledgerClasses.has(entry.class)) {
-				problems.push(problem("candidate-unknown-class", `candidate ${eventId}: class "${entry.class}" is not in the ledger`, 1));
+				found.push({ eventId, entry: problem("candidate-unknown-class", `candidate ${eventId}: class "${entry.class}" is not in the ledger`, 1) });
 			}
 			cited += 1;
+			if (resolutions) {
+				const record = resolutions[eventId];
+				const failure = citationProblem(entry, eventId, record);
+				if (failure) found.push({ eventId, entry: failure });
+				const bucket = record?.status === RESOLVED ? "resolved" : CITATION[record?.status]?.bucket;
+				counts[bucket ?? "sourceUnreadable"] += 1;
+			}
 		} else {
 			dismissed += 1;
 		}
 	}
+	// Problems are sorted by eventId (bytewise) only once a resolution pass ran: then a refusal list is
+	// a function of the file's content and never of the order its lines happen to sit in. Without
+	// `--source-root` the RESOLVED problems stay in file order, so stderr remains byte-identical to the
+	// pre-#533 tool. `sort` is stable: two problems on one event keep the order their rules fired in.
+	const ordered = resolutions ? found.sort((a, b) => compareClasses(a.eventId, b.eventId)) : found;
+	for (const item of ordered) problems.push(item.entry);
 	stats.candidates = { total: list.length, cited, dismissed, claimedLive: candidates.claimedLive === true };
+	if (resolutions) Object.assign(stats.candidates, counts);
 }
 
 /**
- * `check({ledger, log, cycle, facts, close, candidates}) → {problems, stats}`
+ * `check({ledger, log, cycle, facts, close, candidates, resolutions}) → {problems, stats}`
  *
- * `ledger` / `log` are the parsed objects from `parseLedger` / `parseLog`. Each problem is
+ * `ledger` / `log` are the parsed objects from `parseLedger` / `parseLog`; `resolutions` is the CLI's
+ * `{eventId: {status, tried[]}}` map (absent means no resolution pass ran). Each problem is
  * `{code, message, exit}`; the exit is 2 whenever any input could not be read confidently, so a caller's
  * exit code is `problems.some(p => p.exit === 2) ? 2 : problems.length ? 1 : 0`.
  */
-export function check({ ledger, log, cycle, facts, close = false, candidates = null }) {
+export function check({ ledger, log, cycle, facts, close = false, candidates = null, resolutions = null }) {
 	const problems = [];
 	const stats = blankStats(cycle);
 	if (!log || !Array.isArray(log.rows) || log.rows.length === 0) {
@@ -887,7 +968,7 @@ export function check({ ledger, log, cycle, facts, close = false, candidates = n
 	const ids = checkGrammar({ cycleRows, facts }, problems);
 	for (const id of checkCurrency({ cycleRows, facts }, problems)) ids.add(id);
 	stats.facts = factCounts(ids, facts);
-	if (candidates) checkCandidateSeam({ ledger, candidates }, problems, stats);
+	if (candidates) checkCandidateSeam({ ledger, candidates, resolutions }, problems, stats);
 
 	return { problems, stats };
 }
@@ -1020,11 +1101,237 @@ export function parseCandidates(text, cycle) {
 }
 
 // ---------------------------------------------------------------------------
+// Citations (#533) — a cited candidate names a source line whose bytes must still hash to its digest.
+// The grammar and the file search live here; the DECISION lives in `check`, which never touches fs.
+// ---------------------------------------------------------------------------
+
+/** §1.1's grammar, in one place: prefix, basename (no separator), line. */
+const SOURCE_RE = /^(session-log|spawn-log):([A-Za-z0-9._-]+):([1-9][0-9]*)$/;
+const DIGEST_RE = /^[0-9a-f]{16}$/;
+/**
+ * `src/logging.ts` keeps the live file plus FOUR backups (it unlinks `.4` and shifts `.3`→`.4`); `.5` is
+ * searched only in case an older install left one.
+ */
+const BACKUP_COUNT = 5;
+
+/** The one status that needs no problem: the cited line resolved. */
+export const RESOLVED = "ok";
+
+/**
+ * A citation status → its `stats.candidates` bucket (§1.4) and its exit. One table, so a status can
+ * never gain a count nobody prints or an exit nobody returns.
+ */
+const CITATION = Object.freeze({
+	"stale-source": { bucket: "staleSource", exit: 1 },
+	"unresolvable-source": { bucket: "unresolvable", exit: 1 },
+	"missing-line": { bucket: "missingLine", exit: 1 },
+	"missing-digest": { bucket: "missingDigest", exit: 1 },
+	"invalid-source": { bucket: "invalidInput", exit: 2 },
+	"invalid-digest": { bucket: "invalidInput", exit: 2 },
+	"source-unreadable": { bucket: "sourceUnreadable", exit: 2 },
+});
+
+/** `stats.candidates`' resolution keys, in the order the CLI prints them. */
+export const RESOLUTION_KEYS = Object.freeze([
+	"resolved",
+	"staleSource",
+	"unresolvable",
+	"missingLine",
+	"missingDigest",
+	"invalidInput",
+	"sourceUnreadable",
+]);
+
+/**
+ * `parseSource(source)` → `{prefix, basename, line}` or `null`.
+ *
+ * Strict on purpose (§1.1): `1e3`, `abc`, `0`, `-1`, `007` and an overflow are all `null`, never a best
+ * guess. `Number.isSafeInteger` is what refuses the overflow — `[1-9][0-9]*` alone would accept
+ * `9007199254740992` and silently read a different line.
+ */
+export function parseSource(source) {
+	const match = typeof source === "string" ? SOURCE_RE.exec(source) : null;
+	if (!match) return null;
+	const line = Number(match[3]);
+	if (!Number.isSafeInteger(line)) return null;
+	return { prefix: match[1], basename: match[2], line };
+}
+
+/** §1.2 step 1: `brl-subagent.log.3` → `brl-subagent.log`, so a rotated citation searches its family. */
+export function stemOf(basename) {
+	return String(basename).replace(/\.[0-9]+$/, "");
+}
+
+/** §1.2 step 2: the live name and its four rotations (plus `.5`) — one list, so search and message agree. */
+export function familyNames(stem) {
+	const names = [stem];
+	for (let n = 1; n <= BACKUP_COUNT; n++) names.push(`${stem}.${n}`);
+	return names;
+}
+
+/** Trailing CR/LF, stripped from the END only — Python's `bytes.rstrip(b"\r\n")`, byte for byte. */
+function stripTrailingNewlines(buffer) {
+	let end = buffer.length;
+	while (end > 0 && (buffer[end - 1] === 0x0d || buffer[end - 1] === 0x0a)) end--;
+	return buffer.subarray(0, end);
+}
+
+/**
+ * `lineDigest(raw)` — the first 16 hex of the line's sha256, computed over the RAW BYTES with trailing
+ * CR/LF stripped: the generator's `_line_digest` in Python (`sprint-metrics.py`). Bytes, not text, so a
+ * CRLF line and an invalid-UTF-8 line hash the same on both sides of the contract.
+ */
+export function lineDigest(raw) {
+	return createHash("sha256").update(stripTrailingNewlines(raw)).digest("hex").slice(0, 16);
+}
+
+/**
+ * Line `lineNo` (1-based) of a file's bytes, or `null` when the file is shorter.
+ *
+ * Splits on `\n` exactly as Python's binary line iteration does — a trailing newline still yields a
+ * final empty line, which is why the digest of the last line and of an empty tail cannot be confused.
+ */
+function lineAt(body, lineNo) {
+	let start = 0;
+	let index = 1;
+	for (let at = 0; at <= body.length; at++) {
+		if (at !== body.length && body[at] !== 0x0a) continue;
+		if (index === lineNo) return body.subarray(start, at);
+		index += 1;
+		start = at + 1;
+	}
+	return null;
+}
+
+/** The family a citation searched, named for a refusal: `brl-subagent.log, brl-subagent.log.1..5`. */
+function familyLabel(source) {
+	const parsed = parseSource(source);
+	if (!parsed) return `source ${JSON.stringify(source)}`;
+	const stem = stemOf(parsed.basename);
+	return `family ${stem}, ${stem}.1..${stem}.${BACKUP_COUNT}`;
+}
+
+/**
+ * `resolveCandidates(candidates, roots)` → `{eventId: {status, tried[]}}` — the CLI's I/O half (§1.2).
+ *
+ * Every root is listed ONCE, and a root that cannot be listed fails closed for every candidate that
+ * would search it: an incomplete search must never read as a match or as absence (§1.3, first row).
+ * `tried` holds the paths examined, bytewise ascending, except when the status is `source-unreadable` —
+ * then it names the path(s) that could not be listed or read.
+ *
+ * A dismissed candidate is exempt and gets no record; neither does one with neither a class nor a
+ * dismissal (the seam already names that defect, and resolving it would double-report).
+ */
+export function resolveCandidates(candidates, roots) {
+	const list = Array.isArray(candidates?.candidates) ? candidates.candidates : [];
+	const resolutions = {};
+	const listings = [];
+	for (const root of roots) {
+		try {
+			listings.push({ root, names: new Set(readdirSync(root)), error: null });
+		} catch (error) {
+			listings.push({ root, names: null, error: describeError(error) });
+		}
+	}
+	for (const entry of list) {
+		const { eventId, hasClass, hasDismissal } = candidateShape(entry);
+		if (!hasClass || hasDismissal) continue;
+		resolutions[eventId] = resolveOne(entry, listings);
+	}
+	return resolutions;
+}
+
+/** One cited candidate's status. The order of the branches IS §1.3's precedence, fail-closed first. */
+function resolveOne(entry, listings) {
+	const failed = listings.filter((listing) => listing.error !== null).map((listing) => listing.root);
+	if (failed.length > 0) return { status: "source-unreadable", tried: failed.sort(compareClasses) };
+
+	const source = entry?.source;
+	const parsed = parseSource(source);
+	if (!parsed) return { status: "invalid-source", tried: [] };
+	// Only an absent key is missing. `""` is a PRESENT, malformed digest and goes through the grammar
+	// below to `invalid-digest` — a candidate that names an empty digest has malformed evidence.
+	if (entry.digest === undefined || entry.digest === null) {
+		return { status: "missing-digest", tried: [] };
+	}
+	if (typeof entry.digest !== "string" || !DIGEST_RE.test(entry.digest)) return { status: "invalid-digest", tried: [] };
+
+	const names = new Set(familyNames(stemOf(parsed.basename)));
+	const candidates = [];
+	for (const listing of listings) {
+		for (const name of listing.names) if (names.has(name)) candidates.push(join(listing.root, name));
+	}
+	const files = [];
+	for (const path of candidates.sort(compareClasses)) {
+		let stat;
+		try {
+			stat = statSync(path);
+		} catch (error) {
+			// ENOENT means there is no file here to read — a broken symlink resolves to no regular file,
+			// exactly like a directory, so it is not a candidate for the family (§1.2 step 2). Every other
+			// stat error (EACCES, ELOOP, ENOTDIR…) is an incomplete search and fails closed.
+			if (error?.code === "ENOENT") continue;
+			return { status: "source-unreadable", tried: [path] };
+		}
+		// A symlink is followed (statSync) only when it resolves to a regular file; a directory is not a file.
+		if (stat.isFile()) files.push(path);
+	}
+	if (files.length === 0) return { status: "unresolvable-source", tried: [] };
+
+	// Every collected file is READ before the verdict, even after a match: a close must not pass on a
+	// partial search, so an unreadable later family file turns a would-be pass into `source-unreadable`.
+	// Reading more than the match needs is the correct trade (§1.3/G2).
+	const tried = [];
+	const unreadable = [];
+	let sawLine = false;
+	let matched = false;
+	for (const path of files) {
+		let body;
+		try {
+			body = readFileSync(path);
+		} catch (error) {
+			unreadable.push(path);
+			continue;
+		}
+		tried.push(path);
+		const line = lineAt(body, parsed.line);
+		if (line === null) continue;
+		sawLine = true;
+		if (lineDigest(line) === entry.digest) matched = true;
+	}
+	if (unreadable.length > 0) return { status: "source-unreadable", tried: unreadable.sort(compareClasses) };
+	if (matched) return { status: RESOLVED, tried };
+	return { status: sawLine ? "stale-source" : "missing-line", tried };
+}
+
+/**
+ * One candidate's disposition shape — the single reader of "cited" versus "dismissed".
+ *
+ * The seam and the resolver must agree on which candidates are cited: if they each decided, a dismissed
+ * candidate could be exempted by one and resolved by the other, and the exemption would be a fiction.
+ */
+function candidateShape(entry) {
+	const eventId = typeof entry?.eventId === "string" ? entry.eventId : JSON.stringify(entry?.eventId);
+	const hasClass = entry?.class !== null && entry?.class !== undefined;
+	const hasDismissal = typeof entry?.dismissed === "string" && entry.dismissed.trim() !== "";
+	return { eventId, hasClass, hasDismissal };
+}
+
+// ---------------------------------------------------------------------------
 // CLI — argument parsing, facts, and the atomic conditional render. All I/O lives here.
 // ---------------------------------------------------------------------------
 
 export function parseArgs(argv) {
-	const args = { mode: null, cycle: null, close: false, ledger: DEFAULT_LEDGER, log: DEFAULT_LOG, states: null, candidates: null };
+	const args = {
+		mode: null,
+		cycle: null,
+		close: false,
+		ledger: DEFAULT_LEDGER,
+		log: DEFAULT_LOG,
+		states: null,
+		candidates: null,
+		sourceRoots: [],
+	};
 	const modes = [];
 	for (let i = 0; i < argv.length; i++) {
 		const flag = argv[i];
@@ -1042,6 +1349,7 @@ export function parseArgs(argv) {
 		else if (flag === "--log") args.log = value();
 		else if (flag === "--states") args.states = value();
 		else if (flag === "--candidates") args.candidates = value();
+		else if (flag === "--source-root") args.sourceRoots.push(value());
 		else if (flag === "--help" || flag === "-h") args.mode = "help";
 		else throw new InputError(`unknown argument "${flag}"`);
 	}
@@ -1056,7 +1364,11 @@ export function parseArgs(argv) {
 	if (args.mode === "render") {
 		if (args.close) throw new InputError("--close belongs to --check; --render takes --cycle, --ledger and --states");
 		if (args.candidates) throw new InputError("--candidates belongs to --check; --render only refreshes issue cells");
+		if (args.sourceRoots.length > 0) throw new InputError("--source-root belongs to --check; --render only refreshes issue cells");
 		if (args.log !== DEFAULT_LOG) throw new InputError("--log belongs to --check; --render reads only the ledger");
+	}
+	if (args.sourceRoots.length > 0 && !args.candidates) {
+		throw new InputError("--source-root resolves the citations of --candidates; give --candidates too");
 	}
 	return args;
 }
@@ -1236,6 +1548,34 @@ function writeAtomic(path, text) {
 	}
 }
 
+/**
+ * The candidate counts — printed on SUCCESS and, when a resolution pass ran, on FAILURE too (§1.4): a
+ * close that is failing because of citations must be able to see them without re-running. Without
+ * `--source-root` there are no resolution fields, and nothing extra is printed (the byte-identical
+ * compatibility contract, §1.5).
+ */
+const RESOLUTION_LABELS = Object.freeze({
+	resolved: "resolved",
+	staleSource: "stale-source",
+	unresolvable: "unresolvable",
+	missingLine: "missing-line",
+	missingDigest: "missing-digest",
+	invalidInput: "invalid",
+	sourceUnreadable: "source-unreadable",
+});
+
+function printCandidates(stats, out) {
+	const candidates = stats.candidates;
+	if (!candidates) return;
+	out(
+		candidates.total === 0 && candidates.claimedLive === false
+			? "candidates: 0 (declared not live)"
+			: `candidates: ${candidates.total} (cited ${candidates.cited}, dismissed ${candidates.dismissed})`,
+	);
+	if (typeof candidates.resolved !== "number") return;
+	out(`resolutions: ${RESOLUTION_KEYS.map((key) => `${candidates[key]} ${RESOLUTION_LABELS[key]}`).join(", ")}`);
+}
+
 function printStats(stats, out) {
 	out(`✓ ${stats.cycle}: window ${stats.window.from}..${stats.window.to}`);
 	out(`records: ${stats.records}`);
@@ -1243,13 +1583,7 @@ function printStats(stats, out) {
 	out(`coverage: ${stats.assignedRows}/${stats.frictionRows} friction rows assigned, ${stats.classes} classes`);
 	const facts = stats.facts;
 	out(`facts: ${facts.ids.length} id(s) (OPEN ${facts.open}, CLOSED ${facts.closed}, MISSING ${facts.missing})`);
-	if (stats.candidates) {
-		const summary =
-			stats.candidates.total === 0 && stats.candidates.claimedLive === false
-				? "candidates: 0 (declared not live)"
-				: `candidates: ${stats.candidates.total} (cited ${stats.candidates.cited}, dismissed ${stats.candidates.dismissed})`;
-		out(summary);
-	}
+	printCandidates(stats, out);
 }
 
 /**
@@ -1287,12 +1621,19 @@ export function main(argv, { out = (line) => process.stdout.write(`${line}\n`), 
 			throw new InputError(`cannot read log ${logPath}: ${describeError(error)}`);
 		}
 		const candidates = readCandidates(args);
-		const { problems, stats } = check({ ledger, log: parseLog(logText), cycle: args.cycle, facts, close: args.close, candidates });
+		// Resolution is the ONLY new I/O, and it is opt-in: no `--source-root` means no map, no problems,
+		// and output byte-identical to the pre-#533 tool (§1.5).
+		const sourceRoots = args.sourceRoots.map(fileArg);
+		const resolutions = candidates && sourceRoots.length > 0 ? resolveCandidates(candidates, sourceRoots) : null;
+		const { problems, stats } = check({ ledger, log: parseLog(logText), cycle: args.cycle, facts, close: args.close, candidates, resolutions });
 		if (problems.length === 0) {
 			printStats(stats, out);
 			return EXIT.OK;
 		}
 		for (const entry of problems) err(`✗ ${entry.message}`);
+		// §1.4: the counts print on failure too — but only when a resolution pass ran, which is what
+		// keeps the no-`--source-root` output identical to the old head (§1.5).
+		if (resolutions) printCandidates(stats, out);
 		return problems.some((entry) => entry.exit === 2) ? EXIT.CANNOT_CHECK : EXIT.LEDGER;
 	} catch (error) {
 		if (error instanceof InputError) {
