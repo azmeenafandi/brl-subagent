@@ -78,3 +78,7 @@ jobs:
       # (141), --stderr routing, literal argv, the 64/127 overlap — plus both incidences as
       # named cases with the pre-helper control beside the fix.
       - run: bash .pi/skills/worktree/run.sh --selftest
+      # The merge gate's own rules (#570): 72 cases, 3.3 s from /tmp with no `gh` on PATH and 3.6 s
+      # in-repo (measured at 6f27f3a). It drives its own seams, so it needs no gh and no network. The
+      # check that decides every merge was the only selftest CI did not run.
+      - run: bash .pi/skills/worktree/merge-guard.sh --selftest
