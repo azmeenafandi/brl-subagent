@@ -1,7 +1,11 @@
 # #574 fixture corpus — provenance
 
-Frozen from the real logs on this machine (2026-11-22, ~03:00Z) by `../freeze.py`.
-`../replay.py` must print **`expectation match: 7 candidates (full schema)`**.
+Frozen from the real logs on this machine (2026-11-22, ~03:00Z) by the conductor's scratch
+freeze/replay scripts (they live under the conductor's scratch path, e.g.
+`~/.cache/brl-subagent/scratch/spec-574/`; they are **not** part of this repository, so there is no
+path in the tree to follow). Replaying this corpus with that scratch script must print
+**`expectation match: 7 candidates (full schema)`**; `--selftest` in `../../sprint-metrics.py` is the
+shipped equivalent and asserts the same payload.
 
 **Real data, real envelopes; one row is synthetic and says so.** Every real row was produced by the
 extension; only fields the derivation does not need were dropped — `scrub_run` / `scrub_calls` are

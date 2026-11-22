@@ -738,10 +738,25 @@ class SourceError(Exception):
     """A candidates-mode source is missing or unreadable — exit 2, no file written."""
 
 
-def _ms(value):
-    """Epoch milliseconds for an ISO instant (None when unparseable)."""
+class OutputError(Exception):
+    """A candidates-mode output path cannot be written — exit 2, nothing written."""
+
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _us(value):
+    """Epoch MICROseconds for an ISO instant (None when unparseable).
+
+    Sub-millisecond on purpose: the ownership interval is measured, not rounded, so
+    a 2000.4 ms stop→abort delta is out of the inclusive 2000 ms bound instead of
+    rounding down to it. Computed from the exact `timedelta`, never via float.
+    """
     moment = _parse_ts(value)
-    return None if moment is None else int(round(moment.timestamp() * 1000))
+    if moment is None:
+        return None
+    delta = moment - _EPOCH
+    return (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
 
 
 def _source(label, file_name, line_no):
@@ -792,7 +807,7 @@ def _collect_friction(events, spawn_rows):
     """
     runs, stops, steers, retry_calls, spawns, transport = [], [], [], [], [], []
     for order, (kind, payload, ts) in enumerate(events):
-        base = {"ts": iso_ts(ts), "ts_ms": _ms(ts), "order": order,
+        base = {"ts": iso_ts(ts), "ts_us": _us(ts), "order": order,
                 "file": payload["_file"], "line": payload["_line"],
                 "digest": payload["_digest"], "label": SESSION_SOURCE}
         if kind == "run":
@@ -823,7 +838,7 @@ def _collect_friction(events, spawn_rows):
     for order, row in enumerate(spawn_rows, start=len(events)):
         data = row.get("data") or {}
         ts = iso_ts(row.get("timestamp"))
-        base = {"ts": ts, "ts_ms": _ms(ts), "order": order,
+        base = {"ts": ts, "ts_us": _us(ts), "order": order,
                 "file": row["_file"], "line": row["_line"],
                 "digest": row["_digest"], "label": SPAWN_SOURCE}
         if row.get("message") == RETRY_SPAWN_MESSAGE and data.get("sourceId"):
@@ -843,7 +858,7 @@ def _order_of(entry):
     Rows are enumerated across both files (spawn rows after session events), so a
     duplicate timestamp still has a stable, evidence-based order.
     """
-    return (entry["ts_ms"] or 0, entry["order"])
+    return (entry["ts_us"] or 0, entry["order"])
 
 
 def _emission_key(entry):
@@ -853,7 +868,7 @@ def _emission_key(entry):
     source order, while emission is by kind first, so the two orders cannot be folded
     into one key without changing what the payload says.
     """
-    return (entry["ts_ms"] or 0, entry["kind"], entry["runId"], entry["order"])
+    return (entry["ts_us"] or 0, entry["kind"], entry["runId"], entry["order"])
 
 
 def _owning_stop(run, stops):
@@ -867,8 +882,8 @@ def _owning_stop(run, stops):
     for stop in stops:
         if stop["runId"] != run["runId"]:
             continue
-        delta = (run["ts_ms"] or 0) - (stop["ts_ms"] or 0)
-        if delta < 0 or delta > DEDUPE_MS:
+        delta = (run["ts_us"] or 0) - (stop["ts_us"] or 0)
+        if delta < 0 or delta > DEDUPE_MS * 1000:
             continue
         if best is None or _order_of(stop) > _order_of(best):
             best = stop
@@ -893,7 +908,7 @@ def _paired_retries(retry_calls, spawns):
         spawn = earliest.get(call["retryRunId"])
         if spawn is None:
             continue
-        if call["ts_ms"] >= spawn["ts_ms"]:
+        if call["ts_us"] >= spawn["ts_us"]:
             continue
         prev = paired.get(call["retryRunId"])
         if prev is None or _order_of(call) > _order_of(prev):
@@ -930,8 +945,14 @@ def derive_candidates(sources, since, until):
     def in_window(ts):
         return in_range(ts, since, until)
 
+    # Only in-window terminal rows compete for a run's candidate: a later row that
+    # exists solely because of the causal margin is evidence for the join, never an
+    # emission (§2.1 R6), so a snapshot+amendment straddling the bound emits ONE
+    # candidate at the in-window row, and a margin-only run emits nothing.
     terminal = {}
     for run in sources["runs"]:
+        if not in_window(run["ts"]):
+            continue
         key = (run["runId"], run["kind"])
         prev = terminal.get(key)
         if prev is None or _order_of(run) >= _order_of(prev):
@@ -989,7 +1010,12 @@ def write_candidates(path, payload):
     leaves the previous file — or no file — rather than a truncated one.
     """
     out = Path(path)
-    handle, temp_path = tempfile.mkstemp(dir=str(out.parent or Path(".")), prefix=f".{out.name}.", suffix=".tmp")
+    parent = out.parent or Path(".")
+    if not parent.is_dir():
+        # Named, not a FileNotFoundError traceback: the same honesty as a source
+        # refusal, and still nothing written.
+        raise OutputError(f"cannot write {out}: the directory {parent} does not exist")
+    handle, temp_path = tempfile.mkstemp(dir=str(parent), prefix=f".{out.name}.", suffix=".tmp")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(render_candidates(payload))
@@ -1015,7 +1041,11 @@ def run_candidates(args) -> int:
         print(f"sprint-metrics --candidates: {exc}", file=sys.stderr)
         return 2
     payload = build_candidates_payload(session_paths, spawn_paths, args.since, args.until, cycle)
-    written = write_candidates(args.candidates, payload)
+    try:
+        written = write_candidates(args.candidates, payload)
+    except OutputError as exc:
+        print(f"sprint-metrics --candidates: {exc}", file=sys.stderr)
+        return 2
     print(f"candidates: {len(payload['candidates'])} → {written}")
     return 0
 
@@ -1068,14 +1098,14 @@ def _spawn_row(ts, message, **data):
             "message": message, "data": data}
 
 
-def _candidate_fixture(session_entries, spawn_entries):
+def _candidate_fixture(session_entries, spawn_entries, window=SELFTEST_WINDOW):
     """Derive the payload for one in-memory fixture pair (a temp dir, cleaned up)."""
     with tempfile.TemporaryDirectory() as tmp:
         session_path = os.path.join(tmp, "session.jsonl")
         spawn_path = os.path.join(tmp, "spawn.log")
         _write_jsonl(session_path, session_entries)
         _write_jsonl(spawn_path, spawn_entries)
-        return build_candidates_payload([session_path], [spawn_path], *SELFTEST_WINDOW, cycle="unit")
+        return build_candidates_payload([session_path], [spawn_path], *window, cycle="unit")
 
 
 def _kinds(payload):
@@ -1166,6 +1196,28 @@ def _candidate_checks():
     checks.append(("R3: a refused retry call (no spawn at all) is not a candidate",
                    _kinds(unit) == [], str(_kinds(unit))))
 
+    # R6 applies to runs too: the causal margin is a LOAD bound, so a terminal row
+    # that exists only inside it informs a join but is never emitted.
+    for label, offset in (("after", 12000), ("before", -3000)):
+        unit = _candidate_fixture(
+            [_run_row(_ts_at(offset), category="timeout")], [],
+            window=(_ts_at(0), _ts_at(10000)))
+        checks.append((f"R6: a terminal run only in the margin {label} the window emits nothing",
+                       _kinds(unit) == [], str(_kinds(unit))))
+
+    # A snapshot at the window's last in-window instant plus a later margin-only
+    # amendment is ONE run: the in-window row is the candidate, at its own ts/source.
+    unit = _candidate_fixture(
+        [_run_row(_ts_at(15000), category="timeout"),
+         _run_row(_ts_at(18000), category="timeout")], [],
+        window=(_ts_at(0), _ts_at(15000)))
+    got = unit["candidates"]
+    checks.append(("R6: snapshot + margin-only amendment emits one candidate at the in-window row",
+                   _kinds(unit) == ["deadline"] and len(got) == 1
+                   and got[0]["ts"] == _ts_at(15000)
+                   and got[0]["source"] == "session-log:session.jsonl:1",
+                   json.dumps(got, sort_keys=True) if got else "none"))
+
     unit = _candidate_fixture(
         [_call_row(_ts_at(0), "steer_subagent", {"agent_id": "run-1"}, call_id="call-1"),
          _call_row(_ts_at(1000), "steer_subagent", {"agent_id": "run-1"}, call_id="call-2")], [])
@@ -1200,6 +1252,15 @@ def _candidate_checks():
         checks.append(("refusal: empty-but-present sources yield [] and no error",
                        empty["candidates"] == [] and empty["version"] == CANDIDATE_VERSION,
                        str(empty["candidates"])))
+        unwritable = os.path.join(tmp, "no-such-dir", "candidates.json")
+        try:
+            write_candidates(unwritable, empty)
+            detail = "no OutputError raised"
+        except OutputError as exc:
+            detail = str(exc)
+        checks.append(("refusal: an output path in a missing directory is named (exit 2, no file)",
+                       os.path.join(tmp, "no-such-dir") in detail and not os.path.exists(unwritable),
+                       detail))
     return checks
 
 

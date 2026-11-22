@@ -11,8 +11,9 @@
  * JSON row:
  *
  * 1. no forbidden KEY (`task`, `originalParams`, `fullOutput`, `result`, `outputSummary`, `scratchDir`,
- *    `owner`, `label`, `description`);
- * 2. no string VALUE that starts with `/` — an absolute path names a machine, not an event;
+ *    `owner`, `label`, `description`), compared case-insensitively so `Task` cannot slip past;
+ * 2. no `/` starting a path-ish segment ANYWHERE in a string — an absolute path names a machine, not
+ *    an event, and it is just as much a leak mid-sentence ("see /home/x") as at the start;
  * 3. no string VALUE longer than 60 characters — the retained fields are ids, enums, model names and
  *    timestamps, and free text is what exceeds that.
  *
@@ -32,8 +33,17 @@ const FIXTURE_DIR = join(HERE, "fixtures", "friction-candidates");
 /** The row files: `README.md` is prose about the corpus, not a row the derivation reads. */
 const ROW_FILES = ["session.jsonl", "spawn.log", "expected-candidates.json"];
 
-/** Keys that carry classified content — prohibited at ANY depth, in any file. */
+/** Keys that carry classified content — prohibited at ANY depth, in any file, in any case. */
 const FORBIDDEN_KEYS = ["task", "originalParams", "fullOutput", "result", "outputSummary", "scratchDir", "owner", "label", "description"];
+
+/**
+ * A `/` that begins a path-ish segment, anywhere in the string.
+ *
+ * The leading boundary is deliberate: a provider-qualified model id (`deepseek/deepseek-flash`) is a
+ * retained, legitimate value whose slash separates two identifiers. A path's slash is preceded by
+ * the string start or by a non-identifier character (a space in "see /home/x", a quote, `=`, `:`).
+ */
+const PATH_SEGMENT = /(?:^|[^\w.~-])\/[\w.~-]+/;
 
 /** The longest retained value in the corpus is a URN-ish run id; free text would blow past this. */
 const MAX_STRING_LENGTH = 60;
@@ -75,10 +85,11 @@ function leaks(value: unknown, path: string): string[] {
 	const found: string[] = [];
 	visitEntries(value, path, (slot) => {
 		const key = String(slot.key);
-		if (!Array.isArray(slot.container) && FORBIDDEN_KEYS.includes(key)) found.push(`${slot.path}: forbidden key`);
+		if (!Array.isArray(slot.container) && FORBIDDEN_KEYS.some((forbidden) => forbidden.toLowerCase() === key.toLowerCase()))
+			found.push(`${slot.path}: forbidden key`);
 		const item = readSlot(slot);
 		if (typeof item !== "string") return;
-		if (item.startsWith("/")) found.push(`${slot.path}: absolute path "${item}"`);
+		if (PATH_SEGMENT.test(item)) found.push(`${slot.path}: absolute path "${item}"`);
 		if (item.length > MAX_STRING_LENGTH) found.push(`${slot.path}: ${item.length}-character string`);
 	});
 	return found;
@@ -115,8 +126,11 @@ describe("friction-candidates fixture — the leak guard", () => {
 		expect(leaks(row, "planted")).toEqual(["planted.data.nested.deeper[0].task: forbidden key"]);
 	});
 
-	it("the guard catches an absolute path and an oversized string", () => {
+	it("the guard catches an absolute path, a mid-string path, a case-variant key and an oversized string", () => {
 		expect(leaks({ data: { scratch: "/home/someone/.cache/x" } }, "planted")).toEqual(['planted.data.scratch: absolute path "/home/someone/.cache/x"']);
+		expect(leaks({ data: { note: "see /home/someone/.cache/x" } }, "planted")).toEqual(['planted.data.note: absolute path "see /home/someone/.cache/x"']);
+		expect(leaks({ data: { Task: "a prompt" } }, "planted")).toEqual(["planted.data.Task: forbidden key"]);
+		expect(leaks({ data: { model: "deepseek/deepseek-flash" } }, "planted")).toEqual([]);
 		expect(leaks({ data: { note: "x".repeat(MAX_STRING_LENGTH + 1) } }, "planted")).toEqual([`planted.data.note: ${MAX_STRING_LENGTH + 1}-character string`]);
 	});
 });
