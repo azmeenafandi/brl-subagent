@@ -171,6 +171,15 @@ never re-type their logic by hand. Full design:
       (`callers`/`impact` only see who calls it); `codegraph context <task>` to
       build a task map. These are for reading; anything `recon.sh` prints, or a
       test pins, still uses the `-j` commands.
+      **Two CLI traps.** `codegraph upgrade` classifies any install under
+      `/node_modules/` as npm and shells out to `npm install -g` — here npm's prefix
+      is root-owned (EACCES), and a writable one would leave a second owner beside
+      the pnpm shim; the bump is `pnpm add -g @colbymchenry/codegraph@<v>`, and
+      `upgrade` is never run. And `codegraph node --file <path>` answers "No indexed
+      file matches" for a file that *is* indexed, when the path is written against
+      the wrong root (a `scripts/__tests__/…` file asked for as
+      `src/__tests__/…`): resolve it by basename first (`codegraph files --tests`),
+      not by path.
       **Selection:** area/first pass → `explore` (or `recon.sh --explore "<area>"`
       for the freshness gate + a cap); one symbol → `node`; upstream →
       `callers`/`impact`; downstream → `callees`; test set → `affected <changed

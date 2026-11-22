@@ -34,6 +34,11 @@ because nothing checked them and no test pins them.
    *historical* hits (CHANGELOG entries, `.development/` history, the friction
    log). AGENT.md carries no version stamp by design (#166), so nothing to
    update there.
+   **Every `CHANGELOG.md` hit in this grep is historical** — `## [2.9.0]`,
+   a transitive `yaml@2.9.0`, the engines `>=22.9.0` — and the changelog is an
+   *output* of step 5, not an input: the new `## [2.9.x]` heading is load-bearing
+   (pi's Extension Updates notice reads it), so it appears by writing the release
+   entry, never by editing this list.
 2. **`.development/` docs** (TRACKED since #247 — doc updates are direct-to-dev commits):
    - `ROADMAP.md` — header version → new; add a **"Shipped (<date>, vX)"** table
      for this release's items
@@ -80,10 +85,22 @@ because nothing checked them and no test pins them.
    `timeout` dispatch must keep its foreground shape and timeout, and a line-less
    task must spawn. The process checks are maintainer-only; this is the check
    that they are inert for users.
+   **Isolate the *probe*, or it tests the wrong thing.** `pi install <tgz>` under a
+   fresh `PI_CODING_AGENT_DIR` still prints "Installed" into the **user** registry,
+   and a copied `settings.json` carries the user's package list (including this
+   checkout) into the run. What works: a clean `{}` settings, then
+   `pi -ne -e <unpacked dir>` with `PI_OFFLINE=1` and a pinned `--model` — the
+   extension under test is the unpacked directory and nothing else is loaded.
 6. **Commit + tag + push** — `chore: bump version to <X>`. The commit carries
    only `package.json`, `package-lock.json`, `README.md`, `CHANGELOG.md`
    (`.development/` docs are tracked now — commit them separately, so the bump
    commit stays code + shipping docs only).
+   **The bump push bypasses `main`'s protection** — "Changes must be made through a
+   pull request" and "Required status check `test` is expected" — and that is
+   expected for the ritual's direct commit, not an anomaly. The consequence is the
+   one to remember: the release rests on the **merge** commit's CI (check 5), not on
+   the bump's, so a red merge run is the release's red even though the bump landed
+   clean.
 7. **Release note as a GitHub DRAFT** —
    `gh release create vX --draft --title "…" --notes-file <file>`, then tell the
    user where to review it. **The user publishes it** — and that publish is what
