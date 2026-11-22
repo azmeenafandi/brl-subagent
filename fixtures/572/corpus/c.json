@@ -1,0 +1,13 @@
+{
+  "id": "c",
+  "description": "L2",
+  "status": "failed",
+  "startedAt": 1795320000000,
+  "completedAt": 1795320001000,
+  "result": {
+    "exitCode": 1,
+    "stderr": "",
+    "errorCategory": "exit_error",
+    "errorMessage": "ECONNRESET"
+  }
+}

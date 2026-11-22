@@ -1,0 +1,15 @@
+{
+  "id": "r",
+  "description": "L1",
+  "status": "failed",
+  "startedAt": 1795316400000,
+  "completedAt": 1795316401000,
+  "attempt": 2,
+  "resumeOf": "a",
+  "result": {
+    "exitCode": 1,
+    "stderr": "",
+    "errorCategory": "exit_error",
+    "errorMessage": "socket hang up"
+  }
+}

@@ -946,7 +946,9 @@ describe("main — the two streams and the exit codes", () => {
 		// Re-pointed by #591: `sprint-metrics.py` grew by the whole-file result read, the pre-flight
 		// refusal dialect, the refused / failed-after-spawn / unresolved / duplicate clauses and
 		// eight self-test cases; both units' additions are disjoint files, so the pin is their sum.
-		const SKILLS_SOURCE_LOC = 8335;
+		// Re-pointed by #572: the transport-death reader (records store, runtime signature parse,
+		// the default report's one line, `--transport`) and its eight self-test cases (+477).
+		const SKILLS_SOURCE_LOC = 8812;
 		const measured = measureSurface(surface("skills"), ROOT);
 		expect(measured.sourceLoc).toBe(SKILLS_SOURCE_LOC);
 		expect(measured.reference).toBeNull();

@@ -1,0 +1,13 @@
+{
+  "id": "a",
+  "description": "L1",
+  "status": "failed",
+  "startedAt": 1795309200000,
+  "completedAt": 1795309201000,
+  "result": {
+    "exitCode": 1,
+    "stderr": "",
+    "errorCategory": "exit_error",
+    "errorMessage": "Connection error."
+  }
+}

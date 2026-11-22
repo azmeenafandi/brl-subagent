@@ -1,0 +1,13 @@
+{
+  "id": "b",
+  "description": "L1",
+  "status": "failed",
+  "startedAt": 1795312800000,
+  "completedAt": 1795312801000,
+  "result": {
+    "exitCode": 1,
+    "stderr": "",
+    "errorCategory": "exit_error",
+    "errorMessage": "fetch failed"
+  }
+}
