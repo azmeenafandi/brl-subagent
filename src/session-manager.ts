@@ -1257,6 +1257,32 @@ export function markAgentInterrupted(id: string, interruptedAt: string): Backgro
 }
 
 /**
+ * Issue #574: state the run's KIND on the record, so the status flip that
+ * follows persists it. A deadline and a user stop are both `status:"stopped"`;
+ * only the category tells the two frictions apart.
+ *
+ * WHY BEFORE THE FLIP AND NOT AFTER: `updateAgentStatus` persists the record
+ * itself, so a stamp written afterwards is absent from the bytes an observer
+ * reads at the flip — and never lands at all if the settle that would write it
+ * never arrives (a real stop is exactly that case: `stopAgent` persists
+ * `stopped` before any abort settles).
+ *
+ * The `agents.set` is load-bearing: `getAgent` is memory-first, so a record that
+ * exists only on disk would be re-loaded WITHOUT this stamp between the call and
+ * its persist. Re-inserting the stamped object makes the flip write what this
+ * function just said.
+ */
+function stampAgentKind(
+  agent: BackgroundAgent,
+  errorCategory: ErrorCategory,
+  stopReason: string,
+): void {
+  agent.errorCategory = errorCategory;
+  agent.stopReason = stopReason;
+  agents.set(agent.id, agent);
+}
+
+/**
  * Update agent status
  */
 export function updateAgentStatus(id: string, status: AgentStatus, error?: string): BackgroundAgent | null {
@@ -1501,6 +1527,11 @@ export async function stopAgent(id: string): Promise<BackgroundAgent | null> {
   if (agent.status === 'completed' || agent.status === 'failed' || agent.status === 'stopped') {
     return agent;
   }
+
+  // Issue #574: the KIND comes before the flip that persists it — this is the
+  // earliest observable point of a user stop (the abort settles later, if at
+  // all).
+  stampAgentKind(agent, 'aborted', 'aborted');
 
   // Mark stopped BEFORE aborting so the spawnBackgroundSession .then handler
   // (which fires after the run settles) keeps the stopped state.
@@ -2653,6 +2684,18 @@ export async function spawnBackgroundSession(
     gitInfo: { gitBranch?: string; gitDiff?: string },
     stopReason: string,
   ): void => {
+    // Issue #574: FILL ONLY — never re-classify. `updateAgentStatus` already
+    // persisted the kind at the flip; this shared helper runs for BOTH a user
+    // stop and a deadline, and a deadline's kind is `timeout`, so an
+    // unconditional stamp here would overwrite it and lose the friction. The
+    // stamp is for a record that reached the abort settle with NO kind (a
+    // status flipped by a path that did not classify) — and only that.
+    if (!agent.errorCategory) {
+      agent.errorCategory = 'aborted';
+      agent.stopReason = 'aborted';
+      agents.set(id, agent);
+      persistAgent(agent);
+    }
     // W4/M1: capture whatever the branch produced before discarding it — an
     // aborted background agent's partial work is still worth reviewing, and
     // must be RECORDED, not just captured-and-deleted.
@@ -2802,6 +2845,9 @@ export async function spawnBackgroundSession(
     setTimeout(() => {
       if (agent.completedAt) return; // already settled — nothing to abort
       const reason = `Timed out after ${budgetMs}ms`;
+      // Issue #574: the deadline states its OWN kind before the flip persists
+      // it — the snapshot below lands later and may not land at all.
+      stampAgentKind(agent, 'timeout', 'aborted');
       let bookkeepingFailure: unknown;
       try {
         updateAgentStatus(id, 'stopped', reason);
@@ -2952,6 +2998,9 @@ export async function spawnBackgroundSession(
         // status (pre-set 'stopped' + completedAt + event + transcript), only
         // the transcript note is missing from this path.
         if (agent.status !== 'stopped') {
+          // Issue #574: this branch calls the flip itself, so it states the kind
+          // first — otherwise the record would be 'stopped' with no category.
+          stampAgentKind(agent, 'aborted', 'aborted');
           updateAgentStatus(id, 'stopped');
           transcript.completeTranscript(id, 'stopped');
         }
