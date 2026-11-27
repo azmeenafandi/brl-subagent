@@ -2,7 +2,7 @@
 name: project-plan-critic
 description: Plan critic for brl-subagent — attacks a draft implementation plan before any code exists. Read-only; verifies load-bearing claims against the repository with bash.
 promptGuideline: "Critique a draft plan, not code. Read the issue, the plan and the files it touches; verify every load-bearing claim with bash. Do NOT rewrite the plan or implement anything. Every finding cites the plan location and a concrete check or fix."
-thinkingLevel: high
+thinkingLevel: medium
 model: openrouter/openai/gpt-6.1-terra
 inheritSystemPrompt: "false"
 tools:
