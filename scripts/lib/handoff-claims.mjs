@@ -464,9 +464,12 @@ function skip(claim, reason) {
 
 const list = (numbers) => numbers.map((number) => `#${number}`).join(", ");
 
-/** The H2 headings the handoff contract promises exactly once — the index pass adds its own H2-set rule. */
-const MANDATORY_HEADINGS = ["STATE", "Open items"];
-/** The page promises ONE §STATE and nothing else structural (`## Open items` is optional there). */
+/**
+ * The headings a document promises exactly once. The PAGE promises ONE `## STATE` — `## Open items` is
+ * optional there — while the index promises its whole H2 set and is checked by `checkIndexStructure`. A
+ * parameter rather than a constant per document, because the rule is "these texts, once each" and the
+ * texts are the only thing that differs.
+ */
 const PAGE_MANDATORY_HEADINGS = ["STATE"];
 
 /**
@@ -476,15 +479,14 @@ const PAGE_MANDATORY_HEADINGS = ["STATE"];
  * occurrence (a heading that is absent altogether sorts last, and the mandatory order breaks that tie):
  *   `STATE`/`Open items` must appear exactly once (`STATE 2`, `Open items 0`);
  *   any other H2 text must not repeat (`Notes 2`).
- * The `mandatory` list is a parameter because the two documents promise different sets (#607): the index
- * promises its four H2s and is checked by `checkIndexStructure`, while the PAGE promises one `## STATE`
- * and may carry an `## Open items` or not. Passing one list keeps #579's alarm — a duplicated block is
- * still `STATE 2` — on the page, where a slice-replace can still append a second copy.
+ * `mandatory` is the set that must appear exactly once (#607: the page's is `STATE` alone — the index
+ * pass checks its own set), which keeps #579's alarm — a duplicated block is still `STATE 2` — on the
+ * page, where a slice-replace can still append a second copy.
  * The detail names the line numbers, because "a duplicate" without them is a grep the reader re-runs.
  * Uniqueness is NOT freshness (spec §5 R1): one STATE that is the stale copy passes — freshness is
  * `Verified:` plus the claim checks below.
  */
-function checkStructure(claims, mandatory = MANDATORY_HEADINGS) {
+function checkStructure(claims, mandatory) {
 	const byText = headingsByText(claims.structure.headings);
 	const violations = [];
 	for (const text of mandatory) {
