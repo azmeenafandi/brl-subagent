@@ -29,9 +29,10 @@ Cycle: **`process-receipts` CLOSED** (opened 2026-11-21T15:31Z, declared 2026-11
 - **Session reopened 2026-11-27 on pi 1.6.1.** Handoff verified at `f5abde5`, tree now at `1980d94` (one housekeeping
   commit). Two things checked before anything else: (1) **`models.classify()` now returns `responseId`** — the classifier path
   round-trips through `jev-check --classifier` unchanged (envelope intact, no append without `--label`), so #589's check needs
-  nothing; (2) a **stray `.pi/brl-subagent/presets/.pi/subagent-logs/brl-subagent.log`** (2 lines, 09:49Z) appeared because a pi
-  session started with its cwd inside `presets/` — removed, and `.gitignore` now refuses that path, since `presets/` is
-  un-ignored and everything under it was trackable. Nothing else moved in the week; the board is unchanged and no cycle is
+  nothing; (2) a **stray `.pi/brl-subagent/presets/.pi/`** appeared because the maintainer ran `pi` **by accident** with its cwd
+  inside `presets/` (09:49Z; **not** a script bug — nothing in the toolchain spawns there). Both it and the empty
+  `~/.pi/agent/sessions/--…-presets--` directory were deleted on request; `.gitignore` now refuses that path, because
+  `presets/` is un-ignored and everything under it was trackable, so the accident could have been committed. Nothing else moved in the week; the board is unchanged and no cycle is
   open.
 
 - **CYCLE CLOSED (`proof-integrity`, 2026-11-22T11:10Z)** — four units on the verification layer's own honesty, and the
