@@ -1,0 +1,73 @@
+{
+ "version": 1,
+ "cycle": "provenance",
+ "claimedLive": false,
+ "candidates": [
+  {
+   "eventId": "f9eb079b-a451-46f0-a22f-30d5f0f49d7a:failed:1",
+   "kind": "failed",
+   "runId": "f9eb079b-a451-46f0-a22f-30d5f0f49d7a",
+   "ts": "2026-11-27T10:54:32.204Z",
+   "class": "model-override-substitution",
+   "count": 1,
+   "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:15390",
+   "digest": "8752a8940ae98898",
+   "dismissed": null
+  },
+  {
+   "eventId": "328a74e8-50a0-4b56-a449-4d87c0e375eb:stop:1",
+   "kind": "stop",
+   "runId": "328a74e8-50a0-4b56-a449-4d87c0e375eb",
+   "ts": "2026-11-27T10:59:54.165Z",
+   "class": "model-override-substitution",
+   "count": 1,
+   "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:15421",
+   "digest": "d42b7b46e8bbe337",
+   "dismissed": null
+  },
+  {
+   "eventId": "b9bedbc1-e746-43b1-8be3-57a4b0da2814:steer:1",
+   "kind": "steer",
+   "runId": "b9bedbc1-e746-43b1-8be3-57a4b0da2814",
+   "ts": "2026-11-27T11:15:02.868Z",
+   "class": "banking-regression",
+   "count": 1,
+   "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:15443",
+   "digest": "90ba5a9215b69cfc",
+   "dismissed": null
+  },
+  {
+   "eventId": "f4efcc30-aa74-4ec5-adf5-46b44db80261:steer:1",
+   "kind": "steer",
+   "runId": "f4efcc30-aa74-4ec5-adf5-46b44db80261",
+   "ts": "2026-11-27T11:41:13.648Z",
+   "class": "banking-regression",
+   "count": 1,
+   "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:15530",
+   "digest": "7b6df632127a333a",
+   "dismissed": null
+  },
+  {
+   "eventId": "f4efcc30-aa74-4ec5-adf5-46b44db80261:steer:2",
+   "kind": "steer",
+   "runId": "f4efcc30-aa74-4ec5-adf5-46b44db80261",
+   "ts": "2026-11-27T11:42:43.748Z",
+   "class": "banking-regression",
+   "count": 1,
+   "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:15539",
+   "digest": "ef51e6ef6f3a51f8",
+   "dismissed": null
+  },
+  {
+   "eventId": "2b4f99ba-0c33-4c03-90ec-b785779aa7ec:steer:1",
+   "kind": "steer",
+   "runId": "2b4f99ba-0c33-4c03-90ec-b785779aa7ec",
+   "ts": "2026-11-27T12:18:58.843Z",
+   "class": "pr-body-shape-unchecked",
+   "count": 1,
+   "source": "session-log:2026-11-06T14-20-13-539Z_01a1b13b-4363-70fb-a2fc-79cb4cf0dcba.jsonl:15631",
+   "digest": "8ca806f48cb5cfc7",
+   "dismissed": null
+  }
+ ]
+}

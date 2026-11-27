@@ -38,6 +38,9 @@ which touches only the `Verified:` line). The content is the conductor's.
 
 ## Before committing the handoff
 
+**Push it in the same turn.** A handoff commit that stays local diverges `dev` from `origin/dev` the moment a
+PR merges, and the next `git pull --ff-only` refuses. The commit is not recorded until it is pushed.
+
 Run `node scripts/handoff-verify.mjs`: it diffs §STATE's mechanical claims (the `Verified:` range, `dev`
 @ sha, install path and sha, `Open:` set, suite counts, module/ADR counts, every `name.ts` line count)
 against the repo. Exit 0 before you commit; a drift means **fix the claim, never the script**. `--json`
