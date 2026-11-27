@@ -3,7 +3,6 @@
 > Test fixture for `scripts/handoff-verify.mjs`: a `name.ts` line-count claim one line off `wc -l`.
 
 ## STATE
-Verified: 4c1d9ab (2026-11-08)
 Cycle: fixture cycle.
 
 - **dev** @ `4c1d9ab`. The fixture dev tip.
