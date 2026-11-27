@@ -4,7 +4,7 @@
 > History: `.development/HANDOFF-ARCHIVE-*` and `.development/FRICTION_LOG.md` — never re-read it.
 
 ## STATE
-Verified: 318f8ee (2026-11-27)
+Verified: 2788e9a (2026-11-27)
 In flight: #607 — the handoff becomes an index (this unit, PR open)
 Next action: #606 (open) — the factory's front door
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
