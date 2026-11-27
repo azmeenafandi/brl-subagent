@@ -1,14 +1,23 @@
-# #606 — the factory's front door: a grill skill, a confirmed brief, and a dispatch header that makes "no code from an unagreed plan" enforceable — spec **r6**
+# #606 — the factory's front door: a grill skill, a confirmed brief, and a dispatch header that makes "no code from an unagreed plan" enforceable — spec **r7**
 
 **Issue:** #606 (process, owner priority) · **C2** · worktree **y**.
 **jev:** high (0.35) · C2 · worktree y (round-3 dispatch classification; the level is an observation, the pin governs)
-**Spec r6:** 2026-11-27, against `c40ea90` (`dev`). **Status: decision-ready.** Both boundary decisions are settled: gated class = the code-writing dispatch; boundary = option A (mandatory dispatch header, no undeclared residual).
+**Spec r7:** 2026-11-27, against `9c22423` (`dev`). **Status: decision-ready.** Both boundary decisions are settled: gated class = the code-writing dispatch; boundary = option A (mandatory dispatch header, no undeclared residual).
 **Rounds:** r1 → `rethink` (1 blk, 5 maj, 2 min) · r2 → `rethink` (8 maj, 1 min) · r3 → `needs-work` (5 maj, 1 min) ·
-r4 → `needs-work` (3 maj, 1 min) · r5 → `needs-work` (5 maj, 2 min) · r6.
+r4 → `needs-work` (3 maj, 1 min) · r5 → `needs-work` (5 maj, 2 min) · r6 → `needs-work` (3 maj, 1 min) · r7.
 
 **Scope: Unit 1 only.** Units 2 (wiki) and 3 (vocabulary) out of scope.
 
 ---
+
+## r6 → r7, every finding closed
+
+| # | Finding (round 6) | r7 decision |
+| --- | --- | --- |
+| 1 | Falsifier (b) audited only calls *named* `read`/`grep`/`find`/`ls`, so `git show HEAD:src/router.ts` explored code without tripping it (major) | **The predicate is effect-based**: any call whose arguments cause repository content to be read, shell and interpreter included. Interval bounded by transcript entry ids; exactly two exclusions (subagent activity, non-repository sources). Authorship is **not** an exemption. The `git show` case is named as the counter-example must fail on. |
+| 2 | `zero-decision-empty-reason` was requested but never specified as a test; a `none —` with no reason could pass (major) | **T12e added** with fixture `zero-decision-empty-reason` (both `none —` and `none —   `) and **M11e** (accept an empty reason). |
+| 3 | Mutant arrows were predictions; nothing required executing a mutant and recording the failure; T9's M8 did not test the missing-field refusal (major) | **`## Mutation receipts`** now requires, per mutant, the applied command and the `require-executed` output (non-zero executed, the named assertion failing), and **T9 splits into T9a/T9b with M13** for the missing-field half. |
+| 4 | `fenced-only` did not pin whether the `## Want` heading sits outside the fence, so M11b might be unreachable (minor) | **T12b now pins an unfenced `## Want` heading with only fenced content beneath**, plus otherwise valid decisions and marker — so the fence rule is what fails. |
 
 ## r5 → r6, every finding closed
 
@@ -207,18 +216,29 @@ carries a **valid `jev:`** line so the pre-existing Jev rejection cannot mask th
 | T6 | opted-in stale cwd refused; **manifest-less cwd → no check** | two trees, valid Jev | M6 (skip when file absent) → T6 |
 | T7 | integration: refusal reaches **zero spawns** with a valid Jev, message brief-specific; signed-brief control **does** spawn | existing `dispatch-line-enforcement` harness | M1 → T7; Jev alone cannot redden it |
 | T8 | escape valid **and** warns on all four validating paths | opted-in cwd, valid Jev | M7 (silent escape) → T8 |
-| T9 | template renders `dispatch: <kind>`; missing field refused at render | template fixture | M8 (drop the prepend) → T9 |
+| T9a | template renders `dispatch: <kind>` | template fixture | M8 (drop the prepend) → T9a |
+| T9b | a template with **no** `dispatch:` field is refused at render (opted-in cwd) | template fixture | M13 (permit a missing field) → T9b |
 | T10 | **adding a valid header alone does not change the selected preset** | a routing fixture pair | M9 (classify the whole task) → T10 |
 | T11 | unknown/misspelled `dispatch:` frontmatter value is a render error naming the field | template fixture | M10 (ignore unknown fields) → T11 |
 | T12a | `hollow-marker` refused (marker is not Want content) | briefs fixture | M11a (count the marker as Want content) → T12a |
-| T12b | `fenced-only` refused (fenced lines are not body) | briefs fixture | M11b (count fenced lines as body) → T12b |
+| T12b | `fenced-only` refused — fixture pins an **unfenced** `## Want` heading with only fenced content beneath it, plus otherwise valid decisions and marker (so the fence rule, not a missing heading, is what fails) | briefs fixture | M11b (count fenced lines as body) → T12b |
 | T12c | `empty-cell` refused (answer cell must be non-whitespace) | briefs fixture | M11c (skip the answer-cell check) → T12c |
 | T12d | `zero-decision-last` **accepted** (`none — …` then the marker, Settled decisions last) | briefs fixture | M11d (reject the zero-decision form) → T12d |
+| T12e | `zero-decision-empty-reason` **refused** (`none —` and `none —   ` both) | briefs fixtures | M11e (accept an empty reason) → T12e |
 | T13 | block boundary: comment on `dispatch:` refused; title before the block refused; a `jev:` line **later** in the body still satisfies the existing Jev check | boundary fixtures | M12 (accept any `dispatch:` line) → T13 |
 
 All filtered runs quote `node scripts/require-executed.mjs` (#591).
 
 ---
+
+## Mutation receipts — a predicted kill is not a kill
+
+Every `M<n>` above is a **claim to be measured, not asserted**. The implementation report must carry, per mutant, the
+command that applied it and the `node scripts/require-executed.mjs -- npx vitest run <file>` output for the test it
+names: the executed count must be non-zero and the named assertion must be the one that failed (`failed 1`, naming the
+test). A row whose mutant produces `0 executed`, or that fails a *different* test, is an unmeasured claim and the row
+is not closed. The reviewer reproduces at least one mutant per surface; `merge-guard`'s existing test-flow check does
+not see this, so it is the review record's job to say the receipts were read.
 
 ## Falsifiers
 
@@ -242,10 +262,19 @@ interrogative the conductor put to the human, including **several in one turn** 
 Coverage is reconciled in two counts — *turns containing a `?`* (all of which must be opened and their questions
 extracted) and *questions extracted* (≥ that count) — because a turn-level count is what r3 correctly rejected. Each
 question is then classified by the checkable rule *"answerable by a command or read of the repo/environment ⇒ fact ⇒
-fail"*. **And the prohibition is two-sided**, because the issue names two: over the interval *want stated → plan
-written*, the conductor's transcript must contain **no** `read`/`grep`/`find`/`ls` call against repository files
-(subagent calls are how facts were meant to arrive). **Either** predicate failing fails the receipt — a session that
-asks no fact questions but reads the code directly still fails. Honest limit: a manual audit with two coverage counts,
+fail"*. **And the prohibition is two-sided**, because the issue names two. Over the interval *the want is stated → the plan
+is persisted* — bounded by **transcript entry ids**, never by memory — no repository file content may enter the
+conductor's transcript **by any route**. The predicate is **effect-based, not tool-name-based**: a call counts if its
+arguments cause repository content to be read — `read`, `grep`, `find`, `ls`, **and** `bash` running `cat`, `head`,
+`tail`, `sed`, `awk`, `git show`, `git diff`, `wc`, or an interpreter that opens a repo path. Two exclusions, and only
+two: **subagent activity** (that is how facts were meant to arrive) and **non-repository sources** (network, the
+private scratch root). A repository file the conductor *authored* is still a repository file — authorship is **not**
+an exemption, and r6's wording wrongly implied one. The measured counter-example this rule exists for:
+`git show HEAD:src/router.ts | head -5` prints repository code with no prohibited tool name, and **must** fail the
+receipt. **Either** predicate failing fails the receipt — a session that asks no fact questions but reads the code
+directly still fails.
+
+Honest limit: a manual audit with two coverage counts,
 not a proof.
 
 ---
