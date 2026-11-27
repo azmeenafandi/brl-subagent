@@ -1,56 +1,57 @@
-# #607 — the handoff is 62% history; make it an index the next session loads, and pages it opens on demand — spec
+# #607 — the handoff is 62% history; make it an index the next session loads, and pages it opens on demand — spec **r2**
 
 **Issue:** #607 (process, owner priority for the next fresh session) · **C2** · worktree **y**.
 **jev:** medium (0.66) · C2 · worktree y
-**Spec:** 2026-11-27, against `966cd4d` (`dev`). Status: **decision-ready** (pre-critique).
+**Spec r2:** 2026-11-27, against `d724dd7` (`dev`). **Status: decision-ready** after one critique round
+(`crit-607`, 10 majors, every one a design defect a line of code would have inherited; all answered below).
 
 ---
 
-## Recon (Rule 13 — codegraph @ `966cd4d`)
+## r1 → r2 changes (the critique's ten majors, each measured and answered)
+
+| # | r1 gap (measured by `crit-607`) | r2 answer |
+|---|---|---|
+| 1 | The evidence table named expected reds with no commands, measured killers, or negative controls (spec-evidence #557 rules). | §Evidence rewritten: every row names the command, its assertion, a negative control, and a mutant with its killer. |
+| 2 | A handoff commit touching `state.md` is **not** handoff-only to either consumer — `isHandoffOwnCommit` in `handoff-claims.mjs` and `.pi/extensions/handoff/lib.ts` both return false for a page commit, so the next session reads drift/RECONCILE right after the commit. | `isHandoffOwnPath` extends in **both** files to `.development/handoff/*.md`. The extension IS touched (r1 claimed otherwise — wrong). |
+| 3 | `parseClaims` cannot consume the r1 page: it needs a `## STATE` section and the bullet-form `dev @`, not a bare `dev @`. | The state page is a complete `## STATE` section in the **exact existing grammar** (bullet `dev @`, `Running install:`, `Open:`, `Suite:`, `<n> modules`, `<n> ADRs`, sizes) **plus its own `Verified:`**. `parseClaims` is unchanged. |
+| 4 | The seeded "20 lines of history" falsifier is not implied by budget (short) or no-counts (count-free history). | Check 0 enforces the index **shape**: exactly four H2s, **no H3 headings at all**, and §STATE = exactly four named lines. History pasted into §STATE or as a `### Since` section is `state-shape`/`state-drift`. |
+| 5 | Reusing the PR no-counts detector skips blockquotes and recognises only files/tests/lines. | The index no-counts check does **not** skip blockquotes, and the unit list is the handoff's own mechanical units (below). |
+| 6 | Counting `Next action:` lines accepts an empty, non-issue, or closed action; liveness was scoped to `## Pointers` so `Next action: #607 (open)` went unchecked. | Check 5 requires exactly one line naming `#<n>`; liveness scans the **whole index** (not just `## Pointers`) so the action's `(open|closed)` is verified. |
+| 7 | PR states are not OPEN/CLOSED — `gh issue view 601` returns `MERGED`; `--issues` is open-issues only, contradicting "closed is refused". | Citation states are `(open|closed|merged)`; verified via `gh issue view <n> --json number,state` (which maps PRs too). Offline: `--no-network` skips; `--issues` resolves `(open)` only, `(closed|merged)` is exit-2 unanswerable. |
+| 8 | "Given only this repo" cannot make the verifier pass: the suite report lives in private machine state and its absence is exit 2. | The resume protocol distinguishes **checked** (exit 0) from **unavailable** (exit 2 — capture first). The falsifier is about *reaching* the next action, which needs only §STATE + `gh issue view`. |
+| 9 | The injected §STATE carries no pointer to the index/pages, and the extension test only pins the old verify-command table. | §STATE gains a fourth line (`Index:`) naming the index and its sections; `VERIFY_COMMANDS` in `lib.ts` and `handoff.test.cjs` are updated together. |
+| 10 | Only `correct.md` + one page fixture was accounted for; 7 tracked fixtures and 3 live-handoff reads exist. | §Blast radius names the full corpus; acceptance requires every old drift code re-reachable from a fixture against the page. |
+
+---
+
+## Recon (Rule 13 — codegraph @ `d724dd7`)
 
 ```
-# unattributedCounts (scripts/lib/pr-evidence.mjs)  — callers: 2 (pr-evidence.test.ts, checkBody :397)
-# parseClaims / evaluate (scripts/lib/handoff-claims.mjs) — pure claim grammar + verdict; consumed by handoff-verify.mjs
-# extractStateSection ( .pi/extensions/handoff/lib.ts ) — the injection seam; needs `## STATE` + a `Verified:` line only
-# resolveReport (scripts/lib/suite-report.mjs) — the suite-count source (#513), keyed by the handoff's Verified sha
+# parseClaims / evaluate (scripts/lib/handoff-claims.mjs) — pure claim grammar + verdict; checks 0-7 in one `evaluate`
+# unattributedCounts (scripts/lib/pr-evidence.mjs) — the "count outside a block" pattern #607 names (reuse point)
+# extractStateSection / isHandoffOwnCommit / VERIFY_COMMANDS ( .pi/extensions/handoff/lib.ts ) — the injection seam + handoff-owned rule
+# resolveReport (scripts/lib/suite-report.mjs) — suite source (#513), keyed by the Verified sha
 ```
 
-**Recon verification.** V1 `parseClaims` reads the whole `## STATE` section and derives every mechanical claim
-from it (`scripts/lib/handoff-claims.mjs`); the seven checks are `evaluate()`. V2 `unattributedCounts`
-(`pr-evidence.mjs:276`) is the exact "count outside a block" pattern #607 names — `COUNT_RE =
-(?<![\w.])[\d][\d,]*[ \t]+(?:[\w'-]+[ \t]+){0,2}(?:files?|tests?|lines?)\b`, fence-skipping, blockquote-skipping.
-V3 the extension only depends on `## STATE` (heading, tolerating a `(qualifier)`) and the `Verified:` line
-(`lib.ts:40,46`) — it ends §STATE at the **next** `## ` heading, so adding `## Invariants` after `## STATE` is
-compatible. V4 the existing structure check (check 0) mandates `## STATE` and `## Open items` each exactly once;
-the new index removes `## Open items`, so check 0's mandatory set must change. V5 `handoff-verify.mjs` reads one
-file (`--file`, default `.development/HANDOFF.md`) and passes its §STATE to `parseClaims`; a second read (the
-state page) is a new seam. V6 `evaluate()` takes `claims` + a `probe` and returns `{results, drifts}`; new checks
-are new `check*` functions appended in fixed order plus their probe facts.
+**Recon verification.** V1 `parseClaims` reads a whole `## STATE` section; the `dev @` claim needs the
+bullet form (`DEV_RE` = `^[ \t]*[-*][ \t]+\**dev\**…`), not bare `dev @`. V2 `isHandoffOwnPath`
+(`handoff-claims.mjs`) = `/^\.development\/HANDOFF(?:\.md|-ARCHIVE-[^/]+\.md)$/` — a page commit is foreign;
+the extension's `isHandoffOwnCommit` (`.pi/extensions/handoff/lib.ts`) has the same rule and must extend in
+lock-step. V3 the extension injects `extractStateSection` only (`index.ts:183`); `show` appends
+`VERIFY_COMMANDS`; the staleness delta uses `isHandoffOwnCommit`. V4 check 0 mandates `STATE`+`Open items`;
+`Open items` leaves. V5 `evaluate()` returns `{results, drifts}` in fixed order — the new checks are new
+`check*` functions + probe facts, and the page checks reuse the existing ones minus check 0/1.
 
-**Grep delta.** `grep -rn "unattributedCounts" scripts` → 2 hits (the lib + one test import) — the reuse point is
-one exported function. `grep -rn "## STATE\|Open items" .pi/extensions/handoff/lib.ts` → the extension mentions
-only `STATE`; `Open items` is not an extension dependency. `grep -c "Open items" scripts/lib/handoff-claims.mjs` →
-1 (the `MANDATORY_HEADINGS` constant) — the only place the old heading is load-bearing.
+**Grep delta.** `grep -rn "isHandoffOwnPath\|HANDOFF_OWN" .pi/extensions scripts/lib` → 2 definitions, must
+both extend. `git ls-files 'scripts/__tests__/fixtures/handoffs/*.md'` → **7** tracked fixtures.
+`rg -n 'readFileSync\(join\(ROOT, "\.development", "HANDOFF.md"' scripts/__tests__/handoff-verify.test.ts` →
+**3** live-handoff reads (CLI corpus, not fixtures).
 
 ---
 
-## Context — measured, not asserted
+## Decision — index + state page, two evaluation passes, and a shape that rejects history
 
-`.development/HANDOFF.md` is 214 lines / 50,502 b (~13k tokens). The issue's measurement: `## STATE` 8,603 b
-(17%), `### Since the last handover` 31,155 b (62%, unactionable history), `### Next actions` 3,345 b (7%),
-operating notes 7%, open items/pointers 5%. A fresh session loads all of it to reach the ≈5 KB that decides what
-to do. Seven `HANDOFF-ARCHIVE-*` files already exist; the chain keeps growing anyway. In one evening it needed
-three corrections (a placeholder the close made false, a `dev` sha that moved, an `Open:` set missing two issues)
-— each caught by `handoff-verify` or by hand, never by the artifact.
-
-**The decision a fresh session needs, ranked (from the issue):** Verified · In flight · Next action · Invariants ·
-Pointers · Resume protocol. Everything else is history or verification detail.
-
----
-
-## Decision — `HANDOFF.md` becomes a lean index; the mechanical claims move to a page; five checks are added
-
-### 1. The index (`HANDOFF.md`) — ≤80 lines AND ≤8 KB
+### 1. The index (`HANDOFF.md`) — ≤80 lines AND ≤8 KB, flat, no history
 
 ```
 # Handoff
@@ -62,6 +63,7 @@ Pointers · Resume protocol. Everything else is history or verification detail.
 Verified: <sha> (<date>)
 In flight: nothing
 Next action: #607 (open) — redesign the handoff as an index
+Index: .development/HANDOFF.md (Invariants · Pointers · Resume protocol) → handoff/state.md, handoff/invariants.md
 
 ## Invariants
 - (f) reads the provenance ledger; the recheck line is *resolved*, never typed
@@ -76,78 +78,82 @@ Next action: #607 (open) — redesign the handoff as an index
 | [invariants](handoff/invariants.md) | the full invariant list, each with its reason |
 
 ## Resume protocol
-node scripts/handoff-verify.mjs     # 0 drift
+node scripts/handoff-verify.mjs     # 0 drift (or exit 2: capture the suite report first)
 git status --short                  # clean tree
 gh issue view <next-action-number>  # the next action
 ```
 
-**§STATE holds exactly three lines and nothing else** — `Verified:`, `In flight:`, `Next action:`. No `dev @`,
-no `Running install:`, no `Open:`, no `Suite:`, no module/ADR/size counts, no cycle history. The `Verified:` sha
-is the extension's anchor and check 1's subject; it must stay the **first line inside `## STATE`**. The section
-must be followed by `## Invariants` (the next `## ` heading), which is what lets the extension end §STATE there
-unchanged.
+**§STATE has exactly four lines, in order** — `Verified:`, `In flight:`, `Next action:`, `Index:`. The
+`Index:` line is what makes the injected snapshot self-sufficient (V3 injects only §STATE): it names the
+index file, its three other sections, and the two pages. No `dev @`, no `Running install:`, no `Open:`, no
+`Suite:`, no counts, no cycle history, **no `### ` sub-heading** — §STATE ends at `## Invariants`.
 
-**The `### Since the last handover` chain is retired, not migrated.** Its current content is archived verbatim
-to `.development/HANDOFF-ARCHIVE-2026-11-27.md` (the existing archive convention), and the index carries the one
-line above naming where history lives. Nothing else is carried forward into the index.
+**The index is flat and fixed-shape.** Exactly four H2 headings — `## STATE`, `## Invariants`, `## Pointers`,
+`## Resume protocol` — and **no H3 headings anywhere**. The retired `### Since the last handover` chain is
+archived verbatim to `.development/HANDOFF-ARCHIVE-2026-11-27.md`, never migrated; the one preamble line above
+names where history lives.
 
-**Numbers are not prose.** The index may cite a command or a report path, never a count. The mechanical counts
-live in the state page, not here.
+**Numbers are not prose.** The index cites a command or a report path, never a count. Counts live in the state
+page.
 
 ### 2. The pages (`.development/handoff/`)
 
-Two pages ship in this unit (the minimum resume set; further wiki pages are #606's follow-on, out of scope):
+- **`state.md`** — a complete `## STATE` section: `Verified: <sha> (<date>)` (same value as the index),
+  `- **dev** @ \`<sha>\``, `Running install: …`, `Open: #…`, `Suite: <n> files / <m> tests (<p> passed,
+  <q> failed, <r> skipped)`, `<n> modules`, `<n> ADRs`, and every `` `name.ts` <n> `` size line. **This is
+  the exact grammar `parseClaims` already parses** — nothing new to parse, and `parseClaims` is unchanged.
+- **`invariants.md`** — the full invariant list, one reason each, sourced to the issue/ADR/sha that
+  established it. The index carries the short list; this page carries the "why".
 
-- **`state.md`** — the mechanical claims, in the **exact grammar `parseClaims` already parses**, minus the
-  `Verified:` line (the index is authoritative for the sha): `dev @ <sha>`, `Running install: …`, `Open: #…`,
-  `Suite: <n> files / <m> tests (<p> passed, <q> failed, <r> skipped)`, `<n> modules`, `<n> ADRs`, and every
-  `` `name.ts` <n> `` size line. One claim per line; the same "a drift means fix the claim" contract.
-- **`invariants.md`** — the full invariant list with one reason each (the index carries the short list; this page
-  carries the "why", sourced to the issue/ADR/sha that established each).
+### 3. `handoff-verify.mjs` — two passes + the five new checks
 
-Each page opens with a one-line `Source:` note naming the issue it records state for, and is itself a subject
-page — cited in the index's pointer table, never pasted into it.
+**Pass A (the index).** New `parseIndex` extracts the headings, the §STATE lines (`Verified`, `In flight`,
+`Next action`, `Index`), the pointer-table link targets, the citations, and the raw text. Checks, in fixed
+order:
 
-### 3. `handoff-verify.mjs` — relocation + five new checks
+0. **structure / shape** — H2 set == exactly `{STATE, Invariants, Pointers, Resume protocol}` (no extra, no
+   repeat → `state-drift`); **no H3 heading** (a `### Since the last handover` is `state-drift`); §STATE body
+   == exactly the four named lines in order, each non-blank (`Verified:` first) — any other line is
+   `state-shape`.
+1. **verified** — the index's `Verified:` is an ancestor of HEAD with no non-handoff commit after it (the
+   existing check 1, unchanged logic, now sourced from `parseIndex`).
+2. **budget** — >80 lines or >8,192 UTF-8 bytes → `over-budget` (names both measured values).
+3. **index completeness** — pages = `*.md` directly under `<index-dir>/handoff/`; listed = link targets
+   `[...](target)` inside `## Pointers` ending in `.md` and resolving inside `handoff/`. Page not listed →
+   `unindexed-page`; listed but absent → `dead-link`.
+4. **citation liveness** — over the **whole index** (outside fences), three kinds:
+   - `#<n>` immediately followed by `(open|closed|merged)` → `gh issue view <n> --json number,state` must
+     match → else `issue-state-drift` (skipped under `--no-network`, printed; `--issues` resolves `(open)`
+     only, `(closed|merged)` is exit-2 unanswerable);
+   - a backticked `7–40`-hex sha (excluding the `Verified:` line, which check 1 owns) → ancestor of `dev` →
+     else `sha-not-ancestor`;
+   - a path (markdown link target, or backticked token containing `/` ending in a known extension) → exists →
+     else `path-missing`.
+5. **no counts in prose** — the `unattributedCounts` shape (fence-skipping, **not** blockquote-skipping) with
+   the unit list `files?|tests?|lines?|modules?|ADRs?` → `unattributed-count` (line + offending token).
+   Coverage boundary stated in output: a count with a unit outside this list (e.g. `9 issues`) is not detected.
+6. **one next action** — exactly one `Next action:` line in §STATE → else `next-action-ambiguous`; its text
+   must name `#<n>` → else `next-action-issue-missing`. The line's `(open|closed)` is checked by (4).
 
-**Relocation.** Checks 2–7 (dev, install, open, suite, modules/adrs, sizes) now read **`handoff/state.md`** — the
-file discovered at `<dir-of-the-index>/handoff/state.md` — instead of the index's §STATE. Check 1 (`Verified:`
-ancestor + no non-handoff commit after it) still reads the index's §STATE. The `Verified:` sha is the
-`expectHead` the suite check (5) passes to the report resolver. The state page's absence is an exit-2 usage
-fault, not drift (`state-page-missing`), because there is nothing to check.
+**Pass B (the state page).** `parseClaims(statePage)` unchanged; run checks 2–7 (dev, install, open, suite,
+modules/adrs, sizes) with the existing drift codes. Check 0/1 are **not** re-run on the page (structure and
+`Verified:` are the index's). The page's `Verified:` is cross-checked against the index's (disagree →
+`verified-page-drift`), and check 5 (suite) uses the page's `Verified:` as `expectHead`.
 
-**Check 0 (structure) changes.** Mandatory headings become `## STATE`, `## Invariants`, `## Pointers`,
-`## Resume protocol` (each exactly once); `## Open items` leaves the mandatory set. The existing duplicate-H2
-rule (any other H2 repeated → `state-drift`) is unchanged.
+`--file` still names the index; the state page is derived at `<dir-of-index>/handoff/state.md`. A missing
+state page is exit-2 `state-page-missing` (usage, not drift). The scope line is updated to name exactly what
+is now out of scope: the `In flight:` and `Index:` text are prose, and the `Invariants` bullet list is prose —
+the five new checks are the only mechanical reading of the index.
 
-**The five new checks** (all fail loudly with the named reason; all outside fenced code blocks):
+### 4. The extension — two small, load-bearing changes (r1's "untouched" claim was wrong)
 
-1. **budget** — the index file is over 80 lines **or** over 8,192 UTF-8 bytes → `over-budget` (one drift naming
-   both measured values).
-2. **index completeness** — pages are `*.md` directly under `<index-dir>/handoff/`; listed pages are the markdown
-   link targets (`[...](target)`) inside `## Pointers` whose target ends in `.md` and resolves inside `handoff/`.
-   A page file not listed → `unindexed-page`; a listed page whose file is absent → `dead-link`. (Normalised by
-   path relative to `handoff/`.)
-3. **citation liveness** — inside `## Pointers`, three kinds are cited and verified:
-   - an issue/PR ref `#<n>` immediately followed by `(open)` or `(closed)` must match `gh issue view <n>`'s state
-     → else `issue-state-drift` (skipped under `--no-network`, printed as a skip; `--issues <json>` supplies the
-     open set so `(open)` resolves offline and `(closed)` is refused as unanswerable);
-   - a backticked `7–40`-hex sha must be an ancestor of `dev` → else `sha-not-ancestor`;
-   - a path (a markdown link target, or a backticked token containing `/` and ending in a known extension) must
-     exist → else `path-missing`.
-4. **no counts in prose** — reuse `pr-evidence`'s `unattributedCounts` (the `COUNT_RE` unit detector + fence and
-   blockquote skipping) over the **index**, with the unit list extended to `files?|tests?|lines?|modules?|ADRs?`
-   → `unattributed-count` (one finding per line, carrying line number + the token that tripped).
-5. **one next action** — exactly one `Next action:` line at line-start inside `## STATE`; zero or more than one
-   → `next-action-ambiguous`. (The line naming `#<n>` is a documented writer rule, not a check.)
+- **`isHandoffOwnPath`** (`.pi/extensions/handoff/lib.ts`) extends to `.development/handoff/*.md`, in
+  lock-step with `handoff-claims.mjs` (V2): a page commit must be the handoff's own, not drift.
+- **`VERIFY_COMMANDS`** (`.pi/extensions/handoff/lib.ts`) updates to the new resume protocol; `handoff.test.cjs`
+  pins the sync (the reference's verify table and the constant cannot drift).
 
-The check order stays fixed (structure → budget → completeness → liveness → no-counts → next-action → the seven
-mechanical checks), so two runs print the same bytes.
-
-### 4. The extension is untouched
-
-`.pi/extensions/handoff/` reads `## STATE` and `Verified:` only (V3); both are preserved, and §STATE now ends at
-`## Invariants`. No extension change; `handoff.test.cjs` must stay green unchanged.
+`extractStateSection` and the `Verified:` staleness logic are unchanged — §STATE still starts with `Verified:`
+and ends at `## Invariants`.
 
 ---
 
@@ -155,57 +161,60 @@ mechanical checks), so two runs print the same bytes.
 
 | # | Decision | Choice | Why |
 |---|---|---|---|
-| D1 | Where the mechanical claims live | a page `handoff/state.md`, discovered at `<dir-of-index>/handoff/state.md` (no new flag) | the index must carry no counts (#607); a derived path cannot drift from the index it describes |
-| D2 | What §STATE keeps | `Verified:` + `In flight:` + `Next action:` only | the ranked list's first three, the extension's minimum, the falsifier's target |
-| D3 | The page grammar | the existing `parseClaims` shapes, minus `Verified:` | move-not-rewrite; the seven checks keep their drift codes |
-| D4 | `Verified:` lives once | in the index §STATE; the state page does not repeat it | one authoritative sha; the suite check takes it as `expectHead` from the index |
-| D5 | `--no-network` + liveness | `(open)` resolves from `--issues`; `(closed)` is exit-2 unanswerable; shas/paths resolve without network | shas and paths are local git/fs facts; issue state is the only network fact |
-| D6 | The retired chain | archived to `HANDOFF-ARCHIVE-2026-11-27.md` verbatim, never migrated | the issue: "retired, not migrated" |
-| D7 | budget measures the index only | lines (`\n` split) and UTF-8 bytes | the pages are opened on demand, not injected; only the index is the per-session tax |
-| D8 | `no counts` applies to the index only | the state page carries the counts checks 2–7 verify | the page is the mechanical-claims document; the index is the index |
-| D9 | new drift codes | `over-budget` · `unindexed-page` · `dead-link` · `issue-state-drift` · `sha-not-ancestor` · `path-missing` · `unattributed-count` · `next-action-ambiguous` · `state-page-missing` | each seeded violation names one; a human can fix without parsing prose |
+| D1 | Mechanical claims live in `handoff/state.md`, derived from the index dir (no new flag) | page is a full `## STATE` in the existing grammar | index carries no counts; `parseClaims` unchanged |
+| D2 | §STATE = exactly 4 lines incl. `Index:` | `Verified` · `In flight` · `Next action` · `Index` | the injected snapshot is self-sufficient (V3 injects §STATE only) |
+| D3 | `Verified:` lives in **both** files | index §STATE + page §STATE, cross-checked | the page is a complete §STATE; the index is the extension's anchor |
+| D4 | Liveness scans the whole index | not just `## Pointers` | `Next action: #607 (open)` is a citation too |
+| D5 | Citation states | `(open|closed|merged)`, `gh issue view <n>` maps PRs | `MERGED` is a real PR state; issues have no `merged` |
+| D6 | Offline liveness | `--no-network` skips; `--issues` = open-only (`(closed|merged)` exit 2) | the injected list is open issues only — cannot answer closed/merged |
+| D7 | History detection | index shape (4 H2s, no H3, §STATE = 4 lines) | mechanical, not a prose heuristic; catches the seeded paste |
+| D8 | no-counts unit list | `files?|tests?|lines?|modules?|ADRs?`, blockquotes **not** skipped | the handoff's own mechanical units; the index rule is stricter than PR bodies |
+| D9 | budget measures the index only | lines + UTF-8 bytes | pages open on demand; only the index is the per-session tax |
+| D10 | retired chain | archived to `HANDOFF-ARCHIVE-2026-11-27.md` verbatim | the issue: "retired, not migrated" |
 
 ## Blast radius
 
-- `scripts/lib/handoff-claims.mjs` — add the index parse (`parseIndex`), the five check functions, the new
-  structure set; the mechanical `parseClaims` is unchanged but consumed with a state-page source.
-- `scripts/handoff-verify.mjs` — read the index **and** the derived state page; pass both to `evaluate`; print the
-  new scope line.
-- `scripts/__tests__/handoff-verify.test.ts` — fixtures for every new drift code + the relocation (the existing
-  "correct.md" fixture becomes a correct **index**; a new `correct-state.md` fixture holds the mechanical claims).
-- `.development/HANDOFF.md` (rewritten), `.development/handoff/state.md`, `.development/handoff/invariants.md`
-  (new), `.development/HANDOFF-ARCHIVE-2026-11-27.md` (new, verbatim history).
-- `.pi/skills/handoff/SKILL.md` and `references/handoff.md` — restated for the index structure, the budget, the
-  page convention and the five checks.
-- `.pi/extensions/handoff/` — **no change** (V3); `handoff.test.cjs` must stay green unchanged.
+- `scripts/lib/handoff-claims.mjs` — `isHandoffOwnPath` + `handoff/*.md`; `parseIndex` + the five new checks;
+  the structure check's new mandatory set + §STATE shape + no-H3 rule; the page cross-check. `parseClaims`
+  unchanged.
+- `scripts/handoff-verify.mjs` — read index **and** derived state page; two evaluation passes; `--file`/`--root`
+  unchanged; scope line updated; `state-page-missing` exit 2.
+- `scripts/__tests__/handoff-verify.test.ts` + fixtures — migrate **all 7** tracked fixtures and the **3**
+  live-handoff reads; new fixtures for every new drift code and the relocation (each old code re-reachable
+  against the page).
+- `.pi/extensions/handoff/lib.ts` — `isHandoffOwnPath` + `handoff/*.md`; `VERIFY_COMMANDS` updated;
+  `handoff.test.cjs` pins both.
+- `.development/HANDOFF.md` (rewritten), `.development/handoff/state.md` + `invariants.md` (new),
+  `.development/HANDOFF-ARCHIVE-2026-11-27.md` (new).
+- `.pi/skills/handoff/SKILL.md` + `references/handoff.md` — restated for the index shape, the page convention,
+  the budget, and the five checks.
 
 ## Acceptance (what would prove it wrong)
 
-1. A fresh session, given only this repo, reaches the correct next action in **≤3 commands and ≤10k tokens** of
-   reading, with no clarifying question (the issue's falsifier).
-2. Each seeded violation turns the check red **before** the session trusts the index: (a) 20 lines of history
-   pasted back into the index → `over-budget` (or `unattributed-count`); (b) a page file omitted from the pointer
-   table → `unindexed-page`; (c) a listed page whose file is missing → `dead-link`; (d) a stale sha in `## Pointers`
-   → `sha-not-ancestor`; (e) a second `Next action:` line → `next-action-ambiguous`; (f) a bare `Suite: 150 files`
-   outside a fence in the index → `unattributed-count`.
-3. The seven mechanical checks still pass when the claims are in `state.md`, and each existing drift code
-   (`dev-sha-drift`, `suite-count-drift`, …) is still reachable from a fixture against the page.
-4. `node scripts/handoff-verify.mjs` exits 0 on the shipped index + page, and the extension's `handoff.test.cjs`
-   passes unchanged.
-5. The current `HANDOFF.md` is ≤80 lines and ≤8 KB, and its `### Since the last handover` chain is gone.
+1. A fresh session reaches the next action in **≤3 commands and ≤10k tokens**, no clarifying question: §STATE
+   (injected) → `gh issue view <next-action-number>`.
+2. Each seeded violation turns a named check red: (a) 20 lines of history pasted into §STATE or as a
+   `### Since` section → `state-shape`/`state-drift`; (b) a page omitted from the table → `unindexed-page`;
+   (c) a listed page deleted → `dead-link`; (d) a stale sha in the index → `sha-not-ancestor`; (e) a second
+   `Next action:` → `next-action-ambiguous`; (f) a bare `Suite: 150 files` (even blockquoted) → `unattributed-count`.
+3. Every existing mechanical drift code (`dev-sha-drift`, `suite-count-drift`, `file-size-drift`, …) is still
+   reachable from a fixture against the page; `parseClaims` itself is byte-unchanged.
+4. `node scripts/handoff-verify.mjs` exits 0 on the shipped index+page; `handoff.test.cjs` passes; a page
+   commit after `Verified:` reads as handoff-owned (no drift) while an unrelated commit still drifts.
+5. The shipped `HANDOFF.md` is ≤80 lines and ≤8 KB, has no `### ` heading, and no `Since the last handover`.
 
-## Evidence / mutants (to be measured by the implementer)
+## Evidence (each row: command + assertion, a negative control, a mutant with its killer)
 
-| # | What is pinned | Expected red |
-|---|---|---|
-| M1 | the budget check's `<= 80` and `<= 8192` | an 81-line or 8,193-byte index → `over-budget` |
-| M2 | completeness: a page file added but not listed | `unindexed-page` |
-| M3 | completeness: a listed page deleted | `dead-link` |
-| M4 | liveness: a sha in `## Pointers` not on `dev` | `sha-not-ancestor` |
-| M5 | liveness: an issue ref `#<n> (closed)` for an open issue | `issue-state-drift` |
-| M6 | liveness: a listed path that is absent | `path-missing` |
-| M7 | no-counts: a fenced count passes, an unfenced count drifts | `unattributed-count` |
-| M8 | next-action: zero and two `Next action:` lines | `next-action-ambiguous` |
+| # | Command / assertion | Negative control | Mutant → killer |
+|---|---|---|---|
+| E1 | `node scripts/handoff-verify.mjs` on shipped index+page → exit 0, 0 drift | an 81-line index → `over-budget` | budget `<=80` → E1's negative |
+| E2 | pages listed, files present → no completeness drift | add an unlisted page → `unindexed-page`; delete a listed one → `dead-link` | completeness compare → both negatives |
+| E3 | a cited sha on `dev` → pass | a sha off `dev` → `sha-not-ancestor` | ancestor check inverted → E3 neg |
+| E4 | `#607 (open)` with `gh issue view 607` = OPEN → pass | `#607 (closed)` → `issue-state-drift`; `#601 (merged)` (a PR) → passes as `merged` | state compare → E4 neg |
+| E5 | a listed path exists → pass | a missing path → `path-missing` | `existsSync` inverted → E5 neg |
+| E6 | a count inside a fence → pass; outside (incl. `>`) → `unattributed-count` | `> Suite: 150 files` → `unattributed-count` | fence/quote skip removed → E6 neg |
+| E7 | exactly one `Next action:` with `#<n>` → pass | zero/two lines → `next-action-ambiguous`; no `#<n>` → `next-action-issue-missing` | count compare → E7 neg |
+| E8 | page claims checked: stale `dev @`, stale `Suite:`, stale size → their existing codes | each mechanical claim mutated → its code | `parseClaims` unchanged, checks relocated |
 
-The existing suite (3417) stays green; the new test additions are fixtures only (no production behaviour change
-outside `handoff-verify` and the two docs). `npx tsc --noEmit` clean (no `src/` change).
+Suite counts are measured at the implementation head and re-stated there (provisional until captured);
+`npx tsc --noEmit` clean (no `src/` change); `npx vitest run` green.
