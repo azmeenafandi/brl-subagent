@@ -29,7 +29,7 @@ Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §In
 | [handoff reference](../.pi/skills/handoff/references/handoff.md) | the write contract for these pages |
 | [pr skill](../.pi/skills/pr/SKILL.md) | the PR-body contract |
 | [friction log](FRICTION_LOG.md) | where a rule-level defect is filed |
-| [archive](HANDOFF-ARCHIVE-2026-11-27.md) | the retired `Since the last handover` chain |
+| [archive](HANDOFF-ARCHIVE-2026-11-27.md) | the archived handover history |
 
 ## Resume protocol
 node scripts/handoff-verify.mjs     # 0 drift (or exit 2: capture the suite report first)
