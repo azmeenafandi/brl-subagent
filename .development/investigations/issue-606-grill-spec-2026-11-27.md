@@ -17,7 +17,7 @@ A brief is planning's **output**; `project-proposer` exists to *generate* the op
 would invert causality and leave code-writing ungated. Reading B ("planning is the gate") is recorded as rejected so
 it is not silently lost.
 
-### 0.2 The classification boundary — **r3 answer, needs the maintainer's acceptance**
+### 0.2 The classification boundary — **DECIDED** (maintainer, 2026-11-27): a mandatory dispatch header (option A)
 
 Both critiques killed every *inferable* identity, and the second one proved the decisive fact: **`src/router.ts:79`
 routes `implement`/`build`/`code`/`write`/`add`/`change`/`modify`/`edit` to `dev-agent`**, so the preset arm missed the
@@ -26,11 +26,11 @@ gate. #599's generator is the eventual source of a declaration, but it is open a
 
 | Option | Boundary | Consequence |
 | --- | --- | --- |
-| **A — mandatory dispatch header** (**ADOPTED in r3**) | every dispatch's own task text must open with a `dispatch:` declaration | Absence is itself a refusal, so falsifier (a) holds for *every* dispatch with no residual. No preset resolution, no per-unit schema, no batch plumbing. Cost: every dispatch in this repo carries a 3-line leading block, and the existing process-check fixtures (3 files / 83 tests) gain it — mechanical. |
-| B — narrow the guarantee | gate only *declared* `dispatch: impl` dispatches; a dispatch that declares nothing is not gated | Zero cost, but the falsifier becomes "a **declared** code-writing dispatch without a brief is refused" — the ordinary auto-routed implementation escapes, which is the hole both critiques filed. Acceptable only as an explicit maintainer narrowing, never as an unstated residual (r2's §Residual did exactly that and was the blocker). |
+| **A — mandatory dispatch header** (**ADOPTED — maintainer, 2026-11-27**) | every dispatch's own task text must open with a `dispatch:` declaration | Absence is itself a refusal, so falsifier (a) holds for *every* dispatch with no residual. No preset resolution, no per-unit schema, no batch plumbing. Cost: every dispatch in this repo carries a 3-line leading block, and the existing process-check fixtures (3 files / 83 tests) gain it — mechanical. |
+| B — narrow the guarantee (**REJECTED**) | gate only *declared* `dispatch: impl` dispatches; a dispatch that declares nothing is not gated | Zero cost, but the falsifier becomes "a **declared** code-writing dispatch without a brief is refused" — the ordinary auto-routed implementation escapes, which is the hole both critiques filed. Acceptable only as an explicit maintainer narrowing, never as an unstated residual (r2's §Residual did exactly that and was the blocker). |
 
-**Recommendation: A**, and r3 is written for it. If B is chosen, §3's "missing `dispatch:` is a refusal" line is
-deleted and the guarantee is restated as declared-only; nothing else changes.
+**Adopted: A** (maintainer, 2026-11-27). The header is mandatory, absence is a refusal, and there is no undeclared
+residual. Option B is recorded as rejected.
 
 ---
 
@@ -135,6 +135,26 @@ forge it, and the spec says so rather than implying a signature.
   tree without the flag performs no check — that is the flag's documented, fail-open contract (our process, never a
   user's), not an unconsidered hole. Both cases are tested (P5, T6).
 
+### 3a. Templates and retries — how the block reaches a rendered task
+
+Two paths would otherwise strip the declaration, and both are closed here:
+
+- **Template dispatches.** `applyTemplate` replaces a caller's `task` with the rendered body (template-wins), so a
+  caller cannot inject the block into a template task today. **The template's frontmatter gains the field it is
+  missing:** `dispatch: review | probe | docs`, and the renderer **prepends** `dispatch: <kind>` to the rendered text,
+  so the gate reads it in the final task like any other. This is a template-format addition (symmetric with the
+  existing `preset:`/`thinkingLevel:` frontmatter), **not** a dispatch-parameter schema change. All five
+  project-local templates gain the field, and the nine shipped ones do too, so a clean checkout behaves identically.
+- **Impl-through-a-template.** This repo's router gives implementation no template (`project-implementer` + `—`), so
+  the normal impl dispatch is free-form text where the block lives naturally. If an impl dispatch ever does use a
+  template, the renderer composes the caller's `brief:` line (from `params.brief`) under the template's
+  `dispatch: impl` — stated here so the case has a defined behaviour rather than a silent hole.
+- **Retries.** `retryRunId` restores the task text, so the block survives a retry by construction (r2 measured that
+  the same probe retains an escape line).
+
+A template that names no `dispatch:` frontmatter is **refused at render time** with the field named — the same
+loud-failure rule as a missing line in a dispatch.
+
 ### 4. The facts rule has teeth
 
 Facts come from subagents or `codegraph_explore` — never the human, never the conductor reading code. §Falsifiers (b)
@@ -168,6 +188,8 @@ audits the *questions*, not just the table.
 | T7 | integration: refusal reaches **zero spawns** with a *valid Jev* line, and the message is brief-specific; the signed-brief control **does** spawn | the existing `dispatch-line-enforcement` harness | M1 → T7 red; Jev alone cannot redden it |
 | T8 | the escape `brief: none — <reason>` is valid **and** warns, on all four validating paths | opted-in cwd | M7 (drop the warning) → T8 red |
 
+| T9 | a template dispatch renders `dispatch: <kind>` into the task; a template missing the frontmatter field is refused at render | a template fixture | M8 (drop the prepend) → T9 red |
+
 Filtered runs quote `node scripts/require-executed.mjs` (a `-t` filter matching nothing exits 0 — #591).
 
 ---
@@ -188,6 +210,8 @@ this build produces.
 ## Cost, stated
 
 - Every dispatch in this repo gains a 2–3 line leading block; forgetting it is a loud refusal, which is the point.
+- The five project-local templates and nine shipped templates gain a `dispatch:` frontmatter line, and the renderer
+  prepends it.
 - The existing process-check fixtures (3 files / 83 tests) gain the header.
 - No schema change, no new tool parameter, no new manifest key, no preset resolution, no batch plumbing.
 
