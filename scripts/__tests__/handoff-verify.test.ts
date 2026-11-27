@@ -968,13 +968,13 @@ describe("handoff-verify — the index (#607)", () => {
 		expect(live.structure.headings.map((heading: { text: string }) => heading.text)).toEqual([...INDEX_HEADINGS]);
 		expect(live.h3).toEqual([]);
 		expect(live.stateLines).toHaveLength(4);
-		expect(live.lineCount).toBeLessThanOrEqual(INDEX_LIMITS.lines);
-		expect(live.bytes).toBeLessThanOrEqual(INDEX_LIMITS.bytes);
+		expect(live.lineCount).toBeLessThanOrEqual(80);
+		expect(live.bytes).toBeLessThanOrEqual(8192);
 		expect(live.counts).toEqual([]);
 		// The §STATE receipt (spec acceptance 1): what a session is injected with, measured.
 		expect(Buffer.byteLength(live.stateLines.map((entry: { line: string }) => entry.line).join("\n"), "utf8")).toBeLessThanOrEqual(2000);
 		// Every line is inside the per-line bound, and every pointer target exists in this checkout.
-		for (const line of live.lines) expect(line.length).toBeLessThanOrEqual(INDEX_LIMITS.lineChars);
+		for (const line of live.lines) expect(line.length).toBeLessThanOrEqual(160);
 		const probe = stub({
 			pages: () => ["state.md", "invariants.md"],
 			issueState: () => "open",
@@ -1019,10 +1019,12 @@ describe("handoff-verify — the index (#607)", () => {
 	});
 
 	it("names over-budget on the line arm, and on the byte arm alone", () => {
-		// The falsifier's "81-line index": the shipped fixture plus blank lines. A blank line is still a line
-		// the reader loads, which is why the budget counts them.
-		const padded = parseIndex(`${indexText("correct")}${"\n".repeat(INDEX_LIMITS.lines)}`);
-		expect(padded.lineCount).toBeGreaterThan(INDEX_LIMITS.lines);
+		// The literal 80, not `INDEX_LIMITS.lines`: a threshold derived from the constant under test cannot
+		// kill a mutation of that constant (the number moves with it). The contract's numbers are pinned
+		// HERE, and the seed is an index of 81+ lines whatever the constant says.
+		expect(INDEX_LIMITS).toEqual({ lines: 80, bytes: 8192, lineChars: 160, preamble: 2, invariants: 8, pointers: 12, resume: 3 });
+		const padded = parseIndex(`${indexText("correct")}${"\n".repeat(81)}`);
+		expect(padded.lineCount).toBeGreaterThan(80);
 		const lines = evaluateIndex(padded, stub()).drifts;
 		expect(lines.map((drift) => drift.code)).toEqual([CODES.overBudget]);
 		expect(lines[0].claim).toContain("lines");
@@ -1046,12 +1048,12 @@ describe("handoff-verify — the index (#607)", () => {
 	it("names state-shape for a line over the bound, naming the line", () => {
 		const long = indexText("correct").replace(
 			"- a page holds the mechanical claims, so the index holds none",
-			`- a page holds the mechanical claims, so the index holds none ${"x".repeat(INDEX_LIMITS.lineChars)}`,
+			`- a page holds the mechanical claims, so the index holds none ${"x".repeat(160)}`,
 		);
 		const { drifts } = evaluateIndex(parseIndex(long), stub());
 		expect(drifts.map((drift) => drift.code)).toEqual([CODES.stateShape]);
 		expect(drifts[0].claim).toBe("line 13");
-		expect(drifts[0].expected).toBe(`at most ${INDEX_LIMITS.lineChars} characters`);
+		expect(drifts[0].expected).toBe("at most 160 characters");
 	});
 
 	it("names state-shape when §STATE grows history — the 20-line case", () => {
@@ -1065,11 +1067,13 @@ describe("handoff-verify — the index (#607)", () => {
 	});
 
 	it("names section-over-bound for §Pointers, the arm the fixture does not seed", () => {
-		const rows = Array.from({ length: INDEX_LIMITS.pointers }, (_unused, at) => `| [p${at}](handoff/state.md) | row ${at} |`).join("\n");
+		// Thirteen explicit rows against a bound of twelve — literals, for the reason the budget row gives.
+		const rows = Array.from({ length: 13 }, (_unused, at) => `| [p${at}](handoff/state.md) | row ${at} |`).join("\n");
 		const bloated = indexText("correct").replace("|---|---|\n", `|---|---|\n${rows}\n`);
 		const { drifts } = evaluateIndex(parseIndex(bloated), stub());
 		expect(drifts.map((drift) => drift.code)).toEqual([CODES.sectionOverBound]);
-		expect(drifts[0].claim).toBe(`## Pointers ${INDEX_LIMITS.pointers + 3}`);
+		// Header + separator + 13 rows = 16 `|` lines, four over the bound of 12.
+		expect(drifts[0].claim).toBe("## Pointers 16");
 	});
 
 	it("names verified-missing when the index has no usable Verified: line", () => {
@@ -1142,6 +1146,8 @@ describe("handoff-verify — the command", () => {
 		["state-drift-heading", CODES.stateDrift],
 		["state-drift-h3", CODES.stateDrift],
 		["state-shape-fields", CODES.stateShape],
+		// Four lines, one wrong NAME: the count arm cannot see this, so it is the per-field loop's killer.
+		["state-shape-field", CODES.stateShape],
 		["section-over-bound", CODES.sectionOverBound],
 		["dead-link", CODES.deadLink],
 		["sha-not-ancestor", CODES.shaNotAncestor],

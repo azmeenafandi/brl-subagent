@@ -390,16 +390,19 @@ const resumeCommands = resumeSection
 	.filter((line) => line !== "" && !line.startsWith("#") && !line.startsWith("|") && !line.startsWith(">"))
 	.map((line) => line.split("#")[0].trim());
 
+// EXACT equality of the command segment, not `includes`: `git status --short --branch` contains
+// `git status --short`, and a substring pin would call that a match — the drift the pin exists to catch.
+// A row is `<label><2+ spaces><command>[<2+ spaces><note>]`, so the command is the second segment.
+const verifyCommands = VERIFY_COMMANDS.map((row) => {
+	const parts = row.split(/\s{2,}/);
+	return parts.length > 1 ? parts[1].trim() : "";
+});
 check("the index states the three resume commands", resumeCommands.length, 3);
 check("VERIFY_COMMANDS has one row per resume command", VERIFY_COMMANDS.length, resumeCommands.length);
+check("the commands match the index's resume protocol, in order", verifyCommands, resumeCommands);
 check(
-	"every resume command is in VERIFY_COMMANDS, in order",
-	resumeCommands.map((command) => VERIFY_COMMANDS.findIndex((row) => row.includes(command))),
-	[0, 1, 2],
-);
-check(
-	"every VERIFY_COMMANDS row names a command the index states",
-	VERIFY_COMMANDS.map((row) => resumeCommands.some((command) => row.includes(command))),
+	"every row has a label and a command",
+	VERIFY_COMMANDS.map((row) => /^[a-z]+\s{2,}\S/.test(row)),
 	[true, true, true],
 );
 check(
