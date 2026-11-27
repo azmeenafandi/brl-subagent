@@ -1,42 +1,73 @@
-# #606 — the factory's front door: a grill skill that turns a want into a confirmed brief, and a pre-flight that refuses a plan dispatch without one — spec **r1**
+# #606 — the factory's front door: a grill skill that turns a want into a confirmed brief, and a pre-flight that refuses a *code-writing* dispatch without one — spec **r2**
 
 **Issue:** #606 (process, owner priority) · **C2** · worktree **y**.
-**jev:** medium (0.89) · C2 · worktree y
-**Spec r1:** 2026-11-27, against `339ea53` (`dev`). **Status: decision-ready for review.**
+**jev:** medium (0.89) · C2 · worktree y (r1 dispatch; the critique's recheck was `medium (0.5) · C2`)
+**Spec r2:** 2026-11-27, against `7933432` (`dev`). **Status: decision-ready for review — one open decision (§0).**
+**Supersedes:** r1 (same file, same day). Critique r1 returned **`rethink`** — 1 blocker, 5 majors, 2 minors.
 
-**Scope: Unit 1 only** (the grill). Unit 2 (wiki index) and Unit 3 (vocabulary + lint) are explicitly out of
-scope here and are named in `## Out of scope` so they are not lost.
+**Scope: Unit 1 only** (the grill + the gate). Units 2 (wiki) and 3 (vocabulary) remain out of scope.
 
 ---
 
-## Recon (Rule 13 — codegraph @ `339ea53`)
+## 0. The one decision this revision needs from the human
+
+The blocker was a **definitional** mismatch, not a mechanic: r1 gated `project-implementer` dispatches while the
+issue says *"a plan dispatch without a signed brief is refused"*. Two readings exist, and the spec must pick one —
+this is a decision, not a fact:
+
+| Reading | What is gated | Consequence |
+| --- | --- | --- |
+| **A — implementation is the gate** (recommended) | every dispatch that **writes code** (`project-implementer`, plus any task declaring `kind: impl`) | The brief is planning's **output**; gating planning would invert causality and make the grill unrunnable (`project-proposer` exists to *generate* the options a grill settles). |
+| B — "planning" is the gate | `project-proposer` design-proposal dispatches | Would require a brief **before** the dispatch that generates the material for one, and would leave code-writing dispatches ungated. |
+
+**Recommendation: A.** A brief is a set of *settled decisions*; a design proposal is how unsettled decisions get
+options. The rule the issue wants — *no code from an unagreed plan* — is exactly reading A. Everything below
+assumes A; if the human picks B, §3's trigger changes and the rest stands.
+
+---
+
+## r1 → r2, finding by finding
+
+| # | Critique finding (sev) | r2 decision |
+| --- | --- | --- |
+| 1 | `project-implementer` identifies implementation, not planning — gate misses design proposals, catches later implementation (blocker) | **§0 states the gated class explicitly as code-writing dispatches, with the reasoning and the rejected alternative.** The class is not "planning" but "the dispatch that writes code", because the brief is planning's output. Two-sided falsifier added (§Tests T3: a review dispatch must NOT be gated). |
+| 2 | `brief: unavailable` passes as `ok` with no reason; `{ok}` carries no slug (major) | **Removed entirely.** The only escape is an explicit stated-reason line (§3). The parser returns `{ ok: true, slug }` so the file resolver gets the slug — no second regex. |
+| 3 | `noBrief` is a new **tool parameter**: schema, known-key, mode, retry, provenance seams; `snapshotOriginalParams` omits `noJev` (major) | **No parameter.** The escape is a **task-text line** `brief: none — <reason>`. Rationale: the task text is restored on retry (the exact seam the critique measured missing for `noJev`) and lands in the dispatch payload, which is the durable record. Cost stated: a line, not a typed param. |
+| 4 | `readNoJevReason` does not refuse exponent-form numbers (`1e+21`, `1e-7` measured through the real coercion path) (major) | **The plan no longer reuses it** (no parameter ⇒ no coercion surface). The underlying hole is a defect in *shipped* code — **filed separately, not fixed here** (§Filed). |
+| 5 | The falsifier-(a) test could pass with the feature removed: the Jev gate already rejects before spawn; no Evidence/Tests sections (major) | **§Tests now names 6 tests with mutants and measured killers, including the discrimination that makes it brief-specific:** valid Jev line + brief refusal whose message is brief-specific, plus a confirmed-brief spawn control. §Evidence added per `references/spec-evidence.md`. |
+| 6 | Falsifier (b) measures conductor reads only, so it can pass while lookupable facts were asked of the human (major) | **Two predicates, both audited** at the next real want: zero conductor reads/greps, **and** every fact in the brief's `## Facts` table carries a subagent run id or a `codegraph_explore` query. A violation under either fails. |
+| 7 | Committing the brief to `dev` does not place it in a worktree cut from an older commit (minor) | **Stated rule + test:** the brief must exist in the dispatch cwd *at the commit that cwd contains*; a stale worktree refuses, naming the path and the fix (rebase/recreate, or a stated escape). §Tests T6. |
+| 8 | `/^confirmed:/i` accepts a bare marker or a template placeholder (minor) | **Marker requires content:** `confirmed: <YYYY-MM-DD> by <name>`. Bare, placeholder (`<…>`) and undated markers are refused. The spec states plainly that this is a **textual marker, not authentication**. §Tests T5. |
+
+---
+
+## Recon (Rule 13 — codegraph @ `7933432`, refreshed)
 
 ```
-# validatePreTask (src/validate.ts) — the pre-dispatch validator; the refusal lands here as a sibling of the Jev check
-# parseDispatchLine (src/dispatch-line.ts) — the analog to copy: a task-line parser gated by processChecks
-# delegateTaskParamsSchema (src/schema.ts) — the param surface (a new task-line approach avoids widening this 120-symbol blast radius)
+# validatePreTask (src/validate.ts) — the refusal lands inside it, as a sibling of the Jev block
+# parseDispatchLine (src/dispatch-line.ts) — the analog: pure parser, verbatim FORM string, gap marker
+# resolvedPreset / resolveSubagentParams (src/params.ts) — where the preset NAME is resolved
 ```
 
-- `validatePreTask` — 13 callers, 30 symbols across 20 files. Prod callers: `runPreTaskValidation`
-  (src/prelude.ts:291) and `prepareForeground` (src/delegate-handler.ts:949). Tested via
-  `validate.test.ts`, `integration.test.ts`, `project-flags.test.ts`, `dispatch-line.test.ts`,
-  `empty-tools-442.test.ts`, `presets-files.test.ts`.
-- `parseDispatchLine` — 3 callers, only `validatePreTask` + tests. The exact pattern to mirror: a pure parser
-  (`DispatchLineVerdict`), a `DISPATCH_LINE_FORM` string quoted verbatim in every rejection, and a gap marker.
-- `delegateTaskParamsSchema` (src/schema.ts) — 120 symbols / 119 files. **A new `brief` param would widen this
-  blast radius; a task-line (`brief: <slug> (confirmed)`) keeps the change to `validate.ts` + a new parser +
-  tests, the same surgical shape the Jev line took.**
+- **Preset resolution precedes validation** (critique-verified at `7933432`): foreground and background both
+  resolve before `validatePreTask` runs, so the resolved name can be forwarded without a second resolution.
+- **`ValidateConfig` has no preset field today** (`task`, `toolOptions`, `thinkingLevel`, `gitMode`, `outputFile`,
+  `force`, `cwd`, `noJev`) — r2 adds one.
+- **Five `ValidateConfig` construction sites, not two** (r1 said "two prod call sites" — wrong):
 
-**Recon verification.** V1 the Jev check is opt-in per project via `isProcessChecksEnabled`
-(`src/project-flags.ts`), fail-open; the brief check reuses the same flag (one umbrella, no new manifest field —
-`PROCESS_CHECK_KEYS` is a ratchet and is left alone). V2 `validatePreTask` already parses the task text for the
-Jev line at lines 409–430; the brief check is a second block in the same function. V3 the resolver the brief
-check needs (read `briefs/<slug>.md`, test for the confirmation marker) is new and has no analog in the existing
-validator — the grep delta below confirms no existing `brief` handling.
+  | Site | Shape |
+  | --- | --- |
+  | `src/delegate-handler.ts:1045` | foreground dispatch |
+  | `src/prelude.ts:437` | shared pre-task wrapper |
+  | `src/background-pipeline.ts:314` | background spawn |
+  | `src/background-pipeline.ts:914` | background fan-out unit |
+  | `src/mode-prologue.ts:143` | **batch per-unit validation** (chain/parallel/graph) |
 
-**Grep delta.** `grep -rniE '\bbrief\b|briefs/' src` → no pre-existing brief-handling (the only hits are the
-word "brief" in comments about task text). `git ls-files 'briefs/*'` → none (the directory does not exist yet).
-`rg -n 'brief' .pi/skills .development/investigations/issue-606-*` → only this spec and the upstream capture.
+  The batch site is why the preset must be *forwarded*: a unit may name its own preset, else the global resolved
+  preset applies. A unit caller that resolves nothing passes nothing, and the check degrades to the text marker.
+- `readProcessChecks` is fail-open; `PROCESS_CHECK_KEYS` contains only `processChecks` and **r2 adds no key**
+  (the umbrella flag is reused as-is).
+- `git grep -n -E 'noBrief|parseBriefLine|briefs/' -- src` → **no hits** (no prior art to collide with).
 
 ---
 
@@ -44,137 +75,125 @@ word "brief" in comments about task text). `git ls-files 'briefs/*'` → none (t
 
 ### 1. The grill skill — `.pi/skills/grill/SKILL.md` (adapted, not imported)
 
-Adapt Matt Pocock's `productivity/grilling` (MIT © 2026 Matt Pocock), in our frontmatter format, with
-`metadata.credits` as `pr` does:
+Adapt Matt Pocock's `productivity/grilling` (MIT © 2026 Matt Pocock) in our frontmatter format, with
+`metadata.credits` as `pr` does. Unchanged from r1; the algorithm:
 
-```yaml
----
-name: grill
-description: "Grill the user into a shared plan: frontier rounds with recommended answers, facts via subagents, a confirmed brief as the output. Use before any implementation dispatch on a new want."
-metadata:
-  credits:
-    adapted-from: "mattpocock/skills — productivity/grilling (MIT © 2026 Matt Pocock)"
----
-```
+- **Design tree** of decisions, built during the interview.
+- **Frontier** = decisions whose prerequisites are settled — askable *now* without guessing at an unheard answer;
+  recomputed each round, never a pre-baked list.
+- **One round = the whole frontier**, numbered, each with a **recommended answer** worded so "yes" accepts it
+  (`❓ **Qn** - **<title>**: <body>` / `➡️ <recommendation>`; `---` between questions). A question depending on
+  another still-open question moves to a *later* round.
+- **Wait** for the answers; settled decisions push the frontier outward.
+- **Terminate when the frontier is empty** — every branch visited, *nothing left silently assumed* — and
+  **do not act until the human confirms a shared understanding** (upstream's exact gate).
+- **Facts vs decisions:** facts are the conductor's job via subagents or `codegraph_explore`; decisions are the
+  human's.
 
-The skill states the algorithm **in our house wording**, with the upstream's load-bearing pieces preserved and
-named (full verbatim upstream capture: `.development/investigations/issue-606-grilling-upstream-2026-11-27.md`):
+### 2. The durable brief — `briefs/<slug>.md`, ending in a content-bearing confirmation marker
 
-- **Design tree.** Map the want as a tree of decisions; a decision's children are the decisions that only make
-  sense once it is settled. Built during the interview, not given.
-- **Frontier.** Every decision whose prerequisites are already settled — the questions you can ask *now* without
-  guessing at answers you have not heard yet. Recomputed each round; never a pre-baked list walked in order.
-- **One round = the whole frontier**, numbered, each with a **recommended answer** worded so "yes" accepts it.
-  Format per question: `❓ **Qn** - **<title>**: <body>` / blank / `➡️ <recommendation>`; questions separated by
-  `---`. A question whose answer depends on another question still open this round belongs to a *later* round.
-- **Wait for the human's answers before the next round.** Answers reshape the tree; settled decisions push the
-  frontier outward.
-- **Terminate when the frontier is empty** — every branch visited, *nothing left silently assumed*. **Do not act
-  until the human confirms a shared understanding** (upstream's exact gate, the final sentence of the file).
-- **Facts vs decisions** (the rule with teeth — §4 below): facts are the conductor's job via subagents, decisions
-  are the human's.
+Tracked, committed to `dev` before the dispatch that needs it. Structure unchanged from r1 (Want · Settled
+decisions · Facts · Last frontier), with two corrections:
 
-The skill is the **conductor's** playbook, not a user-invocable `/grill` command (upstream ships a separate
-`grill-me` front door; we do not need it — the conductor invokes the grill at the start of a want).
+- **The marker carries content:** last non-blank line `confirmed: <YYYY-MM-DD> by <name>`; a bare `confirmed:`, an
+  undated one, or one containing an unfilled `<…>` placeholder is **not** a signed brief. The spec says plainly
+  what this is: a **textual marker, not authentication** — it records that the human confirmed, and anyone with
+  write access could forge it. The brief is a record, not a signature.
+- **The `## Facts` table is the fact-provenance artifact:** each fact names a subagent run id or a
+  `codegraph_explore` query. §4 and falsifier (b) read this table.
 
-### 2. The durable brief — `briefs/<slug>.md`, ending in a confirmation line
+### 3. The refusal — a code-writing dispatch without a signed brief is refused before spawn
 
-The grill's output is a **tracked file** `briefs/<slug>.md` (a new top-level directory; committed to `dev` before
-any plan dispatch, so it materializes in worktrees). It holds:
+- **New `src/brief-line.ts`** — a pure parser in the `dispatch-line.ts` mould: `parseBriefLine(task)` returns
+  `{ ok: true, slug }` | `{ ok: true, escape: reason }` | `{ ok: false, reason }`, with
+  `BRIEF_LINE_FORM = "brief: <slug>"` and `BRIEF_ESCAPE_FORM = "brief: none — <reason>"` quoted verbatim in every
+  rejection. **There is no "unavailable" form** (r1's silent `ok` is gone): an escape must state a non-empty reason,
+  and it is surfaced as a warning.
+- **`src/validate.ts` `validatePreTask`** — a block beside the Jev check, gated by the **same**
+  `isProcessChecksEnabled(config.cwd)` umbrella:
+  - **Gated class (the blocker's answer):** `config.presetName === "project-implementer"` **or** the task carries
+    `kind: impl`. Both arms matter: the preset arm covers the router's prescribed path with no new line to
+    remember; the text arm covers an implementation routed without the preset. A dispatch in neither arm is not
+    gated (stated residual, §Residual).
+  - **Three refusal conditions, distinguishable in the message:** no `brief:` line; the named `briefs/<slug>.md`
+    missing **in the dispatch cwd's tree**; the file present but without a content-bearing marker. Each names the
+    path it looked for and the form to use.
+  - `brief: none — <reason>` → passes with a **warning that names the reason** (ADR 0007's shape), so the bypass is
+    surfaced in the result and recorded in the task payload, never silent.
+- **`ValidateConfig.presetName?: string`** forwarded at all **five** construction sites (Recon table); batch units
+  forward their own resolved preset, else the global one.
+- **No new manifest key, no new tool parameter, no schema change** — the escape lives in the task text.
 
-```
-# Brief: <slug>
+### 4. The facts rule has teeth
 
-## Want
-<the human's want, in their words — verbatim, not paraphrased>
-
-## Settled decisions
-| # | Decision | Human's answer (verbatim) |
-|---|---|---|
-
-## Facts
-| Fact | Source (subagent run id · or codegraph_explore query) |
-|---|---|---|
-
-## Last frontier
-<the final round's frontier, empty at completion — or the remaining questions if the human ended early>
-
-confirmed: <date> by <human>
-```
-
-The **confirmation line** is the mechanical marker: a line matching `^confirmed:` (case-insensitive), on its own
-line, the last non-blank line of the file. It is the "signed brief". A brief without it is **not** signed, and the
-pre-flight in §3 refuses a plan dispatch that names such a brief. (The marker is a line, not a `## Confirmed`
-heading, so the check is a one-line regex like the Jev line's — no heading scanner needed.)
-
-### 3. The refusal — a plan dispatch without a signed brief is refused before spawn
-
-Mechanism mirrors the Jev dispatch line, one artefact over:
-
-- **New `src/brief-line.ts`** — a pure parser, `parseBriefLine(task)` → `{ ok } | { ok: false, reason }`, with a
-  `BRIEF_LINE_FORM = "brief: <slug> (confirmed)"` quoted verbatim in every rejection, and a gap marker
-  (`brief: unavailable`) accepted as a *recorded* gap (analogous to `jev: unavailable`). Kept byte-comparable with
-  a script counterpart **only if** a `brief-check.mjs` is warranted; r1 leaves the parser extension-side and adds
-  no `.pi` script — the test asserts the parser against the same vector shapes `dispatch-line.test.ts` uses.
-- **`src/validate.ts` `validatePreTask`** — a second block beside the Jev check, gated by the **same**
-  `isProcessChecksEnabled(config.cwd)` umbrella (fail-open for every user's project):
-  - Identify a **plan dispatch** by the resolved preset — `project-implementer` (the implementation shape; a
-    review, probe or fetch is not a plan dispatch). This requires plumbing the resolved preset into
-    `ValidateConfig` (added at the two prod call sites, `runPreTaskValidation` and `prepareForeground`).
-  - If a plan dispatch: require a `brief:` line. Refuse (exit-1 error) when the line is **missing**, or when the
-    named `briefs/<slug>.md` does **not exist**, or when it has **no `confirmed:` line**. The message names the
-    exact form and the file it looked for, e.g. `missing signed brief: <reason>. A plan dispatch must reference a
-    confirmed brief as: brief: <slug> (confirmed) — run the grill first, or pass noBrief: "<reason>".`
-  - `noBrief: "<reason>"` downgrades the rejection to a warning that names the reason (ADR 0007's pattern, exactly
-    as `noJev` does), read through the same runtime guard `readNoJevReason`-style (a boolean/number is refused, not
-    accepted as a bypass).
-- **`noJev`/`noBrief` symmetry** is deliberate: both are stated-reason escapes, both are surfaced as warnings, both
-  are recorded in the dispatch's provenance. Neither is a silent bypass.
-
-The brief file is read relative to the dispatch cwd (the worktree, for an implementation dispatch, where tracked
-`briefs/` materializes per worktree skill rule 4). A missing brief is a refusal, never a fabricated pass.
-
-### 4. The facts rule has teeth — and it is a skill rule, not a human-ask
-
-From #606: *"Facts come from subagents or `codegraph_explore`, never from asking the human and never from the
-conductor reading code."* The grill skill states it as a hard rule, and the **brief's `## Facts` table is the
-provenance**: every fact the plan rests on carries its source (a subagent run id, or a `codegraph_explore` query).
-A grill session that asks the human for something lookupable is a **defect** — enforced by falsifier (b), not by a
-code check (a code check cannot see what the human was asked).
+Facts come from subagents or `codegraph_explore` — never the human, never the conductor reading code. The brief's
+`## Facts` table is the provenance, and falsifier (b) audits **both** predicates (§Falsifiers).
 
 ---
 
-## Falsifiers (both mechanical, from the issue)
+## Evidence (per `references/spec-evidence.md` — command **and** the assertion it must satisfy)
 
-**(a)** A plan dispatch (`project-implementer` preset) with **no `brief:` line**, or whose named brief has **no
-`confirmed:` line**, is **refused before spawn** — asserted as validator unit tests + one integration test that
-the refusal path is reached before any subprocess spawns. A confirmed brief passes.
+| # | Command | Assertion |
+| --- | --- | --- |
+| E1 | `rg -n 'isProcessChecksEnabled' src/validate.ts` | the brief block sits inside `validatePreTask`, after the Jev block and before the tool loop; the flag is read once per call, not twice |
+| E2 | `rg -n 'presetName' src/` | 5 construction sites carry it (the Recon table) and **no** sixth site constructs `ValidateConfig` |
+| E3 | `node -e 'require("./src/presets")'`-style probe via the loader | `project-plan-critic`/`project-proposer`/`project-reviewer` are **not** gated; `project-implementer` is (two-sided) |
+| E4 | `git grep -n 'briefs/' -- src` at the base sha | **0 hits** before the change; no prior art to collide with |
+| E5 | malformed-manifest probe against `readProcessChecks` | still `false`; `PROCESS_CHECK_KEYS` still `["processChecks"]` (no new key) |
 
-**(b)** The process acceptance, recorded for the *next real want* (it cannot fire inside #606's own build): on the
-next genuine want, the conductor's transcript contains **no file reads or greps before the plan exists** — only
-subagent results and the human's answers. This is the measured receipt the issue names; it is written into the
-grill skill as the definition of done, and is verified at the next cycle, not by a unit test now.
+## Tests (each row names its **negative control** and a **measured killer**)
+
+| # | Test | Negative control / mutant → the row this must redden |
+| --- | --- | --- |
+| T1 | `parseBriefLine` accepts `brief: <slug>`; refuses a missing line, an empty slug, and `brief: none —` with no reason | M2: accept an empty escape reason → T1 red |
+| T2 | validator refuses a **valid-Jev** task with `kind: impl` and a missing brief, message brief-specific | M1: delete the brief block → T2 red; a Jev-only rejection does **not** satisfy T2 (asserted on the message) |
+| T3 | **control:** a `project-reviewer` dispatch with no brief is **valid** (two-sided falsifier) | M3: gate every dispatch → T3 red |
+| T4 | `brief: none — <reason>` passes **and** emits a warning naming the reason | M4: pass silently without the warning → T4 red |
+| T5 | marker: bare `confirmed:`, undated, and `<…>`-placeholder markers are refused; `confirmed: 2026-11-27 by azmeen` passes | M5: accept a bare marker → T5 red |
+| T6 | dispatch cwd whose tree lacks `briefs/` → refusal naming the path; same tree with the file → passes | M6: fall back to the cockpit tree → T6 red |
+| T7 | integration: refusal path reaches **zero spawns**; the confirmed-brief control **does** spawn (the existing `dispatch-line-enforcement` harness) | M1 → T7 red; the Jev gate alone cannot redden it |
+
+A filtered run quotes `node scripts/require-executed.mjs` (a `-t` filter matching nothing exits 0 — #591).
 
 ---
 
-## Out of scope (named so it is not lost)
+## Falsifiers
 
-- **Unit 2 — wiki.** `.development/HANDOFF.md` becoming an index over pages (already substantially done by #607);
-  the chief-of-staff "context pointers + wiki" adaptation (upstream captured: `## Chief-of-staff` in the capture).
-- **Unit 3 — vocabulary.** task / trigger / run / runner / ticket tracker, the forbidden-synonym lint, and the
-  dispatch→run / worktree→runner mapping — **including the flagged hazard that our worktrees persist across a
-  dispatch while upstream's runner remembers nothing** (that is Unit 3's deliberate call, not this spec's).
-- **#599 / #602 / #603** (the spine) and `scripts/dispatch.mjs` itself. This spec's brief-refusal is shaped to
-  fold into #599's `dispatch.mjs check` without rework (same `--kind impl` vocabulary, same gated pre-flight slot),
-  but it does not depend on it and does not build it.
-- **No `/grill` user command, no trigger-phrase front door** (upstream's `grill-me`), no round/question cap.
+**(a)** A gated dispatch (preset arm **or** `kind: impl`) with no `brief:` line, a missing brief file, or no
+content-bearing marker is **refused before spawn** — T2 + T7, and M1 reddens both. A confirmed brief spawns (T7
+control); an unrelated dispatch is not gated (T3).
+
+**(b)** At the next real want, **both** predicates hold: (i) the conductor's transcript contains no file reads or
+greps before the plan exists; (ii) no lookupable fact was put to the human — every fact in the brief's `## Facts`
+table names a subagent run id or a `codegraph_explore` query. A violation under **either** fails. Honest limit: this
+is a next-cycle receipt, not a result this build can produce; it is not dressed up as evidence.
 
 ---
+
+## Residual (stated, not hidden)
+
+An implementation dispatch that names **neither** `project-implementer` **nor** `kind: impl` is not gated. That is
+the same opt-in weakness #599 documents (a brief that omits the bank is a *successful* dispatch) and the same place
+it closes: #599's `dispatch.mjs brief --kind impl` emits the kind, so the generated brief always carries it. Named
+here so it is a known edge, not an oversight.
+
+## Filed, not fixed here
+
+The critique measured a live defect in **shipped** code: `noJev`'s guard (`COERCED_PRIMITIVE_RE` via
+`readNoJevReason`) accepts exponent-form numbers (`1e+21`, `1e-7`) arriving through the real `coerce: true` path, so
+a numeric bypass can pass as a stated reason. r2 removes the plan's dependence on that guard; the hole itself wants
+its own fix + test. Filed as a separate issue (not a Unit 1 deliverable).
+
+## Out of scope
+
+Unit 2 (wiki index over pages) · Unit 3 (task/trigger/run/runner/ticket-tracker vocabulary + the forbidden-synonym
+lint, including the worktree→runner persistence hazard the upstream capture flags) · #599/#602/#603 and
+`scripts/dispatch.mjs` · `/grill` as a user command · a round/question cap.
 
 ## Upstream (adapt, don't import)
 
-Source: `mattpocock/skills` @ `6f7f7831a625f040a8e06a0e7954826b87ce775a` (main, 2026-11-25), MIT © 2026 Matt
-Pocock. Primary file `skills/productivity/grilling/SKILL.md` (blob `d2f09a18…`), full verbatim capture in
-`.development/investigations/issue-606-grilling-upstream-2026-11-27.md`. The three things Unit 1 **adds** that
-upstream does not specify — persistence (`briefs/`), the refusal mechanism, and the fact-provenance rule — are
-stated as additions, not inheritances, so a reviewer does not read them as deviations.
+`mattpocock/skills` @ `6f7f7831a625f040a8e06a0e7954826b87ce775a` (main, 2026-11-25), MIT © 2026 Matt Pocock.
+Primary file `skills/productivity/grilling/SKILL.md` (blob `d2f09a18…`); full verbatim capture in
+`.development/investigations/issue-606-grilling-upstream-2026-11-27.md`. The three things Unit 1 **adds** that upstream
+does not specify — persistence (`briefs/`), the refusal, and fact-provenance — are stated as additions, never as
+inheritances.
