@@ -436,13 +436,50 @@ export function checkHeadShape(text) {
 }
 
 /**
+ * The recheck line's two rules — its shape, and the declared tier that may not be weaker than it.
+ *
+ * One definition, applied where the line ENTERS the record: the writer resolves the line from the
+ * ledger's newest `recheck-<pr>` row and runs this on it before rendering (#596; `--recheck` is gone,
+ * so the message names the ledger's printer, not a flag). `checkRecord` applies the same two rules to
+ * a written record's copy — a row is not a promise, so the resolved value is validated like any other
+ * input.
+ */
+export function recheckProblems(risk, line) {
+	const problems = [];
+	if (!RECHECK_RE.test(String(line))) {
+		problems.push(
+			problem(
+				"invalid-recheck",
+				`the recheck line must be "jev: <level> (<conf>) · Cx · worktree <y|n>" (resolved "${line}") — print it with: jev-check --classifier '<raw answers>' --label recheck-<pr>`,
+				"usage",
+			),
+		);
+		return problems;
+	}
+	if (riskRank(risk) > 0 && riskRank(risk) < riskRank(recheckRisk(line))) {
+		problems.push(
+			problem(
+				"risk-weaker-than-recheck",
+				`declared Risk class ${String(risk).toUpperCase()} is weaker than the recheck's ${recheckRisk(line)} — state the tier the review actually ran at`,
+			),
+		);
+	}
+	return problems;
+}
+
+/**
  * The generator's pre-flight — the same vocabulary and shape rules the gate applies, run before a
  * byte is written. A shape fault is `usage` (exit 2: fix the invocation); a declared tier weaker than
  * the recheck is `refused` (exit 1: rule (f) caught at authoring time, which is the point).
+ *
+ * `spec.recheck` is optional here: the writer validates its invocation BEFORE it reads the ledger (a
+ * bad `--verdict` must not touch the disk), then runs `recheckProblems` on the line it resolved.
+ * Callers that hold a complete spec still get both rules from one pass.
  */
 export function validateSpec(spec) {
 	const problems = [];
-	if (!PR_NUMBER_RE.test(String(spec.pr))) {
+	// A PR number is a positive integer: `0` has no `recheck-0` label to bind and no record path.
+	if (!PR_NUMBER_RE.test(String(spec.pr)) || Number(spec.pr) < 1) {
 		problems.push(problem("invalid-pr", `--pr must be a PR number (got "${spec.pr}")`, "usage"));
 	}
 	if (!VERDICTS.includes(spec.verdict)) {
@@ -456,23 +493,8 @@ export function validateSpec(spec) {
 	if (riskRank(spec.risk) === 0) {
 		problems.push(problem("invalid-risk", `--risk must be C1, C2 or C3 (got "${spec.risk}")`, "usage"));
 	}
-	if (!RECHECK_RE.test(spec.recheck)) {
-		problems.push(
-			problem(
-				"invalid-recheck",
-				`--recheck must be "jev: <level> (<conf>) · Cx · worktree <y|n>" (got "${spec.recheck}")`,
-				"usage",
-			),
-		);
-	}
-	if (problems.length === 0 && riskRank(spec.risk) < riskRank(recheckRisk(spec.recheck))) {
-		problems.push(
-			problem(
-				"risk-weaker-than-recheck",
-				`declared Risk class ${String(spec.risk).toUpperCase()} is weaker than the recheck's ${recheckRisk(spec.recheck)} — state the tier the review actually ran at`,
-			),
-		);
-	}
+	const resolved = spec.recheck ?? "";
+	if (resolved !== "") problems.push(...recheckProblems(spec.risk, resolved));
 	return problems;
 }
 

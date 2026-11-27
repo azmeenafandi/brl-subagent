@@ -487,11 +487,12 @@ selftest() {
 	done
 
 	# The risk-weaker CLI case from the same incident: no filter hides it — the tool itself
-	# refuses a declared tier weaker than the recheck. Pinned here so the replay matches the plan.
+	# refuses a declared tier weaker than the RESOLVED recheck (#596: the line comes from the
+	# ledger's newest `recheck-<pr>` row, so the fixture is a synthetic ledger, never a live log).
 	case_begin 'U1 risk-weaker CLI: review-record refuses C3 declared over a C2 recheck → 1'
-	invoke -- node "${SCRIPT_DIR}/../../../scripts/review-record.mjs" --pr 1 --verdict approve \
+	invoke -- node "${SCRIPT_DIR}/../../../scripts/review-record.mjs" --pr 592 --verdict approve \
 		--head 0123456789abcdef0123456789abcdef01234567 --risk C3 \
-		--recheck 'jev: medium (0.75) · C2 · worktree y' --findings - </dev/null
+		--log "${SCRIPT_DIR}/../../../scripts/__tests__/fixtures/review-logs/recheck-592.log" --findings - </dev/null
 	assert_rc 1
 	assert_err_has 'risk-weaker-than-recheck'
 	case_end

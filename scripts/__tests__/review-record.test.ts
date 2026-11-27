@@ -44,6 +44,8 @@ const TOOL = join(ROOT, "scripts", "review-record.mjs");
 const LIB = join(ROOT, "scripts", "lib", "scratch-root.mjs");
 const GUARD = join(ROOT, ".pi", "skills", "worktree", "merge-guard.sh");
 const FIXTURES = join(ROOT, "scripts", "__tests__", "fixtures", "review-records");
+/** The synthetic ledgers (#596) — small, hand-checked rows. Never a copy of a live ledger. */
+const LEDGERS = join(ROOT, "scripts", "__tests__", "fixtures", "review-logs");
 const TMP = (() => {
 	const base = join(ROOT, ".tmp");
 	mkdirSync(base, { recursive: true });
@@ -97,8 +99,19 @@ function write(argv: string[], stdin = "", io: Record<string, unknown> = {}): Ca
 	return { code, stdout: stdout.join(""), stderr: stderr.join("\n") };
 }
 
-/** The generator's argv for a spec, with `--out` pointed at a scratch file. */
+/**
+ * The generator's argv for a spec, with `--out` pointed at a scratch file and `--log` at a scratch
+ * ledger carrying the spec's line under `recheck-<pr>` (#596: the line is RESOLVED from the ledger,
+ * never passed — `--recheck` is gone). An override that is not a recheck line is still written to
+ * the ledger, so the resolution-then-validation path is what the malformed case exercises.
+ */
 let findingsCounter = 0;
+let ledgerCounter = 0;
+function ledgerFor(line: string, pr: string): string {
+	const path = scratch(`ledger-${(ledgerCounter += 1)}.log`);
+	writeFileSync(path, `2026-11-04T00:00:00.000Z\trecheck-${pr}\t${line}\n`);
+	return path;
+}
 function argvFor(overrides: Record<string, unknown> = {}, out: string, extra: string[] = []): string[] {
 	const value = spec(overrides);
 	const findings = String(value.findings);
@@ -117,8 +130,8 @@ function argvFor(overrides: Record<string, unknown> = {}, out: string, extra: st
 		String(value.head),
 		"--risk",
 		String(value.risk),
-		"--recheck",
-		String(value.recheck),
+		"--log",
+		ledgerFor(String(value.recheck), String(value.pr)),
 		"--findings",
 		findingsArg,
 		"--out",
@@ -275,7 +288,7 @@ describe("review-record — (d) is a line, not a word (#583)", () => {
 		writeFileSync(path, text);
 		const out: string[] = [];
 		const err: string[] = [];
-		const code = recordCheck([path, "--pr", "412", "--head", head], { out: (line: string) => void out.push(line), err: (line: string) => void err.push(line) });
+		const code = recordCheck([path, "--pr", "412", "--head", head, "--shape-only"], { out: (line: string) => void out.push(line), err: (line: string) => void err.push(line) });
 		return { code, out: out.join("\n"), err: err.join("\n") };
 	}
 
@@ -391,6 +404,201 @@ describe("review-record — refusals (exit 1) and input errors (exit 2)", () => 
 	it("rejects an unknown flag and a missing --findings", () => {
 		expect(write(["--pr", "412", "--nope", "x"]).code).toBe(EXIT.USAGE);
 		expect(write(["--pr", "412"]).stderr).toContain("--findings");
+	});
+});
+
+describe("review-record — the recheck line is RESOLVED from the ledger (#596)", () => {
+	const LEDGER = join(LEDGERS, "recheck-592.log");
+	const TWO = join(LEDGERS, "two-rows.log");
+	const TRUNCATED = join(LEDGERS, "truncated.log");
+	const EMPTY = join(LEDGERS, "empty.log");
+	const SIX = join(LEDGERS, "three-and-six-column.log");
+	const CRLF = join(LEDGERS, "crlf-mixed.log");
+	const RECORD = join(LEDGERS, "p596-r592.md");
+	const MUTATED = join(LEDGERS, "p596-r592-mutated.md");
+
+	/** The generator's argv against a chosen ledger; `--out` is explicit unless a test wants the default. */
+	function args(log: string, extra: string[] = [], out?: string): string[] {
+		return [
+			"--pr", "592", "--verdict", "approve", "--head", HEAD, "--risk", "C2",
+			"--log", log, "--findings", "-",
+			...(out === undefined ? [] : ["--out", out]),
+			...extra,
+		];
+	}
+
+	/** `--check` in-process, both streams captured, env/cwd seams explicit where a test needs them. */
+	function check(argv: string[], io: Record<string, unknown> = {}) {
+		const stdout: string[] = [];
+		const stderr: string[] = [];
+		const code = recordCheck(argv, {
+			out: (line: string) => void stdout.push(line),
+			err: (line: string) => void stderr.push(line),
+			...io,
+		});
+		return { code, stdout: stdout.join("\n"), stderr: stderr.join("\n") };
+	}
+
+	it("U1-1 resolves the newest recheck-592 row, and prints the ISO and ledger on stderr only", () => {
+		const out = scratch("u1-1.md");
+		const result = write(args(LEDGER, [], out));
+		expect(result.code, result.stderr).toBe(EXIT.WRITTEN);
+		expect(result.stdout).toContain("jev-recheck: jev: medium (0.87) · C2 · worktree n\n");
+		// The row's ISO is the review-time classification instant — stderr, never the record's bytes.
+		expect(result.stderr).toContain("2026-11-04T00:00:00.000Z");
+		expect(result.stderr).toContain(LEDGER);
+		expect(result.stdout).not.toContain("2026-11-04T00:00:00.000Z");
+		expect(readFileSync(out, "utf8")).toBe(result.stdout);
+	});
+
+	it("U1-2 the NEWEST row wins, not the first", () => {
+		const out = scratch("u1-2.md");
+		const result = write(args(TWO, [], out));
+		expect(result.code, result.stderr).toBe(EXIT.WRITTEN);
+		expect(result.stdout).toContain("jev: medium (0.90)");
+		expect(result.stdout).not.toContain("jev: medium (0.81)");
+		expect(result.stderr).toContain("2026-11-04T00:00:05.000Z");
+		expect(result.stderr).toContain("2 rows — the newest wins");
+	});
+
+	it("U1-3 no recheck row is exit 2 naming the label — and creates no directory before it refuses", () => {
+		// No `--out`: the destination is the DEFAULT root, so a resolution moved below `ensureDir`
+		// would leave `<root>/review-592` behind. The empty root is the assertion.
+		const root = scratchDir("u1-3-root");
+		const result = write(args(EMPTY), "", { root });
+		expect(result.code).toBe(EXIT.USAGE);
+		expect(result.stderr).toContain("--label recheck-592");
+		expect(result.stdout).toBe("");
+		expect(list(root)).toEqual([]);
+	});
+
+	it("U1-4 a truncated row is exit 2 with the parser's line number; control: the intact fixture exits 0", () => {
+		const broken = write(args(TRUNCATED, [], scratch("u1-4-broken.md")));
+		expect(broken.code).toBe(EXIT.USAGE);
+		expect(broken.stderr).toContain("provenance log line 2");
+		expect(broken.stderr).toContain("malformed");
+		expect(broken.stdout).toBe("");
+		const intact = write(args(LEDGER, [], scratch("u1-4-ok.md")));
+		expect(intact.code, intact.stderr).toBe(EXIT.WRITTEN);
+	});
+
+	it("U1-5 a relative --log and a missing ledger are both exit 2, and the message names --log", () => {
+		const relative = write(args("relative.log", [], scratch("u1-5-relative.md")));
+		expect(relative.code).toBe(EXIT.USAGE);
+		expect(relative.stderr).toContain("--log");
+		expect(relative.stderr).toContain("absolute");
+		const missing = write(args("/nonexistent/jev-lines.log", [], scratch("u1-5-missing.md")));
+		expect(missing.code).toBe(EXIT.USAGE);
+		expect(missing.stderr).toContain("--log");
+		expect(missing.stderr).toContain("/nonexistent/jev-lines.log");
+	});
+
+	it("U1-6 --recheck is refused by name (exit 2), and PR 0 has no label to bind", () => {
+		const gone = write([...args(LEDGER, [], scratch("u1-6.md")), "--recheck", RECHECK]);
+		expect(gone.code).toBe(EXIT.USAGE);
+		expect(gone.stderr).toContain("--recheck is gone (#596)");
+		expect(gone.stdout).toBe("");
+		const zero = write(["--pr", "0", "--verdict", "approve", "--head", HEAD, "--risk", "C2", "--findings", "-"]);
+		expect(zero.code).toBe(EXIT.USAGE);
+		expect(zero.stderr).toContain("invalid-pr");
+	});
+
+	it("U1-7 the same head with a DIFFERENT resolved line is refused, naming both lines and the record", () => {
+		const out = scratch("u1-7.md");
+		expect(write(args(LEDGER, [], out)).code).toBe(EXIT.WRITTEN);
+		const before = readFileSync(out, "utf8");
+		const changed = scratch("u1-7-other.log");
+		writeFileSync(changed, "2026-11-04T00:00:09.000Z\trecheck-592\tjev: medium (0.91) · C2 · worktree n\n");
+		const refused = write(args(changed, [], out));
+		expect(refused.code).toBe(EXIT.REFUSED);
+		expect(refused.stderr).toContain("line-mismatch");
+		expect(refused.stderr).toContain("0.87");
+		expect(refused.stderr).toContain("0.91");
+		expect(refused.stderr).toContain(out);
+		expect(refused.stdout).toBe("");
+		expect(readFileSync(out, "utf8")).toBe(before);
+		// There is no override: `--new-head` is for a head that MOVED, not for a second line here.
+		expect(write(args(changed, ["--new-head"], out)).code).toBe(EXIT.REFUSED);
+		// Control: the identical ledger is idempotent, byte for byte, and leaves no lock behind.
+		const again = write(args(LEDGER, [], out));
+		expect(again.code, again.stderr).toBe(EXIT.WRITTEN);
+		expect(again.stdout).toBe(before);
+		expect(readdirSync(dirname(out)).filter((name) => name.endsWith(".lock"))).toEqual([]);
+	});
+
+	it("U1-8 --check binds the record's line to ANY row: mutated exit 1, original exit 0", () => {
+		const ok = check([RECORD, "--pr", "592", "--log", LEDGER]);
+		expect(ok.code, ok.stderr).toBe(EXIT.WRITTEN);
+		const mutated = check([MUTATED, "--pr", "592", "--log", LEDGER]);
+		expect(mutated.code).toBe(EXIT.REFUSED);
+		expect(mutated.stderr).toContain("no provenance row");
+		expect(mutated.stdout).toBe("");
+		// ANY row, not the newest: the 0.81 record binds to the first of two rows and passes.
+		const older = scratch("u1-8-older.md");
+		writeFileSync(older, readFileSync(RECORD, "utf8").replace("(0.87)", "(0.81)"));
+		expect(check([older, "--pr", "592", "--log", TWO]).code).toBe(EXIT.WRITTEN);
+		// A label mismatch is a row that is not there: #591's record against the recheck-592 ledger.
+		const otherPr = scratch("u1-8-591.md");
+		writeFileSync(otherPr, readFileSync(RECORD, "utf8").replace("#592", "#591"));
+		const wrongLabel = check([otherPr, "--pr", "591", "--log", LEDGER]);
+		expect(wrongLabel.code).toBe(EXIT.REFUSED);
+		expect(wrongLabel.stderr).toContain("no provenance row");
+		expect(wrongLabel.stderr).toContain("recheck-591");
+	});
+
+	it("U1-9 merge-guard --check-record forwards --provenance and --shape-only", () => {
+		const bad = spawnSync("bash", [GUARD, "--check-record", MUTATED, "--pr", "592", "--provenance", LEDGER], { encoding: "utf8" });
+		expect(bad.status, bad.stderr).toBe(EXIT.REFUSED);
+		expect(bad.stderr).toContain("no provenance row");
+		const good = spawnSync("bash", [GUARD, "--check-record", RECORD, "--pr", "592", "--provenance", LEDGER], { encoding: "utf8" });
+		expect(good.status, good.stderr).toBe(EXIT.WRITTEN);
+		// --shape-only is the pre-#596 output, byte for byte: the same stdout as the tool's own
+		// shape-only run, and no ledger read at all (the mutated record passes it).
+		const shape = spawnSync("bash", [GUARD, "--check-record", MUTATED, "--pr", "592", "--shape-only"], { encoding: "utf8" });
+		expect(shape.status, shape.stderr).toBe(EXIT.WRITTEN);
+		const base = spawnSync(process.execPath, [TOOL, "--check", MUTATED, "--pr", "592", "--shape-only"], { encoding: "utf8" });
+		expect(shape.stdout).toBe(base.stdout);
+	});
+
+	it("U1-10 --log without --pr is exit 2 naming --pr; a relative --log is exit 2 too", () => {
+		const noPr = check([RECORD, "--log", LEDGER]);
+		expect(noPr.code).toBe(EXIT.USAGE);
+		expect(noPr.stderr).toContain("--pr");
+		const relative = check([RECORD, "--pr", "592", "--log", "relative.log"]);
+		expect(relative.code).toBe(EXIT.USAGE);
+		expect(relative.stderr).toContain("absolute");
+	});
+
+	it("a six-column ledger row binds like a three-column one", () => {
+		// U0-3's corpus, asked through U1's two questions: the parser reads all six columns, and
+		// `matchRow` needs only the first three.
+		const out = scratch("six-columns.md");
+		const written = write(args(SIX, [], out));
+		expect(written.code, written.stderr).toBe(EXIT.WRITTEN);
+		expect(written.stdout).toContain("jev: medium (0.88)");
+		expect(check([out, "--pr", "592", "--log", SIX]).code).toBe(EXIT.WRITTEN);
+	});
+
+	it("a CRLF row resolves in the parser but is refused before it can mint an unmatched record", () => {
+		// The parser trims and `matchRow` does not (the gate matched awk's bytes), so a CRLF row is a
+		// row the gate cannot find. The writer asks the gate's question before it writes, rather than
+		// emitting a record that only fails at the merge point.
+		const refused = write(args(CRLF, [], scratch("crlf.md")));
+		expect(refused.code).toBe(EXIT.USAGE);
+		expect(refused.stderr).toContain("cannot bind");
+		expect(refused.stderr).toContain("--label recheck-592");
+	});
+
+	it("a missing row is exit 2 when the ledger is not given and the cwd default is absent", () => {
+		// Decision 1: no discovery. With no --log and no JEV_PROVENANCE the path is
+		// `<cwd>/.pi/jev-lines.log`; an empty cwd (`env: {}`) has no such file, and the message names --log.
+		const cwd = scratchDir("u1-empty-cwd");
+		const io = { env: {}, cwd };
+		const generated = write(["--pr", "592", "--verdict", "approve", "--head", HEAD, "--risk", "C2", "--findings", "-"], "", io);
+		expect(generated.code).toBe(EXIT.USAGE);
+		expect(generated.stderr).toContain("--log");
+		expect(generated.stderr).toContain(join(cwd, ".pi", "jev-lines.log"));
+		expect(list(cwd)).toEqual([]);
 	});
 });
 
@@ -560,9 +768,17 @@ describe("review-record — --verify: the record file is the proof (#503)", () =
 describe("review-record — the acceptance run (no network, no gh)", () => {
 	const out = scratch("acceptance.md");
 	write(argvFor({}, out));
+	// #596: the record's line is bound to a `recheck-412` row, so the offline half is given the
+	// ledger the writer resolved from — the same row, the same bytes.
+	const LEDGER = scratch("acceptance-ledger.log");
+	writeFileSync(LEDGER, `2026-11-04T00:00:00.000Z\trecheck-412\t${RECHECK}\n`);
 
 	it("a generated record passes merge-guard.sh --check-record", () => {
-		const result = spawnSync("bash", [GUARD, "--check-record", out, "--pr", "412", "--head", HEAD], { encoding: "utf8" });
+		const result = spawnSync(
+			"bash",
+			[GUARD, "--check-record", out, "--pr", "412", "--head", HEAD, "--provenance", LEDGER],
+			{ encoding: "utf8" },
+		);
 		expect(result.status, result.stderr).toBe(0);
 		expect(result.stdout).toContain("record-check: OK");
 	});
@@ -584,7 +800,7 @@ describe("review-record — the acceptance run (no network, no gh)", () => {
 		expect(result.status).toBe(0);
 		expect(result.stdout).toBe(GOLDEN);
 		expect(readFileSync(cliOut, "utf8")).toBe(GOLDEN);
-		const checked = spawnSync(process.execPath, [TOOL, "--check", cliOut, "--pr", "412"], { encoding: "utf8" });
+		const checked = spawnSync(process.execPath, [TOOL, "--check", cliOut, "--pr", "412", "--log", LEDGER], { encoding: "utf8" });
 		expect(checked.status).toBe(0);
 	});
 });
@@ -704,7 +920,9 @@ describe("review-record — the private root replaces /tmp (#512)", () => {
 			const verified = cliRun(["--verify", legacy]);
 			expect(verified.status).toBe(EXIT.WRITTEN);
 			expect(verified.stdout).toContain(`record: ${legacy}`);
-			expect(cliRun(["--check", legacy, "--pr", "412"]).status).toBe(EXIT.WRITTEN);
+			// Reading is unrestricted (#512): a legacy record outside the private root still verifies.
+			// `--shape-only` here because this row is about the PATH, not about a ledger row.
+			expect(cliRun(["--check", legacy, "--pr", "412", "--shape-only"]).status).toBe(EXIT.WRITTEN);
 		} finally {
 			rmSync(legacyDir, { recursive: true, force: true });
 		}

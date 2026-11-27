@@ -8,10 +8,28 @@
 // `scripts/lib/record-fields.mjs` (one definition, used by both modes), the reviewer runs one command,
 // and the block is emitted rather than transcribed.
 //
-// Write:
+// Write (#596):
 //   node scripts/review-record.mjs --pr <n> --verdict approve|approve-with-nits|changes-requested \
-//     --head <sha> --risk C1|C2|C3 --recheck "jev: <level> (<conf>) · Cx · worktree <y|n>" \
-//     --findings <path|-> [--conductor-verified "<text>"] [--out <path>] [--new-head]
+//     --head <sha> --risk C1|C2|C3 --findings <path|-> [--log <absolute ledger>] \
+//     [--conductor-verified "<text>"] [--out <path>] [--new-head]
+//
+//   The `jev-recheck:` line is not an argument any more. It is RESOLVED from the ledger's newest
+//   `recheck-<pr>` row, because the line is a fact the classifier printed, not a string the conductor
+//   carried into the review. The ledger path is explicit: `--log` > `JEV_PROVENANCE` >
+//   `<cwd>/.pi/jev-lines.log`, a relative `--log` is exit 2, and nothing is discovered (no pointer
+//   files, no repo-root probe) — a worktree without an override fails loudly and names `--log`.
+//   Resolution reads with `parseProvenanceLog`, so a torn or malformed ledger is inherited
+//   fail-closed (exit 2, the parser's own message) rather than read as "no rows"; the resolved ISO
+//   and the ledger path go to stderr and the record's bytes do not change. The resolved line is
+//   re-validated with the record's own shape and tier rules before it is rendered. `--recheck` is
+//   gone (#596): passed by name it is refused with that sentence, because an alias would be a second
+//   way to author the one field check (f) binds to the ledger.
+//   refuses     a record that already covers the SAME head with a DIFFERENT resolved line (exit 1),
+//               naming both lines and the prior record. One head carries one line: a second is a
+//               contradiction, not an update. Recovery is deleting the record, or `--new-head` when
+//               the head actually changed. There is no `--replace`: a free-text reason rendered into
+//               the record is a field-injection surface (a newline forges `conductor-verified:` past
+//               `verifyRendered`).
 //
 //   stdout IS the record; the same bytes are written to `--out`, whose default is the PRIVATE scratch
 //   root — `~/.cache/brl-subagent/review-<n>/REVIEW_<n>.md` (#512) — so a reviewer pastes stdout or
@@ -59,12 +77,18 @@
 //   and exits 0. A live holder is refused even with `--yes`: nothing here removes a lock by age.
 //
 // Check (what `.pi/skills/worktree/merge-guard.sh --check-record` runs — no network, no `gh`):
-//   node scripts/review-record.mjs --check <record> [--pr <n>] [--head <sha>]
+//   node scripts/review-record.mjs --check <record> [--pr <n>] [--head <sha>] [--log <abs path>] [--shape-only]
 //
-//   exit 0 every field rule holds · 1 a named reason failed · 2 usage or unreadable input. It reports
-//   `changes-requested` as well-formed but unmergeable: the merge decision stays the full gate's, whose
-//   (a) CI and (f) `recheck-<pr>` provenance checks need the network and the local log. Reading is
-//   UNRESTRICTED by the private root: an old `/tmp/REVIEW_<n>.md` record must still verify.
+//   exit 0 every field rule holds · 1 a named reason failed · 2 usage or unreadable input. With
+//   `--pr` the check also binds the record's `jev-recheck:` line to a `recheck-<pr>` row: the gate's
+//   existential question, asked with `matchRow` (ANY row, not the newest, and no trimming — a
+//   reformatted confidence is a different line). The ledger resolves exactly as the writer's does
+//   (`--log`, else `JEV_PROVENANCE`, else `<cwd>/.pi/jev-lines.log`); `--log` without `--pr` is exit
+//   2 because the label derives from the PR, and a missing ledger is exit 2 naming `--log` — 2 is
+//   "cannot check", never "no match". `--shape-only` skips the row check and reproduces the pre-#596
+//   output byte for byte. It reports `changes-requested` as well-formed but unmergeable: the merge
+//   decision stays the full gate's, whose (a) CI needs the network. Reading is UNRESTRICTED by the
+//   private root: an old `/tmp/REVIEW_<n>.md` record must still verify.
 //
 // Verify (#503: the record FILE is the unit of proof):
 //   node scripts/review-record.mjs --verify <record> [--json]
@@ -82,7 +106,7 @@
 //   `reasons[]` there too).
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
 	HEAD_RE,
@@ -90,10 +114,17 @@ import {
 	checkHeadShape,
 	checkRecord,
 	parseRecord,
+	recheckProblems,
 	renderRecord,
 	validateSpec,
 	verifyRendered,
 } from "./lib/record-fields.mjs";
+import {
+	StructuralError,
+	describe,
+	matchRow,
+	parseProvenanceLog,
+} from "./lib/provenance-ledger.mjs";
 import {
 	acquireLock,
 	atomicReplace,
@@ -108,10 +139,11 @@ import {
 
 export const USAGE =
 	"usage: review-record.mjs --pr <n> --verdict <approve|approve-with-nits|changes-requested> " +
-	'--head <sha> --risk <C1|C2|C3> --recheck "<jev line>" --findings <path|-> ' +
+	"--head <sha> --risk <C1|C2|C3> --findings <path|-> [--log <absolute ledger>] " +
 	'[--conductor-verified "<text>"] [--out <path>] [--new-head]';
 
-export const CHECK_USAGE = "usage: review-record.mjs --check <record> [--pr <n>] [--head <sha>]";
+export const CHECK_USAGE =
+	"usage: review-record.mjs --check <record> [--pr <n>] [--head <sha>] [--log <absolute ledger>] [--shape-only]";
 
 export const VERIFY_USAGE = "usage: review-record.mjs --verify <record> [--json]";
 
@@ -126,7 +158,7 @@ const WRITE_FLAGS = new Map([
 	["--verdict", "verdict"],
 	["--head", "head"],
 	["--risk", "risk"],
-	["--recheck", "recheck"],
+	["--log", "log"],
 	["--findings", "findings"],
 	["--conductor-verified", "conductorVerified"],
 	["--out", "out"],
@@ -134,17 +166,47 @@ const WRITE_FLAGS = new Map([
 const CHECK_FLAGS = new Map([
 	["--pr", "pr"],
 	["--head", "head"],
+	["--log", "log"],
 ]);
+
+/** The default ledger, relative to the CALLER's cwd — the one place discovery would start, so it is
+ *  stated once instead of probed (#596 decision 1: no pointer files, no repo-root probe). */
+export const DEFAULT_LEDGER = ".pi/jev-lines.log";
+
+/** A PR number is a positive integer: `0` has no `recheck-0` label and no record path. */
+function validPrNumber(value) {
+	return /^[0-9]+$/.test(String(value)) && Number(value) >= 1;
+}
 
 /** `{ ok: true, spec, newHead }` or `{ ok: false, message }` — never throws, never exits. */
 export function parseArgs(argv) {
-	const spec = { pr: "", verdict: "", head: "", risk: "", recheck: "", findings: "", conductorVerified: "", out: "" };
+	const spec = {
+		pr: "",
+		verdict: "",
+		head: "",
+		risk: "",
+		recheck: "",
+		log: "",
+		findings: "",
+		conductorVerified: "",
+		out: "",
+	};
 	let newHead = false;
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
 		if (argument === "--new-head") {
 			newHead = true;
 			continue;
+		}
+		// Named, not "unknown argument": a conductor carrying a line from an older dispatch needs to
+		// read that the flag is GONE, and why, in the same breath (#596 decision 3).
+		if (argument === "--recheck") {
+			return {
+				ok: false,
+				message:
+					"--recheck is gone (#596): the line is resolved from the ledger by --pr — print the row with " +
+					"jev-check --classifier '<raw answers>' --label recheck-<pr>, then pass --log <absolute path> (or set JEV_PROVENANCE)",
+			};
 		}
 		const key = WRITE_FLAGS.get(argument);
 		if (key === undefined) return { ok: false, message: `unknown argument: ${argument}` };
@@ -161,11 +223,15 @@ export function parseArgs(argv) {
 	return { ok: true, spec, newHead };
 }
 
-/** `{ ok: true, file, pr, head }` or `{ ok: false, message }` for `--check`. */
+/** `{ ok: true, file, pr, head, log, shapeOnly }` or `{ ok: false, message }` for `--check`. */
 export function parseCheckArgs(argv) {
-	const parsed = { file: "", pr: "", head: "" };
+	const parsed = { file: "", pr: "", head: "", log: "", shapeOnly: false };
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
+		if (argument === "--shape-only") {
+			parsed.shapeOnly = true;
+			continue;
+		}
 		const key = CHECK_FLAGS.get(argument);
 		if (key === undefined) {
 			if (argument.startsWith("--")) return { ok: false, message: `unknown argument: ${argument}` };
@@ -179,9 +245,17 @@ export function parseCheckArgs(argv) {
 		index += 1;
 	}
 	if (parsed.file === "") return { ok: false, message: "missing the record path" };
-	if (parsed.pr !== "" && !/^[0-9]+$/.test(parsed.pr)) return { ok: false, message: "--pr must be a PR number" };
+	if (parsed.pr !== "" && !validPrNumber(parsed.pr)) return { ok: false, message: "--pr must be a PR number" };
 	if (parsed.head !== "" && !HEAD_RE.test(parsed.head)) {
 		return { ok: false, message: `--head must be a commit sha, 7-40 hex chars (got "${parsed.head}")` };
+	}
+	// The label is `recheck-<pr>`: a ledger without a PR cannot ask the row question, and a PR without
+	// a ledger is resolved from the environment or the cwd default, never from the record's path.
+	if (parsed.log !== "" && parsed.pr === "") {
+		return { ok: false, message: "--log needs --pr: the provenance row's label is recheck-<pr>, and --pr is what names it" };
+	}
+	if (parsed.log !== "" && !isAbsolute(parsed.log)) {
+		return { ok: false, message: `--log must be an absolute path (got "${parsed.log}") — a relative ledger names nothing` };
 	}
 	return { ok: true, ...parsed };
 }
@@ -196,7 +270,9 @@ function sameCommit(left, right) {
 	return shorter.length >= 7 && longer.startsWith(shorter);
 }
 
-/** The head and supersede chain already on disk, or `null` when there is no record yet. */
+/** The head, the resolved recheck line and the supersede chain already on disk, or `null` when
+ *  there is no record yet. The line is read for the same-head contradiction (#596): one head carries
+ *  one line, so a differing line is a refusal — not a re-render. */
 function readPrior(file, { root }) {
 	const read = readRegular(file, { root });
 	if (!read.ok) {
@@ -204,7 +280,96 @@ function readPrior(file, { root }) {
 		throw new Error(read.message);
 	}
 	const facts = parseRecord(read.bytes.toString("utf8"));
-	return { head: facts.head, supersededHeads: facts.supersededHeads };
+	return { head: facts.head, recheck: facts.recheck, supersededHeads: facts.supersededHeads };
+}
+
+/**
+ * The ledger path — `--log` > `JEV_PROVENANCE` > `<cwd>/.pi/jev-lines.log`, and nothing else
+ * (#596 decision 1). A RELATIVE override is a usage error in both places: a path that means "next to
+ * wherever this ran" is the discovery U2 removes, and guessing the cwd is how a review binds the
+ * wrong ledger. No pointer file and no repo-root probe: the caller states the ledger or inherits the
+ * cwd default, and a missing file is named when it is read.
+ */
+export function resolveLedgerPath({ log = "" } = {}, { env = process.env, cwd = process.cwd() } = {}) {
+	const given = String(log);
+	if (given !== "") {
+		if (!isAbsolute(given)) {
+			return { ok: false, code: "relative-log", message: `--log must be an absolute path (got "${given}") — a relative ledger names nothing` };
+		}
+		return { ok: true, path: given };
+	}
+	const fromEnv = String(env.JEV_PROVENANCE ?? "");
+	if (fromEnv !== "") {
+		if (!isAbsolute(fromEnv)) {
+			return { ok: false, code: "relative-log", message: `JEV_PROVENANCE must be an absolute path (got "${fromEnv}") — a relative ledger names nothing` };
+		}
+		return { ok: true, path: fromEnv };
+	}
+	return { ok: true, path: resolve(cwd, DEFAULT_LEDGER) };
+}
+
+/**
+ * The newest `recheck-<pr>` row's line, resolved BEFORE any destination exists (#596).
+ *
+ * The order is the promise: a record the ledger cannot back is refused with no file and no directory
+ * behind it, so this runs before `resolveDestination`'s `ensureRoot`/`ensureDir`. The reader is
+ * `parseProvenanceLog`, so a torn or malformed ledger is inherited fail-closed — the parser's own
+ * message, exit 2 — never "no entries". Newest = last row in file order; the printed ISO is the
+ * row's, so the reviewer's stderr line names WHEN the line was classified.
+ */
+export function resolveRecheckLine(
+	{ pr, log = "" },
+	{ env = process.env, cwd = process.cwd(), readLedger = readFileSync } = {},
+) {
+	const ledger = resolveLedgerPath({ log }, { env, cwd });
+	if (!ledger.ok) return ledger;
+	let text;
+	try {
+		text = readLedger(ledger.path, "utf8");
+	} catch (error) {
+		return {
+			ok: false,
+			code: "unreadable-ledger",
+			message:
+				`${ledger.path}: cannot read the provenance ledger (${describe(error)}) — the ledger is explicit: pass ` +
+				`--log <absolute path> (or set JEV_PROVENANCE); a missing ledger is not "no rows yet"`,
+		};
+	}
+	let parsed;
+	try {
+		parsed = parseProvenanceLog(text);
+	} catch (error) {
+		// The parser's message, not a paraphrase: it names the line number and the repair.
+		if (!(error instanceof StructuralError)) throw error;
+		return { ok: false, code: "malformed-ledger", message: `${ledger.path}: ${error.message}` };
+	}
+	const label = `recheck-${pr}`;
+	const rows = parsed.entries.filter((entry) => entry.label === label);
+	if (rows.length === 0) {
+		return {
+			ok: false,
+			code: "no-recheck-row",
+			message:
+				`${ledger.path}: no "${label}" row — the recheck line is the classifier's answer printed at review time; ` +
+				`print it with: jev-check --classifier '<raw answers>' --label ${label}`,
+		};
+	}
+	const newest = rows[rows.length - 1];
+	// The parser trims; the gate's predicate does not. A row whose raw bytes are not the line the gate
+	// will look for (a CRLF or padded third field) would resolve here and then fail `matchRow` at the
+	// merge point — so the writer asks the gate's question BEFORE it renders, and refuses to mint a
+	// record the gate cannot bind. Same predicate, both questions, one ledger.
+	if (!matchRow(text.split("\n"), label, newest.line)) {
+		return {
+			ok: false,
+			code: "row-bytes-mismatch",
+			message:
+				`${ledger.path}: the newest ${label} row resolves to "${newest.line}" but its raw bytes are not ` +
+				`that exact line (a CRLF or padded field) — the gate matches bytes, so this row cannot bind the ` +
+				`record; reprint it with: jev-check --classifier '<raw answers>' --label ${label}`,
+		};
+	}
+	return { ok: true, path: ledger.path, line: newest.line, at: newest.at, count: rows.length };
 }
 
 /**
@@ -244,10 +409,6 @@ function refuse(err, code, message) {
 	return EXIT.REFUSED;
 }
 
-function describe(error) {
-	return error instanceof Error ? error.message : String(error);
-}
-
 /** `{ ok: true, file, json }` or `{ ok: false, message }` for `--verify` (the path is positional). */
 export function parseVerifyArgs(argv) {
 	const parsed = { file: "", json: false };
@@ -279,7 +440,12 @@ function verifyProblems(text) {
 }
 
 /** `--check`: the offline field check. No network, no `gh`, no provenance log. */
-export function recordCheck(argv, { out = console.log, err = console.error } = {}) {
+/** `--check`: the offline field check — and, with `--pr`, the provenance row question. No network,
+ *  no `gh`. `--shape-only` is the pre-#596 contract, byte for byte. */
+export function recordCheck(
+	argv,
+	{ out = console.log, err = console.error, readLedger = readFileSync, env = process.env, cwd = process.cwd() } = {},
+) {
 	const parsed = parseCheckArgs(argv);
 	if (!parsed.ok) {
 		err(`review-record: ${CHECK_USAGE}\n${parsed.message}`);
@@ -298,12 +464,61 @@ export function recordCheck(argv, { out = console.log, err = console.error } = {
 		err(`record-check: ${problems.length} reason(s) — ${parsed.file} is not a record the gate can read`);
 		return EXIT.REFUSED;
 	}
+	// The field rules first: a record with no `jev-recheck:` line has no row to look for (it is
+	// already refused above as `missing-recheck`), and a shape fault is cheaper to report than a
+	// ledger read. `--shape-only` stops here — the output is the pre-#596 output.
+	if (!parsed.shapeOnly && parsed.pr !== "") {
+		const bound = bindProvenanceRow(parsed, text, { err, readLedger, env, cwd });
+		if (bound !== EXIT.WRITTEN) return bound;
+	}
 	const facts = parseRecord(text);
 	const disposition = MERGEABLE_VERDICTS.includes(facts.verdict)
 		? facts.verdict
 		: `${facts.verdict} — well-formed, but the gate blocks the merge until the head is re-reviewed`;
 	out(`record-check: OK — ${parsed.file} (${disposition}; Risk class ${facts.risk}; head ${facts.head.slice(0, 12)})`);
 	return EXIT.WRITTEN;
+}
+
+/**
+ * `--check`'s provenance half: does ANY row carry this label and this line?
+ *
+ * The gate's predicate (`matchRow`: no trim, no `#` skip, `>= 3` columns), asked over the raw bytes,
+ * because the gate will ask the same bytes the same way. The read comes first: `parseProvenanceLog`
+ * makes a torn ledger exit 2 (the parser's message) instead of reading as "no match" — 2 is "cannot
+ * check", 1 is "checked, absent", and conflating them is the defect the ledger reader exists to end.
+ */
+function bindProvenanceRow({ pr, log, file }, text, { err, readLedger, env, cwd }) {
+	const ledger = resolveLedgerPath({ log }, { env, cwd });
+	if (!ledger.ok) {
+		err(`review-record: ${CHECK_USAGE}\n${ledger.message}`);
+		return EXIT.USAGE;
+	}
+	let ledgerText;
+	try {
+		ledgerText = readLedger(ledger.path, "utf8");
+	} catch (error) {
+		err(
+			`record-check: ${ledger.path}: cannot read the provenance ledger (${describe(error)}) — pass ` +
+				`--log <absolute path> (or set JEV_PROVENANCE); the ledger is explicit, never discovered`,
+		);
+		return EXIT.USAGE;
+	}
+	try {
+		parseProvenanceLog(ledgerText);
+	} catch (error) {
+		if (!(error instanceof StructuralError)) throw error;
+		err(`record-check: ${ledger.path}: ${error.message}`);
+		return EXIT.USAGE;
+	}
+	const label = `recheck-${pr}`;
+	const line = parseRecord(text).recheck;
+	if (matchRow(ledgerText.split("\n"), label, line)) return EXIT.WRITTEN;
+	err(
+		`record-check: no provenance row "${line}" for the recheck — label ${label} in ${ledger.path}; ` +
+			`print the review-time line with: jev-check --classifier '<raw answers>' --label ${label}`,
+	);
+	err(`record-check: ${file} binds its jev-recheck line to a ${label} row, and none carries it`);
+	return EXIT.REFUSED;
 }
 
 /** `--verify`: one line, recomputable — the record file IS the proof, not a claim about it (#503). */
@@ -372,6 +587,9 @@ export function writeRecord(
 		readStdin = () => readFileSync(0, "utf8"),
 		root = defaultRoot(),
 		lock = {},
+		env = process.env,
+		cwd = process.cwd(),
+		readLedger = readFileSync,
 		...seams
 	} = {},
 ) {
@@ -393,6 +611,26 @@ export function writeRecord(
 	for (const item of problems) {
 		if (item.kind !== "usage") return refuse(err, item.code, item.message);
 	}
+
+	// The ledger BEFORE the destination, so a record the ledger cannot back leaves no file and no
+	// directory behind (that is the #596 resolution-order contract, and the mutant that moves this
+	// below `resolveDestination` fails on an empty private root). The reader is the shared parser:
+	// a torn ledger is exit 2 here exactly as it is in every audit.
+	const resolved = resolveRecheckLine({ pr: spec.pr, log: spec.log }, { env, cwd, readLedger });
+	if (!resolved.ok) {
+		err(`review-record: cannot resolve the recheck line — ${resolved.message}`);
+		return EXIT.USAGE;
+	}
+	spec.recheck = resolved.line;
+	const lineProblems = recheckProblems(spec.risk, spec.recheck);
+	const lineShape = lineProblems.filter((item) => item.kind === "usage");
+	if (lineShape.length > 0) {
+		err(`review-record: the newest recheck-${spec.pr} row is not a recheck line — ${resolved.path}`);
+		for (const item of lineShape) err(`  ✗ ${item.code}: ${item.message}`);
+		return EXIT.USAGE;
+	}
+	// A row is not a promise either: the tier rule is the same rule, against the RESOLVED line.
+	for (const item of lineProblems) return refuse(err, item.code, item.message);
 
 	let findings;
 	try {
@@ -433,6 +671,25 @@ export function writeRecord(
 			}
 			supersededHeads.push(prior.head);
 		}
+		// One head carries one line (#596 decision 2). A differing line for the SAME head is a
+		// contradiction, not an update: the record would otherwise be re-rendered to a line that the
+		// prior record's reader never saw. Recovery is deleting the record, or --new-head when the head
+		// moved. No `--replace`: a free-text reason in the record is a field-injection surface.
+		if (
+			prior !== null &&
+			prior.head !== "" &&
+			sameCommit(prior.head, spec.head) &&
+			prior.recheck !== "" &&
+			prior.recheck !== spec.recheck
+		) {
+			return refuse(
+				err,
+				"line-mismatch",
+				`${file} already covers head ${prior.head} with jev-recheck "${prior.recheck}", but the ledger ` +
+					`resolves "${spec.recheck}" for recheck-${spec.pr} — one head carries one line; delete ${file} to ` +
+					"re-author it, or re-run with --new-head when the head actually changed",
+			);
+		}
 
 		const record = renderRecord({ ...spec, findings, supersededHeads });
 		const drift = verifyRendered(record, { ...spec, findings, supersededHeads });
@@ -455,12 +712,18 @@ export function writeRecord(
 		// describe a file that does not exist. Once per write, and on stderr — stdout IS the record.
 		if (destination.warning !== undefined) err(`review-record: warning: ${destination.warning}`);
 		const head = spec.head.toLowerCase();
+		// Which row, WHEN, and from which ledger: stderr only, so the record's bytes are untouched, and
+		// the reviewer can see the line it did not supply.
+		err(
+			`review-record: recheck ${resolved.at} from ${resolved.path} (label recheck-${spec.pr}` +
+				`${resolved.count > 1 ? `, ${resolved.count} rows — the newest wins` : ""})`,
+		);
 		err(
 			`review-record: wrote ${file} (PR #${spec.pr}, head ${head.slice(0, 12)}, verdict ${spec.verdict}, ` +
 				`Risk class ${spec.risk.toUpperCase()}${supersededHeads.length > 0 ? `, supersedes ${supersededHeads[supersededHeads.length - 1]}` : ""})`,
 		);
 		err(
-			`review-record: verify with: bash .pi/skills/worktree/merge-guard.sh --check-record ${file} --pr ${spec.pr} --head ${head}`,
+			`review-record: verify with: bash .pi/skills/worktree/merge-guard.sh --check-record ${file} --pr ${spec.pr} --head ${head} --provenance ${resolved.path}`,
 		);
 		return EXIT.WRITTEN;
 	} finally {
