@@ -32,6 +32,8 @@ vitest-report.json
 .pi/brl-subagent/*
 !.pi/brl-subagent/*.md
 !.pi/brl-subagent/presets/
+# — a stray `.pi/` under presets/ is a pi session started with the wrong cwd (2026-11-27); it must never be tracked.
+.pi/brl-subagent/presets/.pi/
 !.pi/brl-subagent/templates/
 
 # NOTE: .development/ is tracked deliberately (#247). It was untracked in
