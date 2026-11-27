@@ -1,74 +1,45 @@
-# #606 — the factory's front door: a grill skill, a confirmed brief, and a dispatch header that makes "no code from an unagreed plan" enforceable — spec **r3**
+# #606 — the factory's front door: a grill skill, a confirmed brief, and a dispatch header that makes "no code from an unagreed plan" enforceable — spec **r4**
 
 **Issue:** #606 (process, owner priority) · **C2** · worktree **y**.
-**jev:** medium (0.89) · C2 · worktree y
-**Spec r3:** 2026-11-27, against `30448e8` (`dev`). **Status: decision-ready — one boundary decision (§0.2), recommended and written in.**
-**Rounds:** r1 → critique `rethink` (1 blocker, 5 majors, 2 minors) → r2 → critique `rethink` (8 majors, 1 minor) → r3.
+**jev:** high (0.35) · C2 · worktree y (round-3 dispatch classification; the level is an observation, the pin governs)
+**Spec r4:** 2026-11-27, against `d186226` (`dev`). **Status: decision-ready.** Both boundary decisions are settled: gated class = the code-writing dispatch; boundary = option A (mandatory dispatch header, no undeclared residual).
+**Rounds:** r1 → `rethink` (1 blk, 5 maj, 2 min) · r2 → `rethink` (8 maj, 1 min) · r3 → `needs-work` (5 maj, 1 min) · r4.
 
-**Scope: Unit 1 only** (the grill + the gate). Units 2 (wiki) and 3 (vocabulary) remain out of scope.
+**Scope: Unit 1 only.** Units 2 (wiki) and 3 (vocabulary) out of scope.
 
 ---
 
-## 0. Two decisions
+## r3 → r4, every finding closed
 
-### 0.1 The gated class — **SETTLED** (maintainer, 2026-11-27): the code-writing dispatch
-
-A brief is planning's **output**; `project-proposer` exists to *generate* the options a brief settles, so gating it
-would invert causality and leave code-writing ungated. Reading B ("planning is the gate") is recorded as rejected so
-it is not silently lost.
-
-### 0.2 The classification boundary — **DECIDED** (maintainer, 2026-11-27): a mandatory dispatch header (option A)
-
-Both critiques killed every *inferable* identity, and the second one proved the decisive fact: **`src/router.ts:79`
-routes `implement`/`build`/`code`/`write`/`add`/`change`/`modify`/`edit` to `dev-agent`**, so the preset arm missed the
-*ordinary* implementation dispatch. Any identity the caller can omit — a preset, a keyword, an auto-route — is not a
-gate. #599's generator is the eventual source of a declaration, but it is open and enforces nothing today.
-
-| Option | Boundary | Consequence |
+| # | Finding (round 3) | r4 decision |
 | --- | --- | --- |
-| **A — mandatory dispatch header** (**ADOPTED — maintainer, 2026-11-27**) | every dispatch's own task text must open with a `dispatch:` declaration | Absence is itself a refusal, so falsifier (a) holds for *every* dispatch with no residual. No preset resolution, no per-unit schema, no batch plumbing. Cost: every dispatch in this repo carries a 3-line leading block, and the existing process-check fixtures (3 files / 83 tests) gain it — mechanical. |
-| B — narrow the guarantee (**REJECTED**) | gate only *declared* `dispatch: impl` dispatches; a dispatch that declares nothing is not gated | Zero cost, but the falsifier becomes "a **declared** code-writing dispatch without a brief is refused" — the ordinary auto-routed implementation escapes, which is the hole both critiques filed. Acceptable only as an explicit maintainer narrowing, never as an unstated residual (r2's §Residual did exactly that and was the blocker). |
-
-**Adopted: A** (maintainer, 2026-11-27). The header is mandatory, absence is a refusal, and there is no undeclared
-residual. Option B is recorded as rejected.
-
----
-
-## r1/r2 → r3, every finding accounted for
-
-| # | Finding (round) | r3 disposition |
-| --- | --- | --- |
-| 1 | Preset arm misses the ordinary implementation dispatch — `dev-agent` is the router's implementation route; #599 open (blk/r1, maj/r2) | **Preset identity removed entirely.** §3's boundary is a declaration in the task text; `project-implementer` and `dev-agent` are both covered, and no resolution or forwarding is involved. |
-| 2 | `brief: unavailable` passed as `ok`; `{ok}` carried no slug (maj/r1) | Gone. One escape, `brief: none — <reason>`, which returns the parsed reason for the warning. |
-| 3 | `noBrief` was a new tool parameter (schema/known-key/retry/provenance) (maj/r1) | Gone — the escape is a line in the dispatch header, so the task text (restored on retry, present in the payload) carries it. No schema change. |
-| 4 | `noJev`'s guard accepts exponent numbers (maj/r1) | Not used, not fixed here; filed as separate shipped-code work (§Filed). |
-| 5 | Falsifier (a)'s test could pass with the feature removed (maj/r1) | §Tests T7 carries a **valid** `jev:` line and asserts the **brief-specific** refusal, so Jev cannot mask it; M1 reddens it. Every mutant names the predicate it mutates and the test that reddens. |
-| 6 | Falsifier (b) measured reads, then (r2) table provenance — neither proves no lookupable question was asked (maj/r1, maj/r2) | §Falsifiers (b) is rewritten: **the audit is over human-directed questions**, each labelled decision or fact; one fact-question fails the receipt regardless of the Facts table. |
-| 7 | A marker-only file satisfied the gate; #606 requires decisions and the human's words (maj/r2) | §3 now requires a **minimum brief structure** (`## Want` non-empty, `## Settled decisions` with ≥1 row, plus the content-bearing marker). T5 pins it. |
-| 8 | The stale-worktree guarantee was conditional on the cwd opting in (maj/r2) | §3's **opt-in boundary** is stated exactly (flag read from `<cwd>/package.json`; worktrees carry the tracked manifest; a tree without it is out of scope by the flag's own contract) and **both** cases are tested (P5/T6). No unconditional-refusal claim. |
-| 9 | Batch per-unit validation site misidentified; units have no preset (maj/r2) | Moot: the header lives in each unit's **task text**, validated at `src/prelude.ts:437`. No preset, no forwarding, no sixth site to find. |
-| 10 | `kind: impl` had no parse boundary — prose or a fenced quote could trigger it (maj/r2) | §3 anchors the declaration to a **leading block** (first non-blank lines), so a later quote cannot satisfy it. T3 pins the quoted-fenced case. |
-| 11 | Evidence rows were not executable (maj/r2) | §Evidence is a set of **probe scripts with pass and fail states** (P1–P6), quoted at the implementation HEAD; `rg` rows that survive a deleted feature are gone. |
-| 12 | `<slug>` had no grammar; traversal escaped `briefs/` (min/r2) | §3 pins `^[a-z0-9][a-z0-9-]{0,63}$`, reserves `none`, and refuses traversal/separators. T4 pins the traversal input. |
+| 1 | **The header contaminates auto-routing**: `classifyTask` lowercases the *whole* task and matches keywords first-match-wins, so `dispatch: review` selects `code-reviewer` where the body said "write tests". (major) | **§3b: one definition, two consumers.** `splitDispatchHeader(task)` returns `{ header, body }`; the validator parses `header`, and **`resolveDispatchPreset` classifies `body`**. Falsifier + T10: adding a valid header **alone** must not change the selected preset (M9 classifies the whole task → T10 red). Verified conductor-side: `classifyTask` (src/router.ts:124) matches on `task.toLowerCase()` over the entire string, called from `src/params.ts:497`. |
+| 2 | "Non-empty Want" and "one row" were not content predicates — hollow sections could pass, an honest zero-decision want was refused (major) | **§2 gives exact predicates**: section bodies are delimited by the next `^## ` heading; `## Want` needs ≥1 non-heading, non-fenced line with non-whitespace; `## Settled decisions` needs ≥1 table row whose **decision and answer cells are both non-whitespace**, **or** the explicit zero-decision form `none — <why>`. A zero-decision brief therefore has a defined, checkable outcome and a hollow table still fails. T5 pins all three shapes. |
+| 3 | Evidence rows were not executable; P5 could pass without proving the check was bypassed; P8 had no control; T3/T6/T8 omitted valid-Jev preconditions; T9 had no mutant (major) | **§Evidence now names a deliverable script** (`scripts/verify-dispatch-header.mjs --case <name>`) with a pass **and** a fail assertion per case. P5 uses a **deliberately invalid** header (it must be accepted *because* the flag is off — proving the bypass). P8 gets a control (a signed same-slug brief in a fallback tree must still be refused, proving no fallback). T3/T6/T8 pin a valid `jev:` line. T9 gains **M9**. Counts are labelled **provisional** and re-measured at the implementation HEAD. |
+| 4 | Falsifier (b) used a self-authored question list, which can omit or mislabel (major) | **§Falsifiers (b) is a coverage-counted reconciliation**, not a list: the audit enumerates **every** human-directed question in the session, reconciles the count against the turns that actually ended in a question, and classifies each by a checkable rule ("answerable by a command or read of the repo/environment ⇒ **fact** ⇒ fail"). Honest limit stated: a manual audit with a count, not a proof. |
+| 5 | The escape contradicted the "any impl without a signed brief is refused" guarantee (major) | **The guarantee is restated as *no silent path*, not *no exceptions*.** Every `impl` dispatch is either refused or carries a surfaced, recorded escape; the receipt reports `N impl · N escaped` and may not claim universal signed-brief enforcement when an escape fired. T8 pins the exact exception. |
+| 6 | The retrofit inventory was incomplete and the "83" was unlabelled and from an earlier head (minor) | **§Cost names the surfaces**: the process-check suites (provisional count), `src/__tests__/e2e-subprocess.test.ts` (real single/chain/graph dispatches on a temp cwd), legacy retry records, per-unit chain/parallel/graph text, and template bodies. All counts re-measured at the implementation HEAD; none are treated as final. |
+| +7 | *(found conductor-side, not by the critic)* `validateTemplate` **silently ignores unknown frontmatter fields**, so a typo (`dispatch: reveiw`) would disable the gate with no warning | **§3a requires an enum check**: an unknown or misspelled `dispatch:` value is a **render-time error** naming the field and the allowed set (M10). |
 
 ---
 
-## Recon (Rule 13 — codegraph @ `30448e8`; the two decisive facts verified conductor-side)
+## Recon (Rule 13 — codegraph @ `d186226`)
 
 ```
-# validatePreTask (src/validate.ts) — early-returns on an empty task; Jev block runs first, at lines ~409-430
-# prelude.ts:437 — the REAL per-unit validation site (merged unit params → runPreTaskValidation)
-# mode-prologue.ts:143 — mode-level, NOT per-unit (r2's Recon was wrong about this)
+# classifyTask (src/router.ts:124) — lowercases the WHOLE task; first matching rule wins
+# resolveDispatchPreset (src/params.ts:497) — the only auto-route caller
+# validatePreTask (src/validate.ts) — early-returns on an empty task; Jev block at ~409-430 runs first
+# prelude.ts:437 — the real per-unit validation site (mode-prologue.ts:143 is mode-level)
+# applyTemplate (src/delegate-handler.ts:295) — template-wins: it REPLACES a supplied task
+# validateTemplate (src/templates.ts:116) — validates known fields, IGNORES unknown ones
 # readProcessChecks (src/project-flags.ts) — reads only <cwd>/package.json; fail-open
-# router.ts:79 — dev-agent owns the implementation keywords
+# router.ts:79 — dev-agent owns implement/build/code/write/add/change/modify/edit
 ```
 
-- **`dispatch-line-enforcement.test.ts:280`** already asserts a Jev-only zero-spawn rejection — which is precisely why
-  r1's falsifier test was vacuous, and why T7 must supply a valid `jev:` line.
-- `ValidateConfig` today: `task`, `toolOptions`, `thinkingLevel`, `gitMode`, `outputFile`, `force`, `cwd`, `noJev`.
-  **r3 adds no field** — the header lives in `task`.
-- `git grep -n -E 'noBrief|parseBriefLine|briefs/|dispatch: impl' -- src` → **no hits** (no prior art).
-- Existing process-check suites: **3 files / 83 tests**; their fixtures gain the header (mechanical, named cost).
+- **No existing header/brief code**: `git grep -n -E 'dispatch: impl|parseBriefLine|briefs/' -- src` → 0 hits.
+- **`ValidateConfig` gains no field**: the header lives in `task`.
+- Real subprocess dispatches exist beyond the unit suites — `e2e-subprocess.test.ts` carries 9 `task:` occurrences
+  (single, chain, graph) against a temporary cwd; they are part of the retrofit, not outside it.
 
 ---
 
@@ -76,160 +47,158 @@ residual. Option B is recorded as rejected.
 
 ### 1. The grill skill — `.pi/skills/grill/SKILL.md` (adapted, not imported)
 
-Adapt Matt Pocock's `productivity/grilling` (MIT © 2026 Matt Pocock), our frontmatter + `metadata.credits` as `pr`
-does. The algorithm, unchanged across rounds: **design tree** · **frontier** (decisions whose prerequisites are
-settled; recomputed each round) · **one round = the whole frontier**, numbered, each with a **recommended answer**
-worded so "yes" accepts it · **wait** for answers · **terminate when the frontier is empty** ("nothing left silently
-assumed") · **do not act until the human confirms a shared understanding** · **facts are the conductor's job**
-(subagents or `codegraph_explore`), **decisions are the human's**.
+Matt Pocock's `productivity/grilling` (MIT © 2026 Matt Pocock), our frontmatter + `metadata.credits` as `pr` does.
+Algorithm (stable since r1): **design tree** · **frontier** recomputed each round · **one round = the whole frontier**,
+numbered, each with a **recommended answer** worded so "yes" accepts it · **wait** · **done when the frontier is
+empty** ("nothing left silently assumed") · **do not act until the human confirms a shared understanding** · **facts
+via subagents or `codegraph_explore`; decisions are the human's**.
 
-### 2. The durable brief — `briefs/<slug>.md`
+### 2. The brief — `briefs/<slug>.md`, with predicates an implementer cannot soften
 
-Tracked, committed **before** the worktree is cut (so it is present in the dispatch tree). Minimum structure the gate
-enforces:
+Sections are delimited by the next `^## ` heading (fenced lines are not headings). The gate requires **all** of:
 
-```
-## Want
-<the human's words, non-empty>
+1. `## Want` — at least one line in its body with non-whitespace content, not itself a heading.
+2. `## Settled decisions` — **either** at least one table row (a line starting `|`, excluding the header row and the
+   `|---` separator) whose **decision cell and answer cell are both non-whitespace**, **or** exactly the explicit
+   zero-decision form: a body line starting `none —` followed by a non-empty reason.
+3. `confirmed: <YYYY-MM-DD> by <name>` as the **last non-blank line**, containing no unfilled `<…>` placeholder.
 
-## Settled decisions
-| # | Decision | Human's answer |
-|---|---|---|
-| 1 | … | … |            ← at least one row
+A **marker-only** file fails (1 and 2). An honest confirmed want with **no** decisions passes via the explicit
+`none — <why>` form — decided here so the zero-decision case has a defined outcome instead of being an accident of
+whatever predicate an implementer picks. The marker is a **record, not authentication**; the spec says so.
 
-## Facts
-| Fact | Source (subagent run id · codegraph_explore query) |
+### 3. The gate — a mandatory dispatch header
 
-confirmed: <YYYY-MM-DD> by <name>     ← last non-blank line; content-bearing
-```
+- **`src/dispatch-header.ts`** — one definition, two consumers:
+  - `splitDispatchHeader(task)` → `{ header, body }`: the leading block starts at the first non-blank line and
+    consumes consecutive lines matching `^(dispatch|brief|jev):`, ending at the first line that does not match
+    (a blank line ends it too — stated, so CRLF/BOM/blank-separator cases have one answer: the block is
+    `\r?\n`-split, a leading BOM is stripped before the first line is read).
+  - `parseDispatchHeader(task)` → `{ ok: true, kind, brief }` | `{ ok: false, reason }`, with the forms quoted
+    verbatim in every refusal:
 
-A **marker-only** file fails (T5). The marker is a **record, not authentication** — anyone with write access could
-forge it, and the spec says so rather than implying a signature.
-
-### 3. The gate — a dispatch header, mandated for every dispatch in an opted-in project
-
-- **New `src/dispatch-header.ts`** — a pure parser: `parseDispatchHeader(task)` reads the **leading block** (from the
-  first non-blank line, consuming consecutive lines matching `^(dispatch|brief|jev):`) and returns
-  `{ ok: true, kind, brief }` | `{ ok: false, reason }`. Forms, quoted verbatim in every refusal:
-
-  ```
-  dispatch: impl | review | probe | docs
-  brief: <slug>             (required when dispatch: impl)
-  brief: none — <reason>    (the stated escape; reason non-empty)
-  ```
-- **Anchoring is positional, not textual.** A declaration is metadata only in that leading block, so a review task
-  that quotes the form — inline or in a fence — cannot satisfy or trip it (T3).
+    ```
+    dispatch: impl | review | probe | docs
+    brief: <slug>             (required when dispatch: impl)
+    brief: none — <reason>    (the stated escape; reason non-empty)
+    ```
 - **`validatePreTask`**, gated by `isProcessChecksEnabled(config.cwd)` (unchanged umbrella, no new manifest key):
-  1. no `dispatch:` in the leading block → **refused**, naming the block form. *(This is option A; option B deletes
-     this step and restates the guarantee as declared-only.)*
-  2. `dispatch: impl` + no `brief:` → **refused**.
-  3. `brief: <slug>` → the file must exist **in the dispatch cwd's tree** and pass §2's structure check; otherwise
-     **refused**, naming the path, and — for a stale worktree — naming the fix (commit the brief before cutting the
-     worktree, or rebase it).
-  4. `brief: none — <reason>` → **valid with a warning** that names the reason (ADR 0007's shape), on every validating
-     path (foreground, background spawn, fan-out, batch unit).
-- **Slug grammar:** `^[a-z0-9][a-z0-9-]{0,63}$`; `none` reserved; separators, dots and traversal refused — the slug is
-  a single path component, never a path.
-- **Opt-in boundary, stated exactly:** the check runs iff `readProcessChecks(<dispatch cwd>)` is true. This repo's
-  worktrees carry the tracked `package.json`, so a worktree is opted in and a stale one **is** refused. A cwd under a
-  tree without the flag performs no check — that is the flag's documented, fail-open contract (our process, never a
-  user's), not an unconsidered hole. Both cases are tested (P5, T6).
+  1. no `dispatch:` in the leading block → **refused**, naming the block form;
+  2. `dispatch: impl` + no `brief:` → **refused**;
+  3. `brief: <slug>` → the file must exist **in the dispatch cwd's tree** and satisfy §2; else **refused**, naming the
+     path, and for an opted-in stale worktree naming the fix (commit the brief before cutting the worktree, or rebase);
+  4. `brief: none — <reason>` → **valid with a warning naming the reason**, on every validating path.
+- **Slug:** `^[a-z0-9][a-z0-9-]{0,63}$`; `none` reserved; separators, dots and traversal refused — a single component,
+  never a path.
+- **Opt-in boundary:** the check runs iff `readProcessChecks(<dispatch cwd>)` is true. This repo's worktrees carry the
+  tracked manifest, so a stale worktree **is** refused; a cwd in a tree without the flag performs no check — that is
+  the flag's documented fail-open contract, not an unconsidered hole. Both are tested (P5, T6).
 
-### 3a. Templates and retries — how the block reaches a rendered task
+### 3a. Templates — how the block reaches a rendered task
 
-Two paths would otherwise strip the declaration, and both are closed here:
+`applyTemplate` **replaces** a supplied task (template-wins), so a caller cannot inject the block. Therefore:
 
-- **Template dispatches.** `applyTemplate` replaces a caller's `task` with the rendered body (template-wins), so a
-  caller cannot inject the block into a template task today. **The template's frontmatter gains the field it is
-  missing:** `dispatch: review | probe | docs`, and the renderer **prepends** `dispatch: <kind>` to the rendered text,
-  so the gate reads it in the final task like any other. This is a template-format addition (symmetric with the
-  existing `preset:`/`thinkingLevel:` frontmatter), **not** a dispatch-parameter schema change. All five
-  project-local templates gain the field, and the nine shipped ones do too, so a clean checkout behaves identically.
-- **Impl-through-a-template.** This repo's router gives implementation no template (`project-implementer` + `—`), so
-  the normal impl dispatch is free-form text where the block lives naturally. If an impl dispatch ever does use a
-  template, the renderer composes the caller's `brief:` line (from `params.brief`) under the template's
-  `dispatch: impl` — stated here so the case has a defined behaviour rather than a silent hole.
-- **Retries.** `retryRunId` restores the task text, so the block survives a retry by construction (r2 measured that
-  the same probe retains an escape line).
+- the template frontmatter gains `dispatch: review | probe | docs`, validated as an **enum**: an unknown or misspelled
+  value is a render-time **error naming the field and the allowed set** (never silently ignored — `validateTemplate`
+  ignores unknown fields today);
+- the renderer **prepends** `dispatch: <kind>` to the rendered text, and does so **only if the body does not already
+  open with a declaration** (no second declaration);
+- a template with no `dispatch:` field is **refused at render** with the field named;
+- impl-through-a-template composes the caller's `brief:` line (from `params.brief`) under `dispatch: impl` — defined,
+  not a hole (this repo's router gives implementation no template);
+- retries restore the task text, so the block survives by construction.
 
-A template that names no `dispatch:` frontmatter is **refused at render time** with the field named — the same
-loud-failure rule as a missing line in a dispatch.
+### 3b. Routing must not read the metadata
+
+`classifyTask` matches keywords against the whole task, first rule wins, so a header would change the selected preset
+(`dispatch: review` → `code-reviewer` where the body said "write tests"). **`resolveDispatchPreset` classifies the
+`body` from `splitDispatchHeader`, never the header.** This is a correctness fix, not cosmetics: without it, adding a
+mandatory line to every dispatch would silently re-route them.
 
 ### 4. The facts rule has teeth
 
-Facts come from subagents or `codegraph_explore` — never the human, never the conductor reading code. §Falsifiers (b)
-audits the *questions*, not just the table.
+Facts via subagents or `codegraph_explore` — never the human, never the conductor reading code. §Falsifiers (b) audits
+the questions with a coverage count.
 
 ---
 
-## Evidence (each probe has a pass **and** a fail state; quoted at the implementation HEAD)
+## Evidence (deliverable: `scripts/verify-dispatch-header.mjs --case <name>`, each with a pass **and** a fail state)
 
-| # | Probe (fixture: a temp opted-in tree, `processChecks: true`) | Pass state | Fail state |
+Fixtures are temp trees; an opted-in tree carries `package.json` with `processChecks: true`. Every integration case
+carries a **valid `jev:`** line so the pre-existing Jev rejection cannot mask the result.
+
+| # | Case | Pass assertion | Fail state it rules out |
 | --- | --- | --- | --- |
-| P1 | `node scripts/<probe>.mjs --case header-missing` | exit 1, message contains `dispatch:` form | exit 0 or a generic message |
-| P2 | `--case impl-without-brief` | exit 1, message names the missing `brief:` line | passes |
-| P3 | `--case brief-unsigned` (file present, no marker) | exit 1, message names the brief path + the marker | passes |
-| P4 | `--case brief-signed` (Want + one decision + marker) | exit 0, valid | refused |
-| P5 | `--case no-manifest-cwd` | exit 0 and the probe prints `no check (flag absent)` | any check runs |
-| P6 | `--case review-header` | exit 0, valid — the two-sided control | refused (the gate is too wide) |
-| P7 | `--case slug-../x`, `--case slug-a/b`, `--case slug-none` | exit 1 each, naming the grammar | accepted |
-| P8 | `--case stale-tree` (opted-in cwd whose tree lacks the file) | exit 1, names the path + the fix | silently falls back to another tree |
+| P1 | `header-missing` | exit 1, stderr names the `dispatch:` form | the gate is off |
+| P2 | `impl-no-brief` | exit 1, stderr names the missing `brief:` line | brief ignored |
+| P3 | `brief-unsigned` | exit 1, stderr names the brief path **and** the marker | marker unchecked |
+| P4 | `brief-hollow` | exit 1 (empty `## Want` body; §2 predicate 1) | structure unchecked |
+| P5 | `flag-absent` with a **deliberately invalid** header | exit 0 **and** prints `no check (processChecks absent)` | the check leaking into a non-opted-in tree |
+| P6 | `review-header` | exit 0, valid | the gate is too wide |
+| P7 | `slug-../x`, `slug-a/b`, `slug-none` | exit 1 each, naming the grammar | traversal |
+| P8 | `stale-tree` **and** its control: the same slug signed in a fallback tree | both exit 1, naming the cwd's path (the control proves **no** fallback) | a silent fallback to another tree |
+| P9 | `routing` — `classifyTask(body)` vs `classifyTask(whole)` on the same task | identical preset for body-with-header vs body-alone | the §3b contamination |
+| P10 | `template-no-field` / `template-typo` | exit 1 each, naming the field and the allowed set | a silently ignored frontmatter field |
 
-## Tests (fixture preconditions named; each mutant names the predicate it mutates and the test it reddens)
+## Tests (fixture preconditions pinned; each mutant names its predicate and the test it reddens)
 
-| # | Test | Precondition | Mutant → expected red |
+| # | Test | Precondition | Mutant → red |
 | --- | --- | --- | --- |
-| T1 | header parser: accepts the four kinds; refuses a missing `dispatch:`, an unknown kind, an empty escape reason | — | M2 (accept an empty reason) → T1 red |
-| T2 | `dispatch: impl` + no brief → refused, message names the `brief:` form | opted-in cwd, **valid Jev** | M1 (delete the brief branch) → T2 red |
-| T3 | a review task whose **body** quotes `dispatch: impl` (inline and fenced) stays valid | opted-in cwd | M3 (scan the whole text) → T3 red |
-| T4 | slug: `../x`, `a/b`, `none`, `A`, `""` refused; `consider-tax` accepted | — | M4 (accept any string) → T4 red |
-| T5 | marker-only brief refused; Want+decision+marker accepted | briefs/ fixture | M5 (accept on marker alone) → T5 red |
-| T6 | opted-in cwd whose tree lacks the brief → refused; manifest-less cwd → no check | two fixtures | M6 (skip when absent) → T6 red |
-| T7 | integration: refusal reaches **zero spawns** with a *valid Jev* line, and the message is brief-specific; the signed-brief control **does** spawn | the existing `dispatch-line-enforcement` harness | M1 → T7 red; Jev alone cannot redden it |
-| T8 | the escape `brief: none — <reason>` is valid **and** warns, on all four validating paths | opted-in cwd | M7 (drop the warning) → T8 red |
+| T1 | parser: four kinds accepted; missing `dispatch:`, unknown kind, empty escape reason refused | — | M2 (accept empty reason) → T1 |
+| T2 | `impl` + no brief refused, message names the form | opted-in cwd, valid Jev | M1 (delete the brief branch) → T2 |
+| T3 | a review task **quoting** `dispatch: impl` (inline and fenced) stays valid | opted-in cwd, valid Jev | M3 (scan the whole text) → T3 |
+| T4 | slug: `../x`, `a/b`, `none`, `A`, `""` refused; `consider-tax` accepted | — | M4 (accept any string) → T4 |
+| T5 | marker-only refused; **hollow table row** refused; `none — <why>` form accepted; Want+row+marker accepted | briefs fixtures | M5 (marker alone suffices) → T5 |
+| T6 | opted-in stale cwd refused; **manifest-less cwd → no check** | two trees, valid Jev | M6 (skip when file absent) → T6 |
+| T7 | integration: refusal reaches **zero spawns** with a valid Jev, message brief-specific; signed-brief control **does** spawn | existing `dispatch-line-enforcement` harness | M1 → T7; Jev alone cannot redden it |
+| T8 | escape valid **and** warns on all four validating paths | opted-in cwd, valid Jev | M7 (silent escape) → T8 |
+| T9 | template renders `dispatch: <kind>`; missing field refused at render | template fixture | M8 (drop the prepend) → T9 |
+| T10 | **adding a valid header alone does not change the selected preset** | a routing fixture pair | M9 (classify the whole task) → T10 |
+| T11 | unknown/misspelled `dispatch:` frontmatter value is a render error naming the field | template fixture | M10 (ignore unknown fields) → T11 |
 
-| T9 | a template dispatch renders `dispatch: <kind>` into the task; a template missing the frontmatter field is refused at render | a template fixture | M8 (drop the prepend) → T9 red |
-
-Filtered runs quote `node scripts/require-executed.mjs` (a `-t` filter matching nothing exits 0 — #591).
+All filtered runs quote `node scripts/require-executed.mjs` (#591).
 
 ---
 
 ## Falsifiers
 
-**(a)** With the header mandated (option A), **any** dispatch — auto-routed or preset'd — that omits `dispatch:`, or
-declares `impl` without a signed brief, is refused **before spawn** (T2, T7; M1 reddens both). A signed brief spawns
-(T7 control); a review dispatch stays valid (T3, P6).
+**(a) No silent path** — every `impl` dispatch is either **refused** before spawn, or carries an **escape that is
+surfaced as a warning and recorded in the payload**. The receipt reports `N impl dispatches · N escaped`; it may not
+claim universal signed-brief enforcement when an escape fired. Tests: T2, T7 (refusal, zero spawns), T8 (the exact
+exception).
 
-**(b)** At the next real want, the conductor lists **every question it put to the human** and labels each *decision*
-(legitimate) or *fact* (a defect). One fact-question fails the receipt — even with zero conductor reads and a fully
-sourced Facts table; the zero-reads predicate is checked separately. Honest limit: a next-cycle receipt, not a result
-this build produces.
+**(b) The facts rule** — at the next real want, a **coverage-counted** audit: enumerate every human-directed question
+in the session, reconcile the count against the turns that actually ended in a question, and classify each by the rule
+*"answerable by a command or read of the repo/environment ⇒ fact ⇒ fail"*. One fact-question fails the receipt, even
+with zero conductor reads and a perfect Facts table. Honest limit: a manual audit with a coverage count, not a proof.
 
 ---
 
-## Cost, stated
+## Cost (measured at the implementation HEAD; these numbers are provisional)
 
-- Every dispatch in this repo gains a 2–3 line leading block; forgetting it is a loud refusal, which is the point.
-- The five project-local templates and nine shipped templates gain a `dispatch:` frontmatter line, and the renderer
-  prepends it.
-- The existing process-check fixtures (3 files / 83 tests) gain the header.
-- No schema change, no new tool parameter, no new manifest key, no preset resolution, no batch plumbing.
+Surfaces the retrofit must cover, all named:
+
+- the process-check suites (the earlier "3 files / 83 tests" was taken at another head — **provisional**);
+- `src/__tests__/e2e-subprocess.test.ts` — real single, chain and graph dispatches against a temporary cwd;
+- legacy retry records (a restored task predating the header);
+- per-unit chain/parallel/graph task text (validated at `src/prelude.ts:437`);
+- the 5 project-local and 9 shipped templates (one frontmatter line each).
+
+No schema change, no new tool parameter, no new manifest key, no preset resolution, no batch plumbing.
 
 ## Filed, not fixed here
 
 `noJev`'s guard (`COERCED_PRIMITIVE_RE` via `readNoJevReason`) accepts exponent-form numbers (`1e+21`, `1e-7`) through
-the real `coerce: true` path, so a numeric bypass can pass as a stated reason. A shipped-code defect with its own fix
-and test; r3 does not depend on that guard.
+the real `coerce: true` path. A shipped-code defect with its own fix and test; r4 does not depend on it.
 
 ## Out of scope
 
-Unit 2 (wiki index) · Unit 3 (vocabulary + the forbidden-synonym lint, including the worktree→runner persistence
-hazard the upstream capture flags) · #599/#602/#603 and `scripts/dispatch.mjs` · `/grill` as a user command · a
-round/question cap.
+Unit 2 (wiki index) · Unit 3 (vocabulary + forbidden-synonym lint, including the worktree→runner persistence hazard) ·
+#599/#602/#603 and `scripts/dispatch.mjs` · `/grill` as a user command · round/question caps.
 
 ## Upstream (adapt, don't import)
 
-`mattpocock/skills` @ `6f7f7831a625f040a8e06a0e7954826b87ce775a` (main, 2026-11-25), MIT © 2026 Matt Pocock. Primary
-file `skills/productivity/grilling/SKILL.md` (blob `d2f09a18…`); verbatim capture in
-`.development/investigations/issue-606-grilling-upstream-2026-11-27.md`. Persistence (`briefs/`), the refusal and
-fact-provenance are Unit 1 **additions**, never inheritances.
+`mattpocock/skills` @ `6f7f7831a625f040a8e06a0e7954826b87ce775a` (MIT © 2026 Matt Pocock), primary file
+`skills/productivity/grilling/SKILL.md` (blob `d2f09a18…`); verbatim capture in
+`.development/investigations/issue-606-grilling-upstream-2026-11-27.md`. Persistence, the refusal and fact-provenance
+are Unit 1 **additions**.
