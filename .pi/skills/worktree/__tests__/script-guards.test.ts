@@ -77,6 +77,14 @@ const ROOTS: Roots = OVERRIDE === undefined ? { skillsDir: SKILL_DIR, repoRoot: 
 
 /** The scratch's path for the copy: the same relative shape, so path-derived roots land in the scratch. */
 const COPY_REL = join(".pi", "skills", "worktree");
+
+/**
+ * The one module the skills tree imports from the repository's tooling surface (#596): the provenance
+ * ledger's reader. It is copied into the scratch at the same relative path, because every row that
+ * runs `jev-check.mjs` would otherwise die on `ERR_MODULE_NOT_FOUND` before reaching its own refusal —
+ * and a row that measured the loader's exit instead of the guard's would be a green-looking lie.
+ */
+const LEDGER_MODULE_REL = join("scripts", "lib", "provenance-ledger.mjs");
 const SENTINEL = "sentinel: if a row wrote here, this file is gone or changed\n";
 
 /**
@@ -280,6 +288,11 @@ beforeAll(() => {
 	SCRATCH = mkdtempSync(join(tmpdir(), "brl-script-guards-"));
 	mkdirSync(join(SCRATCH, ".pi", "skills"), { recursive: true });
 	cpSync(ROOTS.skillsDir, join(SCRATCH, COPY_REL), { recursive: true });
+	// #596: the skills tree imports the provenance ledger from `scripts/lib`, so the scratch carries it
+	// at the path that import resolves to. The corpus comparison above does not include it — the
+	// mutations this seam measures are the skills tree's — so this is fixture setup, nothing else.
+	mkdirSync(join(SCRATCH, "scripts", "lib"), { recursive: true });
+	cpSync(join(ROOTS.repoRoot, LEDGER_MODULE_REL), join(SCRATCH, LEDGER_MODULE_REL));
 	mkdirSync(join(SCRATCH, "empty"), { recursive: true });
 	writeFileSync(join(SCRATCH, "sentinel.txt"), SENTINEL);
 	git("init", "-q", "-b", "dev");
