@@ -1,14 +1,26 @@
-# #606 — the factory's front door: a grill skill, a confirmed brief, and a dispatch header that makes "no code from an unagreed plan" enforceable — spec **r5**
+# #606 — the factory's front door: a grill skill, a confirmed brief, and a dispatch header that makes "no code from an unagreed plan" enforceable — spec **r6**
 
 **Issue:** #606 (process, owner priority) · **C2** · worktree **y**.
 **jev:** high (0.35) · C2 · worktree y (round-3 dispatch classification; the level is an observation, the pin governs)
-**Spec r5:** 2026-11-27, against `7f19e1a` (`dev`). **Status: decision-ready.** Both boundary decisions are settled: gated class = the code-writing dispatch; boundary = option A (mandatory dispatch header, no undeclared residual).
+**Spec r6:** 2026-11-27, against `c40ea90` (`dev`). **Status: decision-ready.** Both boundary decisions are settled: gated class = the code-writing dispatch; boundary = option A (mandatory dispatch header, no undeclared residual).
 **Rounds:** r1 → `rethink` (1 blk, 5 maj, 2 min) · r2 → `rethink` (8 maj, 1 min) · r3 → `needs-work` (5 maj, 1 min) ·
-r4 → `needs-work` (3 maj, 1 min) · r5.
+r4 → `needs-work` (3 maj, 1 min) · r5 → `needs-work` (5 maj, 2 min) · r6.
 
 **Scope: Unit 1 only.** Units 2 (wiki) and 3 (vocabulary) out of scope.
 
 ---
+
+## r5 → r6, every finding closed
+
+| # | Finding (round 5) | r6 decision |
+| --- | --- | --- |
+| 1 | "Exactly one body line matching" was ambiguous, and with `## Settled decisions` last the marker sat in its body, so a valid zero-decision brief failed (major) | **§2 predicate 2 says "at least one non-marker body line"** and states that the marker is not body content for any predicate; fixture `zero-decision-last` pins the exact ordering. |
+| 2 | P9 asked `classifyTask(body)` and `classifyTask(whole)` to agree — the behaviour §3b calls wrong (major) | **P9 now probes `resolveDispatchPreset`** and asserts equality with a body-only control, *plus* asserts that `classifyTask(whole)` differs — the second assertion is what proves the hazard and that the fix is in the caller. |
+| 3 | M11 covered only the marker case; fence exclusion, answer-cell validation and zero-decision acceptance had no mutants (major) | **T12 split into T12a–T12d**, each with its own mutant (M11a–M11d) and its own fixture. |
+| 4 | The template contract excluded `impl` from the enum while requiring impl-through-template, and refused missing fields at render even where the flag is absent — contradicting fail-open (major) | **`impl` is in the enum**; a missing field is refused **only when the dispatch cwd is opted in** (P13 proves the flag-absent render is untouched); an `impl` template requires `params.brief` and errors naming what is missing. |
+| 5 | Falsifier (b) audited questions but not the separate "no conductor reads/greps before the plan" prohibition (major) | **Both predicates are stated and both must pass**: question-level classification **and** zero conductor `read`/`grep`/`find`/`ls` calls against repo files over the want→plan interval. |
+| 6 | The author instructions told an author how to write the header but not the brief (minor) | **§3c now ships the brief-writing contract** — path, slug grammar, the four required parts, the zero-decision form and one worked example. |
+| 7 | Two historical rows still described turn-ending counts and a two-outcome falsifier (minor) | **The historical tables carry a superseded notice** and the later table governs. |
 
 ## r4 → r5, every finding closed
 
@@ -18,6 +30,10 @@ r4 → `needs-work` (3 maj, 1 min) · r5.
 | 2 | Falsifier (a) stated two outcomes and omitted the normal **signed** path; `N impl · N escaped` could not establish coverage of flag-absent cwds or misdeclared tasks. (major) | **§Falsifiers (a) is now a three-outcome table** (refused · signed · escaped) with the **receipt's source and denominator defined** (spawn events + refusals in the window, plus `M excluded (flag absent)`), and both limits stated: a declaration is trusted, a flag-absent cwd is out of scope. |
 | 3 | Falsifier (b) reconciled *turns ending in `?`* against a question list — not question-level coverage, since one turn can carry several questions or end in prose. (major) | **§Falsifiers (b) is question-level**: count turns containing a `?` (each opened and its questions extracted) **and** questions extracted (≥ that count), then classify each question. The two-count reconciliation is the coverage statement. |
 | 4 | The block boundary was specified but not tested or explained to authors; a title before the block rejects, a blank line splits it, a later `jev:` still satisfies the old check. (minor) | **§3c adds the author-facing section on the tracked dispatch surface** (`.pi/skills/worktree/SKILL.md`): the three lines, the one-token rule, "the block is the first content", the escape, and that the Jev line may stay anywhere. P11/P12 pin the comment and title-first cases; T13 pins all three boundary behaviours. |
+
+> **Historical (read with the table above).** The `r1/r2 → r3` and `r3 → r4` tables below record what each round changed
+> *at the time*; where a later round corrected a claim (the two-outcome falsifier, the turn-level count), the later
+> table governs and the older wording is retained only as the record of that round.
 
 ## r3 → r4, every finding closed
 
@@ -74,8 +90,10 @@ section's body runs to the next such heading or to EOF. The gate requires **all*
    `confirmed: …` is empty, not full).
 2. `## Settled decisions` — **either** at least one table row outside fences, excluding the header row and the
    `|---` separator, whose **decision cell** (between the 1st and 2nd `|`) **and answer cell** (between the 2nd and
-   3rd `|`) both contain non-whitespace; **or** exactly one body line matching `^none —\s*\S` (the explicit
-   zero-decision form: `none — <why> not settled yet`).
+   3rd `|`) both contain non-whitespace; **or** at least one non-marker body line matching `^none —\s*\S`
+   (the explicit zero-decision form: `none — not settled yet`). The confirmation marker is **not** body content for
+   any predicate, so a brief whose `## Settled decisions` is the **last** section passes with
+   `none — …` followed by the marker — the ordering r5 left ambiguous, pinned now by fixture `zero-decision-last`.
 3. `confirmed: <YYYY-MM-DD> by <name>` — the **last non-blank line outside fences**, containing no unfilled `<…>`
    placeholder.
 
@@ -116,14 +134,19 @@ so.
 
 `applyTemplate` **replaces** a supplied task (template-wins), so a caller cannot inject the block. Therefore:
 
-- the template frontmatter gains `dispatch: review | probe | docs`, validated as an **enum**: an unknown or misspelled
-  value is a render-time **error naming the field and the allowed set** (never silently ignored — `validateTemplate`
-  ignores unknown fields today);
+- the template frontmatter gains `dispatch: impl | review | probe | docs`, validated as an **enum**: an unknown or
+  misspelled value is an **error naming the field and the allowed set** (never silently ignored — `validateTemplate`
+  ignores unknown fields today). **`impl` is in the enum**, so the impl-through-template case below has a legal form
+  rather than being excluded by the enum and required by prose;
 - the renderer **prepends** `dispatch: <kind>` to the rendered text, and does so **only if the body does not already
   open with a declaration** (no second declaration);
-- a template with no `dispatch:` field is **refused at render** with the field named;
-- impl-through-a-template composes the caller's `brief:` line (from `params.brief`) under `dispatch: impl` — defined,
-  not a hole (this repo's router gives implementation no template);
+- a template with **no** `dispatch:` field is refused **only when the dispatch cwd is opted in**
+  (`isProcessChecksEnabled`), with the field named. In a project without the flag it renders exactly as today — the
+  render-time refusal may not leak past the fail-open boundary (P13);
+- a template declaring `dispatch: impl` **must** receive `params.brief` (or the caller's stated escape) and the
+  renderer composes `brief: <slug>` under it; a template declaring `impl` with no brief param is an error naming what
+  is missing. (This repo's router gives implementation no template, so the path is defined for completeness, not for
+  the current router.)
 - retries restore the task text, so the block survives by construction.
 
 ### 3c. Author-facing instructions ship with it
@@ -132,7 +155,10 @@ The block is a new requirement on every dispatch, so it is documented where disp
 `.pi/skills/worktree/SKILL.md` (the tracked dispatch surface that already documents the Jev line) gains a short
 section — the three lines, the one-token rule (no trailing comment), "the block is the first content", the escape,
 and the fact that the **Jev line may still appear anywhere** (its parser scans every line, so existing dispatches
-keep working). A rule an author cannot find is a rule that will be omitted.
+keep working). It also carries a **"Writing a brief"** subsection — the path `briefs/<slug>.md`, the slug grammar,
+the four required parts (`## Want`, `## Settled decisions`, `## Facts`, the `confirmed:` marker), the zero-decision
+form and one worked example — because an author who can write the header but not the brief has half a contract. A rule
+an author cannot find is a rule that will be omitted (#599's own lesson).
 
 ### 3b. Routing must not read the metadata
 
@@ -163,10 +189,11 @@ carries a **valid `jev:`** line so the pre-existing Jev rejection cannot mask th
 | P6 | `review-header` | exit 0, valid | the gate is too wide |
 | P7 | `slug-../x`, `slug-a/b`, `slug-none` | exit 1 each, naming the grammar | traversal |
 | P8 | `stale-tree` **and** its control: the same slug signed in a fallback tree | both exit 1, naming the cwd's path (the control proves **no** fallback) | a silent fallback to another tree |
-| P9 | `routing` — `classifyTask(body)` vs `classifyTask(whole)` on the same task | identical preset for body-with-header vs body-alone | the §3b contamination |
+| P9 | `routing` — call **`resolveDispatchPreset`** on a (header, body) pair; separately call `classifyTask` on the whole task | `resolveDispatchPreset` selects the **same** preset as the body-only control, **and** `classifyTask(whole)` is asserted to select a *different* one | the §3b contamination (the second assertion proves the hazard was real and that the fix is in the caller, not the classifier) |
 | P10 | `template-no-field` / `template-typo` | exit 1 each, naming the field and the allowed set | a silently ignored frontmatter field |
 | P11 | `dispatch-with-comment` (`dispatch: impl   # note`) | exit 1, naming the one-token rule | ambiguous trailing text accepted |
 | P12 | `title-first` (a `# Task` line before the block) | exit 1, naming "the block must be the first content" | a title silently accepted before the block |
+| P13 | `flag-absent-template` (a template with no `dispatch:` field, dispatched from a cwd without the flag) | exit 0, renders and dispatches exactly as today | the render-time refusal leaking past the fail-open boundary |
 
 ## Tests (fixture preconditions pinned; each mutant names its predicate and the test it reddens)
 
@@ -183,7 +210,10 @@ carries a **valid `jev:`** line so the pre-existing Jev rejection cannot mask th
 | T9 | template renders `dispatch: <kind>`; missing field refused at render | template fixture | M8 (drop the prepend) → T9 |
 | T10 | **adding a valid header alone does not change the selected preset** | a routing fixture pair | M9 (classify the whole task) → T10 |
 | T11 | unknown/misspelled `dispatch:` frontmatter value is a render error naming the field | template fixture | M10 (ignore unknown fields) → T11 |
-| T12 | brief predicates: `hollow-marker` and `fenced-only` refused; `empty-cell` refused; `zero-decision` accepted | four briefs fixtures | M11 (count the marker as Want content) → T12 |
+| T12a | `hollow-marker` refused (marker is not Want content) | briefs fixture | M11a (count the marker as Want content) → T12a |
+| T12b | `fenced-only` refused (fenced lines are not body) | briefs fixture | M11b (count fenced lines as body) → T12b |
+| T12c | `empty-cell` refused (answer cell must be non-whitespace) | briefs fixture | M11c (skip the answer-cell check) → T12c |
+| T12d | `zero-decision-last` **accepted** (`none — …` then the marker, Settled decisions last) | briefs fixture | M11d (reject the zero-decision form) → T12d |
 | T13 | block boundary: comment on `dispatch:` refused; title before the block refused; a `jev:` line **later** in the body still satisfies the existing Jev check | boundary fixtures | M12 (accept any `dispatch:` line) → T13 |
 
 All filtered runs quote `node scripts/require-executed.mjs` (#591).
@@ -212,8 +242,11 @@ interrogative the conductor put to the human, including **several in one turn** 
 Coverage is reconciled in two counts — *turns containing a `?`* (all of which must be opened and their questions
 extracted) and *questions extracted* (≥ that count) — because a turn-level count is what r3 correctly rejected. Each
 question is then classified by the checkable rule *"answerable by a command or read of the repo/environment ⇒ fact ⇒
-fail"*. One fact-question fails the receipt, even with zero conductor reads and a perfect Facts table. Honest limit:
-a manual audit with a coverage count, not a proof.
+fail"*. **And the prohibition is two-sided**, because the issue names two: over the interval *want stated → plan
+written*, the conductor's transcript must contain **no** `read`/`grep`/`find`/`ls` call against repository files
+(subagent calls are how facts were meant to arrive). **Either** predicate failing fails the receipt — a session that
+asks no fact questions but reads the code directly still fails. Honest limit: a manual audit with two coverage counts,
+not a proof.
 
 ---
 
