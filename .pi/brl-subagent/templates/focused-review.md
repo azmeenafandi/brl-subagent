@@ -23,13 +23,16 @@ You are the focused reviewer for a **C2-class change** (logic/API/cross-module �
   in the target section. `write`/`edit` are intentionally withheld, but **bash is
   available**: use it. When the review is complete, write the record yourself with
   `node scripts/review-record.mjs --pr <n> --head <sha> --verdict <v> --risk <C>
-  --recheck "<line>" --findings <file>` — the gate must read the reviewer's bytes.
+  --log <absolute ledger> --findings <file>` — the gate must read the reviewer's bytes.
+  The `jev-recheck:` line is NOT an argument (#596): print the row first with
+  `jev-check --classifier '<raw answers>' --label recheck-<n>`, and the tool resolves
+  the newest `recheck-<n>` row from the ledger (`--log`, or `JEV_PROVENANCE`).
   Do NOT batch the write to the end. If this run dies, whatever you had already
   verified must survive it — a partial review is worth far more than a lost one.
 - Output **verdict FIRST, zero preamble**, in this exact format:
   - Verdict: approve | approve-with-nits | changes-requested
   - Risk class: C1 | C2 | C3
-  - jev-recheck: <copy the conductor's recheck line verbatim>
+  - jev-recheck: <resolved by the tool from the newest `recheck-<n>` ledger row — print that row first, never retyped>
   - Findings table: severity (major/minor/nit) | file:line | one-liner
   - Focus-area verdicts: one line each (verified / issue found)
   - Coverage: for each search/read a finding rests on — query, count/range, reconciliation (or N/A)

@@ -451,8 +451,9 @@ ships as product documentation — see `CONTRIBUTING.md`).
                 PR's CURRENT head sha is in the record or a `conductor-verified:` line
                 says how the post-verdict commit was verified, (e) `jev-check --log` is
                 green, (f) the record carries a `jev-recheck:` line (the classifier's
-                answer on the DISPATCH text, run at review time) with a `recheck-<pr>`
-                provenance row, and a `Risk class:` no weaker than the recheck, and
+                answer on the DISPATCH text, run at review time; the writer RESOLVES it
+                from the ledger's newest `recheck-<pr>` row — #596) with that provenance
+                row, and a `Risk class:` no weaker than the recheck, and
                 (g) the PR BODY's `pr-evidence` block recomputes
                 (`pr-evidence --check --pr <n>`) — skipped as `(g) not applicable` for a
                 body with no block and no count. Any
@@ -512,9 +513,13 @@ no ritual without a classification:
 Reversibility is the tiebreaker when the class is ambiguous; new evidence found
 during review can reclassify. If unsure, default UP. **Before dispatching the
 review, re-run the classifier on the dispatch text** (codemode, blind) and print
-it with `jev-check --classifier '<raw answers>' --label recheck-<pr>`; the record
-carries that line plus `Risk class: <Cx>`, and merge check (f) refuses a record
-whose declared tier is weaker than the recheck. The dispatch-time line is a
+it with `jev-check --classifier '<raw answers>' --label recheck-<pr>`. The record
+tool then RESOLVES that row (#596): `--recheck` is gone, and the write takes
+`--log <absolute ledger>` (or `JEV_PROVENANCE`; a relative `--log` and a missing
+ledger are both exit 2). The record carries the resolved line plus
+`Risk class: <Cx>`, and merge check (f) refuses a record whose declared tier is
+weaker than the recheck — and the writer refuses a same-head rewrite to a
+different resolved line (exit 1, `line-mismatch`). The dispatch-time line is a
 prediction; the recheck is the merge-time fact. Brief content, dispatch
 mechanics, verdict format: `references/review-dispatch.md`.
 
@@ -548,7 +553,7 @@ mechanics, verdict format: `references/review-dispatch.md`.
 
   ```bash
   bash .pi/skills/worktree/run.sh --filter 'tail -2' --stderr -- \
-    bash .pi/skills/worktree/merge-guard.sh --check-record ~/.cache/brl-subagent/review-<n>/REVIEW_<n>.md   # exit 1 = rejected
+    bash .pi/skills/worktree/merge-guard.sh --check-record ~/.cache/brl-subagent/review-<n>/REVIEW_<n>.md   # exit 1 = rejected; add --pr <n> --provenance <ledger> to bind the recheck row
   bash .pi/skills/worktree/run.sh --filter 'tail -1' -- node scripts/handoff-verify.mjs  # 1 = drift
   bash .pi/skills/worktree/run.sh --quiet --require-filter --filter 'grep -q "^record:"' -- \
     node scripts/review-record.mjs --verify ~/.cache/brl-subagent/review-<n>/REVIEW_<n>.md   # the filter IS the check
@@ -624,7 +629,9 @@ mechanics, verdict format: `references/review-dispatch.md`.
   dispatch events is exit 2. `--log` is conductor/merge-time (the log is local and
   gitignored, so it is NOT CI-visible; `--since` re-audits legacy dispatches).
   `--classifier ... --label <name>` appends the printed line to the gitignored provenance log
-  (`.pi/jev-lines.log`); `--line` never appends (refused without `--legacy-line`, no-write with
+  (`.pi/jev-lines.log`) — and the review writer reads that log's newest `recheck-<pr>` row back
+  to author the record's `jev-recheck:` line (#596: `--log <absolute path>` or `JEV_PROVENANCE`,
+  never a discovery); `--line` never appends (refused without `--legacy-line`, no-write with
   it), and `--log --require-provenance` additionally fails a dispatch
   line with no such row — fail-closed (exit 2) when the log is missing or empty. That is
   the check the format cannot make: a hand-typed confidence passes the shape. The writer is the
@@ -661,10 +668,13 @@ mechanics, verdict format: `references/review-dispatch.md`.
   worktree; `--pr-tree <path>` names it); the flow half needs no checkout at all. A
   `no checks reported` failure carries the `gh pr view <n> --json mergeable,mergeStateStatus` hint
   (#465), never a pass.
-  `--check-record <record> [--pr <n>] [--head <sha>]` is the offline half — the same field
-  rules, no `gh`, no network, no provenance log — so a generated record can be checked
-  before dispatch; write the record with `scripts/review-record.mjs` (#487), never by hand.
-  `--selftest` covers the record parsing with temp fixtures.
+  `--check-record <record> [--pr <n>] [--head <sha>] [--provenance <ledger>] [--shape-only]` is
+  the offline half — the same field rules, no `gh`, no network — so a generated record can be
+  checked before dispatch; with `--pr` it also binds the `jev-recheck:` line to a
+  `recheck-<pr>` row (`--provenance` names the ledger; `--shape-only` skips the row and is the
+  pre-#596 output). Write the record with `scripts/review-record.mjs` (#487), never by hand —
+  and never pass a line: `--recheck` is gone (#596). `--selftest` covers the record parsing with
+  temp fixtures.
 - **Re-capture before the gate after ANY post-verdict commit.** The order is
   `git commit` → `node scripts/suite-report.mjs --capture` → `merge-guard.sh`. The sidecar
   records the head the suite was tested at, and `pr-evidence --check` compares it against the
