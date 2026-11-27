@@ -86,8 +86,19 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   ```bash
   node scripts/review-record.mjs --pr <n> --verdict approve-with-nits \
     --head "$(git -C <worktree> rev-parse HEAD)" --risk C1 \
-    --recheck 'jev: medium (0.63) · C1 · worktree y' --findings -
+    --log <absolute path to the cockpit's .pi/jev-lines.log> --findings -
   ```
+
+  **`--recheck` no longer exists (#596).** The `jev-recheck:` line is not an argument: the tool
+  resolves the LEDGER's newest `recheck-<pr>` row and writes it, so a line the conductor typed
+  cannot enter the record. The ledger is explicit — `--log <absolute path>` (or `JEV_PROVENANCE`
+  exported, or `<cwd>/.pi/jev-lines.log`); a relative `--log` is exit 2 and a missing ledger is
+  exit 2 naming `--log`. The conductor names the working path in the dispatch, because a review
+  worktree has no ledger of its own (U2 removes that requirement). Print the row at review time
+  with `jev-check --classifier '<raw answers>' --label recheck-<pr>` *before* writing the record;
+  the writer prints the row's ISO and the ledger path on stderr, and refuses (`line-mismatch`,
+  exit 1) when the same head already carries a different line — one head, one line; delete the
+  record or move the head, never edit the line.
 
   `--findings -` reads the findings body from stdin; the script writes the
   canonical block to `<root>/review-<n>/REVIEW_<n>.md` **and** prints it — paste the
@@ -97,11 +108,12 @@ the reviewer to write a repo file (it has no `write`/`edit` tools):
   deliberate alternative: an `--out` directory that fails the private-root predicate
   is REFUSED with the default named, so `/tmp/REVIEW_<n>.md` is now an error rather
   than a habit (#512). The script pre-flights the gate's
-  rules — it refuses a declared `Risk class` weaker than the recheck's and a
-  findings body carrying its own line-start field — so verify the file before
-  pasting with
-  `bash .pi/skills/worktree/merge-guard.sh --check-record <root>/review-<n>/REVIEW_<n>.md --pr <n> --head <sha>`
-  (offline: no `gh`, no provenance log), and then mint the `record:` line with
+  rules — the resolved line against the declared tier, and a findings body carrying
+  its own line-start field — so verify the file before pasting with
+  `bash .pi/skills/worktree/merge-guard.sh --check-record <root>/review-<n>/REVIEW_<n>.md --pr <n> --head <sha> --provenance <ledger>`
+  (offline: no `gh`; with `--provenance` it also binds the `jev-recheck:` line to its
+  `recheck-<n>` row, and `--shape-only` is the field-only check), and then mint the
+  `record:` line with
   `node scripts/review-record.mjs --verify <root>/review-<n>/REVIEW_<n>.md` and paste it
   **verbatim**. **A verdict without that line is incomplete** (#503): it is the
   only part of a review a third party can recompute. The conductor copies the
@@ -186,10 +198,15 @@ not a proofreader. So the shape is now emitted:
 node scripts/review-record.mjs --pr <n> \
   --verdict approve|approve-with-nits|changes-requested \
   --head <sha> --risk C1|C2|C3 \
-  --recheck 'jev: <level> (<conf>) · Cx · worktree <y|n>' \
+  --log <absolute path to the ledger> \
   --findings <path|-> [--conductor-verified "<what was verified, and how>"] \
   [--out <path>] [--new-head]
 ```
+
+The `jev-recheck:` line is RESOLVED, not passed (#596): the tool takes the ledger's newest
+`recheck-<pr>` row, re-validates it with the record's shape rule, and writes it. A torn ledger is
+exit 2 (the reader is `parseProvenanceLog`, fail-closed), a missing one is exit 2 naming `--log`,
+and the row's ISO and path are printed on stderr — never into the record.
 
 - **The destination is private and keyed to the PR** (#512): with no `--out` the record goes to
 `<root>/review-<n>/REVIEW_<n>.md`, where `<root>` is `~/.cache/brl-subagent`. The root is
@@ -221,14 +238,19 @@ gate applies; the generator and `merge-guard.sh --check-record` both use it, so 
 script writes cannot fail the gate on a field rule. Do not re-type the fields, and do not
 "improve" the block by hand.
 - **Exit 0/1/2** — 0 written, 1 refused (a named reason: a declared tier weaker than the
-recheck, a findings body that would become the disposition the gate reads), 2 bad invocation.
-- **`--new-head`** is the only way to re-mint a record that already covers a different head:
+recheck, the same head with a different resolved line, a findings body that would become the
+disposition the gate reads), 2 bad invocation, an unresolvable ledger, or a ledger row that is
+not a recheck line.
+- **`--new-head`** is the only way to re-mint a record that already covers a DIFFERENT head:
 the old head is kept on a `Superseded head:` line, so a retry cannot silently mint a newer
-record.
-- **`--check-record <file> [--pr <n>] [--head <sha>]`** is the offline half of the gate — the
-same rules, no network and no `gh`. Run it on the generated file before dispatch to the
-conductor; it reports `changes-requested` as well-formed but unmergeable, because that record
-is exactly the one a reviewer must be able to write.
+record. It is not a line override: a same-head record with a different resolved line is refused
+whether or not `--new-head` is passed (#596).
+- **`--check-record <file> [--pr <n>] [--head <sha>] [--provenance <ledger>] [--shape-only]`** is the
+offline half of the gate — the same rules, no network and no `gh`. Run it on the generated file
+before dispatch; with `--pr` it also binds the `jev-recheck:` line to a `recheck-<pr>` row (the
+gate's predicate) and reads the ledger, so pass `--provenance` with the path the writer used (or
+`--shape-only` for the field-only check). It reports `changes-requested` as well-formed but
+unmergeable, because that record is exactly the one a reviewer must be able to write.
 - **`--verify <file> [--json]` prints the `record:` line** (#503), and that line is the proof:
 
   ```
@@ -250,7 +272,7 @@ is exactly the one a reviewer must be able to write.
 | `Verdict: approve` / `Verdict: approve-with-nits` | one **final** disposition line; `changes-requested` may not merge | (c) the guard |
 | `Reviewed head: <sha>` | the commit the verdict covers (`@ <sha>` in the title also counts; a >=7-char prefix of the head is accepted) | (d) the guard |
 | `Risk class: C1`/`C2`/`C3` | the review depth the record claims | (f) the guard |
-| `jev-recheck: jev: <level> (<conf>) · Cx · worktree <y|n>` | the classifier's answer on the **dispatch text**, run at review time | (f) the guard |
+| `jev-recheck: jev: <level> (<conf>) · Cx · worktree <y|n>` | the classifier's answer on the **dispatch text**, run at review time; the writer resolves the newest `recheck-<pr>` row | (f) the guard |
 | `Structural closure:` | present for refactor PRs, or an explicit `n/a` | **informational** in this unit — not merge-gated |
 
 The emitted block, byte for byte (identical inputs produce identical bytes — no timestamps, one
@@ -301,22 +323,32 @@ Rules the parser assumes:
 
 The dispatch line is a **prediction** made before the work; the review-time recheck is the
 **fact**. Run the classifier (codemode, blind) on the dispatch text again, print it through the
-provenance writer, and paste the line into the record:
+provenance writer, and let the record tool resolve it:
 
 ```bash
 jev-check --classifier '<raw answers>' --label recheck-<pr>
 # jev: medium (0.63) · C1 · worktree y
 ```
 
-```
-jev-recheck: jev: medium (0.63) · C1 · worktree y
-Risk class: C1
-```
+The `jev-recheck:` line is **not** an argument to `review-record.mjs` (#596). The writer resolves
+the newest `recheck-<pr>` row from the ledger — `--log <absolute path>`, else `JEV_PROVENANCE`,
+else `<cwd>/.pi/jev-lines.log` — validates it, and emits it; it prints the row's ISO and the
+ledger path on stderr. `--recheck` is gone and is refused by name (exit 2): the line is a fact the
+classifier wrote, so there is no second way to author it. Two consequences worth knowing before
+the review starts:
+
+- **One head carries one line.** If the record already covers this head with a DIFFERENT resolved
+  line, the write is refused (exit 1, `line-mismatch`, naming both lines and the record). Recovery
+  is deleting the record, or `--new-head` when the head actually changed — never editing the line.
+- **The ledger is explicit.** A worktree has no ledger of its own; the conductor names the
+  absolute path in the dispatch. A relative `--log` is exit 2, a missing ledger is exit 2 naming
+  `--log`, and there is no discovery (no `<repo>/.pi` probe) — that is U2's job.
 
 Merge check (f) requires a provenance row for that exact line under `recheck-<pr>`, and refuses
-when the declared `Risk class` is **weaker** than the recheck (C1 strongest). The comparison is
-byte-for-byte, so **paste the printed line VERBATIM** — a reformatted confidence (`(0.40)` for a
-printed `(0.4)`) is a different line and is refused. A record carrying
+when the declared `Risk class` is **weaker** than the recheck (C1 strongest). The offline check can
+ask the same question: `merge-guard.sh --check-record <file> --pr <n> --provenance <ledger>` binds
+the record's line to ANY row (the gate's predicate, byte for byte), so it is the reviewer's
+pre-flight rather than a second opinion. A record carrying
 only the dispatch-time line cannot show the tier was right — the 2026-11-04 miss was dispatched
 `C2`, classified `C1`, and would have merged under the old gate.
 

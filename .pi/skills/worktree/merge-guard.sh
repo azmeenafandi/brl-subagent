@@ -74,13 +74,16 @@
 # runs the COCKPIT's `scripts/check-test-budget.mjs` — never the PR tree's, so a PR cannot ship the
 # rule that judges it.
 #
-# `--check-record` is the offline half: checks (b), (c), (d) and (f)'s field rules only, with no
-# `gh`, no network and no provenance log — it runs `scripts/review-record.mjs --check`, which uses
-# the same definition (`scripts/lib/record-fields.mjs`) that WRITES the record, so a generated
-# record passing here and failing the gate cannot happen. `--pr` / `--head` are optional: pass them
-# and the check also demands the record names that PR and covers that head; omit them for a
-# shape-only check. (a) CI, (e) the dispatch audit and (f)'s `recheck-<pr>` row stay in the full
-# gate — none of them can be answered offline.
+# `--check-record` is the offline half: checks (b), (c), (d) and (f)'s field rules with no `gh` and
+# no network, and — when `--provenance <path>` is given — (f)'s `recheck-<pr>` row too. It runs
+# `scripts/review-record.mjs --check`, which uses the same definition (`scripts/lib/record-fields.mjs`)
+# that WRITES the record, so a generated record passing here and failing the gate cannot happen.
+# `--pr` / `--head` are optional: pass them and the check also demands the record names that PR and
+# covers that head; with `--pr`, the ledger is read (no `--provenance` means `JEV_PROVENANCE`, then
+# `<cwd>/.pi/jev-lines.log`, never a discovery), and a missing ledger is exit 2 naming `--log`.
+# `--shape-only` skips the row check and reproduces the pre-#596 output byte for byte. (a) CI, (e)
+# the dispatch audit and (g) the PR body's numbers stay in the full gate — none of them can be
+# answered offline.
 #
 # Exit: 0 all checks pass · 1 at least one reason failed (every reason is listed) · 2 usage/input error.
 #
@@ -542,10 +545,16 @@ check_pr_evidence_block() {
 
 # Delegate to `scripts/review-record.mjs --check`, which uses `scripts/lib/record-fields.mjs` — one
 # definition, so a record the generator emits passing here and failing the gate on a field rule is
-# not possible. No `gh`, no network, no provenance log: (a), (e) and (f)'s `recheck-<pr>` row need
-# the full gate. `pr` / `head` are optional (shape-only check); pass them to demand both.
+# not possible. No `gh`, no network: (a) and (e) need those. `pr` / `head` are optional (shape-only
+# check); pass them to demand both. `provenance` forwards to the tool's `--log` (#596): with it, the
+# record's `jev-recheck:` line must bind to a `recheck-<pr>` row — the gate's own predicate. Without
+# it the tool resolves `JEV_PROVENANCE` or `<cwd>/.pi/jev-lines.log` and refuses a missing ledger by
+# name, exactly as the writer does. `shape_only` forwards `--shape-only`: the pre-#596 contract.
 run_record_check() {
-    local record="$(absolute_path "$1")" pr="$2" head="$3"
+    local record="$(absolute_path "$1")" pr="$2" head="$3" provenance="" shape_only="${5:-false}"
+    if [[ -n "${4}" ]]; then
+        provenance="$(absolute_path "$4")"
+    fi
     local tool="${REPO_ROOT}/scripts/review-record.mjs"
     if [[ ! -f "${tool}" ]]; then
         echo "merge-guard: ${tool} is missing — a checkout older than #487 cannot check a record" >&2
@@ -569,6 +578,12 @@ run_record_check() {
     fi
     if [[ -n "${head}" ]]; then
         args+=(--head "${head}")
+    fi
+    if [[ -n "${provenance}" ]]; then
+        args+=(--log "${provenance}")
+    fi
+    if [[ "${shape_only}" == "true" ]]; then
+        args+=(--shape-only)
     fi
     node "${tool}" "${args[@]}"
 }
@@ -1214,7 +1229,7 @@ EOF
     # --- --check-record: the offline mode is the generator's own definition ----------------
     # Quiet helpers: the node tool's own report is covered by scripts/__tests__/review-record.test.ts;
     # here the point is only that the mode exists and agrees with the generator.
-    check_record_ok() { run_record_check "$1" "$2" "$3" >/dev/null 2>&1; }
+    check_record_ok() { run_record_check "$1" "$2" "$3" "${prov}" "" >/dev/null 2>&1; }
 
     cat >"${dir}/written-by-the-generator.md" <<EOF
 # Review record — PR #412
@@ -1514,6 +1529,7 @@ PR_TREE_OVERRIDE=""
 
 main() {
     local args=() repo_root_override="" check_record_path="" check_pr="" check_head=""
+    local check_provenance="" check_shape_only="false"
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --selftest) run_selftest; return $? ;;
@@ -1530,6 +1546,13 @@ main() {
                 [[ $# -ge 2 ]] || { echo "merge-guard: --check-record needs a record path" >&2; return 2; }
                 check_record_path="$2"
                 shift 2 ;;
+            --provenance)
+                [[ $# -ge 2 ]] || { echo "merge-guard: --provenance needs a ledger path" >&2; return 2; }
+                check_provenance="$2"
+                shift 2 ;;
+            --shape-only)
+                check_shape_only="true"
+                shift ;;
             --pr)
                 [[ $# -ge 2 ]] || { echo "merge-guard: --pr needs a PR number" >&2; return 2; }
                 check_pr="$2"
@@ -1552,8 +1575,12 @@ main() {
 
     # `--check-record` is a mode, not a third positional: it never reaches the network.
     if [[ -n "${check_record_path}" ]]; then
-        run_record_check "${check_record_path}" "${check_pr}" "${check_head}"
+        run_record_check "${check_record_path}" "${check_pr}" "${check_head}" "${check_provenance}" "${check_shape_only}"
         return $?
+    fi
+    if [[ -n "${check_provenance}" || "${check_shape_only}" == "true" ]]; then
+        echo "merge-guard: --provenance and --shape-only belong to --check-record" >&2
+        return 2
     fi
 
     if [[ ${#args[@]} -ne 2 ]]; then

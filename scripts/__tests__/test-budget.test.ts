@@ -952,7 +952,11 @@ describe("main — the two streams and the exit codes", () => {
 		// into `scripts/lib/provenance-ledger.mjs` and the merged block went into the gate's own
 		// `--match-row` call and its structural-failure message here, so the skills surface is
 		// 8812 - 150 + 19. A move is not a rewrite: the scripts surface grows by what this one lost.
-		const SKILLS_SOURCE_LOC = 8681;
+		// Re-pointed again by #596 U1: `merge-guard.sh --check-record` forwards `--provenance` and
+		// `--shape-only` with the two mode guards, and `run.sh`'s risk-weaker replay passes the ledger
+		// fixture instead of `--recheck` (+28 source lines in all); the JS surface is unchanged (the
+		// resolver lives in `scripts/`).
+		const SKILLS_SOURCE_LOC = 8709;
 		const measured = measureSurface(surface("skills"), ROOT);
 		expect(measured.sourceLoc).toBe(SKILLS_SOURCE_LOC);
 		expect(measured.reference).toBeNull();
