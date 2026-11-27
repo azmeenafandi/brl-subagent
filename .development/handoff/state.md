@@ -3,10 +3,10 @@
 The mechanical snapshot #607 moved out of the index. Read by `node scripts/handoff-verify.mjs` — every
 line below is a claim it recomputes, and a drift means the claim is wrong, never the checker.
 
-- **dev** @ `b4efb98` — the changelog `## Unreleased` populate (since-2.9.1 + #583/#585), after the #607 merge.
-- **Running install:** the **dev checkout** (`pi install /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev`) on pi **1.6.1**, `dev @ b4efb98`; every dispatch dogfoods the branch. Revert to the published build: `pi remove /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` → `pi install npm:brl-subagent@2.9.1` → `/reload`.
+- **dev** @ `221d243` — the #606 grill spec r1 + the upstream grilling capture (Unit 1 planning).
+- **Running install:** the **dev checkout** (`pi install /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev`) on pi **1.6.1**, `dev @ 221d243`; every dispatch dogfoods the branch. Revert to the published build: `pi remove /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` → `pi install npm:brl-subagent@2.9.1` → `/reload`.
 - **Board:** `#607` merged (`14aef6e`); the queue after it is the factory front door (#606), then the spine. Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #606.
-- **Suite:** 150 files / **3451** (3450 passed, 0 failed, 1 skipped) captured at `b4efb98`; typecheck clean; docs guards current (**61 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,261; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
+- **Suite:** 150 files / **3451** (3450 passed, 0 failed, 1 skipped) captured at `221d243`; typecheck clean; docs guards current (**61 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,261; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
 
 ## Open items
 
