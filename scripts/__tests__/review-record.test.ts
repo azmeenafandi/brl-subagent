@@ -483,10 +483,16 @@ describe("review-record — the recheck line is RESOLVED from the ledger (#596)"
 	});
 
 	it("U1-5 a relative --log and a missing ledger are both exit 2, and the message names --log", () => {
-		const relative = write(args("relative.log", [], scratch("u1-5-relative.md")));
+		// The dangerous shape: the relative name EXISTS next to the caller's cwd. A resolver that
+		// joined it (mutant M4) would find a valid ledger and write; the refusal is by NAME, never
+		// by "the file I guessed was not there".
+		const cwd = scratchDir("u1-5-cwd");
+		writeFileSync(join(cwd, "relative.log"), `2026-11-04T00:00:00.000Z\trecheck-592\t${RECHECK.replace("medium (0.63)", "medium (0.87)").replace("C1", "C2").replace("worktree y", "worktree n")}\n`);
+		const relative = write(args("relative.log", [], scratch("u1-5-relative.md")), "", { cwd });
 		expect(relative.code).toBe(EXIT.USAGE);
 		expect(relative.stderr).toContain("--log");
-		expect(relative.stderr).toContain("absolute");
+		expect(relative.stderr).toContain("relative ledger names nothing");
+		expect(relative.stdout).toBe("");
 		const missing = write(args("/nonexistent/jev-lines.log", [], scratch("u1-5-missing.md")));
 		expect(missing.code).toBe(EXIT.USAGE);
 		expect(missing.stderr).toContain("--log");
@@ -566,7 +572,7 @@ describe("review-record — the recheck line is RESOLVED from the ledger (#596)"
 		expect(noPr.stderr).toContain("--pr");
 		const relative = check([RECORD, "--pr", "592", "--log", "relative.log"]);
 		expect(relative.code).toBe(EXIT.USAGE);
-		expect(relative.stderr).toContain("absolute");
+		expect(relative.stderr).toContain("relative ledger names nothing");
 	});
 
 	it("a six-column ledger row binds like a three-column one", () => {
