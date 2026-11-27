@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // Purpose: the provenance ledger's ONE reader, writer and row predicate (issue #596).
 //
 // Rule 22's evidence is a row in `.pi/jev-lines.log`: `<iso>\t<label>\t<jev: line>` plus optional

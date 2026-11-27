@@ -101,7 +101,8 @@ import {
 } from "../../../scripts/lib/provenance-ledger.mjs";
 
 // ---------------------------------------------------------------------------
-// Policy — the vocabulary Rule 22 and the ledger speak.
+// Policy — the vocabulary Rule 22's audit speaks. The LEDGER's own grammar (its cutoff header,
+// its row shape, its error class) lives in the module the audits and the gate share.
 // ---------------------------------------------------------------------------
 
 /** Risk classes (SKILL.md's C1/C2/C3 table). */
@@ -179,7 +180,8 @@ const HEADER_FIRST_CELL = "date";
 const SEPARATOR_CELL = /^:?-{2,}:?$/;
 
 // ---------------------------------------------------------------------------
-// Errors — the exit code names the class of failure.
+// Errors — the exit code names the class of failure. StructuralError is the module's: the same
+// class the ledger reader throws, so one `instanceof` still decides exit 2 for both.
 // ---------------------------------------------------------------------------
 
 /** The skipped form: a payload with no usable confidence. Exit 1 — a finding. */

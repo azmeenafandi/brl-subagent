@@ -951,8 +951,8 @@ describe("main — the two streams and the exit codes", () => {
 		// Re-pointed by #596: the provenance ledger's grammar moved verbatim out of `jev-check.mjs`
 		// into `scripts/lib/provenance-ledger.mjs` and the merged block went into the gate's own
 		// `--match-row` call and its structural-failure message here, so the skills surface is
-		// 8812 - 150 + 17. A move is not a rewrite: the scripts surface grows by what this one lost.
-		const SKILLS_SOURCE_LOC = 8679;
+		// 8812 - 150 + 19. A move is not a rewrite: the scripts surface grows by what this one lost.
+		const SKILLS_SOURCE_LOC = 8681;
 		const measured = measureSurface(surface("skills"), ROOT);
 		expect(measured.sourceLoc).toBe(SKILLS_SOURCE_LOC);
 		expect(measured.reference).toBeNull();
