@@ -4,7 +4,7 @@
 > History: `.development/HANDOFF-ARCHIVE-*` and `.development/FRICTION_LOG.md` — never re-read it.
 
 ## STATE
-Verified: 14aef6e (2026-11-27)
+Verified: b4efb98 (2026-11-27)
 In flight: nothing
 Next action: #606 (open) — the factory's front door
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
