@@ -4,7 +4,6 @@
 > at U1 and needed a manual reconciliation.
 
 ## STATE
-Verified: 4c1d9ab (2026-11-08)
 Cycle: fixture cycle.
 
 - **dev** @ `4c1d9ab`. The fixture dev tip.

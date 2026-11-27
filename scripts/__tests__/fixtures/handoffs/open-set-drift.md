@@ -4,7 +4,6 @@
 > three shapes that drifted in the wild at U1.
 
 ## STATE
-Verified: 4c1d9ab (2026-11-08)
 Cycle: fixture cycle.
 
 - **dev** @ `4c1d9ab`. The fixture dev tip.

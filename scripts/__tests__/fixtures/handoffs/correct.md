@@ -4,7 +4,6 @@
 > stubbed repo probe agrees with, so a change to this file is a change to the tool's contract.
 
 ## STATE
-Verified: 4c1d9ab (2026-11-08)
 Cycle: fixture cycle.
 
 - **dev** @ `4c1d9ab`. The fixture dev tip.

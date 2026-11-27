@@ -3,7 +3,6 @@
 > Test fixture for `scripts/handoff-verify.mjs`: the dev line names a tip that is not `git rev-parse dev`.
 
 ## STATE
-Verified: 4c1d9ab (2026-11-08)
 Cycle: fixture cycle.
 
 - **dev** @ `deadbee1`. A tip from another day.

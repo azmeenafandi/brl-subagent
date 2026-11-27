@@ -254,6 +254,16 @@ check("truncated records → null, never a partial match", ["M\0", "R100\0only-o
 console.log("-- ownership: the handoff's own paths");
 
 check("isHandoffOwnPath: the file and its archives", [".development/HANDOFF.md", ".development/HANDOFF-ARCHIVE-2026-10-17.md"].map(isHandoffOwnPath), [true, true]);
+// #607: the pages under `.development/handoff/` are the handoff's own too, in lock-step with
+// `isHandoffOwnPath` in `scripts/lib/handoff-claims.mjs`. A page-only commit is not drift.
+check(
+	"isHandoffOwnPath: the pages too (#607)",
+	[".development/handoff/state.md", ".development/handoff/invariants.md"].map(isHandoffOwnPath),
+	[true, true],
+);
+check("isHandoffOwnPath: a nested page is not one", isHandoffOwnPath(".development/handoff/nested/state.md"), false);
+check("isHandoffOwnPath: a page that is not markdown is not one", isHandoffOwnPath(".development/handoff/state.txt"), false);
+check("isHandoffOwnPath: a page with a trailing space is another file", isHandoffOwnPath(".development/handoff/state.md "), false);
 check(
 	"isHandoffOwnPath: anything else is foreign",
 	["src/runner.ts", ".development/HANDOFF.md.bak", ".development/HANDOFF-ARCHIVE-2026-10-17.md/x", "README.md", "HANDOFF.md"].map(
@@ -367,29 +377,38 @@ const inserted = replaceVerified("## STATE\n- dev @ f4e518b\n\n## Pointers\n", "
 check("inserts a Verified line when §STATE has none", inserted, "## STATE\nVerified: f4e518b (2026-10-17)\n- dev @ f4e518b\n\n## Pointers\n");
 check("no §STATE → null (never a guessed rewrite)", replaceVerified("# Handoff\n\n## Pointers\n", "f4e518b", "2026-10-17"), null);
 
-console.log("-- verify table: mirrors the reference (handoff.md)");
+console.log("-- verify table: mirrors the index's resume protocol (#607)");
 
-// The reference table is the source of truth; the constant must not drift from
-// it silently. Parse the reference's rows after its own heading (other tables in
-// the file have lowercase first cells too, e.g. `| preamble |`).
-const reference = readFileSync(join(__dirname, "..", "..", "skills", "handoff", "references", "handoff.md"), "utf8");
-const referenceTable = reference.slice(reference.indexOf("## Verify-command table"));
-const referenceLabels = referenceTable
-	.split("\n")
-	.map((line) => /^\|\s*([a-z]+)\s*\|/.exec(line))
-	.filter((match) => match !== null)
-	.map((match) => match[1]);
-const constantLabels = VERIFY_COMMANDS.map((row) => row.split(/\s+/)[0]);
+// The RESUME PROTOCOL in the handoff index is the source of truth since #607: a session runs those
+// commands, and `VERIFY_COMMANDS` is what `/handoff` prints. The pin is one-directional on purpose —
+// every command the index tells a session to run must appear in the constant, and the constant must not
+// carry a row the index does not — so the two cannot drift silently.
+const index = readFileSync(join(__dirname, "..", "..", "..", ".development", "HANDOFF.md"), "utf8");
+const resumeSection = index.slice(index.indexOf("## Resume protocol")).split("\n").slice(1);
+const resumeCommands = resumeSection
+	.map((line) => line.trim())
+	.filter((line) => line !== "" && !line.startsWith("#") && !line.startsWith("|") && !line.startsWith(">"))
+	.map((line) => line.split("#")[0].trim());
 
-check("the reference table still has 7 claims", referenceLabels.length, 7);
-check("one constant row per claim", VERIFY_COMMANDS.length, referenceLabels.length);
-check("labels match the reference table, in order", constantLabels, referenceLabels);
-const hygiene = VERIFY_COMMANDS.find((row) => row.startsWith("hygiene ")) ?? "";
+// EXACT equality of the command segment, not `includes`: `git status --short --branch` contains
+// `git status --short`, and a substring pin would call that a match — the drift the pin exists to catch.
+// A row is `<label><2+ spaces><command>[<2+ spaces><note>]`, so the command is the second segment.
+const verifyCommands = VERIFY_COMMANDS.map((row) => {
+	const parts = row.split(/\s{2,}/);
+	return parts.length > 1 ? parts[1].trim() : "";
+});
+check("the index states the three resume commands", resumeCommands.length, 3);
+check("VERIFY_COMMANDS has one row per resume command", VERIFY_COMMANDS.length, resumeCommands.length);
+check("the commands match the index's resume protocol, in order", verifyCommands, resumeCommands);
 check(
-	"the hygiene row names all three commands",
-	["npx tsc --noEmit", "node scripts/docs-arch.mjs", "node scripts/docs-decisions.mjs"].filter((command) => hygiene.includes(command))
-		.length,
-	3,
+	"every row has a label and a command",
+	VERIFY_COMMANDS.map((row) => /^[a-z]+\s{2,}\S/.test(row)),
+	[true, true, true],
+);
+check(
+	"the verify row is the verifier, not a hand-run checklist",
+	VERIFY_COMMANDS[0].includes("node scripts/handoff-verify.mjs"),
+	true,
 );
 
 console.log(failures === 0 ? "\nAll handoff checks passed." : `\n${failures} check(s) FAILED.`);

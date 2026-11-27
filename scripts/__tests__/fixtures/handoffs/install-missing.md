@@ -4,7 +4,6 @@
 > sha on the line still matches, so exactly one drift remains.
 
 ## STATE
-Verified: 4c1d9ab (2026-11-08)
 Cycle: fixture cycle.
 
 - **dev** @ `4c1d9ab`. The fixture dev tip.

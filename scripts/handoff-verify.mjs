@@ -1,9 +1,19 @@
 #!/usr/bin/env node
-// Purpose: Diffs the handoff STATE's mechanical claims against the repo — one command, seven checks
-// (issue #495).
+// Purpose: Diffs the handoff against the repo — the INDEX's shape and citations (seven checks) and the
+// STATE PAGE's mechanical claims (checks 2–7) — one command (issue #495, index #607).
 //
-// The claim grammar and the verdict are in `scripts/lib/handoff-claims.mjs` (pure); this file is the two
-// ends around it: the repo facts a check needs (`createRepoProbe`) and the CLI (`main`). Nothing here
+// TWO DOCUMENTS since #607. `.development/HANDOFF.md` is an index: four §STATE lines, bounded
+// §Invariants/§Pointers/§Resume protocol sections, no counts. The mechanical claims it used to carry live
+// in the page `.development/handoff/state.md` (below the index's own directory), in the SAME grammar
+// `parseClaims` has always read. Two passes, one verdict:
+//
+//   pass A (index)   structure/shape · verified · budget · index completeness · citation liveness ·
+//                    no counts in prose · one next action
+//   pass B (page)    dev · install · open set · suite · modules/ADRs · file sizes — checks 2–7, with the
+//                    index's `Verified:` as the head the suite report must have been captured at
+//
+// The claim grammars and both verdicts are in `scripts/lib/handoff-claims.mjs` (pure); this file is the two
+// ends around them: the repo facts a check needs (`createRepoProbe`) and the CLI (`main`). Nothing here
 // decides whether a claim holds — that is the lib's job, which is what lets the tests drive every drift
 // without a repo, a network or a subprocess.
 //
@@ -12,13 +22,16 @@
 //                                   [--issues <gh-issue-list.json>] [--no-network] [--json]
 //
 // Exit 0 every claim holds · 1 drift, one named code per failing claim · 2 usage, a missing/unreadable
-// input, or an environment that cannot answer (no `dev` ref, no vitest report, `gh` unavailable). A drift
-// and an unanswerable check are never conflated: "cannot check" is exit 2, never a silent pass.
+// input, or an environment that cannot answer (no `dev` ref, no vitest report, `gh` unavailable, and since
+// #607 a missing state page: `state-page-missing`). A drift and an unanswerable check are never
+// conflated: "cannot check" is exit 2, never a silent pass.
 //
-// OUT OF SCOPE BY DESIGN (said in the output, not just here): narrative claims — the cycle queue,
-// `### Next actions` and the `### Since the last handover` bullets. They are prose, and the only mechanical
-// reading of them is a guess at which queue item is "current"; a heuristic there would fail closed on a
-// legitimate rewrite, which is worse than a human reading three lines. See `SCOPE` below.
+// OUT OF SCOPE BY DESIGN (said in the output, not just here): the MEANING of the index's prose. The index
+// is checked for shape, size, set relations, citation liveness and counts — never for whether a sentence
+// is wise, and never for what a page says beyond the claims it states. The old scope sentence named
+// narrative claims (`### Next actions`, the `Since the last handover` bullets); #607 removed those
+// sections, so the residual is stated instead of the sections: a bounded line can still carry prose, and
+// the mechanical guarantee is smallness with a named shape. See `SCOPE` below.
 //
 // Fact sources, and the flags that make them injectable:
 //   root                  this checkout, or the one `--root <path>` names (#548). EVERY repo fact follows it —
@@ -66,30 +79,32 @@
 //   • A drift means the CLAIM is wrong: fix the claim, never this script. It reads the shapes the handoff
 //     contract promises and nothing else — prose is not parsed, nothing is rewritten, nothing is fixed.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { countLines } from "./check-test-budget.mjs";
 import { collectDecisions } from "./docs-decisions.mjs";
 import { collectModules } from "./docs-arch.mjs";
-import { InputError, evaluate, isHandoffOwnCommit, parseClaims } from "./lib/handoff-claims.mjs";
+import { InputError, evaluateIndex, evaluateStatePage, isHandoffOwnCommit, parseClaims, parseIndex } from "./lib/handoff-claims.mjs";
 import { resolveReport } from "./lib/suite-report.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The checkout this script lives in — never a hard-coded cockpit path; `git rev-parse dev` works here. */
 export const ROOT = join(HERE, "..");
 export const DEFAULT_FILE = join(".development", "HANDOFF.md");
+/** The page the index points at, relative to the index's own directory (#607 D1). */
+export const STATE_PAGE = join("handoff", "state.md");
 
 export const USAGE =
-	"usage: handoff-verify.mjs [--root <path>] [--file <handoff>] [--report <vitest-json-report>] [--report-dir <dir>] [--issues <gh-issue-list.json>] [--no-network] [--json]";
+	"usage: handoff-verify.mjs [--root <path>] [--file <handoff-index>] [--report <vitest-json-report>] [--report-dir <dir>] [--issues <gh-issue-list.json>] [--no-network] [--json]";
 
 /**
  * The claims this tool refuses to check, printed with every verdict: a scope nobody states is a scope the
- * reader fills in with their own guess. One sentence, and the reason — a heuristic here would FAIL CLOSED
- * on a legitimate rewrite of the queue or of a "Since" bullet, which is a worse trade than prose.
+ * reader fills in with their own guess. One sentence, and the reason — the index is checked for SHAPE, and
+ * a bounded line can still hold a sentence, so the residual is stated rather than claimed away.
  */
 export const SCOPE =
-	"out of scope by design: narrative claims — the cycle queue, `Next actions`, `Since` bullets — are prose, and a heuristic there would fail closed on a legitimate rewrite";
+	"out of scope by design: the MEANING of the index's prose — a bounded line can still hold a sentence, so the guarantee is smallness with a named shape (H2 set · four §STATE fields · section bounds · budget · citations · no counts), and a page is opened on demand rather than read here";
 
 /** Exit codes, named so the docs and the tests cannot drift from the script. */
 export const EXIT = Object.freeze({ OK: 0, DRIFT: 1, USAGE: 2 });
@@ -236,10 +251,21 @@ export function resolveDevClaim(root) {
  *
  * The suite report itself is not read here any more (#513): `scripts/lib/suite-report.mjs` owns that, so
  * the handoff's suite check and the PR body's `suite:` key cannot disagree about what a report is.
+ *
+ * The INDEX's four facts (#607) are here too, because they are the only facts the index checks need and
+ * they are all IO: the page directory (`pages`), a pointer target (`pointerExists`, resolved against the
+ * index's directory first and then the checkout root — the two places a row can name), an issue's state
+ * (`issueState`, `gh issue view`), and dev ancestry for a cited sha (`isAncestorOfDev`, not `isAncestor`:
+ * a citation names a commit on the branch the index describes, and a worktree's HEAD is not that branch).
+ *
+ * `indexFile` is the resolved index path, so `pages`/`pointerExists` resolve against the directory the
+ * index actually lives in — `--file` may name any document, and its pages are its own.
  */
-export function createRepoProbe(root, { report = "", reportDir = "", issues = "" } = {}) {
+export function createRepoProbe(root, { report = "", reportDir = "", issues = "", indexFile = "" } = {}) {
+	const indexDir = dirname(resolve(indexFile === "" ? join(root, DEFAULT_FILE) : indexFile));
 	return {
 		root,
+		indexDir,
 		headSha: () => gitOrThrow(root, ["rev-parse", "HEAD"], "HEAD").trim(),
 		devSha: () => gitOrThrow(root, ["rev-parse", "dev"], "dev").trim(),
 		devClaimSha: () => resolveDevClaim(root),
@@ -250,9 +276,46 @@ export function createRepoProbe(root, { report = "", reportDir = "", issues = ""
 			if (result.error) throw new InputError(`HEAD: ${describeError(result.error)}`);
 			return result.status === 0;
 		},
+		// Same rule, different subject: a cited sha must be on `dev`, the branch the index describes.
+		isAncestorOfDev: (sha) => {
+			const result = git(root, ["merge-base", "--is-ancestor", sha, "dev"]);
+			if (result.error) throw new InputError(`dev: ${describeError(result.error)}`);
+			return result.status === 0;
+		},
 		commitsAfter: (sha) =>
 			parseRangeLog(gitOrThrow(root, ["log", "--format=%x01%H", "--name-status", "-z", "-M", `${sha}..dev`], "dev")),
 		exists: (path) => existsSync(path),
+		// The pages the index must point at: every `.md` beside it under `handoff/`. An absent directory is
+		// `[]`, not a fault — `main` has already refused a missing page as `state-page-missing`.
+		pages: () => {
+			try {
+				return readdirSync(join(indexDir, "handoff")).filter((name) => name.endsWith(".md")).sort();
+			} catch {
+				return [];
+			}
+		},
+		// Index directory first (a page row reads `handoff/state.md`), then the checkout root (a skill row reads
+		// `.pi/skills/handoff/SKILL.md`). Both are places a `## Pointers` row legitimately names.
+		pointerExists: (target) => existsSync(resolve(indexDir, target)) || existsSync(resolve(root, target)),
+		issueState: (number) => {
+			const result = spawnSync("gh", ["issue", "view", String(number), "--json", "number,state"], { cwd: root, encoding: "utf8" });
+			if (result.error) throw new InputError(`gh issue view ${number}: ${describeError(result.error)}`);
+			if (result.status !== 0) {
+				const reason = (result.stderr ?? "").trim().split("\n")[0] || "no output";
+				throw new InputError(`gh issue view ${number} failed (${reason}) — pass --no-network to skip the citation check`);
+			}
+			let parsed;
+			try {
+				parsed = JSON.parse(result.stdout);
+			} catch (error) {
+				throw new InputError(`gh issue view ${number}: output is not JSON (${describeError(error)})`);
+			}
+			const state = typeof parsed?.state === "string" ? parsed.state.toLowerCase() : "";
+			if (!["open", "closed", "merged"].includes(state)) {
+				throw new InputError(`gh issue view ${number}: unexpected state ${JSON.stringify(parsed?.state)}`);
+			}
+			return state;
+		},
 		lineCount: (name) => {
 			const path = resolveModulePath(root, name);
 			return path === null ? null : { path, lines: countLines(path) };
@@ -365,16 +428,44 @@ export function main(argv = process.argv.slice(2), io = {}) {
 		err(`handoff-verify: cannot read ${filePath} (${describeError(error)})`);
 		return EXIT.USAGE;
 	}
-	const claims = parseClaims(text);
-	if (claims.state === null) {
+	const index = parseIndex(text);
+	// A document with no `## STATE` heading at all is a usage fault, not a drift: there is nothing to check
+	// and no injection. A `## STATE` that EXISTS with the wrong body is drift (`state-shape`), which is the
+	// distinction the reader needs — a wrong file vs. a wrong section.
+	if (!index.structure.headings.some((heading) => heading.text === "STATE")) {
 		err(`handoff-verify: ${filePath} has no "## STATE" section — nothing mechanical to check`);
+		return EXIT.USAGE;
+	}
+	// Pass B's subject, derived from the index rather than named by a second flag (#607 D1): `--file` names
+	// ONE document, and the page it points at is its own. A missing page is "cannot check" (2), never
+	// a drift — there is nothing to compare a claim against.
+	const pagePath = join(dirname(filePath), STATE_PAGE);
+	let pageText;
+	try {
+		pageText = readFileSync(pagePath, "utf8");
+	} catch (error) {
+		err(`handoff-verify: state-page-missing: ${pagePath} (${describeError(error)}) — the index's mechanical claims live in a page at <dir-of-index>/${STATE_PAGE}`);
+		return EXIT.USAGE;
+	}
+	const pageClaims = parseClaims(pageText);
+	if (pageClaims.state === null) {
+		err(`handoff-verify: ${pagePath} has no "## STATE" section — nothing mechanical to check`);
 		return EXIT.USAGE;
 	}
 	let results;
 	let drifts;
 	try {
-		const probe = io.probe ?? createRepoProbe(root, options);
-		({ results, drifts } = evaluate(claims, probe, { noNetwork: options.noNetwork, issuesInjected: options.issues !== "" }));
+		const probe = io.probe ?? createRepoProbe(root, { ...options, indexFile: filePath });
+		const context = { noNetwork: options.noNetwork, issuesInjected: options.issues !== "" };
+		// Pass A then pass B, in that order: the index's `Verified:` is what pass B's suite check needs, and a
+		// reader follows the document the same way.
+		const indexPass = evaluateIndex(index, probe, context);
+		const pagePass = evaluateStatePage(pageClaims, probe, {
+			...context,
+			expectHead: index.verified === null ? "" : index.verified.sha,
+		});
+		results = [...indexPass.results, ...pagePass.results];
+		drifts = [...indexPass.drifts, ...pagePass.drifts];
 	} catch (error) {
 		err(`handoff-verify: ${describeError(error)}`);
 		return EXIT.USAGE;
