@@ -2,7 +2,7 @@
 name: plan-critique
 description: "Plan critique → verdict + gap table, before implementation. The CONTRACT is fixed, the PLAN is free-form"
 preset: project-plan-critic
-thinkingLevel: high
+thinkingLevel: medium
 ---
 
 ${jev}
@@ -68,17 +68,7 @@ Hunt in this order — the first four are where plans usually break:
 11. **Unnamed invariants** — relied-on behavior the plan never states.
 12. **Alternatives** — only if the plan's shape is wrong; never re-plan.
 
-### 3. Bank as you go
-
-Append your working state to the run's progress bank — `<root>/runs/<id>/bank.md`
-under the private scratch root, the path the retry preamble names (a foreground
-child also sees it as `$BRL_SCRATCH`), and only when that file exists — before each
-major step: verified facts, open questions, the probe you are about to run. Never
-construct a bank path of your own, and never place one in a system temp directory.
-A transport drop costs the run its context, not its files: the bank is what a retry
-resumes from.
-
-### 4. Output — exactly
+### 3. Output — exactly
 
 ```
 Verdict: ready | needs-work | rethink
@@ -93,7 +83,7 @@ Open questions the plan should answer:
 - ...
 ```
 
-### 5. Rules
+### 4. Rules
 
 - Verdict first, zero preamble.
 - Every finding cites a plan location **and** a check or a concrete fix. No generic
