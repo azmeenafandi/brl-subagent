@@ -2,27 +2,27 @@
 
 **Issue:** #606 (process, owner priority) · **C2** · worktree **y**.
 **jev:** medium (0.89) · C2 · worktree y (r1 dispatch; the critique's recheck was `medium (0.5) · C2`)
-**Spec r2:** 2026-11-27, against `7933432` (`dev`). **Status: decision-ready for review — one open decision (§0).**
+**Spec r2:** 2026-11-27, against `7933432` (`dev`). **Status: decision-ready — §0 settled by the maintainer (2026-11-27: code-writing).**
 **Supersedes:** r1 (same file, same day). Critique r1 returned **`rethink`** — 1 blocker, 5 majors, 2 minors.
 
 **Scope: Unit 1 only** (the grill + the gate). Units 2 (wiki) and 3 (vocabulary) remain out of scope.
 
 ---
 
-## 0. The one decision this revision needs from the human
+## 0. The gated class — DECIDED (maintainer, 2026-11-27): code-writing dispatches
 
 The blocker was a **definitional** mismatch, not a mechanic: r1 gated `project-implementer` dispatches while the
-issue says *"a plan dispatch without a signed brief is refused"*. Two readings exist, and the spec must pick one —
-this is a decision, not a fact:
+issue says *"a plan dispatch without a signed brief is refused"*. Two readings existed; the maintainer chose **A**
+("I lean with code-writing as well", 2026-11-27). The table below is kept as the reasoning, with B recorded as the
+rejected alternative so it is not silently lost.
 
 | Reading | What is gated | Consequence |
 | --- | --- | --- |
-| **A — implementation is the gate** (recommended) | every dispatch that **writes code** (`project-implementer`, plus any task declaring `kind: impl`) | The brief is planning's **output**; gating planning would invert causality and make the grill unrunnable (`project-proposer` exists to *generate* the options a grill settles). |
-| B — "planning" is the gate | `project-proposer` design-proposal dispatches | Would require a brief **before** the dispatch that generates the material for one, and would leave code-writing dispatches ungated. |
+| **A — implementation is the gate** (**ADOPTED**) | every dispatch that **writes code** (`project-implementer`, plus any task declaring `kind: impl`) | The brief is planning's **output**; gating planning would invert causality and make the grill unrunnable (`project-proposer` exists to *generate* the options a grill settles). |
+| B — "planning" is the gate (**REJECTED**) | `project-proposer` design-proposal dispatches | Would require a brief **before** the dispatch that generates the material for one, and would leave code-writing dispatches ungated. |
 
-**Recommendation: A.** A brief is a set of *settled decisions*; a design proposal is how unsettled decisions get
-options. The rule the issue wants — *no code from an unagreed plan* — is exactly reading A. Everything below
-assumes A; if the human picks B, §3's trigger changes and the rest stands.
+**Adopted: A.** A brief is a set of *settled decisions*; a design proposal is how unsettled decisions get options. The
+rule the issue wants — *no code from an unagreed plan* — is exactly reading A. Everything below assumes A.
 
 ---
 
