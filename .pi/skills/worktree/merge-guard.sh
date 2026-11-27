@@ -294,13 +294,23 @@ risk_rank() {
 
 # The recheck line must have a provenance row labelled `recheck-<pr>` — a dispatch-time row is
 # not enough (that line belongs to the dispatch, not to the review-time classification).
+#
+# The predicate is NOT re-implemented here (issue #596): `jev-check --match-row` asks it from the one
+# module the audits and the writers read, so the gate cannot disagree with them about what a row is.
+# Exit 0 = a row, 1 = none, 2 = the ledger could not be read. Exit 2 never degrades to "no match"
+# silently: the reader's own reason is kept in PROVENANCE_READER_FAILURE and (f) fails closed with
+# it, because "the ledger is corrupt" and "your record is unprovenanced" are different repairs.
+PROVENANCE_READER_FAILURE=""
 provenance_has_recheck() {
-    local line="$1" pr="$2"
-    [[ -n "${line}" && -f "${JEV_PROVENANCE}" ]] || return 1
-    awk -F'\t' -v want="${line}" -v label="recheck-${pr}" '
-        NF >= 3 && $2 == label && $3 == want { found = 1 }
-        END { exit(found ? 0 : 1) }
-    ' "${JEV_PROVENANCE}"
+    local line="$1" pr="$2" output rc=0
+    PROVENANCE_READER_FAILURE=""
+    [[ -n "${line}" ]] || return 1
+    output="$(node "${SCRIPT_DIR}/jev-check.mjs" --match-row "recheck-${pr}" "${line}" --provenance "${JEV_PROVENANCE}" 2>&1)" || rc=$?
+    case "${rc}" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) PROVENANCE_READER_FAILURE="${output#jev-check: }"; return 2 ;;
+    esac
 }
 
 # Empty when the record satisfies (f); otherwise the reason.
@@ -320,7 +330,14 @@ recheck_decision() {
         printf 'the record has no "Risk class: C1|C2|C3" line — the review tier must be stated next to the recheck'
         return
     fi
-    if ! provenance_has_recheck "${line}" "${pr}"; then
+    local provenance_rc=0
+    provenance_has_recheck "${line}" "${pr}" || provenance_rc=$?
+    if [[ ${provenance_rc} -ne 0 ]]; then
+        if [[ ${provenance_rc} -eq 2 ]]; then
+            printf 'the provenance ledger could not be read, so the recheck cannot be bound — fail-closed, never "no match": %s; repair the ledger, then reprint the row with: jev-check --classifier "<raw answers>" --label recheck-%s' \
+                "${PROVENANCE_READER_FAILURE}" "${pr}"
+            return
+        fi
         printf 'no provenance row "%s" for the recheck — paste the printed line VERBATIM (a reformatted confidence is a different line); print it with: jev-check --classifier '"'"'<raw answers>'"'"' --label recheck-%s' "${line}" "${pr}"
         return
     fi
