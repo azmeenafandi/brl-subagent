@@ -948,7 +948,11 @@ describe("main — the two streams and the exit codes", () => {
 		// eight self-test cases; both units' additions are disjoint files, so the pin is their sum.
 		// Re-pointed by #572: the transport-death reader (records store, runtime signature parse,
 		// the default report's one line, `--transport`) and its eight self-test cases (+477).
-		const SKILLS_SOURCE_LOC = 8812;
+		// Re-pointed by #596: the provenance ledger's grammar moved verbatim out of `jev-check.mjs`
+		// into `scripts/lib/provenance-ledger.mjs` and the merged block went into the gate's own
+		// `--match-row` call and its structural-failure message here, so the skills surface is
+		// 8812 - 150 + 19. A move is not a rewrite: the scripts surface grows by what this one lost.
+		const SKILLS_SOURCE_LOC = 8681;
 		const measured = measureSurface(surface("skills"), ROOT);
 		expect(measured.sourceLoc).toBe(SKILLS_SOURCE_LOC);
 		expect(measured.reference).toBeNull();

@@ -70,6 +70,12 @@
 //                               report, and the retrospective classification is the evidence. An
 //                               exception without a usable `retro:` label leaves the dispatch an
 //                               offender — the excuse must point at a row, not at prose.
+//   --match-row <label> <line> [--provenance <path>]
+//                               the merge gate's predicate (issue #596): exit 0 when a ledger row
+//                               carries exactly this label and line, 1 when none does, 2 when the
+//                               ledger cannot be read (a broken log is never "no match"). Silent on
+//                               0/1 — the exit status is the report. No trim, no CR strip, no `#`
+//                               skip: it is the awk predicate it replaced, not the parser.
 //   --selftest                  fixture proof of every mode (CI-wired), deterministic, no network.
 //
 // CI:
@@ -78,13 +84,26 @@
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+	LEVELS,
+	MODEL_ID_PATTERN,
+	PROVENANCE_COLUMN_HELP,
+	PROVENANCE_CUTOFF_PREFIX,
+	StructuralError,
+	appendProvenanceEntry,
+	describe,
+	formatConfidence,
+	formatProvenanceEntry,
+	loadProvenance,
+	matchRow,
+	parseProvenanceLog,
+	parseProvenanceRow,
+} from "../../../scripts/lib/provenance-ledger.mjs";
 
 // ---------------------------------------------------------------------------
-// Policy — the vocabulary Rule 22 and the ledger speak.
+// Policy — the vocabulary Rule 22's audit speaks. The LEDGER's own grammar (its cutoff header,
+// its row shape, its error class) lives in the module the audits and the gate share.
 // ---------------------------------------------------------------------------
-
-/** Thinking levels the classifier answers with, low → high. */
-const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 /** Risk classes (SKILL.md's C1/C2/C3 table). */
 const RISKS = ["C1", "C2", "C3"];
@@ -145,37 +164,8 @@ const MODEL_UNSTATED = "(unstated)";
  */
 const CALIBRATION_MIN_ROWS = 20;
 
-/**
- * The provenance log's header records the cutoff: entries can only exist from the moment the log
- * was created, so dispatches dated BEFORE it are exempt (a historical dispatch cannot have a
- * provenance entry — the log did not exist). Recorded in the file, not in code, so the cutoff is
- * the deployment moment rather than an arbitrary constant.
- */
-const PROVENANCE_CUTOFF_PREFIX = "# jev-lines provenance — cutoff ";
-
 /** Explicit "the classifier did not run" markers — recorded, not silent (Rule 22). */
 const GAP_MARKERS = ["unavailable", "not classified", "n/a", "ritual gap"];
-
-/**
- * A model id: `<provider>/<id>`. At least one slash, and MULTIPLE are legal — the real ids this
- * repository dispatches include `openrouter/meta/muse-spark-1.3-contributor` and
- * `openrouter/~typesafe/jev-latest` (a single-slash pattern rejected both, measured 2026-11-08).
- */
-const MODEL_ID_PATTERN = /^[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)+$/;
-
-/** `<level> (<conf>)` in the aware column. The numeric RANGE is checked separately (rejects `1.5`). */
-const LEVEL_MODEL_SHAPE = /^level-model:([A-Za-z]+) \((\d+(?:\.\d+)?)\)$/;
-
-/** A provenance row: 3 positional columns plus up to 3 keyed ones. */
-const PROVENANCE_ROW_BASE_COLUMNS = 3;
-const PROVENANCE_ROW_MAX_COLUMNS = 6;
-
-/** Anything shaped like a keyed column — used to reject one placed before the line column. */
-const KEYED_COLUMN_PREFIX = /^(?:stated|model|level-model):/;
-
-const PROVENANCE_COLUMN_HELP =
-	"expected <iso>\\t<label>\\t<line> then any of stated:worktree, model:<provider>/<id>, " +
-	"level-model:<level> (<conf>)";
 
 /** A confidence in the Jev cell: any decimal with a leading digit (0.84, 1.0) — `.5` is not matched. */
 const CONFIDENCE_IN_CELL = /\d\.\d/;
@@ -190,18 +180,12 @@ const HEADER_FIRST_CELL = "date";
 const SEPARATOR_CELL = /^:?-{2,}:?$/;
 
 // ---------------------------------------------------------------------------
-// Errors — the exit code names the class of failure.
+// Errors — the exit code names the class of failure. StructuralError is the module's: the same
+// class the ledger reader throws, so one `instanceof` still decides exit 2 for both.
 // ---------------------------------------------------------------------------
 
 /** The skipped form: a payload with no usable confidence. Exit 1 — a finding. */
 class SkippedFormError extends Error {}
-
-/** Broken input (unparseable JSON, unreadable/empty table). Exit 2 — cannot check, never pass. */
-class StructuralError extends Error {}
-
-function describe(error) {
-	return error instanceof Error ? error.message : String(error);
-}
 
 // ---------------------------------------------------------------------------
 // Mode 1 — the dispatch line.
@@ -263,12 +247,6 @@ function normalizeWorktree(value) {
 	throw new SkippedFormError(
 		`missing/invalid "worktree" ${JSON.stringify(value)} — expected true|false (the classifier's probability > 0.5)`,
 	);
-}
-
-/** `0.84` → "0.84", `0.9` → "0.9", `1` → "1.0" — the log's own style, never a trailing-zero artifact. */
-function formatConfidence(confidence) {
-	const text = (Math.round(confidence * 100) / 100).toFixed(2).replace(/0+$/, "");
-	return text.endsWith(".") ? `${text}0` : text;
 }
 
 // ---------------------------------------------------------------------------
@@ -509,182 +487,52 @@ function loadDispatchExceptions(path) {
 }
 
 // ---------------------------------------------------------------------------
-// Provenance — the line must come from the classifier, not from the conductor's memory.
+// Provenance — the gate's row predicate (issue #596). The reader itself lives in
+// scripts/lib/provenance-ledger.mjs, so the gate and the audits cannot disagree.
 // ---------------------------------------------------------------------------
 
 /**
- * One provenance row: `<iso>\t<label>\t<canonical line>` followed by optional KEYED columns
- * (`stated:worktree`, `model:<id>`, `level-model:<level> (<conf>)`). Tabs, because a task label or
- * a line can contain anything else (the middle dot is not a separator risk; a tab cannot appear in
- * a shell label without quoting).
+ * `--match-row <label> <line> [--provenance <path>]` — the merge gate's question, answered from the
+ * ledger's own bytes: is there a row whose second column is exactly `<label>` and whose third is
+ * exactly `<line>`?
  *
- * The keyed columns are FACTS ABOUT THE RUN, never part of the matched line: the printed `jev:`
- * line is what `--require-provenance` compares exactly, so a new column can never invalidate a row
- * that was already printed, and 3-, 4-, 5- and 6-column rows coexist in one log.
+ * Exit 0 = yes, 1 = no, 2 = the ledger could not be read as a ledger. The predicate is `matchRow`,
+ * i.e. the `awk -F'\t' 'NF >= 3 && $2 == label && $3 == want'` it replaces: no trim, no `\r` strip,
+ * no `#` skip. The file is PARSED FIRST anyway, because a corrupted log must fail closed here as it
+ * does in every other reader — "no match" would be an answer about rows nobody validated, and the
+ * gate would print it as a missing provenance row.
  *
- * `fields`: `{ stated?: string, model?: string, levelModel?: { level, conf } }`.
+ * Silent on 0 and 1: this is a predicate, so the exit status is the report.
  */
-function formatProvenanceEntry(line, label, now, fields = {}) {
-	const columns = [now.toISOString(), label, line];
-	// #456: a field the classifier answered was STATED by the conductor (`worktree`, a process
-	// fact under Rule 5). Absent = all model answers.
-	if (fields.stated) columns.push(`stated:${fields.stated}`);
-	// #468: the model that will run the dispatch, and the model-aware arm's answer. These are the
-	// two facts the ledger never had — which is why it could never answer "was this level right
-	// for this model". Absent when unrecorded: never a guess, never a padded `model:unstated`.
-	if (fields.model) columns.push(`model:${fields.model}`);
-	if (fields.levelModel) {
-		columns.push(`level-model:${fields.levelModel.level} (${formatConfidence(fields.levelModel.conf)})`);
-	}
-	return columns.join("\t");
-}
-
-/**
- * Parse the provenance log. Returns `{ cutoff, entries }`, where `cutoff` is the `YYYY-MM-DD` from
- * the header (null when the file predates headers). A non-comment row that is not exactly three
- * tab-separated fields is a StructuralError — a corrupted provenance log must never read as
- * "no entries", which would silently fail every dispatch or, worse, silently pass none.
- */
-function parseProvenanceLog(text) {
-	let cutoff = null;
-	const entries = [];
-	const rows = text.split(/\r?\n/);
-	for (let index = 0; index < rows.length; index += 1) {
-		const raw = rows[index];
-		if (raw.trim() === "") continue;
-		if (raw.trimStart().startsWith("#")) {
-			const trimmed = raw.trim();
-			// The cutoff is the log's creation INSTANT, not its date: a date-only cutoff
-			// treats every same-day dispatch as "since the cutoff", which would flag the
-			// dispatches that predate the log (the 2026-10-31 live case). No released log
-			// predates this feature, so a date-only header is a structural error rather
-			// than a silently weaker comparison.
-			if (/\bcutoff\s+\d{4}-\d{2}-\d{2}\s*$/.test(trimmed)) {
-				throw new StructuralError(
-					`${PROVENANCE_CUTOFF_PREFIX.trim()} is date-only — the cutoff must be a full ISO instant ` +
-						"(YYYY-MM-DDThh:mm:ss.sssZ); delete the log and reprint the next line with --label",
-				);
-			}
-			const match = /^#.*\bcutoff\s+(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)\s*$/.exec(trimmed);
-			if (match !== null) cutoff = match[1];
-			continue;
+function reportMatchRow(args) {
+	const positional = [];
+	let path = DEFAULT_PROVENANCE_LOG;
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (arg === "--provenance") {
+			if (index + 1 >= args.length) throw new StructuralError("--provenance needs a ledger path");
+			path = args[index + 1];
+			index += 1;
+		} else if (arg.startsWith("--")) {
+			throw new StructuralError(`unknown --match-row option ${JSON.stringify(arg)}\n\n${USAGE}`);
+		} else {
+			positional.push(arg);
 		}
-		entries.push(parseProvenanceRow(raw, index + 1));
 	}
-	return { cutoff, entries };
-}
-
-/**
- * Parse ONE provenance row. The base is three positional columns (`<iso>`, `<label>`, `<line>`);
- * everything after is keyed, optional, any order, each at most once (#468).
- *
- * Fail-closed on every deviation a hand-edit can produce: an unknown key, a duplicate key, a
- * malformed value, a tab inside a value (which arrives as an extra column — the reason keyed
- * columns exist at all), a truncated row, or a keyed column before the line column. A corrupted
- * log must never read as "no entries".
- */
-function parseProvenanceRow(raw, lineNumber) {
-	const malformed = (why) =>
-		new StructuralError(`provenance log line ${lineNumber} is malformed — ${why}; ${PROVENANCE_COLUMN_HELP}`);
-	const parts = raw.split("\t");
-	if (parts.length < PROVENANCE_ROW_BASE_COLUMNS) {
-		throw malformed(`only ${parts.length} tab-separated column(s), and <iso>, <label>, <line> are required`);
+	if (positional.length !== 2) {
+		throw new StructuralError(`--match-row needs <label> <line> (got ${positional.length} positional argument(s))\n\n${USAGE}`);
 	}
-	if (parts.length > PROVENANCE_ROW_MAX_COLUMNS) {
-		throw malformed(`${parts.length} columns — at most ${PROVENANCE_ROW_MAX_COLUMNS} (the base 3 plus 3 keyed)`);
-	}
-	const at = parts[0].trim();
-	const label = parts[1].trim();
-	const line = parts[2].trim();
-	if (label === "" || line === "") throw malformed("the label or the line column is empty");
-	if (KEYED_COLUMN_PREFIX.test(at) || KEYED_COLUMN_PREFIX.test(label)) {
-		throw malformed(`the keyed column ${JSON.stringify(KEYED_COLUMN_PREFIX.test(at) ? at : label)} appears before the line column`);
-	}
-	const entry = { at, label, line, stated: null, model: null, levelModel: null };
-	const seen = new Set();
-	for (const column of parts.slice(PROVENANCE_ROW_BASE_COLUMNS)) {
-		applyProvenanceColumn(entry, column.trim(), seen, malformed);
-	}
-	return entry;
-}
-
-/** Apply one keyed column to `entry`; `malformed(why)` builds the StructuralError to throw. */
-function applyProvenanceColumn(entry, column, seen, malformed) {
-	if (column === "stated:worktree") {
-		if (seen.has("stated")) throw malformed("duplicate `stated:` column");
-		seen.add("stated");
-		entry.stated = "worktree";
-		return;
-	}
-	if (column.startsWith("model:")) {
-		if (seen.has("model")) throw malformed("duplicate `model:` column");
-		const id = column.slice("model:".length);
-		if (!MODEL_ID_PATTERN.test(id)) {
-			throw malformed(`model id ${JSON.stringify(id)} is not <provider>/<id> (no spaces, at least one "/")`);
-		}
-		seen.add("model");
-		entry.model = id;
-		return;
-	}
-	const aware = LEVEL_MODEL_SHAPE.exec(column);
-	if (aware !== null) {
-		if (seen.has("level-model")) throw malformed("duplicate `level-model:` column");
-		const [, level, confText] = aware;
-		if (!LEVELS.includes(level)) throw malformed(`level ${JSON.stringify(level)} is not one of ${LEVELS.join(" | ")}`);
-		const conf = Number(confText);
-		if (!Number.isFinite(conf) || conf < 0 || conf > 1) {
-			throw malformed(`confidence ${confText} is outside [0, 1]`);
-		}
-		seen.add("level-model");
-		entry.levelModel = { level, conf };
-		return;
-	}
-	// Only `worktree` can be stated today; a hand-crafted row claiming any other field was stated
-	// is rejected rather than silently accepted.
-	if (column.startsWith("stated:")) {
-		throw malformed(`the stated column ${JSON.stringify(column)} is not supported — only stated:worktree is`);
-	}
-	if (column.startsWith("level-model:")) {
-		throw malformed(`the level-model column ${JSON.stringify(column)} is not "<level> (<0..1 conf>)"`);
-	}
-	throw malformed(`unknown column ${JSON.stringify(column)}`);
-}
-
-/**
- * Append one provenance row, creating the file (and its cutoff header) on first use. The cutoff is
- * the creation DATE, which is what exempts every dispatch that predates the log.
- */
-function appendProvenanceEntry(path, line, label, now = new Date(), fields = {}) {
-	let existing = "";
-	try {
-		existing = readFileSync(path, "utf8");
-	} catch (error) {
-		if (error.code !== "ENOENT") throw new StructuralError(`${path}: cannot read the provenance log (${describe(error)})`);
-	}
-	const header = existing.trim() === "" ? `${PROVENANCE_CUTOFF_PREFIX}${now.toISOString()}\n` : "";
-	mkdirSync(dirname(path), { recursive: true });
-	appendFileSync(path, `${header}${formatProvenanceEntry(line, label, now, fields)}\n`);
-}
-
-/** Read the provenance log, fail-closed: a missing/empty log cannot verify anything. */
-function loadProvenance(path) {
+	const [label, line] = positional;
 	let text;
 	try {
 		text = readFileSync(path, "utf8");
 	} catch (error) {
-		throw new StructuralError(
-			`${path}: cannot read the provenance log (${describe(error)}) — --require-provenance is fail-closed; ` +
-				"print every dispatch line with `--line '<json>' --label <name>`",
-		);
+		throw new StructuralError(`${path}: cannot read the provenance log (${describe(error)})`);
 	}
-	const parsed = parseProvenanceLog(text);
-	if (parsed.entries.length === 0) {
-		throw new StructuralError(
-			`${path}: no provenance entries — --require-provenance cannot verify a dispatch line it never saw printed`,
-		);
-	}
-	return parsed;
+	parseProvenanceLog(text);
+	return matchRow(text.split("\n"), label, line) ? 0 : 1;
 }
+
 
 /**
  * `YYYY-MM-DD` part of an ISO timestamp. A missing/unrecognisable timestamp sorts LAST (it can
@@ -3356,7 +3204,7 @@ function runSelftest() {
 // ---------------------------------------------------------------------------
 
 const USAGE = [
-	"usage: jev-check.mjs --dispatch --classifier '<raw-answers>' --label <name> [--worktree y|n] [--model <id>] [--kind impl|review|probe] | --classifier '<raw-answers>' [--model <id>] [--classifier-model-aware '<raw-answers>'] [--label <name>] | --line '<json>' [--label <name>] [--legacy-line] | --ledger [path] | --log [path] [--since YYYY-MM-DD] [--require-provenance] | --settle <label> --kind <k> --outcome <o> [--verdict <v>] [--nits N] [--model-ran <id>] | --calibrate | --selftest",
+	"usage: jev-check.mjs --dispatch --classifier '<raw-answers>' --label <name> [--worktree y|n] [--model <id>] [--kind impl|review|probe] | --classifier '<raw-answers>' [--model <id>] [--classifier-model-aware '<raw-answers>'] [--label <name>] | --line '<json>' [--label <name>] [--legacy-line] | --match-row <label> <line> [--provenance <path>] | --ledger [path] | --log [path] [--since YYYY-MM-DD] [--require-provenance] | --settle <label> --kind <k> --outcome <o> [--verdict <v>] [--nits N] [--model-ran <id>] | --calibrate | --selftest",
 	"",
 	"  --dispatch        ONE command for a dispatch (#500): classify, print the line, append the",
 	"                    provenance row under --label, and print the exact `paste:` text. --label is",
@@ -3379,6 +3227,9 @@ const USAGE = [
 	"                     It is a measurement: ONE pasteable line is printed (the blind arm's), and an",
 	"                     unusable arm 2 falls back to blind-only rather than blocking the dispatch",
 	"  --legacy-line     with --line --label: acknowledge a conductor-assigned (non-classified) line",
+	"  --match-row <label> <line>  ask the provenance log whether a row carries exactly this label",
+	`                    and line (default log: ${DEFAULT_PROVENANCE_LOG}); exit 0 match, 1 none,`,
+	"                    2 the log cannot be read. The merge gate's (f) check calls this verb",
 	"  --label <name>    with --classifier/--line: append the printed line to the provenance log",
 	`                    (${DEFAULT_PROVENANCE_LOG}) so the dispatch line is machine-produced`,
 	"  --require-provenance  with --log: every dispatch line since the provenance cutoff must",
@@ -3492,6 +3343,7 @@ function main(argv) {
 			const { path, since, exceptions, requireProvenance } = parseLogArgs(rest);
 			return reportDispatchLog(path, since, exceptions, requireProvenance);
 		}
+		if (mode === "--match-row") return reportMatchRow(rest);
 		if (mode === "--settle") {
 			const { label, options } = parseSettleArgs(rest);
 			return reportSettle(label, options);
