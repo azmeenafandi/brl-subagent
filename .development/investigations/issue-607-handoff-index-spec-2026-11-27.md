@@ -54,7 +54,7 @@ documented). V6 check 0 mandates `STATE`+`Open items`; replaced.
 Verified: <sha> (<date>)
 In flight: nothing
 Next action: #607 (open) — redesign the handoff as an index
-Index: .development/HANDOFF.md (Invariants · Pointers · Resume protocol) → handoff/state.md, handoff/invariants.md
+Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → HANDOFF.md §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
 
 ## Invariants
 - (f) reads the provenance ledger; the recheck line is *resolved*, never typed
@@ -75,7 +75,9 @@ gh issue view <next-action-number>  # the next action
 ```
 
 **§STATE has exactly four non-blank lines, in order** — `Verified:`, `In flight:`, `Next action: #<n> (open)`,
-`Index:`. The `Next action:` line must cite `#<n> (open)` — the state is **required and must be `open`**.
+`Index:`. The `Next action:` line must cite `#<n> (open)` — the state is **required and must be `open`**. The
+`Index:` line carries the **verify-before-acting** instruction, so a session that sees only the injection knows to
+run the verifier first — it must never trust the next action before `handoff-verify` is green.
 
 **The index shape** (the mechanical "no history" guarantee — each rule fails with a named code):
 
@@ -175,9 +177,11 @@ extension banner may call the index "current" while the page is unreconciled; th
 ## Acceptance (what would prove it wrong)
 
 1. **Falsifier receipt (measured):** §STATE ≤ 2,000 bytes (`extractStateSection` → `wc -c`); a fresh session
-   reaches the next action in **1 command** after injection (`gh issue view <n>`), well under 3; the whole index
-   ≤8 KB (budget), well under 10k tokens; no clarifying question. The measured values are recorded in the #607
-   close comment.
+   that sees **only the injection** runs `node scripts/handoff-verify.mjs` (1 command) and `gh issue view <n>`
+   (2 commands) before trusting the next action — well under 3 — and stops or reconciles on drift/cannot-check;
+   the whole index ≤8 KB (budget), well under 10k tokens; no clarifying question. A seeded **malformed index** and
+   an **unreconciled page** must each stop the session before it acts. The measured values are recorded in the
+   #607 close comment.
 2. Each seeded violation turns a named check red: (a) 20 lines of history in §STATE / under `## Invariants` /
    `## Pointers` / as a `### Since` section → `state-shape`/`section-over-bound`/`state-drift`; (b) a page omitted
    → `unindexed-page`; (c) a listed page deleted → `dead-link`; (d) a stale sha → `sha-not-ancestor`; (e) a second
@@ -207,3 +211,8 @@ extension banner may call the index "current" while the page is unreconciled; th
 | a stale `dev @` / `Suite:` / size in the page | the existing `dev-sha-drift` / `suite-count-drift` / `file-size-drift` |
 
 `npx tsc --noEmit` clean (no `src/` change); `npx vitest run` green; suite counts measured at the implementation head.
+
+6. **Non-vacuous evidence (the implementation report):** for each check family, a filtered test command that
+   executes ≥1 case (`node scripts/require-executed.mjs …` or an equivalent guard) and a measured mutant/seeded-
+   fixture kill (the observed failing test/code). A green suite with zero executed #607 tests, or a seeded
+   violation that stays green, fails acceptance.
