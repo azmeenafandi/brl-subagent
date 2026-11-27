@@ -22,18 +22,14 @@ export interface Staleness {
 }
 
 /**
- * Verify commands, mirrored from `.pi/skills/handoff/references/handoff.md`
- * (the reference is the source of truth; `handoff.test.cjs` pins the two in
- * sync). Every §STATE claim names one of these (or is marked unverified).
+ * Verify commands, mirrored from the RESUME PROTOCOL in `.development/HANDOFF.md`
+ * (the index is the source of truth since #607; `handoff.test.cjs` pins the two in
+ * sync). The handoff is an index now: a session runs these, then opens a page.
  */
 export const VERIFY_COMMANDS = [
-	"tips     git log -1 --oneline dev",
-	"install  pi list",
-	"board    gh issue list",
-	"release  gh release list",
-	"deps     cat package.json   (pi/* + typebox pins)",
-	"suite    npx vitest run",
-	"hygiene  npx tsc --noEmit · node scripts/docs-arch.mjs · node scripts/docs-decisions.mjs",
+	"verify   node scripts/handoff-verify.mjs   (0 drift, or exit 2: capture the suite report first)",
+	"tree     git status --short",
+	"action   gh issue view <next-action-number>",
 ];
 
 /** §STATE heading — tolerates a trailing qualifier (`## STATE (2026-10-16, post-compaction)`). */
@@ -153,13 +149,15 @@ export function sameRevision(verified: string | null, head: string | null): bool
 }
 
 /**
- * The handoff's own paths: the snapshot file and its archives. A commit that
- * touches only these cannot have changed the tree `Verified:` describes.
+ * The handoff's own paths: the index, its archives, and the pages under `.development/handoff/`
+ * (#607). A commit that touches only these cannot have changed the tree `Verified:` describes —
+ * `Verified:` cannot name the commit that writes the page it points at, so a page-only commit is
+ * the handoff's own work, not drift.
  */
-const HANDOFF_OWN_PATH = /^\.development\/HANDOFF(?:\.md|-ARCHIVE-[^/]+\.md)$/;
+const HANDOFF_OWN_PATH = /^\.development\/(?:HANDOFF(?:\.md|-ARCHIVE-[^/]+\.md)|handoff\/[^/]+\.md)$/;
 
 /**
- * True when `path` is the handoff file or one of its archives.
+ * True when `path` is the handoff index, one of its archives, or one of its pages.
  *
  * No trimming: a path is matched exactly as git reports it, so
  * `.development/HANDOFF.md ` (trailing space) is a DIFFERENT file and stays
