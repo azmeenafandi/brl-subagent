@@ -191,6 +191,12 @@ Cycle: **`process-receipts` CLOSED** (opened 2026-11-21T15:31Z, declared 2026-11
 - **ADR amendments pending:** 0009 (retry snapshot carries `task`), 0003 (lineage/metrics source), 0006 (slotless templates unusable).
 
 ## Operating notes
+
+- **Opus 5.5 is prohibited, not optional.** A single owner-authorised experiment on 2026-11-27 cost **$5.51 / 21 min**
+  (~20× a plan critique, ~350× a review). Never dispatch `anthropic/claude-opus-5.5` or
+  `openrouter/anthropic/claude-opus-5.5` unless the owner names it in that same turn. A hard unit gets a better
+  spec, a narrower scope or another critique round — never a bigger model. The working set is implementer
+  `deepseek/deepseek-flash`, reviewer `openrouter/meta/muse-ember`, plan critic `openrouter/openai/gpt-6.1-terra`.
 - **Gate gotcha — #548 evidence.** If a worktree suite shows exactly 3 `scripts/__tests__/handoff-verify.test.ts` CLI-seam failures, they are **#548** (reproduce on the branch base before blaming the PR). Capture the gate-(g) report from a **clone of the identical tree** (`git write-tree` equal) with `dev` pinned to the branch base (`node scripts/suite-report.mjs --capture` there), `cp -p` the report + sidecar into `~/.cache/brl-subagent/reports/`, and disclose the capture in a PR comment.
 - **Gate gotcha — `Test budget:` declarations.** The line must be a **line-start paragraph outside fences and the pr-evidence block**, and must contain **no digits** (digits outside the block trigger `unattributed-count`). Put the measured numbers in the fenced `--flow` output above it.
 - **Jev on the npm install (not the dev path):** the `typesafe` provider is unwired, but the classifier answers via
