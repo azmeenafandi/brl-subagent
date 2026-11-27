@@ -2,7 +2,7 @@
 
 **Issue:** #606 (process, owner priority) · **C2** · worktree **y**.
 **jev:** high (0.35) · C2 · worktree y (round-3 dispatch classification; the level is an observation, the pin governs)
-**Spec r7:** 2026-11-27, against `9c22423` (`dev`). **Status: decision-ready.** Both boundary decisions are settled: gated class = the code-writing dispatch; boundary = option A (mandatory dispatch header, no undeclared residual).
+**Spec r7:** 2026-11-27, against `9c22423` (`dev`). **Status: decision-ready — implementation approval PENDING.** Maintainer paused 2026-11-27 ("Hold it off for tonight"); both boundary decisions are settled: gated class = the code-writing dispatch; boundary = option A (mandatory dispatch header, no undeclared residual).
 **Rounds:** r1 → `rethink` (1 blk, 5 maj, 2 min) · r2 → `rethink` (8 maj, 1 min) · r3 → `needs-work` (5 maj, 1 min) ·
 r4 → `needs-work` (3 maj, 1 min) · r5 → `needs-work` (5 maj, 2 min) · r6 → `needs-work` (3 maj, 1 min) · r7.
 
