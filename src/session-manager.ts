@@ -3037,8 +3037,15 @@ export async function spawnBackgroundSession(
   // than papered over; a stop landing inside it falls back on the record, which
   // exists from here on.
   // ---------------------------------------------------------------------
-  if (params.resumeOf && isRetryCancelRequested(params.resumeOf, attempt)) {
-    clearArmedRetry(params.resumeOf, attempt);
+  //
+  // BOTH the check and the clear are gated on `retryCause === "transport"`: the
+  // marker is armed by, and describes, the AUTOMATIC retry only. A caller-driven
+  // retry of the same source lands on the same `resumeOf`/`attempt` pair, and it
+  // must neither consume another retry's cancel nor clear its intent.
+  const armedRetrySource =
+    params.resumeOf && params.retryCause === 'transport' ? params.resumeOf : undefined;
+  if (armedRetrySource && isRetryCancelRequested(armedRetrySource, attempt)) {
+    clearArmedRetry(armedRetrySource, attempt);
     settleCancelledRetry();
     return agent;
   }
@@ -3046,7 +3053,7 @@ export async function spawnBackgroundSession(
   // the registry entry are durable — so the intent marker has done its job and
   // must go. Otherwise a later stop would keep disclosing an "armed" retry that
   // is in fact a normal running record.
-  if (params.resumeOf) clearArmedRetry(params.resumeOf, attempt);
+  if (armedRetrySource) clearArmedRetry(armedRetrySource, attempt);
 
   // Issue #453 (ADR 0023, decision 1): ONE owner. This function arms the run's
   // deadline on EVERY path — the explicit timeout when there is one, else the

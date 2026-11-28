@@ -497,6 +497,27 @@ describe("the armed-retry marker closes the spawn window (F5, Q3)", () => {
 		expect(readArmedRetry(source.sourceId)).toBeNull();
 	});
 
+	it("belongs to the AUTOMATIC retry only: a manual retry neither consumes nor clears it", async () => {
+		const source = deadTransportSource();
+		expect(
+			armRetry({ parentId: source.sourceId, attempt: 2, armedAt: new Date().toISOString() }),
+		).toBe(true);
+		// A caller-driven retry of the same source lands on the SAME
+		// `resumeOf`/`attempt` pair. It must not be cancelled by the automatic
+		// retry's intent, and it must not erase it either.
+		const manualId = await spawnLive({
+			dispatchId: source.dispatchId,
+			resumeOf: source.sourceId,
+			attempt: 2,
+			retryCause: "manual",
+		});
+
+		expect(piMock.session.prompt).toHaveBeenCalledTimes(1);
+		expect(getAgent(manualId)?.status).toBe("running");
+		expect(readArmedRetry(source.sourceId)).not.toBeNull();
+		expect(readArmedRetry(source.sourceId)?.cancelRequested).toBeFalsy();
+	});
+
 	it("is an INTENT, not a run: no registry entry, no run record, no agent record", async () => {
 		const source = deadTransportSource();
 		expect(
