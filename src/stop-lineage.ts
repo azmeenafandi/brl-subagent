@@ -275,6 +275,6 @@ export function formatStopReport(input: StopReportInput): StopReport {
   return { text: lines.join('\n'), isError };
 }
 
-export function isTerminalStatus(status: AgentStatus): boolean {
+function isTerminalStatus(status: AgentStatus): boolean {
   return isTerminalAgentStatusValue(status);
 }
