@@ -246,7 +246,8 @@ function ruleViolation(target: string): string {
 	return `worktree-guard: ${target} is under src/ or presets/ and must only be changed through a worktree (rule #5). Create a worktree: git worktree add -b fix/... ../brl-subagent-<branch> dev, then work there.`;
 }
 
-type Verdict = { protected: boolean; message: string | null };
+/** The classifier's answer: refusal and its message travel together, so no caller invents one from `null`. */
+type Verdict = { protected: false } | { protected: true; message: string };
 
 /**
  * Classify one write target. `cwd` is the SESSION's directory: a relative target means
@@ -278,7 +279,7 @@ function classifyTarget(target: string, cwd: string): Verdict {
 			message: `worktree-guard: could not classify ${target}: ${unclassifiable} — refusing the write (fail-closed: rule #5 cannot be evaluated here).`,
 		};
 	}
-	return { protected: false, message: null };
+	return { protected: false };
 }
 
 /**
@@ -348,7 +349,7 @@ export default function initWorktreeGuard(pi: {
 
 		for (const t of extractTargets(event.toolName, event.input ?? {})) {
 			const verdict = classifyTarget(t, sessionCwd);
-			if (verdict.protected) return { block: true, reason: verdict.message ?? ruleViolation(t) };
+			if (verdict.protected) return { block: true, reason: verdict.message };
 		}
 	});
 
