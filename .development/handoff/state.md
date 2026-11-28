@@ -22,7 +22,9 @@ typecheck clean; docs guards current (**61 modules**, **28 ADRs**). Sizes: `inde
 - **Cycle `front-door` (open, paused 2026-11-27 for the night).** #609 merged (the plan-critic preset at `medium`).
   **Resume here:** #606 Unit 1 — the spec is `.development/investigations/issue-606-grill-spec-2026-11-27.md` at
   **r7**, both boundary decisions settled (gated class = code-writing dispatches; boundary = a mandatory dispatch
-  header, option A). Six critique rounds are recorded beside it (`issue-606-critique-r1..r6`); r7 has **not** been
+  header, option A). Critique records **r1–r3** are on disk (`issue-606-critique-r1..r3`); **r4–r6 exist only as
+  the spec's own closing tables** (r3→r4 … r5→r6), each finding folded into the next revision — no separate
+  record was ever committed for those three rounds. r7 has **not** been
   critiqued — the maintainer chose to stop there. The next act is the maintainer's call between *approve → create the
   worktree and dispatch `impl-606`* and *one more critique round*; the conductor recommended approve.
 - **Filed separately:** the `noJev` guard accepts exponent-form numbers (`1e+21`, `1e-7`) through the real coercion
