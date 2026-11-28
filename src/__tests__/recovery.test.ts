@@ -712,14 +712,72 @@ async function withGrandchildWrapper<T>(
 	);
 }
 
+/** Wait until the grandchild readiness file contains a positive integer pid. */
+async function waitForValidPid(pidFile: string, timeoutMs = 5000): Promise<number> {
+	const start = Date.now();
+	let observed = "absent";
+
+	while (true) {
+		try {
+			const content = fs.readFileSync(pidFile, "utf-8").trim();
+			observed = content === "" ? "empty" : content;
+			const pid = Number(content);
+			if (Number.isInteger(pid) && pid > 0) return pid;
+		} catch (error: unknown) {
+			if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			observed = "absent";
+		}
+
+		if (Date.now() - start > timeoutMs) {
+			throw new Error(
+				`grandchild never wrote a valid pid to ${pidFile} within ${timeoutMs}ms (observed: ${observed})`,
+			);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
 /** Wait for the wrapper's readiness (grandchild pid) file and return its pid. */
-async function readGrandchildPid(pidFile: string): Promise<number> {
-	await waitUntil(() => fs.existsSync(pidFile), 5000);
-	const pid = Number(fs.readFileSync(pidFile, "utf-8").trim());
-	if (!Number.isInteger(pid) || pid <= 0) throw new Error(`bad grandchild pid in ${pidFile}`);
+async function readGrandchildPid(pidFile: string, timeoutMs = 5000): Promise<number> {
+	const pid = await waitForValidPid(pidFile, timeoutMs);
 	strayPids.add(pid);
 	return pid;
 }
+
+describe("grandchild pid readiness", () => {
+	it("returns the pid when the file exists but is still empty", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-grandchild-pid-"));
+		const pidFile = path.join(dir, "grandchild.pid");
+		const pid = 42_424;
+		fs.writeFileSync(pidFile, "");
+		const writeComplete = new Promise<void>((resolve) => {
+			setTimeout(() => {
+				fs.writeFileSync(pidFile, String(pid));
+				resolve();
+			}, 40);
+		});
+		try {
+			await expect(waitForValidPid(pidFile, 2000)).resolves.toBe(pid);
+		} finally {
+			await writeComplete;
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects when the file never holds a valid pid", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brl-grandchild-pid-"));
+		const pidFile = path.join(dir, "grandchild.pid");
+		fs.writeFileSync(pidFile, "");
+		try {
+			await expect(waitForValidPid(pidFile, 100)).rejects.toThrow(/never wrote a valid pid/);
+			await expect(waitForValidPid(pidFile, 100)).rejects.toThrow(pidFile);
+			await expect(waitForValidPid(pidFile, 100)).rejects.toThrow(/observed: empty/);
+			await expect(waitForValidPid(pidFile, 100)).rejects.not.toThrow(/bad grandchild pid/);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 /**
  * Field 5 of `/proc/<pid>/stat` — the process group id. Parsed after the LAST
