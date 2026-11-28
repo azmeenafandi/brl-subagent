@@ -14,26 +14,45 @@
  *
  * DURABLE vs SCRATCH (#617, brief `worktree-guard-durability`). A checkout tree is DURABLE
  * when a write there is a lasting change to the project, and SCRATCH when it is the
- * throwaway place rule #5 sends you. Identity is resolved PER TREE, walking up from the
- * target for `.git`, with no subprocess:
- *   a. `.git` is a DIRECTORY → the main worktree                      → durable;
+ * throwaway place rule #5 sends you. Durability is SCOPED to the session's repository
+ * (Q12 = A): identity is only ever evaluated for trees of the ONE repository the session's cwd
+ * resolves to, because the clauses below are also true of repositories that are not ours.
+ *
+ * Identity is resolved PER TREE, walking up from the target for `.git`, with no subprocess:
+ *   a. `.git` is a DIRECTORY → the main worktree of the session's repository → durable;
  *   b. `.git` is a `gitdir:` FILE → read `<gitdir>/HEAD`:
- *        `ref: refs/heads/<branch>` with branch main|dev             → durable;
+ *        `ref: refs/heads/<branch>` with branch main|dev                → durable;
  *      (a detached HEAD is a bare sha and names no branch — clause c has to cover it);
- *   c. otherwise the tree's basename is in DURABLE_CHECKOUT_NAMES      → durable.
+ *   c. otherwise the tree's basename is in DURABLE_CHECKOUT_NAMES        → durable.
  * Everything else is scratch. The union is deliberate: each clause covers another's hole —
  * (a) survives a renamed main checkout, (b) covers a contributor's cockpit on `dev`, and
  * (c) survives the cockpit being detached or switched to a feature branch, where the branch
  * clause alone loses it (brief F4). The name list is the one environment fact, as a constant
  * reviewed beside the predicate that reads it (Q9).
  *
- * A target is protected iff ANY tree above its REAL path is durable — so a nested repo
- * cannot launder the cockpit, and a `.git` planted inside a scratch worktree cannot spoil a
- * fixture (Q5). Symlinks are resolved to the path that actually gets written (F5), and
- * metadata that cannot be read or parsed fails CLOSED with its own message, so "the guard is
- * blind" never reads as "you broke a rule" (Q2). No repository above the path → not
- * protected (Q3: the scratch root's own safety is scratch-root.mjs's job, #509). No cache:
- * HEAD moves and trees nest (F6).
+ * WHY THE CLAUSES ARE SCOPED. Read unscoped, all three are also TRUE of things that are none of
+ * our business: a temp `git init` inside a scratch worktree is a main worktree (a), and an
+ * unrelated repository whose default branch is `main` answers (b) — so the guard would refuse a
+ * fixture repo or a foreign checkout, the same false-positive class #617 removes. "Durable"
+ * means a lasting change to THIS project, so it needs THIS project's identity: the SESSION's
+ * repository is resolved once per classification — walk up from the session's cwd for `.git`; a
+ * directory is the common gitdir, a `gitdir:` file is resolved (relative to the tree) and then
+ * `<gitdir>/commondir` (relative to the gitdir) names the common dir, else the gitdir itself;
+ * both sides canonicalized with `realpath`. A tree is durable iff its common gitdir is the
+ * session's AND clause a, b or c holds. A session whose own repository cannot be resolved (no
+ * `.git` above cwd, unreadable metadata) is BLIND, so it fails closed with its own message
+ * (Q2/Q12) — never a silent allow.
+ *
+ * A target is protected iff ANY tree above its REAL path is durable IN THAT SCOPE — so the
+ * cockpit's `src/` stays refused from a linked-worktree session (the structural clause, in
+ * scope), our real main worktree stays refused from a worktree, and a `.git` planted inside the
+ * cockpit cannot launder it (Q5). A foreign repository elsewhere, or nested in a scratch
+ * worktree, is durable only through a durable ancestor of the SESSION's repository — which is
+ * none, so it is allowed. Symlinks are resolved to the path that actually gets written (F5),
+ * and metadata that cannot be read or parsed fails CLOSED with its own message, so "the guard is
+ * blind" never reads as "you broke a rule" (Q2). No repository above the PATH → not protected
+ * (Q3: the scratch root's own safety is scratch-root.mjs's job, #509). No cache: HEAD moves and
+ * trees nest (F6).
  *
  * Whitelist (deliberate, per #83 design): .development/, README.md, package.json,
  * package-lock.json, .pi/ (so the guard can't block its own updates or the sync-extension
@@ -128,17 +147,49 @@ const BRANCH_REF_RE = /^ref:[ \t]*refs\/heads\/(.+)$/;
 /** A detached HEAD is a bare object name; 7 is git's minimum abbreviation. */
 const DETACHED_SHA_RE = /^[0-9a-f]{7,64}$/;
 
-/** Why a tree is durable (or why its metadata could not be read) — pure data, so the matrix can assert it. */
+/** Why a tree is a durable CANDIDATE, and which repository it belongs to — pure data, so the matrix can
+ * assert it. `clause` is the tree's OWN claim (a, b or c); it becomes durability only when
+ * `commonGitDir` is the session's (Q12: a fixture repo on `main` is not our durable checkout). */
 export type TreeIdentity = {
 	readonly root: string;
-	readonly durable: boolean;
 	readonly clause: "main-worktree" | "branch" | "name" | null;
 	readonly branch: string | null;
+	/** `realpath` of the repository's COMMON gitdir — the identity two trees share iff they are one repo. */
+	readonly commonGitDir: string | null;
 	readonly error: string | null;
 };
 
-function identity(root: string, fields: Partial<TreeIdentity> = {}): TreeIdentity {
-	return { root, durable: false, clause: null, branch: null, error: null, ...fields };
+function identity(root: string, fields: Partial<Omit<TreeIdentity, "root">> = {}): TreeIdentity {
+	return { root, clause: null, branch: null, commonGitDir: null, error: null, ...fields };
+}
+
+/** `realpath` of `path`, or the reason it cannot be canonicalized — two spellings of one repo must compare. */
+function canonicalPath(path: string): { dir: string | null; error: string | null } {
+	try {
+		return { dir: realpathSync(path), error: null };
+	} catch {
+		return { dir: null, error: `cannot resolve ${path}` };
+	}
+}
+
+/**
+ * The COMMON gitdir of the repository whose worktree names `gitDir`: `<gitDir>/commondir` (its own
+ * path relative to the gitdir) when that file exists, else the gitdir itself — a main worktree made
+ * with `git init --separate-git-dir` has no commondir and is still the main worktree (brief F2).
+ */
+function readCommonGitDir(gitDir: string): { dir: string | null; error: string | null } {
+	const commondirPath = join(gitDir, "commondir");
+	let text: string;
+	try {
+		text = readFileSync(commondirPath, "utf8").trim();
+	} catch (error) {
+		// A missing commondir is the NORMAL shape for a main worktree; any other read failure is metadata
+		// the guard cannot evaluate, and fail-closed is the contract there (Q2).
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return canonicalPath(gitDir);
+		return { dir: null, error: `cannot read ${commondirPath}` };
+	}
+	if (text === "") return { dir: null, error: `${commondirPath} is empty` };
+	return canonicalPath(isAbsolute(text) ? text : resolve(gitDir, text));
 }
 
 /** The branch HEAD names, or `null` for a detached HEAD; `error` when the link cannot be read or parsed. */
@@ -163,11 +214,17 @@ function readHead(gitDir: string): { branch: string | null; error: string | null
  */
 export function resolveTreeIdentity(root: string): TreeIdentity {
 	const gitPath = join(root, ".git");
+	let gitIsDirectory: boolean;
 	try {
-		// A directory IS the main worktree; no HEAD read is needed to know it is durable.
-		if (statSync(gitPath).isDirectory()) return identity(root, { durable: true, clause: "main-worktree" });
+		gitIsDirectory = statSync(gitPath).isDirectory();
 	} catch {
 		return identity(root, { error: `cannot read ${gitPath}` });
+	}
+	// A directory IS the main worktree AND the common gitdir: no HEAD read tells us anything more.
+	if (gitIsDirectory) {
+		const common = canonicalPath(gitPath);
+		if (common.dir === null) return identity(root, { error: common.error });
+		return identity(root, { clause: "main-worktree", commonGitDir: common.dir });
 	}
 	let text: string;
 	try {
@@ -179,15 +236,17 @@ export function resolveTreeIdentity(root: string): TreeIdentity {
 	if (match === null) return identity(root, { error: `${gitPath} has no gitdir: line` });
 	// A `--relative-paths` worktree writes `gitdir: ../..`, so the target is relative to THIS tree.
 	const gitDir = isAbsolute(match[1]) ? match[1] : resolve(root, match[1]);
+	const common = readCommonGitDir(gitDir);
+	if (common.dir === null) return identity(root, { error: common.error });
 	const head = readHead(gitDir);
 	if (head.error !== null) return identity(root, { error: head.error });
 	if (head.branch !== null && DURABLE_BRANCHES.includes(head.branch)) {
-		return identity(root, { durable: true, clause: "branch", branch: head.branch });
+		return identity(root, { clause: "branch", branch: head.branch, commonGitDir: common.dir });
 	}
 	if (DURABLE_CHECKOUT_NAMES.includes(basename(root))) {
-		return identity(root, { durable: true, clause: "name", branch: head.branch });
+		return identity(root, { clause: "name", branch: head.branch, commonGitDir: common.dir });
 	}
-	return identity(root, { branch: head.branch });
+	return identity(root, { branch: head.branch, commonGitDir: common.dir });
 }
 
 /**
@@ -250,19 +309,58 @@ function ruleViolation(target: string): string {
 type Verdict = { protected: false } | { protected: true; message: string };
 
 /**
+ * The SESSION's repository: the common gitdir of the nearest checkout at or above the session's cwd.
+ * Resolved once per classification, and the scope every durability clause is read in (Q12) — a tree
+ * elsewhere answering clause a, b or c is somebody else's checkout, not ours. A session with no
+ * repository above its cwd, or with metadata that cannot be read, is unresolvable, and the caller
+ * fails CLOSED on that (Q2): "the guard cannot tell" must never read as "allowed".
+ */
+function sessionCommonGitDir(cwd: string): { dir: string | null; error: string | null } {
+	const sessionRoots = findTreeRoots(cwd);
+	if (sessionRoots.length === 0) {
+		return { dir: null, error: `no repository above the session directory ${cwd}` };
+	}
+	const session = resolveTreeIdentity(sessionRoots[0]);
+	if (session.error !== null) return { dir: null, error: session.error };
+	if (session.commonGitDir === null) {
+		return { dir: null, error: `the session's repository at ${sessionRoots[0]} has no common gitdir` };
+	}
+	return { dir: session.commonGitDir, error: null };
+}
+
+/** A tree is durable FOR THIS SESSION iff it is the same repository and carries clause a, b or c (Q12). */
+function isDurableForSession(tree: TreeIdentity, sessionCommon: string): boolean {
+	return tree.clause !== null && tree.commonGitDir === sessionCommon;
+}
+
+/** Fail-closed refusal: the guard could not evaluate rule #5, which is not the same as a violation (Q2). */
+function unclassifiable(target: string, reason: string): Verdict {
+	return {
+		protected: true,
+		message: `worktree-guard: could not classify ${target}: ${reason} — refusing the write (fail-closed: rule #5 cannot be evaluated here).`,
+	};
+}
+
+/**
  * Classify one write target. `cwd` is the SESSION's directory: a relative target means
- * relative to the session, not to the extension's own checkout (#617's whole failure).
+ * relative to the session, not to the extension's own checkout (#617's whole failure), and the
+ * session's repository is the scope durability is judged in (Q12).
  */
 function classifyTarget(target: string, cwd: string): Verdict {
 	const real = realTargetPath(isAbsolute(target) ? resolve(target) : resolve(cwd, target));
-	let unclassifiable: string | null = null;
+	// The scope comes FIRST: without the session's repository, nothing below can be called durable.
+	const session = sessionCommonGitDir(cwd);
+	if (session.dir === null) {
+		return unclassifiable(target, session.error ?? `cannot resolve the session's repository from ${cwd}`);
+	}
+	let unclassifiableReason: string | null = null;
 	for (const root of findTreeRoots(walkStart(real))) {
 		const tree = resolveTreeIdentity(root);
 		if (tree.error !== null) {
-			unclassifiable = tree.error;
+			unclassifiableReason = tree.error;
 			continue;
 		}
-		if (!tree.durable) continue;
+		if (!isDurableForSession(tree, session.dir)) continue;
 		// The whitelist is written in repo-relative terms, so it is read against the DURABLE
 		// tree this target sits in — never against the absolute path (rule #9: a raw absolute
 		// path would miss `.pi/` and then the `/presets/` substring test would wrongly catch
@@ -273,12 +371,7 @@ function classifyTarget(target: string, cwd: string): Verdict {
 			return { protected: true, message: ruleViolation(target) };
 		}
 	}
-	if (unclassifiable !== null) {
-		return {
-			protected: true,
-			message: `worktree-guard: could not classify ${target}: ${unclassifiable} — refusing the write (fail-closed: rule #5 cannot be evaluated here).`,
-		};
-	}
+	if (unclassifiableReason !== null) return unclassifiable(target, unclassifiableReason);
 	return { protected: false };
 }
 
@@ -357,7 +450,7 @@ export default function initWorktreeGuard(pi: {
 		// Reminder only — the tool_call block is the enforcement.
 		return {
 			message:
-				"[worktree-guard] Remember: ALL changes to src/ or presets/ go through a SCRATCH worktree — a linked worktree on a branch that is not main/dev (git worktree add -b fix/... <path> dev). DURABLE checkouts are refused: the main worktree, any checkout on main or dev, and any checkout named brl-subagent or brl-subagent-dev. Whitelisted in a durable checkout: .development/, README.md, package.json, package-lock.json, .pi/, .github/, templates/, sync-extension.sh.",
+				"[worktree-guard] Remember: ALL changes to src/ or presets/ go through a SCRATCH worktree — a linked worktree on a branch that is not main/dev (git worktree add -b fix/... <path> dev). DURABLE checkouts of THIS repository are refused: its main worktree, any of its checkouts on main or dev, and any of its checkouts named brl-subagent or brl-subagent-dev. Whitelisted in a durable checkout: .development/, README.md, package.json, package-lock.json, .pi/, .github/, templates/, sync-extension.sh.",
 		};
 	});
 }
