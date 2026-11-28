@@ -23,6 +23,15 @@ line below is a claim it recomputes, and a drift means the claim is wrong, never
   (`worker` → `subagent`), a data-only `VOCABULARY.md` the lint parses and validates, and the refusals
   (`runner`, `trigger`, `ticket tracker`) recorded in the prose glossary. Corpus is living `*.md` prose only.
   Next: worktree + `dispatch: impl` `brief: factory-vocabulary` — the first dispatch the gate will police.
+- **Home-directory sweep, 2026-11-28.** Eight stray `brl-*`/`probe*` directories sat directly under `$HOME`,
+  all dated 2026-11-12/13 — the suite-report/provenance sprint (#519–#521), so the maintainer's guess was
+  right. None was a registered worktree and the project referenced none of them. Four probe dirs and one
+  second-capture sidecar were preserved to
+  `~/.cache/brl-subagent/archive/probe519-and-brl521-fixtures-2026-11-28.tar.gz` (+ `.MANIFEST.txt`, every
+  hash verified); the genuine reports were **not** archived because they are already in
+  `~/.cache/brl-subagent/reports/` by hash. **Two of the preserved fixtures must never be filed as captures:**
+  `probe519op`'s sidecar says `capturedAt: "t"` and `probe519mark`'s sidecar names a head its report
+  contradicts — they test the provenance validator by being wrong.
 - **Regression found and fixed while cutting this unit:** the Unit 2 close rewrote the Suite line to
   `154 files / 3516` and dropped its passed/failed/skipped breakdown. `handoff-verify.test.ts:909` parses the
   live line and caught it; `handoff-verify` itself did not, because it compares totals and not the suffix.
