@@ -5,6 +5,7 @@
  * All shared type definitions and constants for the brl-subagent extension.
  */
 
+import type { DispatchKind } from "./dispatch-header";
 import type { delegateTaskParamsSchema } from "./schema";
 import type { TranscriptMessage } from "./transcript-tail";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -201,6 +202,12 @@ export interface TaskTemplate {
 	excludeTools?: string[];
 	noBuiltinTools?: boolean;
 	inheritSystemPrompt?: boolean;
+	/**
+	 * Issue #606 (§3a): the kind a rendered dispatch declares. Validated as an
+	 * ENUM (an unknown or misspelled value is a render error naming the field
+	 * and the allowed set — never a silently ignored key).
+	 */
+	dispatch?: DispatchKind;
 }
 
 export interface CircuitBreakerState {

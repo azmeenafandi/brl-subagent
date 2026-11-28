@@ -1,6 +1,7 @@
 ---
 name: write-tests
 description: Test generation with edge-case coverage
+dispatch: impl
 preset: test-engineer
 thinkingLevel: medium
 ---

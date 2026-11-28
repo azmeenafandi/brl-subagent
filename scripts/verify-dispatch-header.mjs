@@ -52,6 +52,9 @@ const modules = {
 	},
 };
 
+/** The template enum, from the one definition (never a second list). */
+const { DISPATCH_KINDS, DISPATCH_KIND_LIST } = await jiti.import(join(ROOT, "src", "dispatch-header.ts"));
+
 const trees = [];
 
 function tree({ optedIn = true, briefs = {} } = {}) {
@@ -360,7 +363,82 @@ export const CASES = {
 			};
 		},
 	},
+
+	// P10 — the template frontmatter's `dispatch:` field is an enum.
+	"template-no-field": {
+		row: "P10",
+		rulesOut: "a template with no `dispatch:` field slipping through a render in an opted-in project",
+		async run() {
+			const outed = await renderTemplate({ task: "Do ${file}." }, { file: "x" }, tree());
+			return {
+				lines: renderLines(outed),
+				checks: [
+					check(outed.refused, "the render is refused (exit 1)"),
+					check(/no "dispatch" field/.test(outed.message), "names the missing field"),
+					check(new RegExp(DISPATCH_KIND_LIST).test(outed.message), "names the allowed set"),
+				],
+			};
+		},
+	},
+
+	"template-typo": {
+		row: "P10",
+		rulesOut: "a silently ignored frontmatter key (a typo disabling the gate)",
+		async run() {
+			const outed = await renderTemplate({ task: "Do ${file}.", dispatch: "reveiw" }, { file: "x" }, tree());
+			return {
+				lines: renderLines(outed),
+				checks: [
+					check(outed.refused, "the render is refused (exit 1)"),
+					check(/"dispatch" value "reveiw"/.test(outed.message), "names the field and the value"),
+					check(new RegExp(DISPATCH_KIND_LIST).test(outed.message), "names the allowed set"),
+				],
+			};
+		},
+	},
+
+	// P13 — the render-time refusal may NOT leak past the fail-open boundary.
+	"flag-absent-template": {
+		row: "P13",
+		rulesOut: "the render-time refusal reaching a project that never opted in",
+		async run() {
+			const outed = await renderTemplate({ task: "Do ${file}.", dispatch: undefined }, { file: "x" }, tree({ optedIn: false }));
+			return {
+				lines: renderLines(outed),
+				checks: [
+					check(!outed.refused, "the render succeeds (exit 0)"),
+					check(outed.task === "Do x.", "renders exactly as before the gate (byte-identical body)"),
+					check(!DISPATCH_KIND_LIST_ANY.test(outed.task ?? ""), "no dispatch line was injected"),
+				],
+			};
+		},
+	},
 };
+
+
+/** The four kinds as an alternation — used to prove nothing was injected. */
+const DISPATCH_KIND_LIST_ANY = new RegExp(`\\bdispatch: (?:${DISPATCH_KINDS.join("|")})\\b`);
+
+/**
+ * Render a template through the REAL renderer (`resolveTemplate`), and report
+ * the failure as a refusal — the dispatch equivalent of a non-zero exit.
+ */
+async function renderTemplate(fields, params, cwd) {
+	const { resolveTemplate } = await jiti.import(join(ROOT, "src", "templates.ts"));
+	const template = { name: "verify-template", task: "Do ${file}.", ...fields };
+	const rendered = resolveTemplate(template, params, { cwd });
+	if (!rendered.ok) return { refused: true, message: rendered.error, task: undefined };
+	return { refused: false, message: rendered.value.task, task: rendered.value.task };
+}
+
+function renderLines(outed) {
+	return [
+		`render:    ${outed.refused ? "refused (exit 1)" : "ok (exit 0)"}`,
+		...(outed.refused
+			? outed.message.split("\n").map((line) => `message:   ${line}`)
+			: [`task:      ${JSON.stringify(outed.task)}`]),
+	];
+}
 
 function escapeRegExp(text) {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

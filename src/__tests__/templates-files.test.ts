@@ -127,6 +127,8 @@ describe("loadCustomTemplates", () => {
 			["excludeTools", "excludeTools:\n  - write", ["write"]],
 			["noBuiltinTools", 'noBuiltinTools: "true"', true],
 			["inheritSystemPrompt", 'inheritSystemPrompt: "false"', false],
+			// Issue #606 (§3a): the render-time dispatch kind, an enum field.
+			["dispatch", "dispatch: review", "review"],
 		];
 
 		const cwd = makeTempDir();

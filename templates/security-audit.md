@@ -1,6 +1,7 @@
 ---
 name: security-audit
 description: Security audit with severity-ranked findings
+dispatch: review
 preset: security-auditor
 thinkingLevel: high
 ---

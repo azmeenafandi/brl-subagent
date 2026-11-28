@@ -1,6 +1,7 @@
 ---
 name: code-review
 description: Review code for correctness, security, and style
+dispatch: review
 preset: code-reviewer
 thinkingLevel: medium
 ---

@@ -28,8 +28,10 @@ const REQUIRED_ROWS = [
 	"P8",
 	"P8 (control)",
 	"P9",
+	"P10",
 	"P11",
 	"P12",
+	"P13",
 ];
 
 describe("the evidence table", () => {

@@ -1,6 +1,7 @@
 ---
 name: write-docs
 description: Developer documentation with examples
+dispatch: docs
 preset: tech-writer
 thinkingLevel: low
 ---
