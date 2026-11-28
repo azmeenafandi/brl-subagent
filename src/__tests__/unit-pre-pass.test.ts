@@ -23,7 +23,10 @@ const ctx = {
  * (different escape), which is why the fixtures carry it instead of opting out.
  */
 const JEV_LINE = "jev: medium (0.5) · C2 · worktree n";
-const withLine = (text: string): string => `${text}\n\n${JEV_LINE}`;
+/** Issue #606: every dispatch here runs in this opted-in project, so it opens
+ * with the dispatch header — the same shape a real dispatch has. */
+const HEADER = "dispatch: probe";
+const withLine = (text: string): string => `${HEADER}\n${text}\n\n${JEV_LINE}`;
 
 function fakeLog(): Logger {
 	return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };

@@ -76,9 +76,9 @@ function fail(reason: string): BriefVerdict {
 function classifyLines(text: string): BriefLine[] {
 	const lines: BriefLine[] = [];
 	let inFence = false;
-	for (const text_ of text.split(/\r?\n/)) {
-		const isMarker = text_.trim().startsWith("```");
-		lines.push({ text: text_, inFence: isMarker || inFence });
+	for (const raw of text.split(/\r?\n/)) {
+		const isMarker = raw.trim().startsWith("```");
+		lines.push({ text: raw, inFence: isMarker || inFence });
 		if (isMarker) inFence = !inFence;
 	}
 	return lines;
@@ -211,7 +211,7 @@ export function validateBriefFile(cwd: string, slug: string): BriefVerdict {
 		if (code === "ENOENT") {
 			return fail(
 				`brief "${slug}" not found at ${path} — the dispatch cwd's tree carries no such brief. ` +
-					"Commit the brief before cutting the worktree, or rebase the worktree onto the commit that added it.",
+					"Commit the brief before dispatching from this tree, or rebase the tree onto the commit that added it.",
 			);
 		}
 		return fail(`brief "${slug}" at ${path} could not be read (${code ?? "unknown error"}) — an unreadable brief is not a signed brief.`);

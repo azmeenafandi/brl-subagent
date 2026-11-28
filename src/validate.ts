@@ -9,6 +9,8 @@
 
 import { THINKING_LEVELS, type ThinkingLevel, type SubagentToolOptions } from './types';
 import { DISPATCH_LINE_FORM, JEV_UNAVAILABLE, parseDispatchLine } from './dispatch-line';
+import { parseDispatchHeader, type BriefDeclaration } from './dispatch-header';
+import { validateBriefFile } from './brief';
 import { isProcessChecksEnabled } from './project-flags';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -380,6 +382,56 @@ function readNoJevReason(value: unknown): NoJevVerdict {
   return { kind: 'reason', reason };
 }
 
+// ── The dispatch header (issue #606, Unit 1) ─────────────────────────
+
+/**
+ * The mandatory dispatch header, checked at the same seam as the Jev line and
+ * behind the SAME umbrella flag (#415) — no new manifest key. Four rules
+ * (spec §3), each refused with the three accepted forms quoted verbatim:
+ *
+ *   1. no `dispatch:` in the leading block  → refused;
+ *   2. `dispatch: impl` with no `brief:`    → refused;
+ *   3. `brief: <slug>`                      → briefs/<slug>.md in the dispatch
+ *      cwd's tree must exist and satisfy §2 (src/brief.ts), else refused;
+ *   4. `brief: none — <reason>`             → valid, WARNED with the reason.
+ *
+ * Rule 4 is warning-class on every validating path on purpose: the escape is a
+ * recorded gap (like noJev), not a silent one, and the statement "no code from
+ * an unagreed plan" stays honest only while an escape is visible (a refusal or
+ * a surfaced warning — never a quiet pass).
+ */
+function checkDispatchHeader(
+  taskText: string,
+  cwd: string | undefined,
+  errors: string[],
+  warnings: string[],
+): void {
+  // Unreachable behind the flag (a check that is ON has a cwd), stated so the
+  // seam never depends on that inference.
+  if (cwd === undefined) return;
+
+  const verdict = parseDispatchHeader(taskText);
+  if (!verdict.ok) {
+    errors.push(verdict.reason);
+    return;
+  }
+
+  const brief: BriefDeclaration | undefined = verdict.brief;
+  if (brief === undefined) return;
+
+  if (brief.kind === "none") {
+    warnings.push(
+      `dispatch: ${verdict.kind} escaped the signed brief — no brief was agreed because ${brief.reason}`,
+    );
+    return;
+  }
+
+  const checked = validateBriefFile(cwd, brief.slug);
+  if (!checked.ok) {
+    errors.push(checked.reason);
+  }
+}
+
 // ── Main validation ──────────────────────────────────────────────────
 
 export function validatePreTask(config: ValidateConfig): ValidateResult {
@@ -427,6 +479,11 @@ export function validatePreTask(config: ValidateConfig): ValidateResult {
         );
       }
     }
+
+    // Issue #606 (Unit 1): the dispatch header, behind the SAME flag. It runs
+    // after the Jev check so a task missing both names both — a conductor
+    // should not have to re-dispatch twice to learn two independent rules.
+    checkDispatchHeader(taskText, config.cwd, errors, warnings);
   }
 
   // Check tool requirements. A missing capability is warning-class by
