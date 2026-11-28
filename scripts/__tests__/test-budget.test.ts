@@ -931,7 +931,9 @@ describe("main — the two streams and the exit codes", () => {
 		// "every module reachable" — its test imports it, so 14 becomes 15 rather than the floor relaxing.
 		// Re-pointed by #606 (Unit 1): `verify-dispatch-header.mjs` joins the scripts surface and its test
 		// imports it, so 15 becomes 16 — the same rule, never a relaxed floor.
-		expect(/\bscripts (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["16", "16"]);
+		// Re-pointed by #606 (Unit 3): `check-vocabulary.mjs` joins the same surface, and its test imports
+		// it, so 16 becomes 17 — the floor follows the tree; it is never relaxed.
+		expect(/\bscripts (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["17", "17"]);
 		expect(measureFloors(ROOT).every((floor) => floor.unreachable.length === 0)).toBe(true);
 	});
 

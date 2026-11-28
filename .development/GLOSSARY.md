@@ -82,6 +82,29 @@ A short numbered, dated note in `.development/decisions/` recording a decision, 
 why — so nobody (human or agent) has to relitigate it later. We write one when a choice constrains future
 work (e.g. 0013: TypeScript 7 pinned exactly, with one containment adapter).
 
+## Factory vocabulary
+
+**Plain meaning.** The shared names for how work is handed out and executed: a *dispatch* is one request, a
+*spawn* is one attempt to start a subagent, a *run* is one execution at any level, and a *subagent* is the
+agent a spawn starts.
+
+**Not to be confused with** a thesaurus. This is a naming layer over the words the code already uses —
+identifiers, filenames and tool parameters keep their names — and it holds four rows and one ban, not a
+vocabulary of everything. `spawn` is not a synonym of `dispatch`; retries are what separate one request
+from several attempts.
+
+**Here we use** [`.development/VOCABULARY.md`](VOCABULARY.md) as the data file: `scripts/check-vocabulary.mjs`
+parses it, validates its shape, and fails CI on the banned synonym *worker* in living prose (use
+*subagent*). Three candidate terms were deliberately **not** adopted: *runner* is already the foreground
+process-execution component (`src/runner.ts`), so it cannot also name a unit of work; *trigger* names
+machinery this repository does not have (2 mentions in production code, none of it a trigger system); and
+*ticket tracker* likewise — the ticket forms are absent from production code, and a row for a concept the
+repo cannot honour is a stale entry by construction.
+
+**Why it matters.** A synonym that creeps back in splits one concept across two words, and the next reader
+has to translate. The ban is enforced and the rows are checked, so adding a row is the whole cost of
+extending the vocabulary — and a term nobody uses fails until it is marked `forward`.
+
 ---
 
 *Maintained by the conductor. Entries are added or refreshed whenever a term causes confusion or becomes
