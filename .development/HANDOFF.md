@@ -5,8 +5,8 @@
 
 ## STATE
 Verified: 026ef8d (2026-11-28)
-In flight: nothing
-Next action: #606 (open) — approve the r7 spec, then implement Unit 1
+In flight: impl-606 — Unit 1 building in `../brl-subagent-wt-606`; **review HELD** until the maintainer's `/reload`
+Next action: #606 (open) — on the implementer's report, HOLD the review until the maintainer confirms the reload
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
 
 ## Invariants

@@ -12,6 +12,16 @@ typecheck clean; docs guards current (**61 modules**, **28 ADRs**). Sizes: `inde
 
 ## Open items
 
+- **In flight: #606 Unit 1 — impl-606, building in `../brl-subagent-wt-606`** (branch `feat/606-grill-front-door`, cut
+  from `a5f257a`; worktree commit `e169262` flipped the r7 spec to APPROVED). Staged commits, pushed per stage: the
+  header parser + brief predicates, the validator seam, and the routing fix. Template frontmatter and renderer next,
+  then the grill skill + author-facing docs, the retrofit, and the M1–M13 mutation receipts.
+  **HOLD: the review is not to be dispatched until the maintainer confirms the `/reload`** that picks up the pi 1.7.0
+  SDK — the request was made while the implementer was running, so this is a maintainer gate, not a technical one.
+  Note the interaction: `/reload` fires `session_shutdown`, which tears the runtime down and loads a new factory
+  instance, so a reload mid-run interrupts the background agent and surfaces a boot-recovery notice; the staged
+  commits are what make that survivable.
+
 - **Landed: #610 / PR #611 — pi 1.7.0 SDK parity** (`3789461`). Compatibility found no breaking impact: the sole
   breaking change removes install telemetry, which no `src/` file touches, and the public surface is
   unchanged-or-additive. Four devDependency ranges `^1.6.0` → `^1.7.0`; `typebox` still 1.3.27; no source change.
