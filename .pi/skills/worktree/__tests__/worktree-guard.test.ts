@@ -240,10 +240,23 @@ describe("the extension module (the old jiti load check, reproduced by a direct 
 		expect(typeof initWorktreeGuard).toBe("function");
 		expect(handlers.has("tool_call")).toBe(true);
 		expect(handlers.has("before_agent_start")).toBe(true);
-		const reminder = (await handlers.get("before_agent_start")?.({}, {})) as { message?: string } | undefined;
-		expect(typeof reminder?.message).toBe("string");
-		expect(reminder?.message).toContain("worktree");
-		expect(reminder?.message).not.toContain("../brl-subagent-<branch>");
+		const reminder = (await handlers.get("before_agent_start")?.({}, {})) as
+			| { message?: unknown }
+			| undefined;
+		// #621: pi's contract is a message OBJECT; a bare string is accepted and then silently
+		// dropped (customType/content undefined → an empty custom entry). The shape is the pin:
+		// the old string return must fail this row.
+		const message = reminder?.message;
+		expect(typeof message, "a bare-string message is silently dropped by pi (#621)").toBe("object");
+		expect(message).not.toBeNull();
+		const custom = message as { customType?: unknown; content?: unknown; display?: unknown };
+		expect(custom.customType).toBe("worktree-guard");
+		expect(typeof custom.content).toBe("string");
+		const content = custom.content as string;
+		expect(content).toContain("SCRATCH worktree");
+		expect(content).toContain("brl-subagent-dev");
+		expect(custom.display).toBe(false);
+		expect(content).not.toContain("../brl-subagent-<branch>");
 	});
 });
 

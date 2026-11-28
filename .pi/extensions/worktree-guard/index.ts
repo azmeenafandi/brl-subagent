@@ -447,10 +447,17 @@ export default function initWorktreeGuard(pi: {
 	});
 
 	pi.on("before_agent_start", async (_event: any, _ctx: any) => {
-		// Reminder only — the tool_call block is the enforcement.
+		// Reminder only — the tool_call block is the enforcement. The shape is pi's documented
+		// message OBJECT (docs/extensions.md), not a bare string: a string is accepted and then
+		// silently dropped (customType/content undefined → an empty custom entry, #621).
+		// display: false — the text targets the model, not the human (docs/message-types.md).
 		return {
-			message:
-				"[worktree-guard] Remember: ALL changes to src/ or presets/ go through a SCRATCH worktree — a linked worktree on a branch that is not main/dev (git worktree add -b fix/... <path> dev). DURABLE checkouts of THIS repository are refused: its main worktree, any of its checkouts on main or dev, and any of its checkouts named brl-subagent or brl-subagent-dev. Whitelisted in a durable checkout: .development/, README.md, package.json, package-lock.json, .pi/, .github/, templates/, sync-extension.sh.",
+			message: {
+				customType: "worktree-guard",
+				content:
+					"[worktree-guard] Remember: ALL changes to src/ or presets/ go through a SCRATCH worktree — a linked worktree on a branch that is not main/dev (git worktree add -b fix/... <path> dev). DURABLE checkouts of THIS repository are refused: its main worktree, any of its checkouts on main or dev, and any of its checkouts named brl-subagent or brl-subagent-dev. Whitelisted in a durable checkout: .development/, README.md, package.json, package-lock.json, .pi/, .github/, templates/, sync-extension.sh.",
+				display: false,
+			},
 		};
 	});
 }
