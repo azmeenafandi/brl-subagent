@@ -76,10 +76,12 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `atomic-write.ts` | A same-directory temp+rename writer for the agent record — a reader never sees a torn JSON file. |
 | `background-pipeline.ts` | The background pipeline — the fan-out handler, the shared spawn tail and the single-background spawn — built over one runtime context. |
 | `boot-recovery.ts` | Boot recovery — the interrupted-run scan, the boot head-state reconcile and the recovery notices, built over one runtime context. |
+| `brief.ts` | The signed-brief contract (issue #606 §2): fence-aware section predicates over briefs/<slug>.md. |
 | `commands.ts` | The /brl-subagent command definition — its argument completions and the handler table — returned to the composition root to register. |
 | `concurrency.ts` | Session-bound concurrency queue: slot acquisition/release, priority insertion, and progress counters. |
 | `delegate-handler.ts` | The delegate_task tool — its definition, the dispatch pre-flight, the foreground run path — returned to the composition root to register. |
 | `diff.ts` | Parses git unified diffs into structured per-file summaries and hunks for the result UI. |
+| `dispatch-header.ts` | The mandatory dispatch header (issue #606): split it from the task body and parse it. |
 | `dispatch-line.ts` | Parse and validate the Rule 22 dispatch line (the project-local opt-in lives in project-flags.ts). |
 | `engineering-bar.ts` | Builds the project's `<engineering-bar>` system-prompt section for every child spawn (issue #421). |
 | `event-bus.ts` | In-memory lifecycle pub/sub (`subagent:*` events) for extensions and the completion wake. |
@@ -134,7 +136,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 | `worktree-report.ts` | Formats the read-only worktree state a failed or stopped run may have left behind (issue #474). |
 
-**61 modules** — every one is listed because a new module without a purpose fails CI.
+**63 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 
