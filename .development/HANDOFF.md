@@ -4,7 +4,7 @@
 > History: `.development/HANDOFF-ARCHIVE-*` and `.development/FRICTION_LOG.md` — never re-read it.
 
 ## STATE
-Verified: 700fe07 (2026-11-28)
+Verified: 7c11d86 (2026-11-28)
 In flight: nothing
 Next action: #616 (open) — #615 landed at `700fe07`; the stop/retry defects remain
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
