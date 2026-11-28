@@ -5,7 +5,7 @@
 
 ## STATE
 Verified: 5b4da67 (2026-11-27)
-In flight: nothing
+In flight: PR #611 (#610) — align `@earendil-works/*` to pi 1.7.0; awaiting review
 Next action: #606 (open) — approve the r7 spec, then implement Unit 1
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
 
