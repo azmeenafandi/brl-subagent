@@ -118,9 +118,20 @@ describe("T6 — the check follows the dispatch cwd's manifest", () => {
 
 describe("T12 — the brief's content predicates, one fixture per shape", () => {
 	it("T12a — `hollow-marker` is refused: the marker is not Want content", () => {
-		// Want exists, but its only line is the confirmation marker. Everything
-		// else is valid, so the Want predicate is the one that must fail.
-		const hollow = VALID_BRIEF.replace("Make the factory's front door enforceable.\n", "");
+		// The r4 hole's exact shape: valid decisions, then a `## Want` whose only
+		// line is the confirmation marker — so the Want predicate is the one that
+		// must fail, and the marker being last satisfies predicate 3.
+		const hollow = [
+			"## Settled decisions",
+			"",
+			"| Decision | Answer |",
+			"| --- | --- |",
+			"| Gate scope | the code-writing dispatch |",
+			"",
+			"## Want",
+			"",
+			"confirmed: 2026-11-28 by azmeen",
+		].join("\n");
 		const result = gate(`dispatch: impl\nbrief: hollow-marker\n${JEV}\n\nImplement it.`, project({ "hollow-marker": hollow }));
 		expect(result.valid).toBe(false);
 		expect(result.errors.join("\n")).toContain("`## Want` is empty");

@@ -398,9 +398,13 @@ describe("Tier 2: Subprocess integration tests", () => {
 		await env.tearDown();
 	});
 
+	// Issue #606: every real dispatch here opens with the header block. The temp
+	// cwds carry no manifest, so no check runs — but a dispatch written without
+	// one is the shape that would break the day the tree opts in, and these are
+	// the suite's only REAL subprocess dispatches.
 	it("operates on the isolated temp store, not the checkout's .pi", async () => {
 		if (!canRun) return;
-		const result = await runDelegateTask({ task: "registry isolation" });
+		const result = await runDelegateTask({ task: "dispatch: probe\nregistry isolation" });
 		expect(result.exitCode).toBe(0);
 		// The foreground run registers (creating the dir) and clears at settle —
 		// the directory under the HARNESS cwd proves the temp store was used.
@@ -411,7 +415,7 @@ describe("Tier 2: Subprocess integration tests", () => {
 		if (!canRun) return; // Skip if prerequisites missing
 
 		const result = await runDelegateTask({
-			chain: [{ task: "Say hello" }, { task: "Say goodbye" }],
+			chain: [{ task: "dispatch: probe\nSay hello" }, { task: "dispatch: probe\nSay goodbye" }],
 		});
 
 		// The subprocess should exit cleanly (exit 0 from our script)
@@ -458,8 +462,8 @@ describe("Tier 2: Subprocess integration tests", () => {
 		// risk — a scheduler stall would have to exceed ~120ms.
 		const result = await runDelegateTask({
 			tasks: [
-				{ task: "Say hello [delay=700]" },
-				{ task: "Say goodbye [delay=120]" },
+				{ task: "dispatch: probe\nSay hello [delay=700]" },
+				{ task: "dispatch: probe\nSay goodbye [delay=120]" },
 			],
 		});
 
@@ -501,7 +505,7 @@ describe("Tier 2: Subprocess integration tests", () => {
 		const tempRepo = await createTempGitRepo("brl-e2e-git-");
 		try {
 			const result = await runDelegateTask({
-				task: "Say hello",
+				task: "dispatch: probe\nSay hello",
 				gitMode: "branch",
 				cwd: tempRepo,
 			});
@@ -549,7 +553,7 @@ describe("Tier 2: Subprocess integration tests", () => {
 		// supported toolOptions, and an outputFile (which REQUIRES write) is
 		// requested. This is a hard, pre-spawn validation conflict.
 		const result = await runDelegateTask({
-			task: "Write 'hello' to /tmp/test-e2e.txt",
+			task: "dispatch: probe\nWrite 'hello' to /tmp/test-e2e.txt",
 			outputFile: "e2e-write-restricted-report.md",
 			excludeTools: ["write", "edit"],
 		});
@@ -608,8 +612,8 @@ describe("Tier 2: Subprocess integration tests", () => {
 
 		const result = await runDelegateTask({
 			graph: [
-				{ id: "a", task: "Say hello", dependsOn: [] },
-				{ id: "b", task: "Say goodbye", dependsOn: ["a"] },
+				{ id: "a", task: "dispatch: probe\nSay hello", dependsOn: [] },
+				{ id: "b", task: "dispatch: probe\nSay goodbye", dependsOn: ["a"] },
 			],
 		});
 

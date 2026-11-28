@@ -516,6 +516,25 @@ describe("retry inheritance", () => {
 
 		expect(result.isError).toBeFalsy();
 		expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+		// Issue #606, verified not assumed: a retry restores the recorded task
+		// text, so the dispatch block survives the retry by construction.
+		const spawnedTask = (h.spawnBackgroundSession.mock.calls[0]?.[2] as SpawnParams | undefined)?.task;
+		expect(spawnedTask?.startsWith(`${HEADER}\n`)).toBe(true);
+	});
+
+	it("a LEGACY retry record whose task predates the header is refused, loudly", async () => {
+		// A run in flight at upgrade time has no block in its recorded task. The
+		// retry is a dispatch, so it is checked like one: refused with the header
+		// message (the conductor re-dispatches with a block), never silently run.
+		optIn();
+		const ctx = makeCtx();
+		seedRunEntry(ctx, makeRun("retry-legacy", `Background single run\n\n${VALID_LINE}`, { background: true }));
+
+		const result = await execute({ retryRunId: "retry-legacy" }, ctx);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/missing dispatch header/);
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
 	});
 });
 

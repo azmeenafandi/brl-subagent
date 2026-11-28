@@ -214,9 +214,25 @@ function expectRefused(verdict: BriefVerdict, matching: RegExp): void {
 	expect(verdict.reason).toMatch(matching);
 }
 
+/** Valid decisions, then a `## Want` whose body is only the marker. */
+const MARKER_ONLY_BRIEF = [
+	"## Settled decisions",
+	"",
+	"| Decision | Answer |",
+	"| --- | --- |",
+	"| Gate scope | the code-writing dispatch |",
+	"",
+	"## Want",
+	"",
+	"confirmed: 2026-11-28 by azmeen",
+].join("\n");
+
 describe("T5 — a brief must carry content, not decoration", () => {
 	it("T5 — a marker-only file is refused (the marker is not Want content)", () => {
-		expectRefused(validateBriefText("confirmed: 2026-11-28 by azmeen"), /## Want. (is empty|is missing)/);
+		// The r4 hole's exact shape: a valid decisions table, then a `## Want`
+		// whose only line is the confirmation marker — so predicate 1 is the one
+		// that must fail, and the marker being last satisfies predicate 3.
+		expectRefused(validateBriefText(MARKER_ONLY_BRIEF), /## Want. (is empty|is missing)/);
 	});
 
 	it("T5 — a hollow table row (empty answer cell) is refused", () => {
