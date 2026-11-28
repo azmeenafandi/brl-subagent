@@ -9,6 +9,12 @@
  * that file's port plus ONE CASE PER FALSIFIER F1–F12 of the brief, so a classifier regression fails here
  * instead of surfacing as friction inside a dispatch.
  *
+ * SCOPED DURABILITY (Q12 = A, post-grill 2026-11-28). Identity clauses are evaluated only for trees of the
+ * SESSION's repository — the one whose common gitdir the session's cwd resolves to. A foreign repository
+ * (a temp `git init`, a contributor's unrelated clone) is durable only through a durable ANCESTOR in that
+ * same scope, so the rows below that hold a foreign repo are written twice: once from this repository's
+ * session (allowed) and once from the foreign repo's own session (its own structural clause).
+ *
  * WHAT A ROW CLAIMS: that the guard's `tool_call` handler, given this session cwd and this target, blocks
  * or does not block — the refusal REASON is asserted only where the brief distinguishes two of them
  * (F11's `could not classify …` must never read as a rule violation). The handler is the real one:
@@ -82,8 +88,10 @@ function addWorktree(
 
 /** The fixture trees. Named once, assigned in `beforeAll`, read by the rows. */
 let base = "";
-/** A tree with no `.git` above it at all — the scratch-root answer (F10). */
+/** A tree with no `.git` above it at all — the scratch-root answer (F10), and an unresolvable session. */
 let plain = "";
+/** A FOREIGN repository (`git init` on branch `main`) outside the session's repository (Q12). */
+let foreignOutside = "";
 /** The project's MAIN worktree: `.git` is a directory, branch `feature/main-branch` (F7). */
 let primary = "";
 /** A linked worktree of the project on `dev`, basename `brl-subagent-dev`: durable by branch AND name. */
@@ -113,6 +121,9 @@ beforeAll(() => {
 	base = mkdtempSync(join(tmpdir(), "guard-617-"));
 	plain = join(base, "plain");
 	mkdirSync(join(plain, "no-repo", "src"), { recursive: true });
+	// Q12: a repository that is not ours, on the branch an unscoped branch clause would call durable.
+	foreignOutside = join(base, "foreign", "git-init-main");
+	initRepo(foreignOutside, "main");
 
 	// The project. Its main worktree sits on a branch that is neither `main` nor `dev`, and its directory
 	// basename is in no durable list — so F7 isolates the STRUCTURAL clause, and nothing else is durable.
@@ -297,31 +308,66 @@ describe("F9 — a nested repository cannot launder and cannot spoil", () => {
 	it("F9: a nested repo inside a scratch worktree is allowed, inside the cockpit it is refused", async () => {
 		await expectAllowed(join(nestedInScratch, "src", "fixture.ts"), scratch);
 		await expectAllowed("src/fixture.ts", nestedInScratch);
-		await expectRefused(join(nestedInCockpit, "src", "fixture.ts"), nestedInCockpit);
 		await expectRefused(join(nestedInCockpit, "src", "fixture.ts"), cockpit);
+		await expectRefused(join(nestedInCockpit, "src", "fixture.ts"), scratch);
 	});
 
-	// BOUNDARY, recorded rather than wished away: durability is a property of EVERY tree in the chain, and
-	// a `git init` is a MAIN worktree (clause a), so it is durable wherever it sits. The brief's Q5 prose
-	// ("keeps vendored fixtures usable") holds for a nested LINKED worktree — the row above — not for a
-	// nested `git init`. Flagged for the maintainer; the classifier is doing what the union says.
-	it("F9 boundary: a nested `git init` is a main worktree, so it is durable even inside a scratch tree", async () => {
+	// CHANGED MEANING (Q12 = A), recorded rather than wished away: the durable ancestor must belong to the
+	// SESSION's repository. A session whose cwd is inside the planted repo is foreign to the cockpit, so its
+	// own `src/` is allowed — the row above is the one Q5 asks for (a session in OUR repo cannot launder).
+	it("F9/Q12: a session inside the planted repo itself is foreign to the cockpit, so its src/ is allowed", async () => {
+		await expectAllowed(join(nestedInCockpit, "src", "fixture.ts"), nestedInCockpit);
+	});
+
+	// CHANGED MEANING (Q12 = A): the old F9 boundary — a nested `git init` is a main worktree, so it is
+	// durable wherever it sits — WAS the unscoped structural clause, and it refused a fixture repo that a
+	// scratch worktree legitimately owns. Scoped, the `git init` is durable in its OWN session only.
+	it("F9/Q12 boundary: a nested `git init` is allowed from a scratch-worktree session, refused from its own", async () => {
+		await expectAllowed(join(plainInitInScratch, "src", "fixture.ts"), scratch);
 		await expectRefused("src/fixture.ts", plainInitInScratch);
 	});
 });
 
-describe("F10 — no repository above the path", () => {
-	it("F10: a path in a plain directory with no .git above it is allowed", async () => {
-		await expectAllowed("src/notes.ts", plain);
-		await expectAllowed(join(plain, "no-repo", "src", "notes.ts"), plain);
+describe("Q12 — durability is scoped to the SESSION's repository", () => {
+	it("Q12: a foreign repo on branch main OUTSIDE the session's repository is allowed", async () => {
+		await expectAllowed(join(foreignOutside, "src", "tui.ts"), scratch);
+		await expectAllowed(join(foreignOutside, "src", "tui.ts"), cockpit);
+		await expectAllowed(join(foreignOutside, "presets", "dev-agent.md"), scratch);
+	});
+
+	it("Q12: a session whose cwd IS that foreign repo refuses its own src/ — the structural clause, in scope", async () => {
+		await expectRefused("src/tui.ts", foreignOutside);
+	});
+
+	it("Q12: our real main worktree is still refused from a session inside one of its linked worktrees", async () => {
+		await expectRefused(join(primary, "src", "tui.ts"), scratch);
+		await expectRefused(join(primary, "src", "tui.ts"), cockpit);
+	});
+
+	it("Q12: a session whose own repository cannot be resolved fails closed as could-not-classify", async () => {
+		await expectUnclassified("src/notes.ts", plain);
+		await expectUnclassified("src/tui.ts", unreadableGit);
+	});
+});
+
+describe("F10 — no repository above the target", () => {
+	// CHANGED MEANING (Q12 = A): a session with no repository above its cwd cannot be scoped at all, so the
+	// plain-cwd row moved to the Q12 block as a fail-closed case. F10 now asserts what it was about — a
+	// TARGET outside every repository is allowed, from a session that HAS one.
+	it("F10: a target in a plain directory with no .git above it is allowed", async () => {
+		await expectAllowed(join(plain, "src", "notes.ts"), scratch);
+		await expectAllowed(join(plain, "no-repo", "src", "notes.ts"), cockpit);
 	});
 });
 
 describe("F11 — unresolvable metadata fails closed, with its own message", () => {
 	it("F11: a .git with no gitdir: line, a gitdir: naming nothing, and an unreadable .git are all unclassifiable", async () => {
-		await expectUnclassified("src/tui.ts", brokenGit);
-		await expectUnclassified("src/tui.ts", missingGitdir);
-		await expectUnclassified("src/tui.ts", unreadableGit);
+		for (const tree of [brokenGit, missingGitdir, unreadableGit]) {
+			// As the TARGET's metadata, from a session that resolves…
+			await expectUnclassified(join(tree, "src", "tui.ts"), scratch);
+			// …and as the SESSION's own metadata (Q12: an unscopable session is blind, so it refuses).
+			await expectUnclassified("src/tui.ts", tree);
+		}
 	});
 });
 
@@ -338,24 +384,35 @@ describe("F12 — the whitelist is read on the durable tree's repo-relative path
 describe("the pure pieces the hook is built from", () => {
 	it("pins the durable name list and the clause each fixture tree answers with", () => {
 		expect(DURABLE_CHECKOUT_NAMES).toEqual(["brl-subagent", "brl-subagent-dev"]);
-		expect(resolveTreeIdentity(primary)).toMatchObject({ durable: true, clause: "main-worktree", error: null });
-		expect(resolveTreeIdentity(cockpit)).toMatchObject({ durable: true, clause: "branch", branch: "dev" });
-		expect(resolveTreeIdentity(otherNameOnDev)).toMatchObject({ durable: true, clause: "branch", branch: "dev" });
-		expect(resolveTreeIdentity(relativeGitdir)).toMatchObject({ durable: true, clause: "branch", branch: "main" });
-		expect(resolveTreeIdentity(detachedCockpit)).toMatchObject({ durable: true, clause: "name", branch: null });
-		expect(resolveTreeIdentity(switchedCockpit)).toMatchObject({ durable: true, clause: "name", branch: "feature/x" });
-		expect(resolveTreeIdentity(scratch)).toMatchObject({ durable: false, clause: null, branch: "fix/617-x" });
-		expect(resolveTreeIdentity(nestedInCockpit)).toMatchObject({ durable: false, branch: "vendor/planted" });
+		expect(resolveTreeIdentity(primary)).toMatchObject({ clause: "main-worktree", error: null });
+		expect(resolveTreeIdentity(cockpit)).toMatchObject({ clause: "branch", branch: "dev" });
+		expect(resolveTreeIdentity(otherNameOnDev)).toMatchObject({ clause: "branch", branch: "dev" });
+		expect(resolveTreeIdentity(relativeGitdir)).toMatchObject({ clause: "branch", branch: "main" });
+		expect(resolveTreeIdentity(detachedCockpit)).toMatchObject({ clause: "name", branch: null });
+		expect(resolveTreeIdentity(switchedCockpit)).toMatchObject({ clause: "name", branch: "feature/x" });
+		expect(resolveTreeIdentity(scratch)).toMatchObject({ clause: null, branch: "fix/617-x" });
+		expect(resolveTreeIdentity(nestedInCockpit)).toMatchObject({ clause: null, branch: "vendor/planted" });
+	});
+
+	it("gives every tree of one repository the same common gitdir, and a foreign repo its own", () => {
+		const project = resolveTreeIdentity(primary).commonGitDir;
+		expect(project).not.toBeNull();
+		for (const tree of [cockpit, scratch, relativeGitdir]) {
+			expect(resolveTreeIdentity(tree).commonGitDir, tree).toBe(project);
+		}
+		for (const tree of [nestedInScratch, nestedInCockpit, plainInitInScratch, foreignOutside, otherNameOnDev]) {
+			expect(resolveTreeIdentity(tree).commonGitDir, tree).not.toBe(project);
+		}
 	});
 
 	it("reports unreadable metadata as an error, and answers the predicate for the session cwd", () => {
 		for (const tree of [brokenGit, missingGitdir, unreadableGit]) {
 			expect(resolveTreeIdentity(tree).error, tree).not.toBeNull();
-			expect(resolveTreeIdentity(tree).durable).toBe(false);
+			expect(resolveTreeIdentity(tree).clause, tree).toBeNull();
 		}
 		expect(isPathProtected("src/tui.ts", scratch)).toBe(false);
 		expect(isPathProtected(join(cockpit, "src", "tui.ts"), scratch)).toBe(true);
-		expect(isPathProtected("src/tui.ts", plain)).toBe(false);
+		expect(isPathProtected(join(plain, "src", "notes.ts"), scratch)).toBe(false);
 	});
 });
 
