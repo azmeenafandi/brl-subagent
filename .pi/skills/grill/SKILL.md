@@ -65,7 +65,8 @@ An interview that lives only in context is lost at compaction, so the confirmed 
 written down before anything is built. The brief is `briefs/<slug>.md` in the repository (tracked, so
 it materialises in every worktree), slug matching `^[a-z0-9][a-z0-9-]{0,63}$`.
 
-The file has four required parts; the gate that reads it refuses a brief missing any of them:
+The file has four parts, all required of the author. The gate enforces three of them — `#606` §2 lists three
+predicates, and `## Facts` is the fourth part of the contract whose provenance a reviewer audits:
 
 1. **`## Want`** — the human's own words, at least one unfenced line of them. The `confirmed:` marker
    is not content, and a fenced block is not body text.

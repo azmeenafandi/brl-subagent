@@ -431,8 +431,10 @@ never re-type their logic by hand. Full design:
 
     Path: `briefs/<slug>.md` in the repository (tracked, so it materialises in every worktree).
     Slug: `^[a-z0-9][a-z0-9-]{0,63}$` — lowercase, single path component, no dots, no separators; the
-    token `none` is reserved for the escape. Four parts are required, and a brief missing any of them
-    is refused before the dispatch spawns:
+    token `none` is reserved for the escape. Four parts are required of an author; the gate enforces
+    three of them (#606 §2 lists three predicates — `## Facts` is the fourth part of the contract, and
+    provenance is a judgement a reviewer audits, not a regex), and a brief failing an enforced one is
+    refused before the dispatch spawns:
 
     1. **`## Want`** — at least one line of the human's own words outside fences. The `confirmed:`
        marker does not count as content, and neither does a fenced block (a fence is not body text).
