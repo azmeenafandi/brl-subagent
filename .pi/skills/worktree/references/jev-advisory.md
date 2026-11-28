@@ -314,6 +314,11 @@ calibrate" above). The table below stays the human narrative, and `--ledger` aud
 
 ## The rules (Rule 22)
 
+- **Model routing is fixed by the maintainer (2026-11-28).** Implementation dispatches run on
+  `deepseek/deepseek-flash`; critique/design dispatches on `openrouter/openai/gpt-6.1-terra`; reviews on
+  `openrouter/meta/muse-ember`. Pass `model` explicitly on every dispatch — an omitted `model` falls to the
+  configured default and silently leaves the routing. Subagents run in the **background** whenever possible
+  (foreground only when the next step needs the result inline).
 - **Advisory only.** The conductor decides; the maintainer's spec approval is the gate.
 - **The level is an OBSERVATION (2026-11-08, #468).** Record the line in the spec and the dispatch —
   format it with `.pi/skills/worktree/jev-check.mjs --classifier '<raw answers>'` (a bare level is a
