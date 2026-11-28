@@ -4,9 +4,9 @@
 > History: `.development/HANDOFF-ARCHIVE-*` and `.development/FRICTION_LOG.md` — never re-read it.
 
 ## STATE
-Verified: 370774f (2026-11-28)
+Verified: 5100563 (2026-11-28)
 In flight: nothing
-Next action: #606 (open) — the Unit 1 release checkpoint is the maintainer's call; Unit 3 is what remains
+Next action: #606 (open) — Unit 3's brief is signed; cut the worktree and dispatch the implementation
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
 
 ## Invariants

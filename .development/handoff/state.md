@@ -3,11 +3,11 @@
 The mechanical snapshot #607 moved out of the index. Read by `node scripts/handoff-verify.mjs` — every
 line below is a claim it recomputes, and a drift means the claim is wrong, never the checker.
 
-- **dev** @ `370774f` — #606 Unit 1 merged (the grill front door: dispatch header, brief predicates, template
-  kinds, routing fix); on top of the pi 1.7.0 SDK parity (#611) and its spec correction.
-- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 370774f`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
+- **dev** @ `5100563` — #606 Unit 3's signed brief (`briefs/factory-vocabulary.md`) and the two recon reports it
+  cites; on top of Unit 1's merge (#612) and the pi 1.7.0 SDK parity (#611).
+- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 5100563`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
 - **Board:** `#611` merged (`3789461`) with `#610` closed; `#612` merged (`370774f`) — #606 Unit 1, the front door. Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #606.
-- **Suite:** 154 files / **3516** (3515 passed, 0 failed, 1 skipped) captured at `370774f` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
+- **Suite:** 154 files / **3516** (3515 passed, 0 failed, 1 skipped) captured at `5100563` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
 
 ## Open items
 
@@ -17,6 +17,15 @@ line below is a claim it recomputes, and a drift means the claim is wrong, never
   **Release checkpoint is OPEN**: this changed `src/`, so the merged code is not in the published package —
   the maintainer decides between a release and continued dev-checkout dogfooding (a `/reload` activates it
   for the dev install).
+- **In flight: #606 Unit 3 — the brief is signed, nothing is built yet.** `briefs/factory-vocabulary.md`
+  (`5100563`), fifteen decisions taken one question at a time, validated with `validateBriefFile` → ok. The
+  design is deliberately small: a **naming layer** over the words the code already uses, **one ban**
+  (`worker` → `subagent`), a data-only `VOCABULARY.md` the lint parses and validates, and the refusals
+  (`runner`, `trigger`, `ticket tracker`) recorded in the prose glossary. Corpus is living `*.md` prose only.
+  Next: worktree + `dispatch: impl` `brief: factory-vocabulary` — the first dispatch the gate will police.
+- **Regression found and fixed while cutting this unit:** the Unit 2 close rewrote the Suite line to
+  `154 files / 3516` and dropped its passed/failed/skipped breakdown. `handoff-verify.test.ts:909` parses the
+  live line and caught it; `handoff-verify` itself did not, because it compares totals and not the suffix.
 - **Carried nits from #612** (record, not fixed): `src/brief.ts` and `src/dispatch-header.ts` hold two regexes
   for the zero-decision form that disagree (`none—why` accepted by one, refused by the other; neither matches
   the spec's `^none —\s*\S`); an `impl` template whose body already declares its kind skips the render-time
