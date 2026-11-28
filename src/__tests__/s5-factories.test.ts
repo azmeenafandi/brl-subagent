@@ -72,6 +72,7 @@ const session = vi.hoisted(() => ({
 	stopAgent: vi.fn(),
 	steerAgent: vi.fn(),
 	getAgent: vi.fn(),
+	readAgentRecordFromDisk: vi.fn(),
 	resolveAgentId: vi.fn(),
 	findRetryLineage: vi.fn(),
 	isTerminalAgentStatus: vi.fn(),
@@ -79,6 +80,9 @@ const session = vi.hoisted(() => ({
 	RETRY_SCAN_WINDOW_DAYS: 7,
 }));
 vi.mock("../session-manager", () => session);
+/** Issue #616: the stop contract reads its armed-retry markers from here. */
+const retryArmed = vi.hoisted(() => ({ readArmedRetry: vi.fn(), cancelArmedRetry: vi.fn() }));
+vi.mock("../retry-armed", () => retryArmed);
 const transcript = vi.hoisted(() => ({ getTranscript: vi.fn(() => []) }));
 vi.mock("../transcript", () => transcript);
 
@@ -106,6 +110,8 @@ function fakeCtx(cwd = workdir): ExtensionContext {
 beforeEach(() => {
 	for (const spy of Object.values(tui)) spy.mockClear();
 	for (const spy of Object.values(session)) if (typeof spy === "function") spy.mockClear();
+	for (const spy of Object.values(retryArmed)) spy.mockClear();
+	retryArmed.readArmedRetry.mockReturnValue(null);
 });
 
 const textOf = (result: { content: Array<{ type: string }> }): string =>
@@ -339,17 +345,40 @@ describe("createAgentTools — the three agent-tool definitions (ADR 0027 S5)", 
 	});
 
 	it("stop_subagent reports a missing agent without throwing", async () => {
-		session.stopAgent.mockResolvedValueOnce(null);
+		// Issue #616: the tool resolves the id first (`resolveAgentId`), then reads
+		// the record. An id that resolves to nothing stops nothing.
+		session.resolveAgentId.mockReturnValueOnce({ kind: "resolved", id: "bg-1" });
+		session.getAgent.mockReturnValueOnce(null);
 		const result = await tool("stop_subagent").execute("call-1", { agent_id: "nope" } as never, undefined, undefined, fakeCtx());
 		expect(result.isError).toBe(true);
 		expect(textOf(result)).toBe("Agent nope not found");
 	});
 
 	it("stop_subagent confirms the stop with the agent's description", async () => {
+		// ONE live agent, no lineage: the report names the id, its attempt and its
+		// cause, and the terminal status is read back from the store — never from
+		// `stopAgent`'s return value (issue #616).
+		session.resolveAgentId.mockReturnValueOnce({ kind: "resolved", id: "bg-1" });
+		session.getAgent.mockReturnValue({ id: "bg-1", status: "running", startedAt: Date.now(), attempt: 1 });
+		session.findRetryLineage.mockReturnValueOnce({
+			id: "bg-1",
+			family: [{ id: "bg-1", status: "running", startedAt: Date.now(), attempt: 1 }],
+			found: { id: "bg-1", status: "running", startedAt: Date.now(), attempt: 1 },
+			latest: { id: "bg-1", status: "running", startedAt: Date.now(), attempt: 1 },
+			inflight: [],
+			bounds: { capped: false, windowDays: 7 },
+		});
+		session.readAgentRecordFromDisk.mockReturnValue({
+			exists: true,
+			record: { id: "bg-1", description: "audit", status: "stopped", startedAt: 1 },
+		});
 		session.stopAgent.mockResolvedValueOnce({ id: "bg-1", description: "audit" });
 		const result = await tool("stop_subagent").execute("call-1", { agent_id: "bg-1" } as never, undefined, undefined, fakeCtx());
 		expect(result.isError).toBeUndefined();
-		expect(textOf(result)).toBe("Stopped agent bg-1 (audit).");
+		expect(textOf(result)).toBe(
+			"Stopped agent bg-1 (attempt 1, cause unknown, audit).\n" +
+				"Nothing of this dispatch (bg-1) is running.",
+		);
 	});
 
 	it("steer_subagent truncates the echoed message at 50 characters", async () => {

@@ -29,6 +29,7 @@
  * needs one call site fewer than rewriting the schemas into named consts.
  */
 
+import type { StoppedAttempt } from "./stop-lineage";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { formatBudgetLine, normalizeCompletionStatus } from "./notify-completion";
@@ -284,9 +285,12 @@ export function createAgentTools(): ToolDefinition<any, any, any>[] {
 		name: "stop_subagent",
 		label: "Stop Subagent",
 		description: [
-			"Stop a running background agent by aborting its session.",
-			"The agent's current operation is aborted and the session is marked stopped.",
-			"Use this to halt a background agent that is no longer needed.",
+			"Stop a background agent by aborting its session.",
+			"A stop is DISPATCH-scoped: it stops the agent you name AND every automatic transport retry of the same dispatch that is still running, because a retried run continues the same work under a different id.",
+			"A manual retry (one you started yourself) is never stopped by a stop aimed at another attempt — pass its own id to stop it.",
+			"Accepts a full agent id or a unique 8-character id prefix; an ambiguous prefix stops nothing.",
+			"The report names every attempt it acted on (id, attempt, cause) and discloses anything left running, an armed retry, or a truncated lineage scan.",
+			"An already-terminal dispatch is a no-op success.",
 		].join(" "),
 		parameters: Type.Object({
 			agent_id: Type.String({
@@ -294,25 +298,12 @@ export function createAgentTools(): ToolDefinition<any, any, any>[] {
 			}),
 		}),
 		execute: async (toolCallId, params, _signal, _onUpdate, ctx) => {
-			const { stopAgent } = await import('./session-manager');
-			
 			try {
-				const agent = await stopAgent(params.agent_id);
-				
-				if (!agent) {
-					return {
-						content: [{ type: "text" as const, text: `Agent ${params.agent_id} not found` }],
-						details: undefined,
-						isError: true,
-					};
-				}
-				
+				const report = await runDispatchStop(params.agent_id, ctx);
 				return {
-					content: [{
-						type: "text" as const,
-						text: `Stopped agent ${params.agent_id} (${agent.description}).`,
-					}],
+					content: [{ type: "text" as const, text: report.text }],
 					details: undefined,
+					...(report.isError ? { isError: true } : {}),
 				};
 			} catch (err) {
 				// F7 (issue #65): sanitize BEFORE the message reaches the main
@@ -329,4 +320,129 @@ export function createAgentTools(): ToolDefinition<any, any, any>[] {
 		},
 	});
 	return [getSubagentResultTool, steerSubagentTool, stopSubagentTool];
+}
+
+/**
+ * Issue #616 — the stop contract, as one function: **resolve → plan → cancel an
+ * armed retry → stop each live attempt → verify from the records → report**.
+ *
+ * Separated from the tool definition so the tool stays the adapter it is for the
+ * other two lifecycle tools, and every step below is greppable by name.
+ *
+ * SCOPE (the brief's Contract): the requested id — always — plus every attempt of
+ * the same dispatch whose recorded `retryCause` is `transport`. A `manual` retry
+ * is disclosed residue, never stopped by scope; an attempt whose cause is ABSENT
+ * is unknown and equally untouched. Naming a manual retry's own id DOES stop it
+ * (it is the requested id, and `retryCause` is a filter, not an immunity).
+ *
+ * Never prints a universal claim over a partial answer: an armed retry, an
+ * unknown cause, or a truncated lineage scan each get their own disclosure line
+ * instead, and the claim itself is suppressed.
+ */
+async function runDispatchStop(
+	rawId: string,
+	ctx: { cwd?: string } | undefined,
+): Promise<{ text: string; isError: boolean }> {
+	const {
+		getAgent,
+		resolveAgentId,
+		findRetryLineage,
+		readAgentRecordFromDisk,
+		stopAgent,
+	} = await import('./session-manager');
+	const { planDispatchStop, formatStopReport } = await import('./stop-lineage');
+	const { readArmedRetry, cancelArmedRetry } = await import('./retry-armed');
+	const { isTerminalAgentStatusValue } = await import('./types');
+
+	// The notices render the first 8 hex characters of an id, and labels are
+	// shared across attempts (that IS #616) — so resolve a prefix exactly as
+	// `get_subagent_result` does, and fail closed on ambiguity: a guess here could
+	// stop the wrong dispatch.
+	const resolution = resolveAgentId(rawId);
+	if (resolution.kind === 'ambiguous') {
+		return {
+			text: `Agent id prefix "${rawId}" is ambiguous — matches: ${resolution.matches.join(', ')}. Nothing was stopped.`,
+			isError: true,
+		};
+	}
+	if (resolution.kind === 'unresolved') return { text: `Agent ${rawId} not found`, isError: true };
+	const agentId = resolution.id;
+
+	// The record read is deliberately NOT windowed: the stop must act on a run
+	// that exists, not on what the (bounded) lineage scan could see.
+	const agent = getAgent(agentId);
+	if (!agent) return { text: `Agent ${rawId} not found`, isError: true };
+
+	const armedFor = (family: Array<{ id: string }>) => {
+		const ids = new Set<string>([agentId, ...family.map((record) => record.id)]);
+		return [...ids]
+			.map((id) => readArmedRetry(id))
+			.filter((marker): marker is NonNullable<typeof marker> => marker !== null);
+	};
+
+	// Plan 1 — computed BEFORE any cancel, so the armed markers are still there.
+	const firstLineage = findRetryLineage(agentId, agent);
+	let plan = planDispatchStop({
+		targetId: agentId,
+		lineage: firstLineage,
+		armed: armedFor(firstLineage.family),
+		nowMs: Date.now(),
+	});
+
+	const cancels: Array<{
+		armed: (typeof plan.armed)[number];
+		outcome: Awaited<ReturnType<typeof cancelArmedRetry>>;
+	}> = [];
+	for (const marker of plan.armed) {
+		cancels.push({ armed: marker, outcome: cancelArmedRetry(marker.parentId, marker.attempt) });
+	}
+
+	// A cancel that found NO marker means the retry became durable between the read
+	// and the cancel: the spawn's pre-prompt gate cleared the marker, so the retry
+	// now HAS a record. Re-read the lineage ONCE and stop it like any other live
+	// attempt rather than reporting an armed retry that no longer exists.
+	if (cancels.some((cancel) => cancel.outcome === 'gone')) {
+		const reLineage = findRetryLineage(agentId, agent);
+		plan = planDispatchStop({
+			targetId: agentId,
+			lineage: reLineage,
+			armed: armedFor(reLineage.family),
+			nowMs: Date.now(),
+		});
+	}
+
+	const stopped: StoppedAttempt[] = [];
+	for (const record of plan.live) {
+		let thrown: string | undefined;
+		try {
+			// SEQUENTIAL, one contained try per attempt: a throw must not hide the
+			// next run's stop, nor the evidence the report is built from.
+			await stopAgent(record.id);
+		} catch (err) {
+			thrown = sanitizeErrorMessage(err instanceof Error ? err.message : String(err), ctx?.cwd);
+		}
+		// THE VERDICT IS THE STORE'S, not the primitive's return value: `stopAgent`
+		// returns a terminal record UNCHANGED, so "already dead" and "just stopped"
+		// are the same answer — the record is what can tell them apart.
+		const after = readAgentRecordFromDisk(record.id);
+		const status = after.record?.status;
+		const verified = status !== undefined && isTerminalAgentStatusValue(status);
+		const storeState = after.record
+			? `status ${after.record.status}`
+			: after.exists
+				? `record ${after.reason ?? 'unreadable'}`
+				: 'no record';
+		stopped.push({
+			record,
+			description: after.record?.description ?? getAgent(record.id)?.description,
+			verifiedStatus: verified ? (status as NonNullable<typeof status>) : null,
+			unverifiedState: verified
+				? undefined
+				: thrown
+					? `${storeState}; stopAgent threw: ${thrown}`
+					: storeState,
+		});
+	}
+
+	return formatStopReport({ plan, stopped, cancels });
 }

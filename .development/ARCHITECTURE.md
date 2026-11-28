@@ -122,6 +122,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `scratch-spawn.ts` | The spawn seam for the shipped scratch root — resolves, creates, prunes and settles one run's directory. |
 | `session-manager.ts` | Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths. |
 | `state.ts` | Session-bound state container with versioned validation and migration for persisted settings. |
+| `stop-lineage.ts` | The dispatch-scoped stop plan and its report lines for `stop_subagent` (issue #616). |
 | `store-permissions.ts` | Owner-only repair for the persistent stores' directories and files — mkdirSync's mode applies only on CREATE. |
 | `templates.ts` | Task-template resolution: `${param}` substitution over the file-backed template tiers. |
 | `terminal-notifier.ts` | The terminal notifier — the terminal event-bus subscriptions, their per-instance release latch, and the completion alert with its transport auto-retry. |
@@ -137,7 +138,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 | `worktree-report.ts` | Formats the read-only worktree state a failed or stopped run may have left behind (issue #474). |
 
-**64 modules** — every one is listed because a new module without a purpose fails CI.
+**65 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

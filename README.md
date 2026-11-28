@@ -158,13 +158,19 @@ Alongside `delegate_task`, the extension registers three companion tools for bac
 
 ### `stop_subagent`
 
-Stops a running background agent — a real abort, not a status flip.
+Stops the background work of a **dispatch** — a real abort, not a status flip.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `agent_id` | string | Agent ID of the running background session to stop |
+| `agent_id` | string | Agent ID of the background dispatch to stop (full id or a unique 8-character prefix) |
 
-**What it does:** aborts the live session via `session.abort()` — the pending `prompt()` resolves with `stopReason: "aborted"` rather than hanging — and marks the agent `stopped`. Partial work from a `gitMode: 'branch'` run is captured in the result before the work branch is discarded. Returns an error if the agent is not found; an already-terminal agent is a no-op success (the call is idempotent). Use it to halt a background agent that is no longer needed.
+**What it does:** resolves the id, expands it to the whole dispatch (the retries that continue the same work), and aborts every attempt of it that is still running — yours first, then its automatic transport retries in attempt order. Each abort is a real `session.abort()` (the pending `prompt()` resolves with `stopReason: "aborted"` rather than hanging), and partial work from a `gitMode: 'branch'` run is captured before the work branch is discarded.
+
+**Scope is `transport` only.** A background run that dies on a transport-class error is re-dispatched once automatically, as a different agent id under the same label — so stopping the id you were handed must also stop that retry. A retry you started yourself (`retryRunId`) is **not** stopped by a stop aimed at another attempt, because you deliberately started it; pass its own id to stop it. An attempt whose record does not say why it exists is *unknown*, and unknown is never stopped this way — it is reported instead.
+
+**The report is built from the records, not from the tool's return value.** An attempt is reported as `Stopped` only after its record is re-read and is terminal; anything that could not be verified is an error. A line always carries the id, the attempt number and the cause. The call does **not** print a claim that the dispatch is quiet when that cannot be known: an armed-but-unspawned retry, an unknown cause, a live out-of-scope retry, or a truncated lineage scan (a run older than 7 days, or a store scan that hit its record cap) each get their own disclosure line.
+
+Returns an error if the agent is not found and refuses an ambiguous id prefix (stopping nothing). An already-terminal dispatch with nothing running and nothing armed is a no-op success — the call stays idempotent. Use it to halt a background dispatch that is no longer needed.
 
 ---
 

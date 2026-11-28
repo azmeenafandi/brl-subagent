@@ -40,7 +40,7 @@ const SRC = join(ROOT, "src");
  * `dispatch-header.ts` + `brief.ts` (issue #606, Unit 1). Re-point it with the
  * commit that adds or removes a module — never to match a scan that silently
  * stopped matching. */
-const SRC_FILE_COUNT = 64;
+const SRC_FILE_COUNT = 65;
 
 const scratch = mkdtempSync(join(tmpdir(), "brl-476-imports-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
