@@ -31,7 +31,13 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import initWorktreeGuard, { blockReason, isInstallCommand } from "../../../extensions/worktree-guard/index.ts";
+import initWorktreeGuard, {
+	DURABLE_CHECKOUT_NAMES,
+	blockReason,
+	isInstallCommand,
+	isPathProtected,
+	resolveTreeIdentity,
+} from "../../../extensions/worktree-guard/index.ts";
 
 /** Every git command in this file: hermetic env, no prompts, a fixed identity. */
 const GIT_ENV = {
@@ -170,6 +176,9 @@ beforeAll(() => {
 	mkdirSync(join(cockpit, "src"), { recursive: true });
 	mkdirSync(join(cockpit, ".pi"), { recursive: true });
 	mkdirSync(join(scratch, "src"), { recursive: true });
+	// A real file, so the leaf link below RESOLVES — a dangling leaf is the next-but-one row, and its
+	// answer (its own lexical location) is the opposite one.
+	writeFileSync(join(cockpit, "src", "x.ts"), "// fixture\n");
 	symlinkSync(join(cockpit, "src", "x.ts"), join(scratch, "leaf.ts"));
 	symlinkSync(join(cockpit, "src"), join(scratch, "linkdir"));
 	symlinkSync(join(cockpit, ".pi", "tool.ts"), join(cockpit, "alias.ts"));
@@ -396,6 +405,36 @@ describe("F12 — the whitelist is evaluated on the durable tree's repo-relative
 
 	it("F12: the control — the same cockpit still refuses plain src/", async () => {
 		await expectRefused("src/preset.ts", cockpit);
+	});
+});
+
+describe("the pure pieces the hook is built from", () => {
+	it("pins the durable name list — widening it is a policy change, not a bug fix", () => {
+		expect(DURABLE_CHECKOUT_NAMES).toEqual(["brl-subagent", "brl-subagent-dev"]);
+	});
+
+	it("names the clause that made each fixture durable, and the branch it read", () => {
+		expect(resolveTreeIdentity(primary)).toMatchObject({ durable: true, clause: "main-worktree", error: null });
+		expect(resolveTreeIdentity(cockpit)).toMatchObject({ durable: true, clause: "branch", branch: "dev" });
+		expect(resolveTreeIdentity(otherNameOnDev)).toMatchObject({ durable: true, clause: "branch", branch: "dev" });
+		expect(resolveTreeIdentity(relativeGitdir)).toMatchObject({ durable: true, clause: "branch", branch: "main" });
+		expect(resolveTreeIdentity(detachedCockpit)).toMatchObject({ durable: true, clause: "name", branch: null });
+		expect(resolveTreeIdentity(switchedCockpit)).toMatchObject({ durable: true, clause: "name", branch: "feature/x" });
+		expect(resolveTreeIdentity(scratch)).toMatchObject({ durable: false, clause: null, branch: "fix/617-x" });
+		expect(resolveTreeIdentity(nestedInCockpit)).toMatchObject({ durable: false, branch: "vendor/planted" });
+	});
+
+	it("reports unreadable metadata as an error rather than as scratch", () => {
+		for (const tree of [brokenGit, missingGitdir, unreadableGit]) {
+			expect(resolveTreeIdentity(tree).error, tree).not.toBeNull();
+			expect(resolveTreeIdentity(tree).durable).toBe(false);
+		}
+	});
+
+	it("the predicate answers for the session cwd, and agrees with the hook", () => {
+		expect(isPathProtected("src/tui.ts", scratch)).toBe(false);
+		expect(isPathProtected(join(cockpit, "src", "tui.ts"), scratch)).toBe(true);
+		expect(isPathProtected("src/tui.ts", plain)).toBe(false);
 	});
 });
 
