@@ -5,8 +5,8 @@
 
 ## STATE
 Verified: 026ef8d (2026-11-28)
-In flight: impl-606 — Unit 1 building in `../brl-subagent-wt-606`; **review HELD** until the maintainer's `/reload`
-Next action: #606 (open) — on the implementer's report, HOLD the review until the maintainer confirms the reload
+In flight: PR #612 — #606 Unit 1 under review in `../brl-subagent-wt-606`; the `/reload` is done
+Next action: #606 (open) — review #612, then the merge gate; Unit 1 of three
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
 
 ## Invariants
