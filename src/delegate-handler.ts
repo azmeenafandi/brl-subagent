@@ -295,7 +295,7 @@ function warnUnknownParams(
 function applyTemplate(
 	params: DelegateTaskParams,
 	templates: readonly TaskTemplate[],
-	deps: Pick<NormalizeDeps, "pi" | "log">,
+	deps: Pick<NormalizeDeps, "pi" | "log" | "ctx">,
 ): Outcome<void> {
 	const { pi, log } = deps;
 	if (!params.template) return { ok: true, value: undefined };
@@ -318,7 +318,11 @@ function applyTemplate(
 		};
 	}
 
-	const resolved = resolveTemplate(templateEntry, params.params ?? {});
+	// Issue #606 (§3a): the renderer needs the DISPATCH cwd, because a template
+	// with no `dispatch:` field is refused only where the project opted in.
+	const resolved = resolveTemplate(templateEntry, params.params ?? {}, {
+		cwd: templateDispatchCwd(params, deps.ctx),
+	});
 	if (!resolved.ok) {
 		return {
 			ok: false,
@@ -377,6 +381,18 @@ function applyTemplate(
 }
 
 /**
+ * The cwd a rendered dispatch will run in, as far as THIS seam can know it:
+ * the call's own `cwd` resolved against the harness cwd, else the harness cwd.
+ * The later resolver may refine it (a worktree branch, a per-step cwd), so this
+ * is the project the CONDUCTOR named — and the read is fail-open, which is what
+ * keeps a template rendering untouched in a project that never opted in.
+ */
+function templateDispatchCwd(params: DelegateTaskParams, ctx: ExtensionContext): string {
+	const declared = typeof params.cwd === "string" ? params.cwd : "";
+	return declared === "" ? ctx.cwd : path.resolve(ctx.cwd, declared);
+}
+
+/**
  * Seam A — resolve the dispatch inputs: unknown-param warning, template
  * resolution, retry restore (issue #430).
  *
@@ -402,7 +418,7 @@ function normalizeInput(
 	// A1: the two pre-resolution notices (unknown keys, ignored task) and the
 	// template application itself.
 	warnUnknownParams(params, { pi, log });
-	const templated = applyTemplate(params, state.config.templates, { pi, log });
+	const templated = applyTemplate(params, state.config.templates, { pi, log, ctx });
 	if (!templated.ok) return templated;
 
 	// Handle retryRunId — MUST run after template resolution and before the

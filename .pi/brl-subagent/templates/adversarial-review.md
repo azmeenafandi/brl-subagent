@@ -1,6 +1,7 @@
 ---
 name: adversarial-review
 description: "Adversarial review (C1-class) with the verdict-first contract — the CONTRACT is fixed, the TARGET is free-form. Distilled from the brl-subagent sprint reviews (#66 trial + every C1 review since)"
+dispatch: review
 preset: project-reviewer
 thinkingLevel: high
 ---

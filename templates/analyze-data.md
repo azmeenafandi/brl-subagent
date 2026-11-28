@@ -1,6 +1,7 @@
 ---
 name: analyze-data
 description: Data analysis with patterns and recommendations
+dispatch: probe
 preset: data-analyst
 thinkingLevel: medium
 ---

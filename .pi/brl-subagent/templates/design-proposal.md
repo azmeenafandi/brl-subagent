@@ -1,6 +1,7 @@
 ---
 name: design-proposal
 description: "Design investigation → decision-ready proposal. The CONTRACT is fixed, the PROBLEM is free-form"
+dispatch: probe
 preset: project-proposer
 thinkingLevel: high
 ---

@@ -1,6 +1,7 @@
 ---
 name: debug-task
 description: "Debugging/investigation with Rule 12 baked in — environment before theory (order, not exclusivity). The CONTRACT is fixed, the PROBLEM is free-form"
+dispatch: impl
 preset: dev-agent
 thinkingLevel: medium
 ---

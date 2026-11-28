@@ -29,6 +29,8 @@ import { TEMPLATE_PARAM_RE, THINKING_LEVELS, type TaskTemplate, type ThinkingLev
 import { applyFrontmatterMappers, loadMarkdownRecords, type FrontmatterFieldMapper, type FrontmatterMapContext } from "./loader";
 import { sanitizeFileName } from "./presets";
 import { pkgPath } from "./paths";
+import { DISPATCH_KIND_LIST, dispatchFieldProblem, parseDispatchHeader, splitDispatchHeader, type DispatchKind } from "./dispatch-header";
+import { isProcessChecksEnabled } from "./project-flags";
 
 // ---------------------------------------------------------------------------
 // Param extraction
@@ -69,6 +71,7 @@ export function extractParamNames(text: string): string[] {
 export function resolveTemplate(
 	template: TaskTemplate,
 	params: Record<string, string>,
+	context: TemplateRenderContext = {},
 ): { ok: true; value: TaskTemplate } | { ok: false; error: string } {
 	// Collect all unique param names used in task and outputFile
 	const namesInTask = extractParamNames(template.task);
@@ -92,13 +95,91 @@ export function resolveTemplate(
 		});
 	};
 
+	const rendered = renderDispatchBlock(template, params, replaceAll(template.task), context.cwd);
+	if (!rendered.ok) return { ok: false, error: rendered.error };
+
 	const resolved: TaskTemplate = {
 		...template,
-		task: replaceAll(template.task),
+		task: rendered.text,
 		outputFile: template.outputFile ? replaceAll(template.outputFile) : undefined,
 	};
 
 	return { ok: true, value: resolved };
+}
+
+/**
+ * The render context: the dispatch cwd, so the render-time process checks use
+ * the project's OWN manifest. Absent means "no dispatch cwd known", which reads
+ * as fail-open exactly like an un-opted-in project (issue #415's contract).
+ */
+export interface TemplateRenderContext {
+	cwd?: string;
+}
+
+/** The one place the frontmatter kind becomes a header line (spec §3a). */
+function renderDispatchBlock(
+	template: TaskTemplate,
+	params: Record<string, string>,
+	body: string,
+	cwd: string | undefined,
+): { ok: true; text: string } | { ok: false; error: string } {
+	const problem = dispatchFieldProblem(template.dispatch);
+	if (problem !== undefined) return { ok: false, error: `Template "${template.name}": ${problem}` };
+
+	if (template.dispatch === undefined) {
+		// FAIL-OPEN: a project that has not opted in renders exactly as it did
+		// before #606 — the render-time refusal may not leak past the boundary.
+		if (!isProcessChecksEnabled(cwd)) return { ok: true, text: body };
+		return {
+			ok: false,
+			error:
+				`Template "${template.name}" has no "dispatch" field. Add \`dispatch: <kind>\` to its frontmatter ` +
+				`(one of: ${DISPATCH_KIND_LIST}) so the rendered dispatch carries a header — this project opted into processChecks.`,
+		};
+	}
+
+	// No second declaration: a body that already opens with one is authoritative,
+	// and a frontmatter kind that contradicts it would be a silent disagreement
+	// about what the dispatch IS (the kind is what the brief rules key on).
+	const declared = splitDispatchHeader(body).header
+		.split("\n")
+		.find((line) => line.startsWith("dispatch:"));
+	if (declared !== undefined) {
+		const bodyKind = declared.slice("dispatch:".length).trim();
+		if (bodyKind !== template.dispatch) {
+			return {
+				ok: false,
+				error:
+					`Template "${template.name}" declares dispatch: ${template.dispatch} but its body opens with ` +
+					`\`dispatch: ${bodyKind}\`. Declare the kind in one place.`,
+			};
+		}
+		return { ok: true, text: body };
+	}
+
+	const lines = [`dispatch: ${template.dispatch}`];
+	if (template.dispatch === "impl") {
+		const brief = (params.brief ?? "").trim();
+		if (brief === "") {
+			return {
+				ok: false,
+				error:
+					`Template "${template.name}" declares dispatch: impl but no "brief" param was supplied. ` +
+					`Pass brief: "<slug>" (the brief lives at briefs/<slug>.md), or ` +
+					`brief: "none — <reason>" for the stated escape.`,
+			};
+		}
+		lines.push(`brief: ${brief}`);
+	}
+
+	const composed = `${lines.join("\n")}\n${body}`;
+	// One validator for the composed block: a bad brief param and a body whose
+	// first line joins the block are the same class of error, caught here.
+	const verdict = parseDispatchHeader(composed);
+	if (!verdict.ok) {
+		return { ok: false, error: `Template "${template.name}" rendered an invalid dispatch block: ${verdict.reason}` };
+	}
+	return { ok: true, text: composed };
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +251,14 @@ export function validateTemplate(meta: Record<string, unknown>, fileName: string
 		errors.push(`Template "${meta.name}" (${fileName}): preset must be a string.`);
 	}
 
+	// Issue #606 (§3a): `dispatch:` is an ENUM. validateTemplate ignored unknown
+	// fields before this, so a typo (`dispatch: reveiw`) would have disabled the
+	// gate with no warning — the exact failure a silently-ignored key produces.
+	const dispatchProblem = dispatchFieldProblem(meta.dispatch);
+	if (dispatchProblem !== undefined) {
+		errors.push(`Template "${meta.name}" (${fileName}): ${dispatchProblem}`);
+	}
+
 	return errors;
 }
 
@@ -208,6 +297,12 @@ const TEMPLATE_FIELD_MAPPERS = {
 	noBuiltinTools: (meta) => (meta.noBuiltinTools === "true" ? true : undefined),
 	inheritSystemPrompt: (meta) =>
 		(meta.inheritSystemPrompt === "false" ? false : undefined),
+	// An already-validated enum value; anything else stays `undefined` so a
+	// stale file cannot present itself as a typed kind.
+	dispatch: (meta) =>
+		typeof meta.dispatch === "string" && dispatchFieldProblem(meta.dispatch) === undefined
+			? (meta.dispatch as DispatchKind)
+			: undefined,
 } satisfies TemplateFieldMappers;
 
 // ---------------------------------------------------------------------------
@@ -409,6 +504,7 @@ export function buildTemplateFrontmatter(template: TaskTemplate): string {
 		lines.push("tools:");
 		for (const t of template.tools) lines.push(`  - ${t}`);
 	}
+	if (template.dispatch) lines.push(`dispatch: ${template.dispatch}`);
 	if (template.excludeTools?.length) {
 		lines.push("excludeTools:");
 		for (const t of template.excludeTools) lines.push(`  - ${t}`);

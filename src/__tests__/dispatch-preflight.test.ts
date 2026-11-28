@@ -92,6 +92,8 @@ import { createTempEnv } from "./fixtures/temp-lifecycle";
 const GLOBAL_MODEL = { provider: "test", id: "test/model" };
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const VALID_LINE = `jev: high (0.44) · C2 · worktree y`;
+/** Issue #606: every dispatch in an opted-in project opens with the header. */
+const HEADER = "dispatch: probe";
 
 /** Opt a project directory in via the umbrella flag (issue #415). */
 function optIn(dir: string = env.testCwd): void {
@@ -556,7 +558,7 @@ describe("auto-switch: high-thinking foreground + explicit timeout (issue #412)"
 	it("auto-switches to background, drops the explicit timeout, and says so", async () => {
 		optIn();
 		const result = await dispatch({
-			task: `critique the plan\n\n${VALID_LINE}`,
+			task: `${HEADER}\ncritique the plan\n\n${VALID_LINE}`,
 			thinkingLevel: "high",
 			background: false,
 			timeout: 900_000,
@@ -582,7 +584,7 @@ describe("auto-switch: high-thinking foreground + explicit timeout (issue #412)"
 	it("records background:true in the retry snapshot (ordering: switch BEFORE snapshotOriginalParams)", async () => {
 		optIn();
 		await dispatch({
-			task: `critique the plan\n\n${VALID_LINE}`,
+			task: `${HEADER}\ncritique the plan\n\n${VALID_LINE}`,
 			thinkingLevel: "xhigh",
 			background: false,
 			timeout: 900_000,
@@ -616,7 +618,7 @@ describe("auto-switch: force:true keeps the foreground shape (issue #412)", () =
 	it("force:true runs foreground and preserves the explicit timeout", async () => {
 		optIn();
 		const result = await dispatch({
-			task: `read one file and answer inline\n\n${VALID_LINE}`,
+			task: `${HEADER}\nread one file and answer inline\n\n${VALID_LINE}`,
 			thinkingLevel: "high",
 			background: false,
 			timeout: 900_000,
@@ -674,7 +676,7 @@ describe("auto-switch: shapes it must NOT touch (issue #412)", () => {
 		optIn();
 		await sessionStartHandler?.({}, makeCtx() as never);
 		const result = await dispatch({
-			task: `review the code for correctness\n\n${VALID_LINE}`,
+			task: `${HEADER}\nreview the code for correctness\n\n${VALID_LINE}`,
 			background: false,
 			timeout: 900_000,
 		});
@@ -746,7 +748,7 @@ describe("the switch is opt-in per project (issue #415)", () => {
 		(ctx as { cwd: string }).cwd = REPO_ROOT;
 		const result = await dispatch(
 			{
-				task: `Review one file.\n\n${VALID_LINE}`,
+				task: `${HEADER}\nReview one file.\n\n${VALID_LINE}`,
 				thinkingLevel: "high",
 				background: false,
 				timeout: 900_000,
@@ -783,7 +785,7 @@ describe("drop-timeout: foreground keeps its shape, loses its deadline (issue #4
 	it("omitted background + effective 'writes' → foreground, timeout dropped, notice on both channels", async () => {
 		optIn();
 		const result = await dispatch({
-			task: `critique the plan\n\n${VALID_LINE}`,
+			task: `${HEADER}\ncritique the plan\n\n${VALID_LINE}`,
 			thinkingLevel: "high",
 			approvalMode: "writes",
 			timeout: 600_000,
@@ -828,7 +830,7 @@ describe("drop-timeout: foreground keeps its shape, loses its deadline (issue #4
 		// here (ADR 0009).
 		optIn();
 		await dispatch({
-			task: `critique the plan\n\n${VALID_LINE}`,
+			task: `${HEADER}\ncritique the plan\n\n${VALID_LINE}`,
 			thinkingLevel: "xhigh",
 			approvalMode: "writes",
 			timeout: 600_000,
@@ -861,7 +863,7 @@ describe("drop-timeout: foreground keeps its shape, loses its deadline (issue #4
 		const ctx = makeCtx();
 		await seedConfig(ctx, { approvalMode: "writes" });
 		const result = await dispatch(
-			{ task: `critique the plan\n\n${VALID_LINE}`, thinkingLevel: "high", timeout: 600_000 },
+			{ task: `${HEADER}\ncritique the plan\n\n${VALID_LINE}`, thinkingLevel: "high", timeout: 600_000 },
 			ctx,
 		);
 
@@ -883,7 +885,7 @@ describe("drop-timeout: foreground keeps its shape, loses its deadline (issue #4
 		const ctx = makeCtx();
 		await seedConfig(ctx, { approvalMode: "always" });
 		const result = await dispatch(
-			{ task: `critique the plan\n\n${VALID_LINE}`, thinkingLevel: "high", timeout: 600_000 },
+			{ task: `${HEADER}\ncritique the plan\n\n${VALID_LINE}`, thinkingLevel: "high", timeout: 600_000 },
 			ctx,
 		);
 
@@ -909,7 +911,7 @@ describe("drop-timeout: foreground keeps its shape, loses its deadline (issue #4
 		await seedConfig(ctx, { approvalMode: "always" });
 		const result = await dispatch(
 			{
-				task: `critique the plan\n\n${VALID_LINE}`,
+				task: `${HEADER}\ncritique the plan\n\n${VALID_LINE}`,
 				thinkingLevel: "high",
 				background: false,
 				timeout: 600_000,
@@ -930,7 +932,7 @@ describe("drop-timeout: foreground keeps its shape, loses its deadline (issue #4
 	it("force:true overrides the drop — the explicit timeout is preserved, and only the log records it", async () => {
 		optIn();
 		const result = await dispatch({
-			task: `critique the plan\n\n${VALID_LINE}`,
+			task: `${HEADER}\ncritique the plan\n\n${VALID_LINE}`,
 			thinkingLevel: "high",
 			approvalMode: "writes",
 			timeout: 600_000,
@@ -963,7 +965,7 @@ describe("issue #433: never switch into a rejection (approvalMode 'always')", ()
 	it("does not reject an explicit-foreground 'always' dispatch — it runs foreground with no deadline", async () => {
 		optIn();
 		const result = await dispatch({
-			task: `critique the plan\n\n${VALID_LINE}`,
+			task: `${HEADER}\ncritique the plan\n\n${VALID_LINE}`,
 			thinkingLevel: "high",
 			background: false,
 			approvalMode: "always",
@@ -999,7 +1001,7 @@ describe("issue #433: never switch into a rejection (approvalMode 'always')", ()
 			h.spawnBackgroundSession.mockClear();
 			h.runSubagent.mockClear();
 			const result = await dispatch({
-				task: `critique the plan\n\n${VALID_LINE}`,
+				task: `${HEADER}\ncritique the plan\n\n${VALID_LINE}`,
 				thinkingLevel: "high",
 				background: false,
 				approvalMode: mode,
@@ -1030,7 +1032,7 @@ describe("issue #433: never switch into a rejection (approvalMode 'always')", ()
 
 describe("unit shape guard: a batch unit's own declared pair (issue #434)", () => {
 	/** A task carrying the Jev line every opted-in unit is validated for. */
-	const TASK = `read one file and answer inline\n\n${VALID_LINE}`;
+	const TASK = `${HEADER}\nread one file and answer inline\n\n${VALID_LINE}`;
 	/** A unit declaring the incident's pair; `{ field: undefined }` inherits it. */
 	const unit = (over: Record<string, unknown> = {}) => ({
 		task: TASK, thinkingLevel: "high", timeout: 600_000, ...over,

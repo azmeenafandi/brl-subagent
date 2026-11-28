@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -75,6 +75,8 @@ import { createTempEnv } from "./fixtures/temp-lifecycle";
 
 const GLOBAL_MODEL = { provider: "test", id: "test-model" };
 const VALID_LINE = "jev: high (0.44) · C2 · worktree y";
+/** Issue #606: every dispatch in an opted-in project opens with the header. */
+const HEADER = "dispatch: probe";
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 
 interface SpawnParams {
@@ -415,7 +417,7 @@ describe("the 2026-10-31 misses (fixture)", () => {
 	it("the same brief WITH the classified line passes", async () => {
 		optIn();
 		const result = await execute({
-			task: `${PLAN_CRITIQUE_TASK}\n\n${VALID_LINE}`,
+			task: `${HEADER}\n${PLAN_CRITIQUE_TASK}\n\n${VALID_LINE}`,
 			background: true,
 			thinkingLevel: "high",
 			label: "plan-critique",
@@ -434,7 +436,7 @@ describe("noJev — the stated, logged bypass", () => {
 	it("dispatching with noJev proceeds and surfaces the reason as a warning", async () => {
 		optIn();
 		const result = await execute({
-			task: "Implement the thing.",
+			task: `${HEADER}\nImplement the thing.`,
 			background: false,
 			noJev: "classifier unreachable; the maintainer approved this dispatch",
 		});
@@ -508,12 +510,128 @@ describe("retry inheritance", () => {
 		// The original was a BACKGROUND run (the ones that write a run record and
 		// can be auto-retried); the retry re-uses the recorded task, so the line
 		// the original carried is the line the retry passes with — no `noJev`.
-		seedRunEntry(ctx, makeRun("retry-jev-1", `Background single run\n\n${VALID_LINE}`, { background: true }));
+		seedRunEntry(ctx, makeRun("retry-jev-1", `${HEADER}\nBackground single run\n\n${VALID_LINE}`, { background: true }));
 
 		const result = await execute({ retryRunId: "retry-jev-1" }, ctx);
 
 		expect(result.isError).toBeFalsy();
 		expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+		// Issue #606, verified not assumed: a retry restores the recorded task
+		// text, so the dispatch block survives the retry by construction.
+		const spawnedTask = (h.spawnBackgroundSession.mock.calls[0]?.[2] as SpawnParams | undefined)?.task;
+		expect(spawnedTask?.startsWith(`${HEADER}\n`)).toBe(true);
+	});
+
+	it("a LEGACY retry record whose task predates the header is refused, loudly", async () => {
+		// A run in flight at upgrade time has no block in its recorded task. The
+		// retry is a dispatch, so it is checked like one: refused with the header
+		// message (the conductor re-dispatches with a block), never silently run.
+		optIn();
+		const ctx = makeCtx();
+		seedRunEntry(ctx, makeRun("retry-legacy", `Background single run\n\n${VALID_LINE}`, { background: true }));
+
+		const result = await execute({ retryRunId: "retry-legacy" }, ctx);
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toMatch(/missing dispatch header/);
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+	});
+});
+
+
+// ---------------------------------------------------------------------------
+// Issue #606 (Unit 1) — the dispatch header at the decision point
+// ---------------------------------------------------------------------------
+
+/** A brief the contract accepts, written under the opted-in temp cwd. */
+const SIGNED_BRIEF = [
+	"## Want",
+	"",
+	"Make the factory's front door enforceable.",
+	"",
+	"## Settled decisions",
+	"",
+	"| Decision | Answer | Rationale |",
+	"| --- | --- | --- |",
+	"| Gate scope | the code-writing dispatch | boundary A |",
+	"",
+	"confirmed: 2026-11-28 by azmeen",
+].join("\n");
+
+function writeBrief(slug: string, text: string): void {
+	const dir = path.join(env.testCwd, "briefs");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(path.join(dir, `${slug}.md`), text, "utf8");
+}
+
+describe("T7 — the brief refusal reaches zero spawns (valid Jev, so only the brief can fail)", () => {
+	it("T7 — an impl with no brief is refused before anything spawns, and the message is brief-specific", async () => {
+		optIn();
+		const result = await execute({
+			task: `dispatch: impl\n${VALID_LINE}\n\nImplement the thing.`,
+			background: true,
+		});
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("`dispatch: impl` requires a brief");
+		// The Jev line was valid, so this refusal cannot be the pre-existing one.
+		expect(result.content[0].text).not.toMatch(/missing Jev dispatch line/);
+		expect(h.spawnBackgroundSession).not.toHaveBeenCalled();
+		expect(h.runSubagent).not.toHaveBeenCalled();
+	});
+
+	it("T7 — the control: the same dispatch with a signed brief DOES spawn", async () => {
+		optIn();
+		writeBrief("consider-tax", SIGNED_BRIEF);
+		const result = await execute({
+			task: `dispatch: impl\nbrief: consider-tax\n${VALID_LINE}\n\nImplement the thing.`,
+			background: true,
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(h.spawnBackgroundSession).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("T8 — the stated escape is valid AND warned on every validating path", () => {
+	const REASON = "the human was unreachable during the dispatch window";
+	const ESCAPE_TASK = `dispatch: impl\nbrief: none — ${REASON}\n${VALID_LINE}\n\nImplement the thing.`;
+
+	/**
+	 * The escape is accepted (no error) and the reason reaches the conductor as
+	 * a WARNING. The warning's own wording is asserted, not just the reason: a
+	 * background result echoes the whole task text (`Task: …`), so the reason
+	 * alone can appear even when no warning was emitted — measured, not assumed
+	 * (mutant M7 initially reddened only 2 of these 4 paths for that reason).
+	 */
+	function expectSurfaced(result: { isError?: boolean; content: Array<{ text: string }> }): void {
+		expect(result.isError).toBeFalsy();
+		const text = result.content[0].text;
+		expect(text).toContain("[pre-task validation warnings]");
+		expect(text).toContain("escaped the signed brief");
+		expect(text).toContain(REASON);
+	}
+
+	it("T8 — single foreground (the validator called directly)", async () => {
+		optIn();
+		expectSurfaced(await execute({ task: ESCAPE_TASK, background: false }));
+	});
+
+	it("T8 — single background (spawnBackgroundRun)", async () => {
+		optIn();
+		expectSurfaced(await execute({ task: ESCAPE_TASK, background: true }));
+	});
+
+	it("T8 — tasks fan-out (runBackgroundFanOut)", async () => {
+		optIn();
+		expectSurfaced(
+			await execute({ background: true, tasks: [{ task: ESCAPE_TASK, label: "one" }] }),
+		);
+	});
+
+	it("T8 — chain (mode prologue → per-step pre-pass)", async () => {
+		optIn();
+		expectSurfaced(await execute({ chain: [{ task: ESCAPE_TASK }, { task: ESCAPE_TASK }] }));
 	});
 });
 

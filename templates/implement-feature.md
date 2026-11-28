@@ -1,6 +1,7 @@
 ---
 name: implement-feature
 description: Feature implementation following project conventions
+dispatch: impl
 preset: dev-agent
 thinkingLevel: medium
 ---

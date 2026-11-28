@@ -1,6 +1,7 @@
 ---
 name: refactor
 description: Behavior-preserving structural refactor
+dispatch: impl
 preset: refactorer
 thinkingLevel: medium
 ---

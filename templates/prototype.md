@@ -1,6 +1,7 @@
 ---
 name: prototype
 description: Fast throwaway prototype
+dispatch: impl
 preset: rapid-prototyper
 thinkingLevel: low
 ---

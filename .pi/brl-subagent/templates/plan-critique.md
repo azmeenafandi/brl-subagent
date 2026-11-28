@@ -1,6 +1,7 @@
 ---
 name: plan-critique
 description: "Plan critique → verdict + gap table, before implementation. The CONTRACT is fixed, the PLAN is free-form"
+dispatch: review
 preset: project-plan-critic
 thinkingLevel: medium
 ---

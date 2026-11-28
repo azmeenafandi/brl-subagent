@@ -395,6 +395,81 @@ never re-type their logic by hand. Full design:
     no valid line — the ledger cannot see a skip because its rows are written afterwards. It is
     conductor/merge-time only (the log is local, not CI-visible) and `merge-guard.sh` runs it.
 
+23. **The dispatch header (Rule 23 — no code from an unagreed plan).** A project that opts into
+    `{"brl-subagent": {"processChecks": true}}` makes every dispatch open with a block. The block is
+    **the first content** — the first non-blank line of the task — and it is three lines at most:
+
+    ```
+    dispatch: impl | review | probe | docs
+    brief: <slug>             (required when dispatch: impl)
+    brief: none — <reason>    (the stated escape; reason non-empty)
+    ```
+
+    - **One token per line.** `dispatch: impl   # note` is refused: an ambiguous declaration is not a
+      declaration. The rejections quote the three lines verbatim, so you never have to guess.
+    - **The block is first.** A title, a preamble or a quoted example above it ends the block, and a
+      task whose block is not first is refused naming that rule. Blank lines before it are fine.
+    - **The Jev line may still appear anywhere.** Rule 22's parser scans every line and takes the
+      first valid one, so `jev:` inside the block and `jev:` at the bottom both work — existing
+      dispatches keep passing, and the block does not have to hold it.
+    - **`impl` needs a brief, or a stated escape.** `brief: <slug>` names `briefs/<slug>.md` in the
+      dispatch cwd's tree; it must exist there and satisfy the brief contract below (`commit the brief
+      before cutting the worktree` is the fix when it does not — a stale base does not carry it).
+      `brief: none — <reason>` proceeds and **surfaces the reason as a warning**, so an escape is
+      recorded, never silent.
+    - **The header is never a routing input.** Auto-route classifies the BODY only (§3b of #606):
+      `dispatch: review` cannot select `code-reviewer` for a body that says "write tests".
+    - **Templates carry it in frontmatter.** `dispatch:` in a template's frontmatter is validated as
+      an enum (`impl | review | probe | docs`) and prepended at render; a template with no field is
+      refused only where the project opted in, and an `impl` template requires the caller's
+      `brief` param.
+
+    A rule an author cannot find is a rule that will be omitted, so the brief-writing half ships here
+    too.
+
+    ### Writing a brief
+
+    Path: `briefs/<slug>.md` in the repository (tracked, so it materialises in every worktree).
+    Slug: `^[a-z0-9][a-z0-9-]{0,63}$` — lowercase, single path component, no dots, no separators; the
+    token `none` is reserved for the escape. Four parts are required of an author; the gate enforces
+    three of them (#606 §2 lists three predicates — `## Facts` is the fourth part of the contract, and
+    provenance is a judgement a reviewer audits, not a regex), and a brief failing an enforced one is
+    refused before the dispatch spawns:
+
+    1. **`## Want`** — at least one line of the human's own words outside fences. The `confirmed:`
+       marker does not count as content, and neither does a fenced block (a fence is not body text).
+    2. **`## Facts`** — what the conductor looked up, each with its source (a subagent's report, a
+       `codegraph_explore` answer, a file path + line). Facts are never the human's job.
+    3. **`## Settled decisions`** — a table with a non-blank **decision** cell and a non-blank
+       **answer** cell per row. When nothing needed settling, write the zero-decision form
+       `none — <why>` instead; an empty row, or `none —` with no reason, is refused.
+    4. **`confirmed: <YYYY-MM-DD> by <name>`** — the last non-blank line, with no `<…>` placeholder
+       left in it. This is a **record, not authentication**: the gate checks that a brief claims to be
+       confirmed, not that the human typed it. Treat it as evidence to audit.
+
+    ```markdown
+    ## Want
+
+    Make the factory's front door enforceable: no code from an unagreed plan.
+
+    ## Facts
+
+    - `src/validate.ts:409` is the one pre-spawn seam (`codegraph_explore`, 2026-11-28).
+    - The Jev line parser scans every line, so a later `jev:` still satisfies Rule 22.
+
+    ## Settled decisions
+
+    | Decision | Answer | Rationale |
+    | --- | --- | --- |
+    | Gate scope | the code-writing dispatch only | review/probe/docs need no brief |
+    | Escape | `brief: none — <reason>`, warned | a silent pass is what we are removing |
+
+    confirmed: 2026-11-28 by azmeen
+    ```
+
+    The interview that produces the brief is `.pi/skills/grill/SKILL.md` — the frontier, one round at
+    a time, and the confirmation that ends it.
+
 ## Conductor decision rules
 
 Where a check is a **chokepoint** (the verdict parser, the merge guard, the pins) it holds; where

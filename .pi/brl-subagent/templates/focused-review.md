@@ -1,6 +1,7 @@
 ---
 name: focused-review
 description: "Focused review (C2-class) with the verdict-first contract — the CONTRACT is fixed, the TARGET is free-form. Distilled from Rule 10 (risk-calibrated review)"
+dispatch: review
 preset: project-reviewer
 thinkingLevel: medium
 ---

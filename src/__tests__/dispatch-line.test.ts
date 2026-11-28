@@ -32,6 +32,8 @@ import { KNOWN_DELEGATE_KEYS } from "../params";
 import { validatePreTask } from "../validate";
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
+/** Issue #606: a dispatch in an opted-in project opens with the header. */
+const HEADER = "dispatch: probe";
 const JEV_CHECK = path.join(REPO_ROOT, ".pi", "skills", "worktree", "jev-check.mjs");
 
 function tempProject(manifest: unknown | null): string {
@@ -226,20 +228,20 @@ describe("validatePreTask — the line check inside the one shared validator", (
 
 	it("accepts a task carrying the canonical line (opt-in on)", () => {
 		const result = validatePreTask({
-			task: "Implement the thing.\n\njev: medium (0.77) · C2 · worktree y",
+			task: `${HEADER}\nImplement the thing.\n\njev: medium (0.77) · C2 · worktree y`,
 			cwd: OPTED_IN,
 		});
 		expect(result.valid).toBe(true);
 	});
 
 	it("accepts `jev: unavailable` (opt-in on)", () => {
-		const result = validatePreTask({ task: "Implement the thing.\n\njev: unavailable", cwd: OPTED_IN });
+		const result = validatePreTask({ task: `${HEADER}\nImplement the thing.\n\njev: unavailable`, cwd: OPTED_IN });
 		expect(result.valid).toBe(true);
 	});
 
 	it("noJev downgrades the rejection to a WARNING that names the reason", () => {
 		const result = validatePreTask({
-			task: "Implement the thing.",
+			task: `${HEADER}\nImplement the thing.`,
 			cwd: OPTED_IN,
 			noJev: "classifier was down; maintainer approved proceeding",
 		});
@@ -272,7 +274,7 @@ describe("noJev — the handler refuses a bypass whose reason is not a reason", 
 	/** Dispatch a task with no line and the supplied noJev, against the opted-in project. */
 	function dispatch(noJev: unknown) {
 		return validatePreTask({
-			task: "Implement the thing.",
+			task: `${HEADER}\nImplement the thing.`,
 			cwd: OPTED_IN,
 			noJev: noJev as string | undefined,
 		});

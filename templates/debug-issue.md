@@ -1,6 +1,7 @@
 ---
 name: debug-issue
 description: Reproduce, isolate, and fix a bug
+dispatch: impl
 preset: debugger
 thinkingLevel: medium
 ---

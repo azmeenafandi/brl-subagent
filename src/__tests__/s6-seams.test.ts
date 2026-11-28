@@ -673,7 +673,9 @@ describe("seam C — the #412 dispatch pre-flight", () => {
 		const result = await h.tool.execute(
 			"call-c",
 			{
-				task: "summarize the design notes",
+				// Issue #606: an opted-in project's dispatch opens with the header,
+				// so the refusal under test is the shape rule, not a missing block.
+				task: "dispatch: probe\nsummarize the design notes",
 				thinkingLevel: "high",
 				timeout: 5_000,
 				background: false,
@@ -723,7 +725,7 @@ describe("seam C — the #412 dispatch pre-flight", () => {
 		const result = await h.tool.execute(
 			"call-c",
 			{
-				task: "summarize the design notes",
+				task: "dispatch: probe\nsummarize the design notes",
 				thinkingLevel: "high",
 				timeout: 5_000,
 				background: false,

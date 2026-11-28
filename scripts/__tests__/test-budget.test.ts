@@ -924,10 +924,14 @@ describe("main — the two streams and the exit codes", () => {
 		// with the test that reaches it, which is why 12 becomes 13 rather than the floor being relaxed.
 		// Re-pointed once more by `friction-disposition.mjs` (issue #560): a sourced module with its own
 		// test reaches the floor, so 13 becomes 14 for the same reason — never a relaxed floor.
-		expect(/\bsrc (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["61", "61"]);
+		// Re-pointed by #606 (Unit 1): `dispatch-header.ts` + `brief.ts`, each reached by its own test,
+		// so the src floor follows the tree 61 → 63 for the same reason.
+		expect(/\bsrc (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["63", "63"]);
 		// Re-pointed by #591: `scripts/require-executed.mjs` is a new source module, and the floor is
 		// "every module reachable" — its test imports it, so 14 becomes 15 rather than the floor relaxing.
-		expect(/\bscripts (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["15", "15"]);
+		// Re-pointed by #606 (Unit 1): `verify-dispatch-header.mjs` joins the scripts surface and its test
+		// imports it, so 15 becomes 16 — the same rule, never a relaxed floor.
+		expect(/\bscripts (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["16", "16"]);
 		expect(measureFloors(ROOT).every((floor) => floor.unreachable.length === 0)).toBe(true);
 	});
 

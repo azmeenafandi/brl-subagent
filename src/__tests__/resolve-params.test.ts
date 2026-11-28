@@ -258,6 +258,54 @@ describe("resolveDispatchPreset (issue #429 R1-R5)", () => {
 	});
 });
 
+
+// =========================================================================
+// T10 — the dispatch header is not a routing decision (issue #606 §3b)
+// =========================================================================
+
+describe("T10 — adding a valid dispatch header does not change the selected preset", () => {
+	/**
+	 * The hazard the §3b fix exists for: `classifyTask` lowercases the WHOLE
+	 * task and returns the first rule that matches, so `dispatch: review` would
+	 * select `code-reviewer` for a body that says "write tests" — silently
+	 * re-routing every dispatch the moment the header became mandatory.
+	 */
+	const BODY = "write tests for the dispatch header";
+	const HEADERED = `dispatch: review\njev: medium (0.58) · C2 · worktree y\n\n${BODY}`;
+
+	function routingState(): SessionState {
+		return makeState({
+			builtinPresets: [
+				{ name: "code-reviewer", description: "review" },
+				{ name: "test-engineer", description: "tests" },
+				{ name: "dev-agent", description: "impl" },
+			],
+		});
+	}
+
+	it("T10 — adding a valid header alone does not change the selected preset", () => {
+		const state = routingState();
+
+		// The control: the body alone routes to the test engineer.
+		const bodyOnly = resolveDispatchPreset({ task: BODY }, state);
+		expect(bodyOnly.name).toBe("test-engineer");
+
+		// With the header prepended, the SAME preset and the SAME keyword.
+		const headered = resolveDispatchPreset({ task: HEADERED }, state);
+		expect(headered.name).toBe(bodyOnly.name);
+		expect(headered.keyword).toBe(bodyOnly.keyword);
+		expect(headered.autoRouted).toBe(true);
+	});
+
+	it("T10 — the header alone cannot route a body with no keyword", () => {
+		const state = routingState();
+
+		expect(resolveDispatchPreset({ task: "dispatch: review\n\nhello there" }, state)).toEqual({
+			autoRouted: false,
+		});
+	});
+});
+
 // =========================================================================
 // resolveSubagentParams — call > preset precedence (P4, P5, P7-P9, P11, P12)
 // =========================================================================
