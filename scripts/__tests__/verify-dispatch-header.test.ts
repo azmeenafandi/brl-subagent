@@ -27,6 +27,7 @@ const REQUIRED_ROWS = [
 	"P7",
 	"P8",
 	"P8 (control)",
+	"P9",
 	"P11",
 	"P12",
 ];

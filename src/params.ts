@@ -30,6 +30,7 @@ import {
 } from "./types";
 import { getAllPresets, getPreset } from "./presets";
 import { classifyTask } from "./router";
+import { splitDispatchHeader } from "./dispatch-header";
 import { normalizeTimeout } from "./validate";
 
 // ---------------------------------------------------------------------------
@@ -495,7 +496,14 @@ export function resolveDispatchPreset(
 		params.noBuiltinTools !== undefined;
 	if (params.template || hasExplicitToolPreference) return { autoRouted: false };
 	const matched = classifyTask(
-		params.task ?? "",
+		// Issue #606 (§3b): classify the BODY, never the header. `classifyTask`
+		// matches keywords over the whole string, first rule wins, so a mandatory
+		// `dispatch: review` line would re-route a task whose body said "write
+		// tests" — a dispatch line must not be a routing decision. The header is
+		// stripped here (the caller), not in the classifier: the classifier's
+		// contract is "classify the text you are given", and T10/P9 pin both
+		// halves — the body-only preset, and that the whole task would differ.
+		splitDispatchHeader(params.task ?? "").body,
 		getAllPresets(state.builtinPresets, state.customPresets),
 	);
 	if (!matched) return { autoRouted: false };

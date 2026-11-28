@@ -298,6 +298,44 @@ export const CASES = {
 		},
 	},
 
+	// P9 — routing must classify the BODY, never the header (§3b).
+	routing: {
+		row: "P9",
+		rulesOut: "the §3b contamination (a header silently re-routing a dispatch)",
+		async run() {
+			const { resolveDispatchPreset } = await jiti.import(join(ROOT, "src", "params.ts"));
+			const { classifyTask } = await jiti.import(join(ROOT, "src", "router.ts"));
+			const presets = [
+				{ name: "code-reviewer" },
+				{ name: "test-engineer" },
+				{ name: "dev-agent" },
+			];
+			const state = { builtinPresets: presets, customPresets: [] };
+			const body = "write tests for the dispatch header";
+			const whole = `dispatch: review\njev: medium (0.58) · C2 · worktree y\n\n${body}`;
+
+			const bodyOnly = resolveDispatchPreset({ task: body }, state);
+			const headered = resolveDispatchPreset({ task: whole }, state);
+			const wholeClassified = classifyTask(whole, presets);
+
+			return {
+				lines: [
+					`body-only control:  resolveDispatchPreset(body) = ${bodyOnly.name}`,
+					`with the header:    resolveDispatchPreset(task) = ${headered.name}`,
+					`the hazard:         classifyTask(whole task)   = ${wholeClassified && wholeClassified.preset}`,
+				],
+				checks: [
+					check(headered.name === bodyOnly.name, "selects the SAME preset as the body-only control"),
+					check(headered.keyword === bodyOnly.keyword, "selects the same matched keyword"),
+					check(
+						wholeClassified !== undefined && wholeClassified.preset !== bodyOnly.name,
+						"classifyTask(whole) selects a DIFFERENT preset (the hazard is real; the fix is in the caller)",
+					),
+				],
+			};
+		},
+	},
+
 	// P11
 	"dispatch-with-comment": {
 		row: "P11",
@@ -337,15 +375,20 @@ export async function runCase(name) {
 		process.exitCode = 2;
 		return "missing";
 	}
-	const { outed, checks } = await entry.run();
+	const body = await entry.run();
+	const { outed, checks } = body;
 	const failed = checks.filter((c) => !c.ok);
 	const verdict = failed.length === 0 ? "PASS" : "FAIL";
 	process.stdout.write(`${entry.row.padEnd(11)} ${name.padEnd(WIDTH)} ${verdict}\n`);
 	process.stdout.write(`            rules out: ${entry.rulesOut}\n`);
-	process.stdout.write(`            cwd:       ${cwdLabel(outed)}\n`);
-	process.stdout.write(`            gate:      exit ${outed.exit}\n`);
-	for (const line of outed.message.split("\n").filter((l) => l.trim() !== "")) {
-		process.stdout.write(`            message:   ${line}\n`);
+	if (body.lines !== undefined) {
+		for (const line of body.lines) process.stdout.write(`            ${line}\n`);
+	} else {
+		process.stdout.write(`            cwd:       ${cwdLabel(outed)}\n`);
+		process.stdout.write(`            gate:      exit ${outed.exit}\n`);
+		for (const line of outed.message.split("\n").filter((l) => l.trim() !== "")) {
+			process.stdout.write(`            message:   ${line}\n`);
+		}
 	}
 	for (const item of checks) {
 		process.stdout.write(`            ${item.ok ? "ok  " : "FAIL"} ${item.label}\n`);
