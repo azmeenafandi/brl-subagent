@@ -46,8 +46,15 @@ const ZERO_DECISION_RE = /^none\s*—\s*\S/;
 /** The line that ends the zero-decision form and every Want body. */
 const MARKER_LINE_RE = /^confirmed:/i;
 
-/** A section heading, outside fences only. `### x` is content, not a section. */
+/** A section heading, outside fences only — `^## ` delimits sections (spec §2). */
 const SECTION_HEADING_RE = /^## /;
+
+/**
+ * Any heading at all, for predicate 1's "(b) is not a heading": `### Sub` inside
+ * a Want body is a sub-heading, not the human's words, and it must not be able
+ * to fill an otherwise empty section.
+ */
+const ANY_HEADING_RE = /^#{1,6}\s/;
 
 /** One source line, tagged with whether a code fence encloses it. */
 interface BriefLine {
@@ -61,7 +68,7 @@ export interface BriefVerdict {
 	reason: string;
 }
 
-export const BRIEF_OK: BriefVerdict = { ok: true, reason: "" };
+export const BRIEF_OK: BriefVerdict = Object.freeze({ ok: true, reason: "" });
 
 function fail(reason: string): BriefVerdict {
 	return { ok: false, reason };
@@ -85,7 +92,7 @@ function classifyLines(text: string): BriefLine[] {
 }
 
 function isContentLine(line: BriefLine): boolean {
-	return !line.inFence && !SECTION_HEADING_RE.test(line.text) && line.text.trim() !== "";
+	return !line.inFence && !ANY_HEADING_RE.test(line.text) && line.text.trim() !== "";
 }
 
 /**

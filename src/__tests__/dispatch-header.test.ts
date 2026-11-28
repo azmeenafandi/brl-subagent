@@ -235,6 +235,16 @@ describe("T5 — a brief must carry content, not decoration", () => {
 		expectRefused(validateBriefText(MARKER_ONLY_BRIEF), /## Want. (is empty|is missing)/);
 	});
 
+	it("T5 — a sub-heading does not fill an empty `## Want`", () => {
+		// Predicate 1 requires a line that is "not a heading": a `###` line inside
+		// the Want body is a sub-heading, not the human's words.
+		const subHeading = MARKER_ONLY_BRIEF.replace(
+			"## Want\n\nconfirmed: 2026-11-28 by azmeen",
+			"## Want\n\n### Context\n\nconfirmed: 2026-11-28 by azmeen",
+		);
+		expectRefused(validateBriefText(subHeading), /## Want. (is empty|is missing)/);
+	});
+
 	it("T5 — a hollow table row (empty answer cell) is refused", () => {
 		const hollow = VALID_BRIEF.replace("| Gate scope | the code-writing dispatch | boundary A |", "| Gate scope | | boundary A |");
 		expectRefused(validateBriefText(hollow), /## Settled decisions. is empty/);
