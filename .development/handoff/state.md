@@ -11,6 +11,11 @@ line below is a claim it recomputes, and a drift means the claim is wrong, never
   Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #616, #617.
 - **Suite:** 155 files / **3542** (3541 passed, 0 failed, 1 skipped) captured at `700fe07` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
 
+## Dispatch routing (maintainer instruction, 2026-11-28)
+
+- Implementer dispatches → model **`deepseek/deepseek-flash`**; critique → **`openrouter/openai/gpt-6.1-terra`**; review → **`openrouter/meta/muse-ember`**. Always pass the model explicitly; do not let a dispatch fall to the configured default.
+- Subagents run **in the background** whenever possible (foreground only when the next step needs the result inline).
+
 ## Open items
 
 - **Landed: #606 Unit 1 / PR #612** (`370774f`) — the mandatory dispatch header, the signed-brief predicates,
