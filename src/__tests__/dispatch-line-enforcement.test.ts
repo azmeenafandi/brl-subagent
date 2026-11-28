@@ -597,11 +597,18 @@ describe("T8 — the stated escape is valid AND warned on every validating path"
 	const REASON = "the human was unreachable during the dispatch window";
 	const ESCAPE_TASK = `dispatch: impl\nbrief: none — ${REASON}\n${VALID_LINE}\n\nImplement the thing.`;
 
-	/** The escape is accepted (no error) and the reason reaches the conductor. */
+	/**
+	 * The escape is accepted (no error) and the reason reaches the conductor as
+	 * a WARNING. The warning's own wording is asserted, not just the reason: a
+	 * background result echoes the whole task text (`Task: …`), so the reason
+	 * alone can appear even when no warning was emitted — measured, not assumed
+	 * (mutant M7 initially reddened only 2 of these 4 paths for that reason).
+	 */
 	function expectSurfaced(result: { isError?: boolean; content: Array<{ text: string }> }): void {
 		expect(result.isError).toBeFalsy();
 		const text = result.content[0].text;
 		expect(text).toContain("[pre-task validation warnings]");
+		expect(text).toContain("escaped the signed brief");
 		expect(text).toContain(REASON);
 	}
 
