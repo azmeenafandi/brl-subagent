@@ -3,13 +3,13 @@
 The mechanical snapshot #607 moved out of the index. Read by `node scripts/handoff-verify.mjs` — every
 line below is a claim it recomputes, and a drift means the claim is wrong, never the checker.
 
-- **dev** @ `7c11d86` — **#615 fixed** (PR #618: the recovery pid-file race); on top of #606's three units
+- **dev** @ `ec367a9` — **#615 fixed** (PR #618: the recovery pid-file race); on top of #606's three units
   (`370774f`, `14aef6e`-era, `7940302`), the pi 1.7.0 SDK parity (#611) and its spec correction.
-- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 7c11d86`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
+- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ ec367a9`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
 - **Board:** `#611`/`#610` closed, `#612` (`370774f`), `#614` (`7940302`), `#606` closed with all three units
   delivered, **`#615` closed by `#618` (`700fe07`)**, **`#617` filed** (worktree-guard, dev tooling).
   Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #616, #617.
-- **Suite:** 155 files / **3542** (3541 passed, 0 failed, 1 skipped) captured at `7c11d86` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
+- **Suite:** 155 files / **3542** (3541 passed, 0 failed, 1 skipped) captured at `ec367a9` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
 
 ## Open items
 
