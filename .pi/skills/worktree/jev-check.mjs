@@ -52,10 +52,19 @@
 //                               blind-only, because a measurement must never block a dispatch.
 //   --settle <label> --kind impl|review|probe --outcome done|failed|stopped|unknown
 //              [--verdict approve|approve-with-nits|changes-requested] [--nits N] [--model-ran <id>]
+//              [--attempt N] [--cause transport|manual]
 //                               append `.pi/jev-outcomes.log` with what HAPPENED, keyed by label.
 //                               A sidecar, not a second provenance row: the exact-text match stays
 //                               untouched. `--model-ran` corrects the model for a transport retry or
 //                               a fallback — a manual correction, never runtime detection.
+//                               `--attempt N` (integer >= 1) and `--cause transport|manual` say WHEN
+//                               and WHY a dispatch ran more than once (#616): an automatic transport
+//                               retry inherits the label and never passes through `delegate_task`, so
+//                               one label can cover two agents and the single settle row must state
+//                               which attempt did the work. The settle KEY is unchanged (still one
+//                               row per dispatch) — the fact goes on the row instead. Both are
+//                               optional keyed columns (`attempt:<n>`, `cause:<c>`); a row with
+//                               neither is byte-identical to a pre-#616 row.
 //   --calibrate                 read the sidecar against the provenance log: eligible impl rows,
 //                               both arms' agreement with the DISPATCHED level, and the delta. Below
 //                               20 eligible rows it prints counts and NO conclusion. It never ranks.
@@ -154,6 +163,26 @@ const OUTCOMES_ROW_COLUMNS = 7;
 /** The explicit "nothing recorded" cell — a literal, never an empty column that reads as a value. */
 const OUTCOME_NULL = "null";
 
+/**
+ * The two OPTIONAL keyed columns a settle row may carry (#616), after the seven fixed cells:
+ * `attempt:<n>` (which attempt did the work — the Nth spawn of that dispatch) and
+ * `cause:<transport|manual>` (why there was more than one). Absent = unknown, never a guess, so a
+ * row written without them stays byte-identical to one written before they existed.
+ */
+const OUTCOME_ATTEMPT_PREFIX = "attempt:";
+const OUTCOME_CAUSE_PREFIX = "cause:";
+const OUTCOME_CAUSES = ["transport", "manual"];
+
+/**
+ * An attempt ordinal: plain ASCII digits with no leading zero. Deliberately NOT `Number()` on the raw
+ * value — that accepts `2.0`, `2 `, `0x2` and (through the coercion path the `noJev` guard was caught
+ * by, #419) exponent forms like `1e+21`. The pattern decides the FORM, `Number` only converts it.
+ */
+const SETTLE_ATTEMPT_PATTERN = /^[1-9]\d*$/;
+
+/** The flag names that mean something ONLY on a settle row — anywhere else they name no record (#616). */
+const SETTLE_COLUMN_FLAGS = ["--attempt", "--cause"];
+
 /** Rows with no recorded model, printed and never hidden: the legacy log predates the column. */
 const MODEL_UNSTATED = "(unstated)";
 
@@ -184,7 +213,11 @@ const SEPARATOR_CELL = /^:?-{2,}:?$/;
 // class the ledger reader throws, so one `instanceof` still decides exit 2 for both.
 // ---------------------------------------------------------------------------
 
-/** The skipped form: a payload with no usable confidence. Exit 1 — a finding. */
+/**
+ * A FINDING the caller can fix: the skipped form (a payload with no usable confidence), and — since
+ * #616 — a settle column whose VALUE is unusable (`--attempt 2.0`, `--cause Transport`). Exit 1, and
+ * nothing is written; exit 2 stays reserved for input the tool cannot read at all.
+ */
 class SkippedFormError extends Error {}
 
 // ---------------------------------------------------------------------------
@@ -1042,10 +1075,17 @@ function normalizeModelId(value, flag) {
 // settle can never invalidate a dispatch that already merged.
 // ---------------------------------------------------------------------------
 
-/** One sidecar row: `<ts>\t<label>\t<kind>\t<outcome>\t<verdict|null>\t<nits|null>\t<model-ran|null>`. */
+/**
+ * One sidecar row: `<ts>\t<label>\t<kind>\t<outcome>\t<verdict|null>\t<nits|null>\t<model-ran|null>`
+ * then the OPTIONAL keyed columns `attempt:<n>` / `cause:<c>`, in that order (#616). A row carrying
+ * neither is byte-identical to the pre-#616 row: the extra columns are appended, never padded.
+ */
 function formatOutcomeRow(row) {
 	const cell = (value) => (value === null || value === undefined ? OUTCOME_NULL : String(value));
-	return [row.at, row.label, row.kind, row.outcome, cell(row.verdict), cell(row.nits), cell(row.modelRan)].join("\t");
+	const columns = [row.at, row.label, row.kind, row.outcome, cell(row.verdict), cell(row.nits), cell(row.modelRan)];
+	if (row.attempt !== null && row.attempt !== undefined) columns.push(`${OUTCOME_ATTEMPT_PREFIX}${row.attempt}`);
+	if (row.cause !== null && row.cause !== undefined) columns.push(`${OUTCOME_CAUSE_PREFIX}${row.cause}`);
+	return columns.join("\t");
 }
 
 /**
@@ -1089,16 +1129,53 @@ function parseOutcomesLog(text, path = DEFAULT_OUTCOMES_LOG) {
 	return { cutoff, rows };
 }
 
+/** The row shape every malformed-row refusal quotes, one source for the read path and the writer. */
+const OUTCOMES_ROW_HELP =
+	"<ts>\\t<label>\\t<kind>\\t<outcome>\\t<verdict|null>\\t<nits|null>\\t<model-ran|null>" +
+	" then optional attempt:<n> / cause:transport|manual";
+
+/**
+ * Parse the OPTIONAL keyed columns after the seven fixed cells (#616). Fail-closed like the rest of
+ * the row: an unknown key, a duplicate, an empty column and a value outside the vocabulary are all
+ * malformed, because a row that says `attempt:two` is not a row that says nothing.
+ */
+function parseOutcomeKeyedColumns(columns, malformed) {
+	const seen = new Set();
+	const keyed = { attempt: null, cause: null };
+	for (const column of columns) {
+		if (column === "") throw malformed("an empty keyed column — a stray tab is not a value");
+		if (column.startsWith(OUTCOME_ATTEMPT_PREFIX)) {
+			if (seen.has("attempt")) throw malformed("duplicate `attempt:` column");
+			seen.add("attempt");
+			const value = column.slice(OUTCOME_ATTEMPT_PREFIX.length);
+			if (!SETTLE_ATTEMPT_PATTERN.test(value) || !Number.isSafeInteger(Number(value))) {
+				throw malformed(`attempt ${JSON.stringify(value)} is not an integer >= 1`);
+			}
+			keyed.attempt = Number(value);
+			continue;
+		}
+		if (column.startsWith(OUTCOME_CAUSE_PREFIX)) {
+			if (seen.has("cause")) throw malformed("duplicate `cause:` column");
+			seen.add("cause");
+			const value = column.slice(OUTCOME_CAUSE_PREFIX.length);
+			if (!OUTCOME_CAUSES.includes(value)) {
+				throw malformed(`cause ${JSON.stringify(value)} is not one of ${OUTCOME_CAUSES.join(" | ")}`);
+			}
+			keyed.cause = value;
+			continue;
+		}
+		throw malformed(`unknown keyed column ${JSON.stringify(column)} — expected attempt:<n> or cause:${OUTCOME_CAUSES.join("|")}`);
+	}
+	return keyed;
+}
+
 /** Parse one outcome row, fail-closed on every deviation a hand-edit can produce. */
 function parseOutcomeRow(raw, lineNumber, path = DEFAULT_OUTCOMES_LOG) {
 	const malformed = (why) =>
-		new StructuralError(
-			`${path}: outcome row at line ${lineNumber} is malformed — ${why}; expected ` +
-				"<ts>\\t<label>\\t<kind>\\t<outcome>\\t<verdict|null>\\t<nits|null>\\t<model-ran|null>",
-		);
+		new StructuralError(`${path}: outcome row at line ${lineNumber} is malformed — ${why}; expected ${OUTCOMES_ROW_HELP}`);
 	const parts = raw.split("\t").map((part) => part.trim());
-	if (parts.length !== OUTCOMES_ROW_COLUMNS) {
-		throw malformed(`${parts.length} tab-separated column(s), expected ${OUTCOMES_ROW_COLUMNS}`);
+	if (parts.length < OUTCOMES_ROW_COLUMNS) {
+		throw malformed(`${parts.length} tab-separated column(s), expected ${OUTCOMES_ROW_COLUMNS} plus optional keyed columns`);
 	}
 	const [at, label, kind, outcome, verdict, nits, modelRan] = parts;
 	if (at === "" || label === "") throw malformed("the timestamp or the label column is empty");
@@ -1115,6 +1192,7 @@ function parseOutcomeRow(raw, lineNumber, path = DEFAULT_OUTCOMES_LOG) {
 	if (modelRan !== OUTCOME_NULL && !MODEL_ID_PATTERN.test(modelRan)) {
 		throw malformed(`model-ran ${JSON.stringify(modelRan)} is not <provider>/<id> or null`);
 	}
+	const keyed = parseOutcomeKeyedColumns(parts.slice(OUTCOMES_ROW_COLUMNS), malformed);
 	return {
 		at,
 		label,
@@ -1123,6 +1201,8 @@ function parseOutcomeRow(raw, lineNumber, path = DEFAULT_OUTCOMES_LOG) {
 		verdict: verdict === OUTCOME_NULL ? null : verdict,
 		nits: nits === OUTCOME_NULL ? null : Number(nits),
 		modelRan: modelRan === OUTCOME_NULL ? null : modelRan,
+		attempt: keyed.attempt,
+		cause: keyed.cause,
 	};
 }
 
@@ -1165,18 +1245,65 @@ function appendOutcomeEntry(path, row, now = new Date()) {
 }
 
 /**
+ * `--attempt N`: which attempt did the work. A malformed value is a FINDING (exit 1, no row), not a
+ * structural failure: the row is being written now, so the caller can repair the value — and an exit
+ * code that says "one bad value" keeps it distinct from the exit-2 class that means the log itself
+ * cannot be joined. The FORM is decided by the pattern; `Number` converts only what the pattern
+ * allowed, which is what the `noJev` guard's coercion path (#419) got wrong.
+ */
+function parseAttemptColumn(raw) {
+	// A NUMBER is already a number: the CLI's string form is the one that needs the pattern. A safe
+	// integer >= 1 is the whole contract on this branch, so `attempt: 2` from a caller is accepted.
+	if (typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 1) return raw;
+	if (typeof raw !== "string" || !SETTLE_ATTEMPT_PATTERN.test(raw)) {
+		throw new SkippedFormError(
+			`--attempt must be an integer >= 1 in plain digits (got ${JSON.stringify(raw)}) — "0", "2.0", "2 ", ` +
+				'"+2", "0x2" and "1e+21" are refused, never coerced into a valid value',
+		);
+	}
+	const attempt = Number(raw);
+	if (!Number.isSafeInteger(attempt)) {
+		throw new SkippedFormError(
+			`--attempt must be an integer >= 1 in plain digits (got ${JSON.stringify(raw)}) — beyond Number.MAX_SAFE_INTEGER, ` +
+				"so the row would not round-trip it",
+		);
+	}
+	return attempt;
+}
+
+/**
+ * `--cause transport|manual`: exactly those two words, case-sensitive. A retry that inherited its
+ * label died on transport; a stop the conductor asked for is manual. Nothing else is a cause we can
+ * name, and `Transport` is a different value, not a sloppy spelling of this one.
+ */
+function parseCauseColumn(raw) {
+	if (typeof raw !== "string" || !OUTCOME_CAUSES.includes(raw)) {
+		throw new SkippedFormError(
+			`--cause must be exactly ${OUTCOME_CAUSES.join(" or ")} (got ${JSON.stringify(raw)}) — case-sensitive, ` +
+				"no prefix or suffix",
+		);
+	}
+	return raw;
+}
+
+/**
  * Settle one dispatch: append what happened, keyed by the label its provenance row carries.
  *
  * Every refusal is a StructuralError (exit 2) rather than a repaired row: an unknown label, a
  * duplicate settle, an unknown kind/outcome/verdict, `--nits` without a verdict or a non-integer,
- * and a malformed `--model-ran`. A settle that guessed would poison the only ground truth there is.
+ * and a malformed `--model-ran`. The two #616 columns are the deliberate exception — they are pure
+ * values, validated before any join, and a malformed `--attempt`/`--cause` is the exit-1 finding class
+ * (`parseAttemptColumn`). A settle that guessed would poison the only ground truth there is.
  */
 function reportSettle(label, options = {}, outcomesPath = DEFAULT_OUTCOMES_LOG, provenancePath = DEFAULT_PROVENANCE_LOG) {
-	const { kind, outcome, verdict = null, nits = null, modelRan = null } = options;
+	const { kind, outcome, verdict = null, nits = null, modelRan = null, attempt = null, cause = null } = options;
 	if (typeof label !== "string" || label.trim() === "") {
 		throw new StructuralError("--settle needs the dispatch label — the same one the provenance row carries");
 	}
 	const name = label.trim();
+	// #616: settle the run-provenance columns FIRST — they must be refused before any log is read.
+	const attemptColumn = attempt === null ? null : parseAttemptColumn(attempt);
+	const causeColumn = cause === null ? null : parseCauseColumn(cause);
 	if (!OUTCOME_KINDS.includes(kind)) {
 		throw new StructuralError(
 			`--settle needs --kind ${OUTCOME_KINDS.join("|")} (got ${JSON.stringify(kind)}) — reviews are recorded ` +
@@ -1212,11 +1339,14 @@ function reportSettle(label, options = {}, outcomesPath = DEFAULT_OUTCOMES_LOG, 
 				"is append-only and is never overwritten; correct the line in place if it is wrong",
 		);
 	}
-	appendOutcomeEntry(outcomesPath, { label: name, kind, outcome, verdict, nits, modelRan });
+	appendOutcomeEntry(outcomesPath, { label: name, kind, outcome, verdict, nits, modelRan, attempt: attemptColumn, cause: causeColumn });
 	console.log(
 		`jev-check: settled ${JSON.stringify(name)} — ${kind} ${outcome}` +
 			`${verdict === null ? "" : ` ${verdict}`}${nits === null ? "" : ` (${nits} nit(s))`}` +
-			`${modelRan === null ? "" : ` ran ${modelRan}`} → ${outcomesPath}`,
+			`${modelRan === null ? "" : ` ran ${modelRan}`}` +
+			`${attemptColumn === null ? "" : ` · attempt ${attemptColumn}`}` +
+			`${causeColumn === null ? "" : ` · cause ${causeColumn}`}` +
+			` → ${outcomesPath}`,
 	);
 	return 0;
 }
@@ -2930,6 +3060,227 @@ const SELFTEST_CASES = [
 		},
 	},
 
+	// --- #616: --settle --attempt / --cause ----------------------------------
+	{
+		name: "--settle --attempt 2 --cause transport: both keyed columns land on the row and parse back",
+		run() {
+			withTempPair(
+				({ provenance }) => {
+					writeFileSync(provenance, `${provenanceLogFixture(provenanceRow("impl-616", FIXTURE_LINE))}\n`);
+				},
+				({ provenance, outcomes }) => {
+					const result = captureConsole(() =>
+						reportSettle(
+							"impl-616",
+							{ kind: "impl", outcome: "done", verdict: "approve-with-nits", nits: 1, modelRan: "deepseek/deepseek-flash", attempt: 2, cause: "transport" },
+							outcomes,
+							provenance,
+						),
+					);
+					assertEqual(result.code, 0, "exit code");
+					const row = readFileSync(outcomes, "utf8").trimEnd().split("\n")[1];
+					const cells = row.split("\t");
+					assertEqual(cells.length, OUTCOMES_ROW_COLUMNS + 2, "7 fixed cells + 2 keyed");
+					// The fixed prefix is untouched by the new columns — same cells, same order.
+					assertEqual(cells.slice(1, 7).join("\t"), "impl-616\timpl\tdone\tapprove-with-nits\t1\tdeepseek/deepseek-flash", "fixed cells");
+					assertEqual(cells[7], "attempt:2", "attempt column");
+					assertEqual(cells[8], "cause:transport", "cause column");
+					const parsed = parseOutcomesLog(readFileSync(outcomes, "utf8"), outcomes).rows[0];
+					assertEqual(parsed.attempt, 2, "attempt round-trips as a number");
+					assertEqual(parsed.cause, "transport", "cause round-trips");
+					if (!/attempt 2/.test(result.out) || !/cause transport/.test(result.out)) {
+						throw new Error(`the receipt must state both columns, got ${JSON.stringify(result.out)}`);
+					}
+				},
+			);
+		},
+	},
+	{
+		name: "--settle: a row with NEITHER column is byte-identical to the pre-#616 row (captured fixture)",
+		run() {
+			// Both literals were captured by running the PRE-change script (`dev @ 26d2cb7`) in a scratch
+			// directory and copying its sidecar row, timestamp included. Editing either literal is how a
+			// byte-identity claim rots; they are the pre-change shape, not a paraphrase of it.
+			assertEqual(
+				formatOutcomeRow({
+					at: "2026-11-28T13:46:04.545Z",
+					label: "impl-616",
+					kind: "impl",
+					outcome: "done",
+					verdict: "approve-with-nits",
+					nits: 1,
+					modelRan: "deepseek/deepseek-flash",
+				}),
+				"2026-11-28T13:46:04.545Z\timpl-616\timpl\tdone\tapprove-with-nits\t1\tdeepseek/deepseek-flash",
+				"the fully populated pre-#616 row",
+			);
+			assertEqual(
+				formatOutcomeRow({ at: "2026-11-28T13:46:06.482Z", label: "impl-bare", kind: "probe", outcome: "stopped", attempt: null, cause: null }),
+				"2026-11-28T13:46:06.482Z\timpl-bare\tprobe\tstopped\tnull\tnull\tnull",
+				"the all-null pre-#616 row (explicit nulls behave like absent columns)",
+			);
+			// And end to end: a settle with neither flag writes that same seven-cell row.
+			withTempPair(
+				({ provenance }) => {
+					writeFileSync(provenance, `${provenanceLogFixture(provenanceRow("impl-616", FIXTURE_LINE))}\n`);
+				},
+				({ provenance, outcomes }) => {
+					captureConsole(() =>
+						reportSettle(
+							"impl-616",
+							{ kind: "impl", outcome: "done", verdict: "approve-with-nits", nits: 1, modelRan: "deepseek/deepseek-flash" },
+							outcomes,
+							provenance,
+						),
+					);
+					const written = readFileSync(outcomes, "utf8").trimEnd().split("\n")[1];
+					if (!/^\d{4}-\d{2}-\d{2}T[0-9:.]+Z\t/.test(written)) {
+						throw new Error(`the timestamp column changed shape: ${JSON.stringify(written)}`);
+					}
+					assertEqual(
+						written.split("\t").slice(1).join("\t"),
+						"impl-616\timpl\tdone\tapprove-with-nits\t1\tdeepseek/deepseek-flash",
+						"every cell after the timestamp is the pre-#616 cell",
+					);
+					assertEqual(written.split("\t").length, OUTCOMES_ROW_COLUMNS, "no padding, no extra column");
+				},
+			);
+		},
+	},
+	{
+		name: "--attempt: every malformed value is an exit-1 finding and writes no row (no coercion, the #419 trap)",
+		run() {
+			// The coercion path the noJev guard was caught by: `Number()` alone turns `2.0`, `2 `, `0x2`
+			// and `1e+21` into numbers. Every one of these must be refused WITHOUT reaching the log.
+			for (const bad of ["0", "-1", "+2", "2 ", " 2", "2.0", "1e+21", "1e-7", "0x2", "two", "", "99999999999999999999"]) {
+				assertSkippedForm(() => parseAttemptColumn(bad), /--attempt must be an integer >= 1/, `--attempt ${JSON.stringify(bad)}`);
+				assertSkippedForm(
+					() => parseSettleArgs(["impl-616", "--kind", "impl", "--outcome", "done", "--attempt", bad]),
+					/--attempt must be an integer >= 1/,
+					`CLI --attempt ${JSON.stringify(bad)}`,
+				);
+			}
+			// 1 and 2 are the accepted integers; they land on the row as plain digits.
+			assertEqual(parseAttemptColumn("1"), 1, "attempt 1");
+			assertEqual(parseAttemptColumn("2"), 2, "attempt 2");
+			assertEqual(parseAttemptColumn("12"), 12, "attempt 12");
+			withTempPair(
+				({ provenance }) => {
+					writeFileSync(provenance, `${provenanceLogFixture(provenanceRow("impl-616", FIXTURE_LINE))}\n`);
+				},
+				({ provenance, outcomes }) => {
+					assertSkippedForm(
+						() => reportSettle("impl-616", { kind: "impl", outcome: "done", attempt: 0 }, outcomes, provenance),
+						/--attempt must be an integer >= 1/,
+						"reportSettle refuses a 0 attempt",
+					);
+					assertEqual(readIfExists(outcomes), null, "no malformed attempt created a row");
+				},
+			);
+		},
+	},
+	{
+		name: "--cause: only exactly `transport` or `manual` is accepted — case, padding and prefixes are findings",
+		run() {
+			for (const bad of ["Transport", "TRANSPORT", "transport ", " transport", "transport,manual", "retry", "", "manual-exit"]) {
+				assertSkippedForm(() => parseCauseColumn(bad), /--cause must be exactly transport or manual/, `--cause ${JSON.stringify(bad)}`);
+			}
+			assertEqual(parseCauseColumn("transport"), "transport", "transport");
+			assertEqual(parseCauseColumn("manual"), "manual", "manual");
+			withTempPair(
+				({ provenance }) => {
+					writeFileSync(provenance, `${provenanceLogFixture(provenanceRow("impl-616", FIXTURE_LINE))}\n`);
+				},
+				({ provenance, outcomes }) => {
+					assertSkippedForm(
+						() => reportSettle("impl-616", { kind: "impl", outcome: "done", cause: "Transport" }, outcomes, provenance),
+						/--cause must be exactly transport or manual/,
+						"reportSettle refuses `Transport`",
+					);
+					assertEqual(readIfExists(outcomes), null, "no malformed cause created a row");
+				},
+			);
+		},
+	},
+	{
+		name: "--attempt/--cause with no value (or the next flag) is a missing value, never a swallowed one",
+		run() {
+			assertSkippedForm(
+				() => parseSettleArgs(["impl-616", "--kind", "impl", "--outcome", "done", "--attempt"]),
+				/--attempt needs a value/,
+				"--attempt at the end of the line",
+			);
+			assertSkippedForm(
+				() => parseSettleArgs(["impl-616", "--kind", "impl", "--outcome", "done", "--attempt", "--cause", "transport"]),
+				/--attempt needs a value — "--cause" is the next flag/,
+				"--attempt followed by a flag",
+			);
+			assertSkippedForm(
+				() => parseSettleArgs(["impl-616", "--kind", "impl", "--outcome", "done", "--cause"]),
+				/--cause needs a value/,
+				"--cause at the end of the line",
+			);
+			// The valid pair still parses, so the refusal is about the VALUE, not the flag.
+			const parsed = parseSettleArgs(["impl-616", "--kind", "impl", "--outcome", "done", "--attempt", "2", "--cause", "transport"]);
+			assertEqual(parsed.options.attempt, 2, "attempt parsed");
+			assertEqual(parsed.options.cause, "transport", "cause parsed");
+		},
+	},
+	{
+		name: "--attempt/--cause WITHOUT --settle: refused as a misuse that names the column (exit 2)",
+		run() {
+			for (const argv of [["--attempt", "2"], ["--cause", "transport"], ["--calibrate", "--attempt", "2"], ["--ledger", ".development/investigations/jev-calibration-log.md", "--cause", "manual"]]) {
+				const result = captureConsole(() => main(argv));
+				assertEqual(result.code, 2, `${JSON.stringify(argv)} exit code`);
+				if (!/is a --settle COLUMN, not a ledger field/.test(result.err) || !/--settle <label>/.test(result.err)) {
+					throw new Error(`${JSON.stringify(argv)}: the refusal must name the misuse, got ${JSON.stringify(result.err)}`);
+				}
+			}
+		},
+	},
+	{
+		name: "--calibrate reads a #616 row: the keyed columns never change the cohort or the join",
+		run() {
+			withTempPair(
+				({ provenance, outcomes }) => {
+					writeFileSync(provenance, `${provenanceLogFixture(provenanceRow("impl-616", FIXTURE_LINE))}\n`);
+					writeFileSync(
+						outcomes,
+						`${outcomesLogFixture(`${outcomeRow("impl-616", "impl", "done", "approve")}\tattempt:2\tcause:transport`)}\n`,
+					);
+				},
+				({ provenance, outcomes }) => {
+					const out = captureConsole(() => reportCalibration(provenance, outcomes)).out;
+					if (!/eligible 1 \/ settled 1/.test(out)) throw new Error(`the row still joins and counts: ${JSON.stringify(out)}`);
+				},
+			);
+		},
+	},
+	{
+		name: "the outcome reader is fail-closed on a malformed keyed column (hand-edited rows)",
+		run() {
+			const row = (extra) => `${outcomesLogFixture(`${outcomeRow("impl-616", "impl", "done", "approve")}${extra}`)}\n`;
+			for (const [extra, why, label] of [
+				["\tattempt:0", /attempt "0" is not an integer >= 1/, "attempt 0"],
+				["\tattempt:2.0", /attempt "2\.0" is not an integer >= 1/, "attempt 2.0"],
+				["\tcause:Transport", /cause "Transport" is not one of transport \| manual/, "cause Transport"],
+				["\tattempt:2\tattempt:3", /duplicate `attempt:` column/, "duplicate attempt"],
+				["\tmodel:x/y", /unknown keyed column "model:x\/y"/, "unknown key"],
+				["\t", /empty keyed column/, "stray tab"],
+			]) {
+				assertStructural(() => parseOutcomesLog(row(extra), "fixture.log"), why, label);
+			}
+			// A well-formed pair parses back to the same values the writer produced.
+			const parsed = parseOutcomesLog(row("\tattempt:1\tcause:manual"), "fixture.log").rows[0];
+			assertEqual(parsed.attempt, 1, "attempt 1 round-trips");
+			assertEqual(parsed.cause, "manual", "manual round-trips");
+			// Any order is legal, exactly like the provenance row's keyed columns.
+			const reversed = parseOutcomesLog(row("\tcause:manual\tattempt:1"), "fixture.log").rows[0];
+			assertEqual(reversed.attempt, 1, "attempt round-trips in column 9");
+			assertEqual(reversed.cause, "manual", "cause round-trips in column 8");
+		},
+	},
+
 	// --- #468: --calibrate (the eight-case no-data matrix + the cohort) ------
 	{
 		name: "--calibrate case 1: a missing or empty provenance log is exit 2 (fail-closed, checked FIRST)",
@@ -3204,7 +3555,7 @@ function runSelftest() {
 // ---------------------------------------------------------------------------
 
 const USAGE = [
-	"usage: jev-check.mjs --dispatch --classifier '<raw-answers>' --label <name> [--worktree y|n] [--model <id>] [--kind impl|review|probe] | --classifier '<raw-answers>' [--model <id>] [--classifier-model-aware '<raw-answers>'] [--label <name>] | --line '<json>' [--label <name>] [--legacy-line] | --match-row <label> <line> [--provenance <path>] | --ledger [path] | --log [path] [--since YYYY-MM-DD] [--require-provenance] | --settle <label> --kind <k> --outcome <o> [--verdict <v>] [--nits N] [--model-ran <id>] | --calibrate | --selftest",
+	"usage: jev-check.mjs --dispatch --classifier '<raw-answers>' --label <name> [--worktree y|n] [--model <id>] [--kind impl|review|probe] | --classifier '<raw-answers>' [--model <id>] [--classifier-model-aware '<raw-answers>'] [--label <name>] | --line '<json>' [--label <name>] [--legacy-line] | --match-row <label> <line> [--provenance <path>] | --ledger [path] | --log [path] [--since YYYY-MM-DD] [--require-provenance] | --settle <label> --kind <k> --outcome <o> [--verdict <v>] [--nits N] [--model-ran <id>] [--attempt N] [--cause transport|manual] | --calibrate | --selftest",
 	"",
 	"  --dispatch        ONE command for a dispatch (#500): classify, print the line, append the",
 	"                    provenance row under --label, and print the exact `paste:` text. --label is",
@@ -3238,9 +3589,17 @@ const USAGE = [
 	"                    a matching offender prints as acknowledged, never as clean or failing",
 	`  --settle <label> --kind impl|review|probe --outcome done|failed|stopped|unknown`,
 	"                    [--verdict approve|approve-with-nits|changes-requested] [--nits N] [--model-ran <id>]",
+	"                    [--attempt N] [--cause transport|manual]",
 	`                    append what HAPPENED to the sidecar ${DEFAULT_OUTCOMES_LOG} (keyed by label).`,
 	"                    Every refusal (unknown label, duplicate settle, bad vocabulary, --nits without a",
 	"                    verdict) is exit 2 — a guessed settle poisons the only ground truth there is",
+	"  --attempt N       with --settle: which attempt did the work (the Nth spawn of that dispatch), an",
+	"                    integer >= 1 in plain digits. --cause transport|manual says why there was more",
+	"                    than one: an automatic transport retry inherits the label and never re-enters",
+	"                    delegate_task, so the single settle row must say which agent did the work",
+	"                    (#616). Both are optional keyed columns (attempt:<n>, cause:<c>); a row with",
+	"                    neither is byte-identical to a pre-#616 row. A malformed value is exit 1 and",
+	"                    writes nothing; either flag WITHOUT --settle is refused as a misuse",
 	`  --calibrate       read the sidecar against the provenance log: eligible impl rows, both arms'`,
 	"                    agreement with the DISPATCHED level, and the delta. Below 20 eligible rows it",
 	"                    prints counts and NO conclusion; it never names a winner",
@@ -3276,16 +3635,34 @@ function parseLogArgs(args) {
 	return { path: path ?? DEFAULT_SUBAGENT_LOG, since, exceptions, requireProvenance };
 }
 
-/** Parse `--settle <label> --kind <k> --outcome <o> [--verdict <v>] [--nits N] [--model-ran <id>]`. */
+/**
+ * Parse `--settle <label> --kind <k> --outcome <o> [--verdict <v>] [--nits N] [--model-ran <id>]`
+ * `[--attempt N] [--cause transport|manual]`.
+ *
+ * `--attempt`/`--cause` read their value with `columnValue`, not the shared `value`: a missing value
+ * (or the next flag in that position) is refused as a missing value rather than swallowed, so
+ * `--attempt --cause transport` never reads `--cause` as an attempt ordinal.
+ */
 function parseSettleArgs(args) {
 	let label;
-	const options = { kind: null, outcome: null, verdict: null, nits: null, modelRan: null };
+	const options = { kind: null, outcome: null, verdict: null, nits: null, modelRan: null, attempt: null, cause: null };
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index];
 		const value = () => {
 			if (index + 1 >= args.length) throw new StructuralError(`${arg} needs a value`);
 			index += 1;
 			return args[index];
+		};
+		/** A settle COLUMN's value: nothing, or another flag, is a missing value — never a swallowed one. */
+		const columnValue = () => {
+			const next = index + 1 < args.length ? args[index + 1] : undefined;
+			if (next === undefined || next.startsWith("--")) {
+				throw new SkippedFormError(
+					`${arg} needs a value — ${next === undefined ? "the line ends here" : `${JSON.stringify(next)} is the next flag, not its value`}`,
+				);
+			}
+			index += 1;
+			return next;
 		};
 		if (arg === "--kind") {
 			options.kind = value();
@@ -3299,6 +3676,10 @@ function parseSettleArgs(args) {
 			options.nits = Number(raw);
 		} else if (arg === "--model-ran") {
 			options.modelRan = normalizeModelId(value(), "--model-ran");
+		} else if (arg === "--attempt") {
+			options.attempt = parseAttemptColumn(columnValue());
+		} else if (arg === "--cause") {
+			options.cause = parseCauseColumn(columnValue());
 		} else if (arg.startsWith("--")) {
 			throw new StructuralError(`unknown --settle option ${JSON.stringify(arg)}\n\n${USAGE}`);
 		} else if (label === undefined) {
@@ -3312,7 +3693,19 @@ function parseSettleArgs(args) {
 
 function main(argv) {
 	const [mode, ...rest] = argv;
-	try {		if (mode === "--classifier") {
+	try {
+		// #616: `--attempt`/`--cause` are SETTLE COLUMNS. Anywhere else they name no row, so the misuse
+		// is refused by name rather than falling through to `unknown mode`.
+		if (mode !== "--settle") {
+			const stray = argv.find((arg) => SETTLE_COLUMN_FLAGS.includes(arg));
+			if (stray !== undefined) {
+				throw new StructuralError(
+					`${stray} is a --settle COLUMN, not a ledger field or a mode of its own — it records which attempt ` +
+						`did the work on that dispatch's settle row. Use it as: --settle <label> --kind <k> --outcome <o> ${stray} …`,
+				);
+			}
+		}
+		if (mode === "--classifier") {
 			const { raw, label, worktree, model, awareRaw } = parseLineArgs(rest);
 			return reportClassifier(raw, label, DEFAULT_PROVENANCE_LOG, worktree, { model, awareRaw });
 		}

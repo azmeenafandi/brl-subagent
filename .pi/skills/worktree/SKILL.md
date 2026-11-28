@@ -376,8 +376,10 @@ never re-type their logic by hand. Full design:
     **Record the model and what happened** (#468): `--model <provider>/<id>` adds a `model:` column,
     `--classifier-model-aware '<raw answers>'` adds the second arm's `level-model:` answer (it needs
     `--model`; it never prints a second line and never blocks a dispatch), and `--settle <label>
-    --kind impl|review|probe --outcome done|failed|stopped|unknown [--verdict …] [--nits N]` appends
-    the outcome to `.pi/jev-outcomes.log`. `--calibrate` then compares both arms against the
+    --kind impl|review|probe --outcome done|failed|stopped|unknown [--verdict …] [--nits N] [--attempt
+    N] [--cause transport|manual]` appends the outcome to `.pi/jev-outcomes.log` — the last two as
+    optional keyed columns saying which attempt did the work when a transport retry inherited the
+    label (#616). `--calibrate` then compares both arms against the
     dispatched level — and prints **counts only** below 20 eligible implementation rows.
     Snippet + the 2026-10-10 backtest (98 dispatches,
     $0.0034: it flags over-leveling, raises reviews — `review-test-hygiene-r2`, which

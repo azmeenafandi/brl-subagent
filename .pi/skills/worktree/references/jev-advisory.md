@@ -187,13 +187,25 @@ sidecar closes that gap without touching the matched row:
 ```bash
 $ node .pi/skills/worktree/jev-check.mjs --settle impl-468 --kind impl --outcome done \
     --verdict approve-with-nits --nits 2 --model-ran deepseek/deepseek-flash
+$ node .pi/skills/worktree/jev-check.mjs --settle impl-616 --kind impl --outcome done \
+    --verdict approve --attempt 2 --cause transport
 $ node .pi/skills/worktree/jev-check.mjs --calibrate
 ```
 
 - **`.pi/jev-outcomes.log`** — header `# jev-outcomes — cutoff <full ISO instant>`, then
-  `ts\tlabel\tkind\toutcome\tverdict|null\tnits|null\tmodel-ran|null`. Keyed by the dispatch label:
+  `ts\tlabel\tkind\toutcome\tverdict|null\tnits|null\tmodel-ran|null` followed by the **optional
+  keyed columns** `attempt:<n>` and `cause:<transport|manual>` (#616). Keyed by the dispatch label:
   one line per settle, appended, never rewritten. `--kind` is required because a review is a
   different question — a `changes-requested` review is a **good** review, not a level failure.
+- **`--attempt`/`--cause` say which agent did the work** (#616). An automatic transport retry
+  inherits its label and never passes through `delegate_task`, so one label can cover two agents and
+  the single settle row could not say which one finished: `review-612` settled as `stopped … ran
+  deepseek/deepseek-flash` while its retry did the work. `--attempt N` is the Nth spawn of that
+  dispatch (an integer ≥ 1, plain digits — `2.0`, `2 `, `0x2`, `+2` and `1e+21` are refused, never
+  coerced); `--cause` is exactly `transport` or `manual`, case-sensitive. Both are **optional**: the
+  settle KEY is unchanged (still one row per dispatch, a second settle is still refused), and a row
+  written with neither is byte-identical to one written before they existed. A malformed value is
+  exit 1 and writes nothing; either flag **without** `--settle` is refused as a misuse.
 - **`unknown` is a gap, not a value.** A dead agent settles `unknown`; nothing is inferred.
 - **`--model-ran` is a manual correction** for a transport retry or a fallback, on the settle row so
   the provenance row's exact text is untouched. It is not runtime detection, and it is not claimed
@@ -338,9 +350,11 @@ calibrate" above). The table below stays the human narrative, and `--ledger` aud
 - **The model and the outcome are recorded** (#468): `--model <provider>/<id>` adds a `model:`
   column to the provenance row; `--classifier-model-aware '<raw answers>'` adds the second arm's
   `level-model:<level> (<conf>)`; `--settle <label> --kind impl|review|probe --outcome
-  done|failed|stopped|unknown [--verdict …] [--nits N] [--model-ran <id>]` appends what happened to
-  `.pi/jev-outcomes.log`, keyed by label. `--calibrate` joins the two and prints both arms'
-  agreement — counts only below 20 eligible implementation rows, and never a winner.
+  done|failed|stopped|unknown [--verdict …] [--nits N] [--model-ran <id>] [--attempt N] [--cause
+  transport|manual]` appends what happened to `.pi/jev-outcomes.log`, keyed by label — the last two
+  as optional keyed columns naming which attempt did the work and why there was more than one
+  (#616). `--calibrate` joins the two and prints both arms' agreement — counts only below 20
+  eligible implementation rows, and never a winner.
 - **Input + log:** build `state.task` from the input template; when the dispatch closes,
   record the outcome line in `.development/investigations/jev-calibration-log.md` and settle it.
 - **Unavailable is recorded, not silent:** if `codemode` or the model is missing, write
