@@ -963,9 +963,9 @@ describe("main — the two streams and the exit codes", () => {
 		// fixture instead of `--recheck` (+28 source lines in all); the JS surface is unchanged (the
 		// resolver lives in `scripts/`).
 		// Re-pointed by #616: the settle row's two optional keyed columns (`--attempt`/`--cause`), the
-		// reader that parses them back, and eight `--selftest` cases (+389 source lines) — the store is
+		// reader that parses them back, and eight `--selftest` cases (+393 source lines) — the store is
 		// still one `.mjs` entry, so only the LOC pin moves.
-		const SKILLS_SOURCE_LOC = 9098;
+		const SKILLS_SOURCE_LOC = 9102;
 		const measured = measureSurface(surface("skills"), ROOT);
 		expect(measured.sourceLoc).toBe(SKILLS_SOURCE_LOC);
 		expect(measured.reference).toBeNull();

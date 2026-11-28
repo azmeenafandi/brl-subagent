@@ -213,7 +213,11 @@ const SEPARATOR_CELL = /^:?-{2,}:?$/;
 // class the ledger reader throws, so one `instanceof` still decides exit 2 for both.
 // ---------------------------------------------------------------------------
 
-/** The skipped form: a payload with no usable confidence. Exit 1 — a finding. */
+/**
+ * A FINDING the caller can fix: the skipped form (a payload with no usable confidence), and — since
+ * #616 — a settle column whose VALUE is unusable (`--attempt 2.0`, `--cause Transport`). Exit 1, and
+ * nothing is written; exit 2 stays reserved for input the tool cannot read at all.
+ */
 class SkippedFormError extends Error {}
 
 // ---------------------------------------------------------------------------
