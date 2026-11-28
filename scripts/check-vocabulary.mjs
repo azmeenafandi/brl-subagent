@@ -297,11 +297,12 @@ export function audit({ root = ROOT } = {}) {
 	const violations = validateRows(parsed.rows);
 	const corpus = collectCorpus(root);
 	const errors = [...corpus.errors];
-	if (errors.length === 0) {
-		const scanned = scanCorpus(corpus.files, parsed.rows, root);
-		violations.push(...scanned.violations);
-		errors.push(...scanned.errors);
-	}
+	// Scan what WAS readable even when part of the corpus could not be: an unreadable directory must not
+	// suppress a real violation in a file that was read. The exit code is still 2 — "cannot check"
+	// dominates a finding — but the finding is reported rather than swallowed.
+	const scanned = scanCorpus(corpus.files, parsed.rows, root);
+	violations.push(...scanned.violations);
+	errors.push(...scanned.errors);
 	return { files: corpus.files, rows: parsed.rows, violations, errors };
 }
 
@@ -311,7 +312,7 @@ function describeEntry(entry) {
 }
 
 /** The rendered report: corpus, exclusions, vocabulary, violations, verdict. */
-export function renderReport({ files, rows, violations }) {
+export function renderReport({ files, rows, violations, errors = [] }) {
 	const lines = [];
 	lines.push(`corpus: ${CORPUS.map(describeEntry).join(", ")} (${files.length} file(s))`);
 	lines.push("  living normative prose, *.md only — fenced blocks, inline code, URLs and paths are not prose");
@@ -320,10 +321,15 @@ export function renderReport({ files, rows, violations }) {
 	const bans = rows.flatMap((row) => row.banned.map((term) => `${term} → ${row.canonical}`));
 	lines.push(`vocabulary: ${rows.map((row) => row.canonical || "(empty)").join(", ")} · banned: ${bans.length === 0 ? "none" : bans.join(", ")}`);
 	for (const violation of violations) lines.push(`violation: ${violation.path}:${violation.line}: ${violation.message}`);
-	lines.push(
-		`vocabulary: ${violations.length} violation(s) in ${files.length} file(s) — ` +
-			(violations.length === 0 ? "clean" : "fix the data file or the prose"),
-	);
+	// Never call a run "clean" when part of it could not be read: that is the one word a reader trusts
+	// before the exit code reaches them (#606 Unit 3, found in review).
+	const verdict =
+		errors.length > 0
+			? `cannot check (${errors.length} unreadable input(s))`
+			: violations.length === 0
+				? "clean"
+				: "fix the data file or the prose";
+	lines.push(`vocabulary: ${violations.length} violation(s) in ${files.length} file(s) — ${verdict}`);
 	return lines;
 }
 

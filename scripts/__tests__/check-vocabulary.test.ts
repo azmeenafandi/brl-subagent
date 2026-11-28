@@ -242,6 +242,27 @@ describe("the parser and maskers — the pieces, pinned", () => {
 	});
 });
 
+describe("cannot check — the summary never claims clean", () => {
+	// The defect this pins (#606 Unit 3, found in review): an unreadable corpus entry used to skip the
+	// scan entirely, so a real violation in a file that WAS read went unreported under the word "clean".
+	it("still reports a real violation, and says cannot check, when part of the corpus is unreadable", () => {
+		const root = checkout({ files: { "AGENT.md": "A worker did it. " + CLEAN_PROSE } });
+		rmSync(join(root, "presets"), { recursive: true, force: true });
+		const result = run(root);
+		expect(result.code).toBe(EXIT.USAGE);
+		expect(result.out).toContain('banned term "worker"');
+		expect(result.out).toContain("cannot check");
+		expect(result.out).not.toContain("\u2014 clean");
+	});
+
+	it("does not call a missing data file clean", () => {
+		const result = run(checkout({ data: null }));
+		expect(result.code).toBe(EXIT.USAGE);
+		expect(result.out).toContain("cannot check");
+		expect(result.out).not.toContain("\u2014 clean");
+	});
+});
+
 describe("the real tree — the guard is green the day it lands", () => {
 	it("reports zero violations on this checkout", () => {
 		const result = run(ROOT);
