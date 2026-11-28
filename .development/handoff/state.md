@@ -8,7 +8,7 @@ line below is a claim it recomputes, and a drift means the claim is wrong, never
 - **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 812b492`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
 - **Board:** `#611`/`#610` closed, `#612` (`370774f`), `#614` (`7940302`), `#606` closed with all three units
   delivered, `#615` closed by `#618` (`700fe07`), **`#617` closed by `#619` (`812b492`)**.
-  Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #616.
+  Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #616, #620, #621.
 - **Suite:** 156 files / **3575** (3574 passed, 0 failed, 1 skipped) captured at `812b492` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487. Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
 
 ## Open items
@@ -41,14 +41,23 @@ line below is a claim it recomputes, and a drift means the claim is wrong, never
   only (no subprocess, no cache), and is **durable** iff its **common gitdir equals the session's** and it is
   the main worktree, on `main`/`dev`, or named `brl-subagent`/`brl-subagent-dev`. Unreadable metadata fails
   closed with `could not classify …`; a path outside any repository is not protected; a **foreign** repository
-  is durable only through a durable ancestor. Closes the pre-existing hole where a worktree session could
-  write the cockpit's `src/` by absolute path. Test-first red (`12 failed | 36 passed` against the old guard,
+  is durable only through a durable ancestor. **Foreground only** (see the reach findings below): the C1 live probe
+  proved the classifier end-to-end in a foreground worktree session (own `src/` allowed, cockpit `src/` and
+  `presets/` refused, cockpit `.pi/` allowed) — but in **background** delegations the extension is not loaded at
+  all, so "closes the pre-existing hole" holds for foreground. Test-first red (`12 failed | 36 passed` against the old guard,
   then `5 failed` for the session-scoped Q12 rows), a 33-test matrix now in CI (the unwired `guard.test.cjs`
   deleted), eight executed mutation receipts. Reviewed `approve-with-nits` by `openrouter/meta/muse-ember`
   (record sha256 `abf2758e…`; it re-executed M4/M5/M6/M8 itself). **Carried minors:** a bare `src`/`presets`
   directory target is unmatched but unreachable via write/edit; `classifyTarget`'s four-stage pipeline is
   accepted as readable. The `+454/0 skills` flow over-allowance is declared in the PR body and accepted by
   the gate (`test-flow-override`). Brief: `briefs/worktree-guard-durability.md`.
+- **Reach findings from the #617 live probe (filed, not fixed):** **#620** — background sessions build their
+  resource loader with `noExtensions: true, noSkills: true` (`src/session-manager.ts:1814-1832`, a deliberate
+  RCE choice), so the guard is **absent** for the default dispatch shape: a background agent wrote the cockpit's
+  `src/` by absolute path in the probe. **#621** — the guard's `before_agent_start` reminder returns a bare
+  string where pi 1.7 expects `{ customType, content, display }`, so the injected custom message is empty and the
+  reminder is silently dropped in foreground too. Neither changes the classifier's verdicts; both are about the
+  guard's reach, and both were measured live rather than inferred.
 - **#616 remains open** (the next action): `stop_subagent` reports success on a *superseded* agent while its
   transport retry runs on under the same label — the run that nearly gated a merge with an off-protocol
   `approve-with-nits` record.
