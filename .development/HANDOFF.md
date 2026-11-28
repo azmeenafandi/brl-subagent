@@ -4,9 +4,9 @@
 > History: `.development/HANDOFF-ARCHIVE-*` and `.development/FRICTION_LOG.md` — never re-read it.
 
 ## STATE
-Verified: 812b492 (2026-11-28)
+Verified: ff7b2e6 (2026-11-28)
 In flight: nothing
-Next action: #616 (open) — `stop_subagent` still reports success on a superseded agent; #617 landed at `812b492`
+Next action: #616 (open) — `stop_subagent` still reports success on a superseded agent; #617/#621 landed, #620 remains
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
 
 ## Invariants

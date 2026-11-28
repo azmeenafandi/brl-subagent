@@ -3,13 +3,13 @@
 The mechanical snapshot #607 moved out of the index. Read by `node scripts/handoff-verify.mjs` — every
 line below is a claim it recomputes, and a drift means the claim is wrong, never the checker.
 
-- **dev** @ `812b492` — **#617 fixed** (PR #619: the guard's durability classifier); on top of #615 (`700fe07`),
-  #606's three units (`370774f`, `14aef6e`-era, `7940302`) and the pi 1.7.0 SDK parity (#611).
-- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 812b492`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
+- **dev** @ `ff7b2e6` — **#621 fixed** (PR #622: the guard's reminder reaches the model); on top of #617 (`812b492`),
+  #615 (`700fe07`), #606's three units and the pi 1.7.0 SDK parity (#611).
+- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ ff7b2e6`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
 - **Board:** `#611`/`#610` closed, `#612` (`370774f`), `#614` (`7940302`), `#606` closed with all three units
-  delivered, `#615` closed by `#618` (`700fe07`), **`#617` closed by `#619` (`812b492`)**.
-  Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #616, #620, #621.
-- **Suite:** 156 files / **3575** (3574 passed, 0 failed, 1 skipped) captured at `812b492` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487. Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
+  delivered, `#615` closed by `#618` (`700fe07`), `#617` closed by `#619` (`812b492`), **`#621` closed by `#622` (`ff7b2e6`)**.
+  Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #616, #620.
+- **Suite:** 156 files / **3575** (3574 passed, 0 failed, 1 skipped) captured at `ff7b2e6` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487. Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
 
 ## Open items
 
@@ -51,13 +51,16 @@ line below is a claim it recomputes, and a drift means the claim is wrong, never
   directory target is unmatched but unreachable via write/edit; `classifyTarget`'s four-stage pipeline is
   accepted as readable. The `+454/0 skills` flow over-allowance is declared in the PR body and accepted by
   the gate (`test-flow-override`). Brief: `briefs/worktree-guard-durability.md`.
-- **Reach findings from the #617 live probe (filed, not fixed):** **#620** — background sessions build their
+- **Reach findings from the #617 live probe:** **#620** (open) — background sessions build their
   resource loader with `noExtensions: true, noSkills: true` (`src/session-manager.ts:1814-1832`, a deliberate
   RCE choice), so the guard is **absent** for the default dispatch shape: a background agent wrote the cockpit's
-  `src/` by absolute path in the probe. **#621** — the guard's `before_agent_start` reminder returns a bare
-  string where pi 1.7 expects `{ customType, content, display }`, so the injected custom message is empty and the
-  reminder is silently dropped in foreground too. Neither changes the classifier's verdicts; both are about the
-  guard's reach, and both were measured live rather than inferred.
+  `src/` by absolute path in the probe. **#621 (fixed, `ff7b2e6`)** — the guard's `before_agent_start`
+  reminder returned a bare string where pi 1.7 expects `{ customType, content, display }`, so the injected
+  custom message was empty; it now returns the documented object with `display: false`, the text unchanged,
+  and the test row pins the shape (the old string fails it). Live proof (`probe-621-live`, foreground worktree
+  from `ff7b2e6`): the reminder is delivered to the model verbatim — before the fix the same checklist saw
+  nothing. Reviewed `approve` by `openrouter/meta/muse-ember` (record sha256 `77d8c7dd…`, mutant re-run).
+  Neither reached the classifier's verdicts; #620 is about the guard's reach.
 - **#616 remains open** (the next action): `stop_subagent` reports success on a *superseded* agent while its
   transport retry runs on under the same label — the run that nearly gated a merge with an off-protocol
   `approve-with-nits` record.
