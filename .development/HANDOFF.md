@@ -6,7 +6,7 @@
 ## STATE
 Verified: 370774f (2026-11-28)
 In flight: nothing
-Next action: #606 (open) — Unit 1 is merged; the release checkpoint is the maintainer's call, then Unit 2
+Next action: #606 (open) — the Unit 1 release checkpoint is the maintainer's call; Unit 3 is what remains
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
 
 ## Invariants

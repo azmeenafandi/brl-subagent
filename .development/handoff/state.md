@@ -33,14 +33,14 @@ line below is a claim it recomputes, and a drift means the claim is wrong, never
   unreachable — corrected in `026ef8d`. Spec: `.development/investigations/deps-pi-1.7.0-spec-2026-11-28.md`.
   **Any worktree prepped before the bump must be re-prepped with `--force-isolated`.**
 
-- **Cycle `front-door` (open, paused 2026-11-27 for the night).** #609 merged (the plan-critic preset at `medium`).
-  **Resume here:** #606 Unit 1 — the spec is `.development/investigations/issue-606-grill-spec-2026-11-27.md` at
-  **r7**, both boundary decisions settled (gated class = code-writing dispatches; boundary = a mandatory dispatch
-  header, option A). Critique records **r1–r3** are on disk (`issue-606-critique-r1..r3`); **r4–r6 exist only as
-  the spec's own closing tables** (r3→r4 … r5→r6), each finding folded into the next revision — no separate
-  record was ever committed for those three rounds. r7 has **not** been
-  critiqued — the maintainer chose to stop there. The next act is the maintainer's call between *approve → create the
-  worktree and dispatch `impl-606`* and *one more critique round*; the conductor recommended approve.
+- **Cycle `front-door` (open; advanced 2026-11-28).** #609 merged (plan-critic preset at `medium`); #606 **Unit 1**
+  merged (`370774f`, `approve-with-nits`); **Unit 2 closed against #607** (`14aef6e`) — reconciled 2026-11-28 after
+  testing each clause against the verifier's claim codes: the work existed, the claim never did (#607 never names
+  this issue or Unit 2). The accepted residual is stated on the issue: "never copied" has no duplication check
+  (#607 D8 — structural smallness, not a proof of no smuggling). **What remains: Unit 3 (vocabulary) and the
+  Unit 1 release checkpoint.** The spec's two falsifier receipts are unblocked now the gate is live (spawn/refusal
+  counts need a window; the question audit needs a real want).
+
 - **Filed separately:** the `noJev` guard accepts exponent-form numbers (`1e+21`, `1e-7`) through the real coercion
   path — a shipped-code defect, not a Unit 1 deliverable.
 - **#552** — a resume-after-drop needs a state reader; the `In flight:` line works without one.
