@@ -2,7 +2,7 @@
 
 **Issue:** #616 (tooling; filed 2026-11-28 after a live incident) · **C1** (teardown/concurrency) · worktree **y**.
 **jev:** medium (0.89) · C1 · worktree y — classifier on the implementation brief; the level is an observation, the risk class governs review depth (full adversarial review).
-**Written against:** `dev @ e6958f4` (handoff-verified). **Status: awaiting the maintainer's design nod** — the issue names three fix directions and says "pick one, do not do both blindly".
+**Written against:** `dev @ e6958f4` (handoff-verified). **Status: SUPERSEDED, 2026-11-28** — the grill settled the design against `dev @ 16b79ed`; the authority is now `briefs/stop-lineage-contract.md` (PR A) and `briefs/settle-attempt-cause.md` (PR B). Kept as the recon record; its r1 recommendation (whole-dispatch family, manual retries included) was **narrowed by the maintainer** to automatic transport retries only, which requires the `retryCause` field this spec did not foresee.
 
 ---
 
