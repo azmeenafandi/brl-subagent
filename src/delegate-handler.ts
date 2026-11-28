@@ -897,7 +897,19 @@ function routeDispatch(
 	if (useBackground) {
 		return {
 			kind: "returned",
-			result: runners.spawnBackgroundRun(pi, ctx, params, singleTask, retrySourceRun),
+			// Issue #616: a background spawn reached from `delegate_task` is a
+			// CALLER-driven retry when a `retryRunId` resolved — `"manual"`, never
+			// `"transport"`. Only `scheduleTransportRetry` may claim the automatic
+			// cause, because only it IS the automatic retry.
+			result: runners.spawnBackgroundRun(
+				pi,
+				ctx,
+				params,
+				singleTask,
+				retrySourceRun,
+				undefined,
+				retrySourceRun ? "manual" : undefined,
+			),
 		};
 	}
 
@@ -1540,7 +1552,11 @@ function registerForegroundRun(
 	// Option B U1: durability identity — a retry inherits the original
 	// dispatchId and records resumeOf/attempt; a fresh marker keys the
 	// child process for boot-time orphan discovery.
-	const identity = newDispatchIdentity(retrySourceRun);
+	// Issue #616: a foreground retry is always CALLER-driven (`retryRunId` or
+	// `retryOnTimeout`), so its cause is `manual` — there is no automatic
+	// foreground retry. Recorded for completeness; a foreground run has no agent
+	// record, so the dispatch-scoped stop never reaches it (stated non-goal).
+	const identity = newDispatchIdentity(retrySourceRun, retrySourceRun ? "manual" : undefined);
 	// Issue #511 (U2): create this run's scratch directory at record creation so
 	// the record can name it (the retry preamble, U3, reads `scratchDir`). The
 	// spawn seam in `runner.ts` re-prepares idempotently and is the gate that
@@ -1561,6 +1577,7 @@ function registerForegroundRun(
 		dispatchId: identity.dispatchId,
 		resumeOf: identity.resumeOf,
 		attempt: identity.attempt,
+		retryCause: identity.retryCause,
 		owner: currentProcessOwner(),
 		childMarker: crypto.randomUUID(),
 		// U3 (D4): the session recovery posture at dispatch.

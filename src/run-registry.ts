@@ -32,7 +32,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { CUSTOM_ENTRY_TYPES, RECOVERY_MODES, type ProcessOwner, type RecoveryMode, type SubagentRun } from "./types";
+import {
+	CUSTOM_ENTRY_TYPES,
+	RECOVERY_MODES,
+	RETRY_CAUSES,
+	type ProcessOwner,
+	type RecoveryMode,
+	type RetryCause,
+	type SubagentRun,
+} from "./types";
 import { assertSafeAgentId } from "./sanitize";
 import { ensureOwnerOnlyDir } from "./store-permissions";
 
@@ -72,6 +80,13 @@ export interface InflightRun {
 	id: string;
 	dispatchId?: string;
 	attempt?: number;
+	/**
+	 * Issue #616: why this attempt exists (`transport` auto-retry vs a manual
+	 * `retryRunId` retry). Mirrored from the run record so a stop that must
+	 * resolve a retry from the registry alone (no agent record yet) can still
+	 * scope itself. Absent = unknown, never `transport`.
+	 */
+	retryCause?: RetryCause;
 	kind: InflightRunKind;
 	owner?: ProcessOwner;
 	childMarker?: string;
@@ -114,6 +129,7 @@ export interface InflightRunInput {
 	id: string;
 	dispatchId?: string;
 	attempt?: number;
+	retryCause?: RetryCause;
 	kind: InflightRunKind;
 	owner?: ProcessOwner;
 	childMarker?: string;
@@ -218,6 +234,13 @@ function normalizeEnrichment(value: InflightRun, raw: Record<string, unknown>): 
 	} else {
 		delete entry.originalParams;
 	}
+	// Issue #616: same lenient rule — a cause we cannot trust is DROPPED (absent ⇒
+	// unknown ⇒ never auto-stopped), never coerced to the stop-scoped value.
+	if (typeof raw.retryCause === "string" && (RETRY_CAUSES as readonly string[]).includes(raw.retryCause)) {
+		entry.retryCause = raw.retryCause as RetryCause;
+	} else {
+		delete entry.retryCause;
+	}
 	// Issue #447: keep the tri-state intact and treat anything else as LEGACY
 	// (absent) rather than inventing a fourth state. A mistyped marker must
 	// never downgrade a real run into the never-started class.
@@ -267,6 +290,7 @@ function mergeInput(base: InflightRun, input: InflightRunInput): InflightRun {
 	const next: InflightRun = { ...base, id: input.id, kind: input.kind };
 	if (input.dispatchId !== undefined) next.dispatchId = input.dispatchId;
 	if (input.attempt !== undefined) next.attempt = input.attempt;
+	if (input.retryCause !== undefined) next.retryCause = input.retryCause;
 	if (input.recoveryPosture !== undefined) next.recoveryPosture = input.recoveryPosture;
 	if (input.owner !== undefined) next.owner = input.owner;
 	if (input.childMarker !== undefined) next.childMarker = input.childMarker;
@@ -425,6 +449,7 @@ function toRegistryInput(run: SubagentRun, kind: InflightRunKind): InflightRunIn
 		id: run.id,
 		dispatchId: run.dispatchId,
 		attempt: run.attempt,
+		retryCause: run.retryCause,
 		kind,
 		recoveryPosture: run.recoveryPosture,
 		owner: run.owner,

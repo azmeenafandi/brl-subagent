@@ -926,7 +926,9 @@ describe("main — the two streams and the exit codes", () => {
 		// test reaches the floor, so 13 becomes 14 for the same reason — never a relaxed floor.
 		// Re-pointed by #606 (Unit 1): `dispatch-header.ts` + `brief.ts`, each reached by its own test,
 		// so the src floor follows the tree 61 → 63 for the same reason.
-		expect(/\bsrc (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["63", "63"]);
+		// Re-pointed by #616: `retry-armed.ts` is reached through the transport retry's
+		// own suites, so the floor follows the tree 63 → 64 — never a relaxed floor.
+		expect(/\bsrc (\d+)\/(\d+)/.exec(floors)!.slice(1, 3)).toEqual(["64", "64"]);
 		// Re-pointed by #591: `scripts/require-executed.mjs` is a new source module, and the floor is
 		// "every module reachable" — its test imports it, so 14 becomes 15 rather than the floor relaxing.
 		// Re-pointed by #606 (Unit 1): `verify-dispatch-header.mjs` joins the scripts surface and its test

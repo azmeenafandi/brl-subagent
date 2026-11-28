@@ -32,6 +32,38 @@ export type RecoveryMode = (typeof RECOVERY_MODES)[number];
 
 export const DEFAULT_RECOVERY: RecoveryMode = "offer";
 
+/**
+ * Issue #616: the TERMINAL statuses of an agent record — one definition, shared
+ * by `session-manager`'s `isTerminalAgentStatus` (the long-standing export) and
+ * by the stop contract, which must not accept the word "Stopped" for a record
+ * that is still live.
+ */
+export const TERMINAL_AGENT_STATUSES = ["completed", "failed", "stopped"] as const;
+
+export function isTerminalAgentStatusValue(status: AgentStatus): boolean {
+	return (TERMINAL_AGENT_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Issue #616: WHY a retry attempt exists. Two different retries mint the same
+ * lineage shape (same `dispatchId`, `resumeOf` pointing at the source,
+ * `attempt + 1`), so the shape alone cannot tell them apart:
+ *
+ *   - `"transport"` — the background transport auto-retry (#365): the run died
+ *     on a transport-class error and one replacement was dispatched for it.
+ *     It is part of the dispatch a `stop_subagent` aims at.
+ *   - `"manual"` — a caller-driven retry (`retryRunId`): a run someone
+ *     deliberately started. A stop aimed at the original dispatch must NOT
+ *     halt it (naming it directly does).
+ *
+ * Additive by contract: a record written before this field exists lacks it, and
+ * ABSENT READS AS **UNKNOWN** — never as either cause, and never as the
+ * stop-scoped one. Inference from the parent's failure class cannot substitute:
+ * a manual retry of a transport-failed attempt looks identical (issue #616 F6).
+ */
+export const RETRY_CAUSES = ["transport", "manual"] as const;
+export type RetryCause = (typeof RETRY_CAUSES)[number];
+
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -110,6 +142,19 @@ export const SUBAGENT_SIGNAL_KILLED_MESSAGE = "Subagent killed by external signa
 // no classifyError keyword on purpose — a pre-start failure is `unknown`, not a
 // timeout, an abort, or an exit error.
 export const PROMPT_NEVER_ISSUED_MESSAGE = "Subagent prompt was never issued";
+
+/**
+ * Issue #616 (Q3): the stamp on a transport retry that a dispatch-scoped stop
+ * cancelled while it was being set up — armed, but never prompted. Shared by the
+ * pre-prompt gate that writes it (session-manager) and the stop tool, which
+ * reports the cancel, so the two surfaces cannot describe the same non-event
+ * differently.
+ *
+ * It deliberately carries the "aborted" vocabulary `classifyError` already maps
+ * (like SUBAGENT_ABORTED_MESSAGE): a cancelled retry is a stop, never a failure.
+ */
+export const CANCELLED_RETRY_MESSAGE =
+	"Transport retry stopped before its prompt was issued (cancelled by stop_subagent)";
 
 /**
  * Classify a subagent result into an error category based on its errorMessage,
@@ -413,6 +458,12 @@ export interface SubagentRun {
 	dispatchId?: string;
 	resumeOf?: string;
 	attempt?: number;
+	/**
+	 * Issue #616: why THIS attempt exists. Absent on a first dispatch and on every
+	 * record written before the field existed — absent means UNKNOWN, and unknown
+	 * is never treated as the stop-scoped cause (`transport`).
+	 */
+	retryCause?: RetryCause;
 	interruptedAt?: string;
 	owner?: ProcessOwner;
 	childMarker?: string;
@@ -903,6 +954,10 @@ export interface BackgroundAgent {
 	dispatchId?: string;
 	resumeOf?: string;
 	attempt?: number;
+	// Issue #616: why this attempt exists (mirrors `SubagentRun.retryCause`).
+	// Persisted so the stop lineage can scope a dispatch-scoped stop to the
+	// automatic transport retries; absent means unknown, never "transport".
+	retryCause?: RetryCause;
 	interruptedAt?: string;
 	owner?: ProcessOwner;
 	childMarker?: string;
@@ -1328,7 +1383,28 @@ export function isSubagentRunShape(value: unknown): value is SubagentRun {
 	if (v.recoveryPosture !== undefined) {
 		if (!RECOVERY_MODES.includes(v.recoveryPosture as RecoveryMode)) return false;
 	}
+	// Issue #616: a MISTYPED retry cause is rejected like any other bad field; an
+	// ABSENT one is fine (a first dispatch, and every pre-#616 record) and reads
+	// as unknown through `runRetryCause`.
+	if (v.retryCause !== undefined) {
+		if (!(RETRY_CAUSES as readonly unknown[]).includes(v.retryCause)) return false;
+	}
 	return true;
+}
+
+/**
+ * Issue #616: the retry cause recorded for an attempt, or `undefined` when it
+ * cannot be established. ONE reader, so no consumer invents a cause: absent (a
+ * first dispatch, a pre-#616 record) and an unrecognized value both read as
+ * unknown. Unknown is NOT `"transport"` — the stop contract must never widen a
+ * dispatch-scoped stop on a cause it cannot prove.
+ */
+export function runRetryCause(
+	run: Pick<SubagentRun, "retryCause">,
+): RetryCause | undefined {
+	return (RETRY_CAUSES as readonly unknown[]).includes(run.retryCause)
+		? run.retryCause
+		: undefined;
 }
 
 /**
