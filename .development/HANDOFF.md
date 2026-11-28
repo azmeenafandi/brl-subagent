@@ -5,8 +5,8 @@
 
 ## STATE
 Verified: 026ef8d (2026-11-28)
-In flight: PR #612 — #606 Unit 1 under review in `../brl-subagent-wt-606`; the `/reload` is done
-Next action: #606 (open) — review #612, then the merge gate; Unit 1 of three
+In flight: PR #612 — #606 Unit 1 reviewed `approve-with-nits`; merge gate green, **awaiting maintainer approval**
+Next action: #606 (open) — merge #612 on approval (gate already green); Unit 1 of three
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
 
 ## Invariants

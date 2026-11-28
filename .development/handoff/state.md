@@ -13,9 +13,12 @@ typecheck clean; docs guards current (**61 modules**, **28 ADRs**). Sizes: `inde
 ## Open items
 
 - **In flight: PR #612 — #606 Unit 1** (`feat/606-grill-front-door`, head `96edab4`, 10 commits, CI green).
-  Under focused C2 review. The maintainer's `/reload` landed, so the pi 1.7.0 SDK is live in the session.
-  Suite is **154 files / 3516** at this head (+4 files / +65 tests over the 3451 baseline). Six templates now
-  declare `dispatch: impl` and therefore require a caller `brief` param — a user-facing change worth watching.
+  Focused C2 review: **approve-with-nits**, 5 findings (3 minor, 2 nit), no C1. `merge-guard` is green on all
+  seven checks, including the test-flow (within allowance). **Awaiting maintainer approval to merge.**
+  Record: `~/.cache/brl-subagent/review-612/REVIEW_612.md`, sha256 `b34be201…`, reviewer
+  `openrouter/meta/muse-ember`. A first attempt ran on the wrong model (deepseek-flash, no `model` passed) and
+  its stopped record is preserved at `REVIEW_612.deepseek-stopped.md` — its leads were handed to muse as
+  **unverified**, one of which (F2, an impl-brief leak) muse **refuted**.
 
 - **Landed: #610 / PR #611 — pi 1.7.0 SDK parity** (`3789461`). Compatibility found no breaking impact: the sole
   breaking change removes install telemetry, which no `src/` file touches, and the public surface is
