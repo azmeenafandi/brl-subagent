@@ -37,11 +37,21 @@ disk — no install was needed to answer this):
 Every change in the four packages is **additive** or internal:
 
 - `pi-coding-agent`: 13 d.ts files changed, all internal. Declared-module delta = `core/telemetry.d.ts`
-  **removed**; `cli/agent-dir-arg.d.ts` + `modes/interactive/program-resume-reporter.d.ts` **added**. The only
-  removals anywhere are the two telemetry methods (settings-manager.d.ts) and the `enableInstallTelemetry` key
-  (settings-defaults.d.ts · settings-schema.d.ts). Everything else is additive: `imageOutput?`,
-  `supportsReasoningReplay?` (model-config / pi-ai-schemas), `usesDefaultAgentDir()` (config), `resumeFlags`
-  (cli/args), two `protected`/`private` editor members, doc comments (terminal-image, tools-manager).
+  **removed**; `cli/agent-dir-arg.d.ts` + `modes/interactive/program-resume-reporter.d.ts` **added**. The
+  removals reachable from our code are the two telemetry methods (settings-manager.d.ts) and the
+  `enableInstallTelemetry` key (settings-defaults.d.ts · settings-schema.d.ts). Everything else is additive:
+  `imageOutput?`, `supportsReasoningReplay?` (model-config / pi-ai-schemas), `usesDefaultAgentDir()` (config),
+  `resumeFlags` (cli/args), two `protected`/`private` editor members, doc comments (terminal-image,
+  tools-manager).
+
+  **Correction (focused review of PR #611, `fddba84`):** the first version of this spec claimed those telemetry
+  pieces were the *only* removals anywhere. They are not — three more were missed, and all three are
+  **unreachable** from our code (0 `src/` references, not re-exported from any `index.d.ts`, and the subpaths
+  are gated by an unchanged `exports` map): `getClientIdentity(settingsManager)` loses its parameter
+  (client-identity.d.ts); `RadiusGatewayConfig.classifiers` → `.decision`, and
+  `getRadiusAllModelsFromConfig`'s return type widens (radius-config.d.ts); `ClassifierHttpError` changes from
+  an interface to a type alias, shape-identical (classifier-shared.d.ts). The conclusion is unchanged — none is
+  reachable — but the claim as written was wrong.
 - `pi-ai`: additive — new `pi-image` API in the `KnownImageApi` union (our `Api` is `KnownApi | (string & {})`, so
   it absorbs new members by construction), optional `aspectRatio`/`size` on `ImagesOptions`, optional
   `imageOutput` on usage.
