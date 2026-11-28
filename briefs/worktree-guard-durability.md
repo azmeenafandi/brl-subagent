@@ -51,12 +51,13 @@ report inline in its completion message); `conductor-617` = measured by the cond
 | `bash` blind spot | **Unchanged and documented** | The guard is a tripwire for the habitual path, not a sandbox; a shell parser is a new false-positive surface, and the escape existed because a *false* refusal (F11) (Q11) |
 | Test wiring | **Port `guard.test.cjs` into a vitest matrix and delete it** — `.pi/skills/worktree/__tests__/worktree-guard.test.ts` | One runner, CI-covered, counted by the budget; the unwired manual file is what let the classifier go untested (F10) (Q10) |
 | Scope | **One PR**, **C1**: classifier + realpath + fail-closed message + the vitest matrix; the absolute-path hole closes as a side effect | A write-gating predicate must land with the test that proves it (F7) (Q6) |
+| Foreign repositories | **Scoped to the session's repository's common gitdir** (Q12 A, post-grill 2026-11-28); a foreign repo is durable only via a durable ancestor | Unscoped, clauses (a)–(c) are also true of things that are not ours: a temp `git init` inside a scratch worktree is a main worktree, and an unrelated repository whose default branch is `main` answers the branch clause — the same false-positive class this PR removes. The durable ancestor must belong to the session's repository; a session whose own repository cannot be resolved fails closed (Q2) |
 
 ## Contract (what the implementation must satisfy)
 
 - Protected iff the target, resolved to its real path and relative to `cwd` when relative, has **any durable
-  ancestor tree**, the whitelist (evaluated on the durable tree's repo-relative path) does not cover it, and it
-  lies under `src/` or `presets/`.
+  ancestor tree of the session's repository** (common gitdir), the whitelist (evaluated on the durable tree's
+  repo-relative path) does not cover it, and it lies under `src/` or `presets/`.
 - Resolution per tree: walk up for `.git`; a directory ⇒ main worktree; a file ⇒ parse `gitdir:` (resolve it
   relative to the containing tree), then read `<gitdir>/HEAD` (`ref: refs/heads/<branch>` or a sha) — no
   subprocess. Any read failure on a relevant link is "unresolvable" ⇒ protected (Q2).
