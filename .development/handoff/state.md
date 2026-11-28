@@ -3,11 +3,13 @@
 The mechanical snapshot #607 moved out of the index. Read by `node scripts/handoff-verify.mjs` — every
 line below is a claim it recomputes, and a drift means the claim is wrong, never the checker.
 
-- **dev** @ `7940302` — **#606 closed: all three units delivered** (Unit 1 `370774f`, Unit 2 against #607, Unit 3
-  `7940302`); on top of the pi 1.7.0 SDK parity (#611) and its spec correction.
-- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 7940302`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
-- **Board:** `#611`/`#610` closed, `#612` (`370774f`), **`#614` (`7940302`), `#606` closed** with all three units delivered. Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #615, #616.
-- **Suite:** 155 files / **3540** (3539 passed, 0 failed, 1 skipped) captured at `7940302` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
+- **dev** @ `700fe07` — **#615 fixed** (PR #618: the recovery pid-file race); on top of #606's three units
+  (`370774f`, `14aef6e`-era, `7940302`), the pi 1.7.0 SDK parity (#611) and its spec correction.
+- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 700fe07`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
+- **Board:** `#611`/`#610` closed, `#612` (`370774f`), `#614` (`7940302`), `#606` closed with all three units
+  delivered, **`#615` closed by `#618` (`700fe07`)**, **`#617` filed** (worktree-guard, dev tooling).
+  Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #616, #617.
+- **Suite:** 155 files / **3542** (3541 passed, 0 failed, 1 skipped) captured at `700fe07` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
 
 ## Open items
 
@@ -27,10 +29,26 @@ line below is a claim it recomputes, and a drift means the claim is wrong, never
   `src/dispatch-header.ts` disagree (`none—why` accepted by one, refused by the other; neither matches the spec's
   `^none —\s*\S`); an `impl` template whose body self-declares its kind skips the render-time `params.brief`
   check; the dead-row check fires on a partial corpus (noise only — gated under cannot-check, exit 2).
-- **Filed 2026-11-28, after both bit us:** **#615** `recovery.test.ts` waits for its pid file to *exist* then
-  reads it, so a created-but-unflushed file reads as `""` and throws `bad grandchild pid` — it cost a CI cycle on
-  #614 with a zero `src/` diff. **#616** `stop_subagent` reports success on a *superseded* agent while the
-  transport retry runs on under the same label — which is how an off-protocol run nearly gated a merge.
+- **Landed: #615 / PR #618** (`700fe07`) — `recovery.test.ts` raced its own pid file: `waitUntil(existsSync)`
+  then one `readFileSync` read `""` before the grandchild's write landed, so `Number("") === 0` threw
+  `bad grandchild pid` (it cost a CI cycle on #614, a PR with zero `src/` diff). Now `waitForValidPid(pidFile,
+  timeoutMs = 5000)` polls for a *valid* pid, and the timeout names the file, the timeout and what it observed;
+  `readGrandchildPid` registers only a validated pid. Two pinning tests; the existence-only mutant reddens the
+  first (`expected +0 to be 42424`) in both the implementer's and the reviewer's independent runs. Reviewed
+  `approve` by `openrouter/meta/muse-ember` (record sha256 `aa9a3ca6…`, 0 findings).
+- **Filed 2026-11-28: #617** — `worktree-guard` derived the repo root from its own cwd, so in a worktree
+  session every `src/`/`presets/` write was read as "outside a worktree" and refused; the `#615` implementation
+  dispatch was blocked on its first edit. Reproduction and fix direction on the issue. The #615 run was unblocked
+  by a worktree-local, uncommitted exemption in that worktree's copy of the guard (reverted before the branch was
+  pushed); **the cockpit copy is unchanged and still blocks correctly**, so this is a dispatch-shape defect, not a
+  weakened guard.
+- **#616 remains open** (the next action): `stop_subagent` reports success on a *superseded* agent while its
+  transport retry runs on under the same label — the run that nearly gated a merge with an off-protocol
+  `approve-with-nits` record.
+- **Still carried from #614** (record, not fixed): the zero-decision regexes in `src/brief.ts` and
+  `src/dispatch-header.ts` disagree (`none—why` accepted by one, refused by the other; neither matches the spec's
+  `^none —\s*\S`); an `impl` template whose body self-declares its kind skips the render-time `params.brief`
+  check; the dead-row check fires on a partial corpus (noise only — gated under cannot-check, exit 2).
 
 - **Landed: #610 / PR #611 — pi 1.7.0 SDK parity** (`3789461`). Compatibility found no breaking impact: the sole
   breaking change removes install telemetry, which no `src/` file touches, and the public surface is
