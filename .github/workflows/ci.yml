@@ -62,6 +62,12 @@ jobs:
       # project's contract) or moved to ~/.pi/agent/brl-subagent/ (a personal variant); an untracked file and
       # a tracked-but-missing file both fail, one line each, because the two fixes are different.
       - run: node scripts/check-contract-tracking.mjs
+      # The factory vocabulary (#606): `.development/VOCABULARY.md` names the concepts delegated work already
+      # uses — dispatch, spawn, run, subagent — and the one enforced synonym (`worker` → `subagent`). The data
+      # file is validated first (a duplicate concept, a bad status or an empty canonical is its own
+      # violation), then living prose is scanned; a canonical term used nowhere fails unless the row is
+      # marked `forward`.
+      - run: node scripts/check-vocabulary.mjs
       # The Jev ritual's mechanical gate (issue #366): the dispatch-line formatter's selftest, then
       # an audit of the calibration log — every row since the strict-Jev cutoff (2026-10-12) must
       # carry a queried confidence or an explicit gap marker. A bare level is a finding.

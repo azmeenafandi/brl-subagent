@@ -8,6 +8,9 @@
 > nothing for users (a package directory is not in pi's context-file lookup
 > chain) while adding its full contents to every session run inside this repo.
 
+> **Vocabulary:** *dispatch*, *spawn*, *run* and *subagent* — and the one banned synonym — are stated in
+> [`.development/VOCABULARY.md`](.development/VOCABULARY.md) and enforced by `scripts/check-vocabulary.mjs`.
+
 This file is the authoritative reference for how the brl-subagent extension behaves
 and how you (the conductor) should judge a delegation. Read it when planning
 delegation-heavy work.
