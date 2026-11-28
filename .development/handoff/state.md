@@ -3,11 +3,11 @@
 The mechanical snapshot #607 moved out of the index. Read by `node scripts/handoff-verify.mjs` — every
 line below is a claim it recomputes, and a drift means the claim is wrong, never the checker.
 
-- **dev** @ `5100563` — #606 Unit 3's signed brief (`briefs/factory-vocabulary.md`) and the two recon reports it
-  cites; on top of Unit 1's merge (#612) and the pi 1.7.0 SDK parity (#611).
-- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 5100563`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
-- **Board:** `#611` merged (`3789461`) with `#610` closed; `#612` merged (`370774f`) — #606 Unit 1, the front door. Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #606.
-- **Suite:** 154 files / **3516** (3515 passed, 0 failed, 1 skipped) captured at `5100563` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
+- **dev** @ `7940302` — **#606 closed: all three units delivered** (Unit 1 `370774f`, Unit 2 against #607, Unit 3
+  `7940302`); on top of the pi 1.7.0 SDK parity (#611) and its spec correction.
+- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 7940302`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
+- **Board:** `#611`/`#610` closed, `#612` (`370774f`), **`#614` (`7940302`), `#606` closed** with all three units delivered. Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #615, #616.
+- **Suite:** 155 files / **3540** (3539 passed, 0 failed, 1 skipped) captured at `7940302` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
 
 ## Open items
 
@@ -17,32 +17,20 @@ line below is a claim it recomputes, and a drift means the claim is wrong, never
   **Release checkpoint is OPEN**: this changed `src/`, so the merged code is not in the published package —
   the maintainer decides between a release and continued dev-checkout dogfooding (a `/reload` activates it
   for the dev install).
-- **In flight: #606 Unit 3 — the brief is signed, nothing is built yet.** `briefs/factory-vocabulary.md`
-  (`5100563`), fifteen decisions taken one question at a time, validated with `validateBriefFile` → ok. The
-  design is deliberately small: a **naming layer** over the words the code already uses, **one ban**
-  (`worker` → `subagent`), a data-only `VOCABULARY.md` the lint parses and validates, and the refusals
-  (`runner`, `trigger`, `ticket tracker`) recorded in the prose glossary. Corpus is living `*.md` prose only.
-  Next: worktree + `dispatch: impl` `brief: factory-vocabulary` — the first dispatch the gate will police.
-- **Home-directory sweep, 2026-11-28.** Eight stray `brl-*`/`probe*` directories sat directly under `$HOME`,
-  all dated 2026-11-12/13 — the suite-report/provenance sprint (#519–#521), so the maintainer's guess was
-  right. None was a registered worktree and the project referenced none of them. Four probe dirs and one
-  second-capture sidecar were preserved to
-  `~/.cache/brl-subagent/archive/probe519-and-brl521-fixtures-2026-11-28.tar.gz` (+ `.MANIFEST.txt`, every
-  hash verified); the genuine reports were **not** archived because they are already in
-  `~/.cache/brl-subagent/reports/` by hash. **Two of the preserved fixtures must never be filed as captures:**
-  `probe519op`'s sidecar says `capturedAt: "t"` and `probe519mark`'s sidecar names a head its report
-  contradicts — they test the provenance validator by being wrong.
-- **Regression found and fixed while cutting this unit:** the Unit 2 close rewrote the Suite line to
-  `154 files / 3516` and dropped its passed/failed/skipped breakdown. `handoff-verify.test.ts:909` parses the
-  live line and caught it; `handoff-verify` itself did not, because it compares totals and not the suffix.
-- **Carried nits from #612** (record, not fixed): `src/brief.ts` and `src/dispatch-header.ts` hold two regexes
-  for the zero-decision form that disagree (`none—why` accepted by one, refused by the other; neither matches
-  the spec's `^none —\s*\S`); an `impl` template whose body already declares its kind skips the render-time
-  `params.brief` check (the validator still refuses the result). Both are minor.
-- **Carried process defect, undispositioned:** `stop_subagent` reports success against a *superseded* background
-  agent while its automatic transport retry keeps running under the same label — so "stopped" can be false, and
-  a retry can write a merge-gating record after the conductor believes the run is dead. Hit twice today. Needs a
-  friction row or an issue; not yet filed.
+- **Landed: #606 Unit 3 / PR #614** (`7940302`) — the factory vocabulary as a *mechanism*: `.development/VOCABULARY.md`
+  (four concepts, one ban `worker`→`subagent`), `scripts/check-vocabulary.mjs` (0/1/2 contract, data-shape rules,
+  dead-row + `forward`, `*.md` living prose with provable exclusions), the CI line, a `GLOSSARY.md` entry for the
+  three refusals, and an `AGENT.md` link. Reviewed `approve-with-nits` by `openrouter/meta/muse-ember`; the first
+  `approve` at `60bdb9b` was **superseded** after a cannot-check-reported-as-clean defect was found and fixed
+  (`8f70dda`) — the review had verified that path's exit code but not its output.
+- **Carried nits from #614** (record, not fixed): the zero-decision regexes in `src/brief.ts` and
+  `src/dispatch-header.ts` disagree (`none—why` accepted by one, refused by the other; neither matches the spec's
+  `^none —\s*\S`); an `impl` template whose body self-declares its kind skips the render-time `params.brief`
+  check; the dead-row check fires on a partial corpus (noise only — gated under cannot-check, exit 2).
+- **Filed 2026-11-28, after both bit us:** **#615** `recovery.test.ts` waits for its pid file to *exist* then
+  reads it, so a created-but-unflushed file reads as `""` and throws `bad grandchild pid` — it cost a CI cycle on
+  #614 with a zero `src/` diff. **#616** `stop_subagent` reports success on a *superseded* agent while the
+  transport retry runs on under the same label — which is how an off-protocol run nearly gated a merge.
 
 - **Landed: #610 / PR #611 — pi 1.7.0 SDK parity** (`3789461`). Compatibility found no breaking impact: the sole
   breaking change removes install telemetry, which no `src/` file touches, and the public surface is
