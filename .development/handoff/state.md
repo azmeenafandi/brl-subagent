@@ -3,20 +3,21 @@
 The mechanical snapshot #607 moved out of the index. Read by `node scripts/handoff-verify.mjs` — every
 line below is a claim it recomputes, and a drift means the claim is wrong, never the checker.
 
-- **dev** @ `d2d8358` — the pi 1.7.0 compatibility spec (docs only); the #606 spec r2 with the gated class
-  DECIDED (code-writing) is unchanged.
-- **Running install:** the **dev checkout** (`pi install /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev`) on pi **1.7.0**, `dev @ d2d8358`; every dispatch dogfoods the branch. Revert to the published build: `pi remove /home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` → `pi install npm:brl-subagent@2.9.1` → `/reload`. The declared SDK line is still 1.6.1 until **PR #611** merges (then `npm ci` in the cockpit).
-- **Board:** `#607` merged (`14aef6e`); the queue after it is the factory front door (#606), then the spine. Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #606, #610.
-- **Suite:** 150 files / **3451** (3450 passed, 0 failed, 1 skipped) captured at `d2d8358`; typecheck clean; docs guards current (**61 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,261; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
+- **dev** @ `026ef8d` — the pi 1.7.0 SDK parity landed (#611) plus the spec correction the review earned; the
+  #606 spec r2 with the gated class DECIDED (code-writing) is unchanged.
+- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 026ef8d`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
+- **Board:** `#607` merged (`14aef6e`); `#611` merged (`3789461`) and `#610` closed with it — the pi 1.7.0 SDK parity, no release implied. The queue after it is the factory front door (#606), then the spine. Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #606.
+- **Suite:** 150 files / **3451** (3450 passed, 0 failed, 1 skipped) captured at `026ef8d` — measured on pi 1.7.0;
+typecheck clean; docs guards current (**61 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,261; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
 
 ## Open items
 
-- **In flight: PR #611 (#610) — pi 1.7.0 SDK parity.** The compatibility check found no breaking impact (the sole
-  breaking change removes install telemetry, which no `src/` file touches); four devDependency ranges `^1.6.0` →
-  `^1.7.0`, lockfile churn exactly the eight `@earendil-works` entries, `typebox` still 1.3.27, no source change;
-  typecheck clean and the suite unchanged from the `5b4da67` baseline. Spec:
-  `.development/investigations/deps-pi-1.7.0-spec-2026-11-28.md`. Post-merge: `npm ci` in the cockpit, and re-prep
-  any worktree that predates the bump with `--force-isolated`.
+- **Landed: #610 / PR #611 — pi 1.7.0 SDK parity** (`3789461`). Compatibility found no breaking impact: the sole
+  breaking change removes install telemetry, which no `src/` file touches, and the public surface is
+  unchanged-or-additive. Four devDependency ranges `^1.6.0` → `^1.7.0`; `typebox` still 1.3.27; no source change.
+  The focused review (`approve-with-nits`) found the spec's removals list incomplete — three further removals, all
+  unreachable — corrected in `026ef8d`. Spec: `.development/investigations/deps-pi-1.7.0-spec-2026-11-28.md`.
+  **Any worktree prepped before the bump must be re-prepped with `--force-isolated`.**
 
 - **Cycle `front-door` (open, paused 2026-11-27 for the night).** #609 merged (the plan-critic preset at `medium`).
   **Resume here:** #606 Unit 1 — the spec is `.development/investigations/issue-606-grill-spec-2026-11-27.md` at

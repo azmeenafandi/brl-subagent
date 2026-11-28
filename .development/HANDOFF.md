@@ -4,8 +4,8 @@
 > History: `.development/HANDOFF-ARCHIVE-*` and `.development/FRICTION_LOG.md` — never re-read it.
 
 ## STATE
-Verified: d2d8358 (2026-11-28)
-In flight: PR #611 (#610) — align `@earendil-works/*` to pi 1.7.0; awaiting review
+Verified: 026ef8d (2026-11-28)
+In flight: nothing
 Next action: #606 (open) — approve the r7 spec, then implement Unit 1
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
 
