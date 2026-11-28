@@ -4,9 +4,9 @@
 > History: `.development/HANDOFF-ARCHIVE-*` and `.development/FRICTION_LOG.md` — never re-read it.
 
 ## STATE
-Verified: 026ef8d (2026-11-28)
-In flight: PR #612 — #606 Unit 1 reviewed `approve-with-nits`; merge gate green, **awaiting maintainer approval**
-Next action: #606 (open) — merge #612 on approval (gate already green); Unit 1 of three
+Verified: 370774f (2026-11-28)
+In flight: nothing
+Next action: #606 (open) — Unit 1 is merged; the release checkpoint is the maintainer's call, then Unit 2
 Index: verify `node scripts/handoff-verify.mjs` (0 drift) before acting → §Invariants·§Pointers·§Resume protocol · handoff/state.md · handoff/invariants.md
 
 ## Invariants

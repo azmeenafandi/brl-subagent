@@ -3,22 +3,28 @@
 The mechanical snapshot #607 moved out of the index. Read by `node scripts/handoff-verify.mjs` — every
 line below is a claim it recomputes, and a drift means the claim is wrong, never the checker.
 
-- **dev** @ `026ef8d` — the pi 1.7.0 SDK parity landed (#611) plus the spec correction the review earned; the
-  #606 spec r2 with the gated class DECIDED (code-writing) is unchanged.
-- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 026ef8d`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
-- **Board:** `#607` merged (`14aef6e`); `#611` merged (`3789461`) and `#610` closed with it — the pi 1.7.0 SDK parity, no release implied. The queue after it is the factory front door (#606), then the spine. Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #606.
-- **Suite:** 150 files / **3451** (3450 passed, 0 failed, 1 skipped) captured at `026ef8d` — measured on pi 1.7.0;
-typecheck clean; docs guards current (**61 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,261; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
+- **dev** @ `370774f` — #606 Unit 1 merged (the grill front door: dispatch header, brief predicates, template
+  kinds, routing fix); on top of the pi 1.7.0 SDK parity (#611) and its spec correction.
+- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 370774f`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
+- **Board:** `#611` merged (`3789461`) with `#610` closed; `#612` merged (`370774f`) — #606 Unit 1, the front door. Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #606.
+- **Suite:** 154 files / **3516** captured at `370774f` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
 
 ## Open items
 
-- **In flight: PR #612 — #606 Unit 1** (`feat/606-grill-front-door`, head `96edab4`, 10 commits, CI green).
-  Focused C2 review: **approve-with-nits**, 5 findings (3 minor, 2 nit), no C1. `merge-guard` is green on all
-  seven checks, including the test-flow (within allowance). **Awaiting maintainer approval to merge.**
-  Record: `~/.cache/brl-subagent/review-612/REVIEW_612.md`, sha256 `b34be201…`, reviewer
-  `openrouter/meta/muse-ember`. A first attempt ran on the wrong model (deepseek-flash, no `model` passed) and
-  its stopped record is preserved at `REVIEW_612.deepseek-stopped.md` — its leads were handed to muse as
-  **unverified**, one of which (F2, an impl-brief leak) muse **refuted**.
+- **Landed: #606 Unit 1 / PR #612** (`370774f`) — the mandatory dispatch header, the signed-brief predicates,
+  template kinds, and the routing fix. Reviewed `approve-with-nits` by `openrouter/meta/muse-ember` (record
+  sha256 `b34be201…`); `merge-guard` green on all seven checks. Spec: `issue-606-grill-spec-2026-11-27.md`.
+  **Release checkpoint is OPEN**: this changed `src/`, so the merged code is not in the published package —
+  the maintainer decides between a release and continued dev-checkout dogfooding (a `/reload` activates it
+  for the dev install).
+- **Carried nits from #612** (record, not fixed): `src/brief.ts` and `src/dispatch-header.ts` hold two regexes
+  for the zero-decision form that disagree (`none—why` accepted by one, refused by the other; neither matches
+  the spec's `^none —\s*\S`); an `impl` template whose body already declares its kind skips the render-time
+  `params.brief` check (the validator still refuses the result). Both are minor.
+- **Carried process defect, undispositioned:** `stop_subagent` reports success against a *superseded* background
+  agent while its automatic transport retry keeps running under the same label — so "stopped" can be false, and
+  a retry can write a merge-gating record after the conductor believes the run is dead. Hit twice today. Needs a
+  friction row or an issue; not yet filed.
 
 - **Landed: #610 / PR #611 — pi 1.7.0 SDK parity** (`3789461`). Compatibility found no breaking impact: the sole
   breaking change removes install telemetry, which no `src/` file touches, and the public surface is
