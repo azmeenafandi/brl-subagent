@@ -475,7 +475,7 @@
 		"stop_subagent": {
 			"name": "stop_subagent",
 			"label": "Stop Subagent",
-			"description": "Stop a running background agent by aborting its session. The agent's current operation is aborted and the session is marked stopped. Use this to halt a background agent that is no longer needed.",
+			"description": "Stop a background agent by aborting its session. A stop is DISPATCH-scoped: it stops the agent you name AND every automatic transport retry of the same dispatch that is still running, because a retried run continues the same work under a different id. A manual retry (one you started yourself) is never stopped by a stop aimed at another attempt — pass its own id to stop it. Accepts a full agent id or a unique 8-character id prefix; an ambiguous prefix stops nothing. The report names every attempt it acted on (id, attempt, cause) and discloses anything left running, an armed retry, or a truncated lineage scan. An already-terminal dispatch is a no-op success.",
 			"parameters": {
 				"type": "object",
 				"required": [

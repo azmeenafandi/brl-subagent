@@ -24,7 +24,7 @@
  */
 
 import type { Logger } from "./logging";
-import type { ProcessOwner, SubagentRun } from "./types";
+import type { ProcessOwner, RetryCause, SubagentRun } from "./types";
 import { resolveTerminalRunEntry } from "./state";
 import { escalateKill, processTarget, type SignalGuard, type SignalPhase } from "./kill-escalation";
 
@@ -150,16 +150,30 @@ export interface RecoveryOutcome {
  * original's dispatchId and records `resumeOf`/`attempt`; a fresh dispatch
  * mints a new dispatchId with attempt 1. These are RECORD fields, not
  * delegate_task params (D4).
+ *
+ * Issue #616: `retryCause` states WHY the attempt exists, and only the MINT SITE
+ * knows it — the automatic transport retry passes `"transport"`, a
+ * caller-driven `retryRunId` retry passes `"manual"`. It is deliberately NOT
+ * derived here (from the source's failure class, say): a manual retry of a
+ * transport-failed attempt would then be indistinguishable from the automatic
+ * one, which is exactly the over-stop the narrowing exists to prevent. A fresh
+ * dispatch carries no cause at all (absent ⇒ unknown ⇒ never auto-stopped).
  */
-export function newDispatchIdentity(source: SubagentRun | undefined): {
+export function newDispatchIdentity(
+	source: SubagentRun | undefined,
+	retryCause?: RetryCause,
+): {
 	dispatchId: string;
 	resumeOf?: string;
 	attempt: number;
+	retryCause?: RetryCause;
 } {
 	return {
 		dispatchId: source?.dispatchId ?? crypto.randomUUID(),
 		resumeOf: source?.id,
 		attempt: source ? (source.attempt ?? 1) + 1 : 1,
+		// A cause without a source would describe a retry that has no origin.
+		...(source && retryCause ? { retryCause } : {}),
 	};
 }
 

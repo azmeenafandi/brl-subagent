@@ -7,14 +7,17 @@ import {
 	classifyError,
 	classifyTerminalOutcome,
 	isProviderError,
+	isTerminalAgentStatusValue,
 	coherentFailureReason,
 	SUBAGENT_ABORTED_MESSAGE,
 	NO_ASSISTANT_OUTPUT_REASON,
+	CANCELLED_RETRY_MESSAGE,
 	PROMPT_NEVER_ISSUED_MESSAGE,
 	type BackgroundAgent,
 	type AgentStatus,
 	type GitMode,
 	type RecoveryMode,
+	type RetryCause,
 	type SubagentResult,
 	type SubagentRun,
 	type ThinkingLevel,
@@ -60,6 +63,7 @@ import { ensureOwnerOnlyDir, repairOwnerOnlyFiles } from './store-permissions';
 import { writeFileAtomicSync } from './atomic-write';
 import { buildEngineeringBarSection } from './engineering-bar';
 import { prepareRunScratch, markSettled } from './scratch-spawn';
+import { clearArmedRetry, isRetryCancelRequested } from './retry-armed';
 
 const log = createLogger('brl-subagent');
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -778,6 +782,9 @@ export const RETRY_IDENTITY_KEYS: ReadonlySet<string> = new Set([
   'attempt',
   'status',
   'startedAt',
+  // Issue #616: the retry cause. Read by the shallow scanner so a dispatch-scoped
+  // stop can scope itself to `transport` without a full record parse.
+  'retryCause',
 ]);
 
 const AGENT_STATUSES: ReadonlySet<string> = new Set([
@@ -798,6 +805,12 @@ export interface RetryRecordIdentity {
   status: AgentStatus;
   /** Epoch milliseconds (agent records store ms; registry ISO is normalised). */
   startedAt: number;
+  /**
+   * Issue #616: why this attempt exists, when the record says. ABSENT means
+   * UNKNOWN — neither cause is assumed, and unknown is never the stop-scoped
+   * `transport`.
+   */
+  retryCause?: RetryCause;
 }
 
 export type AgentIdResolution =
@@ -815,6 +828,13 @@ export interface RetryLineage {
   latest: RetryRecordIdentity | null;
   /** Registry entries that name the id itself or a member of its family. */
   inflight: InflightRun[];
+  /**
+   * Issue #616 (Q7): whether the scan was TRUNCATED, which is what a caller
+   * needs to avoid printing a universal claim over a partial read. `capped` is
+   * the `RETRY_SCAN_CAP` cut; a record older than `windowDays` is the caller's
+   * own check (it knows the requested record's `startedAt`).
+   */
+  bounds: { capped: boolean; windowDays: number };
 }
 
 function isSafeAgentId(id: string): boolean {
@@ -833,7 +853,9 @@ function isSafeAgentId(id: string): boolean {
 export type AgentFlipOutcome = 'repaired' | 'retired' | false;
 
 export function isTerminalAgentStatus(status: AgentStatus): boolean {
-  return status === 'completed' || status === 'failed' || status === 'stopped';
+  // Issue #616: the vocabulary lives in `types.ts` (one definition, two readers —
+  // this export and the stop contract's post-stop verification).
+  return isTerminalAgentStatusValue(status);
 }
 
 function isAgentStatus(value: unknown): value is AgentStatus {
@@ -1116,6 +1138,7 @@ function readAgentIdentity(file: string): RetryRecordIdentity | null {
 
   const dispatchId = fields.get('dispatchId');
   const resumeOf = fields.get('resumeOf');
+  const retryCause = fields.get('retryCause');
   return {
     id,
     status,
@@ -1123,6 +1146,8 @@ function readAgentIdentity(file: string): RetryRecordIdentity | null {
     attempt,
     ...(typeof dispatchId === 'string' ? { dispatchId } : {}),
     ...(typeof resumeOf === 'string' ? { resumeOf } : {}),
+    // Issue #616: an unrecognized cause is ABSENT (unknown), never coerced.
+    ...(retryCause === 'transport' || retryCause === 'manual' ? { retryCause } : {}),
   };
 }
 
@@ -1130,14 +1155,18 @@ function readAgentIdentity(file: string): RetryRecordIdentity | null {
  * The bounded store read: stat every record (cheap), keep the ones inside the
  * mtime window, sort newest-first, cap at `RETRY_SCAN_CAP`, then read only the
  * surviving files' identity fields. Corrupt/unsafe records are skipped.
+ *
+ * `capped` reports whether the CAP cut anything (issue #616, Q7): a caller that
+ * makes a universal claim over the answer must be able to say the scan was
+ * truncated.
  */
-function readRecentAgentIdentities(): RetryRecordIdentity[] {
+function readRecentAgentIdentities(): { records: RetryRecordIdentity[]; capped: boolean } {
   let files: string[];
   try {
-    if (!existsSync(STORAGE_DIR)) return [];
+    if (!existsSync(STORAGE_DIR)) return { records: [], capped: false };
     files = readdirSync(STORAGE_DIR);
   } catch {
-    return [];
+    return { records: [], capped: false };
   }
 
   const cutoff = Date.now() - RETRY_SCAN_WINDOW_MS;
@@ -1156,12 +1185,13 @@ function readRecentAgentIdentities(): RetryRecordIdentity[] {
   }
 
   recent.sort((a, b) => b.mtime - a.mtime);
+  const capped = recent.length > RETRY_SCAN_CAP;
   const records: RetryRecordIdentity[] = [];
   for (const entry of recent.slice(0, RETRY_SCAN_CAP)) {
     const record = readAgentIdentity(entry.file);
     if (record) records.push(record);
   }
-  return records;
+  return { records, capped };
 }
 
 function identityFromAgent(agent: BackgroundAgent): RetryRecordIdentity | null {
@@ -1174,6 +1204,7 @@ function identityFromAgent(agent: BackgroundAgent): RetryRecordIdentity | null {
     attempt: agent.attempt ?? 1,
     ...(agent.dispatchId ? { dispatchId: agent.dispatchId } : {}),
     ...(agent.resumeOf ? { resumeOf: agent.resumeOf } : {}),
+    ...(agent.retryCause ? { retryCause: agent.retryCause } : {}),
   };
 }
 
@@ -1186,6 +1217,7 @@ function identityFromRegistry(run: InflightRun): RetryRecordIdentity | null {
     startedAt,
     attempt: run.attempt ?? 1,
     ...(run.dispatchId ? { dispatchId: run.dispatchId } : {}),
+    ...(run.retryCause ? { retryCause: run.retryCause } : {}),
   };
 }
 
@@ -1198,11 +1230,19 @@ function identityFromRegistry(run: InflightRun): RetryRecordIdentity | null {
  * in so an in-flight retry is visible without a store record.
  */
 export function findRetryLineage(id: string, source?: BackgroundAgent | null): RetryLineage {
-  const empty: RetryLineage = { id, family: [], found: null, latest: null, inflight: [] };
+  const empty: RetryLineage = {
+    id,
+    family: [],
+    found: null,
+    latest: null,
+    inflight: [],
+    bounds: { capped: false, windowDays: RETRY_SCAN_WINDOW_DAYS },
+  };
   if (!isSafeAgentId(id)) return empty;
 
+  const scan = readRecentAgentIdentities();
   const byId = new Map<string, RetryRecordIdentity>();
-  for (const record of readRecentAgentIdentities()) byId.set(record.id, record);
+  for (const record of scan.records) byId.set(record.id, record);
 
   const sourceIdentity = source && source.id === id ? identityFromAgent(source) : null;
   if (sourceIdentity) byId.set(id, sourceIdentity);
@@ -1237,7 +1277,14 @@ export function findRetryLineage(id: string, source?: BackgroundAgent | null): R
     (run) => run.id === id || (familyDispatch !== undefined && run.dispatchId === familyDispatch),
   );
 
-  return { id, family, found, latest, inflight };
+  return {
+    id,
+    family,
+    found,
+    latest,
+    inflight,
+    bounds: { capped: scan.capped, windowDays: RETRY_SCAN_WINDOW_DAYS },
+  };
 }
 
 /**
@@ -1681,6 +1728,11 @@ export async function spawnBackgroundSession(
     dispatchId?: string;
     resumeOf?: string;
     attempt?: number;
+    /** Issue #616: why this attempt exists — `transport` for the automatic
+     *  background retry, `manual` for a caller-driven `retryRunId` retry. Absent
+     *  on a first dispatch, and then it reads as UNKNOWN (never `transport`).
+     *  Recorded on the agent record, the run entry and the registry entry. */
+    retryCause?: RetryCause;
     /** Option B U3 (D4): recovery posture at dispatch — snapshotted onto the
      *  agent record + run entry so the boot notice reads the posture the run
      *  was actually dispatched under. Absent reads as "offer". */
@@ -1905,6 +1957,10 @@ export async function spawnBackgroundSession(
     dispatchId,
     resumeOf: params.resumeOf,
     attempt,
+    // Issue #616: the retry's cause, persisted on the record so a
+    // dispatch-scoped stop can scope itself to automatic transport retries and
+    // never to a manual one. Absent on a first dispatch (⇒ unknown).
+    retryCause: params.retryCause,
     owner,
     // Option B U3 (D4): per-run recovery posture snapshot. Additive — absent
     // reads as "offer" via `runRecoveryPosture`/the notice collector.
@@ -1939,6 +1995,7 @@ export async function spawnBackgroundSession(
     dispatchId,
     resumeOf: params.resumeOf,
     attempt,
+    retryCause: params.retryCause,
     owner,
     recoveryPosture: params.recoveryPosture,
     // Issue #511 (U2): the run's scratch directory (`<root>/runs/<id>`, 0700),
@@ -2422,6 +2479,61 @@ export async function spawnBackgroundSession(
     `${PROMPT_NEVER_ISSUED_MESSAGE}: ` +
     sanitizeErrorMessage(err instanceof Error ? err.message : String(err), effectiveCwd);
 
+  /**
+   * Issue #616 (Q3): settle a retry whose cancel was found at the pre-prompt
+   * gate. The prompt is NEVER issued, so no deadline is armed yet and there is
+   * no live session to abort — the record, the run entry and the transcript are
+   * the whole settlement, and the status is `stopped` (this is a stop, not a
+   * failure).
+   *
+   * ORDER: record flip → run entry → transcript, each contained separately, so a
+   * throw in one cannot suppress another and cannot escape as the spawn result.
+   * The run-entry write retires the registry entry (its status is terminal) and
+   * prunes the per-run session dir — safe here for the same reason `failPreStart`
+   * documents: the prompt was provably never issued, so nothing can be writing
+   * to that directory and no retry will be offered for this run.
+   *
+   * ACCEPTED RESIDUE (stated, not papered over): a crash between these writes
+   * leaves either a terminal record with a `running` run entry or a `running`
+   * record with a retired entry. Both are the ordinary #439/#546 residue class
+   * and neither is repairable by the boot scan — the window is three synchronous
+   * statements wide.
+   */
+  const settleCancelledRetry = (): void => {
+    const reason = CANCELLED_RETRY_MESSAGE;
+    try {
+      // Issue #574: the KIND precedes the flip that persists it, exactly as
+      // `stopAgent` does for a user stop.
+      stampAgentKind(agent, 'aborted', 'aborted');
+      updateAgentStatus(id, 'stopped', reason);
+    } catch (err) {
+      safeLog(() =>
+        log.warn(`spawnBackgroundSession: cancelled-retry record flip failed for ${id}`, {
+          error: thrownMessage(err),
+        }),
+      );
+    }
+    try {
+      finalizeRunEntry('failed', reason, { stopReason: 'aborted', errorCategory: 'aborted' });
+    } catch (err) {
+      safeLog(() =>
+        log.warn(`spawnBackgroundSession: cancelled-retry run entry failed for ${id}`, {
+          error: thrownMessage(err),
+        }),
+      );
+    }
+    try {
+      transcript.completeTranscript(id, 'stopped');
+    } catch (err) {
+      safeLog(() =>
+        log.warn(`spawnBackgroundSession: cancelled-retry transcript note failed for ${id}`, {
+          error: thrownMessage(err),
+        }),
+      );
+    }
+    agent._sessionRef = undefined;  // outside every try — cannot throw, must always run
+  };
+
   // Start transcript for this agent. Issue #447 (S2): a throw here used to
   // leave a `running` run entry and a live registry entry that the next boot
   // offered as an interrupted, retryable run — clean it and rethrow.
@@ -2902,6 +3014,46 @@ export async function spawnBackgroundSession(
         });
       }
     }, delayMs);
+
+  // ---------------------------------------------------------------------
+  // Issue #616 (Q3): THE ARMED-RETRY CANCEL GATE.
+  //
+  // The automatic transport retry is unaddressable between its id being minted
+  // (above) and its agent record landing: nothing durable names it, so a
+  // `stop_subagent` of the dispatch can only reach the dead attempt 1. The
+  // arming site (`scheduleTransportRetry`) therefore records a durable INTENT
+  // before the spawn, and a stop that finds it sets the cancel. This is where
+  // that cancel is honoured — before the deadline is armed and before the
+  // ACCEPTANCE write, so a cancelled retry never claims `acceptedAt` and never
+  // reaches `session.prompt()`.
+  //
+  // The check reads the marker KEYED BY THE SOURCE RUN (`params.resumeOf`,
+  // inherited through `newDispatchIdentity`), not by our own id — our id is the
+  // thing the marker had to be written without.
+  //
+  // THE SLIVER: between this check and the `session.prompt()` call the marker
+  // can be cancelled by a racing stop and nothing here re-reads it. That window
+  // is unprotectable (it is two statements) and is stated in the PR body rather
+  // than papered over; a stop landing inside it falls back on the record, which
+  // exists from here on.
+  // ---------------------------------------------------------------------
+  //
+  // BOTH the check and the clear are gated on `retryCause === "transport"`: the
+  // marker is armed by, and describes, the AUTOMATIC retry only. A caller-driven
+  // retry of the same source lands on the same `resumeOf`/`attempt` pair, and it
+  // must neither consume another retry's cancel nor clear its intent.
+  const armedRetrySource =
+    params.resumeOf && params.retryCause === 'transport' ? params.resumeOf : undefined;
+  if (armedRetrySource && isRetryCancelRequested(armedRetrySource, attempt)) {
+    clearArmedRetry(armedRetrySource, attempt);
+    settleCancelledRetry();
+    return agent;
+  }
+  // Past this line the retry IS addressable by its own id — the agent record and
+  // the registry entry are durable — so the intent marker has done its job and
+  // must go. Otherwise a later stop would keep disclosing an "armed" retry that
+  // is in fact a normal running record.
+  if (armedRetrySource) clearArmedRetry(armedRetrySource, attempt);
 
   // Issue #453 (ADR 0023, decision 1): ONE owner. This function arms the run's
   // deadline on EVERY path — the explicit timeout when there is one, else the

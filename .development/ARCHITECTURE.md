@@ -110,6 +110,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `recovery-surface.ts` | U3 recovery surface — interrupted-run projection, one-per-boot notice, and the abandon action. |
 | `recovery.ts` | Boot-time recovery scan — decides whether a persisted running record is live, reaps orphaned children, and marks interrupted records. |
 | `reports.ts` | Compliance reporting: file-access records and secrets-exposure detection. |
+| `retry-armed.ts` | The durable "retry armed" marker for the background transport auto-retry (issue #616). |
 | `router.ts` | Auto-route: keyword classification of a task description to the best preset. |
 | `run-registry.ts` | Durable per-run in-flight registry + the single run-record persist choke point that mirrors into it. |
 | `runner.ts` | Foreground execution: spawns the `pi` subprocess, parses its JSON-line stream, and folds usage. |
@@ -121,6 +122,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `scratch-spawn.ts` | The spawn seam for the shipped scratch root — resolves, creates, prunes and settles one run's directory. |
 | `session-manager.ts` | Background execution: SDK sessions (`createAgentSession`), agent records, timeouts, steering, and settle paths. |
 | `state.ts` | Session-bound state container with versioned validation and migration for persisted settings. |
+| `stop-lineage.ts` | The dispatch-scoped stop plan and its report lines for `stop_subagent` (issue #616). |
 | `store-permissions.ts` | Owner-only repair for the persistent stores' directories and files — mkdirSync's mode applies only on CREATE. |
 | `templates.ts` | Task-template resolution: `${param}` substitution over the file-backed template tiers. |
 | `terminal-notifier.ts` | The terminal notifier — the terminal event-bus subscriptions, their per-instance release latch, and the completion alert with its transport auto-retry. |
@@ -136,7 +138,7 @@ _Generated from each module's `// Purpose:` header by `npm run docs:arch` — ed
 | `validate.ts` | H1 pre-task validation: deterministic tool/thinking/git checks and failure post-mortems. |
 | `worktree-report.ts` | Formats the read-only worktree state a failed or stopped run may have left behind (issue #474). |
 
-**63 modules** — every one is listed because a new module without a purpose fails CI.
+**65 modules** — every one is listed because a new module without a purpose fails CI.
 
 <!-- END GENERATED: module-map -->
 

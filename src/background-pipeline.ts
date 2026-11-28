@@ -66,6 +66,7 @@ import {
 	type DelegateTaskParams,
 	type GitMode,
 	type RecoveryMode,
+	type RetryCause,
 	type SubagentResult,
 	type SubagentRun,
 	type SubagentToolOptions,
@@ -140,6 +141,9 @@ interface BackgroundAgentSpawnRequest {
 	dispatchId?: string;
 	resumeOf?: string;
 	attempt?: number;
+	// Issue #616: why this attempt exists — stated by the MINT SITE, never
+	// inferred from the source run's failure class.
+	retryCause?: RetryCause;
 	// Option B U3 (D4): recovery posture snapshot for the background run.
 	recoveryPosture?: RecoveryMode;
 }
@@ -170,6 +174,12 @@ interface BackgroundPipeline {
 		singleTask: string,
 		retrySourceRun?: SubagentRun,
 		attemptContext?: string,
+		/**
+		 * Issue #616: WHY this spawn is a retry. `scheduleTransportRetry` passes
+		 * `"transport"`; a caller-driven `retryRunId` retry passes `"manual"`.
+		 * Omitted for a fresh dispatch. Never derived from the source record.
+		 */
+		retryCause?: RetryCause,
 	) => Promise<ToolResult<undefined>>;
 }
 
@@ -520,6 +530,9 @@ export function createBackgroundPipeline(
 			attempt: spawn.attempt,
 			// Option B U3 (D4): recovery posture snapshot for the background run.
 			recoveryPosture: spawn.recoveryPosture,
+			// Issue #616: the retry cause rides the spawn onto the agent record, the
+			// run entry and the registry entry.
+			retryCause: spawn.retryCause,
 		});
 		
 		// -----------------------------------------------------------------
@@ -835,6 +848,10 @@ export function createBackgroundPipeline(
 		 * cannot be steered by the preamble's wording.
 		 */
 		attemptContext?: string,
+		/** Issue #616: WHY this spawn is a retry — stated by the caller, never
+		 *  inferred. `"transport"` from `scheduleTransportRetry`, `"manual"` from a
+		 *  caller-driven retry; omitted for a fresh dispatch. */
+		retryCause?: RetryCause,
 	): Promise<ToolResult<undefined>> {
 		// Issue #443: the DECLARED level, guarded before `bgResolved` clamps it.
 		// This is the seam for the TRANSPORT auto-retry (`scheduleTransportRetry`
@@ -939,7 +956,7 @@ export function createBackgroundPipeline(
 			);
 
 			// Option B U1: durability identity (retry inherits the original dispatch).
-			const bgIdentity = newDispatchIdentity(retrySourceRun);
+			const bgIdentity = newDispatchIdentity(retrySourceRun, retryCause);
 			const spawned = await startBackgroundAgent(pi, ctx, {
 				// Issue #411: the preamble rides the system-prompt side
 				// (`resumeContext`), never the task. The task stays the recorded
@@ -964,6 +981,7 @@ export function createBackgroundPipeline(
 				dispatchId: bgIdentity.dispatchId,
 				resumeOf: bgIdentity.resumeOf,
 				attempt: bgIdentity.attempt,
+				retryCause: bgIdentity.retryCause,
 				recoveryPosture: state.config.recovery,
 			});
 

@@ -44,7 +44,7 @@
  */
 
 import type { RuntimeContext } from "./runtime";
-import type { DelegateTaskParams, SubagentEvent, SubagentEventListener, SubagentRun, ToolResult } from "./types";
+import type { DelegateTaskParams, RetryCause, SubagentEvent, SubagentEventListener, SubagentRun, ToolResult } from "./types";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -61,6 +61,7 @@ import {
 	withWorktreeState,
 } from "./notify-completion";
 import { bankPath, resolveRoot, RUNS_DIR, type RootOptions } from "./scratch-root";
+import { armRetry, clearArmedRetry } from "./retry-armed";
 import { isTransportRetryable, TRANSPORT_RETRY_TOAST } from "./transport-retry";
 import { describeWorktreeState } from "./worktree-report";
 
@@ -87,6 +88,7 @@ interface TerminalNotifierDeps {
 		singleTask: string,
 		retrySourceRun?: SubagentRun,
 		attemptContext?: string,
+		retryCause?: RetryCause,
 	) => Promise<ToolResult<undefined>>;
 }
 
@@ -311,6 +313,26 @@ export function createTerminalNotifier(rt: RuntimeContext, deps: TerminalNotifie
 		run: SubagentRun,
 	): Promise<boolean> {
 		const sourceAttempt = run.attempt ?? 1;
+		// Issue #616 (Q3): the retry is UNADDRESSABLE until its own agent record
+		// lands, so a durable INTENT is written BEFORE the spawn — keyed by the
+		// source run, the only id that exists yet. A `stop_subagent` that reaches
+		// the dispatch inside that window sets the cancel, and the spawn honours it
+		// at its pre-prompt gate instead of prompting.
+		//
+		// Best-effort: a marker that cannot be written leaves the pre-#616 window
+		// (the retry starts unannounced) — strictly better than dropping a retry the
+		// transport predicate just decided to run.
+		const armed = armRetry({
+			parentId: run.id,
+			attempt: sourceAttempt + 1,
+			armedAt: new Date().toISOString(),
+		});
+		if (!armed) {
+			log.warn("Transport auto-retry could not arm its pre-spawn marker — the retry is unaddressable until it has a record", {
+				sourceId: run.id,
+				attempt: sourceAttempt + 1,
+			});
+		}
 		try {
 			const retryParams = resolveRetryParams({}, run);
 			// Issue #404: point at the retained session ONLY when it is really
@@ -332,6 +354,9 @@ export function createTerminalNotifier(rt: RuntimeContext, deps: TerminalNotifie
 				retryParams.task!,
 				run,
 				buildRetryResumePreamble(run, sourceAttempt + 1, retainedSessionDir),
+				// Issue #616: the mint site states the cause — this IS the automatic
+				// transport retry, and nothing else may claim it.
+				"transport",
 			);
 			if (result.isError) {
 				log.warn("Transport auto-retry spawn rejected — surfacing the original failure", {
@@ -348,6 +373,12 @@ export function createTerminalNotifier(rt: RuntimeContext, deps: TerminalNotifie
 				error: (err as Error).message,
 			});
 			return false;
+		} finally {
+			// Issue #616: the intent's window ends with the spawn — either the gate
+			// already cleared it (the retry is durable), or the spawn failed before
+			// reaching the gate (nothing will prompt, and a stale marker would make a
+			// later stop disclose an "armed" retry that cannot exist).
+			clearArmedRetry(run.id, sourceAttempt + 1);
 		}
 		log.info("Background run settled — transport auto-retry scheduled", {
 			sourceId: run.id,
