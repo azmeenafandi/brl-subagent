@@ -3,13 +3,13 @@
 The mechanical snapshot #607 moved out of the index. Read by `node scripts/handoff-verify.mjs` — every
 line below is a claim it recomputes, and a drift means the claim is wrong, never the checker.
 
-- **dev** @ `ec367a9` — **#615 fixed** (PR #618: the recovery pid-file race); on top of #606's three units
-  (`370774f`, `14aef6e`-era, `7940302`), the pi 1.7.0 SDK parity (#611) and its spec correction.
-- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ ec367a9`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
+- **dev** @ `812b492` — **#617 fixed** (PR #619: the guard's durability classifier); on top of #615 (`700fe07`),
+  #606's three units (`370774f`, `14aef6e`-era, `7940302`) and the pi 1.7.0 SDK parity (#611).
+- **Running install:** the **dev checkout** at `/home/azmeen/public_projects/brl-subagent_workspace/brl-subagent-dev` (`pi install` of that path) on pi **1.7.0**, `dev @ 812b492`; every dispatch dogfoods the branch. The declared SDK line is aligned at **1.7.0** — the cockpit `npm ci` is done. Revert to the published build: remove that path → install `npm:brl-subagent@2.9.1` → `/reload`.
 - **Board:** `#611`/`#610` closed, `#612` (`370774f`), `#614` (`7940302`), `#606` closed with all three units
-  delivered, **`#615` closed by `#618` (`700fe07`)**, **`#617` filed** (worktree-guard, dev tooling).
-  Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #616, #617.
-- **Suite:** 155 files / **3542** (3541 passed, 0 failed, 1 skipped) captured at `ec367a9` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
+  delivered, `#615` closed by `#618` (`700fe07`), **`#617` closed by `#619` (`812b492`)**.
+  Open: #552, #562, #567, #570, #590, #597, #598, #599, #602, #603, #604, #605, #616.
+- **Suite:** 156 files / **3575** (3574 passed, 0 failed, 1 skipped) captured at `812b492` — measured on pi 1.7.0; typecheck clean; docs guards current (**63 modules**, **28 ADRs**). Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487. Sizes: `index.ts` 356; `tui.ts` 3,240; `friction-disposition.mjs` 1,692; `delegate-handler.ts` 2,277; `session-manager.ts` 3,295; `mode-runners.ts` 1,575; `background-pipeline.ts` 1,025; `agent-tools.ts` 332; `boot-recovery.ts` 376; `terminal-notifier.ts` 440; `worktree-report.ts` 142; `commands.ts` 137; `unit-params.ts` 113; `atomic-write.ts` 101; `runtime.ts` 50; `brief.ts` 228; `dispatch-header.ts` 230; `lib/handoff-claims.mjs` 1,378; `handoff-verify.mjs` 487.
 
 ## Open items
 
@@ -36,12 +36,19 @@ line below is a claim it recomputes, and a drift means the claim is wrong, never
   `readGrandchildPid` registers only a validated pid. Two pinning tests; the existence-only mutant reddens the
   first (`expected +0 to be 42424`) in both the implementer's and the reviewer's independent runs. Reviewed
   `approve` by `openrouter/meta/muse-ember` (record sha256 `aa9a3ca6…`, 0 findings).
-- **Filed 2026-11-28: #617** — `worktree-guard` derived the repo root from its own cwd, so in a worktree
-  session every `src/`/`presets/` write was read as "outside a worktree" and refused; the `#615` implementation
-  dispatch was blocked on its first edit. Reproduction and fix direction on the issue. The #615 run was unblocked
-  by a worktree-local, uncommitted exemption in that worktree's copy of the guard (reverted before the branch was
-  pushed); **the cockpit copy is unchanged and still blocks correctly**, so this is a dispatch-shape defect, not a
-  weakened guard.
+- **Landed: #617 / PR #619** (`812b492`) — the guard's durability classifier. It no longer anchors on the
+  session's cwd: each tree on the target's **real-path** ancestor chain is resolved from git metadata files
+  only (no subprocess, no cache), and is **durable** iff its **common gitdir equals the session's** and it is
+  the main worktree, on `main`/`dev`, or named `brl-subagent`/`brl-subagent-dev`. Unreadable metadata fails
+  closed with `could not classify …`; a path outside any repository is not protected; a **foreign** repository
+  is durable only through a durable ancestor. Closes the pre-existing hole where a worktree session could
+  write the cockpit's `src/` by absolute path. Test-first red (`12 failed | 36 passed` against the old guard,
+  then `5 failed` for the session-scoped Q12 rows), a 33-test matrix now in CI (the unwired `guard.test.cjs`
+  deleted), eight executed mutation receipts. Reviewed `approve-with-nits` by `openrouter/meta/muse-ember`
+  (record sha256 `abf2758e…`; it re-executed M4/M5/M6/M8 itself). **Carried minors:** a bare `src`/`presets`
+  directory target is unmatched but unreachable via write/edit; `classifyTarget`'s four-stage pipeline is
+  accepted as readable. The `+454/0 skills` flow over-allowance is declared in the PR body and accepted by
+  the gate (`test-flow-override`). Brief: `briefs/worktree-guard-durability.md`.
 - **#616 remains open** (the next action): `stop_subagent` reports success on a *superseded* agent while its
   transport retry runs on under the same label — the run that nearly gated a merge with an off-protocol
   `approve-with-nits` record.
